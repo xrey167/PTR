@@ -9,10 +9,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-03  
-**Code footprint:** 21 Rust source files · 14270 nonblank source lines · 47 integration-test files · 383 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 21 Rust source files · 14279 nonblank source lines · 47 integration-test files · 385 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- admit_pod_output builds a hypothesis's PodOutputAdmitted and PodHypothesisCommitted events up front and checks both with the ledger's check_encodable before committing the first, so an output over the ledger limits is refused whole instead of leaving an admission whose retry reports success for a hypothesis that was never created
+- The cached JWKS document is dated from when the fetch returned, not when it started, so a fetch slower than the refresh cooldown does not hand back keys that are already stale; the cooldown for new attempts still counts from the start
 - bind_checkpoint resolves the slot encoding an artifact records and refuses a definition this build has no implementation of, because weights trained on vectors it cannot recompute are weights it cannot feed; the encoding is deliberately not part of a StateDeclaration, which says which committed facts a state came from rather than how an artifact was constructed
 - AdmissionPolicy maps a transport-authenticated peer to one principal and one grant set; admit_peer takes the peer and nothing else, so no caller-supplied parameter can name either, and a second entry for a peer is refused rather than replacing the first
 - A session admitted from the policy re-derives its authority at every use, so withdrawing a peer or replacing the policy stops live sessions at once instead of when a TTL runs out; a host-registered session carries no peer and is unaffected

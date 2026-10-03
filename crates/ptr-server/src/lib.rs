@@ -115,10 +115,17 @@ impl ActionExecutor for DemoNoteExecutor {
             file.write_all(&action.payload)?;
             file.sync_all()?;
             std::fs::rename(&temporary, &path)?;
-            // Persist the rename itself. Windows cannot open a directory as a
-            // file, and there NTFS makes the rename durable on its own.
+            // Persist the rename itself. On Unix that is an fsync of the directory.
+            // Windows cannot open a directory as a file, so the replaced note is
+            // opened for writing and flushed instead, which asks the file system to
+            // write out the file's metadata along with its data.
             #[cfg(unix)]
             std::fs::File::open(&directory)?.sync_all()?;
+            #[cfg(not(unix))]
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)?
+                .sync_all()?;
             Ok(())
         };
         if let Err(error) = write() {

@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-03  
-**Code footprint:** 1 Rust source files · 432 nonblank source lines · 3 integration-test files · 11 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 1 Rust source files · 439 nonblank source lines · 3 integration-test files · 11 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -20,7 +20,7 @@
 - POST /v1/requests runs run_resumable_with_pods_using_router against an injected ResumableInferenceBackend, PodRouter, PodRegistry and typed-payload Verifier (router_with_dependencies, serve_with_dependencies); ServerState::new and router() keep the ReferenceEchoBackend, an empty registry and an allow-all verifier, and ApiResponse gains verified_evidence (type:length per observation)
 - A mutating action returned by that run is executed once through the runtime's session path (authorize_action, register_execution_session, prepare_execution_once, execute_prepared): ApiRequest gains an optional idempotency_key that mutations require (400 without it), and ApiResponse.effect returns an EffectReceipt with the ledger indices of the EffectAttempted and EffectSettled records and the SHA-256 of the output; a repeated key replays the receipt
 - Effect failures map to HTTP: a key bound to another action, a fenced runtime or an ambiguous outcome is 409, other execution errors and a missing grant are 422, and a payload that is not UTF-8 or exceeds 4 KiB is 400
-- demo_effect_grants installs a single demo.local-note.create grant (Effect::Mutation, Deterministic verification) whose DemoNoteExecutor replaces effects/demo-note.txt under a data directory atomically (temporary file named from process id, clock and a counter and retried on a name collision, sync_all, rename, then a directory fsync on Unix only because a directory cannot be opened as a file on Windows, which was verified in CI rather than locally), so every distinct idempotency key can write and the latest note wins; the default state installs no grants, so effects there are refused
+- demo_effect_grants installs a single demo.local-note.create grant (Effect::Mutation, Deterministic verification) whose DemoNoteExecutor replaces effects/demo-note.txt under a data directory atomically (temporary file named from process id, clock and a counter and retried on a name collision, sync_all, rename, then a directory fsync on Unix, and on Windows, where a directory cannot be opened as a file, a flush of the replaced note's own handle to push its metadata out; the Windows path was verified in CI rather than locally, and what a flush guarantees about a rename after a power loss is the file system's, not this crate's), so every distinct idempotency key can write and the latest note wins; the default state installs no grants, so effects there are refused
 
 ### Missing for the target architecture
 
