@@ -131,16 +131,17 @@ fn late_activation_cannot_resurrect_a_revoked_membership() {
 }
 
 #[test]
-fn activation_cannot_swap_the_admitted_key_digest() {
+fn a_later_activation_keeps_the_admitted_key_digest_and_is_not_rejected() {
     use ptr_types::MeshTunnelEventKind::MembershipActivated;
     let mut registry = MeshRegistry::default();
     registry
         .apply_event(&lifecycle_event(MembershipActivated, "alice", 1, 7))
         .unwrap();
-    assert_eq!(
-        registry.apply_event(&lifecycle_event(MembershipActivated, "alice", 2, 9)),
-        Err(MeshError::ConflictingRevision)
-    );
+    // A legitimate activation at a higher revision carries a different
+    // event_digest; it must be accepted, but must not replace the admitted key.
+    registry
+        .apply_event(&lifecycle_event(MembershipActivated, "alice", 2, 9))
+        .unwrap();
     let endpoint = registry
         .endpoint(
             &NetworkId::from("mesh"),
@@ -149,6 +150,7 @@ fn activation_cannot_swap_the_admitted_key_digest() {
         )
         .unwrap();
     assert_eq!(endpoint.peer.public_key_digest, [7; 32]);
+    assert_eq!(endpoint.route_revision, ptr_types::Revision(2));
 }
 
 #[test]

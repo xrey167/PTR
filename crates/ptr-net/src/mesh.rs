@@ -83,30 +83,35 @@ impl MeshRegistry {
                     public_key_digest: event.event_digest,
                     network_id: event.network_id.clone(),
                 };
-                if let Some(existing) = self.memberships.get(&key) {
-                    // A revoked membership is terminal for its generation: only a
-                    // fresh invitation may bring the peer back, never a replayed or
-                    // late activation event.
-                    if existing.state == MembershipState::Revoked {
-                        return Err(MeshError::RevokedPeer);
+                // The event carries no key-digest field of its own, only
+                // `event_digest`, so the digest is taken from the first
+                // admission and never from a later activation event. Comparing
+                // the two would reject legitimate events; replacing the stored
+                // peer would let a later event swap the admitted key.
+                let admitted = match self.memberships.get(&key) {
+                    Some(existing) => {
+                        // A revoked membership is terminal in this registry:
+                        // `invite` refuses an existing membership, so there is
+                        // no path back, and a late activation must not create one.
+                        if existing.state == MembershipState::Revoked {
+                            return Err(MeshError::RevokedPeer);
+                        }
+                        if existing.generation != event.generation
+                            || existing.revision > event.revision
+                        {
+                            return Err(MeshError::ConflictingRevision);
+                        }
+                        if existing.revision == event.revision {
+                            return Ok(());
+                        }
+                        existing.peer.clone()
                     }
-                    if existing.generation != event.generation || existing.revision > event.revision
-                    {
-                        return Err(MeshError::ConflictingRevision);
-                    }
-                    // The admitted key material may never change through an
-                    // activation event; key rotation has its own explicit path.
-                    if existing.peer != peer {
-                        return Err(MeshError::ConflictingRevision);
-                    }
-                    if existing.revision == event.revision {
-                        return Ok(());
-                    }
-                }
+                    None => peer,
+                };
                 self.memberships.insert(
                     key,
                     MeshMembership {
-                        peer,
+                        peer: admitted,
                         generation: event.generation,
                         revision: event.revision,
                         state: MembershipState::Active,
