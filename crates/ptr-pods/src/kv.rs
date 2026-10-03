@@ -73,11 +73,78 @@ pub struct KvLayerSnapshot {
 pub struct KvTensorSnapshot {
     pub schema: KvTensorSchema,
     pub layout: KvCacheLayout,
+    pub page_table: KvPageTable,
     pub capacity_tokens: usize,
     pub sequence_length: usize,
     pub position_offset: usize,
     pub layers: Vec<KvLayerSnapshot>,
     pub digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KvPageTable {
+    pub page_tokens: usize,
+    pub capacity_tokens: usize,
+    pub logical_to_physical: Vec<usize>,
+    pub free_physical: Vec<usize>,
+}
+
+impl KvPageTable {
+    pub fn allocate(page_tokens: usize, capacity_tokens: usize) -> Result<Self, KvBackendError> {
+        if page_tokens == 0 || capacity_tokens == 0 {
+            return Err(KvBackendError::InvalidSchema(
+                "invalid KV page allocation".into(),
+            ));
+        }
+        let page_count = capacity_tokens.div_ceil(page_tokens);
+        Ok(Self {
+            page_tokens,
+            capacity_tokens,
+            logical_to_physical: Vec::new(),
+            free_physical: (0..page_count).rev().collect(),
+        })
+    }
+
+    pub fn reserve_tokens(&mut self, sequence_length: usize) -> Result<(), KvBackendError> {
+        if sequence_length > self.capacity_tokens {
+            return Err(KvBackendError::InvalidSchema("KV capacity exceeded".into()));
+        }
+        let required_pages = sequence_length.div_ceil(self.page_tokens);
+        while self.logical_to_physical.len() < required_pages {
+            let physical = self
+                .free_physical
+                .pop()
+                .ok_or_else(|| KvBackendError::InvalidSchema("KV pages exhausted".into()))?;
+            self.logical_to_physical.push(physical);
+        }
+        Ok(())
+    }
+
+    pub fn truncate(&mut self, sequence_length: usize) -> Result<(), KvBackendError> {
+        if sequence_length > self.capacity_tokens {
+            return Err(KvBackendError::InvalidTruncation);
+        }
+        let required_pages = sequence_length.div_ceil(self.page_tokens);
+        while self.logical_to_physical.len() > required_pages {
+            if let Some(physical) = self.logical_to_physical.pop() {
+                self.free_physical.push(physical);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), KvBackendError> {
+        if self.page_tokens == 0 || self.capacity_tokens == 0 {
+            return Err(KvBackendError::SnapshotSchemaMismatch);
+        }
+        let page_count = self.capacity_tokens.div_ceil(self.page_tokens);
+        if self.logical_to_physical.len() > page_count
+            || self.free_physical.len() + self.logical_to_physical.len() != page_count
+        {
+            return Err(KvBackendError::SnapshotSchemaMismatch);
+        }
+        Ok(())
+    }
 }
 
 impl KvTensorSnapshot {
@@ -140,6 +207,7 @@ pub trait KvTensorBackend: Send + Sync {
 pub struct InMemoryKvCache {
     pub schema: KvTensorSchema,
     pub layout: KvCacheLayout,
+    pub page_table: KvPageTable,
     pub capacity_tokens: usize,
     pub sequence_length: usize,
     pub position_offset: usize,
@@ -216,6 +284,18 @@ impl InMemoryKvTensorBackend {
             KvTensorDType::Fp4MxBlock16 => 4,
         });
         bytes.extend_from_slice(&(snapshot.layout.page_tokens as u64).to_le_bytes());
+        bytes.extend_from_slice(&(snapshot.page_table.page_tokens as u64).to_le_bytes());
+        bytes.extend_from_slice(&(snapshot.page_table.capacity_tokens as u64).to_le_bytes());
+        bytes.extend_from_slice(
+            &(snapshot.page_table.logical_to_physical.len() as u64).to_le_bytes(),
+        );
+        for page in &snapshot.page_table.logical_to_physical {
+            bytes.extend_from_slice(&(*page as u64).to_le_bytes());
+        }
+        bytes.extend_from_slice(&(snapshot.page_table.free_physical.len() as u64).to_le_bytes());
+        for page in &snapshot.page_table.free_physical {
+            bytes.extend_from_slice(&(*page as u64).to_le_bytes());
+        }
         bytes.extend_from_slice(&(snapshot.schema.layer_count as u64).to_le_bytes());
         bytes.extend_from_slice(&(snapshot.schema.attention_heads as u64).to_le_bytes());
         bytes.extend_from_slice(&(snapshot.schema.head_dim as u64).to_le_bytes());
@@ -254,6 +334,7 @@ impl KvTensorBackend for InMemoryKvTensorBackend {
             layers: Vec::new(),
             schema,
             layout: KvCacheLayout::default(),
+            page_table: KvPageTable::allocate(1, capacity_tokens)?,
             capacity_tokens,
             sequence_length: 0,
             position_offset: 0,
@@ -282,6 +363,9 @@ impl KvTensorBackend for InMemoryKvTensorBackend {
         if cache.sequence_length.saturating_add(token_count) > cache.capacity_tokens {
             return Err(KvBackendError::InvalidSchema("KV capacity exceeded".into()));
         }
+        cache
+            .page_table
+            .reserve_tokens(cache.sequence_length + token_count)?;
         if cache.layers.is_empty() {
             cache.layers = keys
                 .iter()
@@ -321,6 +405,7 @@ impl KvTensorBackend for InMemoryKvTensorBackend {
             layer.values.shape[0] = new_length;
         }
         cache.sequence_length = new_length;
+        cache.page_table.truncate(new_length)?;
         Ok(())
     }
 
@@ -328,6 +413,7 @@ impl KvTensorBackend for InMemoryKvTensorBackend {
         let mut snapshot = KvTensorSnapshot {
             schema: cache.schema.clone(),
             layout: cache.layout,
+            page_table: cache.page_table.clone(),
             capacity_tokens: cache.capacity_tokens,
             sequence_length: cache.sequence_length,
             position_offset: cache.position_offset,
@@ -353,9 +439,11 @@ impl KvTensorBackend for InMemoryKvTensorBackend {
             return Err(KvBackendError::SnapshotSchemaMismatch);
         }
         snapshot.layout.validate()?;
+        snapshot.page_table.validate()?;
         Ok(InMemoryKvCache {
             schema: snapshot.schema,
             layout: snapshot.layout,
+            page_table: snapshot.page_table,
             capacity_tokens: snapshot.capacity_tokens,
             sequence_length: snapshot.sequence_length,
             position_offset: snapshot.position_offset,

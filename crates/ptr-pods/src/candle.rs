@@ -2,9 +2,9 @@
 
 use crate::{
     DescriptorError, DeviceLease, DeviceLeaseError, InMemoryKvTensorBackend, KvBackendError,
-    KvCacheLayout, KvCacheTier, KvLayerSnapshot, KvTensorBackend, KvTensorDType, KvTensorSchema,
-    KvTensorSnapshot, LeaseState, NeuralPodDescriptor, NeuralPodError, NeuralPodExecutor,
-    NeuralPodLease, TensorDType, TensorRef, TypedPayload,
+    KvCacheLayout, KvCacheTier, KvLayerSnapshot, KvPageTable, KvTensorBackend, KvTensorDType,
+    KvTensorSchema, KvTensorSnapshot, LeaseState, NeuralPodDescriptor, NeuralPodError,
+    NeuralPodExecutor, NeuralPodLease, TensorDType, TensorRef, TypedPayload,
 };
 use candle_core::{DType, Device, Tensor};
 use std::path::Path;
@@ -27,6 +27,7 @@ pub struct CandleDenseExecutor {
 pub struct CandleKvCache {
     schema: KvTensorSchema,
     layout: KvCacheLayout,
+    page_table: KvPageTable,
     capacity_tokens: usize,
     sequence_length: usize,
     position_offset: usize,
@@ -100,6 +101,7 @@ impl KvTensorBackend for CandleKvTensorBackend {
                 tier: KvCacheTier::Gpu,
                 dtype: KvTensorDType::F32,
             },
+            page_table: KvPageTable::allocate(1, capacity_tokens)?,
             capacity_tokens,
             sequence_length: 0,
             position_offset: 0,
@@ -127,6 +129,9 @@ impl KvTensorBackend for CandleKvTensorBackend {
             if token_count == 0 || cache.sequence_length + token_count > cache.capacity_tokens {
                 return Err(KvBackendError::ShapeMismatch);
             }
+            cache
+                .page_table
+                .reserve_tokens(cache.sequence_length + token_count)?;
             for layer in 0..cache.schema.layer_count {
                 if keys[layer].shape != vec![token_count, width]
                     || values[layer].shape != vec![token_count, width]
@@ -175,6 +180,7 @@ impl KvTensorBackend for CandleKvTensorBackend {
                     .map_err(|error| KvBackendError::Backend(error.to_string()))?;
             }
             cache.sequence_length = new_length;
+            cache.page_table.truncate(new_length)?;
             Ok(())
         })();
         cache.device_lease.end_tensor().map_err(Self::lease_error)?;
@@ -196,6 +202,7 @@ impl KvTensorBackend for CandleKvTensorBackend {
         let mut snapshot = KvTensorSnapshot {
             schema: cache.schema.clone(),
             layout: cache.layout,
+            page_table: cache.page_table.clone(),
             capacity_tokens: cache.capacity_tokens,
             sequence_length: cache.sequence_length,
             position_offset: cache.position_offset,
@@ -230,6 +237,7 @@ impl KvTensorBackend for CandleKvTensorBackend {
             .map(|layer| layer.values.clone())
             .collect();
         self.append(&mut cache, &keys, &values)?;
+        cache.page_table = snapshot.page_table;
         cache.position_offset = snapshot.position_offset;
         Ok(cache)
     }

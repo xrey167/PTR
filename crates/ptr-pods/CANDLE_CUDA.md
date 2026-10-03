@@ -23,6 +23,15 @@ content digest. The backend is intentionally separate from
 `CandleDenseExecutor`; it is a tensor-cache primitive, not yet a complete
 Transformer or LLM executor.
 
+The cache contract now also carries a digest-bound `KvPageTable`. The reference
+backend reserves and releases logical KV pages during append/truncate, and
+snapshot restore verifies the page allocation together with the tensor data.
+The current Candle implementation still stores each layer as a contiguous F32
+tensor; wiring the page table into a paged CUDA allocation and fused attention
+kernel is a separate gate. Quantized FP8/FP4/NVFP4 schema values are therefore
+declared but rejected by the current F32 backends until their storage scales,
+packing and attention kernels are implemented and benchmarked.
+
 On Windows, Candle's CUDA kernel build also requires `nvcc` and the MSVC C++
 compiler (`cl.exe`) on `PATH`. Install Visual Studio 2022 Build Tools with the
 Desktop C++ workload, then open a Developer PowerShell before running Cargo.

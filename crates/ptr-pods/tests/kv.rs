@@ -80,7 +80,6 @@ fn snapshot_device_and_digest_are_bound() {
     assert!(backend
         .restore(snapshot, &DeviceId::from("cuda:0"))
         .is_err());
-
     let mut schema_snapshot = backend.snapshot(&cache).unwrap();
     schema_snapshot.schema.model = ModelVersion::from("other-model");
     assert_eq!(
@@ -109,33 +108,31 @@ fn append_rejects_wrong_layer_shape_and_capacity() {
     let backend = InMemoryKvTensorBackend;
     let mut cache = backend.allocate(schema(), 2).unwrap();
     assert_eq!(
-        backend.append(&mut cache, &[tensor(0, 1, 1.0)], &[tensor(0, 1, 1.0)],),
+        backend.append(&mut cache, &[tensor(0, 1, 1.0)], &[tensor(0, 1, 1.0)]),
         Err(ptr_pods::KvBackendError::InvalidLayer(1))
     );
-
     let mut malformed = tensor(0, 1, 1.0);
     malformed.shape = vec![1, 3];
     assert_eq!(
         backend.append(
             &mut cache,
             &[malformed, tensor(1, 1, 1.0)],
-            &[tensor(0, 1, 1.0), tensor(1, 1, 1.0)],
+            &[tensor(0, 1, 1.0), tensor(1, 1, 1.0)]
         ),
         Err(ptr_pods::KvBackendError::ShapeMismatch)
     );
-
     assert!(backend
         .append(
             &mut cache,
             &[tensor(0, 2, 1.0), tensor(1, 2, 1.0)],
-            &[tensor(0, 2, 1.0), tensor(1, 2, 1.0)],
+            &[tensor(0, 2, 1.0), tensor(1, 2, 1.0)]
         )
         .is_ok());
     assert!(matches!(
         backend.append(
             &mut cache,
             &[tensor(0, 1, 1.0), tensor(1, 1, 1.0)],
-            &[tensor(0, 1, 1.0), tensor(1, 1, 1.0)],
+            &[tensor(0, 1, 1.0), tensor(1, 1, 1.0)]
         ),
         Err(ptr_pods::KvBackendError::InvalidSchema(_))
     ));
@@ -175,12 +172,11 @@ fn restore_preserves_capacity_and_rejects_appends_beyond_it() {
     let mut restored = backend
         .restore(snapshot, &DeviceId::from("cuda:0"))
         .unwrap();
-
     assert_eq!(
         backend.append(
             &mut restored,
             &[tensor(0, 1, 2.0), tensor(1, 1, 2.0)],
-            &[tensor(0, 1, 2.0), tensor(1, 1, 2.0)],
+            &[tensor(0, 1, 2.0), tensor(1, 1, 2.0)]
         ),
         Err(ptr_pods::KvBackendError::InvalidSchema(
             "KV capacity exceeded".into()
@@ -194,7 +190,6 @@ fn restore_rejects_a_snapshot_with_a_wrong_device_even_when_the_digest_is_valid(
     let cache = backend.allocate(schema(), 1).unwrap();
     let mut snapshot = backend.snapshot(&cache).unwrap();
     snapshot.schema.device = DeviceId::from("cuda:1");
-
     assert_eq!(
         backend.restore(snapshot, &DeviceId::from("cuda:0")),
         Err(ptr_pods::KvBackendError::DeviceMismatch)
@@ -207,7 +202,6 @@ fn snapshot_digest_changes_when_tensor_schema_changes() {
     let cache = backend.allocate(schema(), 1).unwrap();
     let mut snapshot = backend.snapshot(&cache).unwrap();
     snapshot.schema.head_dim += 1;
-
     assert!(!snapshot.verify_digest());
 }
 
@@ -236,7 +230,6 @@ fn snapshot_binds_cache_layout_and_quantization_contract() {
     assert_eq!(snapshot.layout, KvCacheLayout::default());
     assert_eq!(snapshot.layout.tier, KvCacheTier::Cpu);
     assert_eq!(snapshot.layout.dtype, KvTensorDType::F32);
-
     let mut changed = snapshot.clone();
     changed.layout.tier = KvCacheTier::Nvme;
     assert!(!changed.verify_digest());
@@ -251,4 +244,16 @@ fn current_f32_backend_rejects_unimplemented_quantized_storage() {
         backend.allocate(quantized, 4),
         Err(ptr_pods::KvBackendError::UnsupportedDtype)
     );
+}
+
+#[test]
+fn page_table_allocates_and_releases_logical_pages() {
+    let mut pages = ptr_pods::KvPageTable::allocate(2, 5).unwrap();
+    pages.reserve_tokens(3).unwrap();
+    assert_eq!(pages.logical_to_physical.len(), 2);
+    assert_eq!(pages.free_physical.len(), 1);
+    pages.truncate(1).unwrap();
+    assert_eq!(pages.logical_to_physical.len(), 1);
+    assert_eq!(pages.free_physical.len(), 2);
+    assert!(pages.validate().is_ok());
 }
