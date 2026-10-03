@@ -21,6 +21,7 @@
 - Shared ptr-types ReasoningOperator taxonomy with weighted neural router decision
 - Branch frontier pruning and probability normalization helpers
 - ActionIr with explicit target/generation/revision plus CoreVerification output contracts
+- Internal: ptr_core::action_head no longer defines its own ActionIr; it re-exports ptr_types::ActionIr (same fields: operation, target, capability, effect, input type, generation, revision, payload), so core, model-api and the runtime share one definition
 - External model/burn-a0 research package implements trainable raw↔typed cross-attention, epistemic/validity/provenance metadata, typed attention bias, latent refinement and router gradients
 
 ### Missing for the target architecture

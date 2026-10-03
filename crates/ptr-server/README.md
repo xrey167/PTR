@@ -17,6 +17,10 @@
 - Versioned JSON ApiRequest/ApiResponse and HealthResponse contracts
 - Axum router with GET /health and POST /v1/requests
 - Reference runtime/backend request path returns revisioned response
+- POST /v1/requests runs run_resumable_with_pods_using_router against an injected ResumableInferenceBackend, PodRouter, PodRegistry and typed-payload Verifier (router_with_dependencies, serve_with_dependencies); ServerState::new and router() keep the ReferenceEchoBackend, an empty registry and an allow-all verifier, and ApiResponse gains verified_evidence (type:length per observation)
+- A mutating action returned by that run is executed once through the runtime's session path (authorize_action, register_execution_session, prepare_execution_once, execute_prepared): ApiRequest gains an optional idempotency_key that mutations require (400 without it), and ApiResponse.effect returns an EffectReceipt with the ledger indices of the EffectAttempted and EffectSettled records and the SHA-256 of the output; a repeated key replays the receipt
+- Effect failures map to HTTP: a key bound to another action, a fenced runtime or an ambiguous outcome is 409, other execution errors and a missing grant are 422, and a payload that is not UTF-8 or exceeds 4 KiB is 400
+- demo_effect_grants installs a single demo.local-note.create grant (Effect::Mutation, Deterministic verification) whose DemoNoteExecutor creates effects/demo-note.txt under a data directory with create_new and sync_all, so a second distinct write is refused; the default state installs no grants, so effects there are refused
 
 ### Missing for the target architecture
 
@@ -47,6 +51,8 @@
 
 ### Current automated checks
 
+- scenario_backend_executes_demo_note_once_and_replays_receipt: ScenarioBackend writes the note once, a missing idempotency key is 400, a repeated key returns the same attempt/settlement indices, and the same key with a different request is 409
+- durable_restart_fences_open_effect_until_explicit_reconciliation: over a durable ledger holding an unsettled EffectAttempted, the same key is 409 after reopen and succeeds only after reconcile_effect
 - Axum health/request/bad-request HTTP integration tests matching TypeScript SDK contract
 - public ApiRequest smoke test
 - workspace fmt/check/test/clippy

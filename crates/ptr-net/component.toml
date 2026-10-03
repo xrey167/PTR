@@ -8,7 +8,7 @@ implemented = [
   "The execution wire has its own ALPN rather than sharing the pod wire's: two protocols on one ALPN is how a request meant for one gets parsed by the other, and the parse that succeeds by accident is the dangerous one",
   "NodeIdentity scaffold",
   "Provider-independent Transport trait",
-  "Feature-gated Iroh 1.2 direct QUIC adapter with PTR ALPNs and authenticated peer identity",
+  "Feature-gated Iroh 1.3 direct QUIC adapter with PTR ALPNs and authenticated peer identity",
   "Iroh response path keeps the connection alive through peer-observed graceful completion",
   "The Iroh optional feature builds and is tested on the workspace's Rust 1.99 toolchain, the same one the default runtime core is checked on",
   "The endpoint address type is re-exported, so a composing crate names an address without declaring its own iroh dependency: two pins of a transport would be two wire formats",
@@ -17,6 +17,14 @@ implemented = [
   "PeerAddress has no public constructor, so the only address either wire client will accept is one a PeerBook produced: a requester cannot dial an address it was handed by a peer, read out of a payload, or learned from the network",
   "Nothing in PeerBook reads bytes, which is the mechanism rather than a check: there is no path by which the network can add an entry",
   "An address that names the right peer at the wrong socket fails rather than reaching whoever is there, because the key at the far end is authenticated — pinned in the handshake, and compared against the id asked for as a second line",
+  "Iroh reusable sessions (feature iroh-backend): connect_session/accept_session keep one authenticated QUIC connection and open one bidirectional stream per request; connect_session rejects a peer whose authenticated id differs from the requested one and rejects max_in_flight = 0",
+  "IrohSession::request enforces a per-session in-flight cap with a non-blocking semaphore: a request above the cap fails immediately with a backpressure error instead of queueing; there is no retry or automatic reconnect, a closed session rejects requests and the caller opens a fresh session",
+  "RelayMode (Disabled, DirectOnly, DirectWithRelayFallback) and IrohTransport::bind_with_relay_mode: Disabled and DirectOnly map to iroh's relay disabled, DirectWithRelayFallback to iroh's default relay; bind() keeps Disabled. The relay-fallback mode has no test",
+  "MeshRegistry membership model: one-time invitations, accept creates an Active membership at revision 1, revoke marks it Revoked and bumps the revision, endpoint()/endpoint_binding() resolve only Active members and carry a Direct or Relay route; invitations reject cross-network or zero-digest peer identities, and a consumed invitation cannot be reused",
+  "MeshRegistry::apply_event replays ptr-types MeshTunnelLifecycleEvents (activation, revocation, route change) with generation/revision checks that reject stale or conflicting revisions and route changes for revoked peers",
+  "Mesh tunnel lifecycle: TunnelProfile/TunnelLease/TunnelState and the MeshTunnelExecutor trait with ReferenceMeshTunnelExecutor (in-memory, fencing-token and profile checks, idempotent release) and WireguardUserspaceExecutor<D>, which drives an injected WireguardDevice (create_interface, configure_peer, remove_interface) through the same admit/establish/rotate/revoke/release lifecycle and refuses a second live lease on the same interface name",
+  "Feature wireguard-uapi-backend (Linux only): LinuxWireguardDevice creates and removes interfaces via the host `ip` utility and configures peers through the WireGuard userspace UAPI; the WireGuard public key must be registered explicitly and is never derived from the PTR identity digest, interface names are validated (max 15 chars, alphanumeric, _ or -). Not executed in this environment, described from the code only; the UAPI set request only adds the peer public key (no endpoint, allowed-ips or private key)",
+  "Feature wintun-backend (Windows only): WintunDevice loads the Wintun DLL, creates an adapter and session and can probe the driver version; configure_peer only validates the peer and checks that a session exists, so it is a TUN interface without any WireGuard crypto dataplane. Not compiled or run here, described from the code only",
 ]
 
 missing = [
@@ -24,13 +32,14 @@ missing = [
   "Any traffic on ALPN_MODEL, ALPN_BLOB or ALPN_EVENTS: three of the six ALPNs are still declared and unspoken",
   "Discovery: finding the address for an id nobody told you is a mechanism choice with its own trust question, and iroh's own address lookup is disabled in this build, so turning it on is a decision about trusting a third party rather than a code change",
   "A journaled peer book, and any re-resolution of a stale address: the book is in memory and a deployment whose nodes move must record the new address",
-  "Retry/idempotency and backpressure behavior",
+  "Retry/idempotency semantics and automatic reconnect: backpressure is only a fail-fast per-session in-flight cap",
+  "Mesh state is in memory and not journaled; MeshRegistry is not connected to Iroh peer admission, and WireGuard revoke only marks the lease Revoked without removing the peer from the device",
   "Raft/PodWire/blob stream adapters; ptr-cluster carries raft batches over ALPN_RAFT, ptr-execwire carries execution requests over ALPN_EXEC and ptr-podwire carries Pod access over ALPN_PODWIRE, all three using the request/response path, and a stream adapter would replace that rather than extend it",
 ]
 
 next = [
-  "Extend Iroh adapter from local request/response to reusable connection/session management and Raft/PodWire channels",
-  "Add retry/idempotency/backpressure semantics around authenticated Iroh sessions",
+  "Carry Raft/PodWire channels over the reusable IrohSession instead of one connection per request",
+  "Add retry/idempotency and reconnect semantics around authenticated Iroh sessions",
   "Exercise partition/reconnect behavior in L002",
 ]
 
@@ -53,5 +62,8 @@ checks = [
   "an address is locatable only under the id it carries, re-recording returns what it replaced, a forgotten peer is refused from the next lookup, and a truthful address from the book reaches its peer as the control",
   "an address pointing the honest id at an impostor's socket fails and the impostor serves nothing, with the honest node at its true address succeeding in the same test so the failure is about the lie",
   "compile-fail doctest: PeerAddress cannot be built by a struct literal",
+  "ptr-net tests/iroh.rs (feature iroh-backend): reusable_session_multiplexes_streams_and_enforces_backpressure, session_rejects_work_above_the_in_flight_limit_without_queueing_it, a_closed_session_can_be_replaced_by_a_fresh_session, closed_session_rejects_new_requests_and_a_new_session_recovers",
+  "ptr-net tests/mesh.rs: invitation_acceptance_creates_direct_or_relayable_membership, revoked_membership_cannot_resolve_an_endpoint_or_reuse_invitation, invitation_rejects_cross_network_peer_identity",
+  "ptr-net tests/tunnel.rs: reference_tunnel_is_fenced_and_cleanup_is_idempotent, stale_lease_cannot_revoke_a_new_fenced_lease, invalid_profile_is_rejected_before_tunnel_activation, userspace_executor_binds_device_io_to_the_fenced_lifecycle (fake device); wintun_dll_and_driver_are_loadable_when_provisioned is Windows-only and skips without WINTUN_DLL",
   "workspace fmt/check/test/clippy",
 ]
