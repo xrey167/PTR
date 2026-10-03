@@ -4,8 +4,8 @@
 > Refresh with `python3 scripts/update_component_docs.py --write`.
 
 **Component count:** 33  
-**Maturity distribution:** `foundation`: 1, `prototype`: 21, `research-scaffold`: 1, `scaffold`: 10
-**Rust footprint:** 178 source files · 61178 nonblank source lines · 149 integration-test files · 1429 test markers (`#[test]`, `#[tokio::test]`)
+**Maturity distribution:** `foundation`: 1, `prototype`: 21, `research-scaffold`: 1, `scaffold`: 10  
+**Rust footprint:** 181 source files · 64689 nonblank source lines · 149 integration-test files · 1452 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -29,18 +29,18 @@
 | [ptr-net](../../crates/ptr-net/README.md) | `prototype` | 4 | 1185 | 5 | 19 | 13 | 6 | L002:planned, E001:planned | network:open |
 | [ptr-observe](../../crates/ptr-observe/README.md) | `scaffold` | 7 | 351 | 5 | 12 | 9 | 5 | F001:planned, E003:planned | observability:open |
 | [ptr-pg](../../crates/ptr-pg/README.md) | `prototype` | 17 | 6409 | 2 | 153 | 41 | 12 | L004:completed, Q003:planned | relational-substrate:open, materialized-state:open, lexical-search:open, local-vector-search:open, event-streaming:open |
-| [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 17 | 4417 | 12 | 67 | 8 | 4 | R002:planned, E001:planned | environment-runtime:open |
+| [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 20 | 7183 | 12 | 81 | 8 | 4 | R002:planned, E001:planned | environment-runtime:open |
 | [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 4 | 3385 | 3 | 46 | 20 | 8 | — | — |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 2 | 121 | 2 | 2 | 6 | 4 | R002:planned, E001:planned | network-codec:open, local-serialization:open |
 | [ptr-router](../../crates/ptr-router/README.md) | `scaffold` | 1 | 120 | 1 | 2 | 2 | 5 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
-| [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 21 | 13392 | 45 | 359 | 55 | 18 | E001:planned, E003:planned, E004:planned | — |
+| [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 21 | 14104 | 45 | 367 | 55 | 18 | E001:planned, E003:planned, E004:planned | — |
 | [ptr-search](../../crates/ptr-search/README.md) | `prototype` | 2 | 652 | 3 | 24 | 8 | 5 | Q001:planned, Q002:planned, E002:planned, E003:planned | lexical-search:open, local-vector-search:open, gpu-vector-search:open, distributed-search:open, structural-code-search:open |
 | [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 1 | 126 | 2 | 8 | 6 | 4 | L001:running, E001:planned | security-context:open |
 | [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 2 | 859 | 3 | 32 | 18 | 5 | S001:planned, S002:planned, E004:planned | semantic-db:open |
 | [ptr-server](../../crates/ptr-server/README.md) | `prototype` | 1 | 386 | 2 | 7 | 3 | 4 | E001:planned, E003:planned | — |
 | [ptr-state](../../crates/ptr-state/README.md) | `prototype` | 1 | 377 | 3 | 10 | 11 | 1 | L001:running, L002:planned, E004:planned | materialized-state:open |
-| [ptr-storage](../../crates/ptr-storage/README.md) | `prototype` | 4 | 1521 | 5 | 15 | 8 | 4 | E004:planned | object-storage:open |
-| [ptr-types](../../crates/ptr-types/README.md) | `foundation` | 8 | 2932 | 6 | 75 | 31 | 10 | M005:planned, L001:running | — |
+| [ptr-storage](../../crates/ptr-storage/README.md) | `prototype` | 4 | 1554 | 5 | 16 | 8 | 4 | E004:planned | object-storage:open |
+| [ptr-types](../../crates/ptr-types/README.md) | `foundation` | 8 | 2932 | 6 | 75 | 32 | 10 | M005:planned, L001:running | — |
 | [ptr-verifier](../../crates/ptr-verifier/README.md) | `scaffold` | 1 | 106 | 2 | 2 | 5 | 4 | F001:planned, Q002:planned, E001:planned | code-quality-verifier:open |
 
 ## Meaning of maturity labels
