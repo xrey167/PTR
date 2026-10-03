@@ -64,3 +64,40 @@ async fn malformed_request_is_bad_request() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn oversized_id_text_and_body_are_refused_before_the_runtime_sees_them() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let app =
+        ptr_server::router(ptr_runtime::PtrRuntime::new(ptr_config::PtrConfig::default()).unwrap());
+    let post = |body: String| {
+        Request::post("/v1/requests")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let long_id = "i".repeat(ptr_server::MAX_REQUEST_ID_BYTES + 1);
+    let long_text = "t".repeat(ptr_server::MAX_REQUEST_TEXT_BYTES + 1);
+    let huge = "x".repeat(ptr_server::MAX_REQUEST_BODY_BYTES + 1);
+    let cases = [
+        (
+            format!(r#"{{"id":"{long_id}","text":"hello"}}"#),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            format!(r#"{{"id":"r1","text":"{long_text}"}}"#),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            format!(r#"{{"id":"r1","text":"{huge}"}}"#),
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ),
+    ];
+    for (body, expected) in cases {
+        let response = app.clone().oneshot(post(body)).await.unwrap();
+        assert_eq!(response.status(), expected);
+    }
+}
