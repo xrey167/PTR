@@ -1,6 +1,10 @@
-# M002-v9 — preflight-validated factorized typed pair attention
+# M002-v9 — superseded after five seed records, before any decision
 
-M002-v9 is the active confirmatory successor. Before its registration, its
+See `SUPERSEDED.md`: the A0 lockfile had to change, which changes the pinned
+tree digest the study binds, and the records cannot be re-pinned. The text
+below describes the study as it was prepared.
+
+M002-v9 was the active confirmatory successor. Before its registration, its
 complete freeze gate passed against committed but unregistered candidate files.
 It preserves M002-v5's development-only selection (`rank=8`, `bias_limit=1`,
 `metadata_dropout=0`), the FNV-bound confirmatory folds, and the FactorizedV2
