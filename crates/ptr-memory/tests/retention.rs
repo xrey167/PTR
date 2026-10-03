@@ -392,3 +392,79 @@ fn deterministic_ingestion_builds_typed_knowledge_object() {
     assert_eq!(object.sources, vec![RawEventId::from("ingest-1")]);
     assert_eq!(object.generation, Generation(1));
 }
+
+fn key(id: &str, generation: u64) -> KnowledgeKey {
+    KnowledgeKey {
+        logical_id: KnowledgeObjectId::from(id),
+        generation: Generation(generation),
+    }
+}
+
+fn successor(
+    id: &str,
+    lifecycle: KnowledgeLifecycle,
+    dependencies: Vec<KnowledgeKey>,
+) -> KnowledgeObject {
+    let mut next = object(id, lifecycle, dependencies);
+    next.generation = Generation(2);
+    next.supersedes = Some(key(id, 1));
+    next
+}
+
+#[test]
+fn transition_to_invalidated_cascades_like_invalidate() {
+    let mut store = KnowledgeStore::default();
+    store
+        .register_object(object("base", KnowledgeLifecycle::Hot, vec![]))
+        .unwrap();
+    store
+        .register_object(object(
+            "derived",
+            KnowledgeLifecycle::Hot,
+            vec![key("base", 1)],
+        ))
+        .unwrap();
+    store
+        .transition(
+            &KnowledgeObjectId::from("base"),
+            KnowledgeLifecycle::Invalidated,
+        )
+        .unwrap();
+    assert!(store.is_invalidated(&KnowledgeObjectId::from("derived")));
+}
+
+#[test]
+fn reactivating_a_generation_keeps_its_recorded_demotion() {
+    let mut store = KnowledgeStore::default();
+    let id = KnowledgeObjectId::from("topic");
+    store
+        .register_object(object("topic", KnowledgeLifecycle::Hot, vec![]))
+        .unwrap();
+    store
+        .register_object(successor("topic", KnowledgeLifecycle::Hot, vec![]))
+        .unwrap();
+    store.activate_generation(&id, Generation(2)).unwrap();
+    store.transition(&id, KnowledgeLifecycle::Warm).unwrap();
+    store.activate_generation(&id, Generation(2)).unwrap();
+    assert_eq!(store.lifecycle(&id), Some(KnowledgeLifecycle::Warm));
+}
+
+#[test]
+fn activation_that_would_invalidate_itself_is_refused_without_side_effects() {
+    let mut store = KnowledgeStore::default();
+    let id = KnowledgeObjectId::from("topic");
+    store
+        .register_object(object("topic", KnowledgeLifecycle::Hot, vec![]))
+        .unwrap();
+    store
+        .register_object(successor(
+            "topic",
+            KnowledgeLifecycle::Hot,
+            vec![key("topic", 1)],
+        ))
+        .unwrap();
+    assert!(store.activate_generation(&id, Generation(2)).is_err());
+    assert!(!store.is_generation_invalidated(&id, Generation(1)));
+    assert!(!store.is_generation_invalidated(&id, Generation(2)));
+    assert_eq!(store.object(&id).unwrap().generation, Generation(1));
+}
