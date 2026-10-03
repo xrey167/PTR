@@ -124,16 +124,13 @@ impl MeshRegistry {
                     .memberships
                     .get_mut(&key)
                     .ok_or(MeshError::UnknownPeer)?;
-                // The revision is one shared counter. Revoking an active
-                // membership therefore needs a newer revision than the last
-                // event applied to it: accepting an equal one would make the
-                // outcome depend on whether a route change or the revocation
-                // arrived first. Equality is only the replay of a revocation
-                // that has already been applied.
-                let replay = membership.state == MembershipState::Revoked;
-                if event.revision < membership.revision
-                    || (event.revision == membership.revision && !replay)
-                {
+                // A revocation fails closed. At a revision shared with a route
+                // change the revocation still applies, so the membership ends up
+                // revoked whichever of the two arrived first: after a revocation
+                // the route change is refused because the peer is revoked, and
+                // before it the revocation is accepted because it is not older
+                // than the route change. Only an older revocation is stale.
+                if membership.revision > event.revision {
                     return Err(MeshError::StaleGeneration);
                 }
                 membership.revision = event.revision;

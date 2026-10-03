@@ -174,29 +174,110 @@ fn stale_route_changes_are_rejected_after_a_newer_route() {
 }
 
 #[test]
-fn a_revocation_must_be_newer_than_the_last_event_and_replays_are_idempotent() {
+fn a_revocation_wins_a_shared_revision_so_the_end_state_is_revoked_in_either_order() {
     use ptr_types::MeshTunnelEventKind::{MembershipActivated, MembershipRevoked, RouteChanged};
+    let network = NetworkId::from("mesh");
+    let resolves = |registry: &MeshRegistry| {
+        registry.endpoint(&network, &PeerId::from("alice"), MeshRoute::Direct)
+    };
+
+    // Route change first, then a revocation at the same revision.
+    let mut route_first = MeshRegistry::default();
+    route_first
+        .apply_event(&lifecycle_event(MembershipActivated, "alice", 1, 7))
+        .unwrap();
+    route_first
+        .apply_event(&lifecycle_event(RouteChanged, "alice", 5, 7))
+        .unwrap();
+    route_first
+        .apply_event(&lifecycle_event(MembershipRevoked, "alice", 5, 7))
+        .unwrap();
+    assert_eq!(resolves(&route_first), Err(MeshError::RevokedPeer));
+
+    // Revocation first: the route change at that revision is refused.
+    let mut revoke_first = MeshRegistry::default();
+    revoke_first
+        .apply_event(&lifecycle_event(MembershipActivated, "alice", 1, 7))
+        .unwrap();
+    revoke_first
+        .apply_event(&lifecycle_event(MembershipRevoked, "alice", 5, 7))
+        .unwrap();
+    assert_eq!(
+        revoke_first.apply_event(&lifecycle_event(RouteChanged, "alice", 5, 7)),
+        Err(MeshError::RevokedPeer)
+    );
+    assert_eq!(resolves(&revoke_first), Err(MeshError::RevokedPeer));
+
+    // A replay is accepted, an older revocation is stale.
+    revoke_first
+        .apply_event(&lifecycle_event(MembershipRevoked, "alice", 5, 7))
+        .unwrap();
+    assert_eq!(
+        revoke_first.apply_event(&lifecycle_event(MembershipRevoked, "alice", 4, 7)),
+        Err(MeshError::StaleGeneration)
+    );
+}
+
+#[test]
+fn invitation_acceptance_replay_cannot_restore_a_revoked_peer() {
+    use ptr_types::MeshTunnelEventKind::{
+        InvitationAccepted, MembershipActivated, MembershipRevoked,
+    };
     let mut registry = MeshRegistry::default();
     registry
         .apply_event(&lifecycle_event(MembershipActivated, "alice", 1, 7))
         .unwrap();
     registry
-        .apply_event(&lifecycle_event(RouteChanged, "alice", 5, 7))
+        .apply_event(&lifecycle_event(MembershipRevoked, "alice", 2, 7))
         .unwrap();
-    // Same revision as the route change: refused, whatever order they arrive in.
+    for revision in [1, 2, 3] {
+        let mut event = lifecycle_event(InvitationAccepted, "alice", revision, 9);
+        event.invitation_id = Some(InvitationId::from("invite-replay"));
+        assert_eq!(registry.apply_event(&event), Err(MeshError::RevokedPeer));
+    }
     assert_eq!(
-        registry.apply_event(&lifecycle_event(MembershipRevoked, "alice", 5, 7)),
-        Err(MeshError::StaleGeneration)
+        registry.endpoint(
+            &NetworkId::from("mesh"),
+            &PeerId::from("alice"),
+            MeshRoute::Direct
+        ),
+        Err(MeshError::RevokedPeer)
     );
+}
+
+#[test]
+fn route_revision_fences_late_admissions_without_changing_the_admitted_identity() {
+    use ptr_types::MeshTunnelEventKind::{InvitationAccepted, MembershipActivated, RouteChanged};
+    let mut registry = MeshRegistry::default();
     registry
-        .apply_event(&lifecycle_event(MembershipRevoked, "alice", 6, 7))
+        .apply_event(&lifecycle_event(MembershipActivated, "alice", 1, 7))
         .unwrap();
-    // A replay of the applied revocation is accepted, an older one is not.
     registry
-        .apply_event(&lifecycle_event(MembershipRevoked, "alice", 6, 7))
+        .apply_event(&lifecycle_event(RouteChanged, "alice", 5, 8))
         .unwrap();
-    assert_eq!(
-        registry.apply_event(&lifecycle_event(MembershipRevoked, "alice", 4, 7)),
-        Err(MeshError::StaleGeneration)
-    );
+    for kind in [InvitationAccepted, MembershipActivated] {
+        let mut event = lifecycle_event(kind, "alice", 4, 9);
+        event.invitation_id = Some(InvitationId::from("invite-replay"));
+        assert_eq!(
+            registry.apply_event(&event),
+            Err(MeshError::ConflictingRevision)
+        );
+        event.revision = ptr_types::Revision(5);
+        registry.apply_event(&event).unwrap();
+        event.revision = ptr_types::Revision(6);
+        event.generation = Generation(2);
+        assert_eq!(
+            registry.apply_event(&event),
+            Err(MeshError::ConflictingRevision)
+        );
+    }
+    let endpoint = registry
+        .endpoint(
+            &NetworkId::from("mesh"),
+            &PeerId::from("alice"),
+            MeshRoute::Direct,
+        )
+        .unwrap();
+    assert_eq!(endpoint.peer.public_key_digest, [7; 32]);
+    assert_eq!(endpoint.route_revision, ptr_types::Revision(5));
 }

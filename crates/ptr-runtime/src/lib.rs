@@ -1908,65 +1908,71 @@ impl PtrRuntime {
                 .map(|finding| format!("pod-output/{}", finding.code))
                 .collect(),
         };
-        if !already_admitted {
-            self.commit(LedgerEvent::PodOutputAdmitted {
+        let admitted = LedgerEvent::PodOutputAdmitted {
+            request_id: request.request_id.clone(),
+            session_id: request.session_id.clone(),
+            scope_id: request.scope_id.clone(),
+            pod_id: request.pod_id.clone(),
+            manifest_digest: request.manifest_digest,
+            artifact_digest: request.output.artifact_digest,
+            generation: request.output.generation,
+            revision: request.output.revision,
+            output_kind: request.output.kind_code(),
+            output_type: request.output.payload.type_id.clone(),
+            output_digest,
+            verification: attestation.clone(),
+        };
+        // A hypothesis is two records. Both are built and checked before the first
+        // is committed: refusing the second one afterwards would leave an
+        // admission whose retry reports success for a hypothesis that was never
+        // created.
+        let hypothesis = (request.output.kind == PodOutputKind::Hypothesis).then(|| {
+            let branch_id = format!(
+                "pod-branch:{}:{}:{}",
+                request.request_id,
+                request.pod_id,
+                digest_hex(&output_digest)
+            );
+            let event = LedgerEvent::PodHypothesisCommitted {
                 request_id: request.request_id.clone(),
                 session_id: request.session_id.clone(),
                 scope_id: request.scope_id.clone(),
+                branch_id: branch_id.clone(),
                 pod_id: request.pod_id.clone(),
-                manifest_digest: request.manifest_digest,
+                manifest_digest: request.output.manifest_digest,
                 artifact_digest: request.output.artifact_digest,
                 generation: request.output.generation,
                 revision: request.output.revision,
-                output_kind: request.output.kind_code(),
                 output_type: request.output.payload.type_id.clone(),
                 output_digest,
+                payload: request.output.payload.bytes.clone(),
+                provenance: request
+                    .output
+                    .provenance
+                    .iter()
+                    .map(|item| (item.source.0.clone(), item.note.clone()))
+                    .collect(),
+                dependencies: request.output.dependencies.clone(),
+                confidence_bits: 1.0f32.to_bits(),
+                latency_millis: 0,
                 verification: attestation,
+            };
+            (branch_id, event)
+        });
+        for event in std::iter::once(&admitted).chain(hypothesis.as_ref().map(|(_, event)| event)) {
+            ptr_ledger::check_encodable(event).map_err(|error| {
+                RuntimeError::PodOutputAdmission(format!("output cannot be recorded: {error}"))
             })?;
+        }
+        if !already_admitted {
+            self.commit(admitted)?;
         }
 
         match request.output.kind {
             PodOutputKind::Hypothesis => {
-                let branch_id = format!(
-                    "pod-branch:{}:{}:{}",
-                    request.request_id,
-                    request.pod_id,
-                    digest_hex(&output_digest)
-                );
-                self.commit(LedgerEvent::PodHypothesisCommitted {
-                    request_id: request.request_id.clone(),
-                    session_id: request.session_id.clone(),
-                    scope_id: request.scope_id.clone(),
-                    branch_id: branch_id.clone(),
-                    pod_id: request.pod_id.clone(),
-                    manifest_digest: request.output.manifest_digest,
-                    artifact_digest: request.output.artifact_digest,
-                    generation: request.output.generation,
-                    revision: request.output.revision,
-                    output_type: request.output.payload.type_id.clone(),
-                    output_digest,
-                    payload: request.output.payload.bytes.clone(),
-                    provenance: request
-                        .output
-                        .provenance
-                        .iter()
-                        .map(|item| (item.source.0.clone(), item.note.clone()))
-                        .collect(),
-                    dependencies: request.output.dependencies.clone(),
-                    confidence_bits: 1.0f32.to_bits(),
-                    latency_millis: 0,
-                    verification: Attestation {
-                        required: ptr_types::VerificationLevel::FullSemantic,
-                        level: report.level,
-                        verifiers: vec!["pod-output".into()],
-                        findings: report
-                            .findings
-                            .iter()
-                            .filter(|finding| !finding.hard)
-                            .map(|finding| format!("pod-output/{}", finding.code))
-                            .collect(),
-                    },
-                })?;
+                let (branch_id, event) =
+                    hypothesis.expect("a hypothesis event was built for a hypothesis output");
+                self.commit(event)?;
                 Ok(PodOutputAdmission::Hypothesis { branch_id })
             }
             PodOutputKind::ActionProposal => {

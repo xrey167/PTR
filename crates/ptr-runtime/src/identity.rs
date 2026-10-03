@@ -427,7 +427,10 @@ impl OidcIdentityAdapter {
                         return Err(OidcError::JwksAudienceMismatch);
                     }
                     let store = Arc::new(document.store);
-                    state.fetched = Some((started, Arc::clone(&store)));
+                    // `started` rate-limits attempts; the cached document is dated
+                    // from when the fetch returned, so a slow fetch does not hand
+                    // back keys that are already past the cooldown.
+                    state.fetched = Some((Instant::now(), Arc::clone(&store)));
                     store
                 }
             }

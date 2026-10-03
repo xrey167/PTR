@@ -232,7 +232,20 @@ where
             .ok_or(TunnelError::NotFound)?;
         ensure_same_profile(current, lease)?;
         match current.state {
-            TunnelState::Revoked => Ok(()),
+            TunnelState::Revoked => {
+                // Revoking again is idempotent, but a lease that was revoked
+                // while its interface could not be removed (a failed rotation
+                // that could not roll back) still owns that interface. The call
+                // retries the removal instead of reporting a cut dataplane that
+                // is not cut.
+                if self.live_interfaces.contains(&lease.lease_id) {
+                    self.device
+                        .remove_interface(&current.profile.interface_name)
+                        .map_err(|_| TunnelError::UnsupportedPlatform)?;
+                    self.live_interfaces.remove(&lease.lease_id);
+                }
+                Ok(())
+            }
             TunnelState::Released => Err(TunnelError::InvalidState),
             _ => {
                 // Revocation must cut the dataplane immediately instead of only

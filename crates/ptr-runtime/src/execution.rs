@@ -716,6 +716,17 @@ impl ExecutionState {
         self.settled.contains_key(key)
     }
 
+    /// Whether the key settled with an outcome that a later request under it is
+    /// answered from: the effect applied, with or without a retained response.
+    /// A key reconciled as not applied binds nothing, so a new attempt under it
+    /// is a new attempt and not a replay.
+    pub(super) fn has_replayable_settlement(&self, key: &str) -> bool {
+        matches!(
+            self.settled.get(key),
+            Some(SettledOutcome::Applied { .. } | SettledOutcome::AppliedWithoutResponse { .. })
+        )
+    }
+
     pub(super) fn key_in_flight(&self, key: &str) -> bool {
         self.unsettled
             .values()
@@ -1007,6 +1018,20 @@ impl PtrRuntime {
             return Err(ExecutionError::InvalidKey);
         }
         self.prepare(session, project, action, ttl, Some(key))
+    }
+
+    /// Whether a new request under `key` can be expected to get through
+    /// [`prepare_execution_once`](Self::prepare_execution_once) and be committed:
+    /// a well-formed identifier no longer than [`MAX_KEY_BYTES`], or a longer one
+    /// that a log written by an earlier build settled with an outcome a retry is
+    /// answered from. This is stricter than preparation in one case. A longer key
+    /// that was only reconciled as not applied passes preparation, because the
+    /// runtime holds it, but a new attempt under it is refused at commit, so a
+    /// caller that wants to refuse before it does any work should ask here.
+    /// Nothing is reserved or recorded.
+    pub fn is_usable_execution_key(&self, key: &str) -> bool {
+        valid_identifier(key)
+            && (key.len() <= MAX_KEY_BYTES || self.execution.has_replayable_settlement(key))
     }
 
     fn prepare(
@@ -1407,6 +1432,30 @@ fn deadline(ttl: Duration) -> Result<Instant, ExecutionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_applied_settlement_can_be_replayed_under_a_key() {
+        let mut state = ExecutionState::default();
+        state
+            .settled
+            .insert("not-applied".into(), SettledOutcome::NotApplied);
+        state.settled.insert(
+            "applied-unretained".into(),
+            SettledOutcome::AppliedWithoutResponse {
+                attempt: CommitIndex(1),
+                identity: ActionIdentity {
+                    project: ProjectId::from("project"),
+                    principal: "principal".into(),
+                    revision: Revision(1),
+                    generation: Generation(1),
+                    action_digest: [1; 32],
+                },
+            },
+        );
+        assert!(!state.has_replayable_settlement("not-applied"));
+        assert!(state.has_replayable_settlement("applied-unretained"));
+        assert!(!state.has_replayable_settlement("never-seen"));
+    }
 
     #[test]
     fn session_id_exhaustion_never_wraps() {

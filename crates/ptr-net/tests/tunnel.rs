@@ -112,6 +112,7 @@ struct FakeWireguardDevice {
     fail_configure: bool,
     fail_remove_interface: bool,
     fail_remove_peer: bool,
+    fail_remove_digest: Option<[u8; 32]>,
 }
 
 impl WireguardDevice for FakeWireguardDevice {
@@ -131,7 +132,7 @@ impl WireguardDevice for FakeWireguardDevice {
         Ok(())
     }
     fn remove_peer(&mut self, name: &str, peer: &MeshPeerIdentity) -> Result<(), Self::Error> {
-        if self.fail_remove_peer {
+        if self.fail_remove_peer || self.fail_remove_digest == Some(peer.public_key_digest) {
             return Err("remove_peer failed".into());
         }
         self.events.push(format!(
@@ -311,6 +312,40 @@ fn rotation_rollback_failure_with_a_stuck_interface_keeps_ownership_for_release(
 }
 
 #[test]
+fn revoking_a_lease_revoked_with_a_stuck_interface_retries_the_removal() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    let mut rotated = profile().peer;
+    rotated.public_key_digest = [2; 32];
+    // Neither peer nor the interface can be removed: the lease is revoked but
+    // still owns a live interface.
+    executor.device_mut().fail_remove_peer = true;
+    executor.device_mut().fail_remove_interface = true;
+    assert!(executor.rotate_peer(&lease, &rotated).is_err());
+    // While the device keeps failing, revoke must say so instead of reporting Ok.
+    assert_eq!(
+        executor.revoke(&lease),
+        Err(TunnelError::UnsupportedPlatform)
+    );
+    // Once the device recovers, the same call removes the interface.
+    executor.device_mut().fail_remove_interface = false;
+    assert_eq!(executor.revoke(&lease), Ok(()));
+    assert_eq!(executor.device().events.last().unwrap(), "remove:ptr-mesh0");
+    // After that revoke is a plain idempotent no-op and release does not
+    // remove the interface a second time.
+    assert_eq!(executor.revoke(&lease), Ok(()));
+    executor.release(lease).unwrap();
+    let removals = executor
+        .device()
+        .events
+        .iter()
+        .filter(|event| event.starts_with("remove:"))
+        .count();
+    assert_eq!(removals, 1);
+}
+
+#[test]
 fn failed_cleanup_can_still_be_released() {
     let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice {
         fail_configure: true,
@@ -325,6 +360,98 @@ fn failed_cleanup_can_still_be_released() {
         executor.device().events,
         ["create:ptr-mesh0", "remove:ptr-mesh0"]
     );
+}
+
+#[test]
+fn failed_rotation_rolls_back_the_new_peer_and_can_retry_with_the_original_lease() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    let mut rotated = profile().peer;
+    rotated.public_key_digest = [2; 32];
+    executor.device_mut().fail_remove_digest = Some([1; 32]);
+    assert_eq!(
+        executor.rotate_peer(&lease, &rotated),
+        Err(TunnelError::UnsupportedPlatform)
+    );
+    assert_eq!(
+        &executor.device().events[2..],
+        ["peer:ptr-mesh0:peer-a:2", "unpeer:ptr-mesh0:peer-a:2"]
+    );
+    // The previous identity remains active after rollback, so rotating to it is a no-op.
+    let before = executor.device().events.clone();
+    executor.rotate_peer(&lease, &lease.profile.peer).unwrap();
+    assert_eq!(executor.device().events, before);
+    executor.device_mut().fail_remove_digest = None;
+    executor.rotate_peer(&lease, &rotated).unwrap();
+    assert_eq!(
+        executor.device().events.last().unwrap(),
+        "unpeer:ptr-mesh0:peer-a:1"
+    );
+    executor.release(lease).unwrap();
+}
+
+#[test]
+fn repeated_rotations_remove_the_current_peer_and_identical_rotation_does_no_io() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    for digest in [2, 3] {
+        let mut rotated = profile().peer;
+        rotated.public_key_digest = [digest; 32];
+        executor.rotate_peer(&lease, &rotated).unwrap();
+        assert_eq!(
+            executor.device().events.last().unwrap(),
+            &format!("unpeer:ptr-mesh0:peer-a:{}", digest - 1)
+        );
+        let before = executor.device().events.clone();
+        executor.rotate_peer(&lease, &rotated).unwrap();
+        assert_eq!(executor.device().events, before);
+    }
+    executor.revoke(&lease).unwrap();
+    executor.revoke(&lease).unwrap();
+    executor.release(lease).unwrap();
+    assert_eq!(
+        executor
+            .device()
+            .events
+            .iter()
+            .filter(|event| event.starts_with("remove:"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn invalid_rotation_identities_are_rejected_before_device_io() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    let before = executor.device().events.clone();
+    let mut empty = profile().peer;
+    empty.peer_id = PeerId::from("");
+    let mut foreign = profile().peer;
+    foreign.network_id = NetworkId::from("other");
+    let mut zero = profile().peer;
+    zero.public_key_digest = [0; 32];
+    for peer in [empty, foreign, zero] {
+        assert_eq!(
+            executor.rotate_peer(&lease, &peer),
+            Err(TunnelError::RevokedPeer)
+        );
+        assert_eq!(executor.device().events, before);
+    }
+    executor.release(lease).unwrap();
+}
+
+#[test]
+fn releasing_an_unestablished_lease_never_removes_an_interface() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.revoke(&lease).unwrap();
+    executor.release(lease.clone()).unwrap();
+    executor.release(lease).unwrap();
+    assert!(executor.device().events.is_empty());
 }
 
 #[cfg(all(feature = "wireguard-uapi-backend", target_os = "linux"))]
@@ -436,6 +563,28 @@ mod linux_device {
         let requests = requests.lock().unwrap();
         assert!(requests[0].contains(&"0a".repeat(32)), "{}", requests[0]);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rotating_the_same_peer_id_removes_only_the_previous_digest_key() {
+        let dir = socket_dir("digest-rotation");
+        let requests = mock_socket(&dir, "ptrwg0");
+        let mut device = LinuxWireguardDevice::new(&dir);
+        let (old, new) = (identity("mesh", 1), identity("mesh", 2));
+        device.register_public_key(&old, [0x0a; 32]);
+        device.register_public_key(&new, [0x0b; 32]);
+        device.configure_peer("ptrwg0", &old).unwrap();
+        device.configure_peer("ptrwg0", &new).unwrap();
+        device.remove_peer("ptrwg0", &old).unwrap();
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[0].contains(&"0a".repeat(32)));
+        assert!(requests[1].contains(&"0b".repeat(32)));
+        assert!(requests[2].contains("remove=true"));
+        assert!(requests[2].contains(&"0a".repeat(32)));
+        assert!(!requests[2].contains(&"0b".repeat(32)));
+        drop(requests);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 

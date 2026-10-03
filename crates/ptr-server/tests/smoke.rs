@@ -238,7 +238,7 @@ async fn durable_restart_fences_open_effect_until_explicit_reconciliation() {
         ptr_server::default_verifier(),
         ptr_server::demo_effect_grants(&root),
     );
-    let settled = app.oneshot(request()).await.unwrap();
+    let settled = app.clone().oneshot(request()).await.unwrap();
     let settled_status = settled.status();
     let settled_body = axum::body::to_bytes(settled.into_body(), usize::MAX)
         .await
@@ -253,6 +253,26 @@ async fn durable_restart_fences_open_effect_until_explicit_reconciliation() {
         std::fs::read(root.join("effects/demo-note.txt")).unwrap(),
         b"after restart"
     );
+    let receipt: ptr_server::ApiResponse = serde_json::from_slice(&settled_body).unwrap();
+    let receipt = receipt.effect.unwrap();
+    assert!(
+        receipt.attempt > attempt.0,
+        "receipt must name the new attempt, not the reconciled crash"
+    );
+    let replay = app.clone().oneshot(request()).await.unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replay_body = axum::body::to_bytes(replay.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let replay: ptr_server::ApiResponse = serde_json::from_slice(&replay_body).unwrap();
+    assert_eq!(replay.effect, Some(receipt.clone()));
+    drop(app);
+    let ledger = ptr_ledger::FileLedger::open(&log).unwrap();
+    assert!(ledger.events().iter().any(|event| event.index.0 == receipt.attempt
+        && matches!(&event.event, LedgerEvent::EffectAttempted { key: Some(key), .. } if key == "crash-key")));
+    assert!(ledger.events().iter().any(|event| event.index.0 == receipt.settlement
+        && matches!(&event.event, LedgerEvent::EffectSettled { attempt, .. } if attempt.0 == receipt.attempt)));
+    drop(ledger);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -341,5 +361,22 @@ async fn distinct_idempotency_keys_each_execute_and_malformed_keys_are_rejected_
         .await
         .unwrap();
     assert_eq!(padded_key.status(), StatusCode::BAD_REQUEST);
+    // A new key beyond the runtime's limit is refused up front, before the model
+    // run can commit anything.
+    let too_long = format!(
+        r#"{{"id":"multi-5","text":"fifth","idempotency_key":"{}"}}"#,
+        "k".repeat(ptr_runtime::execution::MAX_KEY_BYTES + 1)
+    );
+    let long_key = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/requests")
+                .header("content-type", "application/json")
+                .body(Body::from(too_long))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(long_key.status(), StatusCode::BAD_REQUEST);
     let _ = std::fs::remove_dir_all(data_dir);
 }
