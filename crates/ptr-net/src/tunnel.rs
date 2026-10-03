@@ -135,6 +135,15 @@ where
         match current.state {
             TunnelState::Admitted => {
                 let interface = current.profile.interface_name.clone();
+                // An earlier attempt whose cleanup failed still owns its
+                // interface. Remove it first, so this attempt starts from a
+                // clean device instead of failing on a name that already exists.
+                if self.live_interfaces.contains(&lease.lease_id) {
+                    self.device
+                        .remove_interface(&interface)
+                        .map_err(|_| TunnelError::UnsupportedPlatform)?;
+                    self.live_interfaces.remove(&lease.lease_id);
+                }
                 self.device
                     .create_interface(&interface)
                     .map_err(|_| TunnelError::UnsupportedPlatform)?;
@@ -143,9 +152,12 @@ where
                     .configure_peer(&interface, &current.profile.peer)
                     .is_err()
                 {
-                    // Do not leak the freshly created interface: a retry of
-                    // `establish` must start from a clean device.
-                    let _ = self.device.remove_interface(&interface);
+                    // Do not leak the freshly created interface. If removing it
+                    // fails too, keep ownership so a retry or `release` removes
+                    // it instead of forgetting that it exists.
+                    if self.device.remove_interface(&interface).is_err() {
+                        self.live_interfaces.insert(lease.lease_id.clone());
+                    }
                     return Err(TunnelError::UnsupportedPlatform);
                 }
                 self.live_interfaces.insert(lease.lease_id.clone());
@@ -253,7 +265,11 @@ where
 #[cfg(all(feature = "wireguard-uapi-backend", target_os = "linux"))]
 pub struct LinuxWireguardDevice {
     socket_root: PathBuf,
-    public_keys: BTreeMap<(String, ptr_types::Digest), [u8; 32]>,
+    public_keys: BTreeMap<(String, String, ptr_types::Digest), [u8; 32]>,
+    /// How many admitted identities currently resolve to each WireGuard key on
+    /// an interface. Two identities may share one key; the peer is only removed
+    /// from the device when the last of them goes.
+    configured: BTreeMap<(String, [u8; 32]), usize>,
 }
 
 #[cfg(all(feature = "wireguard-uapi-backend", target_os = "linux"))]
@@ -262,6 +278,7 @@ impl LinuxWireguardDevice {
         Self {
             socket_root: socket_root.into(),
             public_keys: BTreeMap::new(),
+            configured: BTreeMap::new(),
         }
     }
 
@@ -269,10 +286,15 @@ impl LinuxWireguardDevice {
         self.public_keys.insert(Self::key_id(peer), key);
     }
 
-    /// Keys are bound to the exact admitted identity (peer id plus identity
-    /// digest) so a rotated peer never resolves to the key of its predecessor.
-    fn key_id(peer: &MeshPeerIdentity) -> (String, ptr_types::Digest) {
-        (peer.peer_id.0.clone(), peer.public_key_digest)
+    /// Keys are bound to the exact admitted identity (network, peer id and
+    /// identity digest) so a rotated peer never resolves to the key of its
+    /// predecessor and one peer id in two networks keeps two keys.
+    fn key_id(peer: &MeshPeerIdentity) -> (String, String, ptr_types::Digest) {
+        (
+            peer.network_id.0.clone(),
+            peer.peer_id.0.clone(),
+            peer.public_key_digest,
+        )
     }
 
     fn socket_path(&self, name: &str) -> PathBuf {
@@ -310,7 +332,9 @@ impl WireguardDevice for LinuxWireguardDevice {
         };
         wireguard_uapi::xplatform::Client::create(self.socket_path(name))
             .set(request)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        *self.configured.entry((name.to_owned(), key)).or_insert(0) += 1;
+        Ok(())
     }
 
     fn remove_peer(&mut self, name: &str, peer: &MeshPeerIdentity) -> Result<(), Self::Error> {
@@ -320,6 +344,16 @@ impl WireguardDevice for LinuxWireguardDevice {
             .get(&Self::key_id(peer))
             .copied()
             .ok_or_else(|| "missing admitted WireGuard public key".to_owned())?;
+        let slot = (name.to_owned(), key);
+        // Another admitted identity still resolves to this key on this
+        // interface (a rotation that kept the WireGuard key): removing the peer
+        // from the device would remove the replacement as well.
+        if self.configured.get(&slot).copied().unwrap_or(0) > 1 {
+            if let Some(count) = self.configured.get_mut(&slot) {
+                *count -= 1;
+            }
+            return Ok(());
+        }
         let mut removal = wireguard_uapi::xplatform::set::Peer::from_public_key(key);
         removal.remove = Some(true);
         let request = wireguard_uapi::xplatform::set::Device {
@@ -328,7 +362,9 @@ impl WireguardDevice for LinuxWireguardDevice {
         };
         wireguard_uapi::xplatform::Client::create(self.socket_path(name))
             .set(request)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.configured.remove(&slot);
+        Ok(())
     }
 
     fn remove_interface(&mut self, name: &str) -> Result<(), Self::Error> {
@@ -338,6 +374,8 @@ impl WireguardDevice for LinuxWireguardDevice {
             .status()
             .map_err(|error| error.to_string())?;
         if status.success() {
+            self.configured
+                .retain(|(interface, _), _| interface != name);
             Ok(())
         } else {
             Err(format!("ip link del failed with {status}"))

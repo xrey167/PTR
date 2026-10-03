@@ -340,7 +340,7 @@ pub const DEFAULT_JWKS_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
 /// unknown `kid` values cannot turn into unbounded requests against the IdP.
 #[derive(Default)]
 struct RefreshState {
-    fetched: Option<(Instant, JwksStore)>,
+    fetched: Option<(Instant, Arc<JwksStore>)>,
     last_attempt: Option<Instant>,
 }
 
@@ -392,7 +392,7 @@ impl OidcIdentityAdapter {
             let cached = state.fetched.as_ref().and_then(|(fetched_at, store)| {
                 (started.duration_since(*fetched_at) < self.refresh_cooldown
                     && store.get(&kid).is_some())
-                .then(|| store.clone())
+                .then(|| Arc::clone(store))
             });
             match cached {
                 Some(store) => store,
@@ -412,8 +412,9 @@ impl OidcIdentityAdapter {
                     if document.audience != self.audience {
                         return Err(OidcError::JwksAudienceMismatch);
                     }
-                    state.fetched = Some((started, document.store.clone()));
-                    document.store
+                    let store = Arc::new(document.store);
+                    state.fetched = Some((started, Arc::clone(&store)));
+                    store
                 }
             }
         };

@@ -333,5 +333,13 @@ async fn distinct_idempotency_keys_each_execute_and_malformed_keys_are_rejected_
         .await
         .unwrap();
     assert_eq!(blank_key.status(), StatusCode::BAD_REQUEST);
+    let padded_key = app
+        .clone()
+        .oneshot(post(
+            r#"{"id":"multi-4","text":"fourth","idempotency_key":" padded"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(padded_key.status(), StatusCode::BAD_REQUEST);
     let _ = std::fs::remove_dir_all(data_dir);
 }

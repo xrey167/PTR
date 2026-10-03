@@ -60,6 +60,7 @@ fn invalid_profile_is_rejected_before_tunnel_activation() {
 struct FakeWireguardDevice {
     events: Vec<String>,
     fail_configure: bool,
+    fail_remove_interface: bool,
 }
 
 impl WireguardDevice for FakeWireguardDevice {
@@ -86,6 +87,9 @@ impl WireguardDevice for FakeWireguardDevice {
         Ok(())
     }
     fn remove_interface(&mut self, name: &str) -> Result<(), Self::Error> {
+        if self.fail_remove_interface {
+            return Err("remove failed".into());
+        }
         self.events.push(format!("remove:{name}"));
         Ok(())
     }
@@ -175,6 +179,163 @@ fn failed_peer_configuration_does_not_leak_the_interface_and_allows_retry() {
     );
     executor.device_mut().fail_configure = false;
     assert_eq!(executor.establish(&lease), Ok(TunnelState::Established));
+}
+
+#[test]
+fn failed_cleanup_keeps_ownership_so_a_retry_removes_the_leaked_interface() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice {
+        fail_configure: true,
+        fail_remove_interface: true,
+        ..Default::default()
+    });
+    let lease = executor.admit(&profile()).unwrap();
+    assert_eq!(
+        executor.establish(&lease),
+        Err(TunnelError::UnsupportedPlatform)
+    );
+    // The device recovers: the retry first removes what the failed attempt left
+    // behind, then creates the interface again.
+    executor.device_mut().fail_configure = false;
+    executor.device_mut().fail_remove_interface = false;
+    assert_eq!(executor.establish(&lease), Ok(TunnelState::Established));
+    assert_eq!(
+        executor.device().events,
+        [
+            "create:ptr-mesh0",
+            "remove:ptr-mesh0",
+            "create:ptr-mesh0",
+            "peer:ptr-mesh0:peer-a:1"
+        ]
+    );
+}
+
+#[test]
+fn failed_cleanup_can_still_be_released() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice {
+        fail_configure: true,
+        fail_remove_interface: true,
+        ..Default::default()
+    });
+    let lease = executor.admit(&profile()).unwrap();
+    assert!(executor.establish(&lease).is_err());
+    executor.device_mut().fail_remove_interface = false;
+    executor.release(lease).unwrap();
+    assert_eq!(
+        executor.device().events,
+        ["create:ptr-mesh0", "remove:ptr-mesh0"]
+    );
+}
+
+#[cfg(all(feature = "wireguard-uapi-backend", target_os = "linux"))]
+mod linux_device {
+    use super::*;
+    use ptr_net::LinuxWireguardDevice;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex};
+
+    /// A stand-in for the WireGuard UAPI socket: records every request and
+    /// answers `errno=0`.
+    fn mock_socket(dir: &std::path::Path, name: &str) -> Arc<Mutex<Vec<String>>> {
+        let listener = UnixListener::bind(dir.join(format!("{name}.sock"))).unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&requests);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while stream
+                    .read(&mut byte)
+                    .map(|read| read == 1)
+                    .unwrap_or(false)
+                {
+                    request.push(byte[0]);
+                    if request.ends_with(b"\n\n") {
+                        break;
+                    }
+                }
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&request).into_owned());
+                let _ = stream.write_all(b"errno=0\n\n");
+            }
+        });
+        requests
+    }
+
+    fn identity(network: &str, digest: u8) -> MeshPeerIdentity {
+        MeshPeerIdentity {
+            peer_id: PeerId::from("peer-a"),
+            public_key_digest: [digest; 32],
+            network_id: NetworkId::from(network),
+        }
+    }
+
+    fn socket_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ptr-wg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn remove_peer_sends_a_remove_request_for_the_registered_key() {
+        let dir = socket_dir("remove");
+        let requests = mock_socket(&dir, "ptrwg0");
+        let mut device = LinuxWireguardDevice::new(&dir);
+        let peer = identity("mesh", 1);
+        device.register_public_key(&peer, [0xab; 32]);
+        device.configure_peer("ptrwg0", &peer).unwrap();
+        device.remove_peer("ptrwg0", &peer).unwrap();
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].contains("remove=true"), "{}", requests[1]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rotation_that_keeps_the_wireguard_key_does_not_remove_the_replacement() {
+        let dir = socket_dir("alias");
+        let requests = mock_socket(&dir, "ptrwg0");
+        let mut device = LinuxWireguardDevice::new(&dir);
+        let (old, new) = (identity("mesh", 1), identity("mesh", 2));
+        device.register_public_key(&old, [0xab; 32]);
+        device.register_public_key(&new, [0xab; 32]);
+        device.configure_peer("ptrwg0", &old).unwrap();
+        device.configure_peer("ptrwg0", &new).unwrap();
+        device.remove_peer("ptrwg0", &old).unwrap();
+        assert!(
+            !requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.contains("remove=true")),
+            "the shared key must stay configured while the replacement uses it"
+        );
+        device.remove_peer("ptrwg0", &new).unwrap();
+        assert!(requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.contains("remove=true")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_same_peer_in_two_networks_keeps_two_keys() {
+        let dir = socket_dir("networks");
+        let requests = mock_socket(&dir, "ptrwg0");
+        let mut device = LinuxWireguardDevice::new(&dir);
+        let (a, b) = (identity("mesh-a", 1), identity("mesh-b", 1));
+        device.register_public_key(&a, [0x0a; 32]);
+        device.register_public_key(&b, [0x0b; 32]);
+        device.configure_peer("ptrwg0", &a).unwrap();
+        let requests = requests.lock().unwrap();
+        assert!(requests[0].contains(&"0a".repeat(32)), "{}", requests[0]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 #[cfg(all(feature = "wintun-backend", target_os = "windows"))]

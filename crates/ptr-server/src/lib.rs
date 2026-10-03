@@ -48,7 +48,6 @@ pub const DEMO_NOTE_OPERATION: &str = "create";
 pub const DEMO_NOTE_CAPABILITY: &str = "demo.local-note.create";
 pub const DEMO_NOTE_INPUT_TYPE: &str = "ptr.demo-note.v1";
 pub const MAX_DEMO_NOTE_BYTES: usize = 4 * 1024;
-pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
 
 pub struct DemoNoteExecutor {
     data_dir: std::path::PathBuf,
@@ -85,17 +84,34 @@ impl ActionExecutor for DemoNoteExecutor {
         let directory = self.data_dir.join("effects");
         std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
         let path = directory.join("demo-note.txt");
-        let temporary = directory.join(format!(
-            "demo-note.txt.tmp-{}-{}",
-            std::process::id(),
-            NOTE_WRITE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        let write = || -> std::io::Result<()> {
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
+        // A temporary name that a restarted process cannot reproduce (process id,
+        // clock and a counter), and a retry with a fresh name when one is taken
+        // anyway. A temporary file is only ever removed when this call created it.
+        let mut attempts = 0;
+        let (mut file, temporary) = loop {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0);
+            let candidate = directory.join(format!(
+                "demo-note.txt.tmp-{}-{nanos}-{}",
+                std::process::id(),
+                NOTE_WRITE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(&temporary)?;
+                .open(&candidate)
+            {
+                Ok(file) => break (file, candidate),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempts < 8 => {
+                    attempts += 1;
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        };
+        let mut write = || -> std::io::Result<()> {
+            use std::io::Write;
             file.write_all(&action.payload)?;
             file.sync_all()?;
             std::fs::rename(&temporary, &path)?;
@@ -260,16 +276,16 @@ async fn request(
         return Err(ApiError::BadRequest("id and text must be non-empty".into()));
     }
 
-    // Everything that can be judged from the request alone is judged before the
-    // model run commits anything. Whether the run ends in a mutation (and so
-    // requires a key) is only known afterwards.
+    // The same identifier rule the runtime applies before it will spend a key:
+    // non-empty, no edge whitespace, no control characters. No length cap is
+    // applied here on purpose: the runtime decides that, because it also lets a
+    // longer key through when an earlier build already settled it, and a retry
+    // under such a key must keep being answered from its recorded outcome.
     if let Some(key) = input.idempotency_key.as_deref() {
-        if key.trim().is_empty()
-            || key.len() > MAX_IDEMPOTENCY_KEY_BYTES
-            || key.chars().any(char::is_control)
-        {
+        if key.is_empty() || key.trim() != key || key.chars().any(char::is_control) {
             return Err(ApiError::BadRequest(
-                "idempotency_key must be 1..=256 bytes without control characters".into(),
+                "idempotency_key must be non-empty, without edge whitespace or control characters"
+                    .into(),
             ));
         }
     }
