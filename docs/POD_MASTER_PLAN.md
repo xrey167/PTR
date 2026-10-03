@@ -232,7 +232,7 @@ Komponente; Reviewer und Test-Owner sind die fachlichen Prüfrollen.
 |---|---|---|---|---|
 | [~] | opaque KV-Handles, Invalidation und Recompute | `ptr-memory` | verifier | alte Handles unbrauchbar, unabhängige States gültig |
 | [~] | Placement-/Fencing-gebundene KV-Registry | `ptr-runtime`, `ptr-memory` | security reviewer | stale Epoch/Token fail-closed |
-| [-] | echter layerweiser KV-Tensor-Cache | `ptr-pods`, `ptr-runtime` | architect | Allocate/Append/Snapshot/Restore/Release |
+| [~] | echter layerweiser KV-Tensor-Cache | `ptr-pods`, `ptr-runtime` | architect | Primitive vorhanden; Modell-Continuation, Paging und Tiering offen |
 | [~] | Candle-Safetensors-Dense-Executor | `ptr-pods` | test-engineer | Admission von Weight/Bias/Dtype/Shape |
 | [-] | Candle-CUDA Transformer-/KV-Executor | `ptr-pods` | dependency-expert | tatsächlicher RTX-3090/4090-Nachweis |
 | [-] | Device-/Stream-/Tensor-Lifetime und OOM-Recovery | `ptr-pods`, `ptr-runtime` | security reviewer | RAII, sync vor Release, kein Raw Pointer nach außen |
@@ -288,3 +288,23 @@ positive und negative Tests, aktualisierte Architektur-Dokumentation und ein
 frischer Verifikationsnachweis vorhanden sind. Hardware-, privilegierte
 Netzwerk- und externe-Provider-Tests bleiben ausdrücklich als separate Gates
 markiert und werden nicht durch reine Compile- oder Mock-Ergebnisse ersetzt.
+
+### KV-Research-Mapping
+
+Der KV-Block baut direkt auf den gelieferten Research-Ergebnissen auf:
+
+| Research-Einsicht | PTR-Umsetzung | aktueller Stand |
+|---|---|---|
+| KV-streams: Kompaktion kann Modellzustand weiterführen, ohne alten Text neu zu formulieren | `KvStateRuntime`, opaque Handles, Invalidation und Recompute | Metadata- und Tensorpfad vorhanden; echte Modell-Continuation und kontrollierte Attention-Historie offen |
+| PagedAttention: KV wird block-/seitenweise statt als eine wachsende Sequenz verwaltet | page/block allocator und Prefix-Sharing im `KvTensorBackend` | offen; aktueller Pfad arbeitet mit zusammenhängenden layerweisen Tensoren |
+| SGLang KV-Quantisierung/NVFP4: Dtype, Skalierung und fused Attention sind ein Vertrag | typed Dtype-/Scale-Metadaten und quantized Backend-Capabilities | aktuell nur F32; FP8/FP4/NVFP4 und fused-kernel-Gate offen |
+| HiCache: GPU-, CPU- und Storage-Tiers mit kontrolliertem Attach/Detach | `KvTier`, Storage-Backend, Idle-Gate und Prefetch-/Eviction-Events | Snapshot/Restore vorhanden; tiered Attach/Detach und Prefetch offen |
+| Mooncake: disaggregiertes Prefill/Decode und verteilter KV-Pool | Placement-/Fencing-gebundene Snapshot-/Transfer-Schnittstelle | lokale Placement-Verträge vorhanden; Pool, Transfer Engine und Prefill/Decode-Trennung offen |
+| fast-jev/Retention: behalten, strukturieren, auslagern und invalidieren sind getrennte Entscheidungen | Retention Controller plus Knowledge-/Context-/KV-Lifecycle | Rule-Modell vorhanden; lokaler Neural-/Hybrid-Controller und Evaluation offen |
+
+`CandleKvTensorBackend` ist damit ein erster modellgebundener CUDA-
+Tensorcache, aber noch kein vollständiger Transformer-KV-Executor. Die
+Quantisierungsforschung zeigt außerdem, dass Speicherersparnis ohne passenden
+fused Attention-Backend erhebliche Laufzeitverluste erzeugen kann. Deshalb
+braucht dieser Pfad ein eigenes Accuracy-/Throughput-Gate und darf nicht nur
+über einen erfolgreichen Compile-Check als abgeschlossen gelten.
