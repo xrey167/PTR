@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-22  
+**Last reviewed:** 2026-10-03  
 **Code footprint:** 4 Rust source files · 1277 nonblank source lines · 5 integration-test files · 26 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
@@ -31,9 +31,9 @@
 - IrohSession::request enforces a per-session in-flight cap with a non-blocking semaphore: a request above the cap fails immediately with a backpressure error instead of queueing; there is no retry or automatic reconnect, a closed session rejects requests and the caller opens a fresh session
 - RelayMode (Disabled, DirectOnly, DirectWithRelayFallback) and IrohTransport::bind_with_relay_mode: Disabled and DirectOnly map to iroh's relay disabled, DirectWithRelayFallback to iroh's default relay; bind() keeps Disabled. The relay-fallback mode has no test
 - MeshRegistry membership model: one-time invitations, accept creates an Active membership at revision 1, revoke marks it Revoked and bumps the revision, endpoint()/endpoint_binding() resolve only Active members and carry a Direct or Relay route; invitations reject cross-network or zero-digest peer identities, and a consumed invitation cannot be reused
-- MeshRegistry::apply_event replays ptr-types MeshTunnelLifecycleEvents (activation, revocation, route change) with generation/revision checks that reject stale or conflicting revisions and route changes for revoked peers
-- Mesh tunnel lifecycle: TunnelProfile/TunnelLease/TunnelState and the MeshTunnelExecutor trait with ReferenceMeshTunnelExecutor (in-memory, fencing-token and profile checks, idempotent release) and WireguardUserspaceExecutor<D>, which drives an injected WireguardDevice (create_interface, configure_peer, remove_interface) through the same admit/establish/rotate/revoke/release lifecycle and refuses a second live lease on the same interface name
-- Feature wireguard-uapi-backend (Linux only): LinuxWireguardDevice creates and removes interfaces via the host `ip` utility and configures peers through the WireGuard userspace UAPI; the WireGuard public key must be registered explicitly and is never derived from the PTR identity digest, interface names are validated (max 15 chars, alphanumeric, _ or -). Not executed in this environment, described from the code only; the UAPI set request only adds the peer public key (no endpoint, allowed-ips or private key)
+- MeshRegistry::apply_event replays ptr-types MeshTunnelLifecycleEvents (activation, revocation, route change) with generation/revision checks that reject stale or conflicting revisions and route changes for revoked peers; the membership revision is the single monotone counter, so a replayed older route change is stale, a revoked membership is not reactivated by a later activation event, and an activation cannot swap the admitted key digest
+- Mesh tunnel lifecycle: TunnelProfile/TunnelLease/TunnelState and the MeshTunnelExecutor trait with ReferenceMeshTunnelExecutor (in-memory, fencing-token and profile checks, idempotent release) and WireguardUserspaceExecutor<D>, which drives an injected WireguardDevice (create_interface, configure_peer, remove_peer, remove_interface) through the same admit/establish/rotate/revoke/release lifecycle and refuses a second live lease on the same interface name; revoke removes the interface at once (release then does not remove it again), establish removes the interface it created if peer configuration fails so a retry works, and rotate_peer rejects a zero key, configures the new peer before removing the previous one and leaves the lease profile unchanged so the original lease stays valid
+- Feature wireguard-uapi-backend (Linux only): LinuxWireguardDevice creates and removes interfaces via the host `ip` utility and configures peers through the WireGuard userspace UAPI; the WireGuard public key must be registered explicitly per peer id and identity digest and is never derived from the PTR identity digest, interface names are validated (max 15 chars, alphanumeric, _ or -). Not executed in this environment, described from the code only; the UAPI set request only adds or removes the peer public key (no endpoint, allowed-ips or private key); remove_peer sets the UAPI remove flag and is likewise untested against a real interface
 - Feature wintun-backend (Windows only): WintunDevice loads the Wintun DLL, creates an adapter and session and can probe the driver version; configure_peer only validates the peer and checks that a session exists, so it is a TUN interface without any WireGuard crypto dataplane. Not compiled or run here, described from the code only
 
 ### Missing for the target architecture
@@ -43,7 +43,7 @@
 - Discovery: finding the address for an id nobody told you is a mechanism choice with its own trust question, and iroh's own address lookup is disabled in this build, so turning it on is a decision about trusting a third party rather than a code change
 - A journaled peer book, and any re-resolution of a stale address: the book is in memory and a deployment whose nodes move must record the new address
 - Retry/idempotency semantics and automatic reconnect: backpressure is only a fail-fast per-session in-flight cap
-- Mesh state is in memory and not journaled; MeshRegistry is not connected to Iroh peer admission, and WireGuard revoke only marks the lease Revoked without removing the peer from the device
+- Mesh state is in memory and not journaled; MeshRegistry is not connected to Iroh peer admission, and ReferenceMeshTunnelExecutor::rotate_peer still rewrites the stored profile (only the WireGuard executor keeps the lease profile stable)
 - Raft/PodWire/blob stream adapters; ptr-cluster carries raft batches over ALPN_RAFT, ptr-execwire carries execution requests over ALPN_EXEC and ptr-podwire carries Pod access over ALPN_PODWIRE, all three using the request/response path, and a stream adapter would replace that rather than extend it
 
 ### Next milestones
@@ -73,8 +73,8 @@
 - an address pointing the honest id at an impostor's socket fails and the impostor serves nothing, with the honest node at its true address succeeding in the same test so the failure is about the lie
 - compile-fail doctest: PeerAddress cannot be built by a struct literal
 - ptr-net tests/iroh.rs (feature iroh-backend): reusable_session_multiplexes_streams_and_enforces_backpressure, session_rejects_work_above_the_in_flight_limit_without_queueing_it, a_closed_session_can_be_replaced_by_a_fresh_session, closed_session_rejects_new_requests_and_a_new_session_recovers
-- ptr-net tests/mesh.rs: invitation_acceptance_creates_direct_or_relayable_membership, revoked_membership_cannot_resolve_an_endpoint_or_reuse_invitation, invitation_rejects_cross_network_peer_identity
-- ptr-net tests/tunnel.rs: reference_tunnel_is_fenced_and_cleanup_is_idempotent, stale_lease_cannot_revoke_a_new_fenced_lease, invalid_profile_is_rejected_before_tunnel_activation, userspace_executor_binds_device_io_to_the_fenced_lifecycle (fake device); wintun_dll_and_driver_are_loadable_when_provisioned is Windows-only and skips without WINTUN_DLL
+- ptr-net tests/mesh.rs: invitation_acceptance_creates_direct_or_relayable_membership, revoked_membership_cannot_resolve_an_endpoint_or_reuse_invitation, invitation_rejects_cross_network_peer_identity, late_activation_cannot_resurrect_a_revoked_membership, activation_cannot_swap_the_admitted_key_digest, stale_route_changes_are_rejected_after_a_newer_route
+- ptr-net tests/tunnel.rs: reference_tunnel_is_fenced_and_cleanup_is_idempotent, stale_lease_cannot_revoke_a_new_fenced_lease, invalid_profile_is_rejected_before_tunnel_activation, userspace_executor_binds_device_io_to_the_fenced_lifecycle, revoke_tears_down_the_interface_and_release_does_not_remove_it_twice, rotation_keeps_the_original_lease_valid_and_removes_the_old_peer, rotation_rejects_an_all_zero_key, failed_peer_configuration_does_not_leak_the_interface_and_allows_retry (fake device); wintun_dll_and_driver_are_loadable_when_provisioned is Windows-only and skips without WINTUN_DLL
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
