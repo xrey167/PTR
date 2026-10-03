@@ -37,13 +37,16 @@ pub fn merge_hypotheses(
     if hypotheses.is_empty() {
         return Err(HypothesisError::Empty);
     }
-    let generation = hypotheses[0].generation;
-    if hypotheses.iter().any(|item| item.generation != generation) {
-        return Err(HypothesisError::GenerationConflict);
-    }
+    // Unverified hypotheses are discarded first. Only the ones that stay have to
+    // agree on the generation: a rejected hypothesis from another generation
+    // must not abort a merge it takes no part in.
     hypotheses.retain(|item| item.verification.status == VerificationStatus::Pass);
     if hypotheses.is_empty() {
         return Err(HypothesisError::Unverified);
+    }
+    let generation = hypotheses[0].generation;
+    if hypotheses.iter().any(|item| item.generation != generation) {
+        return Err(HypothesisError::GenerationConflict);
     }
     hypotheses.sort_by(|left, right| {
         right
