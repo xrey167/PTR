@@ -105,6 +105,12 @@ impl PodRevisionAddress {
             .map_err(|_| ResolveError::InvalidAddress {
                 field: "generation",
             })?;
+        // `u64::from_str` also accepts `+3` and `007`; only the printed spelling is canonical.
+        if fragment != generation.to_string() {
+            return Err(ResolveError::InvalidAddress {
+                field: "generation",
+            });
+        }
         let (base, revision) =
             base.split_once("@revision:")
                 .ok_or(ResolveError::InvalidAddress {
@@ -357,18 +363,26 @@ fn hex(bytes: &[u8; 32]) -> String {
 }
 
 fn parse_hex_digest(value: &str) -> Result<Digest, ResolveError> {
-    if value.len() != 64 {
-        return Err(ResolveError::InvalidAddress {
-            field: "semantic_revision",
-        });
+    let invalid = || ResolveError::InvalidAddress {
+        field: "semantic_revision",
+    };
+    // Only the exact spelling `hex` prints is accepted: 64 lower-case hex digits.
+    // Working on bytes keeps multi-byte input from splitting a character.
+    let bytes = value.as_bytes();
+    if bytes.len() != 64
+        || !bytes
+            .iter()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(invalid());
     }
+    let nibble = |byte: u8| match byte {
+        b'0'..=b'9' => byte - b'0',
+        _ => byte - b'a' + 10,
+    };
     let mut digest = [0; 32];
     for (index, byte) in digest.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).map_err(|_| {
-            ResolveError::InvalidAddress {
-                field: "semantic_revision",
-            }
-        })?;
+        *byte = nibble(bytes[index * 2]) << 4 | nibble(bytes[index * 2 + 1]);
     }
     Ok(digest)
 }
@@ -411,6 +425,39 @@ mod tests {
         assert!(uri.contains("@revision:"));
         assert!(uri.ends_with("#generation:3"));
         assert_eq!(PodRevisionAddress::parse(&uri).unwrap(), revision);
+    }
+
+    #[test]
+    fn revision_uri_rejects_non_canonical_digest_and_generation_spellings() {
+        let mut with_letters = revision();
+        with_letters.semantic_revision = [0xab; 32];
+        let canonical = with_letters.canonical_uri().unwrap();
+        let (prefix, rest) = canonical.split_once("@revision:").unwrap();
+        let (digest, fragment) = rest.split_once("#generation:").unwrap();
+        assert_eq!(fragment, "3");
+
+        // A 64-byte value that is not on character boundaries must be an error, not a panic.
+        let multibyte = format!("a{}b", "é".repeat(31));
+        assert_eq!(multibyte.len(), 64);
+        let uri = format!("{prefix}@revision:{multibyte}#generation:3");
+        assert!(PodRevisionAddress::parse(&uri).is_err());
+
+        // Upper-case and signed hex digits are different spellings of the same digest.
+        let upper = digest.to_uppercase();
+        let uri = format!("{prefix}@revision:{upper}#generation:3");
+        assert!(PodRevisionAddress::parse(&uri).is_err());
+        let signed = format!("+{}", &digest[1..]);
+        let uri = format!("{prefix}@revision:{signed}#generation:3");
+        assert!(PodRevisionAddress::parse(&uri).is_err());
+
+        // The generation must be spelled exactly as it is printed.
+        for fragment in ["+3", "03", "003"] {
+            let uri = format!("{prefix}@revision:{digest}#generation:{fragment}");
+            assert!(
+                PodRevisionAddress::parse(&uri).is_err(),
+                "generation spelling {fragment} must be refused"
+            );
+        }
     }
 
     #[test]

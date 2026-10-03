@@ -1124,6 +1124,12 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
             check_hypothesis_dependency_count(dependencies.len())?;
             check_attestation(verification)?;
         }
+        LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
+            endpoint: Some(endpoint),
+            ..
+        }) => endpoint
+            .validate()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
         _ => {}
     }
     Ok(())
@@ -2018,6 +2024,36 @@ mod effect_record_tests {
         let encoded = encode_event(&event);
         assert_eq!(encoded[0], 15);
         assert_eq!(decode_event(&encoded).unwrap(), event);
+    }
+
+    #[test]
+    fn an_endpoint_the_decoder_refuses_is_refused_before_encoding() {
+        // A relayed route without a relay id: `validate` refuses it on decode,
+        // so an append path must refuse it too instead of writing a record the
+        // log cannot read back.
+        let event = LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
+            network_id: "mesh-a".into(),
+            peer_id: "peer-b".into(),
+            invitation_id: None,
+            tunnel_id: None,
+            generation: Generation(2),
+            revision: Revision(4),
+            kind: MeshTunnelEventKind::RouteChanged,
+            endpoint: Some(MeshEndpointBinding {
+                network_id: "mesh-a".into(),
+                peer_id: "peer-b".into(),
+                route: MeshRouteKind::Relay,
+                relay_id: None,
+                membership_generation: Generation(2),
+                membership_revision: Revision(4),
+            }),
+            placement_epoch: 7,
+            fencing_token: FencingToken(9),
+            event_digest: [8; 32],
+        });
+        assert!(decode_event(&encode_event(&event)).is_err());
+        let error = check_encodable(&event).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     /// The only byte two records differ in is the field that differs, which locates
