@@ -1,0 +1,186 @@
+# The A0 mechanism ablation study v1: arms, switches, hyperparameters and the
+# rules fixed before any declared-seed run. The binary's arm table
+# (model/burn-a0/examples/a0_ablation/arms.rs) must match `[[arm]]` exactly;
+# scripts/tests/test_a0_ablation_config.py checks it. The design and its
+# rationale are in research/falsification/A0-ablations-v1/PREREGISTRATION.md.
+version = 1
+study = "A0-ablations-v1"
+benchmark = "operator-routing"
+generator_version = 1
+
+[model]
+vocabulary = 216
+# The design's base width. Calibration missed its target at 32 and applied
+# revision-ladder rung R1, so the study runs at d_model 48: see calibration.json,
+# budget.json and the manifests' a0_* entrypoints (--d-model 48).
+d_model = 32
+provenance_buckets = 8
+slots = 6
+
+[training]
+batch = 128
+warmup_steps = 100
+# Linear warm-up, then cosine decay to this fraction of the peak at the last step.
+final_lr_fraction = 0.1
+optimizer = "adam-defaults"
+steps_candidates = [1500, 2000, 3000]
+validation_checkpoints = 10
+evaluation_batch = 500
+
+[seeds]
+declared = [17, 29, 43, 71, 101]
+calibration = 0
+order_salt = 0x0BA7C4
+sweep_salt = 0x5EE9
+
+[learning_rate]
+grid = [0.002, 0.005, 0.0125]
+calibration = 0.005
+# The smallest rate whose final val accuracy is within this of the best.
+selection_tolerance = 0.005
+
+[calibration]
+# The first steps candidate whose final val accuracy reaches this.
+target_val_accuracy = 0.88
+# Tried in order if no candidate reaches it.
+revision_ladder = ["R1: d_model 48", "R2: G = [0,1,1,1,1], U = 0, d_model 48"]
+
+[budget]
+limit_minutes = 20
+hard_cap_minutes = 45
+workers = 3
+per_process_overhead_seconds = 4
+# Applied in order while the projection exceeds the limit.
+ladder = ["drop latent-4", "drop the blind-query pair", "halve the sweep's steps", "skip the sweep: lr 0.005 for every arm"]
+
+[[arm]]
+name = "full"
+experiment = "M001"
+tier = 1
+typed_attention = true
+typed_query = true
+latent_steps = 2
+latent_nonlinearity = true
+frozen_router = false
+batch = "typed"
+
+[[arm]]
+name = "no-semantic-slots"
+experiment = "M001"
+tier = 1
+typed_attention = true
+typed_query = true
+latent_steps = 2
+latent_nonlinearity = true
+frozen_router = false
+batch = "content-free"
+
+[[arm]]
+name = "no-semantic-slots-masked"
+experiment = "M001"
+tier = 1
+typed_attention = true
+typed_query = true
+latent_steps = 2
+latent_nonlinearity = true
+frozen_router = false
+batch = "content-free-masked"
+
+[[arm]]
+name = "no-typed-attention"
+experiment = "M002"
+tier = 1
+typed_attention = false
+typed_query = true
+latent_steps = 2
+latent_nonlinearity = true
+frozen_router = false
+batch = "typed"
+
+[[arm]]
+name = "raw-blind"
+experiment = "M002"
+tier = 1
+typed_attention = true
+typed_query = true
+latent_steps = 2
+latent_nonlinearity = true
+frozen_router = false
+batch = "raw-blind"
+
+[[arm]]
+name = "blind-query-k0"
+experiment = "M002"
+tier = 2
+typed_attention = true
+typed_query = false
+latent_steps = 0
+latent_nonlinearity = true
+frozen_router = false
+batch = "typed"
+
+[[arm]]
+name = "blind-query-k0-no-typed-attention"
+experiment = "M002"
+tier = 2
+typed_attention = false
+typed_query = false
+latent_steps = 0
+latent_nonlinearity = true
+frozen_router = false
+batch = "typed"
+
+[[arm]]
+name = "latent-0"
+experiment = "M003"
+tier = 1
+typed_attention = true
+typed_query = true
+latent_steps = 0
+latent_nonlinearity = true
+frozen_router = false
+batch = "typed"
+
+[[arm]]
+name = "latent-1"
+experiment = "M003"
+tier = 1
+typed_attention = true
+typed_query = true
+latent_steps = 1
+latent_nonlinearity = true
+frozen_router = false
+batch = "typed"
+
+[[arm]]
+name = "latent-linear"
+experiment = "M003"
+tier = 1
+typed_attention = true
+typed_query = true
+latent_steps = 2
+latent_nonlinearity = false
+frozen_router = false
+batch = "typed"
+
+[[arm]]
+name = "latent-4"
+experiment = "M003"
+tier = 2
+typed_attention = true
+typed_query = true
+latent_steps = 4
+latent_nonlinearity = true
+frozen_router = false
+batch = "typed"
+
+[[arm]]
+name = "frozen-router"
+experiment = "M004"
+tier = 1
+typed_attention = true
+typed_query = true
+latent_steps = 2
+latent_nonlinearity = true
+frozen_router = true
+batch = "typed"

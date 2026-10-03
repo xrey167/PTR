@@ -1192,6 +1192,7 @@ fn the_runtime_never_writes_a_record_its_replay_refuses() {
                     SemanticOrigin::Legacy => panic!("seed {seed}: a record without an origin"),
                     SemanticOrigin::Request { .. } => requests += 1,
                     SemanticOrigin::PodOutput { .. } => outputs += 1,
+                    SemanticOrigin::PodCandidate { .. } => outputs += 1,
                     SemanticOrigin::Host { verification, .. } => {
                         if verification.findings.is_empty() {
                             plain += 1;

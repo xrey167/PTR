@@ -12,6 +12,19 @@ security = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(security)
 
 class SecurityWorkspaceTests(unittest.TestCase):
+    def test_scanner_output_is_decoded_as_utf8_without_locale_dependence(self):
+        self.assertEqual(
+            security.TEXT_OUTPUT,
+            {"encoding": "utf-8", "errors": "replace"},
+        )
+
+    def test_cargo_deny_receives_its_policy_as_a_root_option_before_check(self):
+        # The installed cargo-deny (0.20.2, see security.yml) rejects --config
+        # after the subcommand.
+        command = security.scanner_command("deny", ROOT / "model/burn-a0/Cargo.toml", ROOT)
+        self.assertEqual(command[-3:], ["--config", str(ROOT / "deny.toml"), "check"])
+        self.assertEqual(command.count("--config"), 1)
+
     def test_all_owned_workspaces_are_scanned_and_new_workspace_is_not_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -19,8 +32,15 @@ class SecurityWorkspaceTests(unittest.TestCase):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('[workspace]\n')
-            found = {str(x) for x in security.workspaces(root)}
+            found = {x.as_posix() for x in security.workspaces(root)}
             self.assertEqual(found, security.EXPECTED | {'new-component/Cargo.toml'})
+
+    def test_nested_workspace_evidence_name_is_flat_and_portable(self):
+        self.assertEqual(
+            security.workspace_name(Path("model/burn-a0/Cargo.toml")),
+            "model-burn-a0",
+        )
+        self.assertEqual(security.workspace_name(Path("Cargo.toml")), "workspace")
 
     def test_real_excluded_fuzz_package_without_workspace_table_is_scanned(self):
         with tempfile.TemporaryDirectory() as tmp:

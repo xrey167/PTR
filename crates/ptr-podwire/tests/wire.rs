@@ -10,15 +10,21 @@
 //! loop, so a failure is a failure of the protocol and never of a race with a
 //! server task.
 use ptr_net::{EndpointAddr, IrohTransport, PeerAddress, PeerBook, ALPN_PODWIRE};
-use ptr_pods::{DynPod, PodManifest, PodRegistry};
+use ptr_pods::{
+    DynPod, ExecutionManifest, LineageBinding, PodManifest, PodRegistry, ProtocolBinding,
+};
 use ptr_podwire::{
-    decode_answer, decode_request, encode_answer, encode_request, request_digest, PodAccessPolicy,
-    PodAnswer, PodClient, PodHost, PodOutcome, PodRequest, PodScope, PodWireError, RefusalCode,
+    decode_answer, decode_request, decode_request_v2, encode_answer, encode_answer_v2,
+    encode_request, request_digest, PodAccessPolicy, PodAddressBinding, PodAnswer, PodAnswerV2,
+    PodClient, PodHost, PodOutcome, PodRequest, PodRequestV2, PodScope, PodWireError, RefusalCode,
     MAX_BODY_BYTES,
 };
 use ptr_protocol::TypedPayload;
+use ptr_runtime::{ExecutionManifestRegistry, ValidatedExecutionManifest};
 use ptr_types::{
-    CapabilityId, Effect, NodeId, PodId, Probability, ProjectId, TypeId, VerificationLevel,
+    ArtifactId, CapabilityId, Effect, Generation, NodeId, PodId, PrincipalId, Probability,
+    ProjectId, Revision, ScopeId, SessionId, StatefulRequestRecovery, TypeId, UncertainRequest,
+    VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::sync::{Arc, Mutex};
@@ -26,6 +32,47 @@ use std::sync::{Arc, Mutex};
 const SUMMARIZE: &str = "Summarize<Document>";
 const DOCUMENT: &str = "Document";
 const SUMMARY: &str = "Summary";
+
+fn execution_manifest(
+    manifest: &PodManifest,
+    generation: Generation,
+    revision: Revision,
+) -> ExecutionManifest {
+    ExecutionManifest::build(
+        generation,
+        vec![LineageBinding {
+            key: "knowledge".into(),
+            generation,
+            digest: [1; 32],
+        }],
+        vec![LineageBinding {
+            key: manifest.id.0.clone(),
+            generation,
+            digest: manifest.digest(),
+        }],
+        vec!["wire-test".into()],
+        None,
+        revision,
+        [2; 32],
+        PrincipalId::from("wire-test"),
+        Revision(1),
+    )
+    .unwrap()
+}
+
+#[derive(Default)]
+struct RecoveryProbe {
+    request: Option<UncertainRequest>,
+}
+
+impl StatefulRequestRecovery for RecoveryProbe {
+    type Error = &'static str;
+
+    fn recover_uncertain(&mut self, request: UncertainRequest) -> Result<(), Self::Error> {
+        self.request = Some(request);
+        Ok(())
+    }
+}
 
 /// A Pod that stamps its own project onto whatever it is given, so a test can see
 /// **which** Pod answered rather than only that one did.
@@ -127,6 +174,59 @@ fn request(addressed_to: String, request_id: u64) -> PodRequest {
     }
 }
 
+fn request_v2(
+    addressed_to: String,
+    request_id: u64,
+    manifest: &PodManifest,
+    generation: Generation,
+    revision: Revision,
+) -> PodRequestV2 {
+    PodRequestV2 {
+        address: Some(address_binding(generation, manifest.digest())),
+        execution_manifest: Some(
+            execution_manifest(manifest, generation, revision).manifest_digest,
+        ),
+        addressed_to,
+        request_id,
+        artifact_id: ArtifactId::from("summarizer-artifact"),
+        manifest_hash: manifest.digest(),
+        generation,
+        revision,
+        placement_epoch: None,
+        fencing_token: None,
+        identity_digest: [0; 32],
+        session_id: SessionId::from("test-session"),
+        policy_revision: Revision(0),
+        capability: CapabilityId::from(SUMMARIZE),
+        expect_protocol: 1,
+        payload: TypedPayload {
+            type_id: TypeId::from(DOCUMENT),
+            bytes: b"a document".to_vec(),
+        },
+    }
+}
+
+fn address_binding(generation: Generation, semantic_revision: [u8; 32]) -> PodAddressBinding {
+    PodAddressBinding {
+        source: None,
+        destination: ptr_types::PodRevisionAddress {
+            address: ptr_types::PodAddress::new(
+                ProjectId::from("alpha"),
+                "test".into(),
+                "summarizer".into(),
+            )
+            .unwrap(),
+            semantic_revision,
+            generation,
+        },
+        trace_id: "wire-test".into(),
+        hop_limit: 8,
+        visited: Vec::new(),
+        protocol: None,
+        mesh: None,
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_admitted_peer_reaches_its_project_s_pod_over_a_real_connection() {
     let client = PodClient::bind().await.unwrap();
@@ -170,6 +270,268 @@ async fn an_admitted_peer_reaches_its_project_s_pod_over_a_real_connection() {
         "the peer is the connection's, and the frame has no field it could have been"
     );
     assert_eq!(*invocations.lock().unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_binds_manifest_artifact_generation_and_revision_over_a_real_connection() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let generation = Generation(7);
+    let revision = Revision(12);
+
+    let mut registry = PodRegistry::default();
+    registry.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(registry, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            generation,
+            revision,
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, generation, revision))
+        .unwrap();
+    let asked = request_v2(
+        host.identity().public_key,
+        101,
+        &manifest,
+        generation,
+        revision,
+    );
+    let address = host.address();
+    let (answered, served) = tokio::join!(
+        client.request_v2(located(address), &asked),
+        host.serve_once_v2(&binding)
+    );
+    let answered = answered.unwrap();
+    let served = served.unwrap();
+
+    assert_eq!(
+        answered.outcome,
+        PodOutcome::Answered {
+            output: TypedPayload {
+                type_id: TypeId::from(SUMMARY),
+                bytes: b"alpha:a document".to_vec(),
+            }
+        }
+    );
+    assert_eq!(answered.generation, generation);
+    assert_eq!(answered.revision, revision);
+    assert_eq!(served.request_id, Some(101));
+    assert_eq!(served.refused, None);
+    assert_eq!(*invocations.lock().unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_rejects_a_stale_generation_before_invoking_the_pod() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let mut registry = PodRegistry::default();
+    registry.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(registry, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(2),
+            Revision(9),
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(2), Revision(9)))
+        .unwrap();
+    let asked = request_v2(
+        host.identity().public_key,
+        102,
+        &manifest,
+        Generation(1),
+        Revision(9),
+    );
+    let address = host.address();
+    let (answered, served) = tokio::join!(
+        client.request_v2(located(address), &asked),
+        host.serve_once_v2(&binding)
+    );
+    let answered = answered.unwrap();
+    let served = served.unwrap();
+
+    assert_eq!(
+        answered.outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::Unavailable
+        }
+    );
+    assert_eq!(served.refused, Some(PodWireError::V2BindingUnavailable));
+    assert_eq!(*invocations.lock().unwrap(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_rejects_a_protocol_binding_mismatch_before_invoking_the_pod() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let generation = Generation(3);
+    let revision = Revision(4);
+
+    let mut registry = PodRegistry::default();
+    registry.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(registry, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_addressed_with_protocol(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            generation,
+            revision,
+            ProtocolBinding::Mqtt,
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, generation, revision))
+        .unwrap();
+    let mut asked = request_v2(
+        host.identity().public_key,
+        103,
+        &manifest,
+        generation,
+        revision,
+    );
+    asked.address.as_mut().unwrap().protocol = Some(ProtocolBinding::Ssh);
+
+    let address = host.address();
+    let (answered, served) = tokio::join!(
+        client.request_v2(located(address), &asked),
+        host.serve_once_v2(&binding)
+    );
+    let answered = answered.unwrap();
+    let served = served.unwrap();
+
+    assert_eq!(
+        answered.outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::Unavailable
+        }
+    );
+    assert_eq!(served.refused, Some(PodWireError::V2BindingUnavailable));
+    assert_eq!(*invocations.lock().unwrap(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_client_rejects_answers_with_wrong_generation_or_revision() {
+    let client = PodClient::bind().await.unwrap();
+    let manifest = pod("alpha", &Arc::new(Mutex::new(0))).manifest().clone();
+
+    let wrong_generation = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let generation_key = wrong_generation.identity().public_key;
+    let generation_request = request_v2(
+        generation_key.clone(),
+        201,
+        &manifest,
+        Generation(7),
+        Revision(12),
+    );
+    let generation_address = wrong_generation.direct_addr();
+    let generation_serving = async move {
+        let incoming = wrong_generation.accept_once(1 << 20).await.unwrap();
+        let decoded = decode_request_v2(&incoming.payload).unwrap();
+        let answer = PodAnswerV2 {
+            address: decoded.address.clone(),
+            execution_manifest: decoded.execution_manifest,
+            responder: generation_key,
+            request_id: decoded.request_id,
+            request_digest: request_digest(&incoming.payload),
+            generation: Generation(8),
+            revision: decoded.revision,
+            placement_epoch: decoded.placement_epoch,
+            fencing_token: decoded.fencing_token,
+            identity_digest: decoded.identity_digest,
+            session_id: decoded.session_id.clone(),
+            policy_revision: decoded.policy_revision,
+            outcome: PodOutcome::Refused {
+                code: RefusalCode::Unavailable,
+            },
+        };
+        incoming
+            .respond(&encode_answer_v2(&answer).unwrap())
+            .await
+            .unwrap();
+    };
+    let (generation_result, ()) = tokio::join!(
+        client.request_v2(located(generation_address), &generation_request),
+        generation_serving
+    );
+    assert!(matches!(
+        generation_result,
+        Err(PodWireError::WrongGeneration {
+            expected: Generation(7),
+            answered: Generation(8)
+        })
+    ));
+
+    let wrong_revision = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let revision_key = wrong_revision.identity().public_key;
+    let revision_request = request_v2(
+        revision_key.clone(),
+        202,
+        &manifest,
+        Generation(7),
+        Revision(12),
+    );
+    let revision_address = wrong_revision.direct_addr();
+    let revision_serving = async move {
+        let incoming = wrong_revision.accept_once(1 << 20).await.unwrap();
+        let decoded = decode_request_v2(&incoming.payload).unwrap();
+        let answer = PodAnswerV2 {
+            address: decoded.address.clone(),
+            execution_manifest: decoded.execution_manifest,
+            responder: revision_key,
+            request_id: decoded.request_id,
+            request_digest: request_digest(&incoming.payload),
+            generation: decoded.generation,
+            revision: Revision(13),
+            placement_epoch: decoded.placement_epoch,
+            fencing_token: decoded.fencing_token,
+            identity_digest: decoded.identity_digest,
+            session_id: decoded.session_id.clone(),
+            policy_revision: decoded.policy_revision,
+            outcome: PodOutcome::Refused {
+                code: RefusalCode::Unavailable,
+            },
+        };
+        incoming
+            .respond(&encode_answer_v2(&answer).unwrap())
+            .await
+            .unwrap();
+    };
+    let (revision_result, ()) = tokio::join!(
+        client.request_v2(located(revision_address), &revision_request),
+        revision_serving
+    );
+    assert!(matches!(
+        revision_result,
+        Err(PodWireError::WrongRevision {
+            expected: Revision(12),
+            answered: Revision(13)
+        })
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -614,4 +976,327 @@ async fn an_answer_that_will_not_fit_in_a_frame_is_still_an_answer() {
         answered.unwrap().outcome,
         PodOutcome::Answered { .. }
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_session_reuses_one_authenticated_connection() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let mut registry = PodRegistry::default();
+    registry.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(registry, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_stateful_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(7),
+            Revision(12),
+            3,
+            55,
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(7), Revision(12)))
+        .unwrap();
+    let host_identity = host.identity().public_key.clone();
+    let address = located(host.address());
+    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await.unwrap() });
+    let session = client.connect_session(address, 2).await.unwrap();
+    let mut request = request_v2(host_identity, 99, &manifest, Generation(7), Revision(12));
+    request.placement_epoch = Some(3);
+    request.fencing_token = Some(55);
+    let answer = session.request_v2(&request).await.unwrap();
+    assert!(matches!(answer.outcome, PodOutcome::Answered { .. }));
+    session.close().await;
+    assert_eq!(server.await.unwrap().len(), 1);
+    assert_eq!(*invocations.lock().unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let execution_manifest = execution_manifest(&manifest, Generation(7), Revision(12));
+    let digest = execution_manifest.manifest_digest;
+
+    let mut registry = ExecutionManifestRegistry::default();
+    registry
+        .admit(ValidatedExecutionManifest {
+            manifest: execution_manifest.clone(),
+            knowledge: vec![],
+            artifacts: vec![],
+            runtime_revision: Revision(12),
+        })
+        .unwrap();
+    let registry = Arc::new(std::sync::RwLock::new(registry));
+
+    let mut pods = PodRegistry::default();
+    pods.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(pods, policy, Pass)
+        .await
+        .unwrap()
+        .with_runtime_manifest_registry(Arc::clone(&registry));
+    let binding = host
+        .bind_v2_stateful_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(7),
+            Revision(12),
+            3,
+            55,
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest)
+        .unwrap();
+
+    registry.write().unwrap().revoke(digest).unwrap();
+
+    let host_identity = host.identity().public_key.clone();
+    let address = located(host.address());
+    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await.unwrap() });
+    let session = client.connect_session(address, 1).await.unwrap();
+    let mut request = request_v2(host_identity, 100, &manifest, Generation(7), Revision(12));
+    request.placement_epoch = Some(3);
+    request.fencing_token = Some(55);
+    let answer = session.request_v2(&request).await.unwrap();
+
+    assert_eq!(
+        answer.outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::Unavailable
+        }
+    );
+    assert_eq!(*invocations.lock().unwrap(), 0);
+    session.close().await;
+    assert_eq!(server.await.unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_session_replays_identical_request_ids_but_rejects_conflicting_bytes() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let mut registry = PodRegistry::default();
+    registry.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(registry, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(7),
+            Revision(12),
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(7), Revision(12)))
+        .unwrap();
+    let host_identity = host.identity().public_key.clone();
+    let address = located(host.address());
+    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await.unwrap() });
+    let session = client.connect_session(address, 2).await.unwrap();
+    let request = request_v2(host_identity, 99, &manifest, Generation(7), Revision(12));
+    let first = session.request_v2(&request).await.unwrap();
+    let replay = session.request_v2(&request).await.unwrap();
+    assert_eq!(replay, first);
+
+    let mut conflicting = request.clone();
+    conflicting.payload.bytes = b"different document".to_vec();
+    assert_eq!(
+        session.request_v2(&conflicting).await,
+        Err(PodWireError::DuplicateRequest { request_id: 99 })
+    );
+    session.close().await;
+    assert_eq!(server.await.unwrap().len(), 1);
+    assert_eq!(*invocations.lock().unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_session_marks_an_unverifiable_answer_uncertain_and_blocks_retry() {
+    let client = PodClient::bind().await.unwrap();
+    let raw = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let responder = raw.identity().public_key.clone();
+    let address = located(raw.direct_addr());
+    let session_task = tokio::spawn(async move {
+        let session = raw.accept_session().await.unwrap();
+        let incoming = session.accept_request(1 << 20).await.unwrap();
+        let request = decode_request_v2(&incoming.payload).unwrap();
+        let answer = PodAnswerV2 {
+            address: request.address.clone(),
+            execution_manifest: request.execution_manifest,
+            responder,
+            request_id: request.request_id,
+            request_digest: request_digest(&incoming.payload),
+            generation: Generation(request.generation.0 + 1),
+            revision: request.revision,
+            placement_epoch: request.placement_epoch,
+            fencing_token: request.fencing_token,
+            identity_digest: request.identity_digest,
+            session_id: request.session_id.clone(),
+            policy_revision: request.policy_revision,
+            outcome: PodOutcome::Refused {
+                code: RefusalCode::Unavailable,
+            },
+        };
+        incoming
+            .respond(&encode_answer_v2(&answer).unwrap())
+            .await
+            .unwrap();
+        session.wait_closed().await;
+    });
+
+    let session = client.connect_session(address, 1).await.unwrap();
+    let manifest = pod("alpha", &Arc::new(Mutex::new(0))).manifest().clone();
+    let request = request_v2(
+        session.peer().public_key.clone(),
+        777,
+        &manifest,
+        Generation(7),
+        Revision(12),
+    );
+    let first = session.request_v2(&request).await;
+    assert!(
+        matches!(first, Err(PodWireError::WrongGeneration { .. })),
+        "{first:?}"
+    );
+    assert_eq!(session.uncertain_requests(), (Vec::new(), vec![777]));
+    let mut recovery = RecoveryProbe::default();
+    session
+        .recover_uncertain_request(777, ScopeId::from("pod-call"), &mut recovery)
+        .unwrap();
+    assert_eq!(
+        recovery.request,
+        Some(UncertainRequest {
+            request_id: 777,
+            scope_id: ScopeId::from("pod-call"),
+        })
+    );
+    assert_eq!(
+        session.request_v2(&request).await,
+        Err(PodWireError::RequestUncertain { request_id: 777 })
+    );
+    session.close().await;
+    session_task.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_client_rejects_a_response_with_stale_state_binding() {
+    let client = PodClient::bind().await.unwrap();
+    let raw = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let responder = raw.identity().public_key.clone();
+    let address = located(raw.direct_addr());
+    let serving = tokio::spawn(async move {
+        let incoming = raw.accept_once(1 << 20).await.unwrap();
+        let request = decode_request_v2(&incoming.payload).unwrap();
+        let answer = PodAnswerV2 {
+            address: request.address.clone(),
+            execution_manifest: request.execution_manifest,
+            responder,
+            request_id: request.request_id,
+            request_digest: request_digest(&incoming.payload),
+            generation: request.generation,
+            revision: request.revision,
+            placement_epoch: Some(request.placement_epoch.unwrap() + 1),
+            fencing_token: request.fencing_token,
+            identity_digest: request.identity_digest,
+            session_id: request.session_id.clone(),
+            policy_revision: request.policy_revision,
+            outcome: PodOutcome::Refused {
+                code: RefusalCode::Unavailable,
+            },
+        };
+        incoming
+            .respond(&encode_answer_v2(&answer).unwrap())
+            .await
+            .unwrap();
+    });
+
+    let manifest = pod("alpha", &Arc::new(Mutex::new(0))).manifest().clone();
+    let mut request = request_v2(
+        address.clone().into_address().id.to_string(),
+        778,
+        &manifest,
+        Generation(7),
+        Revision(12),
+    );
+    request.placement_epoch = Some(4);
+    request.fencing_token = Some(55);
+    let result = client.request_v2(address, &request).await;
+    assert!(matches!(
+        result,
+        Err(PodWireError::StateBindingMismatch {
+            expected_epoch: Some(4),
+            answered_epoch: Some(5),
+            expected_token: Some(55),
+            answered_token: Some(55),
+        })
+    ));
+    serving.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_binding_rejects_a_manifest_digest_that_is_not_the_registered_manifest() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let mut altered = manifest.clone();
+    altered.protocol_version = 2;
+    let mut registry = PodRegistry::default();
+    registry.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(registry, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(7),
+            Revision(12),
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(7), Revision(12)))
+        .unwrap();
+    let asked = request_v2(
+        host.identity().public_key,
+        502,
+        &altered,
+        Generation(7),
+        Revision(12),
+    );
+    let (answered, served) = tokio::join!(
+        client.request_v2(located(host.address()), &asked),
+        host.serve_once_v2(&binding)
+    );
+    assert_eq!(
+        answered.unwrap().outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::Unavailable
+        }
+    );
+    assert_eq!(
+        served.unwrap().refused,
+        Some(PodWireError::V2BindingUnavailable)
+    );
+    assert_eq!(*invocations.lock().unwrap(), 0);
 }

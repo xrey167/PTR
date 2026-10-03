@@ -371,7 +371,7 @@ impl ResumableInferenceBackend for Want {
         assert_eq!(request.observation.payload, self.0);
         assert_eq!(request.observation.type_id.0, "bytes");
         assert_eq!(request.observation.source, "echo");
-        assert_eq!(request.observation.revision, request.revision);
+        assert_eq!(request.observation.revision, request.revision());
         Ok(vec![ModelEvent::Finished])
     }
 }

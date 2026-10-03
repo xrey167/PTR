@@ -5,8 +5,14 @@ hypothesis = "Does learned reasoning-method routing outperform LLM-only reasonin
 metrics = "regret; quality-cost utility; route accuracy"
 baseline = "LLM-only + deterministic router"
 falsification = "Reject if learned routing does not improve quality-cost utility."
-hardware_profile = "hardware/default.toml"
+hardware_profile = "hardware/a0-cpu-4core.toml"
 entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json"]
+
+# The A0 mechanism ablation study (research/falsification/A0-ablations-v1).
+# A0-internal; not this manifest's baseline comparison, whose status stays planned.
+a0_ablation_entrypoint = "cargo +1.95.0 run --release --locked --offline --quiet --target-dir model/burn-a0/target-a0-study --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase eval --experiment M004 --arms frozen-router --seed <seed> --steps 1500 --lr-file research/falsification/A0-ablations-v1/lr_selection.tsv --data datasets/generated/operator_routing_v1 --data-fnv64 0ad71688f09b0d0d --d-model 48"
+a0_sweep_entrypoint = "cargo +1.95.0 run --release --locked --offline --quiet --target-dir model/burn-a0/target-a0-study --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase sweep --experiment M004 --arms frozen-router --seed <seed> --steps 1500 --lr <lr> --data datasets/generated/operator_routing_v1 --data-fnv64 0ad71688f09b0d0d --d-model 48"
+a0_contingency_entrypoint = "cargo +1.95.0 run --release --locked --offline --quiet --target-dir model/burn-a0/target-a0-study --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase eval --experiment M004 --arms <arms> --seed <seed> --steps 4000 --lr-file research/falsification/A0-ablations-v1/lr_selection.tsv --data datasets/generated/operator_routing_v1 --data-fnv64 0ad71688f09b0d0d --d-model 48"

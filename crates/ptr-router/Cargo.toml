@@ -7,3 +7,7 @@ publish = false
 
 [dependencies]
 ptr-types = { workspace = true }
+ptr-pods = { workspace = true }
+
+[dev-dependencies]
+ptr-protocol = { workspace = true }

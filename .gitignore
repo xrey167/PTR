@@ -18,6 +18,7 @@ __pycache__/
 *.profraw
 *.flamegraph.svg
 *.heap
+.omx/
 /model/checkpoints/*
 !/model/checkpoints/.gitkeep
 /training/runs/*
@@ -35,6 +36,23 @@ __pycache__/
 !/datasets/processed/.gitkeep
 /datasets/generated/*
 !/datasets/generated/.gitkeep
+# The operator-routing v1 bundle is the frozen public study dataset.
+!/datasets/generated/operator_routing_v1/
+!/datasets/generated/operator_routing_v1/**
+# M002-v5 reads operator-routing-v2 through the hardened runner. Keep the
+# complete generated bundle versioned so every byte the model reads is bound
+# to the freeze commit instead of hidden behind Git's ignore rules.
+!/datasets/generated/operator_routing_v2/
+!/datasets/generated/operator_routing_v2/**
+# datasets/README.md: private/ is "never committed if it contains sensitive
+# material". That promise needs a rule behind it, not only a sentence: anything
+# dropped here is ignored, and only the area's own scaffolding stays tracked.
+/datasets/private/*
+!/datasets/private/.gitkeep
+!/datasets/private/config.toml
+!/datasets/private/tests/
+/datasets/private/tests/*
+!/datasets/private/tests/README.md
 # The codebook artifact is generated, but it is a contract rather than an output:
 # it is what everything outside Rust reads the kernel's tables from, and
 # check_codebook.py exists to catch it drifting from them. A checker cannot compare

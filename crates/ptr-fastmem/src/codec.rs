@@ -37,6 +37,7 @@ pub fn encode_state(state: &FastWeightState) -> Vec<u8> {
 
 /// Decode `PTRFW001` bytes, refusing anything that is not exactly one valid,
 /// intact state.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn decode_state(bytes: &[u8]) -> Result<FastWeightState, FastMemoryError> {
     if bytes.len() < HEADER_LEN + DIGEST_LEN {
         return Err(FastMemoryError::CorruptState {

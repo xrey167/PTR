@@ -1,0 +1,704 @@
+"""Drive the A0 mechanism ablation study, one explicit phase at a time.
+
+The study's design, criteria and order of commits are in
+research/falsification/A0-ablations-v1/PREREGISTRATION.md. This driver only
+sequences what that document fixes:
+
+  prefreeze    generate the splits and check them against splits.lock.json,
+               compute the references and the G0 data bands, build the study
+               binary, run its self-test and the A0 test suite, calibrate the full
+               arm on seed 0 (train and val only), and apply the budget rule.
+               Writes calibration.json and budget.json. Run from a clean commit.
+  prereg       write the manifests' a0_* entrypoint keys (with S*, the arms and
+               the data FNV as literals) and point them at the measured
+               hardware profile. The preregistration commit follows by hand.
+  sweep        one runner invocation per (experiment, learning rate), seed 17.
+  select       pick each arm's learning rate from the sweep records.
+  eval         one runner invocation per (experiment, seed), plus the rerun.
+  contingency  the 4000-step reruns the learnability criterion calls for.
+  aggregate    scripts/aggregate_a0_ablation.py, then scripts/report_a0_ablation.py
+               (RESULTS.md and a FALSIFIED-<contrast>.md note per null or HARMFUL).
+
+It never edits criteria.toml, and `eval` refuses to start unless the worktree
+is clean and the only files changed since the preregistration tag are the
+learning-rate selection and the sweep records (gate G4).
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import hashlib
+import importlib.util
+import json
+import math
+import shlex
+import shutil
+import tempfile
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+STUDY_DIR = ROOT / "research/falsification/A0-ablations-v1"
+CONFIG = ROOT / "model/configs/a0_ablation_study.toml"
+BENCHMARK = ROOT / "benchmarks/operator-routing"
+LOCK = BENCHMARK / "splits.lock.json"
+DATA = "datasets/generated/operator_routing_v1"
+TARGET_DIR = "model/burn-a0/target-a0-study"
+BINARY = ROOT / TARGET_DIR / "release/examples/a0_ablation"
+PREREG_TAG = "a0-ablation-prereg-v1"
+EXPERIMENTS = {
+    "M001": "model/M001-semantic-slots",
+    "M002": "model/M002-typed-attention",
+    "M003": "model/M003-latent-recurrence",
+    "M004": "model/M004-operator-router",
+}
+TOOLCHAIN = "+1.95.0"
+BUILD = [
+    "cargo", TOOLCHAIN, "build", "--release", "--locked", "--offline", "--quiet",
+    "--target-dir", TARGET_DIR, "--manifest-path", "model/burn-a0/Cargo.toml",
+    "--example", "a0_ablation",
+]
+RUN_PREFIX = (
+    f"cargo {TOOLCHAIN} run --release --locked --offline --quiet --target-dir {TARGET_DIR} "
+    "--manifest-path model/burn-a0/Cargo.toml --example a0_ablation --"
+)
+
+
+def config() -> dict:
+    """Load the study's TOML configuration from the repository."""
+    return tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+
+
+def data_fnv() -> str:
+    """Return the benchmark lock's combined TSV FNV-1a-64 digest."""
+    return json.loads(LOCK.read_text(encoding="utf-8"))["data_fnv1a64"]
+
+
+def say(message: str) -> None:
+    """Print a study progress message and flush it immediately."""
+    print(f"[a0-study] {message}", flush=True)
+
+
+def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Log and execute a command from the repository root with text output."""
+    say("$ " + " ".join(command))
+    return subprocess.run(command, cwd=ROOT, text=True, **kwargs)
+
+
+def must(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Execute a command, terminating the study if its exit status is nonzero."""
+    result = run(command, **kwargs)
+    if result.returncode != 0:
+        if kwargs.get("capture_output"):
+            sys.stderr.write(result.stdout[-4000:] + result.stderr[-4000:])
+        raise SystemExit(f"failed ({result.returncode}): {' '.join(command)}")
+    return result
+
+
+def worktree_clean() -> bool:
+    """Report whether tracked files have no staged or unstaged changes."""
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=ROOT, text=True, capture_output=True, check=True,
+    ).stdout
+    return not status.strip()
+
+
+def write_json(path: Path, value) -> None:
+    """Create parent directories and write sorted, indented JSON with a newline."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def arms_by_experiment(tiers: set[int]) -> dict[str, list[str]]:
+    """Group configured arm names by experiment for the selected tiers."""
+    grouped: dict[str, list[str]] = {name: [] for name in EXPERIMENTS}
+    for arm in config()["arm"]:
+        if arm["tier"] in tiers:
+            grouped[arm["experiment"]].append(arm["name"])
+    return grouped
+
+
+def rows(stdout: str) -> list[dict]:
+    """Decode stdout lines beginning with an opening brace as JSON records."""
+    return [json.loads(line) for line in stdout.splitlines() if line.startswith("{")]
+
+
+# --------------------------------------------------------------------------- prefreeze
+
+
+def calibrate(d_model: int, steps: int, lr: float) -> dict:
+    """Run one calibration and collect validation accuracy, loss, and step timing."""
+    result = must(
+        [str(BINARY), "--phase", "calibrate", "--seed", str(config()["seeds"]["calibration"]),
+         "--steps", str(steps), "--lr", str(lr), "--d-model", str(d_model),
+         "--data", DATA, "--data-fnv64", data_fnv()],
+        capture_output=True,
+    )
+    parsed = rows(result.stdout)
+    val = [row for row in parsed if row.get("row") == "val"]
+    meta = next(row for row in parsed if row.get("row") == "meta")
+    timing = re.search(r"ms_per_step=([0-9.]+)", result.stderr)
+    return {
+        "d_model": d_model,
+        "steps": steps,
+        "lr": lr,
+        "final_val_accuracy": val[-1]["val_accuracy"],
+        "val_curve": [row["val_accuracy"] for row in val],
+        "final_train_loss": meta["final_train_loss"],
+        "nan": meta["nan"],
+        "ms_per_step": float(timing.group(1)) if timing else None,
+    }
+
+
+def plan_arms(ladder_applied: list[str]) -> dict[str, list[str]]:
+    """Build the arm plan after applying the selected budget-ladder removals."""
+    plan = arms_by_experiment({1, 2})
+    if "drop latent-4" in ladder_applied:
+        plan["M003"] = [a for a in plan["M003"] if a != "latent-4"]
+    if "drop the blind-query pair" in ladder_applied:
+        plan["M002"] = [a for a in plan["M002"] if not a.startswith("blind-query")]
+    return plan
+
+
+def projected_minutes(plan: dict[str, list[str]], steps: int, sweep_steps: int | None, ms_per_step: float) -> float:
+    """Return projected wall-clock minutes, converting ms_per_step to seconds.
+
+    W = [N_eval (S* t + overhead) + N_sweep (S_sweep t + overhead)] / (60 * workers),
+    where N counts arm-runs: every arm at every declared seed plus the rerun, and
+    every arm at every grid rate when the sweep runs."""
+    rules = config()
+    t = ms_per_step / 1000.0
+    overhead = rules["budget"]["per_process_overhead_seconds"]
+    arms = sum(len(v) for v in plan.values())
+    n_eval = arms * len(rules["seeds"]["declared"]) + 1
+    seconds = n_eval * (steps * t + overhead)
+    if sweep_steps is not None:
+        n_sweep = arms * len(rules["learning_rate"]["grid"])
+        seconds += n_sweep * (sweep_steps * t + overhead)
+    return seconds / rules["budget"]["workers"] / 60.0
+
+
+def budget(steps: int, ms_per_step: float) -> dict:
+    """The budget rule: starting from every arm and a full-length sweep, apply the
+    ladder in order while the projection exceeds the limit, recomputing after
+    each step."""
+    rules = config()["budget"]
+    applied: list[str] = []
+    sweep_steps: int | None = steps
+    for step in [None, *rules["ladder"]]:
+        if step is not None:
+            applied.append(step)
+            if step == "halve the sweep's steps":
+                sweep_steps = steps // 2
+            elif step.startswith("skip the sweep"):
+                sweep_steps = None
+        if projected_minutes(plan_arms(applied), steps, sweep_steps, ms_per_step) <= rules["limit_minutes"]:
+            break
+    plan = plan_arms(applied)
+    minutes = projected_minutes(plan, steps, sweep_steps, ms_per_step)
+    return {
+        "steps": steps,
+        "ms_per_step_used": ms_per_step,
+        "ladder_applied": applied,
+        "sweep": sweep_steps is not None,
+        "sweep_steps": sweep_steps,
+        "arms": plan,
+        "projected_minutes": minutes,
+        "within_limit": minutes <= rules["limit_minutes"],
+        "within_hard_cap": minutes <= rules["hard_cap_minutes"],
+    }
+
+
+def prepare_r2() -> dict:
+    """Apply the declared pre-freeze rule revision to all independent implementations.
+
+    Match the complete old constants before changing any file. Unexpected source
+    requires review; never guess a replacement or silently use mixed rule versions.
+    This is only called after every base and R1 calibration candidate fails.
+    """
+    changes = {
+        "benchmarks/operator-routing/tests/test_operator_routing_rule.py": [
+            ('RULE_REVISION = "base"', 'RULE_REVISION = "R2"'),
+        ],
+        "benchmarks/operator-routing/generator.py": [
+            ("G = [0.0, 0.5, 1.0, 1.0, 1.25]", "G = [0.0, 1.0, 1.0, 1.0, 1.0]"),
+            ('_U = {"unknown": 0.35, "assumed": 0.60, "hypothesis": 0.85, "observed": 0.0, "inferred": 0.0, "verified": 0.0}',
+             '_U = {"unknown": 0.0, "assumed": 0.0, "hypothesis": 0.0, "observed": 0.0, "inferred": 0.0, "verified": 0.0}'),
+        ],
+        "benchmarks/operator-routing/score.py": [
+            ("CONFIDENCE_GAIN = {0: 0.0, 1: 0.5, 2: 1.0, 3: 1.0, 4: 1.25}",
+             "CONFIDENCE_GAIN = {0: 0.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}"),
+            ('"unknown": 0.35, "assumed": 0.60, "hypothesis": 0.85,',
+             '"unknown": 0.0, "assumed": 0.0, "hypothesis": 0.0,'),
+        ],
+        "model/burn-a0/examples/a0_ablation/main.rs": [
+            ("let unknown_bonus_winner = O::Probabilistic;", "let unknown_bonus_winner = O::Statistical;"),
+            ("// Evidence/Unknown: Statistical 0.6 loses to Probabilistic 0.27 + 0.35 = 0.62.",
+             "// R2 removes U: Statistical 0.6 beats Probabilistic 0.27."),
+        ],
+        "model/burn-a0/examples/a0_ablation/rule.rs": [
+            ("const GAIN: [f64; 5] = [0.0, 0.5, 1.0, 1.0, 1.25];",
+             "const GAIN: [f64; 5] = [0.0, 1.0, 1.0, 1.0, 1.0];"),
+            ("EpistemicState::Unknown => (0.30, 0.35)", "EpistemicState::Unknown => (0.30, 0.0)"),
+            ("EpistemicState::Assumed => (0.55, 0.60)", "EpistemicState::Assumed => (0.55, 0.0)"),
+            ("EpistemicState::Hypothesis => (0.80, 0.85)", "EpistemicState::Hypothesis => (0.80, 0.0)"),
+        ],
+    }
+    pending = {}
+    for name, replacements in changes.items():
+        path = ROOT / name
+        source = path.read_text(encoding="utf-8")
+        for old, new in replacements:
+            if source.count(old) != 1:
+                raise SystemExit(f"R2 refuses unexpected rule source: {name}: {old}")
+            source = source.replace(old, new)
+        pending[path] = source
+    for path, source in pending.items():
+        path.write_text(source, encoding="utf-8")
+    must([sys.executable, str(BENCHMARK / "generator.py"), "--update-lock"])
+    must([sys.executable, str(BENCHMARK / "generator.py"), "--check"])
+    # References may report failed G0 bands; retain that evidence and run only
+    # train/val calibration. A failed band still prohibits all ablation runs.
+    (STUDY_DIR / "references.json").unlink(missing_ok=True)
+    result = run([sys.executable, str(BENCHMARK / "references.py"), "--out", str(STUDY_DIR / "references.json")],
+                 capture_output=True)
+    (STUDY_DIR / "logs").mkdir(parents=True, exist_ok=True)
+    (STUDY_DIR / "logs/r2-references.log").write_text(result.stdout + result.stderr, encoding="utf-8")
+    if result.returncode not in (0, 1):
+        raise SystemExit("R2 reference computation failed")
+    references = json.loads((STUDY_DIR / "references.json").read_text(encoding="utf-8"))
+    must(BUILD)
+    must([str(BINARY), "--phase", "self-test", "--data", DATA, "--data-fnv64", data_fnv()])
+    return {"all_bands_pass": result.returncode == 0 and references["all_bands_pass"],
+            "failed_bands": [band["id"] for band in references["bands"] if not band["pass"]],
+            "data_fnv64": data_fnv()}
+
+
+def prefreeze(_args) -> None:
+    """Generate and check data, calibrate training, and write a bounded study plan."""
+    if not worktree_clean():
+        raise SystemExit("prefreeze runs from a clean commit")
+    # A failed new calibration must not leave an older runnable plan behind.
+    (STUDY_DIR / "budget.json").unlink(missing_ok=True)
+    must([sys.executable, str(BENCHMARK / "generator.py")])
+    must([sys.executable, str(BENCHMARK / "generator.py"), "--check"])
+    must([sys.executable, str(BENCHMARK / "references.py"), "--out", str(STUDY_DIR / "references.json")])
+    references = json.loads((STUDY_DIR / "references.json").read_text(encoding="utf-8"))
+    if not references["all_bands_pass"]:
+        failed = [band["id"] for band in references["bands"] if not band["pass"]]
+        raise SystemExit(f"G0 data bands failed: {failed}; fix the generator before the freeze")
+    must(BUILD)
+    must([str(BINARY), "--phase", "self-test", "--data", DATA, "--data-fnv64", data_fnv()])
+    tests = must(["cargo", TOOLCHAIN, "test", "--locked", "--manifest-path", "model/burn-a0/Cargo.toml"],
+                 capture_output=True)
+    (STUDY_DIR / "logs").mkdir(parents=True, exist_ok=True)
+    (STUDY_DIR / "logs/prefreeze-cargo-test.log").write_text(tests.stdout + tests.stderr, encoding="utf-8")
+
+    rules = config()
+    target = rules["calibration"]["target_val_accuracy"]
+    attempts = []
+    chosen = None
+    r2 = None
+    for rung, d_model in [("base", rules["model"]["d_model"]), ("R1", 48), ("R2", 48)]:
+        if rung == "R2":
+            r2 = prepare_r2()
+        for steps in rules["training"]["steps_candidates"]:
+            attempt = calibrate(d_model, steps, rules["learning_rate"]["calibration"])
+            attempt["rung"] = rung
+            attempts.append(attempt)
+            say(f"calibration {rung} d_model={d_model} steps={steps}: val {attempt['final_val_accuracy']:.4f}")
+            if attempt["final_val_accuracy"] >= target:
+                chosen = attempt
+                break
+        if chosen:
+            break
+    calibration = {
+        "target_val_accuracy": target,
+        "attempts": attempts,
+        "chosen": chosen,
+        "r2": r2,
+        "outcome": "calibrated" if chosen else "A0 does not learn operator-routing v1 within 3000 steps",
+    }
+    write_json(STUDY_DIR / "calibration.json", calibration)
+    if not chosen:
+        raise SystemExit("calibration failed at base, R1 and R2; see calibration.json")
+    if r2 and not r2["all_bands_pass"]:
+        raise SystemExit(f"R2 calibrated but G0 data bands failed: {r2['failed_bands']}; no ablation may run")
+    worst = max(a["ms_per_step"] for a in attempts if a["ms_per_step"] is not None)
+    plan = budget(chosen["steps"], worst)
+    plan["d_model"] = chosen["d_model"]
+    write_json(STUDY_DIR / "budget.json", plan)
+    say(f"S* = {chosen['steps']}, d_model {chosen['d_model']}, projected {plan['projected_minutes']:.1f} min")
+    if not plan["within_hard_cap"]:
+        raise SystemExit("the budget exceeds the hard cap; redesign before the freeze")
+
+
+# --------------------------------------------------------------------------- prereg
+
+
+def entrypoints(experiment: str, arms: list[str], steps: int, d_model: int) -> dict[str, str]:
+    """Build runner command templates for an experiment's study phases."""
+    common = f"--data {DATA} --data-fnv64 {data_fnv()} --d-model {d_model}"
+    lr_file = "research/falsification/A0-ablations-v1/lr_selection.tsv"
+    keys = {
+        "a0_ablation_entrypoint": (
+            f"{RUN_PREFIX} --phase eval --experiment {experiment} --arms {','.join(arms)} "
+            f"--seed <seed> --steps {steps} --lr-file {lr_file} {common}"
+        ),
+        "a0_sweep_entrypoint": (
+            f"{RUN_PREFIX} --phase sweep --experiment {experiment} --arms {','.join(arms)} "
+            f"--seed <seed> --steps {{sweep_steps}} --lr <lr> {common}"
+        ),
+        "a0_contingency_entrypoint": (
+            f"{RUN_PREFIX} --phase eval --experiment {experiment} --arms <arms> "
+            f"--seed <seed> --steps 4000 --lr-file {lr_file} {common}"
+        ),
+    }
+    if experiment == "M001":
+        keys["a0_rerun_entrypoint"] = (
+            f"{RUN_PREFIX} --phase eval --experiment M001 --arms full "
+            f"--seed <seed> --steps {steps} --lr-file {lr_file} {common}"
+        )
+    return keys
+
+
+def toml_string(value: str) -> str:
+    """Encode a string as a quoted TOML-compatible JSON string literal."""
+    return json.dumps(value)
+
+
+def prereg(_args) -> None:
+    """Append calibrated A0 entrypoints and the hardware profile to experiment manifests."""
+    plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
+    for experiment, path in EXPERIMENTS.items():
+        manifest = ROOT / "experiments" / path / "experiment.toml"
+        text = manifest.read_text(encoding="utf-8")
+        if "a0_ablation_entrypoint" in text:
+            raise SystemExit(f"{manifest} already carries a0 entrypoints")
+        keys = entrypoints(experiment, plan["arms"][experiment], plan["steps"], plan["d_model"])
+        sweep_steps = plan["sweep_steps"] or plan["steps"]
+        keys = {k: v.replace("{sweep_steps}", str(sweep_steps)) for k, v in keys.items()}
+        text = text.replace('hardware_profile = "hardware/default.toml"',
+                            'hardware_profile = "hardware/a0-cpu-4core.toml"')
+        lines = [text.rstrip("\n"), "",
+                 "# The A0 mechanism ablation study (research/falsification/A0-ablations-v1).",
+                 "# A0-internal; not this manifest's baseline comparison, whose status stays planned."]
+        lines += [f"{key} = {toml_string(value)}" for key, value in keys.items()]
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tomllib.loads(manifest.read_text(encoding="utf-8"))
+        say(f"wrote a0 entrypoints into {manifest.relative_to(ROOT)}")
+
+
+# --------------------------------------------------------------------------- sweep / select
+
+
+def runner(experiment: str, entrypoint: str, seed: int, params: dict[str, str]) -> int:
+    """Execute one experiment-runner job and return its process exit status."""
+    command = [sys.executable, "scripts/run_experiment.py", "run", experiment,
+               "--entrypoint", entrypoint, "--seed", str(seed)]
+    for key, value in params.items():
+        command += ["--set", f"{key}={value}"]
+    return run(command, capture_output=True).returncode
+
+
+def parallel(jobs: list[tuple[str, str, int, dict]], workers: int) -> list[int]:
+    """Run jobs with the requested worker count and return exit codes in job order."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(lambda job: runner(*job), jobs))
+
+
+def require_frozen() -> None:
+    """Require the recorded preregistration identity and a clean tracked tree."""
+    try:
+        aggregator().preregistration_ref()
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    if not worktree_clean():
+        raise SystemExit("the worktree must be clean")
+
+
+def sweep(_args) -> None:
+    """Run the budgeted learning-rate grid from a frozen, clean worktree."""
+    require_frozen()
+    plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
+    if not plan["sweep"]:
+        say("the budget rule skipped the sweep")
+        return
+    jobs = [(experiment, "a0_sweep_entrypoint", 17, {"lr": str(lr)})
+            for experiment in EXPERIMENTS
+            for lr in config()["learning_rate"]["grid"]]
+    codes = parallel(jobs, config()["budget"]["workers"])
+    if any(codes):
+        raise SystemExit(f"sweep processes failed: {codes}")
+
+
+def records(experiment: str, entrypoint: str) -> list[dict]:
+    """Load an experiment's run records for an entrypoint and attach relative paths."""
+    results = ROOT / "experiments" / EXPERIMENTS[experiment] / "results"
+    out = []
+    for path in sorted(results.glob("run-*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("entrypoint") == entrypoint:
+            record["_path"] = str(path.relative_to(ROOT))
+            out.append(record)
+    return out
+
+
+def choose_lr(arm: str, by_lr: dict[float, dict], grid: list[float], tolerance: float) -> tuple[float, str, dict[float, float]]:
+    """The preregistered selection rule for one arm: among the learning rates that
+    did not diverge, the smallest whose validation accuracy is within `tolerance`
+    of the best; flagged when it sits on the edge of the grid. Returns the rate,
+    the flag and every eligible rate's validation accuracy. Raise SystemExit if
+    a grid rate has no result or no rate has finite accuracy without divergence.
+    """
+    missing = [lr for lr in grid if lr not in by_lr]
+    if missing:
+        raise SystemExit(f"{arm}: no sweep result for lr {missing}")
+    eligible = {lr: r["val_accuracy"] for lr, r in by_lr.items()
+                if not r["nan"] and math.isfinite(r["val_accuracy"])}
+    if not eligible:
+        raise SystemExit(f"{arm}: every learning rate diverged")
+    best = max(eligible.values())
+    lr = min(lr for lr, acc in eligible.items() if acc >= best - tolerance)
+    flag = "edge of grid" if lr in (min(grid), max(grid)) else ""
+    return lr, flag, eligible
+
+
+def selection_table(record_commit: str | None = None) -> list[dict]:
+    """Reproduce selection from the frozen sweep; never overwrite duplicate cells."""
+    frozen = aggregator()
+    reference = frozen.preregistration_ref()
+    rules = tomllib.loads(frozen.at_tag(CONFIG.relative_to(ROOT).as_posix()).decode())
+    plan = json.loads(frozen.at_tag("research/falsification/A0-ablations-v1/budget.json"))
+    lock = json.loads(frozen.at_tag("benchmarks/operator-routing/splits.lock.json"))
+    grid = rules["learning_rate"]["grid"]
+    tolerance = rules["learning_rate"]["selection_tolerance"]
+    table = []
+    hosts = set()
+    toolchains = set()
+    for experiment, directory in EXPERIMENTS.items():
+        manifest_bytes = frozen.at_tag(f"experiments/{directory}/experiment.toml")
+        manifest = tomllib.loads(manifest_bytes.decode())
+        results = {}
+        for record in records(experiment, "a0_sweep_entrypoint") if plan["sweep"] else []:
+            if record.get("status") != "completed":
+                continue
+            label = record.get("_path", experiment)
+            def refuse(reason):
+                raise ValueError(f"{label}: invalid frozen sweep: {reason}")
+            if record_commit is not None:
+                archived = json.loads(frozen.git("show", f"{record_commit}:{label}"))
+                if archived != {k: v for k, v in record.items() if k != "_path"}:
+                    refuse("record differs from evaluation commit")
+            if record.get("experiment_id") != experiment or record.get("git_sha") != reference or record.get("git_dirty") is not False:
+                refuse("experiment, commit or clean source identity")
+            if record.get("seed") != 17 or record.get("exit_code") != 0:
+                refuse("seed or exit status")
+            if record.get("manifest_sha256") != hashlib.sha256(manifest_bytes).hexdigest():
+                refuse("manifest identity")
+            params = record.get("parameters", {})
+            try:
+                lr = float(params["lr"])
+            except (KeyError, TypeError, ValueError):
+                refuse("missing learning rate")
+            if set(params) != {"lr"} or lr not in grid:
+                refuse("learning rate outside grid")
+            expected = [token.replace("<seed>", "17").replace("<lr>", str(params["lr"]))
+                        for token in shlex.split(manifest["a0_sweep_entrypoint"])]
+            if record.get("command") != expected:
+                refuse("command differs from frozen step count, width, arms or data")
+            host = record.get("host")
+            if not isinstance(host, dict) or not all(host.get(k) for k in ("system", "release", "machine", "cpu_model", "logical_cpus", "memory_bytes")):
+                refuse("missing measured host")
+            hosts.add(json.dumps(host, sort_keys=True))
+            toolchains.add(record.get("rustc"))
+            if len(hosts) != 1 or len(toolchains) != 1 or not record.get("rustc"):
+                refuse("mixed host or missing/mixed toolchain")
+            profile = record.get("hardware_profile_record", {})
+            profile_path = manifest["hardware_profile"]
+            if record.get("hardware_profile") != profile_path or profile.get("sha256") != hashlib.sha256(frozen.at_tag(profile_path)).hexdigest():
+                refuse("hardware profile differs from freeze")
+            parsed = rows(record.get("stdout", ""))
+            data_rows = [row for row in parsed if row.get("row") == "data"]
+            if len(data_rows) != 1 or data_rows[0].get("data_fnv64") != lock["data_fnv1a64"]:
+                refuse("dataset identity")
+            sweep_rows = [row for row in parsed if row.get("row") == "sweep"]
+            if sorted(row.get("arm", "") for row in sweep_rows) != sorted(plan["arms"][experiment]):
+                refuse("missing, extra or duplicate arm rows")
+            for row in sweep_rows:
+                arm = row["arm"]
+                if row.get("lr") != lr or lr in results.get(arm, {}):
+                    refuse("conflicting or duplicate arm/rate cell")
+                results.setdefault(arm, {})[lr] = row
+        for arm in plan["arms"][experiment]:
+            if not plan["sweep"]:
+                table.append({"arm": arm, "lr": rules["learning_rate"]["calibration"],
+                              "flag": "no per-arm lr selection", "val_accuracy": None})
+                continue
+            lr, flag, eligible = choose_lr(arm, results.get(arm, {}), grid, tolerance)
+            table.append({"arm": arm, "lr": lr, "flag": flag, "val_accuracy": eligible[lr],
+                          "by_lr": {str(k): v for k, v in sorted(eligible.items())}})
+    return table
+
+
+def select(_args) -> None:
+    """Validate all sweep provenance before writing either selection artifact."""
+    table = selection_table()
+    lines = ["arm\tlr\tval_accuracy\tflag"]
+    lines += [f"{row['arm']}\t{row['lr']}\t{row['val_accuracy']}\t{row['flag']}" for row in table]
+    (STUDY_DIR / "lr_selection.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_json(STUDY_DIR / "lr_selection.json", table)
+    say(f"selected learning rates for {len(table)} arms")
+
+
+# --------------------------------------------------------------------------- eval / contingency
+
+
+def aggregator():
+    """The aggregator module, whose G4 diff rule the eval phase applies before it
+    starts, so that the check here and the gate in the aggregate are one rule."""
+    spec = importlib.util.spec_from_file_location("aggregate_a0_ablation", ROOT / "scripts/aggregate_a0_ablation.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def require_eval_commit() -> None:
+    """Reject changes outside the freeze allowance or a missing learning-rate table."""
+    require_frozen()
+    frozen_ref = aggregator().preregistration_ref()
+    changed = subprocess.run(["git", "diff", "--name-only", f"{frozen_ref}..HEAD"],
+                             cwd=ROOT, text=True, capture_output=True, check=True).stdout.split()
+
+    def entrypoint_of(path: str) -> str | None:
+        """Read a run record's entrypoint, returning None for unreadable or invalid JSON."""
+        try:
+            return json.loads((ROOT / path).read_text(encoding="utf-8")).get("entrypoint")
+        except (OSError, json.JSONDecodeError):
+            return None
+    stray = aggregator().freeze_violations(changed, entrypoint_of)
+    if stray:
+        raise SystemExit(f"G4: files changed since {PREREG_TAG} beyond the lr selection: {stray}")
+    if not (STUDY_DIR / "lr_selection.tsv").exists():
+        raise SystemExit("no lr_selection.tsv: run select and commit it first")
+
+
+def correctness(logs: Path | None = None) -> dict:
+    """Gate G6 at the evaluation commit: the A0 tests (T1-T6), the binary's
+    self-test (T7, T8), and the benchmark, aggregator and config test suites.
+    Each log is kept under logs/ for the results commit."""
+    logs = logs if logs is not None else STUDY_DIR / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    checks = {
+        "cargo_test": ["cargo", TOOLCHAIN, "test", "--locked", "--manifest-path", "model/burn-a0/Cargo.toml"],
+        "self_test": [str(BINARY), "--phase", "self-test", "--data", DATA, "--data-fnv64", data_fnv()],
+        "benchmark_tests": [sys.executable, "-m", "unittest", "discover", "-s", "benchmarks/operator-routing/tests"],
+        "aggregator_tests": [sys.executable, "-m", "unittest", "scripts/tests/test_a0_ablation_aggregate.py"],
+        "config_tests": [sys.executable, "-m", "unittest", "scripts/tests/test_a0_ablation_config.py"],
+    }
+    def revision() -> str:
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+                              capture_output=True, check=True).stdout.strip()
+
+    evidence = {"schema_version": 1, "git_sha": revision(), "git_dirty": not worktree_clean(), "checks": {}}
+    outcome = {}
+    pending_logs = {}
+    for name, command in checks.items():
+        result = run(command, capture_output=True)
+        log = (result.stdout + result.stderr).encode("utf-8")
+        pending_logs[name] = log
+        evidence["checks"][name] = {"argv": command, "exit_code": result.returncode,
+                                    "log_sha256": hashlib.sha256(log).hexdigest()}
+        outcome[name] = "pass" if result.returncode == 0 else "fail"
+    evidence.update(git_sha_after=revision(), git_dirty_after=not worktree_clean())
+    # Writing tracked evidence must not make the measured source tree dirty
+    # before the post-check snapshot is taken.
+    for name, log in pending_logs.items():
+        (logs / f"g6-{name}.log").write_bytes(log)
+    write_json(logs / "g6.json", evidence)
+    if evidence["git_dirty"] or evidence["git_dirty_after"] or evidence["git_sha"] != evidence["git_sha_after"]:
+        outcome["source_provenance"] = "fail"
+    return outcome
+
+
+def eval_phase(_args) -> None:
+    """Check correctness, run every evaluation seed and the rerun, and retry failures once."""
+    require_eval_commit()
+    must(BUILD)
+    # Keep tracked G6 artifacts unchanged until every model process has recorded
+    # its clean source identity. Preserve failed-check logs for diagnosis too.
+    with tempfile.TemporaryDirectory(prefix="a0-correctness-") as directory:
+        pending = Path(directory)
+        try:
+            outcome = correctness(pending)
+            if any(value != "pass" for value in outcome.values()):
+                raise SystemExit(f"G6 failed before evaluation: {outcome}")
+            plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
+            seeds = config()["seeds"]["declared"]
+            # Longest first: the experiments with the most arms.
+            order = sorted(EXPERIMENTS, key=lambda e: -len(plan["arms"][e]))
+            jobs = [(experiment, "a0_ablation_entrypoint", seed, {}) for experiment in order for seed in seeds]
+            jobs.append(("M001", "a0_rerun_entrypoint", 17, {}))
+            codes = parallel(jobs, config()["budget"]["workers"])
+            failed = [job for job, code in zip(jobs, codes) if code != 0]
+            if failed:
+                say(f"retrying once (G3): {failed}")
+                retry = parallel(failed, config()["budget"]["workers"])
+                if any(retry):
+                    raise SystemExit(f"evaluation failed twice: {failed}")
+        finally:
+            destination = STUDY_DIR / "logs"
+            destination.mkdir(parents=True, exist_ok=True)
+            for path in pending.iterdir():
+                shutil.copyfile(path, destination / path.name)
+
+
+def contingency(args) -> None:
+    """Run the selected arm and its full-arm comparator at the contingency budget."""
+    require_eval_commit()
+    seeds = config()["seeds"]["declared"]
+    arm = args.arm
+    experiment = next(a["experiment"] for a in config()["arm"] if a["name"] == arm)
+    arms = f"full,{arm}" if experiment == "M001" else arm
+    jobs = [(experiment, "a0_contingency_entrypoint", seed, {"arms": arms}) for seed in seeds]
+    if experiment != "M001":
+        jobs += [("M001", "a0_contingency_entrypoint", seed, {"arms": "full"}) for seed in seeds]
+    codes = parallel(jobs, config()["budget"]["workers"])
+    if any(codes):
+        raise SystemExit(f"contingency runs failed: {codes}")
+
+
+def aggregate(_args) -> None:
+    """Run the study aggregator and report generator, stopping on either failure."""
+    must([sys.executable, "scripts/aggregate_a0_ablation.py"])
+    must([sys.executable, "scripts/report_a0_ablation.py"])
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Dispatch the requested study phase and return zero when it completes."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="phase", required=True)
+    for name in ["prefreeze", "prereg", "sweep", "select", "eval", "aggregate"]:
+        sub.add_parser(name)
+    cont = sub.add_parser("contingency")
+    cont.add_argument("arm")
+    args = parser.parse_args(argv)
+    {
+        "prefreeze": prefreeze,
+        "prereg": prereg,
+        "sweep": sweep,
+        "select": select,
+        "eval": eval_phase,
+        "contingency": contingency,
+        "aggregate": aggregate,
+    }[args.phase](args)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

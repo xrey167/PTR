@@ -3,3 +3,11 @@ xtest = "test --workspace --locked"
 xcheck = "check --workspace --all-targets --locked"
 xclippy = "clippy --workspace --all-targets -- -D warnings"
 xdoc = "doc --workspace --no-deps --locked"
+xcuda-check = "check -p ptr-pods --features candle-cuda --locked"
+
+# Machine-specific CUDA build settings (CUDA_PATH, NVCC, NVCC_CCBIN,
+# NVCC_PREPEND_FLAGS, CUDA_COMPUTE_CAP) belong in the user-level Cargo
+# configuration ($CARGO_HOME/config.toml, %CARGO_HOME%\config.toml on
+# Windows), not here: scripts/check_research_gates.py rejects an [env] table in
+# this file because it names programs, sources and flags a research record does
+# not bind. The previous values are kept in crates/ptr-pods/CANDLE_CUDA.md.

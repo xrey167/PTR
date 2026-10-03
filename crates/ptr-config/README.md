@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 264 nonblank source lines · 4 integration-test files · 6 `#[test]` markers
+**Code footprint:** 1 Rust source files · 322 nonblank source lines · 4 integration-test files · 7 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -19,6 +19,8 @@
 - Typed environment override layer for runtime/action/semantic/observability/research settings
 - Typed CLI override parser with config-path selection and file→environment→CLI precedence
 - Typed server bind configuration with PTR_BIND and --bind overrides
+- ServerConfig::data_dir (default data) and a new ModelConfig::backend section (default reference-echo), overridable by PTR_DATA_DIR/--data-dir and PTR_MODEL_BACKEND/--backend, with the same file→environment→CLI precedence
+- PtrConfig::validate_daemon, a stricter check for the standalone daemon boundary on top of validate: only runtime.mode standalone, only a loopback server.bind, an explicit server.data_dir that already exists as a directory, and an explicit model.backend. Nothing in the workspace outside ptr-config calls it yet
 
 ### Missing for the target architecture
 
@@ -51,6 +53,7 @@
 - typed environment override tests
 - CLI precedence and unknown-argument tests
 - server bind environment/CLI override test
+- daemon_validation_rejects_non_loopback_and_missing_persistence (validate_daemon refuses 0.0.0.0 and a missing data_dir, accepts loopback with an existing directory)
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

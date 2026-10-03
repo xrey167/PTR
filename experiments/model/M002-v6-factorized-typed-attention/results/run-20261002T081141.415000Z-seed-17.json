@@ -1,0 +1,148 @@
+{
+  "schema_version": 2,
+  "experiment_id": "M002-v6",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Windows",
+    "release": "10",
+    "machine": "AMD64",
+    "cpu_model": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "logical_cpus": 24,
+    "memory_bytes": null
+  },
+  "hardware_profile_record": {
+    "path": "hardware/a0-cpu-12core-windows.toml",
+    "sha256": "9ce3991dd8bb0683ce0b7e64921c173917d848937dce8634813b01289ddba5ce",
+    "contents": {
+      "id": "a0-cpu-12core-windows",
+      "os": "Microsoft Windows 11 Pro 10.0.26200, 64-Bit",
+      "cpu": "AMD Ryzen 9 7900X 12-Core Processor, 12 physical cores, 24 logical processors",
+      "ram_gib": 63.2,
+      "gpu": "none",
+      "gpu_memory_gib": 0,
+      "precision": [
+        "fp32"
+      ],
+      "notes": "Local desktop. p95 latency is retained as an evidence gate and the full host/toolchain/environment identity is recorded for every cell."
+    },
+    "unspecified_fields": []
+  },
+  "git_sha": "be6181bc36a2e01b82007a80031081fbf99c7d03",
+  "python": "3.11.15 (main, Apr 14 2026, 14:31:26) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "manifest": {
+    "version": 1,
+    "id": "M002-v6",
+    "status": "prepared",
+    "hypothesis": "Does bounded factorized typed pair attention improve compositional routing accuracy over an operation- and parameter-matched Off control without calibration degradation?",
+    "metrics": "IID/OOD accuracy; NLL; ECE15; coverage; selective error; parameters; FLOPs; p95 latency",
+    "baseline": "the identical FactorizedV2 architecture with the computed pair bias multiplied by zero",
+    "falsification": "Any missing gate, OOD accuracy below the bound, fold sign reversal, NLL/ECE regression, IID harm, inadequate coverage, selective-error harm or compute mismatch yields INCONCLUSIVE/NO-GO.",
+    "hardware_profile": "hardware/a0-cpu-12core-windows.toml",
+    "preregistration_sha256": "275904e4c179511653194b4b49fde7c4a3323b0c15d1368a3641668cb15b11ec",
+    "preregistration_rules_sha256": "2cf63dfdb6f112c3657f593ff80a6ab56a18abaa692ca34181df65a9778931ab",
+    "entrypoint": "cargo +1.95.0-x86_64-pc-windows-gnu run --release --locked --quiet --jobs 1 --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase paired-v5 --experiment M002-v6 --arms factorized-v2,factorized-v2-off --seed <seed> --steps <steps> --lr <learning_rate> --data <data> --folds <folds> --d-model <d_model> --rank <rank> --bias-limit <bias_limit> --metadata-dropout <metadata_dropout>",
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "m002-v6-decision.json"
+    ]
+  },
+  "manifest_sha256": "c671ed6f7e646598e1e845b996229b5161a21776fcbc8cc81c9fc4f265cb5066",
+  "cargo_lock_sha256": "521baf16417710ee195d93c5d0b2bc492424e8dc46a173a21d5217f6f4ef9d06",
+  "uv_lock_sha256": "cb972d8f7f5c918b4b307a570ebf373d4a163d93776e3ef3ee865234ff30a1c0",
+  "hardware_profile": "hardware/a0-cpu-12core-windows.toml",
+  "rustc": null,
+  "status": "failed",
+  "started_at": "20261002T081141.415000Z",
+  "entrypoint": "entrypoint",
+  "seed": 17,
+  "parameters": {
+    "bias_limit": "1",
+    "d_model": "48",
+    "data": "datasets/generated/operator_routing_v2",
+    "folds": "evidence-temporal=8c3bc2324e0eb770,evidence-tabular=9ff1e487932c4638,claim-interventional=fd11dbf9270b2f39",
+    "learning_rate": "0.005",
+    "metadata_dropout": "0",
+    "rank": "8",
+    "steps": "1500"
+  },
+  "command": [
+    "cargo",
+    "+1.95.0-x86_64-pc-windows-gnu",
+    "run",
+    "--release",
+    "--locked",
+    "--quiet",
+    "--jobs",
+    "1",
+    "--manifest-path",
+    "model/burn-a0/Cargo.toml",
+    "--example",
+    "a0_ablation",
+    "--",
+    "--phase",
+    "paired-v5",
+    "--experiment",
+    "M002-v6",
+    "--arms",
+    "factorized-v2,factorized-v2-off",
+    "--seed",
+    "17",
+    "--steps",
+    "1500",
+    "--lr",
+    "0.005",
+    "--data",
+    "datasets/generated/operator_routing_v2",
+    "--folds",
+    "evidence-temporal=8c3bc2324e0eb770,evidence-tabular=9ff1e487932c4638,claim-interventional=fd11dbf9270b2f39",
+    "--d-model",
+    "48",
+    "--rank",
+    "8",
+    "--bias-limit",
+    "1",
+    "--metadata-dropout",
+    "0"
+  ],
+  "environment": {
+    "PATH": "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.6.0_x64__8wekyb3d8bbwe;C:\\Users\\ReyDa\\.codex\\tmp\\arg0\\codex-arg0UnLBaY;C:\\Users\\ReyDa\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\bin\\override;C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.3\\bin\\x64;C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.3\\bin;C:\\WATCOM\\BINNT;C:\\WATCOM\\BINW;C:\\WINDOWS\\system32;C:\\WINDOWS;C:\\WINDOWS\\System32\\Wbem;C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\;C:\\WINDOWS\\System32\\OpenSSH\\;C:\\Program Files\\Git\\cmd;C:\\Program Files\\dotnet\\;C:\\ProgramData\\chocolatey\\bin;C:\\Program Files\\Microsoft SQL Server\\150\\Tools\\Binn\\;C:\\hla;c:\\Users\\ReyDa\\AppData\\Local\\Programs\\cursor\\resources\\app\\bin;C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR;C:\\Program Files\\GitHub CLI\\;C:\\Strawberry\\c\\bin;C:\\Strawberry\\perl\\site\\bin;C:\\Strawberry\\perl\\bin;C:\\Program Files (x86)\\Sniffnet\\;C:\\Program Files (x86)\\cloudflared\\;C:\\Program Files\\Tailscale\\;C:\\Program Files\\NVIDIA Corporation\\Nsight Compute 2026.2.1\\;C:\\Program Files\\Go\\bin;C:\\Program Files\\GnuPG\\bin;C:\\WINDOWS\\system32;C:\\WINDOWS;C:\\WINDOWS\\System32\\Wbem;C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\;C:\\WINDOWS\\System32\\OpenSSH\\;C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common;C:\\Program Files\\nodejs\\;C:\\Program Files\\Cloudflare\\Cloudflare WARP\\;C:\\Program Files\\Netbird;C:\\Program Files\\WSL\\;c:\\Users\\ReyDa\\AppData\\Local\\Programs\\cursor\\resources\\app\\codeBin;C:\\Users\\ReyDa\\.nub\\bin;C:\\Ruby34-x64\\bin;C:\\Users\\ReyDa\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts;C:\\Users\\ReyDa\\AppData\\Local\\hermes\\bin;C:\\Users\\ReyDa\\AppData\\Local\\pnpm;C:\\Users\\ReyDa\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\;C:\\Users\\ReyDa\\AppData\\Local\\Programs\\Python\\Python312\\;C:\\msys64\\mingw64\\bin;C:\\Users\\ReyDa\\.cargo\\bin;C:\\Users\\ReyDa\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\;C:\\Users\\ReyDa\\AppData\\Local\\Programs\\Python\\Python313\\;C:\\Users\\ReyDa\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Users\\ReyDa\\AppData\\Local\\Programs\\Microsoft VS Code\\bin;C:\\Users\\ReyDa\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Schniz.fnm_Microsoft.Winget.Source_8wekyb3d8bbwe;C:\\Users\\ReyDa\\.dotnet\\tools;C:\\Users\\ReyDa\\AppData\\Local\\GitHubDesktop\\bin;C:\\Program Files\\heroku\\bin;c:\\users\\reyda\\.local\\bin;c:\\users\\reyda\\appdata\\roaming\\python\\python313\\scripts;C:\\Users\\ReyDa\\AppData\\Local\\Programs\\cursor\\resources\\app\\bin;C:\\Users\\ReyDa\\AppData\\Local\\JetBrains\\Toolbox\\scripts;C:\\Users\\ReyDa\\AppData\\Local\\Programs\\Ollama;C:\\Users\\ReyDa\\.lmstudio\\bin;C:\\Users\\ReyDa\\AppData\\Local\\Microsoft\\WinGet\\Packages\\marlocarlo.psmux_Microsoft.Winget.Source_8wekyb3d8bbwe;C:\\Users\\ReyDa\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Casey.Just_Microsoft.Winget.Source_8wekyb3d8bbwe;C:\\Users\\ReyDa\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Bazel.Bazelisk_Microsoft.Winget.Source_8wekyb3d8bbwe;C:\\Users\\ReyDa\\AppData\\Local\\Microsoft\\WinGet\\Packages\\astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe;C:\\Users\\ReyDa\\AppData\\Local\\PowerToys\\DSCModules\\;C:\\Users\\ReyDa\\AppData\\Local\\Programs\\Microsoft VS Code Insiders\\bin;C:\\Users\\ReyDa\\AppData\\Local\\Microsoft\\WinGet\\Links;C:\\Users\\ReyDa\\.deno\\bin;C:\\Users\\ReyDa\\AppData\\Local\\plannotator;C:\\Users\\ReyDa\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Google.Protobuf_Microsoft.Winget.Source_8wekyb3d8bbwe\\bin;C:\\Users\\ReyDa\\go\\bin;C:\\Users\\ReyDa\\AppData\\Local\\hermes\\node;C:\\Users\\ReyDa\\AppData\\Local\\Programs\\Warp\\bin;C:\\Users\\ReyDa\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Users\\ReyDa\\.bun\\bin;C:\\Users\\ReyDa\\AppData\\Roaming\\npm;C:\\Users\\ReyDa\\AppData\\Local\\cursor-agent;C:\\Users\\ReyDa\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\bin\\fallback;C:\\Users\\ReyDa\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\git\\cmd;C:\\Users\\ReyDa\\AppData\\Local\\OpenAI\\Codex\\bin\\3e42d49ad3e35a50;C:\\Program Files\\WindowsApps\\OpenAI.CodexBeta_26.727.4816.0_x64__2p2nqsd0c76g0\\app\\resources",
+    "TEMP": "C:\\Users\\ReyDa\\AppData\\Local\\Temp",
+    "TMP": "C:\\Users\\ReyDa\\AppData\\Local\\Temp",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONPYCACHEPREFIX": "C:\\Users\\ReyDa\\AppData\\Local\\Temp\\ptr-run-M002-v6",
+    "CARGO_TARGET_DIR": "C:\\Users\\ReyDa\\AppData\\Local\\Temp\\ptr-run-M002-v6\\cargo-target",
+    "RUSTUP_TOOLCHAIN": "C:\\Users\\ReyDa\\.rustup\\toolchains\\1.95.0-x86_64-pc-windows-gnu"
+  },
+  "executable": {
+    "path": "C:\\Users\\ReyDa\\.cargo\\bin\\rustup.exe",
+    "sha256": "6f4bef66261261fcb43131be8720bab817d403a09edec7455c371974b90bdb7e"
+  },
+  "toolchain": {
+    "rustc": {
+      "path": "C:\\Users\\ReyDa\\.rustup\\toolchains\\1.95.0-x86_64-pc-windows-gnu\\bin\\rustc.exe",
+      "sha256": "d59a05c17b77b717c2e57f318c8598482f11c21e6f9aed7c10f26101cab8befc"
+    },
+    "cargo": {
+      "path": "C:\\Users\\ReyDa\\.rustup\\toolchains\\1.95.0-x86_64-pc-windows-gnu\\bin\\cargo.exe",
+      "sha256": "a9c867d4bdf87f224b3d6ff724845579272b0b2d0673554362809756b3d4290f"
+    }
+  },
+  "finished_at": "2026-10-02T08:24:11.633589+00:00",
+  "exit_code": 2,
+  "stdout": "",
+  "stderr": "a0_ablation: arm factorized-v2 belongs to M002-v5, not M002-v6\n",
+  "launch_error": null,
+  "duration_ns": 724349845900
+}

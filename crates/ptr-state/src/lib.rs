@@ -206,25 +206,64 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             ),
             (format!("effect:{}:applied", attempt.0), applied.to_string()),
         ],
+        LedgerEvent::ScopeLifecycle(_) => Vec::new(),
+        LedgerEvent::ProtectedStateCommitted {
+            domain,
+            logical_id,
+            generation,
+            revision,
+            ciphertext_digest,
+            ..
+        } => vec![
+            (
+                format!("protected:{domain}:{logical_id}:generation"),
+                generation.0.to_string(),
+            ),
+            (
+                format!("protected:{domain}:{logical_id}:revision"),
+                revision.0.to_string(),
+            ),
+            (
+                format!("protected:{domain}:{logical_id}:ciphertext"),
+                hex_digest(ciphertext_digest),
+            ),
+        ],
+        LedgerEvent::MeshTunnelLifecycle(event) => vec![
+            (
+                format!("mesh:{}:{}:revision", event.network_id, event.peer_id),
+                event.revision.0.to_string(),
+            ),
+            (
+                format!("mesh:{}:{}:state", event.network_id, event.peer_id),
+                format!("{:?}", event.kind),
+            ),
+        ],
+        LedgerEvent::ExecutionManifestAdmitted {
+            manifest_digest, ..
+        } => vec![(
+            format!("execution-manifest:{}:state", hex_digest(manifest_digest)),
+            "admitted".to_owned(),
+        )],
+        LedgerEvent::ExecutionManifestRevoked {
+            manifest_digest, ..
+        } => vec![(
+            format!("execution-manifest:{}:state", hex_digest(manifest_digest)),
+            "revoked".to_owned(),
+        )],
+        LedgerEvent::PodEvidenceCommitted { .. }
+        | LedgerEvent::PodOutputAdmitted { .. }
+        | LedgerEvent::PodHypothesisCommitted { .. }
+        | LedgerEvent::PolicyBundleActivated { .. }
+        | LedgerEvent::PolicyBundleRevoked { .. }
+        | LedgerEvent::SessionRevoked { .. }
+        | LedgerEvent::TierBackendLifecycle { .. }
+        | LedgerEvent::TierObjectCommitted { .. }
+        | LedgerEvent::TierReplicaLifecycle { .. } => Vec::new(),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_the_exact_next_index_is_applicable() {
-        assert_eq!(classify_next(4, 5), None);
-        assert_eq!(classify_next(4, 4), Some(ApplyOutcome::Duplicate));
-        assert_eq!(classify_next(4, 2), Some(ApplyOutcome::OutOfOrder));
-        assert_eq!(classify_next(4, 7), Some(ApplyOutcome::Gap));
-        assert_eq!(classify_next(0, 1), None);
-        assert_eq!(
-            classify_next(u64::MAX, u64::MAX),
-            Some(ApplyOutcome::Duplicate)
-        );
-    }
+fn hex_digest(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(feature = "turso-backend")]
@@ -342,5 +381,23 @@ impl TursoMaterializedState {
         tx.commit().await.map_err(|error| error.to_string())?;
         self.last_applied = index;
         Ok(ApplyOutcome::Applied)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_exact_next_index_is_applicable() {
+        assert_eq!(classify_next(4, 5), None);
+        assert_eq!(classify_next(4, 4), Some(ApplyOutcome::Duplicate));
+        assert_eq!(classify_next(4, 2), Some(ApplyOutcome::OutOfOrder));
+        assert_eq!(classify_next(4, 7), Some(ApplyOutcome::Gap));
+        assert_eq!(classify_next(0, 1), None);
+        assert_eq!(
+            classify_next(u64::MAX, u64::MAX),
+            Some(ApplyOutcome::Duplicate)
+        );
     }
 }

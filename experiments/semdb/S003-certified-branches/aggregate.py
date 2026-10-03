@@ -102,16 +102,29 @@ HARD = [
     "nondeterminism",
     "harness_errors",
 ]
+# The per-run counters that `cells` and `descriptive` read.
+RUN_COUNTERS = (
+    "attempts",
+    "merged",
+    "no_change",
+    "conflicts",
+    "lifecycle_refusals",
+    "escalations",
+    "review_voids",
+)
+
+# Said beside every hazard bound, so the figure is never read as one.
+INDEPENDENCE_NOTE = "not established: every arm and agent count replays the same tasks"
 # Each must be above zero in every seed, or the run proves nothing about it.
 COVERAGE = [
     "merges_clean",
     "merges_rebased",
     "conflicts",
     "lifecycle_refusals",
-    "verification_holds",
     "escalations",
     "reviewed_merges",
     "no_change_merges",
+    "probe_verification_holds",
     "lww_lost_updates",
     "lww_lost_increments",
     "occ_undetected_phantoms",
@@ -155,6 +168,17 @@ PROBE_HAZARDS = [
     "probe_hazard_negative",
     "probe_hazard_set_member",
 ]
+# The paths the coverage gate asks the workload to reach, as the fixed probes
+# reached them. Reported, and no gate: the gate reads the workload's own.
+PROBE_PATHS = [
+    "probe_merges_clean",
+    "probe_merges_rebased",
+    "probe_conflicts",
+    "probe_lifecycle_refusals",
+    "probe_escalations",
+    "probe_reviewed_merges",
+    "probe_no_change_merges",
+]
 # The merge-time histogram's buckets, with their upper bounds in microseconds.
 BUCKETS = [
     ("merge_wall_le_10us", 10),
@@ -179,7 +203,8 @@ LIMITATIONS = [
     "it is reported, not tuned",
     "timings come from one shared cloud container with the seeds run one after another; the hardware profile "
     "is unspecified until measured; not a capacity claim",
-    "the generalisation of the safety claim is the rule-of-three bound 3/n per hazard class, not a proof",
+    "the generalisation of the safety claim is the rule-of-three figure 3/n per hazard class, computed as if the trials "
+    "were independent; they are not, so it is not a bound and not a proof",
 ]
 
 
@@ -248,6 +273,15 @@ def validate_layout(result: dict, table: dict) -> None:
             seen.add(key)
             if type(run.get("complete")) is not bool or type(run.get("ticks")) is not int or run["ticks"] < 0:
                 raise ValueError(f"case {index}: run {key} needs a completion flag and nonnegative ticks")
+            # Every counter the analysis reads later, so that a missing or
+            # malformed one is refused here, naming the case and run, instead of
+            # surfacing as a KeyError or TypeError deep inside the analysis.
+            # Zero attempts stay valid: a cell whose attempts are not above
+            # zero is reported by the pilot as unmeasured. A negative count is
+            # no measurement at all and is refused like every other counter.
+            for counter in RUN_COUNTERS:
+                if type(run.get(counter)) is not int or run[counter] < 0:
+                    raise ValueError(f"case {index}: run {key} needs a nonnegative integer {counter}")
             if run["complete"]:
                 settlements = [run.get(field) for field in ("merged", "no_change", "verification_holds", "abandoned")]
                 if any(type(value) is not int or value < 0 for value in settlements) or sum(settlements) != table["tasks_per_case"]:
@@ -405,7 +439,7 @@ def share(numerator: int, denominator: int) -> float | None:
 def descriptive(results: list[dict], totals: dict, hard_pass: bool) -> dict:
     """What every result reports beside the verdict: the baselines'
     anomalies, the shares that trigger predicate digests and typed merge
-    operators, the review voids, and the rule-of-three bound per hazard
+    operators, the review voids, and the rule-of-three figure (as if independent) per hazard
     class."""
     runs = [run for result in results for case in result["cases"] for run in case["runs"]]
     by_arm = {}
@@ -440,7 +474,15 @@ def descriptive(results: list[dict], totals: dict, hard_pass: bool) -> dict:
         "put_increment_share": share(totals["put_increment_conflicts"], refusals),
         "review_void_share": share(sum(run["review_voids"] for run in reviews), sum(run["escalations"] for run in reviews)),
         "hazard_trials": {
-            name: {"trials": totals[name], "rule_of_three_bound": round(3 / totals[name], 6) if hard_pass and totals[name] else None}
+            name: {
+                "trials": totals[name],
+                # 3/n is a bound only for independent trials. These are not: every
+                # arm and agent count replays the same tasks, so n counts each
+                # task several times and the figure is what the bound would be
+                # if they were independent, which understates the real one.
+                "bound_if_independent": round(3 / totals[name], 6) if hard_pass and totals[name] else None,
+                "independence": INDEPENDENCE_NOTE,
+            }
             for name in HAZARDS
         },
         "rule_class_trials": {
@@ -452,6 +494,7 @@ def descriptive(results: list[dict], totals: dict, hard_pass: bool) -> dict:
             for name in RULE_CLASSES
         },
         "probe_hazard_repetitions": {name: totals.get(name, 0) for name in PROBE_HAZARDS},
+        "probe_path_repetitions": {name: totals.get(name, 0) for name in PROBE_PATHS},
     }
 
 
@@ -707,6 +750,8 @@ def validate_pilot_provenance(result: dict) -> None:
     experiment_records.ProvenanceError.
     """
     evidence = result.get("pilot_provenance", {})
+    if not isinstance(evidence, dict):
+        raise ValueError("pilot has no successful, clean producing-revision evidence; rerun with --record-pilot")
     if (evidence.get("schema_version") != 1 or evidence.get("git_dirty") is not False
             or type(evidence.get("exit_code")) is not int or evidence["exit_code"] != 0):
         raise ValueError("pilot has no successful, clean producing-revision evidence; rerun with --record-pilot")
@@ -789,6 +834,8 @@ def pilot(paths: list[Path]) -> int:
         try:
             echoed = json.loads(result.get("preregistration"))
         except (TypeError, ValueError):
+            raise SystemExit(f"S003: {path.name} echoes no preregistration")
+        if not isinstance(echoed, dict):
             raise SystemExit(f"S003: {path.name} echoes no preregistration")
         echoed = {key: value for key, value in echoed.items() if key != "low_cells"}
         if echoed != expected:

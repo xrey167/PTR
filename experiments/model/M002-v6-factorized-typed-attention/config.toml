@@ -1,0 +1,30 @@
+version = 1
+kind = "workspace-area"
+name = "M002-v6-factorized-typed-attention"
+path = "experiments/model/M002-v6-factorized-typed-attention"
+tests_dir = "tests"
+
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+steps = 1500
+batch = 128
+d_model = 48
+learning_rate = "0.005"
+data = "datasets/generated/operator_routing_v2"
+folds = "evidence-temporal=8c3bc2324e0eb770,evidence-tabular=9ff1e487932c4638,claim-interventional=fd11dbf9270b2f39"
+rank = 8
+bias_limit = 1
+metadata_dropout = "0"
+dataset_lock = "benchmarks/operator-routing-v2/splits.lock.json"
+dataset_lock_sha256 = "6a001b37e4adb81bae66f8abc50c9a461f07eea918c905179300cc8d353266a1"
+criteria = "experiments/model/M002-v6-factorized-typed-attention/PLAN.toml"
+criteria_sha256 = "8c8d833a08efe3e53b76ff9deb3bc42abab65ef1c07d73c3f6b784417a659600"
+decision_script = "scripts/aggregate_m002_v6.py"
+decision_script_sha256 = "5aa6bec380f21ee88cd923fa66dfe84081e3c4000810f241c71a6db5ea142356"
+decision_core = "scripts/aggregate_m002_v5.py"
+decision_core_sha256 = "8ee9539a790f44c57eaa751fa56dfa07bb0342d636bf65230650ad4f6fddb957"
+pilot_source_experiment = "M002-v5"
+pilot_selection = "experiments/model/M002-v5-factorized-typed-attention/pilot-selection.json"
+pilot_selection_sha256 = "605e2272c107e4cab646be1f4ef9024a0e9b9fee4188be781a680aa73aa45dfc"
+factorized_contract = "experiments/model/M002-v5-factorized-typed-attention/factorized-v2-contract.txt"
+factorized_contract_sha256 = "b76a21bbde937505729de8c3bc04490ae30c199e243183a4e62dee403ddcd67a"

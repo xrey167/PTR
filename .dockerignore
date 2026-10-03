@@ -10,4 +10,5 @@ training/runs
 datasets/raw
 datasets/processed
 datasets/generated
+datasets/private
 experiments/**/results

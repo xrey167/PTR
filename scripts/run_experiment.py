@@ -38,7 +38,7 @@ PLACEHOLDER = experiment_records.PLACEHOLDER
 # the command, so no `PYTHONPATH`, `LD_PRELOAD`, `RUSTC_WRAPPER`,
 # `RUSTUP_TOOLCHAIN` or `RUSTFLAGS` loads code the commit does not hold,
 # and no credential or network setting reaches it.
-COMMAND_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "CARGO_HOME", "RUSTUP_HOME")
+COMMAND_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE", "CARGO_HOME", "RUSTUP_HOME")
 # What the runner sets in that environment whatever the runner's holds:
 # Python reads no packages from the user's own site directory under `HOME`,
 # which the commit does not hold, and hashes strings the same way in every
@@ -263,6 +263,11 @@ def validate():
             errors.append(f"{exp_id}: missing config.toml")
         if not (root / "tests").exists():
             errors.append(f"{exp_id}: missing tests/")
+    registered = {item["path"] for item in registry().values()}
+    for path in sorted((ROOT / "experiments").glob("**/experiment.toml")):
+        relative = path.parent.relative_to(ROOT / "experiments").as_posix()
+        if relative not in registered:
+            errors.append(f"experiments/{relative}: not listed in experiments/registry.toml")
     if errors:
         print("\n".join("ERROR: " + error for error in errors))
         return 1
@@ -270,10 +275,101 @@ def validate():
     return 0
 
 
+def host_facts() -> dict:
+    """The machine a run executed on, measured rather than declared.
+
+    A manifest names a hardware profile, but `hardware/default.toml`, which most
+    experiments name, is `unspecified` in every field, so the profile alone says
+    nothing about where a number came from."""
+    cpu_model = None
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.is_file():
+        for line in cpuinfo.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.lower().startswith("model name") and ":" in line:
+                cpu_model = line.split(":", 1)[1].strip()
+                break
+    if not cpu_model:
+        cpu_model = platform.processor() or None
+    memory_bytes = None
+    meminfo = Path("/proc/meminfo")
+    if meminfo.is_file():
+        for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("MemTotal:"):
+                memory_bytes = int(line.split()[1]) * 1024
+                break
+    if memory_bytes is None:
+        try:
+            memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        except (AttributeError, ValueError, OSError):
+            memory_bytes = None
+    return {
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "cpu_model": cpu_model,
+        "logical_cpus": os.cpu_count(),
+        "memory_bytes": memory_bytes,
+    }
+
+def hardware_profile_record(relative: str | None) -> dict | None:
+    """The declared profile's bytes and contents, not only its path, and which of
+    its fields still say `unspecified`.
+
+    Return None for an absent path argument, or a record with None metadata for
+    a missing file. Existing files' read and TOML decoding errors propagate.
+    """
+    if not relative:
+        return None
+    path = ROOT / relative
+    if not path.is_file():
+        return {"path": relative, "sha256": None, "contents": None, "unspecified_fields": None}
+    contents = load(path)
+    return {
+        "path": relative,
+        "sha256": sha(path),
+        "contents": contents,
+        "unspecified_fields": sorted(
+            key for key, value in contents.items() if value == "unspecified"
+        ),
+    }
+
+def rustc_version(command: list[str]) -> str | None:
+    """`rustc --version` for the toolchain a cargo command runs on: the `+name` it
+    names, or the one rust-toolchain.toml pins for the repository root.
+    Return None for a non-Cargo command or a failed version query.
+    """
+    if not command or Path(command[0]).name != "cargo":
+        return None
+    query = ["rustc"]
+    if len(command) > 1 and command[1].startswith("+"):
+        query.append(command[1])
+    query.append("--version")
+    try:
+        return subprocess.check_output(query, cwd=ROOT, text=True).strip()
+    except Exception:
+        return None
+
+
+def exploratory_worktree_state() -> dict:
+    """Additional whole-tree evidence for legacy model aggregation, not a launch gate."""
+    try:
+        status = experiment_records.git(ROOT, "status", "--porcelain", "--untracked-files=no")
+        diff = experiment_records.git(ROOT, "diff", "--binary", "HEAD")
+        if status.returncode or diff.returncode:
+            raise ValueError("Git inspection failed")
+        return {"git_dirty": bool(status.stdout.strip()),
+                "git_tracked_diff_sha256": hashlib.sha256(diff.stdout.encode("utf-8")).hexdigest()}
+    except (OSError, UnicodeError, ValueError):
+        return {"git_dirty": None, "git_tracked_diff_sha256": None}
+
+
 def base_record(exp_id: str, data: dict, root: Path) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "experiment_id": exp_id,
+        **exploratory_worktree_state(),
+        "host": host_facts(),
+        "hardware_profile_record": hardware_profile_record(data.get("hardware_profile")),
         "git_sha": git_sha(),
         "python": sys.version,
         "platform": platform.platform(),
@@ -1309,6 +1405,46 @@ def removed_after(directory: Path):
         shutil.rmtree(directory, ignore_errors=True)
 
 
+def cargo_lock_record(command: list[str]) -> dict:
+    """Ask the selected Cargo for its workspace lockfile, before launching a run.
+
+    Only Cargo's arguments before `--` select a manifest; arguments to the
+    experiment itself do not. Resolution failures refuse launch rather than
+    silently attributing the root workspace's dependencies to another build.
+    """
+    if not command or Path(command[0]).name not in {"cargo", "cargo.exe"}:
+        return {"cargo_lock_path": None, "cargo_lock_sha256": None}
+    arguments = command[1:command.index("--")] if "--" in command else command[1:]
+    query = [command[0]]
+    if arguments and arguments[0].startswith("+"):
+        query.append(arguments[0])
+    query.extend(["locate-project", "--workspace", "--message-format", "plain"])
+    manifests = []
+    for index, argument in enumerate(arguments):
+        if argument == "--manifest-path":
+            if index + 1 == len(arguments):
+                raise ValueError("Cargo --manifest-path requires a value")
+            manifests.append(arguments[index + 1])
+        elif argument.startswith("--manifest-path="):
+            manifests.append(argument.split("=", 1)[1])
+    if len(manifests) > 1 or manifests == [""]:
+        raise ValueError("Cargo requires one nonempty manifest path")
+    if manifests:
+        query.extend(["--manifest-path", manifests[0]])
+    try:
+        result = subprocess.run(query, cwd=ROOT, text=True, capture_output=True, check=True)
+        if not result.stdout.strip():
+            raise ValueError("Cargo returned no workspace manifest")
+        manifest = (ROOT / result.stdout.strip()).resolve()
+        lock = manifest.with_name("Cargo.lock")
+        relative = lock.relative_to(ROOT.resolve()).as_posix()
+        if not lock.is_file():
+            raise ValueError(f"Cargo workspace lockfile is missing: {relative}")
+        return {"cargo_lock_path": relative, "cargo_lock_sha256": sha(lock)}
+    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+        raise ValueError(f"cannot bind Cargo workspace lockfile: {error}") from error
+
+
 def execute_command(
     command: list[str],
     environment: dict[str, str] | None = None,
@@ -1442,6 +1578,13 @@ def run_experiment(
     the way to it, changed (its stamp moved, `experiment_records.file_stamp`)
     is not recorded. The record is written whole or not at all
     (`write_json_exclusive`)."""
+    # Frozen A0 v1 used the exploratory runner. It cannot acquire hardened
+    # build provenance retrospectively, and fixed models require a new freeze.
+    # Refuse new study records instead of labeling an ambient build as frozen.
+    if exp_id in {"M001", "M002", "M003", "M004"} and entrypoint.startswith("a0_"):
+        print("ERROR: A0 v1 is archival: new model runs require a newly registered frozen study "
+              "using the hardened entrypoint runner; exploratory A0 study launches are disabled", file=sys.stderr)
+        return 2
     _, root, data = resolve(exp_id)
     if unrecordable_manifest(exp_id, data) or launch_refused(exp_id):
         return 2
@@ -1542,6 +1685,16 @@ def launch_and_record(
         return 2
 
     record = base_record(exp_id, data, root)
+    if not listed and command and Path(command[0]).name in {"cargo", "cargo.exe"}:
+        try:
+            dependency = cargo_lock_record(command)
+        except ValueError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 2
+        record["command_cargo_lock_path"] = dependency["cargo_lock_path"]
+        record["command_cargo_lock_sha256"] = dependency["cargo_lock_sha256"]
+
+    record["rustc"] = rustc_version(command) if not listed else None
     record.update(
         {
             "git_sha": watch.head,
@@ -1914,7 +2067,24 @@ def main():
     run.add_argument("--entrypoint", default="entrypoint")
     run.add_argument("--set", dest="params", action="append", default=[])
 
+    agg = sub.add_parser("aggregate")
+    agg.add_argument("id")
+    agg.add_argument("--entrypoint", default="entrypoint")
+    agg.add_argument("--git-sha")
+    agg.add_argument("--allow-dirty", action="store_true")
+    agg.add_argument("--set", dest="params", action="append", default=[])
+
     args = parser.parse_args()
+    if args.cmd == "aggregate":
+        import aggregate_experiment
+        try:
+            code = aggregate_experiment.aggregate(args.id, entrypoint=args.entrypoint,
+                git_sha_filter=args.git_sha, allow_dirty=args.allow_dirty,
+                parameters_filter=parse_params(args.params))
+        except ValueError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            raise SystemExit(2)
+        raise SystemExit(code)
     if args.cmd == "list":
         for key, value in registry().items():
             print(key, value["status"], value["path"])

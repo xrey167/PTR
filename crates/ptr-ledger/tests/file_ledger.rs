@@ -1,5 +1,8 @@
 use ptr_ledger::{FileLedger, LedgerEvent};
-use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision};
+use ptr_types::{
+    CapsuleId, CommitIndex, Generation, ProjectId, Revision, ScopeId, ScopeLeaseBinding,
+    ScopeLifecycleEvent, ScopeLifecycleKind, SessionId, Timestamp,
+};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,6 +58,41 @@ fn all_event_variants_roundtrip_across_reopen() {
         LedgerEvent::SnapshotCommitted {
             revision: 9,
             covers: CommitIndex(7),
+        },
+        LedgerEvent::ScopeLifecycle(ScopeLifecycleEvent {
+            scope_id: ScopeId::from("scope"),
+            parent_id: None,
+            session_id: SessionId::from("session"),
+            project_id: ProjectId::from("p"),
+            created_at: Timestamp(7),
+            deadline: Some(Timestamp(99)),
+            kind: ScopeLifecycleKind::Created,
+            previous_kind: None,
+            lease: ScopeLeaseBinding::default(),
+            revision: Revision(9),
+            reason: None,
+        }),
+        LedgerEvent::TierBackendLifecycle {
+            backend_id: "nvme-a".into(),
+            tier: 2,
+            state: 2,
+            revision: Revision(9),
+            event_digest: [11; 32],
+        },
+        LedgerEvent::TierObjectCommitted {
+            root_digest: [12; 32],
+            generation: Generation(4),
+            revision: Revision(9),
+            manifest: b"canonical-tier-manifest".to_vec(),
+        },
+        LedgerEvent::TierReplicaLifecycle {
+            root_digest: [12; 32],
+            backend_id: "nvme-a".into(),
+            tier: 2,
+            state: 1,
+            generation: Generation(4),
+            revision: Revision(9),
+            event_digest: [13; 32],
         },
     ];
 

@@ -5,13 +5,16 @@
 //! record therefore travels inside a [`CheckpointHeader`], and a build whose
 //! codebook has moved refuses to load it rather than reading the weights under a
 //! taxonomy they never saw.
-use crate::{PtrA0, PtrA0Config};
+use crate::{
+    M002V5Contract, M002V5ContractError, PtrA0, PtrA0Config, RouterMode, TypedAttentionMode,
+};
 use burn::{
     prelude::*,
     store::{ModuleRecord, RecordError},
     tensor::Bytes,
 };
 use ptr_types::{CheckpointError, CheckpointHeader, CodeFamily, TableSize};
+use sha2::{Digest, Sha256};
 
 /// Stable name recorded in the header. Not the crate version: what matters to a
 /// reader is which model's parameter layout this is.
@@ -39,6 +42,14 @@ pub enum CheckpointIoError {
     /// one's. Refused rather than attempted: burn would report missing tensors,
     /// but "this is not that model" is the more useful answer.
     WrongModel { found: String },
+    /// The model-owned architecture binding disagrees with the requested config.
+    ArchitectureMismatch,
+    /// Format-2 artifacts have no architecture binding and require an explicit,
+    /// exact legacy opt-in.
+    LegacyArchitectureUnbound,
+    /// A commit-bound M002-v5 contract does not match the graph or training
+    /// contract the caller attempted to use.
+    Contract(M002V5ContractError),
 }
 
 impl From<CheckpointError> for CheckpointIoError {
@@ -62,7 +73,16 @@ impl core::fmt::Display for CheckpointIoError {
             Self::Header(error) => error.fmt(f),
             Self::Record(_) => f.write_str("PTR_A0_CKPT_RECORD"),
             Self::WrongModel { .. } => f.write_str("PTR_A0_CKPT_WRONG_MODEL"),
+            Self::ArchitectureMismatch => f.write_str("PTR_A0_CKPT_ARCHITECTURE"),
+            Self::LegacyArchitectureUnbound => f.write_str("PTR_A0_CKPT_LEGACY_UNBOUND"),
+            Self::Contract(error) => error.fmt(f),
         }
+    }
+}
+
+impl From<M002V5ContractError> for CheckpointIoError {
+    fn from(error: M002V5ContractError) -> Self {
+        Self::Contract(error)
     }
 }
 
@@ -100,6 +120,93 @@ pub fn header(model: &PtrA0) -> CheckpointHeader {
             },
         ],
     )
+    .with_architecture(architecture_digest(
+        model.vocabulary_size(),
+        model.provenance_rows(),
+        model.slot_type_rows(),
+        model.epistemic_rows(),
+        model.operator_count(),
+        model.latent_steps(),
+        model.typed_attention_mode(),
+        model.typed_attention_rank(),
+        model.typed_attention_limit(),
+        model.typed_query(),
+        model.latent_nonlinearity(),
+        model.router_mode(),
+        model.router_logit_scale(),
+    ))
+}
+
+pub(crate) fn config_architecture_digest(config: &PtrA0Config) -> Vec<u8> {
+    architecture_digest(
+        config.vocab_size,
+        config.provenance_bucket_count,
+        config.slot_type_count(),
+        config.epistemic_count(),
+        config.operator_count(),
+        config.latent_steps,
+        config.typed_attention,
+        config.typed_attention_rank,
+        config.typed_attention_limit,
+        config.typed_query,
+        config.latent_nonlinearity,
+        config.router_mode,
+        config.router_logit_scale,
+    )
+}
+
+fn bound_architecture_digest(config: &PtrA0Config, contract: &M002V5Contract) -> Vec<u8> {
+    let mut bytes = b"ptr-a0-m002-v5-bound-architecture-v1\0".to_vec();
+    bytes.extend_from_slice(&config_architecture_digest(config));
+    bytes.extend_from_slice(&contract.digest());
+    Sha256::digest(bytes).to_vec()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn architecture_digest(
+    vocab_size: usize,
+    provenance_buckets: usize,
+    slot_types: usize,
+    epistemic_states: usize,
+    operators: usize,
+    latent_steps: usize,
+    attention: TypedAttentionMode,
+    attention_rank: usize,
+    attention_limit: f32,
+    typed_query: bool,
+    latent_nonlinearity: bool,
+    router: RouterMode,
+    router_scale: f32,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(64);
+    bytes.extend_from_slice(b"ptr-a0-architecture-v1\0");
+    for value in [
+        vocab_size,
+        provenance_buckets,
+        slot_types,
+        epistemic_states,
+        operators,
+        latent_steps,
+        attention_rank,
+    ] {
+        bytes.extend_from_slice(&(value as u64).to_le_bytes());
+    }
+    bytes.push(attention as u8);
+    bytes.extend_from_slice(&attention_limit.to_bits().to_le_bytes());
+    bytes.push(u8::from(typed_query));
+    bytes.push(u8::from(latent_nonlinearity));
+    bytes.push(router as u8);
+    bytes.extend_from_slice(&router_scale.to_bits().to_le_bytes());
+    Sha256::digest(bytes).to_vec()
+}
+
+fn exact_legacy_config(config: &PtrA0Config) -> bool {
+    let current = config_architecture_digest(config);
+    config.legacy_v2_architecture.as_deref() == Some(current.as_slice())
+        && config.typed_attention == TypedAttentionMode::LegacyScalarV1
+        && config.router_mode == RouterMode::LegacyMeanLinear
+        && config.typed_query
+        && config.latent_nonlinearity
 }
 
 /// Serialize a model as a checkpoint: identity header, then its parameters.
@@ -108,12 +215,42 @@ pub fn save(model: &PtrA0) -> Result<Vec<u8>, CheckpointIoError> {
     Ok(header(model).write(&record))
 }
 
+/// Serialize only after the supplied frozen M002-v5 contract has constructed
+/// the same graph.  The contract digest becomes part of the header's opaque
+/// architecture binding, so a later reader must present the same bytes too.
+pub fn save_bound(
+    model: &PtrA0,
+    config: &PtrA0Config,
+    contract: &M002V5Contract,
+) -> Result<Vec<u8>, CheckpointIoError> {
+    contract.verify_config(config)?;
+    let header = header(model);
+    if header.architecture != config_architecture_digest(config) {
+        return Err(CheckpointIoError::ArchitectureMismatch);
+    }
+    let record = model.clone().into_record().into_bytes()?;
+    Ok(header
+        .with_architecture(bound_architecture_digest(config, contract))
+        .write(&record))
+}
+
 /// Read a checkpoint into a model built from `config`.
 ///
 /// Order matters. The identity is checked first, because if the assignment has
 /// moved there is no point in loading tensors that would then mean the wrong
-/// thing; the architecture is checked second, by the record itself refusing a
-/// shape that does not fit.
+/// thing; the model-owned architecture digest is checked second, before the
+/// record is decoded or any weight is accepted.
+///
+/// `frozen_router` remains a training-time optimizer choice and is not applied
+/// on this path. Every forward-graph choice is bound by format 3. An unbound
+/// format-2 artifact requires explicit opt-in to the exact legacy graph.
+///
+/// # Errors
+///
+/// Returns a header error for malformed or incompatible identity metadata,
+/// `WrongModel` for another model's checkpoint, `ArchitectureMismatch` for a
+/// different graph, `LegacyArchitectureUnbound` for an unapproved format-2
+/// artifact, or a record error when the payload cannot be decoded.
 pub fn load(
     bytes: &[u8],
     config: &PtrA0Config,
@@ -126,6 +263,39 @@ pub fn load(
         });
     }
     header.verify(&config.codebook(), config.encoding(), &EMBEDDED_FAMILIES)?;
+    if header.architecture.is_empty() {
+        if header.format() != ptr_types::FORMAT_V2 {
+            return Err(CheckpointIoError::ArchitectureMismatch);
+        }
+        if !exact_legacy_config(config) {
+            return Err(CheckpointIoError::LegacyArchitectureUnbound);
+        }
+    } else if header.architecture != config_architecture_digest(config) {
+        return Err(CheckpointIoError::ArchitectureMismatch);
+    }
     let record = ModuleRecord::from_bytes(Bytes::from_bytes_vec(payload.to_vec()))?;
-    Ok(config.init(device).try_load_record(record)?)
+    Ok(config.init_lazy(device).try_load_record(record)?)
+}
+
+/// Load a learned-backend checkpoint only when the exact M002-v5 contract
+/// binds both the requested config and the serialized header.
+pub fn load_bound(
+    bytes: &[u8],
+    config: &PtrA0Config,
+    contract: &M002V5Contract,
+    device: &Device,
+) -> Result<PtrA0, CheckpointIoError> {
+    contract.verify_config(config)?;
+    let (header, payload) = CheckpointHeader::read(bytes)?;
+    if header.model != MODEL {
+        return Err(CheckpointIoError::WrongModel {
+            found: header.model,
+        });
+    }
+    header.verify(&config.codebook(), config.encoding(), &EMBEDDED_FAMILIES)?;
+    if header.architecture != bound_architecture_digest(config, contract) {
+        return Err(CheckpointIoError::ArchitectureMismatch);
+    }
+    let record = ModuleRecord::from_bytes(Bytes::from_bytes_vec(payload.to_vec()))?;
+    Ok(contract.init(config, device)?.try_load_record(record)?)
 }

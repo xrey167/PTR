@@ -36,8 +36,10 @@ mod frame;
 
 pub use access::{answer, PodAccessPolicy, PodScope, PolicyError};
 pub use frame::{
-    decode_answer, decode_request, encode_answer, encode_request, request_digest, FrameError,
-    PodAnswer, PodOutcome, PodRequest, RefusalCode, FORMAT_V1, MAX_BODY_BYTES, MAX_FIELD_BYTES,
+    decode_answer, decode_answer_v2, decode_request, decode_request_v2, encode_answer,
+    encode_answer_v2, encode_request, encode_request_v2, request_digest, FrameError,
+    PodAddressBinding, PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome, PodRequest,
+    PodRequestV2, RefusalCode, FORMAT_V1, FORMAT_V2, FORMAT_V3, MAX_BODY_BYTES, MAX_FIELD_BYTES,
     MAX_FRAME_BYTES,
 };
 
@@ -45,4 +47,7 @@ pub use frame::{
 mod endpoint;
 
 #[cfg(feature = "podwire-backend")]
-pub use endpoint::{PodClient, PodHost, PodWireError, Served, DEFAULT_REQUEST_TIMEOUT};
+pub use endpoint::{
+    ExecutionManifestResolver, PodClient, PodHost, PodSession, PodWireError, PodWireV2Binding,
+    Served, DEFAULT_REQUEST_TIMEOUT,
+};

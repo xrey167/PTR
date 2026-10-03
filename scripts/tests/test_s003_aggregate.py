@@ -130,7 +130,7 @@ class VerdictTests(unittest.TestCase):
                 analysis = analyse([seed_result(17, **changes)], exit_codes=exits)
                 for trial in analysis["metrics"]["descriptive"]["hazard_trials"].values():
                     self.assertGreater(trial["trials"], 0)
-                    self.assertIsNone(trial["rule_of_three_bound"])
+                    self.assertIsNone(trial["bound_if_independent"])
 
     def test_a_run_that_meets_every_condition_and_gains_over_serial_completes(self):
         analysis = analyse(five())
@@ -207,6 +207,28 @@ class VerdictTests(unittest.TestCase):
         analysis = analyse(results)
         self.assertFalse(analysis["conditions"]["coverage_ok"])
         self.assertEqual(analysis["metrics"]["descriptive"]["probe_hazard_repetitions"]["probe_hazard_write"], 240)
+
+    def test_the_workloads_own_paths_gate_coverage_and_the_probes_cover_only_the_verification_hold(self):
+        # A path the workload must reach is read from the workload's counter: a
+        # probe's own count of it is reported, and gates nothing.
+        for name in ("merges_rebased", "conflicts", "lifecycle_refusals", "escalations", "reviewed_merges", "no_change_merges"):
+            with self.subTest(name=name):
+                results = five()
+                results[1][name] = 0
+                results[1]["probe_" + name] = 999
+                self.assertFalse(analyse(results)["conditions"]["coverage_ok"])
+        # A merge held by verification is the one path the workload does not
+        # reach (its count is descriptive); the probes' count gates it.
+        results = five()
+        for result in results:
+            result["verification_holds"] = 0
+        self.assertTrue(analyse(results)["conditions"]["coverage_ok"])
+        results[3]["probe_verification_holds"] = 0
+        self.assertFalse(analyse(results)["conditions"]["coverage_ok"])
+        self.assertIn("probe_verification_holds", aggregate.COVERAGE)
+        self.assertNotIn("verification_holds", aggregate.COVERAGE)
+        for name in aggregate.PROBE_PATHS:
+            self.assertNotIn(name, aggregate.COVERAGE)
 
     def test_the_two_rule_classes_are_covered_by_their_probes_and_gate_nothing_else(self):
         results = five()
@@ -336,7 +358,10 @@ class VerdictTests(unittest.TestCase):
         analysis = analyse(five())
         descriptive = analysis["metrics"]["descriptive"]
         self.assertEqual(descriptive["hazard_trials"]["hazard_write"]["trials"], 200)
-        self.assertEqual(descriptive["hazard_trials"]["hazard_write"]["rule_of_three_bound"], round(3 / 200, 6))
+        self.assertEqual(descriptive["hazard_trials"]["hazard_write"]["bound_if_independent"], round(3 / 200, 6))
+        for trial in descriptive["hazard_trials"].values():
+            self.assertNotIn("rule_of_three_bound", trial)
+            self.assertEqual(trial["independence"], aggregate.INDEPENDENCE_NOTE)
         self.assertEqual(descriptive["review_void_share"], 0.8)
         self.assertEqual(set(descriptive["hazard_trials"]), set(aggregate.HAZARDS))
         self.assertIn("certified", descriptive["arms"])
@@ -492,7 +517,9 @@ class PilotInputTests(unittest.TestCase):
         self.enterContext(mock.patch.object(aggregate, "validate_pilot_provenance"))
 
     def test_unmeasured_cells_cannot_supply_the_pilots_high_cell_minimum(self):
-        for attempts in (0, -1):
+        # Zero attempts are an unmeasured cell; a negative count is refused
+        # earlier, as a malformed measurement (see the matrix tests).
+        for attempts in (0,):
             with self.subTest(attempts=attempts), tempfile.TemporaryDirectory() as directory:
                 paths = [self.write(Path(directory), seed, TABLE) for seed in TABLE["pilot_seeds"]]
                 for path in paths:
@@ -547,6 +574,9 @@ class PilotInputTests(unittest.TestCase):
             "incomplete baseline": lambda result: result["cases"][0]["runs"][-1].update(complete=False),
             "zero duration": lambda result: result["cases"][0]["runs"][-1].update(ticks=0),
             "missing run": lambda result: result["cases"][0]["runs"].pop(),
+            "preregistration that is a list": lambda result: result.update(preregistration="[1, 2]"),
+            "preregistration that is a number": lambda result: result.update(preregistration="7"),
+            "preregistration that is null": lambda result: result.update(preregistration="null"),
         }
         for name, change in changes.items():
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
@@ -578,6 +608,15 @@ class LayoutTests(unittest.TestCase):
             "negative tasks": lambda case: case["runs"][1].update(merged=-1, no_change=129),
             "boolean tasks": lambda case: case["runs"][1].update(no_change=False),
             "boolean agents": lambda case: case["runs"][0].update(agents=True),
+            "missing attempts": lambda case: case["runs"][1].pop("attempts"),
+            "negative attempts": lambda case: case["runs"][1].update(attempts=-1),
+            "negative attempts on a baseline arm": lambda case: case["runs"][0].update(attempts=-1),
+            "missing conflicts": lambda case: case["runs"][1].pop("conflicts"),
+            "boolean lifecycle refusals": lambda case: case["runs"][1].update(lifecycle_refusals=True),
+            "missing escalations": lambda case: case["runs"][2].pop("escalations"),
+            "negative review voids": lambda case: case["runs"][2].update(review_voids=-1),
+            "fractional no change": lambda case: case["runs"][1].update(no_change=0.0),
+            "counter on an incomplete run": lambda case: case["runs"][1].update(complete=False, attempts="many"),
         }
         for name, change in changes.items():
             with self.subTest(name=name):
@@ -592,11 +631,16 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(analyse([result])["recommended"], "failed")
 
 
-
 class PilotSourceEvidenceTests(unittest.TestCase):
     def test_legacy_pilot_without_a_producing_revision_is_refused(self):
         with self.assertRaisesRegex(ValueError, "producing-revision"):
             aggregate.validate_pilot_provenance({"seed": 1})
+
+    def test_pilot_provenance_that_is_not_an_object_is_refused_not_a_traceback(self):
+        for evidence in ("clean", ["git_sha"], 7, None, True):
+            with self.subTest(evidence=evidence):
+                with self.assertRaisesRegex(ValueError, "producing-revision"):
+                    aggregate.validate_pilot_provenance({"seed": 1, "pilot_provenance": evidence})
 
     def test_harness_changes_invalidate_pilot_even_with_the_same_configuration(self):
         for name in ("harness.rs", "schema.proto", "rust-toolchain", "migration.sql"):
@@ -654,6 +698,199 @@ class PilotSourceEvidenceTests(unittest.TestCase):
         result["lww_lost_updates"] = 1
         values = analyse([result])["metrics"]["descriptive"]
         self.assertGreater(values["lww_anomalies_per_settled_attempt"], 0)
+
+
+class LayoutBoundaryTests(unittest.TestCase):
+    def test_top_level_count_requires_an_integer_and_an_actual_case_list(self):
+        changes = [
+            {"iterations": True}, {"iterations": float(TABLE["cases_per_seed"])},
+            {"iterations": str(TABLE["cases_per_seed"])}, {"cases": None},
+            {"cases": {}}, {"cases": []},
+        ]
+        for change in changes:
+            with self.subTest(change=change):
+                result = seed_result(17)
+                result.update(change)
+                with self.assertRaisesRegex(ValueError, "expected .* cases"):
+                    aggregate.validate_layout(result, TABLE)
+
+    def test_completion_and_time_fields_reject_boolean_numeric_and_negative_impostors(self):
+        for field, values in (("complete", (0, 1, "true", None)),
+                              ("ticks", (True, -1, 1.0, "1", None))):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    result = seed_result(17)
+                    result["cases"][0]["runs"][1][field] = value
+                    with self.assertRaisesRegex(ValueError, "completion flag and nonnegative ticks"):
+                        aggregate.validate_layout(result, TABLE)
+
+    def test_each_settlement_category_can_account_for_all_tasks(self):
+        fields = ("merged", "no_change", "verification_holds", "abandoned")
+        for field in fields:
+            with self.subTest(field=field):
+                result = seed_result(17)
+                entry = result["cases"][0]["runs"][1]
+                entry.update(dict.fromkeys(fields, 0))
+                entry[field] = TABLE["tasks_per_case"]
+                aggregate.validate_layout(result, TABLE)
+                entry[field] -= 1
+                with self.assertRaisesRegex(ValueError, "did not settle exactly"):
+                    aggregate.validate_layout(result, TABLE)
+
+    def test_reordering_runs_preserves_the_matrix_and_cell_measurements(self):
+        result = seed_result(17)
+        before = aggregate.cells([result])
+        for case in result["cases"]:
+            case["runs"].reverse()
+        aggregate.validate_layout(result, TABLE)
+        self.assertEqual(aggregate.cells([result]), before)
+
+    def test_partial_failed_runs_remain_valid_negative_evidence(self):
+        result = seed_result(17)
+        result["cases"][0]["runs"][1].update(complete=False, merged=1, ticks=0)
+        aggregate.validate_layout(result, TABLE)
+        cell = aggregate.cells([result])["L0N2"]
+        self.assertEqual(cell["unusable_runs"], 1)
+        self.assertIsNone(cell["gain"])
+        self.assertIsNone(cell["efficiency"])
+
+
+class MeasurementBoundaryTests(unittest.TestCase):
+    def histogram(self, fast, slow):
+        return {"merge_calls": fast + slow, "merge_wall_ns": 12_345_000,
+                "merge_wall_le_10us": fast, "merge_wall_le_100us": slow,
+                "merge_wall_le_1ms": 0, "merge_wall_le_10ms": 0,
+                "merge_wall_gt_10ms": 0}
+
+    def test_exactly_99_percent_in_budget_passes_but_one_fewer_fails(self):
+        at_boundary = aggregate.merge_time([self.histogram(99, 1)], 10)
+        self.assertTrue(at_boundary["ok"])
+        self.assertEqual(at_boundary["p99_upper_bound_us"], 10)
+        below = aggregate.merge_time([self.histogram(98, 2)], 10)
+        self.assertFalse(below["ok"])
+        self.assertEqual(below["p99_upper_bound_us"], 100)
+        self.assertFalse(aggregate.merge_time([self.histogram(99, 1)], 9)["ok"])
+
+    def test_empty_histograms_do_not_claim_a_time_model_or_a_mean(self):
+        for results in ([], [self.histogram(0, 0)]):
+            with self.subTest(results=results):
+                summary = aggregate.merge_time(results, 10_000)
+                self.assertEqual(summary["calls"], 0)
+                self.assertFalse(summary["ok"])
+                self.assertIsNone(summary["mean_us"])
+
+    def test_mean_merge_time_is_weighted_by_calls_and_converted_to_microseconds(self):
+        first = {**self.histogram(1, 0), "merge_wall_ns": 1000}
+        second = {**self.histogram(9, 0), "merge_wall_ns": 90_000}
+        self.assertEqual(aggregate.merge_time([first, second], 10)["mean_us"], 9.1)
+
+    def test_conflict_rate_pools_attempts_instead_of_averaging_run_rates(self):
+        entries = [run("certified", 2, 1, attempts=1, conflicts=1),
+                   run("certified", 2, 1, attempts=99, lifecycle=9)]
+        self.assertAlmostEqual(aggregate.conflict_rate(entries), 0.1)
+
+    def test_a_single_case_bootstrap_has_an_exact_interval(self):
+        result = aggregate.bootstrap_gain([(9, 4)], 1, 17, 950)
+        self.assertEqual(result, {"cases": 1, "gain": 2.25, "lower": 2.25,
+                                  "upper": 2.25, "resamples": 1})
+
+
+class PilotCollectionFailureTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.output = Path(directory.name) / "nested" / "pilot.json"
+        self.watch = mock.Mock(head="a" * 40, uncommitted=[], changes=mock.Mock(return_value=[]))
+        patcher = mock.patch.object(aggregate.experiment_records, "ProvenanceWatch", return_value=self.watch)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(aggregate.subprocess, "run")
+        self.execute = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_undeclared_seed_is_rejected_without_launching_the_harness(self):
+        with self.assertRaisesRegex(SystemExit, "declared pilot seed"):
+            aggregate.record_pilot(TABLE["seeds"][0], self.output)
+        self.execute.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_existing_evidence_is_preserved_without_launching_the_harness(self):
+        self.output.parent.mkdir()
+        self.output.write_text("original evidence", encoding="utf-8")
+        with self.assertRaisesRegex(SystemExit, "refusing to replace"):
+            aggregate.record_pilot(TABLE["pilot_seeds"][0], self.output)
+        self.execute.assert_not_called()
+        self.assertEqual(self.output.read_text(encoding="utf-8"), "original evidence")
+
+    def test_dirty_source_is_rejected_before_launch(self):
+        self.watch.uncommitted = ["bins/ptr-bench/src/main.rs"]
+        with self.assertRaisesRegex(SystemExit, "commit pilot source first"):
+            aggregate.record_pilot(TABLE["pilot_seeds"][0], self.output)
+        self.execute.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_failed_process_writes_no_evidence_even_with_valid_stdout(self):
+        seed = TABLE["pilot_seeds"][0]
+        self.execute.return_value = subprocess.CompletedProcess(
+            [], 7, stdout=json.dumps(seed_result(seed)), stderr="harness failed")
+        with self.assertRaisesRegex(SystemExit, r"pilot failed \(7\).*harness failed"):
+            aggregate.record_pilot(seed, self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_wrong_seed_or_benchmark_writes_no_evidence(self):
+        seed = TABLE["pilot_seeds"][0]
+        for change in ({"seed": seed + 1}, {"benchmark": "other"}):
+            with self.subTest(change=change):
+                result = seed_result(seed)
+                result.update(change)
+                self.execute.return_value = subprocess.CompletedProcess([], 0, stdout=json.dumps(result), stderr="")
+                with self.assertRaisesRegex(SystemExit, "does not match the requested run"):
+                    aggregate.record_pilot(seed, self.output)
+                self.assertFalse(self.output.exists())
+
+    def test_success_preserves_measurements_and_records_the_actual_build_command(self):
+        seed = TABLE["pilot_seeds"][0]
+        result = seed_result(seed)
+        self.execute.return_value = subprocess.CompletedProcess([], 0, stdout=json.dumps(result), stderr="")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(aggregate.record_pilot(seed, self.output), 0)
+        saved = json.loads(self.output.read_text(encoding="utf-8"))
+        evidence = saved.pop("pilot_provenance")
+        self.assertEqual(saved, result)
+        command = self.execute.call_args.args[0]
+        self.assertEqual(command[:4], ["cargo", "run", "--release", "--locked"])
+        self.assertEqual(command[-5:], ["ptr-bench", "--", aggregate.BENCHMARK,
+                                       str(TABLE["cases_per_seed"]), str(seed)])
+        target = Path(command[command.index("--target-dir") + 1])
+        self.assertFalse(target.exists(), "temporary build directory is cleaned up")
+        self.assertEqual(evidence, {"schema_version": 1, "git_sha": "a" * 40,
+                                    "git_dirty": False, "exit_code": 0, "command": command})
+
+
+class PilotProvenanceBoundaryTests(unittest.TestCase):
+    def test_invalid_revision_and_unsuccessful_producer_are_refused_before_git(self):
+        valid = {"schema_version": 1, "git_sha": "a" * 40, "git_dirty": False, "exit_code": 0}
+        changes = [({"git_sha": value}, "valid producing revision")
+                   for value in (None, "a" * 39, "A" * 40, "g" * 40)]
+        changes += [({field: value}, "producing-revision")
+                    for field, value in (("schema_version", 2), ("git_dirty", True),
+                                         ("git_dirty", 0), ("exit_code", False), ("exit_code", 1))]
+        for change, message in changes:
+            with self.subTest(change=change), mock.patch.object(aggregate.experiment_records, "head_commit") as head:
+                with self.assertRaisesRegex(ValueError, message):
+                    aggregate.validate_pilot_provenance({"pilot_provenance": {**valid, **change}})
+                head.assert_not_called()
+
+    def test_revision_outside_checkout_history_cannot_supply_pilot_evidence(self):
+        evidence = {"pilot_provenance": {"schema_version": 1, "git_sha": "a" * 40,
+                                          "git_dirty": False, "exit_code": 0}}
+        with mock.patch.object(aggregate.experiment_records, "head_commit", return_value="b" * 40), \
+                mock.patch.object(aggregate.experiment_records, "git", return_value=subprocess.CompletedProcess([], 1)), \
+                mock.patch.object(aggregate.experiment_records, "changes_after") as changes:
+            with self.assertRaisesRegex(ValueError, "not in this checkout's history"):
+                aggregate.validate_pilot_provenance(evidence)
+            changes.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

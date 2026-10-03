@@ -39,6 +39,10 @@ REQUIRED = [
     "docs/TESTING.md",
     "templates/rust-crate/Cargo.toml",
 ]
+COMPONENT_MAPS = {
+    "README.md": "crates/{}/README.md",
+    "docs/components/README.md": "../../crates/{}/README.md",
+}
 COMPONENT_KEYS = [
     "maturity",
     "last_reviewed",
@@ -124,6 +128,7 @@ def check_workspace_membership(root: Path) -> list[str]:
 
 
 def check(root: Path) -> tuple[list[str], str]:
+    """Return repository structure and registry errors with a component-count summary."""
     errors: list[str] = []
 
     for rel in REQUIRED:
@@ -136,12 +141,12 @@ def check(root: Path) -> tuple[list[str], str]:
         try:
             tomllib.loads(p.read_text(encoding="utf-8"))
         except Exception as e:
-            errors.append(f"TOML {p.relative_to(root)}: {e}")
+            errors.append(f"TOML {p.relative_to(root).as_posix()}: {e}")
     for p in owned(root, root.rglob("*.json")):
         try:
             json.loads(p.read_text(encoding="utf-8"))
         except Exception as e:
-            errors.append(f"JSON {p.relative_to(root)}: {e}")
+            errors.append(f"JSON {p.relative_to(root).as_posix()}: {e}")
     for p in owned(root, root.rglob("*.jsonl")):
         for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip():
@@ -149,7 +154,7 @@ def check(root: Path) -> tuple[list[str], str]:
             try:
                 json.loads(line)
             except Exception as e:
-                errors.append(f"JSONL {p.relative_to(root)}:{n}: {e}")
+                errors.append(f"JSONL {p.relative_to(root).as_posix()}:{n}: {e}")
 
     # Reported, not raised. `check(root)` is driven by fixtures as well as by the
     # real tree, and a fixture missing a registry should come back as an error in
@@ -208,6 +213,18 @@ def check(root: Path) -> tuple[list[str], str]:
             txt = readme.read_text(encoding="utf-8")
             if "<!-- PTR:STATUS:BEGIN -->" not in txt or "<!-- PTR:STATUS:END -->" not in txt:
                 errors.append(f"{name}: README generated status block missing")
+        # Both component maps are hand-written tables. ptr-cluster, ptr-execwire
+        # and ptr-podwire were added after them and appeared in neither, so the
+        # maps listed 24 crates while the workspace had 27.
+        # A row, not a mention: the link must open a table row of the map.
+        for relative, link in COMPONENT_MAPS.items():
+            path = root / relative
+            row = f"| [{name}]({link.format(name)}) |"
+            if path.is_file() and not any(
+                line.startswith(row)
+                for line in path.read_text(encoding="utf-8").splitlines()
+            ):
+                errors.append(f"{name}: not listed in the component map in {relative}")
 
     # Every declared workspace-area config must have a sibling tests directory.
     for cfg in owned(root, root.rglob("config.toml")):
@@ -231,6 +248,16 @@ def check(root: Path) -> tuple[list[str], str]:
     comps = list((root / "evaluations/components").glob("*/candidates.toml"))
     if len(comps) < 20:
         errors.append("expected >=20 component evaluations")
+    # The registry is what `evaluations = [...]` in a component.toml is resolved
+    # against, so a slot that exists on disk but not in the registry reads as an
+    # "unknown evaluation" to every crate that cites it. training-backend sat in
+    # exactly that gap: its directory landed without its registry entry, and no
+    # rule compared the two.
+    on_disk = {path.parent.name for path in comps}
+    for eid in sorted(on_disk - eval_ids):
+        errors.append(f"evaluations/components/{eid}: not listed in evaluations/registry.toml")
+    for eid in sorted(eval_ids - on_disk):
+        errors.append(f"evaluations/registry.toml: {eid} has no evaluations/components/{eid}/candidates.toml")
     exps = list((root / "experiments").glob("**/experiment.toml"))
     if len(exps) < 15:
         errors.append("expected >=15 experiments")

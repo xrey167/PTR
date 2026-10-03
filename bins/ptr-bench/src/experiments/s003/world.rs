@@ -19,8 +19,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use ptr_branch::{
-    merge_plan_digest, AutoThreshold, BranchError, BranchId, CertificationKind, PolicyRecord,
-    TriageDecision, TriagePolicy,
+    merge_plan_digest, AutoThreshold, BranchError, BranchId, BranchOp, CertificationKind,
+    PolicyRecord, SealedBranch, TriageDecision, TriagePolicy,
 };
 use ptr_config::PtrConfig;
 use ptr_ledger::{
@@ -962,11 +962,23 @@ impl World {
                 if seal.as_ref().ok() != Some(&record.seal) || record.seal != receipt.seal_digest {
                     faults.push("the record's seal is not the sealed branch's".into());
                 }
+                // The dependency digest is derived here from the sealed
+                // branch's own declarations, not read back from the record: a
+                // certification that left a read or an input out of it would
+                // otherwise write the same wrong digest into the record, the
+                // plan and the receipt, and each check below would agree.
+                let dependencies = expected_dependencies(&attempt.sealed);
+                if record.dependencies != dependencies {
+                    faults.push(
+                        "the record's dependency digest is not the sealed branch's declarations"
+                            .into(),
+                    );
+                }
                 let recomputed = merge_plan_digest(
                     &record.branch,
                     Revision(base_revision.0),
                     encoded_delta,
-                    &record.dependencies,
+                    &dependencies,
                     &record.rebased,
                 );
                 if record.plan != recomputed || record.plan != receipt.plan_digest {
@@ -1361,14 +1373,11 @@ impl World {
         }
         let live = self.runtime.materialized_state();
         let other = rebuilt.materialized_state();
-        if how != "compacted restore"
-            && (live.values != other.values || live.last_applied != other.last_applied)
-        {
-            differences.push("the materialized entries differ".into());
-        }
-        if how == "compacted restore" && live.last_applied != other.last_applied {
-            differences.push("the restored runtime applied another index".into());
-        }
+        differences.extend(materialized_differences(
+            (&live.values, live.last_applied),
+            (&other.values, other.last_applied),
+            how,
+        ));
         if !differences.is_empty() {
             self.metrics.replay_divergences += 1;
             self.note(format!(
@@ -1376,6 +1385,97 @@ impl World {
             ));
         }
     }
+}
+
+/// How the materialized state of a runtime rebuilt from its journal or a
+/// snapshot differs from the live one. Every rebuild must hold the same
+/// entries (the merged-branch markers among them) and the same last applied
+/// index; a compacted restore resumes above its floor, so only its index is
+/// the floor's own, never another one.
+fn materialized_differences(
+    (live_values, live_applied): (&BTreeMap<String, String>, u64),
+    (other_values, other_applied): (&BTreeMap<String, String>, u64),
+    how: &str,
+) -> Vec<String> {
+    let mut differences = Vec::new();
+    if live_applied != other_applied {
+        differences.push(if how == "compacted restore" {
+            "the restored runtime applied another index".to_string()
+        } else {
+            "the materialized entries differ".to_string()
+        });
+    }
+    if live_values != other_values {
+        differences.push(if how == "compacted restore" {
+            "the restored materialized entries differ".to_string()
+        } else {
+            "the materialized entries differ".to_string()
+        });
+    }
+    differences.dedup();
+    differences
+}
+
+/// The digest of a sealed branch's declared dependencies, written out from
+/// its public declarations: the base revision, every read, scan, reliance and
+/// touched input set, and one base presence per set member, each section
+/// counted and each variable-length item length-delimited. It mirrors
+/// ptr-branch's own encoding on purpose, so that a change to either shows as a
+/// mismatch in every merge the workload makes.
+fn expected_dependencies(branch: &SealedBranch) -> [u8; 32] {
+    fn count(bytes: &mut Vec<u8>, length: usize) {
+        bytes.extend_from_slice(&(length as u64).to_le_bytes());
+    }
+    fn text(bytes: &mut Vec<u8>, value: &str) {
+        count(bytes, value.len());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+    let mut bytes = b"ptr-branch/dependencies/v3".to_vec();
+    bytes.extend_from_slice(&branch.base_revision().0.to_le_bytes());
+    count(&mut bytes, branch.reads().len());
+    for (key, digest) in branch.reads() {
+        text(&mut bytes, key);
+        bytes.extend_from_slice(digest.as_bytes());
+    }
+    count(&mut bytes, branch.scans().len());
+    for (prefix, digest) in branch.scans() {
+        text(&mut bytes, prefix);
+        bytes.extend_from_slice(digest.as_bytes());
+    }
+    count(&mut bytes, branch.relied().len());
+    for (target, generation) in branch.relied() {
+        text(&mut bytes, target);
+        bytes.extend_from_slice(&generation.0.to_le_bytes());
+    }
+    count(&mut bytes, branch.touched_inputs().len());
+    for (key, digest) in branch.touched_inputs() {
+        text(&mut bytes, key);
+        bytes.extend_from_slice(digest.as_bytes());
+    }
+    let members: BTreeMap<(&str, &str), bool> = branch
+        .ops()
+        .iter()
+        .filter_map(|op| match op {
+            BranchOp::SetInsert {
+                key,
+                member,
+                in_base,
+            }
+            | BranchOp::SetRemove {
+                key,
+                member,
+                in_base,
+            } => Some(((key.as_str(), member.as_str()), *in_base)),
+            BranchOp::Put { .. } | BranchOp::Remove { .. } | BranchOp::Add { .. } => None,
+        })
+        .collect();
+    count(&mut bytes, members.len());
+    for ((key, member), in_base) in members {
+        text(&mut bytes, key);
+        text(&mut bytes, member);
+        bytes.push(u8::from(in_base));
+    }
+    integrity::sha256(&bytes)
 }
 
 /// Whether the runtime holds `value` where the model holds `expected`.
@@ -1489,6 +1589,40 @@ impl Drop for Unlink<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_compacted_restore_is_compared_on_its_entries_as_well_as_its_index() {
+        let entries = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect()
+        };
+        let live = entries(&[("a", "1"), ("branch/merged/b1", "x")]);
+        assert_eq!(
+            materialized_differences((&live, 9), (&live.clone(), 9), "compacted restore"),
+            Vec::<String>::new()
+        );
+        // A restore that kept its index but lost a merged-branch marker.
+        let lost = entries(&[("a", "1")]);
+        assert_eq!(
+            materialized_differences((&live, 9), (&lost, 9), "compacted restore"),
+            vec!["the restored materialized entries differ".to_string()]
+        );
+        // The same loss in a replay and a durable reopen.
+        for how in ["replay", "durable reopen"] {
+            assert_eq!(
+                materialized_differences((&live, 9), (&lost, 9), how),
+                vec!["the materialized entries differ".to_string()],
+                "{how}"
+            );
+        }
+        // Another index is reported for a restore under its own wording.
+        assert_eq!(
+            materialized_differences((&live, 9), (&live.clone(), 8), "compacted restore"),
+            vec!["the restored runtime applied another index".to_string()]
+        );
+    }
+
     use super::*;
 
     fn world(kind: GrantKind) -> World {
@@ -1520,6 +1654,38 @@ mod tests {
         let mut delta = Delta::default();
         delta.upserts.insert(key.to_string(), value);
         world.host_write(&delta, "s003-test").expect("a host write")
+    }
+
+    #[test]
+    fn the_dependency_digest_is_derived_from_the_sealed_branch_and_matches_the_record() {
+        let mut world = world(GrantKind::Auto);
+        let first = open(&mut world, "digest-a", rmw(0, 1));
+        let second = open(&mut world, "digest-b", rmw(1, 1));
+        // The declarations of two different branches give two digests.
+        assert_ne!(
+            expected_dependencies(&first.sealed),
+            expected_dependencies(&second.sealed)
+        );
+        let from = world.ledger_len();
+        assert!(matches!(
+            world.merge(&first, &auto()).expect("a merge"),
+            Settled::Committed
+        ));
+        let record = match world.runtime.committed_events().get(from) {
+            Some(CommittedEvent {
+                event:
+                    LedgerEvent::SemanticDeltaCommitted {
+                        origin: SemanticOrigin::Merge(record),
+                        ..
+                    },
+                ..
+            }) => record.clone(),
+            other => panic!("not a merge record: {other:?}"),
+        };
+        // The record carries what the declarations give, and the check that
+        // reads it back finds no fault in a merge the runtime made.
+        assert_eq!(record.dependencies, expected_dependencies(&first.sealed));
+        clean(&world);
     }
 
     #[test]

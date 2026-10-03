@@ -11,6 +11,56 @@ path = "model/M002-typed-attention"
 status = "planned"
 
 [[experiment]]
+id = "M001-v2"
+path = "model/M001-v2-semantic-slots"
+status = "prepared"
+
+[[experiment]]
+id = "M002-v2"
+path = "model/M002-v2-typed-attention"
+status = "prepared"
+
+[[experiment]]
+id = "M002-v3"
+path = "model/M002-v3-typed-attention"
+status = "prepared"
+
+[[experiment]]
+id = "M002-v4"
+path = "model/M002-v4-typed-attention"
+status = "prepared"
+
+[[experiment]]
+id = "M001-v4"
+path = "model/M001-v4-semantic-slots"
+status = "prepared"
+
+[[experiment]]
+id = "M002-v5"
+path = "model/M002-v5-factorized-typed-attention"
+status = "superseded"
+
+[[experiment]]
+id = "M002-v6"
+path = "model/M002-v6-factorized-typed-attention"
+status = "superseded"
+
+[[experiment]]
+id = "M002-v7"
+path = "model/M002-v7-factorized-typed-attention"
+status = "superseded"
+
+[[experiment]]
+id = "M002-v8"
+path = "model/M002-v8-factorized-typed-attention"
+status = "superseded"
+
+[[experiment]]
+id = "M002-v9"
+path = "model/M002-v9-factorized-typed-attention"
+status = "superseded"
+
+[[experiment]]
 id = "M003"
 path = "model/M003-latent-recurrence"
 status = "planned"

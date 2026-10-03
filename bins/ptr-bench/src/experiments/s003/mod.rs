@@ -38,12 +38,14 @@ use super::json;
 /// cases that make one; `label` tells a case from its rerun. It is removed when
 /// dropped, with cleanup errors ignored. Exits with status 2 if creation fails.
 fn durable_scratch(seed: u64, index: usize, label: &str) -> Option<Scratch> {
-    (index % params::DURABLE_ROUNDTRIP_EVERY_CASES == 0).then(|| {
-        Scratch::create(&format!("{seed}-{index}-{label}")).unwrap_or_else(|error| {
-            eprintln!("no scratch directory for a durable round trip: {error}");
-            std::process::exit(2);
+    index
+        .is_multiple_of(params::DURABLE_ROUNDTRIP_EVERY_CASES)
+        .then(|| {
+            Scratch::create(&format!("{seed}-{index}-{label}")).unwrap_or_else(|error| {
+                eprintln!("no scratch directory for a durable round trip: {error}");
+                std::process::exit(2);
+            })
         })
-    })
 }
 
 /// The most notes of one case that are printed.

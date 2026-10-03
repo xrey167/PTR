@@ -134,6 +134,80 @@ class RepositoryShape(unittest.TestCase):
         self.assertIn("missing crates", errors)
         self.assertTrue(summary.startswith("OK: 0 documented crates"), summary)
 
+    def test_evaluation_registry_and_directories_name_the_same_slots(self):
+        """Report evaluation entries missing from either the registry or the filesystem."""
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        with directory:
+            for slot in ["listed-and-present", "present-only"]:
+                (root / "evaluations/components" / slot).mkdir(parents=True)
+                (root / "evaluations/components" / slot / "candidates.toml").write_text(
+                    f'component = "{slot}"\n', encoding="utf-8"
+                )
+            (root / "evaluations/registry.toml").write_text(
+                "".join(
+                    f'[[component]]\nid = "{slot}"\n'
+                    f'path = "components/{slot}/candidates.toml"\nstatus = "open"\n'
+                    for slot in ["listed-and-present", "listed-only"]
+                ),
+                encoding="utf-8",
+            )
+
+            errors, _ = mod.check(root)
+
+        self.assertIn(
+            "evaluations/components/present-only: not listed in evaluations/registry.toml",
+            errors,
+        )
+        self.assertIn(
+            "evaluations/registry.toml: listed-only has no "
+            "evaluations/components/listed-only/candidates.toml",
+            errors,
+        )
+        self.assertFalse(any("listed-and-present" in error for error in errors), errors)
+
+    def test_a_crate_missing_from_either_component_map_is_reported(self):
+        """Require a component-map table row rather than a prose link for each crate."""
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        with directory:
+            for crate in ["ptr-listed", "ptr-unlisted"]:
+                (root / "crates" / crate / "src").mkdir(parents=True)
+                (root / "crates" / crate / "Cargo.toml").write_text(
+                    "[package]\nname = 'x'\n", encoding="utf-8"
+                )
+            (root / "docs/components").mkdir(parents=True)
+            (root / "README.md").write_text(
+                "| [ptr-listed](crates/ptr-listed/README.md) | x |\n"
+                "| [ptr-unlisted](crates/ptr-unlisted/README.md) | x |\n",
+                encoding="utf-8",
+            )
+            # Mentioned in prose is not listed in the map.
+            (root / "docs/components/README.md").write_text(
+                "| [ptr-listed](../../crates/ptr-listed/README.md) | x | x |\n"
+                "See [ptr-unlisted](../../crates/ptr-unlisted/README.md) for more.\n",
+                encoding="utf-8",
+            )
+
+            errors, _ = mod.check(root)
+
+        self.assertIn(
+            "ptr-unlisted: not listed in the component map in docs/components/README.md",
+            errors,
+        )
+        self.assertFalse(any("ptr-listed: not listed" in e for e in errors), errors)
+        self.assertFalse(any("in README.md" in e for e in errors), errors)
+
+    def test_the_real_tree_lists_every_crate_in_both_maps(self):
+        """Check that both repository component maps include all actual crates."""
+        errors, _ = mod.check(ROOT)
+        self.assertEqual([e for e in errors if "component map" in e], [])
+
+    def test_the_real_tree_registers_every_evaluation(self):
+        """Check that actual evaluation directories and registry entries agree."""
+        errors, _ = mod.check(ROOT)
+        self.assertEqual([e for e in errors if "evaluations/" in e], [])
+
 
 if __name__ == "__main__":
     unittest.main()
