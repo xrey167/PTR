@@ -578,6 +578,13 @@ class LayoutTests(unittest.TestCase):
             "negative tasks": lambda case: case["runs"][1].update(merged=-1, no_change=129),
             "boolean tasks": lambda case: case["runs"][1].update(no_change=False),
             "boolean agents": lambda case: case["runs"][0].update(agents=True),
+            "missing attempts": lambda case: case["runs"][1].pop("attempts"),
+            "missing conflicts": lambda case: case["runs"][1].pop("conflicts"),
+            "boolean lifecycle refusals": lambda case: case["runs"][1].update(lifecycle_refusals=True),
+            "missing escalations": lambda case: case["runs"][2].pop("escalations"),
+            "negative review voids": lambda case: case["runs"][2].update(review_voids=-1),
+            "fractional no change": lambda case: case["runs"][1].update(no_change=0.0),
+            "counter on an incomplete run": lambda case: case["runs"][1].update(complete=False, attempts="many"),
         }
         for name, change in changes.items():
             with self.subTest(name=name):

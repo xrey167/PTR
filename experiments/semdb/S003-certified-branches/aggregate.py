@@ -102,6 +102,16 @@ HARD = [
     "nondeterminism",
     "harness_errors",
 ]
+# The per-run counters that `cells` and `descriptive` read.
+RUN_COUNTERS = (
+    "attempts",
+    "merged",
+    "no_change",
+    "conflicts",
+    "lifecycle_refusals",
+    "escalations",
+    "review_voids",
+)
 # Each must be above zero in every seed, or the run proves nothing about it.
 COVERAGE = [
     "merges_clean",
@@ -248,6 +258,14 @@ def validate_layout(result: dict, table: dict) -> None:
             seen.add(key)
             if type(run.get("complete")) is not bool or type(run.get("ticks")) is not int or run["ticks"] < 0:
                 raise ValueError(f"case {index}: run {key} needs a completion flag and nonnegative ticks")
+            # Every counter the analysis reads later, so that a missing or
+            # malformed one is refused here, naming the case and run, instead of
+            # surfacing as a KeyError or TypeError deep inside the analysis.
+            # `attempts` keeps its sign: a cell whose attempts are not above
+            # zero is reported by the pilot as unmeasured, not as malformed.
+            for counter in RUN_COUNTERS:
+                if type(run.get(counter)) is not int or (counter != "attempts" and run[counter] < 0):
+                    raise ValueError(f"case {index}: run {key} needs a nonnegative integer {counter}")
             if run["complete"]:
                 settlements = [run.get(field) for field in ("merged", "no_change", "verification_holds", "abandoned")]
                 if any(type(value) is not int or value < 0 for value in settlements) or sum(settlements) != table["tasks_per_case"]:
