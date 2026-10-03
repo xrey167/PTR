@@ -1,0 +1,872 @@
+{
+ "crates": {
+  "ptr-types": {
+   "role": "Dependency-free foundational types shared by every PTR crate: revisions, generations, commit indexes, addresses, slot encodings and checkpoint headers.",
+   "summary": "Holds the identity newtypes (Revision, Generation, CommitIndex, FencingToken, Digest), the semantic and lifecycle enums (Effect, Validity, VerificationLevel), pod and mesh address records with validation, and the model-facing pieces: a versioned cognitive codebook, a slot encoding that turns a committed value into a vector, a validity mask and a checkpoint header. Every other crate in this area imports it; it has no external dependencies by design.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Core identity newtypes, admission traits, semantic value and lifecycle enums shared across PTR.",
+     "key_types": [
+      "Revision",
+      "Generation",
+      "CommitIndex",
+      "FencingToken",
+      "Effect"
+     ]
+    },
+    "checkpoint.rs": {
+     "purpose": "Header a stored model artifact carries (format version, codebook, slot encoding, table sizes) and the reader that refuses a mismatch.",
+     "key_types": [
+      "CheckpointHeader",
+      "CheckpointError",
+      "TableSize",
+      "FORMAT_V3"
+     ]
+    },
+    "codebook.rs": {
+     "purpose": "Versioned table giving every cognitive type kernel member a stable integer code that never follows enum declaration order.",
+     "key_types": [
+      "Codebook",
+      "CodebookVersion",
+      "TypeCode",
+      "CodeFamily",
+      "CodebookError"
+     ]
+    },
+    "confidence.rs": {
+     "purpose": "A probability tagged with an explicit semantic target so confidence is never mistaken for runtime authority.",
+     "key_types": [
+      "ConfidenceEstimate",
+      "ConfidenceTarget",
+      "ConfidenceTargetMismatch"
+     ]
+    },
+    "mesh.rs": {
+     "purpose": "Mesh tunnel lifecycle event record with a validate check on identity, revision and placement epoch.",
+     "key_types": [
+      "MeshTunnelLifecycleEvent",
+      "MeshTunnelEventKind"
+     ]
+    },
+    "pod_address.rs": {
+     "purpose": "Pod and pod-revision addresses, endpoints, routes and headers with canonical URI parsing and validation.",
+     "key_types": [
+      "PodAddress",
+      "PodRevisionAddress",
+      "PodEndpoint",
+      "PodRoute",
+      "PodHeader"
+     ]
+    },
+    "slot_encoding.rs": {
+     "purpose": "Deterministic, versioned encoding of a typed payload into a fixed-width slot vector; encodes identity, not similarity.",
+     "key_types": [
+      "SlotEncoding",
+      "SlotVector",
+      "EncodingVersion",
+      "EncodingError"
+     ]
+    },
+    "validity_mask.rs": {
+     "purpose": "Mask computed from committed lifecycle state deciding which slots a model may attend to; it can only narrow.",
+     "key_types": [
+      "ValidityMask",
+      "MaskError"
+     ]
+    }
+   }
+  },
+  "ptr-config": {
+   "role": "Typed daemon configuration with file, environment and command-line layers applied in a fixed order and validated.",
+   "summary": "One file defining PtrConfig and its sections (server, runtime, semantic, action boundary, observability, research, model) with serde defaults, a TOML loader, an environment override table, a command-line parser and two validators. ptrd applies them in the order defaults, file, environment, command line, then runs the stricter daemon validation.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "PtrConfig sections with defaults, TOML loading, PTR_ environment overrides, CliOverrides parsing and validation.",
+     "key_types": [
+      "PtrConfig",
+      "CliOverrides",
+      "ServerConfig",
+      "RuntimeConfig",
+      "ModelConfig"
+     ]
+    }
+   }
+  },
+  "ptr-ledger": {
+   "role": "The committed-history journal: event model and codec, hash-chained file log, authenticated anchor, compaction, erasure audit and a feature-gated Raft path.",
+   "summary": "lib.rs defines LedgerEvent, its canonical byte codec, an in-memory ledger and optional Raft-engine and raft-rs backends. integrity.rs frames records as a SHA-256 chain, file.rs is the single-writer FileLedger that the runtime opens in ptrd, anchor.rs plus acknowledged.rs add an HMAC-authenticated anchor with recovery rules, and compaction.rs with retention.rs raise the log floor and measure erasure. The anchored, compaction and Raft layers are driven only by tests in this repository; the plain FileLedger is the part reachable from a binary.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "LedgerEvent model, canonical event codec, Ledger trait, in-memory ledger, compaction barrier and feature-gated Raft backends.",
+     "key_types": [
+      "LedgerEvent",
+      "CommittedEvent",
+      "Ledger",
+      "InMemoryLedger",
+      "CompactionBarrier"
+     ]
+    },
+    "acknowledged.rs": {
+     "purpose": "Binds the durable log to the protected anchor, names every way they can disagree and what recovery does for each.",
+     "key_types": [
+      "AcknowledgedLedger",
+      "Split",
+      "TailPolicy",
+      "TailRecovery",
+      "AcknowledgedError"
+     ]
+    },
+    "anchor.rs": {
+     "purpose": "HMAC-authenticated, atomically renamed anchor record carrying epoch, acknowledged tail, chain origin and compaction floor.",
+     "key_types": [
+      "AnchorStore",
+      "ProtectedAnchor",
+      "AnchorKey",
+      "ChainOrigin",
+      "AnchorError"
+     ]
+    },
+    "compaction.rs": {
+     "purpose": "Log file naming by floor, retention policy, compaction plan and decision types, and the faults a cutover refuses with.",
+     "key_types": [
+      "LogPaths",
+      "RetentionPolicy",
+      "CompactionPlan",
+      "CompactionDecision",
+      "CompactionFault"
+     ]
+    },
+    "file.rs": {
+     "purpose": "Single-writer FileLedger with durable append, strict open, anchor-checked open and anchor-directed tail repair.",
+     "key_types": [
+      "FileLedger",
+      "RecoverableLog",
+      "LegacyLog"
+     ]
+    },
+    "integrity.rs": {
+     "purpose": "Versioned PTRLOG02 frame format with SHA-256 chaining, bounded scanning, strict decode and HMAC primitives.",
+     "key_types": [
+      "LogAnchor",
+      "VerifiedLog",
+      "encode_log_from",
+      "decode_log_from",
+      "hmac_sha256"
+     ]
+    },
+    "raft_node.rs": {
+     "purpose": "One Raft member over durable storage that hands outbound messages back to a transport instead of dropping them.",
+     "key_types": [
+      "RaftNode",
+      "MembershipChange",
+      "InstalledSnapshot",
+      "RetainedSnapshotAnchor",
+      "encode_message"
+     ]
+    },
+    "raft_storage.rs": {
+     "purpose": "File-backed Raft storage for hard state, configuration, log and snapshot with a write fence read from disk.",
+     "key_types": [
+      "FileRaftStorage",
+      "Core",
+      "MAX_ENTRY_BYTES",
+      "MAX_SNAPSHOT_BYTES"
+     ]
+    },
+    "retention.rs": {
+     "purpose": "Byte-search erasure audit over every retained log file plus the boundaries no audit can cross.",
+     "key_types": [
+      "ErasureAudit",
+      "Retainer",
+      "OutOfReach",
+      "retains"
+     ]
+    }
+   }
+  },
+  "ptr-state": {
+   "role": "Materialized key-value projection of the ledger with a single definition of what each event means as current state.",
+   "summary": "Defines projection_entries (the one mapping from a committed event to state keys), classify_next (duplicate, out-of-order or gap detection) and an in-memory MaterializedState; a Turso adapter behind the turso-backend feature applies the same entries in one transaction. The runtime uses the in-memory form.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Projection of committed events to key-value entries, next-index classification and the in-memory and Turso state appliers.",
+     "key_types": [
+      "MaterializedState",
+      "ApplyOutcome",
+      "classify_next",
+      "projection_entries",
+      "merged_branch_key"
+     ]
+    }
+   }
+  },
+  "ptr-storage": {
+   "role": "Encrypted protected-state store and content-addressed tier storage with in-memory, file and optional object-store backends.",
+   "summary": "lib.rs holds the protected-state records sealed with AES-256-GCM-SIV under a key provider, in-memory and file stores, generation anchors, and a plain object store trait. tier.rs defines chunked tier objects, manifests and CPU and file backends; opendal_tier.rs adds an OpenDAL backend behind a feature; tier_protected.rs seals key-value snapshot chunks through the protected store.",
+   "maturity": "partial",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Protected-state sealing and opening with key providers, generation anchors, in-memory and file stores and a simple object store.",
+     "key_types": [
+      "ProtectedStateStore",
+      "FileProtectedStateStore",
+      "KeyProvider",
+      "ProtectedRecord",
+      "StateDomain"
+     ]
+    },
+    "opendal_tier.rs": {
+     "purpose": "Tier backend that stores digest-named chunks through an OpenDAL operator under a validated prefix.",
+     "key_types": [
+      "OpenDalTierBackend"
+     ]
+    },
+    "tier.rs": {
+     "purpose": "Chunk descriptors, tier object manifests with canonical encoding, the TierBackend trait and CPU and file backends.",
+     "key_types": [
+      "TierBackend",
+      "TierObjectManifest",
+      "ChunkDescriptor",
+      "CpuTierBackend",
+      "FileTierBackend"
+     ]
+    },
+    "tier_protected.rs": {
+     "purpose": "Seals and opens key-value snapshot tier chunks through a protected state store, checking plaintext digests.",
+     "key_types": [
+      "seal_protected_tier_chunk",
+      "open_protected_tier_chunk",
+      "ProtectedTierChunk"
+     ]
+    }
+   }
+  },
+  "ptr-semdb": {
+   "role": "Revisioned semantic state: deltas, dependency graph with invalidation, atomic apply, immutable snapshots and the PTRSD001 delta codec.",
+   "summary": "SemanticHost prepares a SemanticDelta against its current state (bounds, conflicts, cycle and missing-input checks), then applies the prepared change only if it is still current, bumping the revision. Snapshots are immutable clones with a canonical digest and a staleness check. The codec writes the exact bytes the ledger stores in SemanticDeltaCommitted. ptr-runtime drives it on every semantic commit and on replay.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "SemanticHost, SemanticDelta, DependencyGraph, PreparedDelta, immutable SemanticSnapshot and ingress key prefixes.",
+     "key_types": [
+      "SemanticHost",
+      "SemanticDelta",
+      "PreparedDelta",
+      "SemanticSnapshot",
+      "DependencyGraph"
+     ]
+    },
+    "codec.rs": {
+     "purpose": "Deterministic PTRSD001 encoding and strict canonical decoding of a SemanticDelta with size and count bounds.",
+     "key_types": [
+      "MAX_DELTA_BYTES",
+      "MAX_DELTA_ITEMS",
+      "MAX_KEY_BYTES"
+     ]
+    }
+   }
+  },
+  "ptr-protocol": {
+   "role": "Semantic PodWire frame types and the checked conversion from the generated protobuf call message.",
+   "summary": "lib.rs defines WireVersion, CallFrame, Frame (call, return, error, event, revoke) and TryFrom for the generated PodCall that refuses empty call identifier, capability, payload or type; generated.rs includes the prost output compiled by build.rs from four proto files. The call frame deliberately carries no caller identity.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "PodWire semantic frames and validated conversion from the generated PodCall message.",
+     "key_types": [
+      "Frame",
+      "CallFrame",
+      "TypedPayload",
+      "ProtocolError",
+      "WireVersion"
+     ]
+    },
+    "generated.rs": {
+     "purpose": "Includes prost-generated podwire, model, events and raft message modules produced by build.rs.",
+     "key_types": [
+      "podwire",
+      "model",
+      "events",
+      "raft"
+     ]
+    }
+   }
+  },
+  "ptr-security": {
+   "role": "Pure authorization decision over capability, effect, revision freshness and live generation.",
+   "summary": "One function, PermissionSet::authorize, checks stale revision, revoked or unknown generation, capability membership and effect permission in that order and returns an allow receipt or a typed denial. Mutation, external and irreversible effects always face the hard checks regardless of configuration flags.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "PermissionSet and authorize: ordered revision, generation, capability and effect checks returning a receipt or denial.",
+     "key_types": [
+      "PermissionSet",
+      "ActionAuthorization",
+      "AuthorizationDecision",
+      "AuthorizationDenial",
+      "AuthorizationReceipt"
+     ]
+    }
+   }
+  },
+  "ptr-verifier": {
+   "role": "Verifier trait and a fabric that combines several verifier reports into one conservative report.",
+   "summary": "VerifierFabric runs every pushed verifier and returns the worst status, the lowest score, all findings and the strongest level reached; an empty fabric reports Unknown at Unverified. Admission policy is left to the runtime grant.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Verifier traits, VerificationReport and the fabric that merges reports by worst status and lowest score.",
+     "key_types": [
+      "VerifierFabric",
+      "Verifier",
+      "NamedVerifier",
+      "VerificationReport",
+      "VerificationStatus"
+     ]
+    }
+   }
+  }
+ },
+ "flows": [
+  {
+   "id": "ledger-durable-commit-and-recovery",
+   "title": "Durable commit, anchor and recovery",
+   "summary": "A journal record is framed and synced to the file ledger, the anchor covering it is then published, and on reopen the pair is classified and only an unacknowledged tail is repaired. The plain FileLedger append is reachable from ptrd; the anchor and recovery layers are driven only by tests.",
+   "status": "partial",
+   "lanes": [
+    {
+     "id": "ack",
+     "label": "acknowledged.rs",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "file",
+     "label": "file.rs",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "integ",
+     "label": "integrity.rs",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "anchor",
+     "label": "anchor.rs",
+     "crate": "ptr-ledger"
+    }
+   ],
+   "steps": [
+    {
+     "from": "ack",
+     "to": "file",
+     "label": "append_acknowledged calls append_durable",
+     "note": "Refuses when the ledger is fenced, then appends first so a crash can only leave the log ahead of the anchor.",
+     "evidence": "crates/ptr-ledger/src/acknowledged.rs:273-280"
+    },
+    {
+     "from": "file",
+     "to": "integ",
+     "label": "encode_record builds one PTRFR002 frame",
+     "note": "Checks index and size limits, writes magic, index, length, previous digest and header hash, then payload, record hash and end magic.",
+     "evidence": "crates/ptr-ledger/src/integrity.rs:78-113"
+    },
+    {
+     "from": "file",
+     "to": "file",
+     "label": "Write frame and sync_data, then publish in memory",
+     "note": "Marks the handle poisoned before writing; only after sync_data are the event, anchor and length updated and poison cleared. A length changed behind its back is refused.",
+     "evidence": "crates/ptr-ledger/src/file.rs:366-404"
+    },
+    {
+     "from": "ack",
+     "to": "anchor",
+     "label": "acknowledge covers the new tail",
+     "note": "Sets fenced, then asks the anchor store to advance; the origin digest of index 1 is adopted the first time and must match afterwards.",
+     "evidence": "crates/ptr-ledger/src/acknowledged.rs:280-287"
+    },
+    {
+     "from": "anchor",
+     "to": "anchor",
+     "label": "commit validates a monotonic successor",
+     "note": "Epoch must rise, covered index may not fall, an equal index needs an equal digest, and a set origin may not change.",
+     "evidence": "crates/ptr-ledger/src/anchor.rs:426-441"
+    },
+    {
+     "from": "anchor",
+     "to": "anchor",
+     "label": "publish writes scratch, syncs, renames, syncs directory",
+     "note": "Encodes 168 bytes with an HMAC-SHA256 tag and installs by atomic rename so a reader sees the old or new record only.",
+     "evidence": "crates/ptr-ledger/src/anchor.rs:450-481"
+    },
+    {
+     "from": "ack",
+     "to": "anchor",
+     "label": "open reads the anchor with open_expecting",
+     "note": "Authenticates the record, rejects a wrong length or tag, and rejects an epoch below the host-retained witness.",
+     "evidence": "crates/ptr-ledger/src/anchor.rs:318-350"
+    },
+    {
+     "from": "ack",
+     "to": "file",
+     "label": "lock_for_recovery scans the log above the anchor floor",
+     "note": "Takes the writer lock and validates every complete frame from the trusted base without writing.",
+     "evidence": "crates/ptr-ledger/src/file.rs:184-199"
+    },
+    {
+     "from": "file",
+     "to": "file",
+     "label": "classify returns a Split",
+     "note": "Aligned, Unacknowledged, LostSuffix, Diverged, OriginMismatch or BaseMismatch, as a pure function of the bytes and the anchor.",
+     "evidence": "crates/ptr-ledger/src/file.rs:445-467"
+    },
+    {
+     "from": "file",
+     "to": "file",
+     "label": "repair truncates a partial frame and applies TailPolicy",
+     "note": "Only Aligned and Unacknowledged proceed; Acknowledge keeps complete records, Discard cuts back to the anchor, Refuse fails. Any other split fails with every byte left in place.",
+     "evidence": "crates/ptr-ledger/src/file.rs:474-534"
+    },
+    {
+     "from": "ack",
+     "to": "anchor",
+     "label": "Advance the anchor over a kept tail",
+     "note": "If the repaired tail differs from the anchor, acknowledge it so the pair is aligned before appends resume.",
+     "evidence": "crates/ptr-ledger/src/acknowledged.rs:251-254"
+    }
+   ]
+  },
+  {
+   "id": "ledger-compaction-and-erasure",
+   "title": "Compaction cutover and erasure audit",
+   "summary": "A retention policy and snapshot barrier propose a new floor, a cutover builds a new log file and raises the floor in the anchor, and an audit searches every retained file for a plaintext. Driven only by tests in this repository.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "ack",
+     "label": "acknowledged.rs",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "comp",
+     "label": "compaction.rs",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "integ",
+     "label": "integrity.rs",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "file",
+     "label": "file.rs",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "anchor",
+     "label": "anchor.rs",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "ret",
+     "label": "retention.rs",
+     "crate": "ptr-ledger"
+    }
+   ],
+   "steps": [
+    {
+     "from": "ack",
+     "to": "ack",
+     "label": "plan_compaction applies RetentionPolicy and barrier",
+     "note": "Returns Retain when too little sits above the floor, Blocked when the barrier is unsafe or no snapshot covers a prefix; the floor is capped by snapshot_covers.",
+     "evidence": "crates/ptr-ledger/src/acknowledged.rs:322-339"
+    },
+    {
+     "from": "ack",
+     "to": "integ",
+     "label": "chain_anchors derives the digest at the proposed floor",
+     "note": "Recomputes anchors through the canonical encoder and fails if the floor is not on a record boundary.",
+     "evidence": "crates/ptr-ledger/src/acknowledged.rs:340-344"
+    },
+    {
+     "from": "ack",
+     "to": "comp",
+     "label": "CompactionPlan holds base, tail and counts",
+     "note": "The plan is only produced here and records discarded and retained record counts.",
+     "evidence": "crates/ptr-ledger/src/compaction.rs:131-139"
+    },
+    {
+     "from": "ack",
+     "to": "ack",
+     "label": "compact checks the plan against the live anchor",
+     "note": "Refuses StalePlan, FloorNotAdvancing, FloorAboveTail and FloorNotOnBoundary before touching any file.",
+     "evidence": "crates/ptr-ledger/src/acknowledged.rs:367-381"
+    },
+    {
+     "from": "ack",
+     "to": "integ",
+     "label": "encode_log_from builds the retained tail above the floor",
+     "note": "The new log chains from the plan base, not from the empty anchor.",
+     "evidence": "crates/ptr-ledger/src/acknowledged.rs:382-383"
+    },
+    {
+     "from": "ack",
+     "to": "file",
+     "label": "create_from_log_above writes the new floor-named file",
+     "note": "Destination must not exist; bytes and tail anchor are validated before the file is created, then synced.",
+     "evidence": "crates/ptr-ledger/src/file.rs:247-266"
+    },
+    {
+     "from": "ack",
+     "to": "anchor",
+     "label": "advance_compacted raises floor and covered index together",
+     "note": "This is the commit point: the anchor now names the new file. A crash before it leaves the old file live, after it the new one.",
+     "evidence": "crates/ptr-ledger/src/anchor.rs:404-423"
+    },
+    {
+     "from": "ack",
+     "to": "comp",
+     "label": "orphans lists unnamed log files; reclaim_orphans deletes them",
+     "note": "Only names this set could have produced count; deletion is an explicit separate step and is unsafe under a rolled-back anchor.",
+     "evidence": "crates/ptr-ledger/src/compaction.rs:78-106"
+    },
+    {
+     "from": "ack",
+     "to": "ret",
+     "label": "audit_erasure searches live and superseded logs",
+     "note": "Reads the live log through its held handle and orphans independently, byte-searching for the plaintext.",
+     "evidence": "crates/ptr-ledger/src/acknowledged.rs:421-427"
+    },
+    {
+     "from": "ret",
+     "to": "ret",
+     "label": "audit_with_live collects Retainer entries",
+     "note": "Any match anywhere counts as still retained; the result also records the live floor and scanned file count.",
+     "evidence": "crates/ptr-ledger/src/retention.rs:383-421"
+    },
+    {
+     "from": "ret",
+     "to": "ret",
+     "label": "with_retained_elsewhere and out_of_reach complete the claim",
+     "note": "Snapshots and backups are folded in by the caller; three boundaries (host artifacts, storage residue, model state) are always reported as out of reach.",
+     "evidence": "crates/ptr-ledger/src/retention.rs:314-330"
+    }
+   ]
+  },
+  {
+   "id": "semdb-transaction-and-snapshot",
+   "title": "Semantic delta commit and snapshot",
+   "summary": "The runtime encodes a semantic delta, the host prepares it against current state, the ledger records it, and apply_prepared publishes it atomically; snapshots are opened and checked for staleness afterwards.",
+   "status": "built",
+   "lanes": [
+    {
+     "id": "rt",
+     "label": "ptr-runtime semantic.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "host",
+     "label": "SemanticHost",
+     "crate": "ptr-semdb"
+    },
+    {
+     "id": "codec",
+     "label": "codec.rs",
+     "crate": "ptr-semdb"
+    },
+    {
+     "id": "ledger",
+     "label": "Ledger",
+     "crate": "ptr-ledger"
+    }
+   ],
+   "steps": [
+    {
+     "from": "rt",
+     "to": "codec",
+     "label": "apply_ingress encodes the delta",
+     "note": "delta.encode writes PTRSD001: magic, upserts, removals and dependencies in sorted order, refusing a key both removed and upserted and enforcing byte and item bounds.",
+     "evidence": "crates/ptr-semdb/src/codec.rs:43-82"
+    },
+    {
+     "from": "rt",
+     "to": "host",
+     "label": "prepare_delta stages a clone of state",
+     "note": "Re-encodes to enforce the durable-replay rules, then applies removals, upserts and dependency replacements to a cloned state.",
+     "evidence": "crates/ptr-semdb/src/lib.rs:495-524"
+    },
+    {
+     "from": "host",
+     "to": "host",
+     "label": "Cycle check on the dependency graph",
+     "note": "A topological pass over the staged graph returns CyclicDependency if any node is left unvisited.",
+     "evidence": "crates/ptr-semdb/src/lib.rs:525-527"
+    },
+    {
+     "from": "host",
+     "to": "host",
+     "label": "Compute affected keys and evict derived values",
+     "note": "Walks dependants in the old and new graph, removes cached derived values that the delta did not re-supply, and keeps their dependency entries.",
+     "evidence": "crates/ptr-semdb/src/lib.rs:528-536"
+    },
+    {
+     "from": "host",
+     "to": "host",
+     "label": "Missing-input check for supplied derivations",
+     "note": "An upserted derived key whose declared inputs are not present in the staged state fails with MissingDependency.",
+     "evidence": "crates/ptr-semdb/src/lib.rs:537-548"
+    },
+    {
+     "from": "host",
+     "to": "host",
+     "label": "Next revision only when state changed",
+     "note": "Revision increments by one, failing with RevisionExhausted at the ceiling; the PreparedDelta records owner, base revision and affected keys.",
+     "evidence": "crates/ptr-semdb/src/lib.rs:549-563"
+    },
+    {
+     "from": "rt",
+     "to": "ledger",
+     "label": "append_semantic then append writes SemanticDeltaCommitted",
+     "note": "The record is checked for encodability, appended (durably when the file ledger is open) and then applied.",
+     "evidence": "crates/ptr-runtime/src/semantic.rs:308-316"
+    },
+    {
+     "from": "rt",
+     "to": "host",
+     "label": "apply_committed calls apply_prepared",
+     "note": "Replaces state only if the preparation came from this host and the revision still equals its base, otherwise StalePreparation; returns the new revision and invalidated keys.",
+     "evidence": "crates/ptr-semdb/src/lib.rs:566-575"
+    },
+    {
+     "from": "rt",
+     "to": "codec",
+     "label": "Replay decodes and re-prepares stored deltas",
+     "note": "SemanticDelta::decode rejects bad magic, duplicates, trailing bytes and any non-canonical ordering by re-encoding and comparing.",
+     "evidence": "crates/ptr-semdb/src/codec.rs:83-130"
+    },
+    {
+     "from": "rt",
+     "to": "host",
+     "label": "snapshot opens an immutable view",
+     "note": "Clones state into an Arc with owner handle; canonical_digest hashes revision, ordered keys and complete typed payloads.",
+     "evidence": "crates/ptr-semdb/src/lib.rs:615-621"
+    },
+    {
+     "from": "rt",
+     "to": "host",
+     "label": "snapshot_is_current uses is_stale",
+     "note": "Stale if the owner differs or the revision moved, and never current while execution is fenced; this is identity only, not an execution permit.",
+     "evidence": "crates/ptr-runtime/src/semantic.rs:357-359"
+    }
+   ]
+  },
+  {
+   "id": "ledger-raft-replication",
+   "title": "Raft node propose, persist and commit",
+   "summary": "A leader proposes an encoded ledger event, each ready state is persisted in raft's required order with messages handed back to the caller, and committed entries become ledger events. Only available with the raft-rs-backend feature and driven by tests; no binary uses it.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "node",
+     "label": "raft_node.rs",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "raft",
+     "label": "raft RawNode",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "store",
+     "label": "raft_storage.rs",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "host",
+     "label": "caller or transport",
+     "crate": "ptr-ledger"
+    }
+   ],
+   "steps": [
+    {
+     "from": "host",
+     "to": "node",
+     "label": "propose encodes the event",
+     "note": "Checks the event is encodable and submits its bytes; a member that does not lead refuses rather than buffering the write.",
+     "evidence": "crates/ptr-ledger/src/raft_node.rs:360-366"
+    },
+    {
+     "from": "node",
+     "to": "raft",
+     "label": "drain loops while a ready state exists",
+     "note": "Takes the next ready; messages that do not depend on persistence are collected first.",
+     "evidence": "crates/ptr-ledger/src/raft_node.rs:380-386"
+    },
+    {
+     "from": "node",
+     "to": "store",
+     "label": "apply_snapshot when the ready carries one",
+     "note": "Fenced first, writes the payload then state, clears the held events and records an InstalledSnapshot with a digest computed from the arriving bytes.",
+     "evidence": "crates/ptr-ledger/src/raft_node.rs:388-407"
+    },
+    {
+     "from": "node",
+     "to": "store",
+     "label": "append entries then set_hard_state",
+     "note": "Entries are fenced, bounds-checked and synced; term, vote and commit are written atomically and flushed before any dependent message leaves.",
+     "evidence": "crates/ptr-ledger/src/raft_node.rs:411-423"
+    },
+    {
+     "from": "store",
+     "to": "store",
+     "label": "fenced_to reads the fence from disk",
+     "note": "The fence is the highest term ever accepted; a writer whose term is below it fails with PTR_RAFT_FENCED before any byte moves.",
+     "evidence": "crates/ptr-ledger/src/raft_storage.rs:503-520"
+    },
+    {
+     "from": "node",
+     "to": "host",
+     "label": "persisted_messages are released after the write",
+     "note": "Votes and appends depending on the flush go out only now, returned to the caller to carry.",
+     "evidence": "crates/ptr-ledger/src/raft_node.rs:425"
+    },
+    {
+     "from": "node",
+     "to": "node",
+     "label": "apply_committed turns entries into CommittedEvent",
+     "note": "Configuration changes update raft and the stored configuration; empty entries are skipped; normal entries decode into events with a running applied count.",
+     "evidence": "crates/ptr-ledger/src/raft_node.rs:448-483"
+    },
+    {
+     "from": "node",
+     "to": "store",
+     "label": "advance and set_commit",
+     "note": "The light ready's commit index is persisted, remaining committed entries applied, then advance_apply.",
+     "evidence": "crates/ptr-ledger/src/raft_node.rs:429-438"
+    },
+    {
+     "from": "host",
+     "to": "node",
+     "label": "step feeds messages from other members",
+     "note": "Inbound messages enter raft and drain returns the replies; decode_message bounds a frame at 16 MiB and drops one that does not decode.",
+     "evidence": "crates/ptr-ledger/src/raft_node.rs:369-372"
+    },
+    {
+     "from": "host",
+     "to": "node",
+     "label": "record_snapshot and resume_with_applied",
+     "note": "The application hands in state at a committed index, the log below is rewritten away; a follower given a snapshot must call resume_with_applied before applying more.",
+     "evidence": "crates/ptr-ledger/src/raft_node.rs:228-293"
+    }
+   ]
+  },
+  {
+   "id": "state-projection-and-config-precedence",
+   "title": "Config layering and state projection at startup",
+   "summary": "ptrd builds its configuration from defaults, file, environment and command line, validates it for daemon use, opens the durable ledger and replays each committed event into the materialized state through ptr-state.",
+   "status": "built",
+   "lanes": [
+    {
+     "id": "ptrd",
+     "label": "ptrd main",
+     "crate": "ptrd"
+    },
+    {
+     "id": "cfg",
+     "label": "ptr-config",
+     "crate": "ptr-config"
+    },
+    {
+     "id": "rt",
+     "label": "ptr-runtime",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "led",
+     "label": "FileLedger",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "state",
+     "label": "ptr-state",
+     "crate": "ptr-state"
+    }
+   ],
+   "steps": [
+    {
+     "from": "ptrd",
+     "to": "cfg",
+     "label": "CliOverrides::parse reads flags first",
+     "note": "Parses the flags and the config path so the file can be located; an unknown flag is refused. The values are applied last.",
+     "evidence": "bins/ptrd/src/main.rs:12"
+    },
+    {
+     "from": "ptrd",
+     "to": "cfg",
+     "label": "PtrConfig::from_path loads the file over defaults",
+     "note": "Every section uses serde default, so keys missing from the TOML keep built-in defaults such as 127.0.0.1:8080 and a mailbox capacity of 128. The path comes from --config, PTR_CONFIG or config/default.toml.",
+     "evidence": "crates/ptr-config/src/lib.rs:116-119"
+    },
+    {
+     "from": "ptrd",
+     "to": "cfg",
+     "label": "apply_env overrides the file",
+     "note": "A fixed table of PTR_ variables is applied; an unknown name is ignored; a bad number or boolean is an error; then validate runs.",
+     "evidence": "crates/ptr-config/src/lib.rs:121-172"
+    },
+    {
+     "from": "ptrd",
+     "to": "cfg",
+     "label": "CliOverrides::apply_to overrides the environment",
+     "note": "Command-line values win over both earlier layers and validation runs again.",
+     "evidence": "crates/ptr-config/src/lib.rs:70-96"
+    },
+    {
+     "from": "ptrd",
+     "to": "cfg",
+     "label": "validate_daemon is the stricter startup gate",
+     "note": "Requires standalone mode, a loopback bind, an existing explicit data directory and a named model backend.",
+     "evidence": "crates/ptr-config/src/lib.rs:193-214"
+    },
+    {
+     "from": "ptrd",
+     "to": "rt",
+     "label": "PtrRuntime::open_durable opens the ledger file",
+     "note": "Calls FileLedger::open on data_dir/ledger.log and replays what it holds.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:522-525"
+    },
+    {
+     "from": "rt",
+     "to": "led",
+     "label": "Replay each persisted event",
+     "note": "Each event passes lifecycle and semantic validation before apply_committed.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:528-536"
+    },
+    {
+     "from": "rt",
+     "to": "state",
+     "label": "apply_committed ends in MaterializedState::apply",
+     "note": "After the event-specific handling the runtime applies the committed event to its projection.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:2834"
+    },
+    {
+     "from": "state",
+     "to": "state",
+     "label": "try_apply classifies the index with classify_next",
+     "note": "Duplicate, out-of-order and gap indexes return an outcome without changing state; only the exact next index inserts projection_entries and advances last_applied.",
+     "evidence": "crates/ptr-state/src/lib.rs:39-50"
+    },
+    {
+     "from": "state",
+     "to": "state",
+     "label": "apply discards the outcome",
+     "note": "The in-memory convenience wrapper ignores the ApplyOutcome, so the runtime does not learn of a refused index here; the Turso try_apply returns it and commits in one transaction (feature turso-backend).",
+     "evidence": "crates/ptr-state/src/lib.rs:52-54"
+    }
+   ]
+  }
+ ]
+}

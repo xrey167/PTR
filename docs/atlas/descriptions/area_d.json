@@ -1,0 +1,1152 @@
+{
+ "crates": {
+  "ptr-branch": {
+   "role": "Speculative agent branches over an immutable snapshot, certified against declared dependencies and triaged by a verifier-bounded, calibrated policy.",
+   "summary": "A Branch records value digests of keys it read, range digests of prefixes it scanned, relied-on lifecycle generations and staged operations, then seals into a SealedBranch that can only be built through checked constructors. certify() refuses on any changed dependency or yields a MergePlan with a stable digest; the arbiter decides auto-propose, escalate or discard and calibrates its threshold with conformal risk control or Learn-then-Test. Nothing here commits: PtrRuntime::merge_branch in ptr-runtime does, and the ptr-bench certified-branches experiment drives it.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Crate documentation and public re-exports; states that a branch has no authority and only the runtime merges.",
+     "key_types": [
+      "Branch",
+      "SealedBranch",
+      "certify",
+      "TriagePolicy"
+     ]
+    },
+    "branch.rs": {
+     "purpose": "Open Branch recording reads, scans, reliance and operations, and the SealedBranch it seals into with its invariants and digest.",
+     "key_types": [
+      "Branch",
+      "BranchId",
+      "SealedBranch",
+      "SealedBranchParts",
+      "RESERVED_PREFIXES"
+     ]
+    },
+    "ops.rs": {
+     "purpose": "Staged operation kinds (put, remove, counter add, set insert and remove) with commutativity and apply semantics.",
+     "key_types": [
+      "BranchOp",
+      "counter_value",
+      "set_value",
+      "read_counter_value",
+      "read_set_value"
+     ]
+    },
+    "digest.rs": {
+     "purpose": "Fixed-size SHA-256 digests of a key's value, a scanned prefix, and a key's declared input set.",
+     "key_types": [
+      "ValueDigest",
+      "RangeDigest",
+      "InputsDigest"
+     ]
+    },
+    "certify.rs": {
+     "purpose": "Optimistic certification of a sealed branch against a target snapshot, yielding a digest-bearing MergePlan or a refusal.",
+     "key_types": [
+      "certify",
+      "MergePlan",
+      "Certification",
+      "CertificationKind",
+      "merge_plan_digest"
+     ]
+    },
+    "arbiter.rs": {
+     "purpose": "Triage policy: verification first, calibrated auto-propose threshold, calibration slice, adjudication and off-policy evaluation.",
+     "key_types": [
+      "TriagePolicy",
+      "TriageDecision",
+      "PolicyRecord",
+      "certify_threshold",
+      "calibrate_threshold"
+     ]
+    },
+    "error.rs": {
+     "purpose": "Stable-coded refusals for branch staging, sealing and certification, and for arbiter policy and calibration.",
+     "key_types": [
+      "BranchError",
+      "ArbiterError"
+     ]
+    }
+   }
+  },
+  "ptr-fastmem": {
+   "role": "Gated delta-rule associative working memory that is a derived, exactly revocable projection of lifecycle-managed inputs.",
+   "summary": "FastMemory folds validated writes into per-head f32 matrices with the Kimi-style gated delta rule, keeps a journal and periodic checkpoints, and reads only when every source is admissible. Readouts are decoded against identifier codes into ordinary SearchHit candidates or Unknown, never evidence. Revocation removes writes and refolds from the last earlier checkpoint to a bit-identical state. The crate is reached from ptr-pg storage adapters and from the ptr-bench L003 experiment, which needs the non-default postgres-experiments feature.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Crate documentation of the revocable fast-weight design and public re-exports.",
+     "key_types": [
+      "FastMemory",
+      "decode_readout",
+      "encode_state"
+     ]
+    },
+    "config.rs": {
+     "purpose": "Shape configuration of a memory with hard upper bounds on heads, dimensions, cells, journal length and value magnitude.",
+     "key_types": [
+      "FastMemoryConfig",
+      "check_config",
+      "MAX_STATE_CELLS",
+      "MAX_WRITES",
+      "MAX_VALUE_MAGNITUDE"
+     ]
+    },
+    "state.rs": {
+     "purpose": "The fast-weight matrices with the deterministic delta-rule fold, read-out, and the sealed Readout type.",
+     "key_types": [
+      "FastWeightState",
+      "Readout",
+      "ReadoutView"
+     ]
+    },
+    "write.rs": {
+     "purpose": "Write and query requests with admission checks, unit-key normalisation and source references to lifecycle inputs.",
+     "key_types": [
+      "WriteRequest",
+      "MemoryWrite",
+      "SourceRef",
+      "Decay",
+      "Query"
+     ]
+    },
+    "projection.rs": {
+     "purpose": "Seeded key projection from embeddings to head keys and the seeded identifier codebook of fact codes.",
+     "key_types": [
+      "SeededProjection",
+      "ProjectionSpec",
+      "IdentifierCodebook"
+     ]
+    },
+    "decode.rs": {
+     "purpose": "Decodes a readout against fact codes into search hits or Unknown, refusing foreign codebooks and non-capsule targets.",
+     "key_types": [
+      "decode_readout",
+      "DecodePolicy",
+      "Recall",
+      "FactCode",
+      "FASTMEM_BACKEND"
+     ]
+    },
+    "memory.rs": {
+     "purpose": "Journaled FastMemory with write, admitted read, exact revocation by refold, checkpoints, restore and binding digest.",
+     "key_types": [
+      "FastMemory",
+      "WriteReceipt",
+      "RevocationReport",
+      "binding_digest_of"
+     ]
+    },
+    "codec.rs": {
+     "purpose": "PTRFW001 byte encoding of a state with a trailing SHA-256, decoded only if intact and finite.",
+     "key_types": [
+      "encode_state",
+      "decode_state",
+      "STATE_MAGIC"
+     ]
+    },
+    "error.rs": {
+     "purpose": "Stable-coded refusals for configuration, write, projection, decode and state-codec failures.",
+     "key_types": [
+      "FastMemoryError"
+     ]
+    }
+   }
+  },
+  "ptr-lineage": {
+   "role": "Adapter lineage for continual specialisation: identity, gated lifecycle, subspace interference, forgetting-driven replay and consolidation.",
+   "summary": "An in-memory Lineage registers adapter records for one base model, gates them on forgetting metrics, tracks depth and names every adapter affected by revoked training inputs. Interference between adapters is measured as principal-angle overlap of update subspaces, replay samples are scheduled by an FSRS-style forgetting curve, and consolidation is a TIES merge, all with overflow-safe arithmetic. No binary or runtime code calls it; ptr-pg only stores measured InterferenceReport rows, so it is library code exercised by tests.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Crate documentation and public re-exports; states the Lineage is a working model, not authority.",
+     "key_types": [
+      "Lineage",
+      "ForgettingGate",
+      "ReplayPool",
+      "ties_merge"
+     ]
+    },
+    "lineage.rs": {
+     "purpose": "Adapter identity and record, lifecycle Candidate-Gated-Serving-Retired, depth, erasure propagation and consolidation policy.",
+     "key_types": [
+      "Lineage",
+      "AdapterRecord",
+      "AdapterStatus",
+      "Origin",
+      "ConsolidationPolicy"
+     ]
+    },
+    "forgetting.rs": {
+     "purpose": "Accuracy matrix metrics (backward transfer, forgetting) and the gate that decides whether an adapter may serve.",
+     "key_types": [
+      "AccuracyMatrix",
+      "ForgettingGate",
+      "GateReport",
+      "GateViolation",
+      "PublicSuite"
+     ]
+    },
+    "subspace.rs": {
+     "purpose": "Dense matrices, orthonormal bases, principal cosines and layer-by-layer interference between adapter updates.",
+     "key_types": [
+      "measure_interference",
+      "subspace_overlap",
+      "principal_cosines",
+      "LayerUpdate",
+      "InterferenceReport"
+     ]
+    },
+    "replay.rs": {
+     "purpose": "Replay pool with a forgetting curve, stability and difficulty updates from probes, and stratified sampling without replacement.",
+     "key_types": [
+      "ReplayPool",
+      "retrievability",
+      "ReplayParams",
+      "MemoryState",
+      "NewSample"
+     ]
+    },
+    "merge.rs": {
+     "purpose": "TIES merge of task vectors: trim to the largest entries, elect a sign per coordinate, average agreeing entries.",
+     "key_types": [
+      "ties_merge"
+     ]
+    },
+    "scale.rs": {
+     "purpose": "Extended-exponent arithmetic that keeps sums, means and differences correct where intermediate f64 results would overflow or underflow.",
+     "key_types": [
+      "Wide",
+      "exponent",
+      "power_of_two",
+      "times_power_of_two"
+     ]
+    },
+    "error.rs": {
+     "purpose": "Stable-coded refusals for registration, lifecycle transitions, gate, replay and shape errors.",
+     "key_types": [
+      "LineageError"
+     ]
+    }
+   }
+  },
+  "ptr-labeling": {
+   "role": "Weak supervision with verifier precedence: labeling-function votes, a Dawid-Skene label model, active-learning acquisition and typed gold labels.",
+   "summary": "VoteMatrix validates votes from verifier, heuristic, model and agent functions; fit_label_model runs Dawid-Skene expectation-maximisation over the non-verifier functions and resolve applies verifier vetoes first, giving Determined, Estimated, Unknown or Disputed per item. rank_for_annotation picks items for people, and evaluate and function_accuracy score against gold labels using ptr-analytics. No crate or binary depends on it, so it is library code exercised by its own tests.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Crate documentation of verifier precedence and the outcome vocabulary; re-exports the labeling API.",
+     "key_types": [
+      "fit_label_model",
+      "resolve",
+      "rank_for_annotation",
+      "evaluate"
+     ]
+    },
+    "votes.rs": {
+     "purpose": "Label schema, vote kinds, labeling functions and the validated VoteMatrix with a content digest.",
+     "key_types": [
+      "LabelSchema",
+      "Vote",
+      "FunctionKind",
+      "LabelingFunction",
+      "VoteMatrix"
+     ]
+    },
+    "model.rs": {
+     "purpose": "Dawid-Skene label model fit by expectation-maximisation, and resolution of items under verifier vetoes.",
+     "key_types": [
+      "fit_label_model",
+      "resolve",
+      "LabelModel",
+      "LabelOutcome",
+      "Resolution"
+     ]
+    },
+    "acquisition.rs": {
+     "purpose": "Ranks items for human annotation by entropy or margin, disputes first and determined items never.",
+     "key_types": [
+      "rank_for_annotation",
+      "Acquisition"
+     ]
+    },
+    "gold.rs": {
+     "purpose": "Gold label and evaluation-set types plus accuracy, calibration and per-function accuracy scoring against gold.",
+     "key_types": [
+      "GoldLabel",
+      "EvaluationSet",
+      "GoldSampling",
+      "evaluate",
+      "function_accuracy"
+     ]
+    },
+    "error.rs": {
+     "purpose": "Stable-coded refusals for labeling input and model errors, converting statistics errors from ptr-analytics.",
+     "key_types": [
+      "LabelingError"
+     ]
+    }
+   }
+  },
+  "ptr-analytics": {
+   "role": "Statistics kernel and metric definitions shared by the branch, labeling and storage crates.",
+   "summary": "Holds binomial intervals and bounds, calibration scores, Krippendorff alpha, running moments, importance-weighted rates and the platform Metric, Grouping, Window and MetricSpec definitions, with no SQL. Of these, ptr-branch uses clopper_pearson_upper, ptr-labeling uses wilson_interval, brier_score and expected_calibration_error, and ptr-pg compiles MetricSpec to SQL. Agreement, running moments, weighted rate and binomial_cdf have no consumer outside this crate and its tests.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Crate documentation and re-exports of the statistics kernel.",
+     "key_types": [
+      "krippendorff_alpha_nominal",
+      "wilson_interval",
+      "weighted_rate"
+     ]
+    },
+    "agreement.rs": {
+     "purpose": "Krippendorff's alpha for nominal ratings with missing values treated as absent.",
+     "key_types": [
+      "krippendorff_alpha_nominal"
+     ]
+    },
+    "binomial.rs": {
+     "purpose": "Wilson interval, Clopper-Pearson upper bound and binomial distribution function with strict input checks.",
+     "key_types": [
+      "wilson_interval",
+      "wilson_bounds",
+      "clopper_pearson_upper",
+      "binomial_cdf",
+      "RateEstimate"
+     ]
+    },
+    "calibration.rs": {
+     "purpose": "Multiclass Brier score and expected calibration error over equal-width or equal-mass bins.",
+     "key_types": [
+      "brier_score",
+      "expected_calibration_error",
+      "Binning"
+     ]
+    },
+    "metric.rs": {
+     "purpose": "Storage-independent definitions of the five platform metrics, their grouping, time window and result rows.",
+     "key_types": [
+      "Metric",
+      "Grouping",
+      "Window",
+      "MetricSpec",
+      "MetricRow"
+     ]
+    },
+    "running.rs": {
+     "purpose": "Streaming mean and sample variance that can be pushed and merged.",
+     "key_types": [
+      "RunningMoments"
+     ]
+    },
+    "weighted.rs": {
+     "purpose": "Self-normalised importance-weighted rate with a Wilson interval on the Kish effective sample size.",
+     "key_types": [
+      "weighted_rate",
+      "WeightedOutcome",
+      "WeightedRate"
+     ]
+    },
+    "error.rs": {
+     "purpose": "Stable-coded refusals for empty, mismatched, invalid-distribution and invalid-parameter inputs.",
+     "key_types": [
+      "StatsError"
+     ]
+    }
+   }
+  },
+  "ptr-memory": {
+   "role": "Semantic memory types and reference implementations for ingestion, knowledge store, retention, context compilation and key-value cache state.",
+   "summary": "Defines raw events, versioned KnowledgeObject generations, a KnowledgeStore with lifecycle and cascading invalidation, retention decisions, a budgeted context compiler and a key-value cache state runtime. The ingestion, retention and key-value implementations are deliberately simple: whitespace tokenizer, hash-based entities, a fixed 0.5 rule retention model and an in-memory key-value runtime. ptr-runtime wraps it in ContextMemoryController and KvStateMetadata checks, but no binary calls that, so it is library code driven by tests.",
+   "maturity": "partial",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Module wiring, re-exports and the capsule and procedure value types of the memory classes.",
+     "key_types": [
+      "MemoryClass",
+      "SemanticCapsule",
+      "VerifiedProcedure"
+     ]
+    },
+    "ingestion.rs": {
+     "purpose": "Ingestion pipeline traits and deterministic reference stages from raw event to KnowledgeObject.",
+     "key_types": [
+      "SemanticTokenizer",
+      "EntityExtractor",
+      "NamespaceResolver",
+      "KnowledgeObjectBuilder",
+      "DeterministicTokenizer"
+     ]
+    },
+    "knowledge.rs": {
+     "purpose": "Append-only raw history and generation-versioned knowledge objects with lifecycle transitions and dependency invalidation.",
+     "key_types": [
+      "KnowledgeStore",
+      "KnowledgeStoreError",
+      "LifecycleRecord"
+     ]
+    },
+    "retention.rs": {
+     "purpose": "Raw event and knowledge object data model plus retention scoring and the deterministic keep or drop decision.",
+     "key_types": [
+      "RawEvent",
+      "KnowledgeObject",
+      "RetentionAction",
+      "RetentionController",
+      "decide"
+     ]
+    },
+    "context.rs": {
+     "purpose": "Compiles retained objects into a digested context under a token budget, refusing invalidated or dependency-missing objects.",
+     "key_types": [
+      "compile_selected",
+      "compile_structured",
+      "CompiledContext",
+      "TokenBudget",
+      "ContextCandidate"
+     ]
+    },
+    "kv.rs": {
+     "purpose": "Key-value cache state metadata with owner-bound handles and an in-memory runtime that invalidates dependents.",
+     "key_types": [
+      "KvStateRuntime",
+      "InMemoryKvStateRuntime",
+      "KvStateMetadata",
+      "KvStateHandle",
+      "KvValidity"
+     ]
+    }
+   }
+  },
+  "ptr-search": {
+   "role": "Search hit types with staged evidence promotion and rank or score fusion that keeps capsule generations apart.",
+   "summary": "SearchHit moves SearchCandidate to PossibleEvidence to Observed to VerifiedKnown only through checked steps, asking the lifecycle authority about the hit's exact generation. fusion.rs provides weighted reciprocal rank fusion, convex score fusion and retain_live. There is no index here: SearchIndex is only a trait, and the Postgres hybrid search in ptr-pg and the fast-memory decoder produce the hits. Promotion and fusion are driven by tests and ptr-pg library code.",
+   "maturity": "partial",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Evidence stages, SearchHit with promotion checks, the SearchIndex trait and a reciprocal-rank-fusion wrapper.",
+     "key_types": [
+      "SearchHit",
+      "EvidenceStage",
+      "EvidencePromotionError",
+      "SearchIndex",
+      "reciprocal_rank_fusion"
+     ]
+    },
+    "fusion.rs": {
+     "purpose": "Weighted rank fusion, convex score fusion and lifecycle filtering of hits, keyed by capsule and generation.",
+     "key_types": [
+      "weighted_rank_fusion",
+      "convex_score_fusion",
+      "retain_live",
+      "WeightedList",
+      "FusedHit"
+     ]
+    }
+   }
+  },
+  "ptr-feedback": {
+   "role": "Minimal candidate, critique and population types for picking the best verified candidate.",
+   "summary": "A single file defines Candidate with an optional VerificationReport, Critique, and Population whose best_verified returns the passing candidate with the highest verifier score. It has no tests in source, no dependents and no loop that generates or repairs candidates.",
+   "maturity": "scaffold",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Candidate, Critique and Population types with best_verified selection by verifier score.",
+     "key_types": [
+      "Candidate",
+      "Critique",
+      "Population"
+     ]
+    }
+   }
+  }
+ },
+ "flows": [
+  {
+   "id": "branch-certify-and-triage",
+   "title": "Branch certify, triage and seal",
+   "summary": "An agent works on a private branch over one snapshot; sealing, certification against declared dependencies and verifier-bounded triage decide whether the runtime may merge it. Triggered by the ptr-bench certified-branches experiment and runtime merge_branch tests.",
+   "status": "built",
+   "lanes": [
+    {
+     "id": "host",
+     "label": "Agent host (ptr-bench)",
+     "crate": null
+    },
+    {
+     "id": "branch",
+     "label": "ptr-branch",
+     "crate": "ptr-branch"
+    },
+    {
+     "id": "semdb",
+     "label": "ptr-semdb snapshot",
+     "crate": "ptr-semdb"
+    },
+    {
+     "id": "runtime",
+     "label": "PtrRuntime::merge_branch",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "arbiter",
+     "label": "arbiter (triage)",
+     "crate": "ptr-branch"
+    },
+    {
+     "id": "analytics",
+     "label": "ptr-analytics",
+     "crate": "ptr-analytics"
+    }
+   ],
+   "steps": [
+    {
+     "from": "host",
+     "to": "branch",
+     "label": "Branch::open(id, author, snapshot)",
+     "note": "Starts an empty overlay on one immutable SemanticSnapshot; the author is recorded as given and nothing is visible to others.",
+     "evidence": "crates/ptr-branch/src/branch.rs:482"
+    },
+    {
+     "from": "branch",
+     "to": "semdb",
+     "label": "read / scan_prefix record digests",
+     "note": "The first read stores a ValueDigest of the base value and the first scan a RangeDigest of the prefix; these become the certified dependencies.",
+     "evidence": "crates/ptr-branch/src/branch.rs:523"
+    },
+    {
+     "from": "branch",
+     "to": "branch",
+     "label": "rely_on(target, generation)",
+     "note": "Declares the lifecycle generation relied on; a second, different generation for the same target is ConflictingReliance.",
+     "evidence": "crates/ptr-branch/src/branch.rs:587"
+    },
+    {
+     "from": "branch",
+     "to": "branch",
+     "label": "put / stage_commutative stage BranchOp",
+     "note": "Refuses ingress-reserved keys, overwrites of unread keys and operations on evicted derived keys; Add and set operations commute and are rebased later.",
+     "evidence": "crates/ptr-branch/src/branch.rs:694"
+    },
+    {
+     "from": "branch",
+     "to": "branch",
+     "label": "Branch::seal -> SealedBranch::from_parts",
+     "note": "Records base digests and input-set digests of touched keys, then re-checks every sealing invariant in check_sealed (reserved prefixes, unread targets, derived removal).",
+     "evidence": "crates/ptr-branch/src/branch.rs:734"
+    },
+    {
+     "from": "branch",
+     "to": "branch",
+     "label": "SealedBranch::seal_digest",
+     "note": "SHA-256 under a domain tag over id, author, base revision, all dependency maps and all operations, so a merge record can name the sealed branch.",
+     "evidence": "crates/ptr-branch/src/branch.rs:267"
+    },
+    {
+     "from": "runtime",
+     "to": "branch",
+     "label": "certify(sealed, target, validity)",
+     "note": "Rechecks sealing, refuses a target behind the base, then refuses with LifecycleChanged if a relied generation is not Live.",
+     "evidence": "crates/ptr-branch/src/certify.rs:370"
+    },
+    {
+     "from": "branch",
+     "to": "semdb",
+     "label": "Compare read, scan and input digests",
+     "note": "Any changed value digest, range digest or input-set digest, or an undeclared input, is a Conflict; the only repair is re-running the agent on the new snapshot.",
+     "evidence": "crates/ptr-branch/src/certify.rs:397-444"
+    },
+    {
+     "from": "branch",
+     "to": "branch",
+     "label": "Build MergePlan and its digest",
+     "note": "Applies operations to target values (commutative ones rebase), emits one semantic delta, and MergePlan::digest binds branch, revision, delta, dependencies and rebased keys for reviewer approval.",
+     "evidence": "crates/ptr-branch/src/certify.rs:514"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "certify_merge, then judge_merge",
+     "note": "The runtime certifies again against its own state, refuses a branch already merged, and lets the host grant's verifiers judge the exact state it would publish.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:994"
+    },
+    {
+     "from": "runtime",
+     "to": "arbiter",
+     "label": "TriagePolicy::triage(report, score, draw)",
+     "note": "Verification is consulted first: Fail discards; Disputed, Unknown, below FullSemantic or any hard finding escalates; only an eligible branch meets the threshold, and a seeded draw can put it in the calibration slice.",
+     "evidence": "crates/ptr-branch/src/arbiter.rs:232"
+    },
+    {
+     "from": "arbiter",
+     "to": "analytics",
+     "label": "certify_threshold uses clopper_pearson_upper",
+     "note": "Learn-then-Test picks the lowest grid threshold whose exact binomial upper bound on harm among auto-proposed branches is at most alpha; calibrate_threshold is the conformal risk control alternative.",
+     "evidence": "crates/ptr-branch/src/arbiter.rs:640"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "Commit or hold under the grant",
+     "note": "Auto-propose commits the plan once per branch id with a MergeRecord; escalate or verifier rejection returns MergeOutcome::Held. certify() itself never commits anything.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:927-974"
+    }
+   ]
+  },
+  {
+   "id": "fastmem-write-recall-revoke",
+   "title": "Fast memory write, recall and revocation",
+   "summary": "A write names its semantic source and is folded into the delta-rule matrices and journal; a read is admitted only if every source is admissible and is decoded into candidates; revoking a source refolds from a checkpoint. Reached from ptr-pg storage and the ptr-bench L003 experiment (non-default feature).",
+   "status": "built",
+   "lanes": [
+    {
+     "id": "caller",
+     "label": "Caller (ptr-pg, ptr-bench L003)",
+     "crate": null
+    },
+    {
+     "id": "write",
+     "label": "write.rs / projection.rs",
+     "crate": "ptr-fastmem"
+    },
+    {
+     "id": "mem",
+     "label": "memory.rs FastMemory",
+     "crate": "ptr-fastmem"
+    },
+    {
+     "id": "state",
+     "label": "state.rs FastWeightState",
+     "crate": "ptr-fastmem"
+    },
+    {
+     "id": "decode",
+     "label": "decode.rs",
+     "crate": "ptr-fastmem"
+    },
+    {
+     "id": "codec",
+     "label": "codec.rs",
+     "crate": "ptr-fastmem"
+    },
+    {
+     "id": "search",
+     "label": "ptr-search SearchHit",
+     "crate": "ptr-search"
+    }
+   ],
+   "steps": [
+    {
+     "from": "caller",
+     "to": "write",
+     "label": "SeededProjection::project / Query::project",
+     "note": "Projects an embedding to head keys in fixed-order f64 sums rounded once; the projection digest is later compared with the memory's bound digest.",
+     "evidence": "crates/ptr-fastmem/src/projection.rs:122"
+    },
+    {
+     "from": "caller",
+     "to": "mem",
+     "label": "FastMemory::write(WriteRequest)",
+     "note": "Checks journal capacity and sequence limit, then admits the request.",
+     "evidence": "crates/ptr-fastmem/src/memory.rs:313"
+    },
+    {
+     "from": "mem",
+     "to": "write",
+     "label": "admit_write validates and normalises",
+     "note": "Refuses beta outside (0,1], wrong lengths, non-finite or oversized values and bad decay; each key head is scaled to unit length and an all-zero head is refused.",
+     "evidence": "crates/ptr-fastmem/src/write.rs:237"
+    },
+    {
+     "from": "mem",
+     "to": "state",
+     "label": "FastWeightState::apply (gated delta rule)",
+     "note": "Decays the block, reads back what the key already returns and moves it toward the value by beta; returns the surprise. Plain f32 in fixed order so refolds are bit-identical.",
+     "evidence": "crates/ptr-fastmem/src/state.rs:136"
+    },
+    {
+     "from": "mem",
+     "to": "mem",
+     "label": "fold journals the write and checkpoints",
+     "note": "Pushes the write to the journal and clones the state into checkpoints every checkpoint_interval writes.",
+     "evidence": "crates/ptr-fastmem/src/memory.rs:474"
+    },
+    {
+     "from": "caller",
+     "to": "mem",
+     "label": "read_admitted(query, admissible)",
+     "note": "Refuses a wrong head shape or projection mismatch, and refuses with Denied if any journaled source is not admissible by the caller's lifecycle view.",
+     "evidence": "crates/ptr-fastmem/src/memory.rs:346"
+    },
+    {
+     "from": "mem",
+     "to": "decode",
+     "label": "fact_codes and decode_readout",
+     "note": "Facts are capsule-at-generation codes from the memory's codebook; decoding scores readout against codes and answers Unknown unless the best clears min_score and a margin over the runner-up.",
+     "evidence": "crates/ptr-fastmem/src/decode.rs:203"
+    },
+    {
+     "from": "decode",
+     "to": "search",
+     "label": "Recall::Hits as SearchHit at the lowest stage",
+     "note": "Hits carry the fastmem backend name and start at SearchCandidate, so they must still be resolved against live generations and verified.",
+     "evidence": "crates/ptr-fastmem/src/decode.rs:281"
+    },
+    {
+     "from": "caller",
+     "to": "mem",
+     "label": "revoke(is_revoked)",
+     "note": "Asks the predicate once per write in journal order, drops matching writes, discards later checkpoints and refolds from the last earlier checkpoint: exact revocation, not erasure of stored copies.",
+     "evidence": "crates/ptr-fastmem/src/memory.rs:398"
+    },
+    {
+     "from": "caller",
+     "to": "codec",
+     "label": "encode_state / decode_state checkpoint bytes",
+     "note": "PTRFW001 header, full-precision f32 cells and a SHA-256; decode refuses bad magic, length, digest or non-finite cells. ptr-pg stores these with the binding digest.",
+     "evidence": "crates/ptr-fastmem/src/codec.rs:20"
+    },
+    {
+     "from": "caller",
+     "to": "mem",
+     "label": "restore(config, codebook, journal)",
+     "note": "Re-admits each journaled write in sequence order and refolds; the L003 experiment compares this with revoked live memory.",
+     "evidence": "crates/ptr-fastmem/src/memory.rs:148"
+    }
+   ]
+  },
+  {
+   "id": "lineage-lifecycle-and-forgetting",
+   "title": "Adapter lineage, gate and forgetting",
+   "summary": "A trained adapter is registered as a candidate, measured for subspace interference, gated on forgetting metrics, served, and later consolidated or retired; replay samples are scheduled by modelled forgetting. Library code driven by tests; ptr-pg only stores interference reports.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "lineage",
+     "label": "lineage.rs Lineage",
+     "crate": "ptr-lineage"
+    },
+    {
+     "id": "subspace",
+     "label": "subspace.rs",
+     "crate": "ptr-lineage"
+    },
+    {
+     "id": "gate",
+     "label": "forgetting.rs",
+     "crate": "ptr-lineage"
+    },
+    {
+     "id": "replay",
+     "label": "replay.rs",
+     "crate": "ptr-lineage"
+    },
+    {
+     "id": "merge",
+     "label": "merge.rs",
+     "crate": "ptr-lineage"
+    },
+    {
+     "id": "scale",
+     "label": "scale.rs",
+     "crate": "ptr-lineage"
+    },
+    {
+     "id": "pg",
+     "label": "ptr-pg lineage adapter",
+     "crate": "ptr-pg"
+    }
+   ],
+   "steps": [
+    {
+     "from": "lineage",
+     "to": "lineage",
+     "label": "Lineage::register(AdapterRecord)",
+     "note": "Checks base model, duplicate id, named parent or consolidation sources and rank at least one; always stores the record as Candidate.",
+     "evidence": "crates/ptr-lineage/src/lineage.rs:151"
+    },
+    {
+     "from": "subspace",
+     "to": "scale",
+     "label": "measure_interference(candidate, updates, earlier)",
+     "note": "Per layer, computes principal-angle overlap and chance overlap of output and input subspaces against earlier adapters and names the worst one; duplicate layers are refused.",
+     "evidence": "crates/ptr-lineage/src/subspace.rs:1123"
+    },
+    {
+     "from": "subspace",
+     "to": "pg",
+     "label": "record_interference stores the report",
+     "note": "ptr-pg writes the measured InterferenceReport one row per layer and refuses a report naming another adapter; it cannot prove the report was measured here.",
+     "evidence": "crates/ptr-pg/src/adapters/lineage.rs:45"
+    },
+    {
+     "from": "gate",
+     "to": "gate",
+     "label": "ForgettingGate::evaluate(matrix, public suite)",
+     "note": "Reports every exceeded limit: average forgetting, per-task forgetting, backward transfer below minimum and public regression; non-finite thresholds or scores are refused first.",
+     "evidence": "crates/ptr-lineage/src/forgetting.rs:235"
+    },
+    {
+     "from": "gate",
+     "to": "lineage",
+     "label": "Lineage::gate(id, report)",
+     "note": "Only a Candidate with a passing report for the same adapter id becomes Gated; anything else is GateFailed or InvalidTransition.",
+     "evidence": "crates/ptr-lineage/src/lineage.rs:192"
+    },
+    {
+     "from": "lineage",
+     "to": "lineage",
+     "label": "serve, retire and depth",
+     "note": "serve needs Gated; retire is final; depth counts trained ancestors and restarts at zero for a consolidated adapter.",
+     "evidence": "crates/ptr-lineage/src/lineage.rs:214"
+    },
+    {
+     "from": "lineage",
+     "to": "lineage",
+     "label": "affected_by(revoked_inputs)",
+     "note": "Follows data manifests, parents and consolidation sources to every adapter whose weights depend on a revoked input; the only erasure is to retire or retrain them.",
+     "evidence": "crates/ptr-lineage/src/lineage.rs:264"
+    },
+    {
+     "from": "replay",
+     "to": "replay",
+     "label": "ReplayPool::record_probe updates memory state",
+     "note": "From probe loss and elapsed model time, a lapse lowers stability and raises difficulty, a success grows stability; retrievability is the FSRS-4.5 power curve.",
+     "evidence": "crates/ptr-lineage/src/replay.rs:263"
+    },
+    {
+     "from": "replay",
+     "to": "replay",
+     "label": "priority and sample(count, now, seed)",
+     "note": "Priority is (1 - recall) scaled by difficulty; lapsed-out samples are withheld for label audit; draws are stratified by priority and sampled without replacement by Gumbel top-k. Held-out samples are refused at insert.",
+     "evidence": "crates/ptr-lineage/src/replay.rs:414"
+    },
+    {
+     "from": "lineage",
+     "to": "lineage",
+     "label": "ConsolidationPolicy::consolidation_due",
+     "note": "Consolidation is due when depth reaches the limit or overlap exceeds the limit; an unmeasured or NaN overlap also makes it due.",
+     "evidence": "crates/ptr-lineage/src/lineage.rs:341"
+    },
+    {
+     "from": "merge",
+     "to": "scale",
+     "label": "ties_merge(vectors, density)",
+     "note": "Trims each task vector to its largest entries, elects each coordinate's sign from the sum and averages agreeing entries; sums and means go through scale.rs so extreme magnitudes cannot overflow.",
+     "evidence": "crates/ptr-lineage/src/merge.rs:32"
+    }
+   ]
+  },
+  {
+   "id": "labeling-weak-supervision",
+   "title": "Weak supervision to gold labels",
+   "summary": "Labeling-function votes are validated, a Dawid-Skene model estimates class posteriors, verifier vetoes take precedence in resolution, acquisition ranks items for people, and typed gold labels score the result. Library code driven by its own tests.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "votes",
+     "label": "votes.rs",
+     "crate": "ptr-labeling"
+    },
+    {
+     "id": "model",
+     "label": "model.rs",
+     "crate": "ptr-labeling"
+    },
+    {
+     "id": "acq",
+     "label": "acquisition.rs",
+     "crate": "ptr-labeling"
+    },
+    {
+     "id": "gold",
+     "label": "gold.rs",
+     "crate": "ptr-labeling"
+    },
+    {
+     "id": "stats",
+     "label": "ptr-analytics",
+     "crate": "ptr-analytics"
+    },
+    {
+     "id": "lineage",
+     "label": "ptr-lineage adapter ids",
+     "crate": "ptr-lineage"
+    }
+   ],
+   "steps": [
+    {
+     "from": "votes",
+     "to": "votes",
+     "label": "VoteMatrix::new validates votes",
+     "note": "Verifiers may only veto, other kinds may only vote a class, names are unique, rows are not ragged; only model functions may name an adapter.",
+     "evidence": "crates/ptr-labeling/src/votes.rs:140"
+    },
+    {
+     "from": "votes",
+     "to": "lineage",
+     "label": "LabelingFunction::model(name, adapter)",
+     "note": "A model function carries the adapter id from the lineage catalog as text; nothing in this crate checks it against ptr-lineage.",
+     "evidence": "crates/ptr-labeling/src/votes.rs:107"
+    },
+    {
+     "from": "model",
+     "to": "model",
+     "label": "fit_label_model (Dawid-Skene)",
+     "note": "Expectation-maximisation over non-verifier functions starting from smoothed majority vote; warns on fewer than three functions, no overlap or non-convergence.",
+     "evidence": "crates/ptr-labeling/src/model.rs:176"
+    },
+    {
+     "from": "model",
+     "to": "model",
+     "label": "resolve(matrix, model, min_probability)",
+     "note": "Refuses a model fitted on another matrix digest, then per item applies vetoes first: all ruled out is Disputed, one left is Determined, otherwise Estimated above the threshold or Unknown.",
+     "evidence": "crates/ptr-labeling/src/model.rs:450"
+    },
+    {
+     "from": "model",
+     "to": "model",
+     "label": "resolve_item renormalises over remaining classes",
+     "note": "Vetoed classes get zero probability whatever the model says; if the remaining mass is below the smallest normal f64 the item is Unknown.",
+     "evidence": "crates/ptr-labeling/src/model.rs:496"
+    },
+    {
+     "from": "acq",
+     "to": "acq",
+     "label": "rank_for_annotation(resolution, strategy, budget)",
+     "note": "Disputed items first in item order, determined items never, the rest by entropy or margin on the resolved posterior.",
+     "evidence": "crates/ptr-labeling/src/acquisition.rs:30"
+    },
+    {
+     "from": "gold",
+     "to": "gold",
+     "label": "EvaluationSet::push(GoldLabel)",
+     "note": "Refuses mixing oracle and human labels and a second label for an item; no function builds gold from a prediction.",
+     "evidence": "crates/ptr-labeling/src/gold.rs:81"
+    },
+    {
+     "from": "gold",
+     "to": "stats",
+     "label": "evaluate uses brier_score and expected_calibration_error",
+     "note": "Accuracy is always reported; calibration only for a uniformly sampled set, because actively sampled gold is a biased sample of hard items.",
+     "evidence": "crates/ptr-labeling/src/gold.rs:256"
+    },
+    {
+     "from": "gold",
+     "to": "stats",
+     "label": "function_accuracy uses wilson_interval",
+     "note": "Scores each function's class votes against uniform gold with a Wilson interval and reports the adapter, which attributes labeling quality to an adapter.",
+     "evidence": "crates/ptr-labeling/src/gold.rs:165"
+    }
+   ]
+  },
+  {
+   "id": "memory-ingestion-and-search",
+   "title": "Memory ingestion, context and search",
+   "summary": "A raw event is ingested into a versioned KnowledgeObject, retained or dropped, and compiled into a budgeted context; search hits are fused and promoted by evidence stage. Only library code and tests exist; no binary reaches it.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "ctrl",
+     "label": "ContextMemoryController",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "ingest",
+     "label": "ingestion.rs",
+     "crate": "ptr-memory"
+    },
+    {
+     "id": "store",
+     "label": "knowledge.rs",
+     "crate": "ptr-memory"
+    },
+    {
+     "id": "ctx",
+     "label": "retention.rs / context.rs",
+     "crate": "ptr-memory"
+    },
+    {
+     "id": "kv",
+     "label": "kv.rs",
+     "crate": "ptr-memory"
+    },
+    {
+     "id": "search",
+     "label": "ptr-search",
+     "crate": "ptr-search"
+    }
+   ],
+   "steps": [
+    {
+     "from": "ctrl",
+     "to": "store",
+     "label": "ingest: append_raw",
+     "note": "Appends immutable history; the same event again is idempotent, a different payload under one id is refused, digest and tool pairing are validated.",
+     "evidence": "crates/ptr-memory/src/knowledge.rs:40"
+    },
+    {
+     "from": "ctrl",
+     "to": "ingest",
+     "label": "Tokenize, extract entities, resolve namespace",
+     "note": "Reference stages only: whitespace split, 8-byte SHA-256 id per token as entity, first namespace of the context. Real semantic tokenizing and extraction do not exist.",
+     "evidence": "crates/ptr-memory/src/ingestion.rs:62"
+    },
+    {
+     "from": "ingest",
+     "to": "store",
+     "label": "BasicKnowledgeObjectBuilder then admit_object",
+     "note": "Builds a generation-1 hot object with confidence 1.0; admission needs every raw source and live same-generation dependencies and checks the supersede chain.",
+     "evidence": "crates/ptr-memory/src/knowledge.rs:81"
+    },
+    {
+     "from": "store",
+     "to": "store",
+     "label": "transition, activate_generation, invalidate",
+     "note": "Lifecycle may only step Hot-Warm-Cold-Pod-Archived or to Invalidated; invalidating a generation cascades to all objects that depend on it.",
+     "evidence": "crates/ptr-memory/src/knowledge.rs:286"
+    },
+    {
+     "from": "ctx",
+     "to": "ctx",
+     "label": "RetentionController::decide_all",
+     "note": "The shipped RuleRetentionModel scores pinned 1.0 else 0.5; decide keeps pinned verbatim, otherwise keeps the result, drops it or drops the call by threshold, falling back to KeepVerbatim.",
+     "evidence": "crates/ptr-memory/src/retention.rs:291"
+    },
+    {
+     "from": "ctx",
+     "to": "ctx",
+     "label": "compile_selected under TokenBudget",
+     "note": "Orders pinned first, refuses invalidated objects, missing dependencies, missing verbatim bytes and budget overflow, and returns entries with a SHA-256 context digest.",
+     "evidence": "crates/ptr-memory/src/context.rs:76"
+    },
+    {
+     "from": "ctx",
+     "to": "kv",
+     "label": "KvStateRuntime::continue_state / invalidate_dependencies",
+     "note": "The in-memory runtime chains state metadata by context digest, and invalidating a dependency digest invalidates the state and every descendant; handles are bound to one runtime owner.",
+     "evidence": "crates/ptr-memory/src/kv.rs:142"
+    },
+    {
+     "from": "search",
+     "to": "search",
+     "label": "weighted_rank_fusion / convex_score_fusion",
+     "note": "Fuses lists keyed by capsule and generation so a stale generation cannot borrow a live one's rank; raw scores are ignored by rank fusion; retain_live drops hits not Live.",
+     "evidence": "crates/ptr-search/src/fusion.rs:226"
+    },
+    {
+     "from": "search",
+     "to": "search",
+     "label": "SearchHit::mark_possible then observe",
+     "note": "observe asks the lifecycle for the exact generation's validity and requires the source resolved; stale, revoked, disputed and unknown generations are distinct refusals.",
+     "evidence": "crates/ptr-search/src/lib.rs:167"
+    },
+    {
+     "from": "search",
+     "to": "search",
+     "label": "promote_verified(verification_passed)",
+     "note": "Observed moves to VerifiedKnown only on a passing verification; the lifecycle is not asked again here.",
+     "evidence": "crates/ptr-search/src/lib.rs:202"
+    }
+   ]
+  },
+  {
+   "id": "analytics-metrics-kernel",
+   "title": "Analytics kernel consumers",
+   "summary": "Statistics from ptr-analytics bound the branch triage threshold, score labeling quality and define the platform metrics that ptr-pg compiles to SQL. Several kernel functions have no consumer outside the crate.",
+   "status": "partial",
+   "lanes": [
+    {
+     "id": "kernel",
+     "label": "ptr-analytics",
+     "crate": "ptr-analytics"
+    },
+    {
+     "id": "branch",
+     "label": "ptr-branch arbiter",
+     "crate": "ptr-branch"
+    },
+    {
+     "id": "label",
+     "label": "ptr-labeling gold",
+     "crate": "ptr-labeling"
+    },
+    {
+     "id": "pg",
+     "label": "ptr-pg metrics",
+     "crate": "ptr-pg"
+    }
+   ],
+   "steps": [
+    {
+     "from": "kernel",
+     "to": "kernel",
+     "label": "clopper_pearson_upper(successes, trials, delta)",
+     "note": "One-sided exact binomial upper bound by bisection on the binomial distribution; returns 1 for no trials or all successes and refuses delta outside (0,1).",
+     "evidence": "crates/ptr-analytics/src/binomial.rs:96"
+    },
+    {
+     "from": "kernel",
+     "to": "branch",
+     "label": "certify_threshold imports clopper_pearson_upper",
+     "note": "The only call of the kernel from ptr-branch: bounds the harm rate among auto-proposed branches in Learn-then-Test threshold selection.",
+     "evidence": "crates/ptr-branch/src/arbiter.rs:651"
+    },
+    {
+     "from": "kernel",
+     "to": "kernel",
+     "label": "wilson_interval(successes, trials, z)",
+     "note": "Wilson score interval with strict count and quantile checks, containing the point estimate.",
+     "evidence": "crates/ptr-analytics/src/binomial.rs:28"
+    },
+    {
+     "from": "kernel",
+     "to": "label",
+     "label": "function_accuracy imports wilson_interval",
+     "note": "Reports a per-function accuracy interval over uniform gold votes.",
+     "evidence": "crates/ptr-labeling/src/gold.rs:3"
+    },
+    {
+     "from": "kernel",
+     "to": "label",
+     "label": "brier_score and expected_calibration_error",
+     "note": "Multiclass Brier score and equal-mass calibration error; evaluate calls both only for a uniformly sampled gold set.",
+     "evidence": "crates/ptr-analytics/src/calibration.rs:31"
+    },
+    {
+     "from": "kernel",
+     "to": "pg",
+     "label": "Metric, MetricSpec, Grouping, Window definitions",
+     "note": "Five proportions over triage and branch records, defined in platform terms; AdjudicatedHarmRate is the unbiased estimate and RevertShare is descriptive only.",
+     "evidence": "crates/ptr-analytics/src/metric.rs:10"
+    },
+    {
+     "from": "pg",
+     "to": "pg",
+     "label": "metric_sql compiles a MetricSpec to SQL",
+     "note": "Counts each branch once, windows on one timestamp per branch and returns numerator and denominator per group.",
+     "evidence": "crates/ptr-pg/src/metric.rs:22"
+    },
+    {
+     "from": "pg",
+     "to": "kernel",
+     "label": "PgSubstrate::metric returns MetricRow",
+     "note": "Returns raw counts only; no interval from ptr-analytics is applied to them in this code.",
+     "evidence": "crates/ptr-pg/src/adapters/metrics.rs:12"
+    },
+    {
+     "from": "kernel",
+     "to": "kernel",
+     "label": "Unconsumed: agreement, weighted, running, binomial_cdf",
+     "note": "krippendorff_alpha_nominal, weighted_rate, RunningMoments and binomial_cdf are not called by any other crate in the repository; only the kernel tests exercise them.",
+     "evidence": "crates/ptr-analytics/src/weighted.rs:44"
+    }
+   ]
+  }
+ ]
+}

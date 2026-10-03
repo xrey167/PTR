@@ -1,0 +1,1117 @@
+{
+ "crates": {
+  "ptr-pods": {
+   "role": "Defines what a Pod is: manifests, registry, neural descriptors and leases, paged key-value cache, tiering adapters, evidence bundles and output records.",
+   "summary": "A 7k-line library holding the Pod contract (PodManifest, DynPod, PodRegistry keyed by project), the neural Pod adapter with lease lifecycle, reference attention and Qwen2 decoders over a paged key-value cache, and adapters that turn cache snapshots into storage-tier objects. The runtime, router, server and podwire crates consume the registry, manifest, evidence and cache types; the Candle GPU backend only builds under the candle-cuda feature, and several modules (adapter, protocol, native, semantic, turns, cache, hypothesis wiring) are exercised mainly by tests inside this crate.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Declares the crate modules and holds PodManifest, the Pod and DynPod traits, the project-keyed PodRegistry and the typestate PodLease.",
+     "key_types": [
+      "PodManifest",
+      "PodRegistry",
+      "DynPod",
+      "RegisteredPodBinding",
+      "invoke_with_lease"
+     ]
+    },
+    "adapter.rs": {
+     "purpose": "Wraps a NeuralPodExecutor as a DynPod after checking descriptor schemas and manifest digest, then runs activate, infer and release per call.",
+     "key_types": [
+      "NeuralPodAdapter",
+      "AdapterError"
+     ]
+    },
+    "attention.rs": {
+     "purpose": "Reference single-layer causal attention that appends keys and values to a paged cache and loads weights from safetensors.",
+     "key_types": [
+      "ReferenceCausalAttentionExecutor",
+      "CausalAttentionWeights",
+      "KvContinuationExecutor",
+      "CausalAttentionInput",
+      "CausalAttentionOutput"
+     ]
+    },
+    "cache.rs": {
+     "purpose": "An in-memory output cache keyed by pod identity, manifest digest, capability, input digest, knowledge revision, principal and protocol.",
+     "key_types": [
+      "PodCache",
+      "PodCacheKey"
+     ]
+    },
+    "candle.rs": {
+     "purpose": "Feature-gated CUDA backends: a dense matmul executor, a paged key-value backend and a GPU storage tier backend built on candle.",
+     "key_types": [
+      "CandleDenseExecutor",
+      "CandlePagedKvBackend",
+      "CandleGpuTierBackend",
+      "CandlePagedKvCache",
+      "CandleExecutorError"
+     ]
+    },
+    "evidence.rs": {
+     "purpose": "Hash-chained evidence bundle of turn events and outputs that can be sealed, signed with Ed25519, encoded canonically and replayed.",
+     "key_types": [
+      "PodEvidenceBundle",
+      "EvidenceSigner",
+      "EvidenceVerifier",
+      "Ed25519EvidenceSigner",
+      "ReplayedEvidence"
+     ]
+    },
+    "hypothesis.rs": {
+     "purpose": "Merges competing Pod hypotheses: refuses mixed generations, keeps only verifier-passed ones, ranks by confidence then latency.",
+     "key_types": [
+      "merge_hypotheses",
+      "PodHypothesis",
+      "MergedPodResult",
+      "HypothesisError"
+     ]
+    },
+    "kv.rs": {
+     "purpose": "Dense key-value cache model: schema, layout, page table, snapshots with digest, the KvTensorBackend trait and an in-memory backend.",
+     "key_types": [
+      "KvTensorBackend",
+      "InMemoryKvTensorBackend",
+      "KvTensorSnapshot",
+      "KvPageTable",
+      "KvCacheTier"
+     ]
+    },
+    "manifest.rs": {
+     "purpose": "ExecutionManifest binds knowledge, artifacts, reader and adapter under one digest with canonical encoding; also a lifecycle gate.",
+     "key_types": [
+      "ExecutionManifest",
+      "LineageBinding",
+      "LifecycleGate",
+      "ArtifactLifecycle",
+      "ManifestError"
+     ]
+    },
+    "native.rs": {
+     "purpose": "Tcp and Udp executors that send one typed payload as a length-prefixed frame (1 MiB cap) and read one reply.",
+     "key_types": [
+      "TcpProtocolExecutor",
+      "UdpProtocolExecutor",
+      "MAX_NATIVE_FRAME_BYTES"
+     ]
+    },
+    "neural.rs": {
+     "purpose": "Neural Pod descriptor, lifecycle, device and Pod leases, the NeuralPodExecutor trait and a pass-through reference executor.",
+     "key_types": [
+      "NeuralPodDescriptor",
+      "NeuralPodExecutor",
+      "ReferenceNeuralExecutor",
+      "DeviceLease",
+      "NeuralPodLease"
+     ]
+    },
+    "output.rs": {
+     "purpose": "A Pod output record with kind, digest, provenance and verified flag; validation refuses unverified state deltas and verified results.",
+     "key_types": [
+      "PodOutput",
+      "PodOutputKind",
+      "OutputError"
+     ]
+    },
+    "paged_kv.rs": {
+     "purpose": "Paged key-value backend trait and in-memory implementation with sealed pages, copy on write, lease binding, snapshots and shared prefixes.",
+     "key_types": [
+      "PagedKvTensorBackend",
+      "InMemoryPagedKvBackend",
+      "KvPagedSnapshot",
+      "KvSharedPrefix",
+      "KvPageSize"
+     ]
+    },
+    "protocol.rs": {
+     "purpose": "Names 23 transport bindings with profiles, and PodLink, a hop-limited, deadline-bound, manifest-bound link between Pods.",
+     "key_types": [
+      "ProtocolBinding",
+      "PodLink",
+      "NativeProtocolExecutor",
+      "EgressPolicy",
+      "ProtocolProfile"
+     ]
+    },
+    "qwen.rs": {
+     "purpose": "Reference Qwen2 decoder layer with grouped-query attention, rotary scaling and safetensors loading over the paged cache.",
+     "key_types": [
+      "Qwen2PagedDecoder",
+      "Qwen2LayerConfig",
+      "Qwen2DecoderWeights",
+      "Qwen2DecoderInput",
+      "Qwen2DecoderOutput"
+     ]
+    },
+    "runtime.rs": {
+     "purpose": "Artifact catalog with revocation, resource governor with leases, and an executor factory; the admission side of neural Pods.",
+     "key_types": [
+      "InMemoryArtifactCatalog",
+      "ArtifactCatalog",
+      "InMemoryResourceGovernor",
+      "ResourceGovernor",
+      "ReferenceExecutorFactory"
+     ]
+    },
+    "semantic.rs": {
+     "purpose": "PodSemanticManifest: a validated and digested description of a Pod's kind, role, types, resources, protocols and lifecycle.",
+     "key_types": [
+      "PodSemanticManifest",
+      "PodKind",
+      "ModelVariant",
+      "SemanticPodLifecycle",
+      "PodResourceProfile"
+     ]
+    },
+    "tier_storage.rs": {
+     "purpose": "Adapters that turn key-value snapshots, model weights and artifacts into chunked storage-tier objects and verify them on restore.",
+     "key_types": [
+      "PagedKvTierAdapter",
+      "KvTierAdapter",
+      "ModelWeightTierAdapter",
+      "ArtifactTierAdapter",
+      "KvTierBinding"
+     ]
+    },
+    "transport.rs": {
+     "purpose": "Request and response records for a generation-bound Pod call, validated against a neural descriptor.",
+     "key_types": [
+      "PodWireRequest",
+      "PodWireResponse",
+      "TransportError"
+     ]
+    },
+    "turns.rs": {
+     "purpose": "Duplex session that records ordered Pod turn events with sequence checks, interrupt, resume and close.",
+     "key_types": [
+      "DuplexSession",
+      "PodTurnEvent",
+      "PodTurnKind",
+      "TurnError"
+     ]
+    }
+   }
+  },
+  "ptr-podwire": {
+   "role": "Lets one host invoke another host's Pure or Read Pod over an authenticated connection with a framed request and answer.",
+   "summary": "Implements the ptr-podwire/1 protocol: framed PTRPWREQ requests and PTRPWANS answers (formats 1 to 3, with generation- and address-bound variants), a project-scoped access policy, and PodHost and PodClient endpoints on ptr-net. A request names no sender, session or project; the project comes from host policy keyed by the authenticated key. Only tests drive it; no binary constructs a PodHost.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Crate root documenting why the Pod wire is separate from the execution wire and re-exporting frame, access and endpoint items.",
+     "key_types": [
+      "PodHost",
+      "PodClient",
+      "PodAccessPolicy",
+      "answer",
+      "PodRequest"
+     ]
+    },
+    "access.rs": {
+     "purpose": "Per-peer scope table and the ordered decision answer(): admitted, in scope, resolvable, Pure or Read, protocol version, run, verify.",
+     "key_types": [
+      "PodScope",
+      "PodAccessPolicy",
+      "answer",
+      "PolicyError"
+     ]
+    },
+    "frame.rs": {
+     "purpose": "Bounded length-prefixed frames for PTRPWREQ and PTRPWANS in versions 1 to 3 with explicit outcome and refusal codes.",
+     "key_types": [
+      "PodRequest",
+      "PodAnswer",
+      "PodOutcome",
+      "RefusalCode",
+      "encode_request"
+     ]
+    },
+    "endpoint.rs": {
+     "purpose": "PodHost serves one connection per call, PodClient and PodSession send requests and check responder, request id and digest.",
+     "key_types": [
+      "PodHost",
+      "PodClient",
+      "PodSession",
+      "PodWireError",
+      "PodWireV2Binding"
+     ]
+    }
+   }
+  },
+  "ptr-execwire": {
+   "role": "Carries an effectful action request to another runtime and returns a receipt, keeping authentication separate from authorization.",
+   "summary": "Implements ptr-exec/1: PTREXREQ request and PTREXRCP receipt frames, an ExecutionHost that admits the authenticated peer through runtime policy, spends a request id in a bounded replay window and drives prepare and execute, and an ExecutionClient that checks the receipt. Two small bridges convert a runtime ActionAdmission into a request and an uncertain receipt into the shared recovery contract. Only tests call these; no binary hosts it.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Crate root explaining that authenticating a peer is not authorizing an action and re-exporting the wire, bridge and endpoint items.",
+     "key_types": [
+      "ExecutionHost",
+      "ExecutionClient",
+      "bind_action_admission",
+      "recover_uncertain_receipt"
+     ]
+    },
+    "admission.rs": {
+     "purpose": "Builds a WireRequest from an already admitted runtime action after checking the action digest, project, address and once key.",
+     "key_types": [
+      "bind_action_admission",
+      "AdmissionBindingError"
+     ]
+    },
+    "endpoint.rs": {
+     "purpose": "ExecutionHost accepts one connection and answers with a receipt; ExecutionClient sends one request and verifies the receipt.",
+     "key_types": [
+      "ExecutionHost",
+      "ExecutionClient",
+      "WireError",
+      "Serviced",
+      "refused_by_runtime"
+     ]
+    },
+    "frame.rs": {
+     "purpose": "Bounded frames for the request and receipt with outcome codes Applied, AppliedWithoutResponse, Uncertain and Refused.",
+     "key_types": [
+      "WireRequest",
+      "WireReceipt",
+      "WireOutcome",
+      "RefusalCode",
+      "request_digest"
+     ]
+    },
+    "recovery.rs": {
+     "purpose": "Converts an Uncertain receipt into an UncertainRequest and forwards it once to an injected recovery implementation.",
+     "key_types": [
+      "uncertain_request",
+      "recover_uncertain_receipt",
+      "RecoveryBindingError",
+      "RecoveryBindingErrorOr"
+     ]
+    }
+   }
+  },
+  "ptr-net": {
+   "role": "Provides authenticated transport over iroh, the deployment-owned peer address book, mesh membership state and fenced tunnel lifecycle.",
+   "summary": "The iroh backend binds endpoints per protocol identifier, dials only when the authenticated key equals the requested id, and offers one-shot and pooled sessions. PeerBook is the only source of a dialable PeerAddress. MeshRegistry and the tunnel executors are separate state machines (invitation, membership, fenced WireGuard lease) that are not connected to the iroh transport, and the Transport trait has no implementor.",
+   "maturity": "partial",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Protocol identifier constants, NodeIdentity, RelayMode and the iroh-backed IrohTransport with one-shot and session request paths.",
+     "key_types": [
+      "IrohTransport",
+      "ALPN_RAFT",
+      "ALPN_PODWIRE",
+      "ALPN_EXEC",
+      "NodeIdentity"
+     ]
+    },
+    "mesh.rs": {
+     "purpose": "Mesh membership registry with one-time invitations, generation and revision checks, revocation and endpoint bindings.",
+     "key_types": [
+      "MeshRegistry",
+      "MeshMembership",
+      "MeshInvitation",
+      "MeshEndpoint",
+      "MeshError"
+     ]
+    },
+    "peers.rs": {
+     "purpose": "PeerBook records addresses under the id the address carries and hands out PeerAddress, the only type a wire client may dial.",
+     "key_types": [
+      "PeerBook",
+      "PeerAddress",
+      "BookError"
+     ]
+    },
+    "tunnel.rs": {
+     "purpose": "Fenced tunnel lease lifecycle (admit, establish, rotate, revoke, release) with a reference executor and WireGuard device adapters.",
+     "key_types": [
+      "MeshTunnelExecutor",
+      "WireguardUserspaceExecutor",
+      "ReferenceMeshTunnelExecutor",
+      "TunnelProfile",
+      "TunnelLease"
+     ]
+    }
+   }
+  },
+  "ptr-cluster": {
+   "role": "Carries raft messages between group members over ptr-raft/1 and steps them only when the authenticated connection matches the claimed sender.",
+   "summary": "frame.rs defines the PTRRAFTW batch frame. member.rs wraps a ptr-ledger RaftNode in a ClusterMember with campaign, tick, propose and propose_membership that drive delivery rounds, and serve_once that authenticates, validates and steps one inbound batch. There is no background loop; messages a step produces for other members are returned from serve_once and nothing in the crate delivers them. Only tests use it.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Crate root stating the sender-is-the-connection rule and re-exporting the frame and member items.",
+     "key_types": [
+      "ClusterMember",
+      "MemberAddress",
+      "encode_batch",
+      "decode_batch"
+     ]
+    },
+    "frame.rs": {
+     "purpose": "Bounded wire frame carrying a batch of already encoded raft messages with magic, version, count and length prefixes.",
+     "key_types": [
+      "encode_batch",
+      "decode_batch",
+      "FrameError",
+      "MAX_FRAME_BYTES",
+      "MAX_BATCH_MESSAGES"
+     ]
+    },
+    "member.rs": {
+     "purpose": "ClusterMember: drives raft rounds to quiescence, reports unreachable peers, and serves one authenticated inbound batch.",
+     "key_types": [
+      "ClusterMember",
+      "MemberAddress",
+      "ClusterError",
+      "Unreached",
+      "DEFAULT_REQUEST_TIMEOUT"
+     ]
+    }
+   }
+  },
+  "ptr-ingress": {
+   "role": "Placeholder types for raw and typed input, a semantic proposal, and a cross-check status function.",
+   "summary": "A 45-line crate with RawInput, ArtifactKind, LabelScore, SemanticProposal and a cross_check function mapping raw presence and hard issue count to a status. No other crate depends on it and one smoke test covers cross_check.",
+   "maturity": "scaffold",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Defines raw input and artifact kinds, a label-scored semantic proposal and cross_check returning an agreement status.",
+     "key_types": [
+      "RawInput",
+      "ArtifactKind",
+      "SemanticProposal",
+      "CrossCheckStatus",
+      "cross_check"
+     ]
+    }
+   }
+  }
+ },
+ "flows": [
+  {
+   "id": "podwire-invocation",
+   "title": "Remote Pod invocation over ptr-podwire/1",
+   "summary": "A requester asks another host's Pod a question; the host authenticates the peer, decides access from its own policy and registry, runs and verifies the Pod, and answers with a bound PTRPWANS frame. This traces the version 1 path; version 2 and 3 add generation and address binding (serve_once_v2).",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "client",
+     "label": "PodClient",
+     "crate": "ptr-podwire"
+    },
+    {
+     "id": "net",
+     "label": "IrohTransport and PeerBook",
+     "crate": "ptr-net"
+    },
+    {
+     "id": "host",
+     "label": "PodHost",
+     "crate": "ptr-podwire"
+    },
+    {
+     "id": "access",
+     "label": "answer and policy",
+     "crate": "ptr-podwire"
+    },
+    {
+     "id": "pods",
+     "label": "PodRegistry and Pod",
+     "crate": "ptr-pods"
+    }
+   ],
+   "steps": [
+    {
+     "from": "client",
+     "to": "client",
+     "label": "Compose PodRequest",
+     "note": "Request carries addressed_to, request_id, capability, expect_protocol and a typed payload; it has no sender, session or project field.",
+     "evidence": "crates/ptr-podwire/src/frame.rs:73-101"
+    },
+    {
+     "from": "client",
+     "to": "net",
+     "label": "PeerBook::locate yields PeerAddress",
+     "note": "The client accepts only a PeerAddress from the deployment book; an unrecorded peer is refused before any connection.",
+     "evidence": "crates/ptr-net/src/peers.rs:141"
+    },
+    {
+     "from": "client",
+     "to": "client",
+     "label": "encode_request writes PTRPWREQ frame",
+     "note": "Length-prefixed, bounded fields; the digest of the frame bytes is kept to bind the answer.",
+     "evidence": "crates/ptr-podwire/src/endpoint.rs:1454"
+    },
+    {
+     "from": "client",
+     "to": "net",
+     "label": "IrohTransport::request on ptr-podwire/1",
+     "note": "The dial fails unless the authenticated remote id equals the id in the address.",
+     "evidence": "crates/ptr-net/src/lib.rs:152-155"
+    },
+    {
+     "from": "net",
+     "to": "host",
+     "label": "PodHost::serve_once accepts the connection",
+     "note": "The peer identity is the authenticated connection's key; no payload field is read for it.",
+     "evidence": "crates/ptr-podwire/src/endpoint.rs:562-572"
+    },
+    {
+     "from": "host",
+     "to": "host",
+     "label": "decide: decode frame, check addressed_to",
+     "note": "A malformed frame gets a Malformed refusal; a request addressed to another key gets Misaddressed.",
+     "evidence": "crates/ptr-podwire/src/endpoint.rs:968-1001"
+    },
+    {
+     "from": "host",
+     "to": "access",
+     "label": "answer(): admitted peer and in-scope capability",
+     "note": "No policy entry gives NotAdmitted; an uncovered capability and payload type gives Unavailable, before the registry is touched.",
+     "evidence": "crates/ptr-podwire/src/access.rs:162-168"
+    },
+    {
+     "from": "access",
+     "to": "pods",
+     "label": "PodRegistry::resolve in the policy's project",
+     "note": "The project comes from the peer's scope, so a Pod in another project is refused as Unavailable like a missing one.",
+     "evidence": "crates/ptr-podwire/src/access.rs:171-173"
+    },
+    {
+     "from": "access",
+     "to": "access",
+     "label": "Effect gate and protocol version check",
+     "note": "A Pod with an effect other than Pure or Read gives RequiresActionBoundary; a differing protocol_version gives ProtocolMismatch.",
+     "evidence": "crates/ptr-podwire/src/access.rs:178-189"
+    },
+    {
+     "from": "access",
+     "to": "pods",
+     "label": "pod.invoke then verifier.verify",
+     "note": "A Pod error becomes PodFailed; a failed or hard-finding verification becomes Unverified and the output is withheld.",
+     "evidence": "crates/ptr-podwire/src/access.rs:192-198"
+    },
+    {
+     "from": "host",
+     "to": "client",
+     "label": "encode_answer writes PTRPWANS and responds",
+     "note": "The answer carries responder key, request id and request digest; an oversized answer is replaced by AnswerTooLarge.",
+     "evidence": "crates/ptr-podwire/src/endpoint.rs:589-602"
+    },
+    {
+     "from": "client",
+     "to": "client",
+     "label": "validate responder, request_id and digest",
+     "note": "Author mismatch gives ForgedAnswer, id mismatch WrongRequest, digest mismatch UnboundAnswer.",
+     "evidence": "crates/ptr-podwire/src/endpoint.rs:1466-1481"
+    }
+   ]
+  },
+  {
+   "id": "execwire-request-and-receipt",
+   "title": "Execution request, receipt and recovery hand-off",
+   "summary": "An admitted runtime action is bound into a PTREXREQ request, served by an ExecutionHost that admits the peer by policy and executes through the runtime, and answered with a PTREXRCP receipt; an Uncertain receipt is handed once to runtime recovery. The bridge and recovery helpers are called by the caller, not by the endpoint.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "bridge",
+     "label": "admission.rs bridge",
+     "crate": "ptr-execwire"
+    },
+    {
+     "id": "client",
+     "label": "ExecutionClient",
+     "crate": "ptr-execwire"
+    },
+    {
+     "id": "net",
+     "label": "IrohTransport",
+     "crate": "ptr-net"
+    },
+    {
+     "id": "host",
+     "label": "ExecutionHost",
+     "crate": "ptr-execwire"
+    },
+    {
+     "id": "runtime",
+     "label": "PtrRuntime execution",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "recovery",
+     "label": "recovery.rs hand-off",
+     "crate": "ptr-execwire"
+    }
+   ],
+   "steps": [
+    {
+     "from": "bridge",
+     "to": "client",
+     "label": "bind_action_admission builds WireRequest",
+     "note": "Refuses when the action digest differs from the admission, the project differs, the address is empty or the once key is empty.",
+     "evidence": "crates/ptr-execwire/src/admission.rs:46-61"
+    },
+    {
+     "from": "client",
+     "to": "net",
+     "label": "ExecutionClient::request sends PTREXREQ on ptr-exec/1",
+     "note": "Takes only a PeerAddress from the peer book; encodes the request and keeps its digest.",
+     "evidence": "crates/ptr-execwire/src/endpoint.rs:534-546"
+    },
+    {
+     "from": "net",
+     "to": "host",
+     "label": "ExecutionHost::serve_once accepts, peer is the connection",
+     "note": "Nothing in the frame names a sender; the receipt is bound to the bytes that arrived.",
+     "evidence": "crates/ptr-execwire/src/endpoint.rs:251-262"
+    },
+    {
+     "from": "host",
+     "to": "host",
+     "label": "decode_request and addressed_to check",
+     "note": "A frame that does not decode or names another key is answered with a Refused receipt and spends nothing.",
+     "evidence": "crates/ptr-execwire/src/endpoint.rs:294-321"
+    },
+    {
+     "from": "host",
+     "to": "runtime",
+     "label": "runtime.admit_peer from the authenticated key",
+     "note": "Principal and grants come from the policy entry for the peer; an unknown peer is refused.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:919"
+    },
+    {
+     "from": "host",
+     "to": "host",
+     "label": "Spend request_id in the bounded replay window",
+     "note": "A repeated id for the same peer is refused as Replayed and the session is revoked; the window is memory only.",
+     "evidence": "crates/ptr-execwire/src/endpoint.rs:338-354"
+    },
+    {
+     "from": "host",
+     "to": "runtime",
+     "label": "dispatch: prepare_execution or prepare_execution_once",
+     "note": "A once_key selects the at-most-once path recorded by the runtime; otherwise a retry is a new request.",
+     "evidence": "crates/ptr-execwire/src/endpoint.rs:377-391"
+    },
+    {
+     "from": "host",
+     "to": "runtime",
+     "label": "execute_prepared runs the effect",
+     "note": "An executor error cannot tell applied from not applied, so the host maps it to Uncertain.",
+     "evidence": "crates/ptr-execwire/src/endpoint.rs:392"
+    },
+    {
+     "from": "host",
+     "to": "host",
+     "label": "refused_by_runtime maps errors exhaustively",
+     "note": "Executor error is Uncertain; lost response or unrecorded settlement is AppliedWithoutResponse; everything else is one Runtime refusal.",
+     "evidence": "crates/ptr-execwire/src/endpoint.rs:414-464"
+    },
+    {
+     "from": "host",
+     "to": "client",
+     "label": "Revoke session, encode and send WireReceipt",
+     "note": "The session lives for one request; the receipt carries responder key, request id, request digest and outcome.",
+     "evidence": "crates/ptr-execwire/src/endpoint.rs:264-274"
+    },
+    {
+     "from": "client",
+     "to": "client",
+     "label": "Check receipt author, request id and digest",
+     "note": "ForgedReceipt, WrongRequest or UnboundReceipt refuse a receipt that does not belong to this request.",
+     "evidence": "crates/ptr-execwire/src/endpoint.rs:549-563"
+    },
+    {
+     "from": "recovery",
+     "to": "recovery",
+     "label": "uncertain_request converts only Uncertain receipts",
+     "note": "Any other outcome returns NotUncertain; the result is the shared UncertainRequest with request id and scope id.",
+     "evidence": "crates/ptr-execwire/src/recovery.rs:27-37"
+    },
+    {
+     "from": "recovery",
+     "to": "runtime",
+     "label": "recover_uncertain_receipt forwards once",
+     "note": "Calls StatefulRequestRecovery::recover_uncertain; the runtime adapter then marks the scope for recovery, revokes it and cleans it up. No retry or ledger write happens in this crate.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:228-240"
+    }
+   ]
+  },
+  {
+   "id": "raft-message-batches",
+   "title": "Raft message batches over ptr-raft/1",
+   "summary": "A ClusterMember produces raft messages (campaign, tick, propose), frames them as PTRRAFTW batches per destination, and the receiving member authenticates the connection, checks every message, steps the node and answers with replies. Messages a step produces for third members are returned to the caller and have no delivery path in the crate.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "caller",
+     "label": "Caller",
+     "crate": "ptr-cluster"
+    },
+    {
+     "id": "sender",
+     "label": "ClusterMember (sending)",
+     "crate": "ptr-cluster"
+    },
+    {
+     "id": "frame",
+     "label": "frame.rs",
+     "crate": "ptr-cluster"
+    },
+    {
+     "id": "net",
+     "label": "IrohTransport",
+     "crate": "ptr-net"
+    },
+    {
+     "id": "receiver",
+     "label": "ClusterMember (serving)",
+     "crate": "ptr-cluster"
+    },
+    {
+     "id": "ledger",
+     "label": "RaftNode",
+     "crate": "ptr-ledger"
+    }
+   ],
+   "steps": [
+    {
+     "from": "caller",
+     "to": "ledger",
+     "label": "campaign, tick or propose asks the node for messages",
+     "note": "The node is locked, returns raft messages, and drive() takes them as the initial queue.",
+     "evidence": "crates/ptr-cluster/src/member.rs:281-300"
+    },
+    {
+     "from": "sender",
+     "to": "sender",
+     "label": "drive groups messages by destination, sorted",
+     "note": "Each round sends one batch per destination in id order; at most 64 rounds, then NotQuiescent.",
+     "evidence": "crates/ptr-cluster/src/member.rs:407-422"
+    },
+    {
+     "from": "sender",
+     "to": "frame",
+     "label": "encode_batch writes PTRRAFTW frame",
+     "note": "Magic, format 1, count and length-prefixed messages; limits 4096 messages and 32 MiB.",
+     "evidence": "crates/ptr-cluster/src/frame.rs:75-97"
+    },
+    {
+     "from": "sender",
+     "to": "net",
+     "label": "exchange: transport.request on ptr-raft/1 with timeout",
+     "note": "A timeout or transport error is recorded in Unreached and the round continues with other peers.",
+     "evidence": "crates/ptr-cluster/src/member.rs:448-466"
+    },
+    {
+     "from": "net",
+     "to": "receiver",
+     "label": "serve_once accepts one connection",
+     "note": "The inbound payload and the authenticated peer identity come from the transport.",
+     "evidence": "crates/ptr-cluster/src/member.rs:308-313"
+    },
+    {
+     "from": "receiver",
+     "to": "receiver",
+     "label": "authenticate maps the connection key to a member id",
+     "note": "A key that no admitted member holds gives UnknownPeer; the id in the messages is never trusted.",
+     "evidence": "crates/ptr-cluster/src/member.rs:343-351"
+    },
+    {
+     "from": "receiver",
+     "to": "frame",
+     "label": "decode_batch and check every message",
+     "note": "Each message must claim the authenticated sender (ForgedSender) and be addressed to this member (Misaddressed) before any is stepped.",
+     "evidence": "crates/ptr-cluster/src/member.rs:362-380"
+    },
+    {
+     "from": "receiver",
+     "to": "ledger",
+     "label": "node.step for each message in the batch",
+     "note": "Only after the whole batch passed; the produced messages are split into replies for the sender and leftovers for others.",
+     "evidence": "crates/ptr-cluster/src/member.rs:385-399"
+    },
+    {
+     "from": "receiver",
+     "to": "sender",
+     "label": "Respond with encoded replies, or an empty batch on refusal",
+     "note": "A refused frame still gets an answer so the peer is not left hanging; the refusal is returned to the serving caller.",
+     "evidence": "crates/ptr-cluster/src/member.rs:322-339"
+    },
+    {
+     "from": "sender",
+     "to": "ledger",
+     "label": "Decode replies, apply the same checks, step them",
+     "note": "The reply is held to the same sender and address rules; stepping may produce the next round's queue.",
+     "evidence": "crates/ptr-cluster/src/member.rs:468-488"
+    },
+    {
+     "from": "receiver",
+     "to": "caller",
+     "label": "Leftover messages returned from serve_once",
+     "note": "Messages for members other than the sender are returned; no function in this crate sends them, and the test harness discards the value. The module doc names a dispatch function that does not exist.",
+     "evidence": "crates/ptr-cluster/src/member.rs:329"
+    }
+   ]
+  },
+  {
+   "id": "peer-book-and-transport",
+   "title": "Peer address authority and transport binding",
+   "summary": "The deployment records peer addresses in a PeerBook, wire clients can dial only addresses it hands out, and IrohTransport refuses a connection whose authenticated key is not the requested id. Mesh membership and tunnel leases are separate state machines not connected to this path.",
+   "status": "partial",
+   "lanes": [
+    {
+     "id": "host",
+     "label": "Deployment host",
+     "crate": null
+    },
+    {
+     "id": "book",
+     "label": "PeerBook",
+     "crate": "ptr-net"
+    },
+    {
+     "id": "transport",
+     "label": "IrohTransport",
+     "crate": "ptr-net"
+    },
+    {
+     "id": "wires",
+     "label": "Wire clients",
+     "crate": "ptr-podwire"
+    },
+    {
+     "id": "mesh",
+     "label": "MeshRegistry",
+     "crate": "ptr-net"
+    },
+    {
+     "id": "tunnel",
+     "label": "Tunnel executors",
+     "crate": "ptr-net"
+    }
+   ],
+   "steps": [
+    {
+     "from": "host",
+     "to": "transport",
+     "label": "IrohTransport::bind with protocol identifiers",
+     "note": "Binds a local endpoint for the listed identifiers; relay is disabled unless DirectWithRelayFallback is chosen.",
+     "evidence": "crates/ptr-net/src/lib.rs:92-120"
+    },
+    {
+     "from": "transport",
+     "to": "transport",
+     "label": "identity: node id is the endpoint public key",
+     "note": "The NodeIdentity a peer sees is the key the connection authenticates.",
+     "evidence": "crates/ptr-net/src/lib.rs:126-132"
+    },
+    {
+     "from": "host",
+     "to": "book",
+     "label": "PeerBook::record keys the address by the id it carries",
+     "note": "There is no (peer, address) pair to transpose; a later record replaces an earlier address for the same id.",
+     "evidence": "crates/ptr-net/src/peers.rs:129-132"
+    },
+    {
+     "from": "wires",
+     "to": "book",
+     "label": "PeerBook::locate returns PeerAddress or Unknown",
+     "note": "PeerAddress has no public constructor; an unrecorded peer is refused before dialing.",
+     "evidence": "crates/ptr-net/src/peers.rs:141-151"
+    },
+    {
+     "from": "wires",
+     "to": "transport",
+     "label": "into_address then IrohTransport::request",
+     "note": "The request carries an ALPN constant (RAFT, PODWIRE or EXEC are used; MODEL, BLOB and EVENTS have no user).",
+     "evidence": "crates/ptr-net/src/lib.rs:26-37"
+    },
+    {
+     "from": "transport",
+     "to": "transport",
+     "label": "Refuse when remote_id differs from the requested id",
+     "note": "A stale or hostile address costs a failed request, never a request served by the wrong node.",
+     "evidence": "crates/ptr-net/src/lib.rs:152-155"
+    },
+    {
+     "from": "transport",
+     "to": "wires",
+     "label": "accept_once and respond on the serving side",
+     "note": "Reads the single request stream up to a bound and exposes the authenticated peer; respond closes the connection after the reply.",
+     "evidence": "crates/ptr-net/src/lib.rs:205-233"
+    },
+    {
+     "from": "transport",
+     "to": "wires",
+     "label": "connect_session with a non-blocking permit limit",
+     "note": "A pooled connection opens one stream per request and returns a backpressure error instead of queueing.",
+     "evidence": "crates/ptr-net/src/lib.rs:174-203"
+    },
+    {
+     "from": "host",
+     "to": "mesh",
+     "label": "MeshRegistry::invite then accept",
+     "note": "A one-time invitation becomes an Active membership with revision 1; a consumed invitation is refused.",
+     "evidence": "crates/ptr-net/src/mesh.rs:149-176"
+    },
+    {
+     "from": "mesh",
+     "to": "mesh",
+     "label": "endpoint refuses a revoked member",
+     "note": "Revocation bumps the revision; endpoint and endpoint_binding return RevokedPeer afterwards.",
+     "evidence": "crates/ptr-net/src/mesh.rs:205-237"
+    },
+    {
+     "from": "mesh",
+     "to": "tunnel",
+     "label": "TunnelProfile admitted by a MeshTunnelExecutor",
+     "note": "Admit, establish, rotate, revoke and release are fenced by lease state; WireguardUserspaceExecutor injects a device. Nothing here connects it to IrohTransport.",
+     "evidence": "crates/ptr-net/src/tunnel.rs:94-130"
+    }
+   ]
+  },
+  {
+   "id": "pod-runtime-and-model-execution",
+   "title": "Pod admission, registry and neural execution",
+   "summary": "A Pod manifest and neural descriptor are admitted, wrapped by NeuralPodAdapter, registered by project, and invoked by the runtime loop; the executor runs under a lease and the output is type-checked and verified before promotion. The crate's model strands (this one, key-value continuation, tiering) are not joined by one call chain, so key-value tiering is traced separately.",
+   "status": "partial",
+   "lanes": [
+    {
+     "id": "manifest",
+     "label": "PodManifest and catalog",
+     "crate": "ptr-pods"
+    },
+    {
+     "id": "adapter",
+     "label": "NeuralPodAdapter",
+     "crate": "ptr-pods"
+    },
+    {
+     "id": "registry",
+     "label": "PodRegistry",
+     "crate": "ptr-pods"
+    },
+    {
+     "id": "loop",
+     "label": "run_model_with_pods",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "executor",
+     "label": "NeuralPodExecutor",
+     "crate": "ptr-pods"
+    }
+   ],
+   "steps": [
+    {
+     "from": "manifest",
+     "to": "manifest",
+     "label": "PodManifest::digest over project, id, types, effects",
+     "note": "The digest is the invocation contract that descriptors and transport requests must match.",
+     "evidence": "crates/ptr-pods/src/lib.rs:107"
+    },
+    {
+     "from": "manifest",
+     "to": "manifest",
+     "label": "InMemoryArtifactCatalog::admit_with_manifest",
+     "note": "Refuses a descriptor whose manifest hash, pod id or schemas disagree with the manifest; revoked generations are refused.",
+     "evidence": "crates/ptr-pods/src/runtime.rs:37-50"
+    },
+    {
+     "from": "manifest",
+     "to": "adapter",
+     "label": "NeuralPodAdapter::new validates descriptor against manifest",
+     "note": "Checks descriptor validity, accepted input type, produced output type and manifest digest equality.",
+     "evidence": "crates/ptr-pods/src/adapter.rs:21-37"
+    },
+    {
+     "from": "adapter",
+     "to": "registry",
+     "label": "PodRegistry::register keyed by (project, pod id)",
+     "note": "Two projects can register the same pod id without shadowing; lookups always carry the project.",
+     "evidence": "crates/ptr-pods/src/lib.rs:185"
+    },
+    {
+     "from": "loop",
+     "to": "registry",
+     "label": "Route and fetch the Pod inside the request's project",
+     "note": "Another project's Pod is unavailable in the same words as a missing one.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1245-1250"
+    },
+    {
+     "from": "loop",
+     "to": "loop",
+     "label": "Effect gate: only Pure or Read Pods run here",
+     "note": "Any other effect returns PodEffectRequiresActionBoundary.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1253-1262"
+    },
+    {
+     "from": "loop",
+     "to": "adapter",
+     "label": "pod.invoke with the typed payload",
+     "note": "The adapter refuses an input whose type is not the descriptor's input schema.",
+     "evidence": "crates/ptr-pods/src/adapter.rs:59-63"
+    },
+    {
+     "from": "adapter",
+     "to": "executor",
+     "label": "executor.activate then infer under a lease",
+     "note": "On inference failure the lease is aborted and both errors are reported.",
+     "evidence": "crates/ptr-pods/src/adapter.rs:65-78"
+    },
+    {
+     "from": "executor",
+     "to": "executor",
+     "label": "Reference executor copies bytes under the output schema",
+     "note": "ReferenceNeuralExecutor is a pass-through that checks lease state and input type; CandleDenseExecutor does a CUDA matmul only when built with candle-cuda.",
+     "evidence": "crates/ptr-pods/src/neural.rs:404-420"
+    },
+    {
+     "from": "adapter",
+     "to": "loop",
+     "label": "Release lease, check output type against manifest.produces",
+     "note": "An output type the manifest does not produce is refused before it is returned.",
+     "evidence": "crates/ptr-pods/src/adapter.rs:80-85"
+    },
+    {
+     "from": "loop",
+     "to": "loop",
+     "label": "promote_verified_pod_output",
+     "note": "Re-checks effects and produced type, runs the verifier, and promotes only a passing, finding-free output.",
+     "evidence": "crates/ptr-runtime/src/semantic.rs:58-101"
+    },
+    {
+     "from": "loop",
+     "to": "registry",
+     "label": "ptr-server reaches the loop with an empty default registry",
+     "note": "The server passes a PodRegistry to run_resumable_with_pods_using_router; its default registry is empty and NeuralPodAdapter is only built in ptr-pods tests.",
+     "evidence": "crates/ptr-server/src/lib.rs:152"
+    }
+   ]
+  },
+  {
+   "id": "pod-kv-cache-tiering",
+   "title": "Key-value cache continuation and tiering",
+   "summary": "A decoder appends keys and values to a paged cache, the runtime's managed registry seals a snapshot and prepares it as a storage-tier object, and a later restore re-verifies the object, its placement binding and the cache binding before rebuilding the cache. Chosen because the model strands in ptr-pods do not form one call chain.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "decoder",
+     "label": "Attention and Qwen2 decoders",
+     "crate": "ptr-pods"
+    },
+    {
+     "id": "backend",
+     "label": "Paged key-value backend",
+     "crate": "ptr-pods"
+    },
+    {
+     "id": "registry",
+     "label": "ManagedKvRegistry",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "adapter",
+     "label": "PagedKvTierAdapter",
+     "crate": "ptr-pods"
+    },
+    {
+     "id": "storage",
+     "label": "PreparedTierObject",
+     "crate": "ptr-storage"
+    }
+   ],
+   "steps": [
+    {
+     "from": "decoder",
+     "to": "backend",
+     "label": "prefill or decode appends key and value rows",
+     "note": "Reference attention projects each token, appends to the cache, snapshots, and attends over the whole sequence; Qwen2PagedDecoder does the same with grouped-query attention.",
+     "evidence": "crates/ptr-pods/src/attention.rs:180-196"
+    },
+    {
+     "from": "decoder",
+     "to": "backend",
+     "label": "Qwen2PagedDecoder append and grouped attention",
+     "note": "Checks the cache schema and the maximum position count against the layer config before appending.",
+     "evidence": "crates/ptr-pods/src/qwen.rs:336-350"
+    },
+    {
+     "from": "backend",
+     "to": "backend",
+     "label": "InMemoryPagedKvBackend::append fills pages",
+     "note": "Tokens fill fixed-size pages; a page that is shared or already sealed is copied before it is written.",
+     "evidence": "crates/ptr-pods/src/paged_kv.rs:513"
+    },
+    {
+     "from": "registry",
+     "to": "backend",
+     "label": "seal_online_snapshot seals pages",
+     "note": "The registry calls the backend's seal_snapshot, which seals open pages and returns a digest-checked snapshot lease.",
+     "evidence": "crates/ptr-runtime/src/tensor_kv.rs:462-481"
+    },
+    {
+     "from": "backend",
+     "to": "backend",
+     "label": "seal_snapshot with copy on write",
+     "note": "Unsealed pages shared with another cache are cloned first; sealing computes each page digest and marks it Sealed.",
+     "evidence": "crates/ptr-pods/src/paged_kv.rs:726-750"
+    },
+    {
+     "from": "registry",
+     "to": "adapter",
+     "label": "prepare_online_snapshot_to_tier checks binding",
+     "note": "Refuses when the tier binding disagrees with the record's state id, generation, placement epoch or fencing token, or the placement lease is stale.",
+     "evidence": "crates/ptr-runtime/src/tensor_kv.rs:611-645"
+    },
+    {
+     "from": "adapter",
+     "to": "storage",
+     "label": "PagedKvTierAdapter::prepare builds chunks and manifest",
+     "note": "One header chunk plus one chunk per page, described by a TierObjectManifest with a schema digest.",
+     "evidence": "crates/ptr-pods/src/tier_storage.rs:89-123"
+    },
+    {
+     "from": "registry",
+     "to": "adapter",
+     "label": "restore_paged_from_tier validates the admitted object",
+     "note": "Checks the tier journal projection for backend and replica availability and the placement generation and epoch.",
+     "evidence": "crates/ptr-runtime/src/tensor_kv.rs:562-597"
+    },
+    {
+     "from": "adapter",
+     "to": "adapter",
+     "label": "PagedKvTierAdapter::restore verifies chunks and digests",
+     "note": "Verifies the object, binding, page count, snapshot digest and schema digest; accepts legacy digests only after recomputation.",
+     "evidence": "crates/ptr-pods/src/tier_storage.rs:126-185"
+    },
+    {
+     "from": "backend",
+     "to": "backend",
+     "label": "restore_paged rebinds the cache",
+     "note": "Refuses when principal, execution manifest, model, adapter, generation, dtype or page size differ from the new binding.",
+     "evidence": "crates/ptr-pods/src/paged_kv.rs:762-797"
+    },
+    {
+     "from": "backend",
+     "to": "backend",
+     "label": "publish_prefix and fork_prefix share prefixes",
+     "note": "A prefix is keyed by principal, manifest, model, adapter, generation, schema and prefix digest; fork only into an empty cache with an equal key.",
+     "evidence": "crates/ptr-pods/src/paged_kv.rs:845-877"
+    },
+    {
+     "from": "backend",
+     "to": "backend",
+     "label": "CandlePagedKvBackend implements the same trait on GPU",
+     "note": "Compiled only with candle-cuda; CandleGpuTierBackend also acts as a storage tier backend.",
+     "evidence": "crates/ptr-pods/src/candle.rs:628"
+    }
+   ]
+  }
+ ]
+}
