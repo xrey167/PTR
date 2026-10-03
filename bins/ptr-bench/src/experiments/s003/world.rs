@@ -1361,14 +1361,11 @@ impl World {
         }
         let live = self.runtime.materialized_state();
         let other = rebuilt.materialized_state();
-        if how != "compacted restore"
-            && (live.values != other.values || live.last_applied != other.last_applied)
-        {
-            differences.push("the materialized entries differ".into());
-        }
-        if how == "compacted restore" && live.last_applied != other.last_applied {
-            differences.push("the restored runtime applied another index".into());
-        }
+        differences.extend(materialized_differences(
+            (&live.values, live.last_applied),
+            (&other.values, other.last_applied),
+            how,
+        ));
         if !differences.is_empty() {
             self.metrics.replay_divergences += 1;
             self.note(format!(
@@ -1376,6 +1373,35 @@ impl World {
             ));
         }
     }
+}
+
+/// How the materialized state of a runtime rebuilt from its journal or a
+/// snapshot differs from the live one. Every rebuild must hold the same
+/// entries (the merged-branch markers among them) and the same last applied
+/// index; a compacted restore resumes above its floor, so only its index is
+/// the floor's own, never another one.
+fn materialized_differences(
+    (live_values, live_applied): (&BTreeMap<String, String>, u64),
+    (other_values, other_applied): (&BTreeMap<String, String>, u64),
+    how: &str,
+) -> Vec<String> {
+    let mut differences = Vec::new();
+    if live_applied != other_applied {
+        differences.push(if how == "compacted restore" {
+            "the restored runtime applied another index".to_string()
+        } else {
+            "the materialized entries differ".to_string()
+        });
+    }
+    if live_values != other_values {
+        differences.push(if how == "compacted restore" {
+            "the restored materialized entries differ".to_string()
+        } else {
+            "the materialized entries differ".to_string()
+        });
+    }
+    differences.dedup();
+    differences
 }
 
 /// Whether the runtime holds `value` where the model holds `expected`.
@@ -1489,6 +1515,40 @@ impl Drop for Unlink<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_compacted_restore_is_compared_on_its_entries_as_well_as_its_index() {
+        let entries = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect()
+        };
+        let live = entries(&[("a", "1"), ("branch/merged/b1", "x")]);
+        assert_eq!(
+            materialized_differences((&live, 9), (&live.clone(), 9), "compacted restore"),
+            Vec::<String>::new()
+        );
+        // A restore that kept its index but lost a merged-branch marker.
+        let lost = entries(&[("a", "1")]);
+        assert_eq!(
+            materialized_differences((&live, 9), (&lost, 9), "compacted restore"),
+            vec!["the restored materialized entries differ".to_string()]
+        );
+        // The same loss in a replay and a durable reopen.
+        for how in ["replay", "durable reopen"] {
+            assert_eq!(
+                materialized_differences((&live, 9), (&lost, 9), how),
+                vec!["the materialized entries differ".to_string()],
+                "{how}"
+            );
+        }
+        // Another index is reported for a restore under its own wording.
+        assert_eq!(
+            materialized_differences((&live, 9), (&live.clone(), 8), "compacted restore"),
+            vec!["the restored runtime applied another index".to_string()]
+        );
+    }
+
     use super::*;
 
     fn world(kind: GrantKind) -> World {
