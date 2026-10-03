@@ -547,6 +547,9 @@ class PilotInputTests(unittest.TestCase):
             "incomplete baseline": lambda result: result["cases"][0]["runs"][-1].update(complete=False),
             "zero duration": lambda result: result["cases"][0]["runs"][-1].update(ticks=0),
             "missing run": lambda result: result["cases"][0]["runs"].pop(),
+            "preregistration that is a list": lambda result: result.update(preregistration="[1, 2]"),
+            "preregistration that is a number": lambda result: result.update(preregistration="7"),
+            "preregistration that is null": lambda result: result.update(preregistration="null"),
         }
         for name, change in changes.items():
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
@@ -597,6 +600,12 @@ class PilotSourceEvidenceTests(unittest.TestCase):
     def test_legacy_pilot_without_a_producing_revision_is_refused(self):
         with self.assertRaisesRegex(ValueError, "producing-revision"):
             aggregate.validate_pilot_provenance({"seed": 1})
+
+    def test_pilot_provenance_that_is_not_an_object_is_refused_not_a_traceback(self):
+        for evidence in ("clean", ["git_sha"], 7, None, True):
+            with self.subTest(evidence=evidence):
+                with self.assertRaisesRegex(ValueError, "producing-revision"):
+                    aggregate.validate_pilot_provenance({"seed": 1, "pilot_provenance": evidence})
 
     def test_harness_changes_invalidate_pilot_even_with_the_same_configuration(self):
         for name in ("harness.rs", "schema.proto", "rust-toolchain", "migration.sql"):
