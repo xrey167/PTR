@@ -1001,12 +1001,19 @@ impl PtrRuntime {
         key: impl Into<String>,
     ) -> Result<ExecutionPermit, ExecutionError> {
         let key = key.into();
-        if !valid_identifier(&key)
-            || (key.len() > MAX_KEY_BYTES && !self.execution.has_settled(&key))
-        {
+        if !self.is_usable_execution_key(&key) {
             return Err(ExecutionError::InvalidKey);
         }
         self.prepare(session, project, action, ttl, Some(key))
+    }
+
+    /// Whether [`prepare_execution_once`](Self::prepare_execution_once) would
+    /// accept `key` at all: a well-formed identifier no longer than
+    /// [`MAX_KEY_BYTES`], or a longer one that a log written by an earlier build
+    /// already settled. Nothing is reserved or recorded, so a caller can refuse a
+    /// key before it does any work that the refusal would otherwise follow.
+    pub fn is_usable_execution_key(&self, key: &str) -> bool {
+        valid_identifier(key) && (key.len() <= MAX_KEY_BYTES || self.execution.has_settled(key))
     }
 
     fn prepare(

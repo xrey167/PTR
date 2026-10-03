@@ -341,5 +341,22 @@ async fn distinct_idempotency_keys_each_execute_and_malformed_keys_are_rejected_
         .await
         .unwrap();
     assert_eq!(padded_key.status(), StatusCode::BAD_REQUEST);
+    // A new key beyond the runtime's limit is refused up front, before the model
+    // run can commit anything.
+    let too_long = format!(
+        r#"{{"id":"multi-5","text":"fifth","idempotency_key":"{}"}}"#,
+        "k".repeat(ptr_runtime::execution::MAX_KEY_BYTES + 1)
+    );
+    let long_key = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/requests")
+                .header("content-type", "application/json")
+                .body(Body::from(too_long))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(long_key.status(), StatusCode::BAD_REQUEST);
     let _ = std::fs::remove_dir_all(data_dir);
 }

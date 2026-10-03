@@ -276,24 +276,23 @@ async fn request(
         return Err(ApiError::BadRequest("id and text must be non-empty".into()));
     }
 
-    // The same identifier rule the runtime applies before it will spend a key:
-    // non-empty, no edge whitespace, no control characters. No length cap is
-    // applied here on purpose: the runtime decides that, because it also lets a
-    // longer key through when an earlier build already settled it, and a retry
-    // under such a key must keep being answered from its recorded outcome.
-    if let Some(key) = input.idempotency_key.as_deref() {
-        if key.is_empty() || key.trim() != key || key.chars().any(char::is_control) {
-            return Err(ApiError::BadRequest(
-                "idempotency_key must be non-empty, without edge whitespace or control characters"
-                    .into(),
-            ));
-        }
-    }
-
     let mut runtime = state
         .runtime
         .lock()
         .map_err(|_| ApiError::Internal("runtime mutex poisoned".into()))?;
+    // The key is judged by the runtime's own rule, before the model run commits
+    // anything: a malformed key and an over-long key that never settled are
+    // refused here (400), while an over-long key that an earlier build settled
+    // still passes, so a retry under it is answered from its recorded outcome.
+    // Whether the run ends in a mutation, and so needs a key at all, is only
+    // known afterwards.
+    if let Some(key) = input.idempotency_key.as_deref() {
+        if !runtime.is_usable_execution_key(key) {
+            return Err(ApiError::BadRequest(
+                "idempotency_key must be a non-empty identifier without edge whitespace or control characters, and not longer than the runtime's key limit".into(),
+            ));
+        }
+    }
     let run = runtime
         .run_resumable_with_pods_using_router(
             RequestId::from(input.id.as_str()),
