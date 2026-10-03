@@ -50,6 +50,28 @@ fn memory_operator_roundtrips_and_verifies_chunks() {
     );
 }
 
+#[test]
+fn put_chunk_repairs_a_corrupt_replica_at_the_same_key() {
+    let operator = Operator::new(Memory::default()).unwrap();
+    let backend = OpenDalTierBackend::new(
+        TierBackendId::from("opendal-memory"),
+        operator.clone(),
+        "ptr/tests",
+    )
+    .unwrap();
+    let chunk = ChunkDescriptor::for_bytes(0, 0, b"object-store-chunk");
+    block_on(operator.write(&backend.chunk_key(&chunk), b"damaged-replica".to_vec())).unwrap();
+    assert!(!block_on(backend.verify_chunk(&chunk)).unwrap().valid);
+
+    block_on(backend.put_chunk(chunk.clone(), b"object-store-chunk".to_vec())).unwrap();
+
+    assert!(block_on(backend.verify_chunk(&chunk)).unwrap().valid);
+    assert_eq!(
+        block_on(backend.get_chunk(&chunk)).unwrap(),
+        b"object-store-chunk"
+    );
+}
+
 #[cfg(feature = "tier-opendal-fs")]
 #[tokio::test]
 async fn filesystem_operator_survives_backend_recreation() {
