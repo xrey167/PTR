@@ -3006,6 +3006,24 @@ def m002_v6_successor_freeze_errors(root: Path, experiment: Path, manifest: dict
 M002_V7_ARM_PAIR = "factorized-v2-v7,factorized-v2-off-v7"
 
 
+def m002_arm_block_binding_errors(arm_table: str, experiment_id: str, treatment: str, control: str) -> list[str]:
+    """Require each arm's own `Arm { ... }` block to name the experiment and
+    carry its typed-attention mode. The mode is looked for inside that block
+    only: the same mode names appear throughout the table, so a search of the
+    whole file would pass for any arm."""
+    errors = []
+    for name, mode in ((treatment, "TypedAttentionMode::FactorizedV2"), (control, "TypedAttentionMode::Off")):
+        marker = f'name: "{name}",\n        experiment: "{experiment_id}",'
+        start = arm_table.find(marker)
+        block = ""
+        if start != -1:
+            end = arm_table.find("\n    },", start)
+            block = arm_table[start:end if end != -1 else len(arm_table)]
+        if start == -1 or f"typed_attention_mode: {mode}," not in block:
+            errors.append(f"{experiment_id}: runner arm table does not bind {name} to {experiment_id}")
+    return errors
+
+
 def m002_versioned_runner_binding_errors(
     root: Path, config: dict, manifest: dict, experiment_id: str, arm_pair: str
 ) -> list[str]:
@@ -3037,10 +3055,7 @@ def m002_versioned_runner_binding_errors(
         sources[key] = data.decode("utf-8", "replace")
     arm_table = sources.get("runner_arm_table", "")
     treatment, control = arm_pair.split(",", 1)
-    for name, mode in ((treatment, "TypedAttentionMode::FactorizedV2"), (control, "TypedAttentionMode::Off")):
-        marker = f'name: "{name}",\n        experiment: "{experiment_id}",'
-        if marker not in arm_table or mode not in arm_table:
-            errors.append(f"{experiment_id}: runner arm table does not bind {name} to {experiment_id}")
+    errors.extend(m002_arm_block_binding_errors(arm_table, experiment_id, treatment, control))
     if f'"{experiment_id}" => Some(["{treatment}", "{control}"])' not in arm_table:
         errors.append(f"{experiment_id}: runner arm table does not admit only the registered pair")
     runner_main = sources.get("runner_main", "")
