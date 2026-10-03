@@ -19,9 +19,9 @@ pub use kv::{
 };
 pub use retention::{
     decide, score_candidates, ConflictState, Freshness, KnowledgeKey, KnowledgeLifecycle,
-    KnowledgeObject, RawEvent, Relation, RetentionAction, RetentionCandidate, RetentionController,
-    RetentionDecision, RetentionError, RetentionModel, RetentionReason, RetentionScore,
-    RetentionState, RuleRetentionModel, ToolCall, ToolResult,
+    KnowledgeObject, RawEvent, RawEventError, Relation, RetentionAction, RetentionCandidate,
+    RetentionController, RetentionDecision, RetentionError, RetentionModel, RetentionReason,
+    RetentionScore, RetentionState, RuleRetentionModel, ToolCall, ToolResult,
 };
 
 use ptr_types::{CapsuleId, Generation, ProjectId, ProvenanceRef, Revision, Validity};

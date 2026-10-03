@@ -38,12 +38,12 @@ impl KnowledgeStore {
     /// Appends immutable history. Replaying the exact same event is idempotent;
     /// reusing an id for different content is rejected.
     pub fn append_raw(&mut self, event: RawEvent) -> Result<bool, KnowledgeStoreError> {
-        if !event.validate_digest() {
-            return Err(KnowledgeStoreError::InvalidRawDigest(event.id));
-        }
-        if !event.validate_tool_pair() {
-            return Err(KnowledgeStoreError::InvalidToolPair(event.id));
-        }
+        event
+            .validate_digest()
+            .map_err(|_| KnowledgeStoreError::InvalidRawDigest(event.id.clone()))?;
+        event
+            .validate_tool_pair()
+            .map_err(|_| KnowledgeStoreError::InvalidToolPair(event.id.clone()))?;
         match self.raw.get(&event.id) {
             Some(existing) if existing == &event => Ok(false),
             Some(_) => Err(KnowledgeStoreError::ConflictingRawEvent(event.id)),
