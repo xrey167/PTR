@@ -314,6 +314,27 @@ fn unknown_dependency_is_rejected_before_ledger_append() {
 }
 
 #[test]
+fn a_hypothesis_over_the_ledger_limits_is_refused_before_admission_is_committed() {
+    let mut runtime = runtime_with_scope();
+    let mut request = request(PodOutputKind::Hypothesis);
+    request.output.provenance = (0..ptr_ledger::MAX_HYPOTHESIS_PROVENANCE + 1)
+        .map(|_| ProvenanceRef {
+            source: ptr_types::EvidenceId::from("evidence"),
+            note: None,
+        })
+        .collect();
+    assert!(runtime.admit_pod_output(request.clone(), &Pass).is_err());
+    // Neither record may be left behind: an admission without its hypothesis
+    // would make a retry report success for a hypothesis that does not exist.
+    assert!(!runtime.committed_events().iter().any(|event| matches!(
+        event.event,
+        ptr_ledger::LedgerEvent::PodOutputAdmitted { .. }
+            | ptr_ledger::LedgerEvent::PodHypothesisCommitted { .. }
+    )));
+    assert!(runtime.admit_pod_output(request, &Pass).is_err());
+}
+
+#[test]
 fn admitted_output_replays_without_recreating_the_payload() {
     let mut runtime = runtime_with_scope();
     runtime

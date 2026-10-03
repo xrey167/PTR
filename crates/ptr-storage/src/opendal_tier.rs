@@ -74,8 +74,19 @@ impl TierBackend for OpenDalTierBackend {
             match self.operator.read(&key).await {
                 Ok(existing) => {
                     let existing = existing.to_vec();
-                    if existing != bytes || chunk.validate_bytes(&existing).is_err() {
-                        return Err(TierError::ImmutableConflict);
+                    if chunk.validate_bytes(&existing).is_ok() {
+                        // A valid object for this digest and length can only be
+                        // byte-identical to what we were asked to store.
+                        if existing != bytes {
+                            return Err(TierError::ImmutableConflict);
+                        }
+                    } else {
+                        // The stored object does not match its own content
+                        // address, so it is a corrupt replica and not a
+                        // conflicting write. Overwrite it with the verified
+                        // bytes so a damaged replica can be repaired.
+                        self.operator.write(&key, bytes).await.map_err(map_error)?;
+                        self.read_verified(&chunk).await?;
                     }
                 }
                 Err(error) if error.kind() == ErrorKind::NotFound => {

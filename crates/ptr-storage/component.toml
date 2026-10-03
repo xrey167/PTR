@@ -9,7 +9,7 @@ implemented = [
   "In-memory object-store reference implementation",
   "Typed multi-tier manifests with canonical chunk and root digests",
   "Immutable CPU and atomic filesystem tier backends with verify-on-read",
-  "Optional OpenDAL memory, filesystem and S3-capable adapter",
+  "Optional OpenDAL memory, filesystem and S3-capable adapter; put_chunk over an existing object that fails its own content address overwrites it with the verified bytes (repair) instead of returning ImmutableConflict, which is kept only for a valid object with different bytes",
   "AEAD-bound durable KV chunks with authenticated cross-generation anchors",
   "Crash-safe protected-state replacement with unique writer temp files",
   "ProtectedStateStore trait with InMemoryProtectedStateStore and FileProtectedStateStore: seal encrypts a payload with AES-256-GCM-SIV under a key from a KeyProvider, with the domain, logical id, generation, revision, key id and plaintext digest as associated data and a nonce derived from them, and returns a ProtectedHandle carrying the ciphertext and anchor digests; open and verify check the ciphertext digest, anchor, plaintext digest and key",
@@ -44,7 +44,7 @@ decisions = [
 ]
 
 checks = [
-  "ptr-storage tier, protected-tier and OpenDAL contract tests",
+  "ptr-storage tier, protected-tier and OpenDAL contract tests, including put_chunk_repairs_a_corrupt_replica_at_the_same_key",
   "tests/protected.rs: seal/open/verify round trip with an idempotent re-seal, rollback and forged-anchor rejection, revoked-key refusal, and a FileProtectedStateStore reopened twice with the sealed state still readable and extendable by a later generation",
   "workspace fmt/check/test/clippy",
 ]
