@@ -1,0 +1,1336 @@
+{
+ "crates": {
+  "ptr-events": {
+   "role": "Defines the runtime event taxonomy and a bounded in-memory event bus contract that is never causal authority.",
+   "summary": "RuntimeEvent and EventEnvelope are what the runtime appends to its in-memory event list on each commit and request stage. The bus (offsets, projection versus telemetry classes, producer and consumer traits, an in-memory implementation with refusal-based backpressure) is only driven by its own tests; nothing in the runtime or server publishes to it.",
+   "maturity": "partial",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Defines the RuntimeEvent enum and EventEnvelope that the runtime emits into its in-memory event list.",
+     "key_types": [
+      "RuntimeEvent",
+      "EventEnvelope"
+     ]
+    },
+    "bus.rs": {
+     "purpose": "Bounded event bus contract with projection and telemetry classes, consumer offsets and an in-memory implementation.",
+     "key_types": [
+      "InMemoryBus",
+      "EventProducer",
+      "EventConsumer",
+      "NewRecord",
+      "BusError"
+     ]
+    }
+   }
+  },
+  "ptr-exec": {
+   "role": "Bounded mailbox and isolate-effect types for a future isolate scheduler.",
+   "summary": "A 46-line library with a bounded synchronous mailbox, an Effect enum, an Isolate trait and a replay trace. ptr-runtime lists it as a dependency but no runtime source uses it; only ptr-bench and its own smoke test call it.",
+   "maturity": "scaffold",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Bounded mailbox with try-send backpressure, an isolate Effect enum, the Isolate handler trait and a replay trace.",
+     "key_types": [
+      "Mailbox",
+      "SendError",
+      "Effect",
+      "Isolate",
+      "ReplayTrace"
+     ]
+    }
+   }
+  },
+  "ptr-model-api": {
+   "role": "Defines the inference backend traits, the model event and request types, and two deterministic plumbing backends.",
+   "summary": "InferenceBackend and ResumableInferenceBackend are the contract the runtime loop calls; ModelEvent carries tokens, pod requests and action proposals. The only implementations are ReferenceEchoBackend and ScenarioBackend, which are deterministic stand-ins and explicitly not model-quality baselines.",
+   "maturity": "partial",
+   "modules": {
+    "backend.rs": {
+     "purpose": "Backend traits plus the echo and scenario plumbing backends used by the daemon and tests.",
+     "key_types": [
+      "InferenceBackend",
+      "ResumableInferenceBackend",
+      "ReferenceEchoBackend",
+      "ScenarioBackend",
+      "ModelError"
+     ]
+    },
+    "event.rs": {
+     "purpose": "The ModelEvent enum a backend emits: tokens, pod requests, action proposals, candidates and finish.",
+     "key_types": [
+      "ModelEvent"
+     ]
+    },
+    "lib.rs": {
+     "purpose": "Module declarations and re-exports for the model API.",
+     "key_types": []
+    },
+    "request.rs": {
+     "purpose": "Request, resume request and observation structs passed to a backend, carrying the semantic context revision.",
+     "key_types": [
+      "ModelRequest",
+      "ModelResumeRequest",
+      "ModelObservation"
+     ]
+    }
+   }
+  },
+  "ptr-router": {
+   "role": "Deterministic selection of a registered Pod by project, capability and input type.",
+   "summary": "PodRouter asks the project-scoped registry for candidates, scores each 1.0 and picks the highest, breaking ties by Pod id; the runtime pod loop uses it. RouteDecision, RouteScore and RoutingPolicy exist but no other code uses them.",
+   "maturity": "partial",
+   "modules": {
+    "lib.rs": {
+     "purpose": "PodRouter candidate listing and selection with deterministic tie-break, plus unused routing score and policy types.",
+     "key_types": [
+      "PodRouter",
+      "PodRoute",
+      "RouteDecision",
+      "RouteScore",
+      "RoutingPolicy"
+     ]
+    }
+   }
+  },
+  "ptr-runtime": {
+   "role": "The authority core: owns the ledger, semantic state, effect gateway, merge authority, neural-state admission and recovery for one runtime.",
+   "summary": "One PtrRuntime value replays a hash-chained ledger on open, applies every committed record to semantic state, lifecycle generations, the effect fence and the tier journal, and gates every write through checked entry points. The shipped daemon reaches ingest, the resumable model loop and the effect gateway; merge authority, neural admission, identity, manifests, placement, tiering, snapshots and compaction are exercised by tests and the ptr-bench experiments only.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "PtrRuntime host: durable open and replay, commit and fencing, model and pod loops, pod-output admission, manifests, scopes, tier journal.",
+     "key_types": [
+      "PtrRuntime",
+      "RuntimeError",
+      "ResumableRun",
+      "PodOutputAdmission",
+      "PodOutputAdmissionRequest"
+     ]
+    },
+    "admission.rs": {
+     "purpose": "Admit an authenticated identity into a project-bound grant by consulting a policy, a policy revision and a session revocation set.",
+     "key_types": [
+      "IdentityAdmissionController",
+      "AdmissionGrant",
+      "AdmissionError"
+     ]
+    },
+    "compacted.rs": {
+     "purpose": "Export and import a compacted snapshot of state, lifecycle and effect obligations at a floor, without the history behind it.",
+     "key_types": [
+      "CompactedSnapshot",
+      "CompactedAnchor",
+      "CompactedError",
+      "export_compacted_snapshot",
+      "restore_compacted"
+     ]
+    },
+    "directory.rs": {
+     "purpose": "Resolve a logical Pod revision address to a healthy, constraint-matching endpoint route that is a candidate, never a grant.",
+     "key_types": [
+      "PodDirectory",
+      "InMemoryPodDirectory"
+     ]
+    },
+    "execution.rs": {
+     "purpose": "The action gateway: sessions, exact scopes, permits, attempt and settlement journaling, at-most-once keys, fencing and reconciliation.",
+     "key_types": [
+      "ExecutionGrant",
+      "ExecutionPermit",
+      "ExecutionError",
+      "ActionExecutor",
+      "action_digest"
+     ]
+    },
+    "identity.rs": {
+     "purpose": "Turn a signed token or forward-auth headers into an IdentityContext, with key-set refresh, issuer and audience checks and replay refusal.",
+     "key_types": [
+      "OidcIdentityAdapter",
+      "AutheliaForwardAuthAdapter",
+      "JwksStore",
+      "HttpJwksRefresher",
+      "OidcError"
+     ]
+    },
+    "kv.rs": {
+     "purpose": "Issue and complete a single-use ticket for using a key-value cache state, checked against metadata and a fenced placement lease.",
+     "key_types": [
+      "RuntimeKvAuthority",
+      "KvUseTicket",
+      "KvUseRequest",
+      "KvUseError"
+     ]
+    },
+    "manifest.rs": {
+     "purpose": "Validate execution manifests against knowledge, artifacts, principals, policy revisions and snapshot digests; hold the admitted registry.",
+     "key_types": [
+      "ValidatedExecutionManifest",
+      "ManifestAuthorityRegistry",
+      "ExecutionManifestRegistry",
+      "validate_and_build",
+      "validate_authority"
+     ]
+    },
+    "memory.rs": {
+     "purpose": "Orchestrate semantic memory ingestion, retention choice and context compilation, delegating durable promotion to the runtime.",
+     "key_types": [
+      "ContextMemoryController",
+      "MemoryControllerError"
+     ]
+    },
+    "merge.rs": {
+     "purpose": "The host policy for non-ingress semantic writes: grant, verdict, preview, hold, receipt, refusal and the only agent-branch merge.",
+     "key_types": [
+      "SemanticGrant",
+      "MergeAuthority",
+      "MergeOutcome",
+      "MergePreview",
+      "SemanticVerdict"
+     ]
+    },
+    "migration.rs": {
+     "purpose": "State machine that moves a frozen key-value cache snapshot to a different node or device under fenced leases.",
+     "key_types": [
+      "KvMigrationController",
+      "MigrationRecord",
+      "MigrationState",
+      "MigrationError"
+     ]
+    },
+    "neural.rs": {
+     "purpose": "Bind opaque model, cache and checkpoint state to history, inputs and generations, and re-decide admission at every use.",
+     "key_types": [
+      "StateBinding",
+      "NeuralState",
+      "NeuralStateCache",
+      "Denial",
+      "StateDeclaration"
+     ]
+    },
+    "persistence.rs": {
+     "purpose": "Export, verify and restore complete replay-backed recovery snapshots, strict anchored reopen and legacy log migration.",
+     "key_types": [
+      "RecoverySnapshot",
+      "SnapshotAnchor",
+      "SnapshotError",
+      "export_recovery_snapshot",
+      "open_durable_at"
+     ]
+    },
+    "placement.rs": {
+     "purpose": "Track nodes, devices and Pod placements with epochs, and issue fenced state leases that go stale when placement moves.",
+     "key_types": [
+      "PodPlacementController",
+      "FencedStateLease",
+      "Placement",
+      "PlacementEpoch",
+      "FencingToken"
+     ]
+    },
+    "policy.rs": {
+     "purpose": "Signed policy bundles: canonical payload, digest, signature and validity-window verification against a trust store, plus loaders.",
+     "key_types": [
+      "SignedPolicyBundle",
+      "PolicyBundlePayload",
+      "PolicyTrustStore",
+      "PolicyBundleLoader",
+      "PolicyError"
+     ]
+    },
+    "protected_state.rs": {
+     "purpose": "Thin runtime wrapper that forwards seal, open, verify and key rotation to an injected protected-state store.",
+     "key_types": [
+      "ProtectedStateCoordinator"
+     ]
+    },
+    "sandbox.rs": {
+     "purpose": "Sandbox profile and executor contract, with a test-only native executor and external backends that always fail closed.",
+     "key_types": [
+      "SandboxExecutor",
+      "SandboxProfile",
+      "NativeSandboxExecutor",
+      "ExternalSandboxExecutor",
+      "NetworkMode"
+     ]
+    },
+    "scopes.rs": {
+     "purpose": "Execution scope registry with a checked lifecycle state machine, lease bindings, recovery marking and cleanup ordering.",
+     "key_types": [
+      "ScopeRegistry",
+      "ExecutionScope",
+      "ScopeState",
+      "ScopeCleanupCoordinator",
+      "ScopeError"
+     ]
+    },
+    "semantic.rs": {
+     "purpose": "Semantic publication paths: ingress of request text and pod output, host writes, and the replay rules every origin must satisfy.",
+     "key_types": [
+      "SemanticCommit",
+      "request_raw_key",
+      "pod_output_key",
+      "promote_verified_pod_output",
+      "apply_verified_semantic_delta"
+     ]
+    },
+    "tensor_kv.rs": {
+     "purpose": "Registry of managed tensor key-value caches with lease-checked allocate, append, snapshot, tier snapshot and restore, and prefix sharing.",
+     "key_types": [
+      "ManagedKvRegistry",
+      "ManagedKvHandle",
+      "ManagedKvMetadata",
+      "TensorKvError",
+      "ManagedKvPageContext"
+     ]
+    },
+    "tier.rs": {
+     "purpose": "Tier residency controller, ledger-projected backend and replica lifecycle, pinning, transfer, prefetch and placement policies.",
+     "key_types": [
+      "TierResidencyController",
+      "TierJournalProjection",
+      "TierPlacementPolicy",
+      "BackendLifecycleState",
+      "ReplicaState"
+     ]
+    }
+   }
+  },
+  "ptr-server": {
+   "role": "Axum HTTP surface for the daemon: GET /health and POST /v1/requests, plus the demo-note effect wiring.",
+   "summary": "Holds the runtime behind a mutex and serves two routes. POST /v1/requests runs the resumable pod loop, and when the model returns an action it authorizes it, opens a 30-second execution session and runs it through the action gateway with a mandatory idempotency key. Includes the demo-note executor and an allow-all verifier; there is no authentication, streaming or event route.",
+   "maturity": "partial",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Axum router, request handler, error-to-status mapping, demo-note executor and grants, and the default allow-all verifier.",
+     "key_types": [
+      "ServerState",
+      "ApiRequest",
+      "ApiResponse",
+      "DemoNoteExecutor",
+      "demo_effect_grants"
+     ]
+    }
+   }
+  },
+  "ptr-worker": {
+   "role": "Placeholder binary for an external Pod adapter process.",
+   "summary": "The whole program prints one line saying no external Pod adapter is selected. It declares dependencies on ptr-types and ptr-pods but uses neither.",
+   "maturity": "scaffold",
+   "modules": {
+    "main.rs": {
+     "purpose": "Prints a scaffold notice and exits; no adapter is implemented.",
+     "key_types": []
+    }
+   }
+  },
+  "ptrctl": {
+   "role": "Operator command line: a repository health check and a checkpoint binding and sealing step.",
+   "summary": "Three commands: doctor checks required repository files, loads and validates the default configuration and probes tool versions; layout prints a pointer to the docs; seal binds a trained checkpoint to a journal and writes the sealed artifact and a separate anchor file.",
+   "maturity": "built",
+   "modules": {
+    "main.rs": {
+     "purpose": "Command dispatch for doctor, layout and seal, with the doctor repository and configuration check.",
+     "key_types": []
+    },
+    "seal.rs": {
+     "purpose": "Bind a checkpoint to committed journal history through the runtime and write the sealed state and its anchor file.",
+     "key_types": [
+      "SealRequest",
+      "seal"
+     ]
+    }
+   }
+  },
+  "ptrd": {
+   "role": "The standalone daemon binary: loads configuration, opens the durable runtime and serves the HTTP API on a loopback address.",
+   "summary": "Parses flags, layers file, environment and flag configuration, refuses anything but standalone mode on a loopback address with an existing data directory, opens the file-backed runtime, installs a demo-note capsule and mutation permission, and serves with an empty pod registry and an allow-all verifier.",
+   "maturity": "built",
+   "modules": {
+    "main.rs": {
+     "purpose": "Daemon entry: configuration layering and validation, durable runtime open, demo target install, backend choice and server start.",
+     "key_types": []
+    }
+   }
+  }
+ },
+ "flows": [
+  {
+   "id": "production-request-path",
+   "title": "POST /v1/requests in the shipped daemon",
+   "summary": "A client posts an id and text to ptrd. The text is committed as ingress, a backend runs, an action proposal (scenario backend only) goes through the effect gateway, and the handler answers with text, revision, evidence and an effect receipt. The older eight-step map is out of date: the ledger is durable, the loop is resumable and an effect path exists.",
+   "status": "built",
+   "lanes": [
+    {
+     "id": "ptrd",
+     "label": "ptrd",
+     "crate": "ptrd"
+    },
+    {
+     "id": "server",
+     "label": "ptr-server",
+     "crate": "ptr-server"
+    },
+    {
+     "id": "runtime",
+     "label": "ptr-runtime",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "semdb",
+     "label": "ptr-semdb",
+     "crate": "ptr-semdb"
+    },
+    {
+     "id": "ledger",
+     "label": "ptr-ledger",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "model",
+     "label": "ptr-model-api",
+     "crate": "ptr-model-api"
+    },
+    {
+     "id": "events",
+     "label": "ptr-events",
+     "crate": "ptr-events"
+    }
+   ],
+   "steps": [
+    {
+     "from": "ptrd",
+     "to": "ptrd",
+     "label": "Layer configuration and refuse unsafe daemon settings",
+     "note": "Flags, then file, then environment, then flags again are applied; validate_daemon requires standalone mode, a loopback bind address and an existing data directory, and only the reference-echo and scenario backends are accepted.",
+     "evidence": "bins/ptrd/src/main.rs:12-60"
+    },
+    {
+     "from": "ptrd",
+     "to": "runtime",
+     "label": "PtrRuntime::open_durable on data_dir/ledger.log",
+     "note": "Opens the file ledger and replays every persisted record through lifecycle validation and state application, then marks scopes as needing recovery. An unsettled effect attempt found in the log fences the runtime from the start.",
+     "evidence": "bins/ptrd/src/main.rs:66-67"
+    },
+    {
+     "from": "ptrd",
+     "to": "runtime",
+     "label": "Install demo-note capsule, mutation permission, capability",
+     "note": "If no live generation exists for demo-note it commits CapsuleCommitted generation 1, then sets allow_mutation and the demo.local-note.create capability.",
+     "evidence": "bins/ptrd/src/main.rs:68-81"
+    },
+    {
+     "from": "ptrd",
+     "to": "server",
+     "label": "serve_with_dependencies with an empty PodRegistry",
+     "note": "Binds the loopback listener and hands the runtime, chosen backend, PodRouter, an empty PodRegistry, an allow-all verifier and the demo effect grants to axum.",
+     "evidence": "bins/ptrd/src/main.rs:82-101"
+    },
+    {
+     "from": "server",
+     "to": "server",
+     "label": "request handler validates the body and locks the runtime",
+     "note": "Rejects an empty id or text with 400 and takes the single global mutex around PtrRuntime, so requests are fully serialized.",
+     "evidence": "crates/ptr-server/src/lib.rs:233-244"
+    },
+    {
+     "from": "server",
+     "to": "runtime",
+     "label": "run_resumable_with_pods_using_router(project demo, 4 rounds)",
+     "note": "Calls the resumable loop with the injected backend, registry, router and verifier and a limit of four resume rounds.",
+     "evidence": "crates/ptr-server/src/lib.rs:245-256"
+    },
+    {
+     "from": "runtime",
+     "to": "semdb",
+     "label": "ingest_text then apply_ingress, prepare_delta",
+     "note": "Builds a one-value delta at request:ID:raw with a Request origin, refuses a fenced runtime, checks the origin shape rule and prepares the delta in the semantic database to get the next revision.",
+     "evidence": "crates/ptr-runtime/src/semantic.rs:112-127"
+    },
+    {
+     "from": "runtime",
+     "to": "ledger",
+     "label": "append_semantic through append_checked to append_durable",
+     "note": "Marks the commit uncertain, then the file ledger writes a framed hash-chained record and syncs it to disk before anything else is applied.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:2168-2175"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "apply_committed publishes the delta and projects state",
+     "note": "The prepared delta becomes the live semantic snapshot and the materialized state applies the record; the uncertainty flag clears only after this succeeds.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:2583-2590"
+    },
+    {
+     "from": "runtime",
+     "to": "events",
+     "label": "emit RequestStarted, SnapshotOpened and CommitApplied",
+     "note": "Events are pushed onto an in-memory vector with a sequence number. Nothing publishes them to the ptr-events bus and the server never reads them.",
+     "evidence": "crates/ptr-runtime/src/semantic.rs:349-352"
+    },
+    {
+     "from": "runtime",
+     "to": "model",
+     "label": "backend.infer with the semantic context",
+     "note": "The backend receives the request id, the sorted semantic context at the new revision and the raw text. The echo backend returns Token then Finished; the scenario backend returns Token then a mutation ActionReady.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1316-1323"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "Classify events: finish, action, or pod request",
+     "note": "More than one control event is refused. Finished with no control event emits RequestFinished and returns; an action is returned without emitting RequestFinished; a pod request goes to the pod loop, which with the daemon's empty registry ends in PodUnavailable.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1327-1389"
+    },
+    {
+     "from": "server",
+     "to": "runtime",
+     "label": "Authorize and execute the action through the gateway",
+     "note": "For a returned action the handler requires a UTF-8 payload of at most 4 KiB and an idempotency key, calls authorize_action, then register_execution_session, prepare_execution_once and execute_prepared (see action-gateway), and builds an effect receipt from the ledger.",
+     "evidence": "crates/ptr-server/src/lib.rs:258-306"
+    },
+    {
+     "from": "server",
+     "to": "server",
+     "label": "Build ApiResponse or map the error to a status",
+     "note": "Response text is the concatenated Token events, revision is the runtime's current revision, evidence is type:length per observation. Stale revision, stale generation, fence and key conflicts map to 409; other runtime and effect errors to 422.",
+     "evidence": "crates/ptr-server/src/lib.rs:308-327"
+    }
+   ]
+  },
+  {
+   "id": "pod-and-resume-loop",
+   "title": "Pod request and resume loop",
+   "summary": "When a backend emits PodRequested, the runtime resolves a registered Pod, refuses effectful Pods, invokes it, verifies its typed output, promotes the output into semantic state and resumes the backend with an observation. The loop is reachable from ptrd but the daemon registers no Pod and neither shipped backend asks for one, so only tests complete a round.",
+   "status": "partial",
+   "lanes": [
+    {
+     "id": "runtime",
+     "label": "ptr-runtime",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "model",
+     "label": "ptr-model-api",
+     "crate": "ptr-model-api"
+    },
+    {
+     "id": "router",
+     "label": "ptr-router",
+     "crate": "ptr-router"
+    },
+    {
+     "id": "pods",
+     "label": "ptr-pods registry",
+     "crate": "ptr-pods"
+    },
+    {
+     "id": "verifier",
+     "label": "ptr-verifier",
+     "crate": "ptr-verifier"
+    },
+    {
+     "id": "semdb",
+     "label": "ptr-semdb",
+     "crate": "ptr-semdb"
+    }
+   ],
+   "steps": [
+    {
+     "from": "runtime",
+     "to": "model",
+     "label": "Ingest the request and call backend.infer",
+     "note": "Ingress commit first, then the backend is asked for its first batch of events. run_model_with_pods is the older single-pass variant that never resumes.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1314-1323"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "Split events into pod requests and actions, refuse mixes",
+     "note": "Each round extracts PodRequested and ActionReady events. Two or more control events are refused (MixedControlEvents or MultipleControlEvents); no control event and no Finished is ModelNoProgress.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1327-1374"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "Bound the loop at max_rounds",
+     "note": "A pod request on the last round fails with ModelResumeLimit instead of invoking another Pod.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1376-1378"
+    },
+    {
+     "from": "runtime",
+     "to": "router",
+     "label": "PodRouter::select(project, capability, input_type)",
+     "note": "The router asks the project-scoped registry for candidates, scores them equally and takes the highest by Pod id. A missing Pod and a Pod in another project give the same PodUnavailable error.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1380-1389"
+    },
+    {
+     "from": "router",
+     "to": "pods",
+     "label": "registry.candidates then pods.get(project, pod_id)",
+     "note": "Candidates come only from the registry for that project; the router never accepts an out-of-registry identity.",
+     "evidence": "crates/ptr-router/src/lib.rs:38-70"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "Effect gate: only Pure or Read Pods may run here",
+     "note": "Any other declared effect returns PodEffectRequiresActionBoundary before the Pod is invoked; effects must go through the action gateway.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1391-1400"
+    },
+    {
+     "from": "runtime",
+     "to": "pods",
+     "label": "Emit PodInvoked and call pod.invoke(TypedPayload)",
+     "note": "The payload is wrapped with the requested input type and the Pod returns a typed output or an error.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1402-1408"
+    },
+    {
+     "from": "runtime",
+     "to": "verifier",
+     "label": "promote_verified_pod_output: type and verifier checks",
+     "note": "Re-checks the effect gate, requires the output type in the manifest's produces list, runs the verifier, emits VerifierResult, and fails with PodVerificationFailed unless status is Pass with no hard finding.",
+     "evidence": "crates/ptr-runtime/src/semantic.rs:58-100"
+    },
+    {
+     "from": "runtime",
+     "to": "semdb",
+     "label": "promote_pod_output as PodOutput ingress",
+     "note": "Writes pod-output:REQUEST:POD with the Pod as source and a dependency on the request's raw text, under an origin whose exact shape replay checks again; the commit follows the production-request-path append sequence.",
+     "evidence": "crates/ptr-runtime/src/semantic.rs:363-390"
+    },
+    {
+     "from": "runtime",
+     "to": "model",
+     "label": "backend.resume with a ModelObservation",
+     "note": "The observation carries the new revision, Pod id, type and bytes; the semantic context is refreshed first and the round number increments, then the loop repeats until Finished or an action.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1410-1429"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "Alternative entry: admit_pod_output with manifest bindings",
+     "note": "A separate admission path for mesh-style outputs: it checks fence, scope, session and lease binding, manifest digest, generation, artifact and dependencies, verifies, commits PodOutputAdmitted first, then routes by output kind to candidate, hypothesis, action proposal or promotion. Not called by the daemon.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1723-1790"
+    }
+   ]
+  },
+  {
+   "id": "action-gateway",
+   "title": "Action gateway: attempt, execute, settle, fence",
+   "summary": "A trusted host registers a session with exact grants, prepares a permit for one action and executes it. The runtime journals EffectAttempted before the executor runs and EffectSettled after; an executor error leaves the attempt unsettled and the runtime fenced until an operator reconciles it.",
+   "status": "built",
+   "lanes": [
+    {
+     "id": "server",
+     "label": "ptr-server host",
+     "crate": "ptr-server"
+    },
+    {
+     "id": "gateway",
+     "label": "execution.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "security",
+     "label": "ptr-security",
+     "crate": "ptr-security"
+    },
+    {
+     "id": "verifier",
+     "label": "grant verifier",
+     "crate": "ptr-verifier"
+    },
+    {
+     "id": "ledger",
+     "label": "ptr-ledger",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "executor",
+     "label": "ActionExecutor",
+     "crate": "ptr-server"
+    }
+   ],
+   "steps": [
+    {
+     "from": "server",
+     "to": "security",
+     "label": "authorize_action: permissions, revision, generation",
+     "note": "The runtime builds an ActionAuthorization from the permission set, live generation and revocations and maps denials to StaleRevision, StaleGeneration, UnknownGeneration or PermissionDenied.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1435-1477"
+    },
+    {
+     "from": "server",
+     "to": "gateway",
+     "label": "register_execution_session with exact grants and TTL",
+     "note": "Refuses a fenced runtime or any unsettled attempt, an invalid principal, a zero TTL, zero or more than 64 grants, invalid or duplicate scopes and more than 1024 live sessions.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:823-875"
+    },
+    {
+     "from": "server",
+     "to": "gateway",
+     "label": "prepare_execution_once validates the at-most-once key",
+     "note": "The key must be a clean identifier and, unless it already settled, at most the compacted-snapshot string bound; then the common prepare runs.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:995-1010"
+    },
+    {
+     "from": "gateway",
+     "to": "gateway",
+     "label": "prepare: session, exact scope, project, permissions",
+     "note": "session() refuses a foreign runtime, a fenced or ambiguous runtime, a closed or expired session and a withdrawn peer; the grant must match project, target, operation, capability, input type and effect exactly; check_execution_action requires the capsule's project and current revision and live generation.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:781-807"
+    },
+    {
+     "from": "gateway",
+     "to": "verifier",
+     "label": "execute_prepared then admit_effect re-checks and verifies",
+     "note": "Session match, permit expiry, permit epoch (any commit or permission change invalidates pending permits), grant still held, dispatch kind, the same action checks again, then the grant's verifier must Pass at the required level with no hard finding, and expiry is checked once more.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:1231-1278"
+    },
+    {
+     "from": "gateway",
+     "to": "gateway",
+     "label": "At-most-once key lookup",
+     "note": "A key whose effect applied is answered from history for the same project, principal and action (read at the recorded revision and generation); another action gets KeyBoundToAnotherAction; applied without a kept response gets ResponseNotRetained; a not-applied key binds nothing.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:1297-1325"
+    },
+    {
+     "from": "gateway",
+     "to": "ledger",
+     "label": "Commit EffectAttempted before the executor runs",
+     "note": "The attempt record with key, project, principal, target, operation, capability, effect, generation, revision, verification level and action digest is committed; applying it records an unsettled effect, which is the fence.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:1327-1344"
+    },
+    {
+     "from": "gateway",
+     "to": "executor",
+     "label": "executor.execute(VerifiedDispatch)",
+     "note": "Only the runtime builds a VerifiedDispatch. The demo executor re-checks the contract and creates demo-note.txt with create_new and a sync; a second distinct note fails because the file exists.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:1093-1103"
+    },
+    {
+     "from": "gateway",
+     "to": "gateway",
+     "label": "Executor error leaves the attempt unsettled",
+     "note": "An error or panic cannot prove the effect did not apply, so no settlement is written; every later commit, session and ingest is refused with a fence error, across restarts, until reconciliation.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:1099-1103"
+    },
+    {
+     "from": "gateway",
+     "to": "ledger",
+     "label": "record_settlement commits EffectSettled with a digest",
+     "note": "The response digest is always recorded and the response is kept only within MAX_RETAINED_RESPONSE; commit_settlement bypasses the unsettled fence but not commit uncertainty, and applying it clears the attempt and binds the key.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:1210-1222"
+    },
+    {
+     "from": "gateway",
+     "to": "ledger",
+     "label": "reconcile_effect records operator evidence",
+     "note": "An operator states applied or not applied with an identifier evidence string for a known unsettled attempt; EffectReconciled is committed, nothing is inferred or retried, and a not-applied key binds nothing. ptrd exposes no route to it.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:1054-1076"
+    },
+    {
+     "from": "gateway",
+     "to": "gateway",
+     "label": "Detached dispatch and peer admission variants",
+     "note": "dispatch_detached journals the attempt and leaves it unsettled until settle_detached; admit_peer builds a session from a host policy table for a transport-authenticated node id. Both share admit_effect.",
+     "evidence": "crates/ptr-runtime/src/execution.rs:1126-1162"
+    },
+    {
+     "from": "gateway",
+     "to": "gateway",
+     "label": "Scopes, sandbox and policy are not on this path",
+     "note": "execute_prepared never calls the scope registry or a sandbox. The native sandbox executor is test-only, external sandbox backends always fail closed, and signed policy bundles gate manifests, not effects.",
+     "evidence": "crates/ptr-runtime/src/sandbox.rs:62-86"
+    }
+   ]
+  },
+  {
+   "id": "semantic-merge-authority",
+   "title": "Semantic merge authority for non-ingress writes",
+   "summary": "The host installs a SemanticGrant once. A host delta or a sealed agent branch is then judged by every verifier of that grant and appended only if admitted, with a record naming who wrote it and which verifiers agreed. The shipped daemon installs no grant, so this runs in tests and experiments.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "host",
+     "label": "host caller",
+     "crate": null
+    },
+    {
+     "id": "merge",
+     "label": "merge.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "semantic",
+     "label": "semantic.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "branch",
+     "label": "ptr-branch",
+     "crate": "ptr-branch"
+    },
+    {
+     "id": "verifier",
+     "label": "grant verifiers",
+     "crate": "ptr-verifier"
+    },
+    {
+     "id": "ledger",
+     "label": "ptr-ledger",
+     "crate": "ptr-ledger"
+    }
+   ],
+   "steps": [
+    {
+     "from": "host",
+     "to": "merge",
+     "label": "install_semantic_grant once",
+     "note": "The grant needs at least one verifier with a distinct valid name, an optional host-write permission, an optional merge policy with a calibration seed and listed reviewers. A second install is refused and nothing of the grant is journaled.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:740-747"
+    },
+    {
+     "from": "host",
+     "to": "semantic",
+     "label": "apply_verified_semantic_delta (host write)",
+     "note": "Refuses a fenced runtime, no grant, a grant without host writes, a bad principal, a stale expected revision, any ingress key written, removed or derived, and an unprepared delta or one that would evict an ingress key.",
+     "evidence": "crates/ptr-runtime/src/semantic.rs:214-253"
+    },
+    {
+     "from": "semantic",
+     "to": "verifier",
+     "label": "grant.judge over the before and after views",
+     "note": "Every verifier judges the SemanticChange in grant order; results are emitted as VerifierResult events, a report that fails closed stops later verifiers, and a non-admitted verdict is a SemanticVerificationRejected error.",
+     "evidence": "crates/ptr-runtime/src/semantic.rs:254-275"
+    },
+    {
+     "from": "semantic",
+     "to": "ledger",
+     "label": "Check origin rules, then append Host origin",
+     "note": "The record is checked by the same rules replay applies, then appended with an attestation naming the principal, verifiers, weakest level and soft findings; a no-op is returned without appending.",
+     "evidence": "crates/ptr-runtime/src/semantic.rs:276-297"
+    },
+    {
+     "from": "host",
+     "to": "merge",
+     "label": "preview_merge certifies and judges without committing",
+     "note": "Returns certification, seal digest, plan digest, verdict and affected keys even for a failing verdict, so a reviewer can decide. merge_branch never trusts a preview and recomputes it.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:777-786"
+    },
+    {
+     "from": "host",
+     "to": "merge",
+     "label": "merge_branch with Triage or Reviewed authority",
+     "note": "Refuses a fenced runtime or no grant; Triage needs a grant merge policy and Reviewed needs a reviewer the grant lists.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:848-883"
+    },
+    {
+     "from": "merge",
+     "to": "branch",
+     "label": "certify_merge: provenance, once-only, ptr_branch::certify",
+     "note": "Branch id and author must be valid provenance text, a branch already merged is refused, and certification checks the sealed branch against current state and the generations it relied on, producing a merge plan and its digest.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:994-1021"
+    },
+    {
+     "from": "merge",
+     "to": "merge",
+     "label": "Reviewed: approved plan digest must equal the current one",
+     "note": "If anything in the plan changed since approval, MergePlanChanged is returned and nothing is judged.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:885-892"
+    },
+    {
+     "from": "merge",
+     "to": "verifier",
+     "label": "judge_merge: reserved keys, prepare, every verifier",
+     "note": "A plan that writes, removes or derives an ingress key, or evicts one, is refused; otherwise the prepared change is judged by all verifiers.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:1025-1059"
+    },
+    {
+     "from": "merge",
+     "to": "merge",
+     "label": "Decide: hold, escalate, no change or commit",
+     "note": "A verifier rejection is held whatever the authority. Under Triage, a policy that does not auto-propose is held as Escalated for a person to approve by plan digest. A change that alters nothing returns NoChange and does not mark the branch merged.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:926-948"
+    },
+    {
+     "from": "merge",
+     "to": "semantic",
+     "label": "Build the Merge origin and validate it as replay will",
+     "note": "The record names branch, author, seal, plan, dependencies, rebased keys, attestation and authority; rules R3 and R4 check provenance, score range, no dependency entry, plan digest equality and branch not yet merged.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:950-962"
+    },
+    {
+     "from": "merge",
+     "to": "ledger",
+     "label": "Append and mark the branch merged",
+     "note": "The record is checked for encodability, appended, and state projects the merged-branch key so a second merge of the same id is refused. A MergeReceipt is returned.",
+     "evidence": "crates/ptr-runtime/src/merge.rs:963-989"
+    },
+    {
+     "from": "host",
+     "to": "merge",
+     "label": "merge_pod_hypothesis rebuilds a Pod hypothesis as a branch",
+     "note": "A persisted PodHypothesis is turned into a sealed branch and sent through merge_branch, so a hypothesis never publishes semantics by itself.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:627-658"
+    }
+   ]
+  },
+  {
+   "id": "neural-state-admission",
+   "title": "Neural state binding, sealing and admission",
+   "summary": "A checkpoint or cache state is bound to the journal position, input digests, live generations and codebook it came from, sealed with a separate anchor, and re-checked at every use. Only the ptrctl seal step is reachable from a binary; the cache, key-value, tier and migration ends run in tests.",
+   "status": "partial",
+   "lanes": [
+    {
+     "id": "ctl",
+     "label": "ptrctl seal",
+     "crate": "ptrctl"
+    },
+    {
+     "id": "neural",
+     "label": "neural.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "kv",
+     "label": "kv.rs, tensor_kv.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "tier",
+     "label": "tier.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "migration",
+     "label": "migration.rs, protected_state.rs",
+     "crate": "ptr-runtime"
+    }
+   ],
+   "steps": [
+    {
+     "from": "ctl",
+     "to": "neural",
+     "label": "bind_checkpoint(bytes, declaration, required families)",
+     "note": "Reads the checkpoint header, requires its codebook to equal the declared one, resolves the slot encoding, verifies required code families and bounds the payload before retaining it.",
+     "evidence": "crates/ptr-runtime/src/neural.rs:765-803"
+    },
+    {
+     "from": "neural",
+     "to": "neural",
+     "label": "bind_state builds a StateBinding from committed facts",
+     "note": "Takes the journal anchor (refused when fenced), the digest of each declared semantic input from the live snapshot and the live generation of each declared target; a missing key or target is undeclarable.",
+     "evidence": "crates/ptr-runtime/src/neural.rs:710-743"
+    },
+    {
+     "from": "neural",
+     "to": "neural",
+     "label": "Binding is admitted by the same rules it will meet later",
+     "note": "bind_state calls admission on its own result, so producer and consumer share one rule set.",
+     "evidence": "crates/ptr-runtime/src/neural.rs:744-746"
+    },
+    {
+     "from": "neural",
+     "to": "neural",
+     "label": "admission: fixed order of checks",
+     "note": "Fenced first, then any revoked bound generation, a known codebook with an unchanged fingerprint, history, each input digest, and generation equality (not at-least). Every refusal is one Denial type, including cannot-verify.",
+     "evidence": "crates/ptr-runtime/src/neural.rs:817-873"
+    },
+    {
+     "from": "neural",
+     "to": "neural",
+     "label": "check_history: anchor chain at the bound index",
+     "note": "The runtime must hold the chain base, the position must lie in its checkable range, its own chain anchor at that index must equal the binding's, and at the tip the revision must match.",
+     "evidence": "crates/ptr-runtime/src/neural.rs:880-915"
+    },
+    {
+     "from": "neural",
+     "to": "neural",
+     "label": "NeuralState::seal writes PTRNEU01 with a digest",
+     "note": "Header, canonical binding, payload and a SHA-256 digest; the returned anchor carries journal position, codebook and digest for a catalog to keep elsewhere.",
+     "evidence": "crates/ptr-runtime/src/neural.rs:603-627"
+    },
+    {
+     "from": "ctl",
+     "to": "ctl",
+     "label": "Write the sealed file, then the anchor file, undo on failure",
+     "note": "Every option is required; if the anchor file cannot be written the sealed file is removed so a seal never exists without its anchor.",
+     "evidence": "bins/ptrctl/src/seal.rs:123-131"
+    },
+    {
+     "from": "neural",
+     "to": "neural",
+     "label": "NeuralState::open against a retained anchor",
+     "note": "Size, magic, reserved field, lengths and trailing digest are checked and must equal the trusted anchor, and the decoded binding must agree with it. Decoding is not admission.",
+     "evidence": "crates/ptr-runtime/src/neural.rs:634-658"
+    },
+    {
+     "from": "neural",
+     "to": "neural",
+     "label": "NeuralStateCache::admit re-decides on every use",
+     "note": "The cache has no accessor that returns a payload without a runtime to check against; admit delegates to PtrRuntime::admit each time.",
+     "evidence": "crates/ptr-runtime/src/neural.rs:972-982"
+    },
+    {
+     "from": "neural",
+     "to": "neural",
+     "label": "denied and evict_denied housekeeping",
+     "note": "Lists or drops entries the runtime would now refuse; safety comes from per-use admission, not from eviction.",
+     "evidence": "crates/ptr-runtime/src/neural.rs:984-1006"
+    },
+    {
+     "from": "kv",
+     "to": "kv",
+     "label": "RuntimeKvAuthority::prepare issues a single-use ticket",
+     "note": "The placement lease must still be current, metadata must be Valid and match state, model, adapter, context digest, lease generation and pod generations, and a state with an active ticket is refused.",
+     "evidence": "crates/ptr-runtime/src/kv.rs:49-91"
+    },
+    {
+     "from": "kv",
+     "to": "tier",
+     "label": "Managed key-value allocate, snapshot_to_tier, restore_from_tier",
+     "note": "allocate issues a fenced lease; the tier snapshot requires the binding to match state, generation, epoch and token; restore checks the admitted object against the backend, object and replica records in the ledger projection and the current placement.",
+     "evidence": "crates/ptr-runtime/src/tensor_kv.rs:271-325"
+    },
+    {
+     "from": "tier",
+     "to": "tier",
+     "label": "Journaled replica transfer and residency control",
+     "note": "transfer_tier_replica_journaled commits Preparing, runs the controller transfer (budget, source readable, destination available) and commits Available, or Corrupt on failure; TierJournalProjection rebuilds backend, object and replica state from the ledger.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1660-1698"
+    },
+    {
+     "from": "migration",
+     "to": "migration",
+     "label": "KvMigrationController freeze, snapshot, restore, commit",
+     "note": "begin freezes the state and revokes its lease; snapshot records a verified digest; restore needs a different node or device and a matching generation; commit unfreezes. ProtectedStateCoordinator only forwards seal and open to an injected store.",
+     "evidence": "crates/ptr-runtime/src/migration.rs:48-153"
+    }
+   ]
+  },
+  {
+   "id": "identity-and-peer-admission",
+   "title": "Identity to admission grant and manifest resolution",
+   "summary": "An adapter turns a signed token or forward-auth headers into an IdentityContext; the runtime or an admission controller then admits the principal under a policy revision, and a pod execution manifest is validated against that authority and committed. Nothing in the daemon calls any of it; tests drive it.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "identity",
+     "label": "identity.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "admission",
+     "label": "admission.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "runtime",
+     "label": "lib.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "manifest",
+     "label": "manifest.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "policy",
+     "label": "policy.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "directory",
+     "label": "directory.rs, placement.rs",
+     "crate": "ptr-runtime"
+    }
+   ],
+   "steps": [
+    {
+     "from": "identity",
+     "to": "identity",
+     "label": "Unknown key id triggers a key-set refresh",
+     "note": "authenticate_at_with_refresh reads the token's kid; if the held store lacks it, a JwksRefresher fetches a document whose issuer and audience must equal the adapter's. The HTTPS-only reqwest refresher needs the oidc-http feature.",
+     "evidence": "crates/ptr-runtime/src/identity.rs:354-372"
+    },
+    {
+     "from": "identity",
+     "to": "identity",
+     "label": "Verify EdDSA signature, claims and token replay",
+     "note": "Only EdDSA is allowed; the signature is checked with the key for the kid, then issuer, audience, subject, session id, issue and expiry times, and a repeated jti is refused as TokenReplay. The result is an IdentityContext with a canonical digest.",
+     "evidence": "crates/ptr-runtime/src/identity.rs:374-453"
+    },
+    {
+     "from": "identity",
+     "to": "identity",
+     "label": "Forward-auth headers as the alternative adapter",
+     "note": "AutheliaForwardAuthAdapter requires subject and session, a valid time window and non-empty groups, then builds the same context type.",
+     "evidence": "crates/ptr-runtime/src/identity.rs:252-282"
+    },
+    {
+     "from": "admission",
+     "to": "admission",
+     "label": "IdentityAdmissionController::admit checks",
+     "note": "Expired identity, session mismatch and revoked session are refused; the policy decides; its revision must equal the controller's, the project must match the request, the capability must be listed and the grant must expire inside the identity's lifetime.",
+     "evidence": "crates/ptr-runtime/src/admission.rs:65-125"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "revoke_identity_session journals a SessionRevoked tombstone",
+     "note": "The tombstone is committed before it is materialized, and a repeat is idempotent.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:773-796"
+    },
+    {
+     "from": "runtime",
+     "to": "manifest",
+     "label": "admit_identity_context names the principal issuer:subject",
+     "note": "A revoked session is refused, otherwise the manifest authority registry records the principal that later manifests must name.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:802-819"
+    },
+    {
+     "from": "policy",
+     "to": "policy",
+     "label": "SignedPolicyBundle::verify against the trust store",
+     "note": "Checks key id, signature length, revision, payload validity, digest equality, validity window, known and unrevoked key, and the Ed25519 signature.",
+     "evidence": "crates/ptr-runtime/src/policy.rs:305-335"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "activate_policy_bundle commits PolicyBundleActivated",
+     "note": "Verification, then a projection update, then the ledger record, then the live authority registry is replaced; policy_authority_ready becomes true.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:896-929"
+    },
+    {
+     "from": "runtime",
+     "to": "manifest",
+     "label": "admit_execution_manifest_from_runtime binds the manifest",
+     "note": "The manifest principal must equal the identity's issuer:subject, the policy authority must be ready, the identity must be admitted, and the manifest snapshot revision and protected snapshot digest must equal the live ones.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:859-894"
+    },
+    {
+     "from": "manifest",
+     "to": "manifest",
+     "label": "validate_and_build then validate_authority",
+     "note": "The manifest is validated structurally; every knowledge generation must exist, not be invalidated and match its digest; artifacts and readers are resolved; the principal, policy revision and snapshot digest must match the authority.",
+     "evidence": "crates/ptr-runtime/src/manifest.rs:342-373"
+    },
+    {
+     "from": "runtime",
+     "to": "runtime",
+     "label": "Commit ExecutionManifestAdmitted and register it",
+     "note": "The canonical manifest is committed, then the authority projection observes it; replay rebuilds the registry, and resolve_execution_manifest returns the immutable record by digest.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:702-735"
+    },
+    {
+     "from": "directory",
+     "to": "directory",
+     "label": "InMemoryPodDirectory registers and resolves a route",
+     "note": "Registration refuses stale or unhealthy endpoints and epoch regressions; resolve checks health, artifact, region, zone, minimum epoch, memory, capability and input and output types. A route is a candidate, never an authorization.",
+     "evidence": "crates/ptr-runtime/src/directory.rs:21-134"
+    },
+    {
+     "from": "directory",
+     "to": "directory",
+     "label": "PodPlacementController assigns and fences state leases",
+     "note": "assign needs a healthy node and device with enough memory and bumps the epoch; issue_lease hands out a fresh fencing token; validate_lease rejects any lease that is not the current one.",
+     "evidence": "crates/ptr-runtime/src/placement.rs:162-259"
+    }
+   ]
+  },
+  {
+   "id": "snapshot-persistence-and-compaction",
+   "title": "Recovery snapshot and compacted snapshot",
+   "summary": "The runtime can export its complete replay-backed journal as a recovery snapshot, or its state at a floor as a compacted snapshot, and restore either against a separately retained anchor. No binary calls these exports; tests and ptr-bench probes do.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "host",
+     "label": "host caller",
+     "crate": null
+    },
+    {
+     "id": "persist",
+     "label": "persistence.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "compact",
+     "label": "compacted.rs",
+     "crate": "ptr-runtime"
+    },
+    {
+     "id": "ledger",
+     "label": "ptr-ledger",
+     "crate": "ptr-ledger"
+    },
+    {
+     "id": "runtime",
+     "label": "PtrRuntime::replay",
+     "crate": "ptr-runtime"
+    }
+   ],
+   "steps": [
+    {
+     "from": "host",
+     "to": "persist",
+     "label": "journal_anchor requires a healthy runtime",
+     "note": "A fenced runtime has no checkable history identity; a file ledger returns its anchor and a memory ledger encodes and decodes its log to compute one.",
+     "evidence": "crates/ptr-runtime/src/persistence.rs:107-118"
+    },
+    {
+     "from": "host",
+     "to": "persist",
+     "label": "export_recovery_snapshot",
+     "note": "Encodes the whole committed log, requires it to decode to the anchor and the materialized state to equal the anchor's index, and writes PTRSN001 with revision, index, length, anchor digest, the log and a trailing digest.",
+     "evidence": "crates/ptr-runtime/src/persistence.rs:131-158"
+    },
+    {
+     "from": "persist",
+     "to": "persist",
+     "label": "write_new publishes without replacing a file",
+     "note": "create_new, file sync and a parent directory sync on Unix; a failed write may leave an invalid file that readers reject.",
+     "evidence": "crates/ptr-runtime/src/persistence.rs:76-97"
+    },
+    {
+     "from": "host",
+     "to": "persist",
+     "label": "snapshot_log checks size, magic, lengths and digest",
+     "note": "The trusted anchor comes from a separate catalog, not from the snapshot, and revision, index and digest must match it.",
+     "evidence": "crates/ptr-runtime/src/persistence.rs:230-250"
+    },
+    {
+     "from": "persist",
+     "to": "runtime",
+     "label": "restore_recovery_snapshot replays the full log",
+     "note": "The decoded log must equal the trusted anchor, then PtrRuntime::replay validates every lifecycle and semantic transition, and revision and last applied index must equal the anchor.",
+     "evidence": "crates/ptr-runtime/src/persistence.rs:162-175"
+    },
+    {
+     "from": "persist",
+     "to": "ledger",
+     "label": "restore_durable_snapshot and open_durable_at",
+     "note": "Restoration validates first, then creates a new ledger file from the log and never overwrites one; open_durable_at reopens a file against a trusted anchor so a shorter valid chain cannot pass.",
+     "evidence": "crates/ptr-runtime/src/persistence.rs:122-130"
+    },
+    {
+     "from": "host",
+     "to": "compact",
+     "label": "export_compacted_snapshot at the runtime's own anchor",
+     "note": "The floor is the journal anchor and the materialized state must be fully applied; it encodes semantic state, lifecycle state and the effect obligations (unsettled attempts and settled keys), checks section limits and writes PTRCS004 with a digest.",
+     "evidence": "crates/ptr-runtime/src/compacted.rs:646-695"
+    },
+    {
+     "from": "compact",
+     "to": "compact",
+     "label": "covers() reports the floor a compaction barrier may use",
+     "note": "The covered index is taken from the snapshot, not chosen by the caller, so a cutover cannot discard records no snapshot describes.",
+     "evidence": "crates/ptr-runtime/src/compacted.rs:195-197"
+    },
+    {
+     "from": "compact",
+     "to": "compact",
+     "label": "compacted_sections validates framing and trusted anchor",
+     "note": "Size bounds, one of two readable layouts by magic, digest and trusted identity are checked before any section is decoded.",
+     "evidence": "crates/ptr-runtime/src/compacted.rs:777-833"
+    },
+    {
+     "from": "compact",
+     "to": "runtime",
+     "label": "restore_compacted reinstates state and obligations",
+     "note": "Semantic state, lifecycle maps and the unsettled and settled effect memory are restored first, so a spent key is not executed again and the fence is kept; the ledger resumes above the floor.",
+     "evidence": "crates/ptr-runtime/src/compacted.rs:713-743"
+    },
+    {
+     "from": "compact",
+     "to": "runtime",
+     "label": "Replay retained records above the floor",
+     "note": "Each record must index above the floor and passes lifecycle and semantic validation and apply, so a restored runtime cannot reach a state a full replay would refuse.",
+     "evidence": "crates/ptr-runtime/src/compacted.rs:745-762"
+    }
+   ]
+  },
+  {
+   "id": "ptrctl-seal",
+   "title": "ptrctl seal: bind and seal a checkpoint",
+   "summary": "The operator passes a journal, a checkpoint, a declaration, and two output paths. ptrctl opens the journal as a runtime, binds the checkpoint to committed history, seals it and writes the sealed file and a separate anchor file, writing nothing on any failure.",
+   "status": "built",
+   "lanes": [
+    {
+     "id": "operator",
+     "label": "operator",
+     "crate": null
+    },
+    {
+     "id": "main",
+     "label": "ptrctl main.rs",
+     "crate": "ptrctl"
+    },
+    {
+     "id": "seal",
+     "label": "ptrctl seal.rs",
+     "crate": "ptrctl"
+    },
+    {
+     "id": "runtime",
+     "label": "ptr-runtime",
+     "crate": "ptr-runtime"
+    }
+   ],
+   "steps": [
+    {
+     "from": "operator",
+     "to": "main",
+     "label": "ptrctl seal with five required options",
+     "note": "All of --journal, --checkpoint, --declaration, --out and --anchor are required; unknown options and missing values exit with code 2 and usage, and there is no default journal or output path.",
+     "evidence": "bins/ptrctl/src/main.rs:39-84"
+    },
+    {
+     "from": "main",
+     "to": "seal",
+     "label": "seal::seal parses the declaration file",
+     "note": "The TOML names the codebook version, semantic keys read, lifecycle targets constrained by and provenance; an unknown code family is refused instead of skipped.",
+     "evidence": "bins/ptrctl/src/seal.rs:69-100"
+    },
+    {
+     "from": "seal",
+     "to": "runtime",
+     "label": "PtrRuntime::open_durable on the journal",
+     "note": "Opens and replays the journal read as a runtime with default configuration.",
+     "evidence": "bins/ptrctl/src/seal.rs:102-106"
+    },
+    {
+     "from": "seal",
+     "to": "runtime",
+     "label": "bind_checkpoint refuses a bad header or missing key",
+     "note": "A header whose codebook assignment this build cannot reproduce, or a declaration naming a key or target the journal lacks, ends the command before any file is written.",
+     "evidence": "bins/ptrctl/src/seal.rs:108-110"
+    },
+    {
+     "from": "seal",
+     "to": "runtime",
+     "label": "NeuralState::seal produces bytes and an anchor",
+     "note": "See neural-state-admission: PTRNEU01 framing with a trailing digest and a NeuralAnchor.",
+     "evidence": "bins/ptrctl/src/seal.rs:112-114"
+    },
+    {
+     "from": "seal",
+     "to": "seal",
+     "label": "Write sealed file, then anchor file, undo on failure",
+     "note": "The anchor goes to a separate file because a digest read back from its own artifact proves nothing; if it cannot be written the sealed file is removed.",
+     "evidence": "bins/ptrctl/src/seal.rs:123-131"
+    },
+    {
+     "from": "main",
+     "to": "operator",
+     "label": "Print the sealed path and journal index",
+     "note": "Exit code 0 on success; any error prints and exits 1. ptrctl doctor is separate: it checks required repository files, loads and validates config/default.toml and probes tool versions.",
+     "evidence": "bins/ptrctl/src/main.rs:86-99"
+    }
+   ]
+  }
+ ]
+}
