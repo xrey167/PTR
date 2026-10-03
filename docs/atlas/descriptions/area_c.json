@@ -581,7 +581,7 @@
      "to": "runtime",
      "label": "runtime.admit_peer from the authenticated key",
      "note": "Principal and grants come from the policy entry for the peer; an unknown peer is refused.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:919"
+     "evidence": "crates/ptr-runtime/src/execution.rs:930"
     },
     {
      "from": "host",
@@ -637,7 +637,7 @@
      "to": "runtime",
      "label": "recover_uncertain_receipt forwards once",
      "note": "Calls StatefulRequestRecovery::recover_uncertain; the runtime adapter then marks the scope for recovery, revokes it and cleans it up. No retry or ledger write happens in this crate.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:228-240"
+     "evidence": "crates/ptr-runtime/src/lib.rs:326-338"
     }
    ]
   },
@@ -857,21 +857,21 @@
      "to": "mesh",
      "label": "MeshRegistry::invite then accept",
      "note": "A one-time invitation becomes an Active membership with revision 1; a consumed invitation is refused.",
-     "evidence": "crates/ptr-net/src/mesh.rs:149-176"
+     "evidence": "crates/ptr-net/src/mesh.rs:173-225"
     },
     {
      "from": "mesh",
      "to": "mesh",
      "label": "endpoint refuses a revoked member",
      "note": "Revocation bumps the revision; endpoint and endpoint_binding return RevokedPeer afterwards.",
-     "evidence": "crates/ptr-net/src/mesh.rs:205-237"
+     "evidence": "crates/ptr-net/src/mesh.rs:227-251"
     },
     {
      "from": "mesh",
      "to": "tunnel",
      "label": "TunnelProfile admitted by a MeshTunnelExecutor",
-     "note": "Admit, establish, rotate, revoke and release are fenced by lease state; WireguardUserspaceExecutor injects a device. Nothing here connects it to IrohTransport.",
-     "evidence": "crates/ptr-net/src/tunnel.rs:94-130"
+     "note": "Admit, establish, rotate, revoke and release are fenced by lease state, and a lease keeps its admitted profile while the active peer is tracked separately; revoke and release remove the device interface. WireguardUserspaceExecutor injects a device, and nothing here connects it to IrohTransport.",
+     "evidence": "crates/ptr-net/src/tunnel.rs:106-285"
     }
    ]
   },
@@ -941,14 +941,14 @@
      "to": "registry",
      "label": "Route and fetch the Pod inside the request's project",
      "note": "Another project's Pod is unavailable in the same words as a missing one.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1245-1250"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1343-1349"
     },
     {
      "from": "loop",
      "to": "loop",
      "label": "Effect gate: only Pure or Read Pods run here",
      "note": "Any other effect returns PodEffectRequiresActionBoundary.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1253-1262"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1351-1360"
     },
     {
      "from": "loop",
@@ -989,8 +989,8 @@
      "from": "loop",
      "to": "registry",
      "label": "ptr-server reaches the loop with an empty default registry",
-     "note": "The server passes a PodRegistry to run_resumable_with_pods_using_router; its default registry is empty and NeuralPodAdapter is only built in ptr-pods tests.",
-     "evidence": "crates/ptr-server/src/lib.rs:152"
+     "note": "The handler passes a PodRegistry to run_resumable_with_pods_using_router; ServerState::new builds an empty default registry and ptrd injects an empty one too. NeuralPodAdapter is only built in ptr-pods tests.",
+     "evidence": "crates/ptr-server/src/lib.rs:197-207"
     }
    ]
   },

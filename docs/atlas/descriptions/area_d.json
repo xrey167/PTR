@@ -1008,8 +1008,8 @@
      "from": "store",
      "to": "store",
      "label": "transition, activate_generation, invalidate",
-     "note": "Lifecycle may only step Hot-Warm-Cold-Pod-Archived or to Invalidated; invalidating a generation cascades to all objects that depend on it.",
-     "evidence": "crates/ptr-memory/src/knowledge.rs:286"
+     "note": "Lifecycle may only step Hot-Warm-Cold-Pod-Archived or to Invalidated; invalidating a generation, directly or by transition, cascades to all objects that depend on it. Activation fails before changing anything if the cascade from the superseded generation would reach the activated one.",
+     "evidence": "crates/ptr-memory/src/knowledge.rs:333"
     },
     {
      "from": "ctx",

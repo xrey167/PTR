@@ -430,15 +430,15 @@
      "from": "server",
      "to": "server",
      "label": "request handler validates the body and locks the runtime",
-     "note": "Rejects an empty id or text with 400 and takes the single global mutex around PtrRuntime, so requests are fully serialized.",
-     "evidence": "crates/ptr-server/src/lib.rs:233-244"
+     "note": "Rejects an empty or oversized id or text and a malformed idempotency key with 400, then takes the single global mutex around PtrRuntime, so requests are fully serialized.",
+     "evidence": "crates/ptr-server/src/lib.rs:286-302"
     },
     {
      "from": "server",
      "to": "runtime",
      "label": "run_resumable_with_pods_using_router(project demo, 4 rounds)",
      "note": "Calls the resumable loop with the injected backend, registry, router and verifier and a limit of four resume rounds.",
-     "evidence": "crates/ptr-server/src/lib.rs:245-256"
+     "evidence": "crates/ptr-server/src/lib.rs:316-327"
     },
     {
      "from": "runtime",
@@ -452,14 +452,14 @@
      "to": "ledger",
      "label": "append_semantic through append_checked to append_durable",
      "note": "Marks the commit uncertain, then the file ledger writes a framed hash-chained record and syncs it to disk before anything else is applied.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:2168-2175"
+     "evidence": "crates/ptr-runtime/src/lib.rs:2393-2409"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "apply_committed publishes the delta and projects state",
      "note": "The prepared delta becomes the live semantic snapshot and the materialized state applies the record; the uncertainty flag clears only after this succeeds.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:2583-2590"
+     "evidence": "crates/ptr-runtime/src/lib.rs:2802-2810"
     },
     {
      "from": "runtime",
@@ -473,28 +473,28 @@
      "to": "model",
      "label": "backend.infer with the semantic context",
      "note": "The backend receives the request id, the sorted semantic context at the new revision and the raw text. The echo backend returns Token then Finished; the scenario backend returns Token then a mutation ActionReady.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1316-1323"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1412-1423"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "Classify events: finish, action, or pod request",
      "note": "More than one control event is refused. Finished with no control event emits RequestFinished and returns; an action is returned without emitting RequestFinished; a pod request goes to the pod loop, which with the daemon's empty registry ends in PodUnavailable.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1327-1389"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1425-1487"
     },
     {
      "from": "server",
      "to": "runtime",
      "label": "Authorize and execute the action through the gateway",
      "note": "For a returned action the handler requires a UTF-8 payload of at most 4 KiB and an idempotency key, calls authorize_action, then register_execution_session, prepare_execution_once and execute_prepared (see action-gateway), and builds an effect receipt from the ledger.",
-     "evidence": "crates/ptr-server/src/lib.rs:258-306"
+     "evidence": "crates/ptr-server/src/lib.rs:328-368"
     },
     {
      "from": "server",
      "to": "server",
      "label": "Build ApiResponse or map the error to a status",
      "note": "Response text is the concatenated Token events, revision is the runtime's current revision, evidence is type:length per observation. Stale revision, stale generation, fence and key conflicts map to 409; other runtime and effect errors to 422.",
-     "evidence": "crates/ptr-server/src/lib.rs:308-327"
+     "evidence": "crates/ptr-server/src/lib.rs:369-389"
     }
    ]
   },
@@ -541,28 +541,28 @@
      "to": "model",
      "label": "Ingest the request and call backend.infer",
      "note": "Ingress commit first, then the backend is asked for its first batch of events. run_model_with_pods is the older single-pass variant that never resumes.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1314-1323"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1412-1423"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "Split events into pod requests and actions, refuse mixes",
      "note": "Each round extracts PodRequested and ActionReady events. Two or more control events are refused (MixedControlEvents or MultipleControlEvents); no control event and no Finished is ModelNoProgress.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1327-1374"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1425-1472"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "Bound the loop at max_rounds",
      "note": "A pod request on the last round fails with ModelResumeLimit instead of invoking another Pod.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1376-1378"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1474-1476"
     },
     {
      "from": "runtime",
      "to": "router",
      "label": "PodRouter::select(project, capability, input_type)",
      "note": "The router asks the project-scoped registry for candidates, scores them equally and takes the highest by Pod id. A missing Pod and a Pod in another project give the same PodUnavailable error.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1380-1389"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1478-1487"
     },
     {
      "from": "router",
@@ -576,14 +576,14 @@
      "to": "runtime",
      "label": "Effect gate: only Pure or Read Pods may run here",
      "note": "Any other declared effect returns PodEffectRequiresActionBoundary before the Pod is invoked; effects must go through the action gateway.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1391-1400"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1489-1498"
     },
     {
      "from": "runtime",
      "to": "pods",
      "label": "Emit PodInvoked and call pod.invoke(TypedPayload)",
      "note": "The payload is wrapped with the requested input type and the Pod returns a typed output or an error.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1402-1408"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1500-1506"
     },
     {
      "from": "runtime",
@@ -604,14 +604,14 @@
      "to": "model",
      "label": "backend.resume with a ModelObservation",
      "note": "The observation carries the new revision, Pod id, type and bytes; the semantic context is refreshed first and the round number increments, then the loop repeats until Finished or an action.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1410-1429"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1508-1527"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "Alternative entry: admit_pod_output with manifest bindings",
-     "note": "A separate admission path for mesh-style outputs: it checks fence, scope, session and lease binding, manifest digest, generation, artifact and dependencies, verifies, commits PodOutputAdmitted first, then routes by output kind to candidate, hypothesis, action proposal or promotion. Not called by the daemon.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1723-1790"
+     "note": "A separate admission path for mesh-style outputs: it checks fence, scope, session and lease binding, manifest digest, generation, artifact and dependencies, verifies, commits PodOutputAdmitted first, then routes by output kind to candidate, hypothesis (a second record), action proposal or promotion. A retry replays the earlier answer only when the follow-up record is already in the ledger, otherwise it completes the missing step. Not called by the daemon.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:1821-2147"
     }
    ]
   },
@@ -658,84 +658,84 @@
      "to": "security",
      "label": "authorize_action: permissions, revision, generation",
      "note": "The runtime builds an ActionAuthorization from the permission set, live generation and revocations and maps denials to StaleRevision, StaleGeneration, UnknownGeneration or PermissionDenied.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1435-1477"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1533-1575"
     },
     {
      "from": "server",
      "to": "gateway",
      "label": "register_execution_session with exact grants and TTL",
      "note": "Refuses a fenced runtime or any unsettled attempt, an invalid principal, a zero TTL, zero or more than 64 grants, invalid or duplicate scopes and more than 1024 live sessions.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:823-875"
+     "evidence": "crates/ptr-runtime/src/execution.rs:834-886"
     },
     {
      "from": "server",
      "to": "gateway",
      "label": "prepare_execution_once validates the at-most-once key",
      "note": "The key must be a clean identifier and, unless it already settled, at most the compacted-snapshot string bound; then the common prepare runs.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:995-1010"
+     "evidence": "crates/ptr-runtime/src/execution.rs:1006-1021"
     },
     {
      "from": "gateway",
      "to": "gateway",
      "label": "prepare: session, exact scope, project, permissions",
      "note": "session() refuses a foreign runtime, a fenced or ambiguous runtime, a closed or expired session and a withdrawn peer; the grant must match project, target, operation, capability, input type and effect exactly; check_execution_action requires the capsule's project and current revision and live generation.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:781-807"
+     "evidence": "crates/ptr-runtime/src/execution.rs:792-818"
     },
     {
      "from": "gateway",
      "to": "verifier",
      "label": "execute_prepared then admit_effect re-checks and verifies",
      "note": "Session match, permit expiry, permit epoch (any commit or permission change invalidates pending permits), grant still held, dispatch kind, the same action checks again, then the grant's verifier must Pass at the required level with no hard finding, and expiry is checked once more.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:1231-1278"
+     "evidence": "crates/ptr-runtime/src/execution.rs:1256-1303"
     },
     {
      "from": "gateway",
      "to": "gateway",
      "label": "At-most-once key lookup",
      "note": "A key whose effect applied is answered from history for the same project, principal and action (read at the recorded revision and generation); another action gets KeyBoundToAnotherAction; applied without a kept response gets ResponseNotRetained; a not-applied key binds nothing.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:1297-1325"
+     "evidence": "crates/ptr-runtime/src/execution.rs:1322-1350"
     },
     {
      "from": "gateway",
      "to": "ledger",
      "label": "Commit EffectAttempted before the executor runs",
      "note": "The attempt record with key, project, principal, target, operation, capability, effect, generation, revision, verification level and action digest is committed; applying it records an unsettled effect, which is the fence.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:1327-1344"
+     "evidence": "crates/ptr-runtime/src/execution.rs:1352-1369"
     },
     {
      "from": "gateway",
      "to": "executor",
      "label": "executor.execute(VerifiedDispatch)",
      "note": "Only the runtime builds a VerifiedDispatch. The demo executor re-checks the contract and creates demo-note.txt with create_new and a sync; a second distinct note fails because the file exists.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:1093-1103"
+     "evidence": "crates/ptr-runtime/src/execution.rs:1118-1128"
     },
     {
      "from": "gateway",
      "to": "gateway",
      "label": "Executor error leaves the attempt unsettled",
      "note": "An error or panic cannot prove the effect did not apply, so no settlement is written; every later commit, session and ingest is refused with a fence error, across restarts, until reconciliation.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:1099-1103"
+     "evidence": "crates/ptr-runtime/src/execution.rs:1124-1128"
     },
     {
      "from": "gateway",
      "to": "ledger",
      "label": "record_settlement commits EffectSettled with a digest",
      "note": "The response digest is always recorded and the response is kept only within MAX_RETAINED_RESPONSE; commit_settlement bypasses the unsettled fence but not commit uncertainty, and applying it clears the attempt and binds the key.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:1210-1222"
+     "evidence": "crates/ptr-runtime/src/execution.rs:1235-1247"
     },
     {
      "from": "gateway",
      "to": "ledger",
      "label": "reconcile_effect records operator evidence",
      "note": "An operator states applied or not applied with an identifier evidence string for a known unsettled attempt; EffectReconciled is committed, nothing is inferred or retried, and a not-applied key binds nothing. ptrd exposes no route to it.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:1054-1076"
+     "evidence": "crates/ptr-runtime/src/execution.rs:1079-1101"
     },
     {
      "from": "gateway",
      "to": "gateway",
      "label": "Detached dispatch and peer admission variants",
      "note": "dispatch_detached journals the attempt and leaves it unsettled until settle_detached; admit_peer builds a session from a host policy table for a transport-authenticated node id. Both share admit_effect.",
-     "evidence": "crates/ptr-runtime/src/execution.rs:1126-1162"
+     "evidence": "crates/ptr-runtime/src/execution.rs:1151-1187"
     },
     {
      "from": "gateway",
@@ -873,7 +873,7 @@
      "to": "merge",
      "label": "merge_pod_hypothesis rebuilds a Pod hypothesis as a branch",
      "note": "A persisted PodHypothesis is turned into a sealed branch and sent through merge_branch, so a hypothesis never publishes semantics by itself.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:627-658"
+     "evidence": "crates/ptr-runtime/src/lib.rs:725-758"
     }
    ]
   },
@@ -999,7 +999,7 @@
      "to": "tier",
      "label": "Journaled replica transfer and residency control",
      "note": "transfer_tier_replica_journaled commits Preparing, runs the controller transfer (budget, source readable, destination available) and commits Available, or Corrupt on failure; TierJournalProjection rebuilds backend, object and replica state from the ledger.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1660-1698"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1758-1816"
     },
     {
      "from": "migration",
@@ -1051,23 +1051,23 @@
     {
      "from": "identity",
      "to": "identity",
-     "label": "Unknown key id triggers a key-set refresh",
-     "note": "authenticate_at_with_refresh reads the token's kid; if the held store lacks it, a JwksRefresher fetches a document whose issuer and audience must equal the adapter's. The HTTPS-only reqwest refresher needs the oidc-http feature.",
-     "evidence": "crates/ptr-runtime/src/identity.rs:354-372"
+     "label": "Unknown key id triggers a rate-limited key-set refresh",
+     "note": "If the held store lacks the token's kid, a fetched document still inside the cooldown is reused when it holds the key; within one cooldown of the last attempt the call fails with UnknownKey, otherwise a JwksRefresher fetches a document whose issuer and audience must equal the adapter's. The HTTPS-only reqwest refresher needs the oidc-http feature.",
+     "evidence": "crates/ptr-runtime/src/identity.rs:434-486"
     },
     {
      "from": "identity",
      "to": "identity",
      "label": "Verify EdDSA signature, claims and token replay",
-     "note": "Only EdDSA is allowed; the signature is checked with the key for the kid, then issuer, audience, subject, session id, issue and expiry times, and a repeated jti is refused as TokenReplay. The result is an IdentityContext with a canonical digest.",
-     "evidence": "crates/ptr-runtime/src/identity.rs:374-453"
+     "note": "Only EdDSA is allowed; the signature is checked with the key for the kid, then issuer, audience, subject, session id, issue and expiry times. A jti is recorded only after every claim is accepted and only until its token expires, and a repeated live jti is refused as TokenReplay.",
+     "evidence": "crates/ptr-runtime/src/identity.rs:488-575"
     },
     {
      "from": "identity",
      "to": "identity",
      "label": "Forward-auth headers as the alternative adapter",
-     "note": "AutheliaForwardAuthAdapter requires subject and session, a valid time window and non-empty groups, then builds the same context type.",
-     "evidence": "crates/ptr-runtime/src/identity.rs:252-282"
+     "note": "AutheliaForwardAuthAdapter requires subject and session, a valid time window and non-empty groups, then builds the same context type; the credential form is always judged against the server clock. The headers are unsigned, so the host must guarantee that only the trusted proxy can reach it.",
+     "evidence": "crates/ptr-runtime/src/identity.rs:252-332"
     },
     {
      "from": "admission",
@@ -1081,14 +1081,14 @@
      "to": "runtime",
      "label": "revoke_identity_session journals a SessionRevoked tombstone",
      "note": "The tombstone is committed before it is materialized, and a repeat is idempotent.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:773-796"
+     "evidence": "crates/ptr-runtime/src/lib.rs:871-893"
     },
     {
      "from": "runtime",
      "to": "manifest",
      "label": "admit_identity_context names the principal issuer:subject",
      "note": "A revoked session is refused, otherwise the manifest authority registry records the principal that later manifests must name.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:802-819"
+     "evidence": "crates/ptr-runtime/src/lib.rs:900-917"
     },
     {
      "from": "policy",
@@ -1102,14 +1102,14 @@
      "to": "runtime",
      "label": "activate_policy_bundle commits PolicyBundleActivated",
      "note": "Verification, then a projection update, then the ledger record, then the live authority registry is replaced; policy_authority_ready becomes true.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:896-929"
+     "evidence": "crates/ptr-runtime/src/lib.rs:994-1027"
     },
     {
      "from": "runtime",
      "to": "manifest",
      "label": "admit_execution_manifest_from_runtime binds the manifest",
-     "note": "The manifest principal must equal the identity's issuer:subject, the policy authority must be ready, the identity must be admitted, and the manifest snapshot revision and protected snapshot digest must equal the live ones.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:859-894"
+     "note": "The manifest principal must equal the identity's issuer:subject and the identity must be valid at the given time, the policy authority must be ready, the identity must be admitted, and the manifest snapshot revision and protected snapshot digest must equal the live ones.",
+     "evidence": "crates/ptr-runtime/src/lib.rs:957-992"
     },
     {
      "from": "manifest",
@@ -1123,7 +1123,7 @@
      "to": "runtime",
      "label": "Commit ExecutionManifestAdmitted and register it",
      "note": "The canonical manifest is committed, then the authority projection observes it; replay rebuilds the registry, and resolve_execution_manifest returns the immutable record by digest.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:702-735"
+     "evidence": "crates/ptr-runtime/src/lib.rs:800-833"
     },
     {
      "from": "directory",
@@ -1136,8 +1136,8 @@
      "from": "directory",
      "to": "directory",
      "label": "PodPlacementController assigns and fences state leases",
-     "note": "assign needs a healthy node and device with enough memory and bumps the epoch; issue_lease hands out a fresh fencing token; validate_lease rejects any lease that is not the current one.",
-     "evidence": "crates/ptr-runtime/src/placement.rs:162-259"
+     "note": "assign needs a healthy node and device with enough memory and bumps the epoch; issue_lease rechecks that node and device and hands out a fresh fencing token; validate_lease rejects any lease that is not the current one. A heartbeat or a replaced node record revokes leases on devices that are gone or failed.",
+     "evidence": "crates/ptr-runtime/src/placement.rs:171-270"
     }
    ]
   },
