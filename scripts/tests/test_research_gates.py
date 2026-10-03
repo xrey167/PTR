@@ -4910,6 +4910,17 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(mod.history(root,"--format=%H","HEAD"),[second,first])
         self.assertEqual(mod.descendants_of(root,first),{second})
 
+    def test_v4_decisions_bind_only_the_trees_that_hold_the_experiments(self):
+        # A tree without M001-v4 and M002-v4, such as a fixture, has no v4
+        # decision to bind: it is no error that their files are absent.
+        root=self.tree()
+        self.assertEqual(gate(root),(0,[]))
+        # The check itself is unchanged where it runs: a tree asked about one
+        # of them without its decision file still reports it.
+        for exp_id in mod.V4_NO_GO:
+            with self.subTest(experiment=exp_id):
+                self.assertEqual(mod.v4_no_go_errors(exp_id,root),[f"{exp_id}: DECISION.toml is not a regular repository file"])
+
     def test_a_listed_experiment_is_reached_through_no_symlink(self):
         # Git holds a link as its target's path, so the history of the
         # directory the registry names would hold none of its files.

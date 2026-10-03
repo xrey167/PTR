@@ -3592,7 +3592,8 @@ def gate_errors(root: Path) -> list[str]:
             errors.append("E002: strong RAG baseline is still blocked")
 
     for exp_id in V4_NO_GO:
-        errors.extend(v4_no_go_errors(exp_id,root))
+        if exp_id in experiments and exp_id in directories:
+            errors.extend(v4_no_go_errors(exp_id,root))
     if "M002-v5" in experiments and "M002-v5" in directories:
         errors.extend(m002_v5_pilot_freeze_errors(root,directories["M002-v5"],experiments["M002-v5"]))
     if "M002-v6" in experiments and "M002-v6" in directories:
