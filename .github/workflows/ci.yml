@@ -4,6 +4,12 @@ on:
   pull_request:
 permissions:
   contents: read
+# A newer push to the same branch (or the same PR) supersedes the run still in
+# flight, so a fix is not reported against by a stale run of the commit before
+# it. main is never cancelled: every merge keeps its own complete result.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -69,10 +75,15 @@ jobs:
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE: ${{ github.event.before }}
+          PUSH_REF: ${{ github.ref }}
         shell: bash
         run: |
+          # A pull request is judged against its base. A push to main is judged
+          # against what main was before it. Any other push (a PR branch) is
+          # judged against where it left main, so it sees the complete change
+          # range like the pull request run, not only the last push.
           base="$PR_BASE"
-          if [ -z "$base" ]; then base="$PUSH_BASE"; fi
+          if [ -z "$base" ] && [ "$PUSH_REF" = "refs/heads/main" ]; then base="$PUSH_BASE"; fi
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             base="$(git merge-base HEAD origin/main)"
           fi
