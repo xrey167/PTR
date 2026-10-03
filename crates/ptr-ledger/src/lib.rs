@@ -331,6 +331,10 @@ pub const MAX_ATTESTATION_FINDINGS: usize = 32;
 /// delta can hold (`ptr_semdb::MAX_DELTA_ITEMS`), since a key is rebased only
 /// where the delta writes it or leaves it equal to the target.
 pub const MAX_REBASED_KEYS: usize = 16_384;
+/// Most provenance entries a `PodHypothesisCommitted` record carries.
+pub const MAX_HYPOTHESIS_PROVENANCE: usize = 1024;
+/// Most dependency digests a `PodHypothesisCommitted` record carries.
+pub const MAX_HYPOTHESIS_DEPENDENCIES: usize = 1024;
 
 /// Largest effect response copied into the journal. Above it only the digest is
 /// kept: an unbounded history is its own failure, and a silently truncated
@@ -933,23 +937,13 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             let output_digest = cursor.digest()?;
             let payload = cursor.bytes()?.to_vec();
             let count = cursor.u32()? as usize;
-            if count > 1024 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "too many hypothesis provenance entries",
-                ));
-            }
+            check_hypothesis_provenance_count(count)?;
             let mut provenance = Vec::with_capacity(count);
             for _ in 0..count {
                 provenance.push((cursor.string()?, cursor.optional_string()?));
             }
             let dependency_count = cursor.u32()? as usize;
-            if dependency_count > 1024 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "too many hypothesis dependencies",
-                ));
-            }
+            check_hypothesis_dependency_count(dependency_count)?;
             let mut dependencies = Vec::with_capacity(dependency_count);
             for _ in 0..dependency_count {
                 dependencies.push(cursor.digest()?);
@@ -1107,8 +1101,8 @@ pub fn check_encodable(event: &LedgerEvent) -> Result<(), io::Error> {
 /// reads the fields they cover, so an append path refuses what the decoder
 /// would refuse (and never panics on a count too large for its byte).
 pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> {
-    if let LedgerEvent::SemanticDeltaCommitted { origin, .. } = event {
-        match origin {
+    match event {
+        LedgerEvent::SemanticDeltaCommitted { origin, .. } => match origin {
             SemanticOrigin::Legacy
             | SemanticOrigin::Request { .. }
             | SemanticOrigin::PodOutput { .. }
@@ -1118,7 +1112,43 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
                 check_rebased_key_count(merge.rebased.len())?;
                 check_attestation(&merge.verification)?;
             }
+        },
+        LedgerEvent::PodOutputAdmitted { verification, .. } => check_attestation(verification)?,
+        LedgerEvent::PodHypothesisCommitted {
+            provenance,
+            dependencies,
+            verification,
+            ..
+        } => {
+            check_hypothesis_provenance_count(provenance.len())?;
+            check_hypothesis_dependency_count(dependencies.len())?;
+            check_attestation(verification)?;
         }
+        LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
+            endpoint: Some(endpoint),
+            ..
+        }) => endpoint
+            .validate()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// A Pod hypothesis carries at most [`MAX_HYPOTHESIS_PROVENANCE`] provenance
+/// entries.
+fn check_hypothesis_provenance_count(count: usize) -> Result<(), io::Error> {
+    if count > MAX_HYPOTHESIS_PROVENANCE {
+        return Err(integrity::invalid("PTR_LEDGER_HYPOTHESIS_LIMIT"));
+    }
+    Ok(())
+}
+
+/// A Pod hypothesis carries at most [`MAX_HYPOTHESIS_DEPENDENCIES`] dependency
+/// digests.
+fn check_hypothesis_dependency_count(count: usize) -> Result<(), io::Error> {
+    if count > MAX_HYPOTHESIS_DEPENDENCIES {
+        return Err(integrity::invalid("PTR_LEDGER_HYPOTHESIS_LIMIT"));
     }
     Ok(())
 }
@@ -1996,6 +2026,36 @@ mod effect_record_tests {
         assert_eq!(decode_event(&encoded).unwrap(), event);
     }
 
+    #[test]
+    fn an_endpoint_the_decoder_refuses_is_refused_before_encoding() {
+        // A relayed route without a relay id: `validate` refuses it on decode,
+        // so an append path must refuse it too instead of writing a record the
+        // log cannot read back.
+        let event = LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
+            network_id: "mesh-a".into(),
+            peer_id: "peer-b".into(),
+            invitation_id: None,
+            tunnel_id: None,
+            generation: Generation(2),
+            revision: Revision(4),
+            kind: MeshTunnelEventKind::RouteChanged,
+            endpoint: Some(MeshEndpointBinding {
+                network_id: "mesh-a".into(),
+                peer_id: "peer-b".into(),
+                route: MeshRouteKind::Relay,
+                relay_id: None,
+                membership_generation: Generation(2),
+                membership_revision: Revision(4),
+            }),
+            placement_epoch: 7,
+            fencing_token: FencingToken(9),
+            event_digest: [8; 32],
+        });
+        assert!(decode_event(&encode_event(&event)).is_err());
+        let error = check_encodable(&event).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
     /// The only byte two records differ in is the field that differs, which locates
     /// it without hand-counting offsets that would rot with the layout.
     fn sole_difference(left: &[u8], right: &[u8]) -> usize {
@@ -2535,6 +2595,77 @@ mod semantic_origin_tests {
                 assert!(decode_event(&encoded[..end]).is_err(), "cut at {end}");
             }
         }
+    }
+
+    fn pod_hypothesis(
+        provenance: usize,
+        dependencies: usize,
+        verification: Attestation,
+    ) -> LedgerEvent {
+        LedgerEvent::PodHypothesisCommitted {
+            request_id: RequestId("request".into()),
+            session_id: SessionId("session".into()),
+            scope_id: ScopeId("scope".into()),
+            branch_id: "branch".into(),
+            pod_id: PodId("pod".into()),
+            manifest_digest: [1; 32],
+            artifact_digest: [2; 32],
+            generation: Generation(1),
+            revision: Revision(1),
+            output_type: TypeId("type".into()),
+            output_digest: [3; 32],
+            payload: b"payload".to_vec(),
+            provenance: (0..provenance).map(|n| (format!("s{n}"), None)).collect(),
+            dependencies: (0..dependencies).map(|n| [n as u8; 32]).collect(),
+            confidence_bits: 0,
+            latency_millis: 0,
+            verification,
+        }
+    }
+
+    #[test]
+    fn pod_events_are_bounded_before_encoding_and_stay_readable() {
+        // Over the decoder's limits: refused up front instead of appended and
+        // then unreadable (or, for the finding count, a panic in the encoder).
+        for (provenance, dependencies) in [
+            (MAX_HYPOTHESIS_PROVENANCE + 1, 0),
+            (0, MAX_HYPOTHESIS_DEPENDENCIES + 1),
+        ] {
+            let error = check_encodable(&pod_hypothesis(provenance, dependencies, attestation()))
+                .unwrap_err();
+            assert_eq!(error.to_string(), "PTR_LEDGER_HYPOTHESIS_LIMIT");
+        }
+        let too_many_findings = Attestation {
+            findings: (0..=255).map(|n| format!("f{n}")).collect(),
+            ..attestation()
+        };
+        let error = check_encodable(&pod_hypothesis(0, 0, too_many_findings.clone())).unwrap_err();
+        assert_eq!(error.to_string(), "PTR_LEDGER_ATTESTATION_LIMIT");
+        let admitted = LedgerEvent::PodOutputAdmitted {
+            request_id: RequestId("request".into()),
+            session_id: SessionId("session".into()),
+            scope_id: ScopeId("scope".into()),
+            pod_id: PodId("pod".into()),
+            manifest_digest: [1; 32],
+            artifact_digest: [2; 32],
+            generation: Generation(1),
+            revision: Revision(1),
+            output_kind: 0,
+            output_type: TypeId("type".into()),
+            output_digest: [3; 32],
+            verification: too_many_findings,
+        };
+        assert!(check_encodable(&admitted).is_err());
+
+        // Exactly at the limits it is accepted and round-trips through the codec.
+        let at_limits = pod_hypothesis(
+            MAX_HYPOTHESIS_PROVENANCE,
+            MAX_HYPOTHESIS_DEPENDENCIES,
+            attestation(),
+        );
+        check_encodable(&at_limits).unwrap();
+        let payload = encode_event(&at_limits);
+        assert_eq!(decode_event(&payload).unwrap(), at_limits);
     }
 
     #[test]

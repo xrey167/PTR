@@ -92,6 +92,25 @@ fn canonical_round_trip_preserves_interleaved_chain_order() {
 }
 
 #[test]
+fn a_forged_record_count_is_refused_instead_of_reserving_memory_for_it() {
+    let mut original = bundle();
+    original.append_output(output()).unwrap();
+    original.seal().unwrap();
+    let encoded = original.encode_canonical().unwrap();
+    // The output is the last record and carries no dependencies or provenance,
+    // so the final sixteen bytes are exactly those two counts.
+    let counts = encoded.len() - 16;
+    for (name, offset) in [("dependency", counts), ("provenance", counts + 8)] {
+        let mut forged = encoded.clone();
+        forged[offset..offset + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(
+            PodEvidenceBundle::decode_canonical(&forged).is_err(),
+            "a forged {name} count must be an error"
+        );
+    }
+}
+
+#[test]
 fn tampering_is_detected_and_sequence_is_strict() {
     let mut bundle = bundle();
     assert_eq!(

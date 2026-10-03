@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-19  
-**Code footprint:** 6 Rust source files · 1211 nonblank source lines · 2 integration-test files · 16 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-03  
+**Code footprint:** 6 Rust source files · 1256 nonblank source lines · 2 integration-test files · 22 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -21,7 +21,7 @@
 - KnowledgeStore (in memory) keeps raw events append-only: replaying the identical event is idempotent, reusing an id for different content is rejected as ConflictingRawEvent
 - KnowledgeObject generations are stored under (logical_id, generation) and are immutable: registering different content under an existing key fails with ConflictingKnowledgeGeneration; lifecycle changes are kept as separate revisioned LifecycleRecords, so content_digest() does not change on a lifecycle transition
 - KnowledgeStore::admit_object requires every raw source to be present and every dependency to name an existing, non-invalidated exact generation; a generation above 1 must supersede exactly the previous generation
-- Lifecycle transitions are restricted to Hot -> Warm -> Cold -> Pod -> Archived, with Invalidated reachable from any state; activating a new generation invalidates the previous one
+- Lifecycle transitions are restricted to Hot -> Warm -> Cold -> Pod -> Archived, with Invalidated reachable from any state; activating a new generation invalidates the previous one; a transition to Invalidated cascades to dependents exactly like invalidate(), and re-activating a generation keeps its recorded lifecycle and is refused, with nothing changed, when the cascade from the superseded generation would reach it
 - Invalidation propagates transitively to every object that depends on the invalidated exact generation (dependents of other generations are untouched)
 - RetentionController/decide: pinned objects are always KeepVerbatim, otherwise a result score at or above the threshold keeps the result, else a call score at or above it drops only the result, else drops the call; a model failure or invalid decision falls back to KeepVerbatim; score_candidates rejects duplicate candidates, score-count mismatch and unknown or duplicate scores; RuleRetentionModel is a fixed 0.5/1.0 placeholder, not a trained classifier
 - Deterministic context compiler (compile_structured/compile_selected): orders candidates by pinned flag, action rank and object key rather than input order, rejects invalidated objects, missing or dropped dependencies, missing verbatim bytes and token-budget overflow, and returns a SHA-256 digest over the compiled entries
@@ -62,7 +62,7 @@
 ### Current automated checks
 
 - ptr-memory tests/retention.rs: raw_history_is_digest_checked_and_idempotent, raw_history_rejects_tampering_and_conflicting_reuse
-- ptr-memory tests/retention.rs: knowledge_generation_is_immutable_and_context_digest_tracks_content, lifecycle_transition_does_not_mutate_immutable_generation_digest, invalidation_propagates_to_dependents, invalidation_is_not_archive
+- ptr-memory tests/retention.rs: knowledge_generation_is_immutable_and_context_digest_tracks_content, lifecycle_transition_does_not_mutate_immutable_generation_digest, invalidation_propagates_to_dependents, invalidation_is_not_archive, transition_to_invalidated_cascades_like_invalidate, reactivating_a_generation_keeps_its_recorded_demotion, activation_that_would_invalidate_itself_is_refused_without_side_effects
 - ptr-memory tests/retention.rs: retention_preserves_pinned_objects, retention_drops_result_before_dropping_call, retention_rejects_duplicate_scores
 - ptr-memory tests/retention.rs: context_compiler_rejects_missing_dependencies_and_budget_overflow, dropped_dependency_cannot_satisfy_an_active_object, context_digest_is_independent_of_equal_priority_input_order
 - ptr-memory tests/retention.rs: kv_runtime_continues_and_requires_recompute_on_dependency_invalidation, kv_handles_are_owned_by_their_runtime, deterministic_ingestion_builds_typed_knowledge_object

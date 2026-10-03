@@ -45,6 +45,9 @@ pub enum TurnError {
     Closed,
     InvalidSequence,
     InvalidBinding,
+    /// `emit` was given a kind that only `commit_turn`, `interrupt` or `close`
+    /// may produce, because each of them also moves session state.
+    ReservedKind,
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +77,22 @@ impl DuplexSession {
         })
     }
     pub fn emit(&mut self, event: PodTurnEvent) -> Result<&PodTurnEvent, TurnError> {
+        // These three kinds change session state (turn counter, epoch, closed).
+        // Emitting one here would record the event without that change, so they
+        // only enter the log through the methods that make it.
+        if matches!(
+            event.kind,
+            PodTurnKind::TurnCommitted | PodTurnKind::TurnInterrupted | PodTurnKind::SessionClosed
+        ) {
+            return Err(TurnError::ReservedKind);
+        }
+        self.check(&event)?;
+        Ok(self.push(event))
+    }
+
+    /// Every rule an event must meet, without changing the session. A rejected
+    /// event must leave the counters exactly as they were.
+    fn check(&self, event: &PodTurnEvent) -> Result<(), TurnError> {
         if self.closed {
             return Err(TurnError::Closed);
         }
@@ -90,20 +109,28 @@ impl DuplexSession {
         {
             return Err(TurnError::InvalidBinding);
         }
+        Ok(())
+    }
+
+    fn push(&mut self, event: PodTurnEvent) -> &PodTurnEvent {
         self.next_sequence = event.sequence;
         self.events.push(event);
-        Ok(self.events.last().expect("event was just pushed"))
+        self.events.last().expect("event was just pushed")
     }
+
     pub fn commit_turn(&mut self, mut event: PodTurnEvent) -> Result<&PodTurnEvent, TurnError> {
-        self.turn_id += 1;
         event.kind = PodTurnKind::TurnCommitted;
-        event.turn_id = self.turn_id;
-        self.emit(event)
+        event.turn_id = self.turn_id + 1;
+        self.check(&event)?;
+        self.turn_id += 1;
+        Ok(self.push(event))
     }
+
     pub fn interrupt(&mut self, mut event: PodTurnEvent) -> Result<&PodTurnEvent, TurnError> {
-        self.epoch += 1;
         event.kind = PodTurnKind::TurnInterrupted;
-        self.emit(event)
+        self.check(&event)?;
+        self.epoch += 1;
+        Ok(self.push(event))
     }
     pub fn resume(&self, last_sequence: u64) -> Result<Vec<PodTurnEvent>, TurnError> {
         if last_sequence > self.next_sequence {
@@ -118,7 +145,8 @@ impl DuplexSession {
     }
     pub fn close(&mut self, mut event: PodTurnEvent) -> Result<PodTurnEvent, TurnError> {
         event.kind = PodTurnKind::SessionClosed;
-        let emitted = self.emit(event)?.clone();
+        self.check(&event)?;
+        let emitted = self.push(event).clone();
         self.closed = true;
         Ok(emitted)
     }

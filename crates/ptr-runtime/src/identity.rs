@@ -2,11 +2,11 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use ptr_types::{AuthenticationLevel, IdentityContext, IdentityProvider, SessionId, Timestamp};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 #[cfg(feature = "oidc-http")]
 use std::io::Read;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OidcAlgorithm {
@@ -238,6 +238,17 @@ pub struct ForwardAuthHeaders {
     pub authentication_level: AuthenticationLevel,
 }
 
+/// Builds an identity from forward-auth headers that a reverse proxy has
+/// already verified.
+///
+/// **Trust precondition.** The headers (and the JSON form accepted by
+/// [`IdentityProvider::authenticate`]) are not signed or otherwise bound to the
+/// proxy: this adapter only checks their shape and their expiry against the
+/// server clock. It is safe only when the embedding host guarantees that they
+/// can reach it exclusively from the trusted proxy, for example by listening
+/// on a private interface or behind mutual TLS, and that the proxy strips any
+/// copy of these headers a client sends itself. Use [`OidcIdentityAdapter`]
+/// where the credential must carry its own proof.
 pub struct AutheliaForwardAuthAdapter {
     pub issuer: String,
 }
@@ -314,12 +325,10 @@ impl IdentityProvider for AutheliaForwardAuthAdapter {
                 expires_at: required_timestamp(&value, "expires_at")?,
                 authentication_level: level,
             },
-            Timestamp(
-                value
-                    .get("now")
-                    .and_then(Value::as_u64)
-                    .ok_or(OidcError::MissingClaim("now"))?,
-            ),
+            // The verification time always comes from the server clock. A
+            // credential must never be able to choose the instant at which its
+            // own expiry is evaluated.
+            current_timestamp()?,
         )
     }
 }
@@ -329,7 +338,71 @@ pub struct OidcIdentityAdapter {
     pub audience: String,
     pub jwks: JwksStore,
     pub allowed_algorithms: Vec<OidcAlgorithm>,
-    used_jti: Mutex<BTreeSet<String>>,
+    /// Token ids seen so far, each with the `exp` of the token that carried it.
+    /// An id is only needed until that moment: afterwards the token is expired
+    /// anyway, so the entry is dropped and the set cannot grow without bound.
+    used_jti: Mutex<UsedTokenIds>,
+    refresh: Mutex<RefreshState>,
+    refresh_cooldown: Duration,
+}
+
+/// The token ids seen so far, indexed twice: by id for the replay check and by
+/// expiry for pruning, so dropping the expired ones visits only those and never
+/// walks the ids that are still live.
+///
+/// The latest time ever presented is kept as well. Pruning follows it and not
+/// the time of the call, so a clock that later reads earlier cannot make an id
+/// that was dropped look unused: a token that had already expired at the latest
+/// time seen is refused as a replay, because its id may no longer be here.
+#[derive(Default)]
+struct UsedTokenIds {
+    expiry_by_id: BTreeMap<String, Timestamp>,
+    ids_by_expiry: BTreeMap<Timestamp, Vec<String>>,
+    latest_seen: Timestamp,
+}
+
+impl UsedTokenIds {
+    /// Drops every id whose token has expired at the latest time seen.
+    fn prune(&mut self) {
+        while let Some(entry) = self.ids_by_expiry.first_entry() {
+            if *entry.key() > self.latest_seen {
+                break;
+            }
+            for id in entry.remove() {
+                self.expiry_by_id.remove(&id);
+            }
+        }
+    }
+
+    /// Records `id` until `expires`, at the time `now`; false when it must be
+    /// treated as a replay.
+    fn insert(&mut self, id: String, expires: Timestamp, now: Timestamp) -> bool {
+        self.latest_seen = self.latest_seen.max(now);
+        self.prune();
+        if expires <= self.latest_seen || self.expiry_by_id.contains_key(&id) {
+            return false;
+        }
+        self.expiry_by_id.insert(id.clone(), expires);
+        self.ids_by_expiry.entry(expires).or_default().push(id);
+        true
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.expiry_by_id.len()
+    }
+}
+
+/// Default minimum spacing between JWKS fetches triggered by unknown key ids.
+pub const DEFAULT_JWKS_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// Keys obtained through a refresh, kept only for one cooldown window. The same
+/// window also rate-limits fetches, so unauthenticated callers presenting
+/// unknown `kid` values cannot turn into unbounded requests against the IdP.
+#[derive(Default)]
+struct RefreshState {
+    fetched: Option<(Instant, Arc<JwksStore>)>,
+    last_attempt: Option<Instant>,
 }
 
 impl OidcIdentityAdapter {
@@ -339,8 +412,15 @@ impl OidcIdentityAdapter {
             audience: audience.into(),
             jwks,
             allowed_algorithms: vec![OidcAlgorithm::EdDsa],
-            used_jti: Mutex::new(BTreeSet::new()),
+            used_jti: Mutex::new(UsedTokenIds::default()),
+            refresh: Mutex::new(RefreshState::default()),
+            refresh_cooldown: DEFAULT_JWKS_REFRESH_COOLDOWN,
         }
+    }
+
+    pub fn with_refresh_cooldown(mut self, cooldown: Duration) -> Self {
+        self.refresh_cooldown = cooldown;
+        self
     }
 
     pub fn authenticate_at(
@@ -361,14 +441,48 @@ impl OidcIdentityAdapter {
         if self.jwks.get(&kid).is_some() {
             return self.authenticate_at(credential, now);
         }
-        let document = refresher.refresh()?;
-        if document.issuer != self.issuer {
-            return Err(OidcError::JwksIssuerMismatch);
-        }
-        if document.audience != self.audience {
-            return Err(OidcError::JwksAudienceMismatch);
-        }
-        self.authenticate_at_with_store(credential, now, &document.store)
+        let store = {
+            // The lock is held across the fetch on purpose: concurrent callers
+            // with unknown key ids queue here and then observe the cooldown
+            // instead of each issuing their own request.
+            let mut state = self
+                .refresh
+                .lock()
+                .map_err(|_| OidcError::RefreshFailed("refresh state poisoned".into()))?;
+            let started = Instant::now();
+            let cached = state.fetched.as_ref().and_then(|(fetched_at, store)| {
+                (started.duration_since(*fetched_at) < self.refresh_cooldown
+                    && store.get(&kid).is_some())
+                .then(|| Arc::clone(store))
+            });
+            match cached {
+                Some(store) => store,
+                None => {
+                    if state.last_attempt.is_some_and(|attempt| {
+                        started.duration_since(attempt) < self.refresh_cooldown
+                    }) {
+                        return Err(OidcError::UnknownKey(kid));
+                    }
+                    // Failed fetches count as attempts, so an unreachable or
+                    // hostile IdP endpoint is not hammered either.
+                    state.last_attempt = Some(started);
+                    let document = refresher.refresh()?;
+                    if document.issuer != self.issuer {
+                        return Err(OidcError::JwksIssuerMismatch);
+                    }
+                    if document.audience != self.audience {
+                        return Err(OidcError::JwksAudienceMismatch);
+                    }
+                    let store = Arc::new(document.store);
+                    // `started` rate-limits attempts; the cached document is dated
+                    // from when the fetch returned, so a slow fetch does not hand
+                    // back keys that are already past the cooldown.
+                    state.fetched = Some((Instant::now(), Arc::clone(&store)));
+                    store
+                }
+            }
+        };
+        self.authenticate_at_with_store(credential, now, &store)
     }
 
     fn authenticate_at_with_store(
@@ -426,18 +540,26 @@ impl OidcIdentityAdapter {
         if expires_at <= now {
             return Err(OidcError::Expired);
         }
-        if let Some(jti) = claims.get("jti") {
-            let jti = jti
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .ok_or(OidcError::InvalidClaim("jti"))?;
+        let jti = match claims.get("jti") {
+            Some(jti) => Some(
+                jti.as_str()
+                    .filter(|value| !value.is_empty())
+                    .ok_or(OidcError::InvalidClaim("jti"))?
+                    .to_owned(),
+            ),
+            None => None,
+        };
+        let groups = canonical_groups(claims.get("groups"))?;
+        let authentication_level = authentication_level(&claims);
+        // The id is recorded last, once every claim has been accepted: a token
+        // that is refused for any other reason must not burn its id, or the
+        // corrected token carrying the same id would be rejected as a replay.
+        if let Some(jti) = jti {
             let mut used = self.used_jti.lock().map_err(|_| OidcError::InvalidToken)?;
-            if !used.insert(jti.to_owned()) {
+            if !used.insert(jti, expires_at, now) {
                 return Err(OidcError::TokenReplay);
             }
         }
-        let groups = canonical_groups(claims.get("groups"))?;
-        let authentication_level = authentication_level(&claims);
         let mut context = IdentityContext {
             subject,
             issuer,
@@ -457,12 +579,15 @@ impl IdentityProvider for OidcIdentityAdapter {
     type Error = OidcError;
 
     fn authenticate(&self, credential: &[u8]) -> Result<IdentityContext, Self::Error> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| OidcError::InvalidClaim("system_time"))?
-            .as_secs();
-        self.authenticate_at(credential, Timestamp(now))
+        self.authenticate_at(credential, current_timestamp()?)
     }
+}
+
+fn current_timestamp() -> Result<Timestamp, OidcError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| Timestamp(elapsed.as_secs()))
+        .map_err(|_| OidcError::InvalidClaim("system_time"))
 }
 
 fn decode_json(encoded: &str) -> Result<Value, OidcError> {
@@ -728,5 +853,168 @@ mod tests {
             .unwrap();
         assert_eq!(context.groups, vec!["a", "z"]);
         assert!(context.has_valid_digest());
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingRefresher {
+        document: JwksDocument,
+        calls: AtomicUsize,
+    }
+
+    impl JwksRefresher for CountingRefresher {
+        fn refresh(&self) -> Result<JwksDocument, OidcError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(JwksDocument {
+                issuer: self.document.issuer.clone(),
+                audience: self.document.audience.clone(),
+                store: self.document.store.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn unknown_kid_refreshes_are_rate_limited_and_cached() {
+        let old_key = SigningKey::from_bytes(&[37; 32]);
+        let new_key = SigningKey::from_bytes(&[38; 32]);
+        let adapter = adapter(&old_key).with_refresh_cooldown(Duration::from_secs(3600));
+        let mut new_store = JwksStore::default();
+        new_store.insert("k2", new_key.verifying_key());
+        let refresher = CountingRefresher {
+            document: JwksDocument {
+                issuer: "https://issuer".into(),
+                audience: "ptr".into(),
+                store: new_store,
+            },
+            calls: AtomicUsize::new(0),
+        };
+        // A flood of unknown key ids results in a single fetch.
+        for attempt in 0..5 {
+            let unknown = token_with_kid(&new_key, claims(), &format!("unknown-{attempt}"));
+            assert!(matches!(
+                adapter.authenticate_at_with_refresh(unknown.as_bytes(), Timestamp(50), &refresher),
+                Err(OidcError::UnknownKey(_))
+            ));
+        }
+        assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
+        // The fetched key is cached, so a legitimate rotated key needs no new fetch.
+        let valid = token_with_kid(&new_key, claims(), "k2");
+        assert!(adapter
+            .authenticate_at_with_refresh(valid.as_bytes(), Timestamp(50), &refresher)
+            .is_ok());
+        assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn forward_auth_credential_cannot_choose_its_own_clock() {
+        let adapter = AutheliaForwardAuthAdapter::new("https://authelia");
+        let credential = json!({
+            "subject": "user", "session_id": "session", "groups": ["a"], "acr": "mfa",
+            "issued_at": 1, "expires_at": 100, "now": 50
+        });
+        assert_eq!(
+            adapter.authenticate(credential.to_string().as_bytes()),
+            Err(OidcError::Expired)
+        );
+    }
+
+    #[test]
+    fn a_refused_token_does_not_burn_its_jti() {
+        let key = SigningKey::from_bytes(&[39; 32]);
+        let adapter = adapter(&key);
+        let bad = token(
+            &key,
+            json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s","iat":1,"exp":100,
+                   "jti":"j1","groups":"notarray"}),
+        );
+        assert_eq!(
+            adapter.authenticate_at(bad.as_bytes(), Timestamp(50)),
+            Err(OidcError::InvalidClaim("groups"))
+        );
+        let corrected = token(
+            &key,
+            json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s","iat":1,"exp":100,
+                   "jti":"j1","groups":["a"]}),
+        );
+        assert!(adapter
+            .authenticate_at(corrected.as_bytes(), Timestamp(50))
+            .is_ok());
+        // Once accepted, the same id is a replay.
+        assert_eq!(
+            adapter.authenticate_at(corrected.as_bytes(), Timestamp(50)),
+            Err(OidcError::TokenReplay)
+        );
+    }
+
+    #[test]
+    fn expired_jti_entries_are_dropped_so_the_cache_stays_bounded() {
+        let key = SigningKey::from_bytes(&[40; 32]);
+        let adapter = adapter(&key);
+        for (n, now) in (0..50u64).enumerate() {
+            let t = token(
+                &key,
+                json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s",
+                       "iat":now,"exp":now + 5,"jti":format!("j{n}")}),
+            );
+            adapter
+                .authenticate_at(t.as_bytes(), Timestamp(now))
+                .unwrap();
+        }
+        // Each token lives 5 s and one is seen per second: at most the few
+        // still-valid ids may remain, not all 50.
+        assert!(adapter.used_jti.lock().unwrap().len() <= 6);
+    }
+
+    #[test]
+    fn a_clock_that_runs_backwards_does_not_free_a_consumed_token_id() {
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let adapter = adapter(&key);
+        let token_at = |jti: &str, exp: u64| {
+            token(
+                &key,
+                json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s",
+                       "iat":1,"exp":exp,"jti":jti}),
+            )
+        };
+        let a = token_at("a", 100);
+        let b = token_at("b", 200);
+        adapter
+            .authenticate_at(a.as_bytes(), Timestamp(50))
+            .unwrap();
+        // The clock reaches 150, where `a` has expired and its id is dropped ...
+        adapter
+            .authenticate_at(b.as_bytes(), Timestamp(150))
+            .unwrap();
+        // ... and then reads 50 again. `a` is not expired by that reading, but its
+        // id is gone, so it must not be accepted a second time.
+        assert_eq!(
+            adapter.authenticate_at(a.as_bytes(), Timestamp(50)),
+            Err(OidcError::TokenReplay)
+        );
+    }
+
+    #[test]
+    fn pruning_expired_ids_keeps_every_live_id_and_both_indexes_in_step() {
+        let key = SigningKey::from_bytes(&[41; 32]);
+        let adapter = adapter(&key);
+        let accept = |jti: &str, exp: u64, now: u64| {
+            let t = token(
+                &key,
+                json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s",
+                       "iat":1,"exp":exp,"jti":jti}),
+            );
+            adapter.authenticate_at(t.as_bytes(), Timestamp(now))
+        };
+        accept("short-a", 10, 5).unwrap();
+        accept("short-b", 10, 5).unwrap();
+        accept("long", 1000, 5).unwrap();
+        // At t = 11 the two short tokens have expired and are dropped; the long
+        // one is still live, so its id is still a replay.
+        accept("fresh", 1000, 11).unwrap();
+        assert_eq!(adapter.used_jti.lock().unwrap().len(), 2);
+        assert_eq!(accept("long", 1000, 11), Err(OidcError::TokenReplay));
+        let used = adapter.used_jti.lock().unwrap();
+        let indexed: usize = used.ids_by_expiry.values().map(Vec::len).sum();
+        assert_eq!(indexed, used.expiry_by_id.len());
     }
 }
