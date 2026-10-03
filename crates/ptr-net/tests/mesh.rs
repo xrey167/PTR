@@ -172,3 +172,31 @@ fn stale_route_changes_are_rejected_after_a_newer_route() {
         Err(MeshError::StaleGeneration)
     );
 }
+
+#[test]
+fn a_revocation_must_be_newer_than_the_last_event_and_replays_are_idempotent() {
+    use ptr_types::MeshTunnelEventKind::{MembershipActivated, MembershipRevoked, RouteChanged};
+    let mut registry = MeshRegistry::default();
+    registry
+        .apply_event(&lifecycle_event(MembershipActivated, "alice", 1, 7))
+        .unwrap();
+    registry
+        .apply_event(&lifecycle_event(RouteChanged, "alice", 5, 7))
+        .unwrap();
+    // Same revision as the route change: refused, whatever order they arrive in.
+    assert_eq!(
+        registry.apply_event(&lifecycle_event(MembershipRevoked, "alice", 5, 7)),
+        Err(MeshError::StaleGeneration)
+    );
+    registry
+        .apply_event(&lifecycle_event(MembershipRevoked, "alice", 6, 7))
+        .unwrap();
+    // A replay of the applied revocation is accepted, an older one is not.
+    registry
+        .apply_event(&lifecycle_event(MembershipRevoked, "alice", 6, 7))
+        .unwrap();
+    assert_eq!(
+        registry.apply_event(&lifecycle_event(MembershipRevoked, "alice", 4, 7)),
+        Err(MeshError::StaleGeneration)
+    );
+}
