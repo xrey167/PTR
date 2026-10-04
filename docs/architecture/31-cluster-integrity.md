@@ -381,22 +381,26 @@ unfenced is the failure this exists to prevent.
   `PTR_RAFT_FENCED` stops a writer at a superseded term from changing these files.
   It says nothing about a writer reaching some *other* copy of the state — a
   replica, a restored backup, a second mount that is not the same file — because
-  nothing there ever sees the token. The older statement follows, narrowed:
-- **Local file locks fence nothing across nodes, and neither does consensus alone.**
+  nothing there ever sees the token.
+- **Local file locks fence nothing across nodes, and neither does consensus alone;
+  the fencing token above is what does, within the bound just stated.**
   `FileLedger` takes an advisory lock, which makes one writer per file on one
   machine and says nothing about a second. What raft adds is a safety argument
   among correct members — a deposed leader cannot commit, tested — and not a fence
-  against a writer that is not one. **Durable leadership fencing is a protocol
-  property and it is not implemented**, which is the last clause of #15's Gate 2
-  sentence and is carried forward in `docs/OPEN_ITEMS_PLAN_20260921.md` rather than
-  closed here. This document used to assert the opposite in its own body, fourteen
-  lines above this section; that is corrected.
+  against a writer that is not one. The last clause of #15's Gate 2 sentence
+  (G2 in #23) is closed by **The fencing token** section, not by raft: a writer
+  that ignores the protocol is refused by `PTR_RAFT_FENCED` on the storage it
+  shares. An earlier revision of this bullet still said durable fencing was "not
+  implemented" after that section had landed — the same document asserting both,
+  for the second time; that is corrected.
 - **Compaction is not integrated with the ledger's retention floor.** This is
   raft's own log, distinct from the committed ledger in
   `25-erasure-and-retention.md`, and the two floors are still independent.
-- **A deployment with no second channel still trusts the leader.** The mechanism
-  for retaining an anchor independently exists; supplying one is the host's, and a
-  host that calls `take_installed_snapshot` is back to trusting the sender. Nothing
-  here can create a second channel for a deployment that has none.
+- **A deployment with no second channel still trusts the leader — an accepted
+  boundary, not an open item (C6 in issue #23).** The mechanism for retaining an
+  anchor independently exists; supplying one is the host's, and a host that calls
+  `take_installed_snapshot` is back to trusting the sender. Nothing here can create
+  a second channel for a deployment that has none, and no code could: an anchor
+  that arrives only through the leader is, by construction, the leader's word.
 - **No performance or availability claim.** Every write flushes, which is a
   correctness choice with an obvious cost, unmeasured here.

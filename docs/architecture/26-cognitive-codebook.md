@@ -640,9 +640,18 @@ nothing follows it to be confused with, and no test could justify the line.
   `29-peer-admission-and-pod-scope.md` states for a peer identity, for the same
   reason, and it would close the same way: a dependency edge somebody has to decide
   on.
-- **The artifact is trusted as data, not as authentication.** A fingerprint detects
-  a mismatch; it cannot detect someone who recomputes it. That was true of
-  `canonical_bytes` from the start and is unchanged by writing it to a file.
+- **The artifact is trusted as data, not as authentication — decided (D3 in issue
+  #23: no signature).** A fingerprint detects a mismatch; it cannot detect someone
+  who recomputes it. That was true of `canonical_bytes` from the start and is
+  unchanged by writing it to a file. The artifact is not signed, deliberately: the
+  authority over the codebook is the kernel compiled into `ptr-types`, and every
+  loader that matters — A0's checkpoint header, the dataset loader, the run
+  manifest — compares against the kernel's own version and fingerprint rather than
+  believing the file. A signature would need a key with no trust anchor this
+  repository could name, and would turn a mismatch that is caught today into a
+  signed mismatch that looks authoritative. Where an artifact crosses a trust
+  boundary it does so inside a release, and the release's own provenance
+  attestation is what vouches for it, not a second key on one file.
 - **No semantic payloads reach the model.** "Connect actual semantic payloads to the
   model" remains open; this supplies the identity layer such a connection needs.
 - Nothing here is evidence about model quality, reasoning improvement or the

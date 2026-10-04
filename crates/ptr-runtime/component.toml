@@ -120,7 +120,6 @@ missing = [
 ]
 next = [
   "Decide whether peer identity should be constructible only from an authenticated connection, which would make this crate depend on ptr-net; until then ptr-execwire is the one host that passes an authenticated key and nothing else",
-  "Define the PodWire request framing, which is still undefined even though the execution wire is not",
   "Retaining a NeuralAnchor outside the artifact remains a deployment obligation; nothing here stores one",
   "Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode",
   "Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract",

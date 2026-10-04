@@ -4,7 +4,8 @@ Status: **implemented for address authority; discovery is deliberately not
 implemented** and the last section says why.
 
 It closes the second clause of **C8** in issue #23 — *no discovery and no address
-authority* — and the first clause only by recording it as the owner's.
+authority* — and closes the first clause by decision: **no discovery**. Addresses
+stay an operator authority, recorded in the last section.
 
 Owner: `crates/ptr-net`, with `crates/ptr-execwire` and `crates/ptr-podwire` as its
 only consumers.
@@ -138,10 +139,13 @@ against a compiling control.
   — and each brings its own trust question: whose answer do you believe, and what
   happens when two disagree. `iroh` ships address lookup and this build disables it
   (`RelayMode::Disabled`, `clear_ip_transports()`), so turning it on is a decision
-  about trusting a third party, not a code change. Recorded as the owner's rather
-  than invented, alongside D4 in issue #23. What the layers above give meanwhile: a
-  wrong answer from any future discovery mechanism costs a failed request, because
-  it cannot produce a working connection for an id whose key it does not hold.
+  about trusting a third party, not a code change. **Decided (C8 in issue #23): no
+  discovery.** An address is supplied by the operator of the host and nothing else;
+  every discovery mechanism above would add a party whose answer is believed, and
+  nothing in this system needs one. What the layers above give if that is ever
+  revisited: a wrong answer from a discovery mechanism costs a failed request,
+  because it cannot produce a working connection for an id whose key it does not
+  hold.
 - **A stale address.** The book cannot tell a stale address from a current one; the
   dial fails and nothing here re-resolves. A deployment whose nodes move must update
   the book, which is what `record` replacing rather than refusing is for.
