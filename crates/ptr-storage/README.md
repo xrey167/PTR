@@ -1,7 +1,7 @@
 # ptr-storage — Artifact & Object Storage
 
 > **Role:** Provides typed, content-addressed artifact references while abstracting physical storage locations.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status

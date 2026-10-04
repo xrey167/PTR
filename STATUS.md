@@ -4,19 +4,19 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 ## Implemented and validated
 
-- 24 Rust workspace crates, including typed file/environment/CLI configuration and a central `ptr-runtime` orchestrator
+- 33 Rust workspace crates plus four binaries (`ptr-bench`, `ptr-worker`, `ptrctl`, `ptrd`), including typed file/environment/CLI configuration and a central `ptr-runtime` orchestrator; [docs/components/STATUS.md](docs/components/STATUS.md) is the generated inventory and the authority for the count
 - foundational domain types, semantic revision/snapshot prototype and dependency invalidation
 - bounded-mailbox/isolate contracts and Pod lease typestate
 - typed model → semantic Pod registry → Pod → verifier → SemDB observation loop for Pure/Read cognitive Pods
-- typed ActionIR authorization decisions in `ptr-security`, with revision/generation freshness, independent effect authority, capability/effect denials and audit-ready allow receipts
+- typed ActionIR authorization decisions in `ptr-security`, with revision/generation freshness, independent effect authority, capability/effect denials and allow receipts (`ptr-runtime`'s diagnostic `authorize_action` returns only `Result<(), _>`, so no runtime path retains a receipt yet)
 - durable single-node reference `FileLedger` with PTRLOG02 integrity framing, strict reopen and independently anchored explicit crash-tail recovery
 - `ptr-runtime` durable standalone mode can open/replay `FileLedger` and reconstruct lifecycle/materialized state across restart
-- feature-gated raft-engine durable log, raft-rs single-node consensus, Turso materialized-state and direct Iroh transport adapters with dedicated CI jobs
+- feature-gated raft-engine durable log, raft-rs consensus (single-node, and a three-member group with elections, partitions and snapshot transfer tested on loopback, composed over `ALPN_RAFT` in `ptr-cluster`), Turso materialized-state and direct Iroh transport adapters with dedicated CI jobs
 - monotonic materialization with duplicate/out-of-order/gap rejection
 - explicit retrieval evidence-promotion stages that reject stale generations and direct promotion to Known
 - Prost-generated protobuf schemas with validated PodCall → domain conversion
 - per-component `component.toml`, local `config.toml`, README status blocks and tests directories
-- 160 configured workspace areas with matching tests directories
+- every first-class workspace area has a local `config.toml` and a matching tests directory, checked by `scripts/check_repo.py`
 - Cargo and uv lockfiles; Rust 1.99 MSRV plus current-stable Ubuntu/Windows CI
 - dataset cards, experiment/evaluation validators, setup scripts, devcontainer/Docker and release scaffolding
 - executable experiment and component-evaluation runners with declared no-shell commands and immutable success/failure process evidence
@@ -87,8 +87,8 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 - PTR-Core now has a separate trainable Burn A0 research package with typed metadata, bidirectional cross-attention, recurrent latent refinement and a router; it is still a small architecture probe rather than a pretrained language model
 - bounded model resume after verified Pod observations is now wired and revision-advancing; opaque backend checkpoints, async streaming and router-driven operator selection remain open
-- hard ActionIR authorization has diagnostic typed decisions plus a scoped synchronous execution gateway with opaque host-issued sessions, exact capsule/project grants and registered verifiers/executors; network authentication, scoped Pod access and durable audit/idempotency remain open
-- feature-gated raft-engine, single-node raft-rs, Turso and direct Iroh adapters now exist and are under evaluation; multi-node consensus/network sessions and real search-backend adapters remain incomplete
+- hard ActionIR authorization has diagnostic typed decisions plus a scoped synchronous execution gateway with opaque host-issued sessions, exact capsule/project grants and registered verifiers/executors; peer admission by host policy and project-scoped Pods ([doc 29](docs/architecture/29-peer-admission-and-pod-scope.md)), a journaled execution audit with durable fencing and at-most-once keys ([doc 28](docs/architecture/28-durable-execution-audit.md)) and an execution wire on `ALPN_EXEC` ([doc 32](docs/architecture/32-execution-wire.md)) now exist; a signed receipt, a settlement channel for detached work and a journaled admission policy remain open
+- feature-gated raft-engine, raft-rs (including a three-member group over `ALPN_RAFT`), Turso and direct Iroh adapters now exist and are under evaluation; an accept loop, discovery, session reuse and real search-backend adapters remain open (membership changes are implemented one voter at a time through `ClusterMember::propose_membership` over `ALPN_RAFT`, and a joining member still has to be admitted out of band) ([doc 31](docs/architecture/31-cluster-integrity.md) lists what the cluster work leaves open)
 - M002-v5 is superseded and the other planned architecture experiments are not positive evidence; L001 remains the only running experiment and has two executed scoped crash/recovery evidence slices
 - external component candidates mostly lack comparative benchmark evidence
 - strong RAG/GraphRAG/editable-memory and matched plain-model comparative runs are not yet executed
@@ -107,7 +107,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 See [docs/components/STATUS.md](docs/components/STATUS.md) for per-component maturity and [experiments/lifecycle/L001-revocation-crash/results/](experiments/lifecycle/L001-revocation-crash/results/) for the first lifecycle evidence.
 
-P0.2 adds canonical journaled semantic transactions, typed binary Pod results, transactional dependencies and validated revision reconstruction. Invalidated current derivations are evicted; prior log records and immutable snapshots remain. See `docs/architecture/22-durable-semantic-state.md`. Neural checkpoints, secure erasure, authenticated framing and cluster composition remain open.
+P0.2 adds canonical journaled semantic transactions, typed binary Pod results, transactional dependencies and validated revision reconstruction. Invalidated current derivations are evicted; prior log records and immutable snapshots remain. See `docs/architecture/22-durable-semantic-state.md`. (This paragraph was written at P0.2. Neural-state admission ([doc 27](docs/architecture/27-neural-state-admission.md)), erasure and retention ([doc 25](docs/architecture/25-erasure-and-retention.md)) and cluster integrity ([doc 31](docs/architecture/31-cluster-integrity.md)) have since landed at library level; each of those documents states what it leaves open.)
 
 ## P0.3 persistence reference boundary
 

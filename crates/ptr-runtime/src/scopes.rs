@@ -153,13 +153,20 @@ impl ScopeRegistry {
         self.recovery_required.iter().cloned().collect()
     }
 
+    /// Marks every scope whose cleanup has not completed. A scope that ended
+    /// (completed, failed, cancelled, timed out, revoked) but was never released
+    /// still holds its pod lease, resource lease and session, so it is pending
+    /// recovery exactly like a scope that was still running.
     pub fn mark_recovery_required(&mut self) {
-        self.recovery_required = self
-            .scopes
+        self.recovery_required = self.unreleased();
+    }
+
+    fn unreleased(&self) -> BTreeSet<ScopeId> {
+        self.scopes
             .values()
-            .filter(|scope| !scope.state.is_terminal())
+            .filter(|scope| scope.state != ScopeState::Released)
             .map(|scope| scope.id.clone())
-            .collect();
+            .collect()
     }
 
     /// Fences one live scope after an external request outcome became
@@ -184,12 +191,13 @@ impl ScopeRegistry {
     }
 
     pub fn ensure_available(&self, id: &ScopeId) -> Result<(), ScopeError> {
-        if self.recovery_required(id) {
-            return Err(ScopeError::RecoveryRequired(id.clone()));
-        }
         let scope = self.get(id)?;
+        // An ended scope is refused as ended even while its cleanup is pending.
         if scope.state.is_terminal() {
             return Err(ScopeError::Terminal(scope.state));
+        }
+        if self.recovery_required(id) {
+            return Err(ScopeError::RecoveryRequired(id.clone()));
         }
         Ok(())
     }
@@ -361,12 +369,7 @@ impl ScopeRegistry {
         for event in events {
             self.apply_committed(event)?;
         }
-        self.recovery_required = self
-            .scopes
-            .values()
-            .filter(|scope| !scope.state.is_terminal())
-            .map(|scope| scope.id.clone())
-            .collect();
+        self.mark_recovery_required();
         Ok(())
     }
 

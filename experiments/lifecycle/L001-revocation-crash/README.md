@@ -9,6 +9,10 @@ false accept count; recovery consistency
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.
 
+## Historical evidence
+
+The numbers below (`results/run.json`, `results/process_crash_run.json` and their metrics) were recorded on 2026-09-18, before the PTRLOG02 journal format landed (`069d4b0`, 2026-09-19). They are evidence about the earlier v1 journal format, not measurements of the current implementation. Re-running L001 against PTRLOG02 is still to do, and until then no claim about the current format follows from them.
+
 ## Reference-scope evidence
 
 The first executed slice is recorded in [results/run.json](results/run.json) and [results/metrics.json](results/metrics.json). It covers five seeds × 100 partial-tail crash/reopen probes against the reference FileLedger.
