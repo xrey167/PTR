@@ -9,8 +9,14 @@ binding (`bindings/ptr-py`, PyO3; a separate work package, not in the tree). The
 smoke pipeline: **no quality claim is made**, and every claim beyond the cited code is an
 experiment (§5) with a falsification rule, per invariant 15.
 
-This document references `crates/ptr-pods/src/expert.rs` (#115) and `ptr-router`'s
-`Router`/`RoutedChoice`/`Propensity` (#116), which land before it.
+**Dependencies on other PRs.** This document describes three APIs by PR: `aimer_score`
+(#114, merged), `ExpertProposal` in `crates/ptr-pods/src/expert.rs` (#115) and the
+`ptr-router` routing API (#116: `Router::policy` returning a `RouteDistribution`, the
+trusted `route_checked` / `CheckedRouter` that samples with a secret `SamplingKey` and
+a fresh `DecisionNonce` and records the sampled pod's quantized probability as a
+`Propensity` (exact width/2^53), and `RoutedError` carrying the request id and
+digest). Statements about #115 and #116 hold **once those PRs are merged**; the merge
+order is #116, #115, then this document. They are not in this branch's tree today.
 
 ## 1. Principle
 
@@ -33,13 +39,21 @@ at every level.
 it is specific to the fixed `TriageDecision` action space (`AutoPropose` / Escalate /
 Discard, `arbiter.rs:13`) and cannot score a categorical choice among pods. L2 needs
 a **new** contextual-routing log (request features, candidate set, chosen pod, and
-the logging propensity as the `RoutedChoice` of `ptr-router`'s `Router` trait
-reports it, a validated `Propensity` of the chosen pod in (0, 1]) and a categorical
-IPS / SNIPS / doubly-robust estimator. The
+the logging propensity as `ptr-router`'s trusted `route_checked` records it from the
+`RouteDistribution` of `Router::policy`, a validated `Propensity` of the chosen pod in (0, 1]) and a categorical
+IPS / SNIPS / doubly-robust estimator. Every L2 record logs the **complete
+per-candidate distribution** (the `RouteDistribution`'s quantized probabilities for
+every candidate) plus the logging-policy version or digest, not only the chosen
+propensity. The estimator refuses a target policy that puts mass on an action whose
+logging probability is 0 (positivity), as the arbiter does with
+`ArbiterError::PositivityViolation` (`crates/ptr-branch/src/arbiter.rs:1174-1178`). The
 arbiter's estimators are a template only.
 
 **Actions and candidates are generation-qualified.** The log records, for every
-candidate and for the chosen action, `(PodId, generation, artifact digest)`. The Pod
+candidate and for the chosen action, `(ProjectId, PodId, generation, execution-manifest
+digest)`. The project is part of the identity because `PodRegistry` is keyed by
+`(ProjectId, PodId)` (`crates/ptr-pods/src/lib.rs:174-192`), so two projects may each
+register an `echo` Pod. The Pod
 manifest alone does not carry a generation: `PodManifest` has `id: PodId` and a
 `digest()` over the invocation contract (`crates/ptr-pods/src/lib.rs:96` and `:107`),
 while the generation and the `manifest_digest` live in the `ExecutionManifest`
@@ -105,7 +119,13 @@ evidence**: the artifact digest and generation of the evaluated expert, the **ex
 base model identity, generation and digest** (or the complete evaluated
 execution-manifest digest, which folds them in), the digest of
 the evaluation-data manifest, the digest of the gate configuration (thresholds), and
-the evaluator identity. The evaluation must run in a **trusted evaluator**, not in
+the evaluator identity, and the **attested training manifest**: the training sandbox
+is untrusted, so the full consumed-input manifest (every input identity, generation
+and digest the trainer actually read) is recorded by the trusted orchestrator that
+feeds the data, never self-reported by the trainer. `affected_by` uses this attested
+manifest, and an expert whose attested manifest is missing or mismatched cannot be
+promoted (`SECURITY.md:17-21`: revoked generations cannot become usable). The
+evaluation must run in a **trusted evaluator**, not in
 the proposer's sandbox, which produced the candidate and could hand the gate
 measurements of a different artifact. The Python binding (§6) only calls the gate; it
 does not make the result trustworthy.
