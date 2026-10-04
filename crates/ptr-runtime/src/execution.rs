@@ -241,8 +241,10 @@ pub trait ActionExecutor: Send + Sync {
 /// `start` hands the work off and returns. It must not report success as though the
 /// effect had applied — it has not; all it says is that the work was accepted. What
 /// happened is reported later through
-/// [`PtrRuntime::settle_detached`](crate::PtrRuntime::settle_detached), and until
-/// then the runtime is fenced by the attempt's own record.
+/// [`PtrRuntime::settle_detached`](crate::PtrRuntime::settle_detached) — or, for
+/// work a peer asked for, by that peer through
+/// [`PtrRuntime::settle_detached_from`](crate::PtrRuntime::settle_detached_from) —
+/// and until then the runtime is fenced by the attempt's own record.
 ///
 /// Detached work is a property of the **authority**, not of the call: a grant is
 /// either synchronous or detached, decided when the grant is issued. A caller that
@@ -522,6 +524,10 @@ struct Attempted {
     grant: Arc<ExecutionGrant>,
     principal: String,
     action: ActionIr,
+    /// The authenticated peer whose session admitted the attempt, if a peer's
+    /// did. Taken from the session before the attempt fenced the runtime,
+    /// since a fenced runtime looks up no session.
+    peer: Option<NodeId>,
 }
 
 /// An opaque session capability issued by a trusted host after authentication.
@@ -571,6 +577,17 @@ pub struct ExecutionPermit {
     action: ActionIr,
     expires_at: Instant,
     key: Option<String>,
+}
+
+impl ExecutionPermit {
+    /// Whether the grant this permit was prepared under dispatches detached.
+    ///
+    /// A host with one entry point for both kinds asks this to pick the call,
+    /// and the runtime still refuses the other one: the grant decides, and
+    /// this only reports what it decided.
+    pub fn is_detached(&self) -> bool {
+        self.grant.is_detached()
+    }
 }
 
 impl fmt::Debug for ExecutionPermit {
@@ -664,6 +681,40 @@ pub enum ExecutionError {
     NotDetached {
         attempt: CommitIndex,
     },
+    /// A settlement from a peer that is not the one bound to settle this
+    /// attempt (C4 in issue #23). Nothing is recorded: another admitted peer
+    /// being able to report an outcome would let any member close any other
+    /// member's window.
+    NotSettler {
+        attempt: CommitIndex,
+        peer: NodeId,
+    },
+    /// The bound settler is no longer a member. The binding names a key, and
+    /// whether that key may report is membership, re-derived when the report
+    /// arrives; a withdrawn settler leaves the attempt to reconciliation.
+    SettlerWithdrawn {
+        attempt: CommitIndex,
+        settler: NodeId,
+    },
+    /// An in-process settlement for an attempt bound to a peer settler. The
+    /// binding says who reports this outcome, and two reporters for one
+    /// attempt would make the first answer a race rather than a record.
+    BoundToSettler {
+        attempt: CommitIndex,
+        settler: NodeId,
+    },
+    /// A detached attempt was committed and its settler binding could not be.
+    /// `error` says why.
+    ///
+    /// The work was **not** handed out — the binding comes first so that every
+    /// effect a peer can be told about has a durable answer to who reports it —
+    /// so nothing was attempted outside this runtime. The attempt record stands
+    /// and fences the runtime until reconciliation records that nothing
+    /// applied.
+    SettlerNotBound {
+        attempt: CommitIndex,
+        error: Box<RuntimeError>,
+    },
     /// The audit record itself could not be committed.
     ///
     /// For the attempt record, nothing was attempted and no unsettled attempt is
@@ -735,14 +786,16 @@ pub(super) struct ExecutionState {
     /// Rebuilt from committed history on every open, which is what makes the
     /// fence survive a restart.
     unsettled: BTreeMap<CommitIndex, UnsettledEffect>,
-    /// Detached attempts this process dispatched.
+    /// Detached attempts this process dispatched for an in-process caller, which
+    /// no peer is bound to settle.
     ///
     /// Deliberately **not** rebuilt from history: the record says an effect was
     /// attempted, not how it was dispatched, and inventing that distinction on
     /// reopen would let a restarted runtime accept an "adapter answer" for work it
     /// never handed to an adapter. After a restart the fence stands and
     /// reconciliation is the way forward, which is the same answer a crash mid-effect
-    /// gets.
+    /// gets. Work a peer asked for is the exception, and is in `settlers` instead:
+    /// there the history does say how the attempt was dispatched.
     detached: BTreeSet<CommitIndex>,
     settled: BTreeMap<String, SettledOutcome>,
     /// Admitted peers, rebuilt from committed history on every open and from
@@ -753,6 +806,15 @@ pub(super) struct ExecutionState {
     grant_sets: GrantSets,
     /// Whether the reconciliation authority has been handed out.
     authority_taken: bool,
+    /// Detached attempts a peer asked for, each with the peer bound to settle
+    /// it (C4 in issue #23).
+    ///
+    /// Unlike `detached`, rebuilt from committed history on every open: the
+    /// `DetachedSettlerBound` record is exactly the statement an attempt
+    /// record lacks — this attempt was dispatched detached, and this key
+    /// reports its outcome — so replaying it invents nothing. An entry leaves
+    /// when its attempt is settled or reconciled.
+    settlers: BTreeMap<CommitIndex, NodeId>,
 }
 
 impl Default for ExecutionState {
@@ -769,6 +831,7 @@ impl Default for ExecutionState {
             members: BTreeMap::new(),
             grant_sets: GrantSets::new(),
             authority_taken: false,
+            settlers: BTreeMap::new(),
         }
     }
 }
@@ -850,6 +913,9 @@ impl ExecutionState {
     /// An applied outcome is bound here to the attempt it closes and to what
     /// that attempt recorded, because this is the one place that holds both.
     pub(super) fn settle(&mut self, attempt: CommitIndex, settlement: Settlement) {
+        // A settled or reconciled attempt has nobody left to report it: the
+        // first answer recorded is the one that holds.
+        self.settlers.remove(&attempt);
         if let Some(effect) = self.unsettled.remove(&attempt) {
             if let Some(key) = effect.key {
                 let identity = effect.identity;
@@ -931,6 +997,23 @@ impl ExecutionState {
             }
         }
         Ok(record)
+    }
+
+    /// The peer bound to settle `attempt`, while it is outstanding.
+    pub(super) fn settler_of(&self, attempt: CommitIndex) -> Option<&NodeId> {
+        self.settlers.get(&attempt)
+    }
+
+    /// Apply a committed settler binding. Validated before it was appended, so
+    /// this only records it.
+    pub(super) fn bind_settler(&mut self, attempt: CommitIndex, settler: NodeId) {
+        self.settlers.insert(attempt, settler);
+    }
+
+    /// Reinstate the bindings a compacted snapshot's projection carries, for
+    /// the attempts it carries as unsettled.
+    pub(super) fn restore_settlers(&mut self, settlers: BTreeMap<CommitIndex, NodeId>) {
+        self.settlers = settlers;
     }
 
     /// The admitted peers, for the projection check a compacted restore makes.
@@ -1155,12 +1238,19 @@ impl PtrRuntime {
 
     /// Withdraw a peer: committed, so a peer withdrawn before a restart is still
     /// refused after it. Sessions admitted under it stop working immediately.
+    ///
+    /// Committed even while an unsettled attempt fences the runtime: narrowing
+    /// authority waits on no effect's outcome, and a peer bound to settle
+    /// detached work has to be withdrawable *during* that work, or the host could
+    /// only withdraw it after accepting the report it no longer trusts (C4 in
+    /// issue #23). Admission is not: it widens authority and stays behind the
+    /// fence.
     pub fn withdraw_peer(&mut self, peer: &NodeId) -> Result<CommitIndex, ExecutionError> {
         let event = LedgerEvent::PeerWithdrawn { peer: peer.clone() };
         if let Some(refusal) = membership_refusal(&self.execution.members, &event) {
             return Err(refusal);
         }
-        self.commit(event).map_err(audit)
+        self.commit_past_fence(event).map_err(audit)
     }
 
     /// Revocation removes all grants of this session. Re-registration issues a
@@ -1312,7 +1402,10 @@ impl PtrRuntime {
     ///
     /// A detached attempt it closes is no longer outstanding, as after
     /// [`PtrRuntime::settle_detached`], so an adapter answer that arrives later is
-    /// refused with [`ExecutionError::NotDetached`].
+    /// refused with [`ExecutionError::NotDetached`] — from a bound settler as well
+    /// ([`PtrRuntime::settle_detached_from`]). Reconciliation is how the host
+    /// closes a bound attempt whose settler will never report: one withdrawn, or
+    /// one that went away.
     pub fn reconcile_effect(
         &mut self,
         authority: &ReconciliationAuthority,
@@ -1331,7 +1424,7 @@ impl PtrRuntime {
             return Err(ExecutionError::UnknownAttempt { attempt });
         }
         let reconciled = self
-            .commit_settlement(LedgerEvent::EffectReconciled {
+            .commit_past_fence(LedgerEvent::EffectReconciled {
                 attempt,
                 applied,
                 evidence,
@@ -1389,6 +1482,21 @@ impl PtrRuntime {
     /// Whether an effect is detached is the grant's to say, not the caller's: a
     /// synchronous grant is refused here and a detached one is refused on the
     /// synchronous path.
+    ///
+    /// **Work a peer asked for is bound to that peer** (C4 in issue #23). When
+    /// the session came from [`PtrRuntime::admit_peer`], the attempt is followed
+    /// at once by a `DetachedSettlerBound` record naming the authenticated peer,
+    /// committed before the work is handed out. The requester is the settler
+    /// because it is the only authenticated principal this dispatch involves: the
+    /// [`DetachedExecutor`] is an in-process object with no key of its own, and
+    /// the peer that asked for detached work under its own grant is the party
+    /// that can say when it finished. From then on only that peer can report the
+    /// outcome ([`PtrRuntime::settle_detached_from`]); the binding is replayed
+    /// on every open, so a restart does not take that away. If the binding cannot
+    /// be committed the work is not handed out and
+    /// [`ExecutionError::SettlerNotBound`] is returned: the attempt fences the
+    /// runtime until it is reconciled. A session the host registered itself has
+    /// no peer and no binding, and is settled in process as before.
     pub fn dispatch_detached(
         &mut self,
         session: &ExecutionSession,
@@ -1408,6 +1516,18 @@ impl PtrRuntime {
         let Dispatcher::Detached(executor) = &attempted.grant.dispatch else {
             unreachable!("admit_effect refused the other dispatch kind");
         };
+        // Bound before the work is handed out, so nothing reaches an adapter
+        // whose outcome nobody is entitled to report.
+        if let Some(settler) = attempted.peer.clone() {
+            self.commit_past_fence(LedgerEvent::DetachedSettlerBound {
+                attempt: attempted.attempt,
+                settler,
+            })
+            .map_err(|error| ExecutionError::SettlerNotBound {
+                attempt: attempted.attempt,
+                error: Box::new(error),
+            })?;
+        }
         match executor.start(VerifiedDispatch {
             action: &attempted.action,
             principal: &attempted.principal,
@@ -1420,7 +1540,9 @@ impl PtrRuntime {
             // executor's error gets, for the same reason.
             Err(error) => return Err(ExecutionError::Executor(error)),
         }
-        self.execution.detached.insert(attempted.attempt);
+        if attempted.peer.is_none() {
+            self.execution.detached.insert(attempted.attempt);
+        }
         Ok(DetachedEffect {
             attempt: attempted.attempt,
             already_applied: false,
@@ -1440,11 +1562,20 @@ impl PtrRuntime {
     /// [`ExecutionError::NotDetached`] before anything is appended. Only an attempt
     /// still awaiting its answer reaches the ledger, so a failure there is an
     /// applied effect whose settlement was not recorded.
+    ///
+    /// An attempt a peer asked for is bound to that peer, and refused here with
+    /// [`ExecutionError::BoundToSettler`]: the binding says who reports it.
     pub fn settle_detached(
         &mut self,
         attempt: CommitIndex,
         response: Vec<u8>,
     ) -> Result<CommitIndex, ExecutionError> {
+        if let Some(settler) = self.execution.settler_of(attempt) {
+            return Err(ExecutionError::BoundToSettler {
+                attempt,
+                settler: settler.clone(),
+            });
+        }
         if !self.execution.detached.contains(&attempt) || !self.execution.is_unsettled(attempt) {
             return Err(ExecutionError::NotDetached { attempt });
         }
@@ -1458,10 +1589,101 @@ impl PtrRuntime {
         Ok(settled)
     }
 
-    /// Attempts this runtime dispatched to a detached adapter and has not heard back
-    /// about, oldest first.
+    /// Record the outcome a detached attempt's bound settler reported (C4 in
+    /// issue #23).
+    ///
+    /// The transport-free half of the settlement channel: `peer` is an
+    /// [`AuthenticatedPeer`], which only a transport can produce, so the caller
+    /// cannot name a settler it did not authenticate. The report is accepted
+    /// only from the peer bound to `attempt`, only while the attempt is
+    /// outstanding, and so exactly once. Refused before anything is appended,
+    /// in this order:
+    ///
+    /// - an attempt with no outstanding binding — never bound, bound in another
+    ///   runtime, already settled or reconciled — with
+    ///   [`ExecutionError::NotDetached`];
+    /// - a peer other than the bound settler, with [`ExecutionError::NotSettler`];
+    /// - a settler that is no longer a member, with
+    ///   [`ExecutionError::SettlerWithdrawn`], and one whose grant set the host
+    ///   does not define now, with [`ExecutionError::UnknownGrantSet`]. Both are
+    ///   re-derived here rather than remembered from the dispatch, for the reason
+    ///   every session is: a key the host has since withdrawn is not one it
+    ///   trusts to report anything. The host can withdraw it while the work is
+    ///   outstanding ([`PtrRuntime::withdraw_peer`] does not wait for the fence)
+    ///   and cannot readmit it until the fence is gone (admission does), so a
+    ///   withdrawn settler's attempt is the operator's to reconcile.
+    ///
+    /// The report is that the work applied, with what it returned. It cannot be
+    /// that the work did not apply: that claim releases an at-most-once key for
+    /// another attempt, and a wrong one applies the effect twice, so it stays
+    /// [`PtrRuntime::reconcile_effect`]'s, on an operator's evidence. A wrong
+    /// "applied" costs a retry it refuses, never a second effect.
+    ///
+    /// Works the same after a restart and after a compacted restore: the binding
+    /// is replayed from history, or carried by the snapshot's projection. Once
+    /// the attempt is settled it cannot be reconciled, and once reconciled it
+    /// cannot be settled. A failure to append is an applied effect whose
+    /// settlement was not recorded ([`ExecutionError::SettlementNotRecorded`]),
+    /// and the binding stands, so the settler can report again after the host is
+    /// reopened.
+    pub fn settle_detached_from(
+        &mut self,
+        peer: &AuthenticatedPeer,
+        attempt: CommitIndex,
+        response: Vec<u8>,
+    ) -> Result<CommitIndex, ExecutionError> {
+        let Some(settler) = self.execution.settler_of(attempt) else {
+            return Err(ExecutionError::NotDetached { attempt });
+        };
+        if !self.execution.is_unsettled(attempt) {
+            return Err(ExecutionError::NotDetached { attempt });
+        }
+        if settler != peer.id() {
+            return Err(ExecutionError::NotSettler {
+                attempt,
+                peer: peer.id().clone(),
+            });
+        }
+        let Some(member) = self.execution.members.get(settler) else {
+            return Err(ExecutionError::SettlerWithdrawn {
+                attempt,
+                settler: settler.clone(),
+            });
+        };
+        if !self.execution.grant_sets.defines(&member.grant_set) {
+            return Err(ExecutionError::UnknownGrantSet {
+                name: member.grant_set.clone(),
+            });
+        }
+        self.record_settlement(attempt, response).map_err(|error| {
+            ExecutionError::SettlementNotRecorded {
+                attempt,
+                error: Box::new(error),
+            }
+        })
+    }
+
+    /// The peer bound to settle `attempt`, while it is outstanding (C4 in issue
+    /// #23). `None` for an attempt dispatched for an in-process caller, and for
+    /// one already settled or reconciled.
+    pub fn detached_settler(&self, attempt: CommitIndex) -> Option<&NodeId> {
+        self.execution.settler_of(attempt)
+    }
+
+    /// Attempts dispatched to a detached adapter whose answer is still owed,
+    /// oldest first: those this process dispatched for an in-process caller, and
+    /// those bound to a peer settler, whichever process dispatched them.
     pub fn outstanding_detached(&self) -> Vec<CommitIndex> {
-        self.execution.detached.iter().copied().collect()
+        let mut outstanding: Vec<CommitIndex> = self
+            .execution
+            .detached
+            .iter()
+            .chain(self.execution.settlers.keys())
+            .copied()
+            .collect();
+        outstanding.sort_unstable();
+        outstanding.dedup();
+        outstanding
     }
 
     /// Commit a settlement with its response digest, retaining the response only
@@ -1480,7 +1702,7 @@ impl PtrRuntime {
     ) -> Result<CommitIndex, RuntimeError> {
         let response_digest = integrity::sha256(&output);
         let response = (output.len() <= MAX_RETAINED_RESPONSE).then_some(output);
-        self.commit_settlement(LedgerEvent::EffectSettled {
+        self.commit_past_fence(LedgerEvent::EffectSettled {
             attempt,
             response,
             response_digest,
@@ -1519,6 +1741,7 @@ impl PtrRuntime {
             return Err(ExecutionError::ScopeDenied);
         }
         let principal = record.principal.clone();
+        let peer = record.peer.as_ref().map(|(peer, _)| peer.clone());
         let grant = permit.grant;
         if grant.is_detached() != want_detached {
             return Err(ExecutionError::DispatchMismatch {
@@ -1614,6 +1837,7 @@ impl PtrRuntime {
             grant,
             principal,
             action: permit.action,
+            peer,
         }))
     }
 

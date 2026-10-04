@@ -32,7 +32,8 @@ use std::collections::{BTreeMap, BTreeSet};
 /// PTRCS005 is the layout this build writes: its lifecycle section is
 /// PTRLC003, the first that may carry peer membership
 /// ([`ptr_state::MEMBER_PREFIX`]) and the codec ceiling
-/// ([`ptr_state::CODEC_CEILING_KEY`]) — D5 in issue #23.
+/// ([`ptr_state::CODEC_CEILING_KEY`]) — D5 in issue #23 — and detached
+/// attempts' bound settlers ([`ptr_state::DETACHED_SETTLER_PREFIX`], C4).
 ///
 /// The magic moved so that a build from before journaled membership stops
 /// here. Reading such a snapshot, it would restore a runtime that had forgotten
@@ -388,6 +389,11 @@ impl LifecycleState {
     /// exactly one encoding and a reordered or duplicated entry fails closed
     /// rather than resolving to whichever entry happens to come last.
     ///
+    /// Membership, the codec ceiling and settler bindings are carried by
+    /// PTRLC003 alone: an earlier section holding a key of any of the three is
+    /// refused by version, and in PTRLC003 each must be exactly what a
+    /// committed record projects, or the section is refused as noncanonical.
+    ///
     /// The section must be the one `layout` pairs with, and a PTRLC001 section
     /// must hold neither [`ptr_state::ATTESTED_MARKER`] nor a key under
     /// [`ptr_state::MERGED_BRANCH_PREFIX`]: both are refused by version. In a
@@ -422,9 +428,15 @@ impl LifecycleState {
             }
             if layout != Layout::Membership
                 && (key.starts_with(ptr_state::MEMBER_PREFIX)
-                    || key == ptr_state::CODEC_CEILING_KEY)
+                    || key == ptr_state::CODEC_CEILING_KEY
+                    || key.starts_with(ptr_state::DETACHED_SETTLER_PREFIX))
             {
                 return Err(invalid(CompactedError::UnsupportedVersion));
+            }
+            if key.starts_with(ptr_state::DETACHED_SETTLER_PREFIX)
+                && (ptr_state::detached_settler_of(&key).is_none() || !valid_member_field(&value))
+            {
+                return Err(invalid(CompactedError::NoncanonicalSection));
             }
             if key.starts_with(ptr_state::MEMBER_PREFIX)
                 && (ptr_state::member_of(&key).is_none_or(|peer| !valid_member_field(peer))
@@ -523,6 +535,33 @@ fn members_from_projection(
                     admitted_at: floor,
                 },
             ))
+        })
+        .collect()
+}
+
+/// The settler bindings a restored projection describes, for the attempts the
+/// snapshot carries as unsettled (C4 in issue #23).
+///
+/// A binding key is written once and never rewritten, so it outlives its
+/// attempt's settlement in the projection; whether it still binds anything is
+/// whether the execution section still carries its attempt as unsettled. A key
+/// for a settled attempt is history and binds nothing. In practice the map is
+/// empty — an unsettled attempt fences the runtime, and a fenced runtime exports
+/// no snapshot — and it is restored anyway, for the reason the unsettled
+/// attempts themselves are carried: so the guarantee does not depend on that one
+/// invariant holding somewhere else.
+fn settlers_from_projection(
+    materialized: &BTreeMap<String, String>,
+    unsettled: &BTreeMap<CommitIndex, UnsettledEffect>,
+) -> BTreeMap<CommitIndex, NodeId> {
+    materialized
+        .range(ptr_state::DETACHED_SETTLER_PREFIX.to_owned()..)
+        .take_while(|(key, _)| key.starts_with(ptr_state::DETACHED_SETTLER_PREFIX))
+        .filter_map(|(key, settler)| {
+            let attempt = CommitIndex(ptr_state::detached_settler_of(key)?);
+            unsettled
+                .contains_key(&attempt)
+                .then(|| (attempt, NodeId::from(settler.as_str())))
         })
         .collect()
 }
@@ -807,9 +846,13 @@ impl PtrRuntime {
         runtime.semdb = semdb;
         // Before the fence and the at-most-once memory are reinstated, this
         // runtime would answer a spent key by executing the effect again.
+        let settlers = settlers_from_projection(&lifecycle.materialized, &execution.unsettled);
         runtime
             .execution
             .restore_obligations(execution.unsettled, execution.settled);
+        // Who may settle an outstanding detached attempt is history too, and the
+        // projection carries it across the floor with the attempt it names.
+        runtime.execution.restore_settlers(settlers);
         // Membership is history, and compaction is what removes the records it
         // was committed in; the projection carries it across the floor.
         runtime.execution.restore_members(members_from_projection(

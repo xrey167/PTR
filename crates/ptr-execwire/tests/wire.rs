@@ -12,16 +12,20 @@
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_execwire::{
-    decode_request, encode_receipt, encode_request, request_digest, ExecutionClient, ExecutionHost,
-    RefusalCode, WireError, WireOutcome, WireReceipt, WireRequest,
+    decode_request, encode_receipt, encode_request, encode_settlement, request_digest,
+    settlement_digest, verify_settlement_receipt, AdapterReport, ExecutionClient, ExecutionHost,
+    RefusalCode, Serviced, Settled, SettlementOutcome, SettlementRefusal, WireError, WireOutcome,
+    WireReceipt, WireRequest, WireSettlement,
 };
 use ptr_ledger::integrity::{self, LogAnchor};
 use ptr_ledger::LedgerEvent;
-use ptr_net::{EndpointAddr, IrohTransport, NodeIdentity, PeerAddress, PeerBook, ALPN_EXEC};
+use ptr_net::{
+    EndpointAddr, IrohTransport, NodeIdentity, PeerAddress, PeerBook, ALPN_EXEC, ALPN_SETTLE,
+};
 use ptr_runtime::compacted::CompactedAnchor;
 use ptr_runtime::execution::{
-    ActionExecutor, ActionScope, DetachedExecutor, ExecutionGrant, GrantSets, RequiredVerification,
-    VerifiedDispatch,
+    ActionExecutor, ActionScope, DetachedExecutor, ExecutionError, ExecutionGrant, GrantSets,
+    RequiredVerification, VerifiedDispatch,
 };
 use ptr_runtime::PtrRuntime;
 use ptr_types::{
@@ -103,12 +107,26 @@ impl ActionExecutor for Adapter {
     }
 }
 
-/// An adapter that takes work and answers later, which this wire has no channel for.
-struct Detached;
+/// An adapter that takes work and answers later, through its settler over
+/// `ALPN_SETTLE`. It records each hand-off so a test can see the work went out.
+#[derive(Clone, Default)]
+struct Detached {
+    handed_out: Arc<Mutex<Vec<String>>>,
+}
+
+impl Detached {
+    fn handoffs(&self) -> usize {
+        self.handed_out.lock().unwrap().len()
+    }
+}
 
 impl DetachedExecutor for Detached {
-    fn start(&self, _dispatch: VerifiedDispatch<'_>) -> Result<(), String> {
-        panic!("a detached grant must be refused before the adapter is reached");
+    fn start(&self, dispatch: VerifiedDispatch<'_>) -> Result<(), String> {
+        self.handed_out
+            .lock()
+            .unwrap()
+            .push(dispatch.principal().to_owned());
+        Ok(())
     }
 }
 
@@ -221,6 +239,20 @@ fn request(host: &ExecutionHost, action: &ActionIr, request_id: u64) -> WireRequ
     }
 }
 
+/// Serve one connection that must be an execution request.
+async fn serve_execution(host: &ExecutionHost) -> Result<Serviced, WireError> {
+    host.serve_once()
+        .await
+        .map(|served| served.execution().expect("an ALPN_EXEC connection"))
+}
+
+/// Serve one connection that must be a settlement.
+async fn serve_settlement(host: &ExecutionHost) -> Result<Settled, WireError> {
+    host.serve_once()
+        .await
+        .map(|served| served.settlement().expect("an ALPN_SETTLE connection"))
+}
+
 /// How many events a runtime has committed, so a test can assert that a refusal
 /// wrote nothing.
 fn committed(host: &ExecutionHost) -> usize {
@@ -241,7 +273,7 @@ async fn an_admitted_peer_executes_over_the_wire_under_the_principal_policy_name
     let serving = Arc::clone(&host);
     let (answer, served) = tokio::join!(
         client.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     let receipt = answer.unwrap();
     let served = served.unwrap();
@@ -458,7 +490,7 @@ async fn a_receipt_from_a_real_exchange_verifies_offline_against_the_host_alone(
     let serving = Arc::clone(&host);
     let (answer, served) = tokio::join!(
         raw.request(host.address(), ALPN_EXEC, &frame, 1 << 20),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     let stored = answer.unwrap();
     assert_eq!(served.unwrap().refused, None);
@@ -572,7 +604,7 @@ async fn a_request_addressed_to_another_runtime_is_refused_and_writes_no_record(
     let serving = Arc::clone(&two);
     let (answer, served) = tokio::join!(
         client.request(located(two.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     let receipt = answer.unwrap();
     let served = served.unwrap();
@@ -600,7 +632,7 @@ async fn a_request_addressed_to_another_runtime_is_refused_and_writes_no_record(
     let serving = Arc::clone(&two);
     let (answer, _) = tokio::join!(
         client.request(located(two.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -625,7 +657,7 @@ async fn an_unadmitted_peer_is_refused_exactly_as_an_admitted_one_outside_its_gr
     let asked = request(&host, &action, 1);
     let (answer, _) = tokio::join!(
         stranger.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     let unadmitted = answer.unwrap().outcome;
 
@@ -634,7 +666,7 @@ async fn an_unadmitted_peer_is_refused_exactly_as_an_admitted_one_outside_its_gr
     let serving = Arc::clone(&host);
     let (answer, _) = tokio::join!(
         admitted.request(located(host.address()), &outside),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     let out_of_scope = answer.unwrap().outcome;
 
@@ -657,7 +689,7 @@ async fn an_unadmitted_peer_is_refused_exactly_as_an_admitted_one_outside_its_gr
     let serving = Arc::clone(&host);
     let (answer, _) = tokio::join!(
         stranger.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -677,12 +709,12 @@ async fn the_same_frame_sent_twice_is_refused_by_the_window_and_applies_once() {
     let serving = Arc::clone(&host);
     let (first, _) = tokio::join!(
         client.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     let serving = Arc::clone(&host);
     let (second, served) = tokio::join!(
         client.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
 
     assert_eq!(
@@ -725,13 +757,13 @@ async fn a_retry_is_a_new_request_id_with_the_same_key_and_still_applies_once() 
     let serving = Arc::clone(&host);
     let (answer, _) = tokio::join!(
         client.request(located(host.address()), &first),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     let applied = answer.unwrap().outcome;
     let serving = Arc::clone(&host);
     let (answer, _) = tokio::join!(
         client.request(located(host.address()), &retry),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     let retried = answer.unwrap().outcome;
 
@@ -774,7 +806,7 @@ async fn a_key_spent_by_one_peer_is_refused_to_another_rather_than_answered_with
     let serving = Arc::clone(&host);
     let (answer, _) = tokio::join!(
         first.request(located(host.address()), &spent),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     let applied = answer.unwrap().outcome;
     assert_eq!(
@@ -788,7 +820,7 @@ async fn a_key_spent_by_one_peer_is_refused_to_another_rather_than_answered_with
     let serving = Arc::clone(&host);
     let (answer, served) = tokio::join!(
         second.request(located(host.address()), &spent),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -814,7 +846,7 @@ async fn a_key_spent_by_one_peer_is_refused_to_another_rather_than_answered_with
     let serving = Arc::clone(&host);
     let (answer, _) = tokio::join!(
         first.request(located(host.address()), &retry),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(answer.unwrap().outcome, applied);
     assert_eq!(probe.executions(), 1);
@@ -838,7 +870,7 @@ async fn a_damaged_frame_is_refused_before_it_reaches_the_runtime() {
     let address = host.address();
     let (answer, served) = tokio::join!(
         raw.request(address, ALPN_EXEC, &frame, 1 << 20),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     let response = answer.unwrap();
     let served = served.unwrap();
@@ -864,61 +896,243 @@ async fn a_damaged_frame_is_refused_before_it_reaches_the_runtime() {
     let _ = client;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_detached_grant_is_refused_over_the_wire_and_leaves_no_fence() {
-    // Detached work is audited by an attempt that stays unsettled until the adapter
-    // reports back, and this wire has no channel for that report. So a detached grant
-    // is refused — by the runtime, before the attempt is committed, which is why the
-    // runtime is left unfenced. An outcome the requester can never be told is not an
-    // outcome.
-    let client = ExecutionClient::bind().await.unwrap();
+/// A host whose grant set is one detached grant for `action`, admitting each of
+/// `peers` as a member under it.
+async fn host_with_detached_grant(
+    peers: &[NodeIdentity],
+) -> (Arc<ExecutionHost>, ActionIr, Detached) {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     let action = action(&mut runtime);
+    let adapter = Detached::default();
     let mut sets = GrantSets::new();
     let scope = scope(&action);
+    let grant_adapter = adapter.clone();
     sets.define(GRANT_SET, TTL, move || {
         vec![ExecutionGrant::detached(
             scope.clone(),
             RequiredVerification::Deterministic,
             PassingVerifier,
-            Detached,
+            grant_adapter.clone(),
         )]
     })
     .unwrap();
     runtime.install_grant_sets(sets);
-    runtime
-        .admit_member(
-            NodeId(client.identity().public_key),
-            POLICY_PRINCIPAL,
-            GRANT_SET,
-        )
-        .unwrap();
+    for peer in peers {
+        runtime
+            .admit_member(NodeId(peer.public_key.clone()), POLICY_PRINCIPAL, GRANT_SET)
+            .unwrap();
+    }
     let host = Arc::new(ExecutionHost::bind(runtime).await.unwrap());
-    let before = committed(&host);
+    (host, action, adapter)
+}
+
+/// The settlements recorded in a host's history: the attempt each closes and the
+/// response it retained.
+fn recorded_settlements(host: &ExecutionHost) -> Vec<(CommitIndex, Option<Vec<u8>>)> {
+    host.runtime()
+        .committed_events()
+        .iter()
+        .filter_map(|committed| match &committed.event {
+            LedgerEvent::EffectSettled {
+                attempt, response, ..
+            } => Some((*attempt, response.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_detached_request_is_pending_and_its_bound_peer_settles_it_with_a_signed_receipt() {
+    // C4 in issue #23. A detached grant used to be refused over this wire, because
+    // there was no channel for the adapter's report. There is one now: the
+    // requester is bound to settle the attempt, and reports over ALPN_SETTLE.
+    //
+    // The admitted peer speaks the raw transport, as in the offline-verification
+    // test above, because the raw receipt bytes are what a settler keeps.
+    let raw = IrohTransport::bind(&[ALPN_EXEC]).await.unwrap();
+    let (host, action, adapter) = host_with_detached_grant(&[raw.identity()]).await;
+    let host_id = NodeId(host.identity().public_key);
+
+    // 1. The request: answered Pending, naming the attempt, and the work went out.
+    let frame = encode_request(&request(&host, &action, 1)).unwrap();
+    let serving = Arc::clone(&host);
+    let (answer, served) = tokio::join!(
+        raw.request(host.address(), ALPN_EXEC, &frame, 1 << 20),
+        serve_execution(&serving)
+    );
+    assert_eq!(served.unwrap().refused, None);
+    let receipt = ptr_execwire::verify_receipt(&answer.unwrap(), &host_id).unwrap();
+    let WireOutcome::Pending { attempt } = receipt.outcome else {
+        panic!("a detached request is pending, not {:?}", receipt.outcome);
+    };
+    assert_eq!(adapter.handoffs(), 1, "the work was handed out once");
+    assert_eq!(
+        host.runtime().detached_settler(CommitIndex(attempt)),
+        Some(&NodeId(raw.identity().public_key)),
+        "the requester is bound to settle it"
+    );
+    assert_eq!(
+        host.runtime().unsettled_effects().len(),
+        1,
+        "the host is fenced while the outcome is owed"
+    );
+    assert!(recorded_settlements(&host).is_empty());
+
+    // 2. The bound peer settles it over ALPN_SETTLE.
+    let settlement = encode_settlement(&WireSettlement {
+        addressed_to: host_id.0.clone(),
+        attempt,
+        report: AdapterReport::Applied {
+            response: b"queued and done".to_vec(),
+        },
+    })
+    .unwrap();
+    let serving = Arc::clone(&host);
+    let (answer, settled) = tokio::join!(
+        raw.request(host.address(), ALPN_SETTLE, &settlement, 1 << 20),
+        serve_settlement(&serving)
+    );
+    let stored = answer.unwrap();
+    let settled = settled.unwrap();
+    assert_eq!(settled.refused, None);
+    assert_eq!(settled.attempt, Some(attempt));
+    assert_eq!(settled.reported, SettlementOutcome::Recorded);
+
+    // The control on the runtime: the fence is lifted and the outcome is history.
+    assert!(host.runtime().unsettled_effects().is_empty());
+    assert!(host.runtime().outstanding_detached().is_empty());
+    assert_eq!(host.runtime().detached_settler(CommitIndex(attempt)), None);
+    assert_eq!(
+        recorded_settlements(&host),
+        vec![(CommitIndex(attempt), Some(b"queued and done".to_vec()))]
+    );
+
+    // 3. The settlement receipt verifies offline, against the host's key alone.
+    host.close().await;
+    let verified = verify_settlement_receipt(&stored, &host_id).unwrap();
+    assert_eq!(verified.attempt, attempt);
+    assert_eq!(verified.settlement_digest, settlement_digest(&settlement));
+    assert_eq!(verified.outcome, SettlementOutcome::Recorded);
+    assert!(matches!(
+        verify_settlement_receipt(&stored, &NodeId(raw.identity().public_key)),
+        Err(ptr_execwire::ReceiptError::WrongResponder { .. })
+    ));
+    let mut edited = stored.clone();
+    let outcome_at = edited.len() - ptr_net::SIGNATURE_BYTES - 1;
+    edited[outcome_at] = 2;
+    assert_eq!(
+        verify_settlement_receipt(&edited, &host_id),
+        Err(ptr_execwire::ReceiptError::BadSignature),
+        "Recorded edited into NotRecorded after signing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_the_bound_peer_settles_and_only_once_over_the_wire() {
+    // Two admitted peers under the same grant. The requester is bound; the other is
+    // a member with every right the requester has, and still may not settle work it
+    // did not ask for.
+    let requester = ExecutionClient::bind().await.unwrap();
+    let other = ExecutionClient::bind().await.unwrap();
+    let (host, action, adapter) =
+        host_with_detached_grant(&[requester.identity(), other.identity()]).await;
+    let host_key = host.identity().public_key;
 
     let serving = Arc::clone(&host);
     let asked = request(&host, &action, 1);
     let (answer, served) = tokio::join!(
-        client.request(located(host.address()), &asked),
-        serving.serve_once()
+        requester.request(located(host.address()), &asked),
+        serve_execution(&serving)
     );
+    assert_eq!(served.unwrap().refused, None);
+    let WireOutcome::Pending { attempt } = answer.unwrap().outcome else {
+        panic!("a detached request is pending");
+    };
+    assert_eq!(adapter.handoffs(), 1);
+    let settlement = WireSettlement {
+        addressed_to: host_key.clone(),
+        attempt,
+        report: AdapterReport::Applied {
+            response: b"done".to_vec(),
+        },
+    };
+    let before = committed(&host);
 
+    // Another admitted peer's settlement: refused with the one authority code, and
+    // nothing is recorded.
+    let serving = Arc::clone(&host);
+    let (answer, settled) = tokio::join!(
+        other.settle(located(host.address()), &settlement),
+        serve_settlement(&serving)
+    );
     assert_eq!(
         answer.unwrap().outcome,
-        WireOutcome::Refused {
-            code: RefusalCode::Runtime
+        SettlementOutcome::Refused {
+            code: SettlementRefusal::Runtime
+        }
+    );
+    assert!(matches!(
+        settled.unwrap().refused,
+        Some(WireError::Runtime(ExecutionError::NotSettler { .. }))
+    ));
+    assert_eq!(
+        committed(&host),
+        before,
+        "a refused settlement writes nothing"
+    );
+    assert_eq!(host.runtime().unsettled_effects().len(), 1, "still fenced");
+
+    // Addressed to another host: refused as misaddressed, before the runtime.
+    let misaddressed = WireSettlement {
+        addressed_to: other.identity().public_key,
+        ..settlement.clone()
+    };
+    let serving = Arc::clone(&host);
+    let (answer, _) = tokio::join!(
+        requester.settle(located(host.address()), &misaddressed),
+        serve_settlement(&serving)
+    );
+    assert_eq!(
+        answer.unwrap().outcome,
+        SettlementOutcome::Refused {
+            code: SettlementRefusal::Misaddressed
+        }
+    );
+    assert_eq!(committed(&host), before);
+
+    // The control: the same settlement from the bound peer is recorded.
+    let serving = Arc::clone(&host);
+    let (answer, settled) = tokio::join!(
+        requester.settle(located(host.address()), &settlement),
+        serve_settlement(&serving)
+    );
+    assert_eq!(answer.unwrap().outcome, SettlementOutcome::Recorded);
+    assert_eq!(settled.unwrap().refused, None);
+    assert!(host.runtime().unsettled_effects().is_empty());
+    let after = committed(&host);
+    assert_eq!(after, before + 1, "exactly one settlement record");
+
+    // Replayed — the same settlement again from the bound peer: refused, because
+    // the attempt is no longer outstanding, and nothing more is recorded.
+    let serving = Arc::clone(&host);
+    let (answer, settled) = tokio::join!(
+        requester.settle(located(host.address()), &settlement),
+        serve_settlement(&serving)
+    );
+    assert_eq!(
+        answer.unwrap().outcome,
+        SettlementOutcome::Refused {
+            code: SettlementRefusal::Runtime
         }
     );
     assert_eq!(
-        served.unwrap().refused,
-        Some(WireError::Runtime(
-            ptr_runtime::execution::ExecutionError::DispatchMismatch { detached: true }
-        )),
-        "the local side knows which refusal it was"
+        settled.unwrap().refused,
+        Some(WireError::Runtime(ExecutionError::NotDetached {
+            attempt: CommitIndex(attempt)
+        }))
     );
-    assert_eq!(committed(&host), before, "a refusal writes no record");
-    assert!(host.runtime().unsettled_effects().is_empty());
-    assert!(host.runtime().outstanding_detached().is_empty());
+    assert_eq!(committed(&host), after);
+    assert_eq!(recorded_settlements(&host).len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -933,7 +1147,7 @@ async fn an_uncertain_outcome_is_not_a_refusal_and_the_fence_reaches_the_next_re
     let asked = request(&host, &action, 1);
     let (answer, _) = tokio::join!(
         client.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -953,7 +1167,7 @@ async fn an_uncertain_outcome_is_not_a_refusal_and_the_fence_reaches_the_next_re
     let asked = request(&host, &action, 2);
     let (answer, served) = tokio::join!(
         client.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -980,7 +1194,7 @@ async fn an_uncertain_execwire_attempt_replays_as_a_durable_runtime_fence() {
     let asked = request(&host, &action, 41);
     let (answer, served) = tokio::join!(
         client.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(answer.unwrap().outcome, WireOutcome::Uncertain);
     assert_eq!(served.unwrap().request_id, Some(41));
@@ -1082,7 +1296,7 @@ async fn an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_n
     let asked = request(&host, &action, 1);
     let (answer, served) = tokio::join!(
         client.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -1116,7 +1330,7 @@ async fn an_attempt_the_host_cannot_record_is_refused_and_reaches_no_adapter() {
     let asked = request(&host, &action, 1);
     let (answer, served) = tokio::join!(
         client.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -1149,7 +1363,7 @@ async fn withdrawing_a_peer_takes_effect_between_two_requests_over_the_wire() {
     let asked = request(&host, &action, 1);
     let (answer, _) = tokio::join!(
         client.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -1166,7 +1380,7 @@ async fn withdrawing_a_peer_takes_effect_between_two_requests_over_the_wire() {
     let asked = request(&host, &action, 2);
     let (answer, _) = tokio::join!(
         client.request(located(host.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -1195,7 +1409,7 @@ async fn two_runtimes_audit_the_same_peer_independently() {
     let serving = Arc::clone(&one);
     let (answer, _) = tokio::join!(
         client.request(located(one.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -1211,7 +1425,7 @@ async fn two_runtimes_audit_the_same_peer_independently() {
     let serving = Arc::clone(&two);
     let (answer, _) = tokio::join!(
         client.request(located(two.address()), &asked),
-        serving.serve_once()
+        serve_execution(&serving)
     );
     assert_eq!(
         answer.unwrap().outcome,
@@ -1252,8 +1466,8 @@ async fn two_runtimes_decide_concurrently_and_one_withdrawal_does_not_reach_the_
     let (refused, applied, _, _) = tokio::join!(
         client.request(located(one.address()), &refused_at),
         client.request(located(two.address()), &applied_at),
-        serving_one.serve_once(),
-        serving_two.serve_once()
+        serve_execution(&serving_one),
+        serve_execution(&serving_two)
     );
 
     assert_eq!(

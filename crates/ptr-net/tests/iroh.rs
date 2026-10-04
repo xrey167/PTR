@@ -1,4 +1,4 @@
-use ptr_net::{IrohTransport, ALPN_PODWIRE};
+use ptr_net::{IrohTransport, ALPN_EXEC, ALPN_PODWIRE, ALPN_SETTLE};
 use tokio::sync::oneshot;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -223,6 +223,33 @@ async fn the_endpoint_signer_signs_as_the_identity_the_handshake_authenticates()
         "another endpoint's key does not"
     );
 
+    client.close().await;
+    server.close().await;
+}
+
+/// An endpoint serving two protocols reads which one a connection negotiated from
+/// the handshake, never from the payload (C4 in issue #23): the same bytes on
+/// `ALPN_EXEC` and on `ALPN_SETTLE` arrive labelled with their own protocol.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_incoming_connection_carries_the_protocol_its_handshake_negotiated() {
+    assert_ne!(ALPN_EXEC, ALPN_SETTLE, "two protocols, two names");
+    assert_eq!(ALPN_SETTLE, b"ptr-settle/1");
+    let server = IrohTransport::bind(&[ALPN_EXEC, ALPN_SETTLE])
+        .await
+        .unwrap();
+    let client = IrohTransport::bind(&[]).await.unwrap();
+    for alpn in [ALPN_SETTLE, ALPN_EXEC] {
+        let address = server.direct_addr();
+        let (response, incoming) =
+            tokio::join!(client.request(address, alpn, b"same bytes", 1024), async {
+                let incoming = server.accept_once(1024).await.unwrap();
+                let negotiated = incoming.alpn.clone();
+                incoming.respond(&negotiated).await.unwrap();
+                negotiated
+            });
+        assert_eq!(incoming, alpn, "the label is the handshake's");
+        assert_eq!(response.unwrap(), alpn);
+    }
     client.close().await;
     server.close().await;
 }

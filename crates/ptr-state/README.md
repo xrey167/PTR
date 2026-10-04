@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 1 Rust source files · 431 nonblank source lines · 3 integration-test files · 13 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 1 Rust source files · 457 nonblank source lines · 3 integration-test files · 14 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- A settler binding projects to detached-settler:<attempt index> holding the settler's node id (C4 in issue #23); detached_settler_of reads back exactly a decimal index without sign or leading zero, and the key is written once, so whether it still binds is whether its attempt is unsettled
 - Peer membership projects to one key per peer, peer:<node id>, holding member_entry (admitted, principal and grant set separated by line feeds) or withdrawn; the codec ceiling projects to ledger:codec-ceiling; parse_member_entry accepts exactly what the projection writes (D5 in issue #23)
 - ATTESTED_MARKER (semdb:attested) and MERGED_BRANCH_PREFIX (branch-merge:) name the materialized keys that record attributed semantic records and merged branches: every attributed semantic record projects the marker and every merge record its branch's key, and ptr-runtime refuses a compacted snapshot in the pre-attestation lifecycle layout (PTRLC001) that carries either
 - Semantic transaction position and revision materialization without duplicated payload ownership; every semantic record with an attributed origin also projects the semdb:attested marker (value 1), and ptr-runtime replays a record without an origin only in the absence of that marker
@@ -57,6 +58,7 @@
 
 ### Current automated checks
 
+- replay.rs: a_settler_binding_projects_to_its_attempts_own_key, with every other spelling of the key refused and a node id containing the separator kept whole
 - replay.rs: membership projects to one key per peer and a withdrawal overwrites it, with a node id containing the separator reading back whole; a member entry has exactly one reading; a codec ceiling projects to its own key
 - an attributed semantic record of each ingress and host kind projects the revision and the semdb:attested marker, never its payload
 - a merge projects its branch's key with its index and plan digest (a_merge_projects_its_branch_key_with_its_index_and_plan), and merge keys are length-delimited: ids that share a character prefix or a length written into them project distinct keys, and merged_branch_of and parse_merged_branch_entry refuse every other spelling (branch_merge_keys_are_length_delimited)

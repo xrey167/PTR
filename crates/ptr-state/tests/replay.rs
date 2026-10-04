@@ -363,3 +363,37 @@ fn a_codec_ceiling_projects_to_its_own_key() {
         Some("2")
     );
 }
+
+#[test]
+fn a_settler_binding_projects_to_its_attempts_own_key() {
+    let mut state = MaterializedState::default();
+    let bound = CommittedEvent {
+        index: CommitIndex(1),
+        event: LedgerEvent::DetachedSettlerBound {
+            attempt: CommitIndex(41),
+            settler: ptr_types::NodeId::from("k:settler"),
+        },
+    };
+    assert_eq!(state.try_apply(&bound), ApplyOutcome::Applied);
+    let key = ptr_state::detached_settler_key(41);
+    assert_eq!(key, "detached-settler:41");
+    assert_eq!(ptr_state::detached_settler_of(&key), Some(41));
+    assert_eq!(
+        state.values.get(&key).map(String::as_str),
+        Some("k:settler"),
+        "a node id containing the separator is the whole value"
+    );
+    // Exactly one spelling names an attempt; the control is the key above.
+    for other in [
+        "detached-settler:",
+        "detached-settler:041",
+        "detached-settler:0",
+        "detached-settler:+41",
+        "detached-settler:41 ",
+        "detached-settler:4a",
+        "detached-settler:99999999999999999999999",
+        "detached-settlers:41",
+    ] {
+        assert_eq!(ptr_state::detached_settler_of(other), None, "{other:?}");
+    }
+}

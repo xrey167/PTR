@@ -271,6 +271,22 @@ pub enum LedgerEvent {
     CodecCeilingRaised {
         version: u16,
     },
+    /// A detached attempt requested by a peer over the wire is settled by this
+    /// peer and by no other (C4 in issue #23).
+    ///
+    /// Committed immediately after the attempt it names and before the work is
+    /// handed out, so every detached effect a peer can be told about has a
+    /// durable answer to *who reports back*. Replayed in order, so the binding
+    /// survives a restart, and the runtime reads it as the one thing an attempt
+    /// record alone does not say: that this attempt was dispatched detached, to
+    /// be settled by `settler`. It names a key, not a grant: whether that key may
+    /// still settle is membership, re-derived when the settlement arrives.
+    ///
+    /// Codec version 2.
+    DetachedSettlerBound {
+        attempt: CommitIndex,
+        settler: NodeId,
+    },
 }
 
 /// The ledger codec version this build reads and writes.
@@ -302,7 +318,9 @@ pub const BASE_CODEC_VERSION: u16 = 1;
 fn tag_codec_version(tag: u8) -> Option<u16> {
     match tag {
         0..=26 => Some(BASE_CODEC_VERSION),
-        27..=29 => Some(2),
+        // 31 and 32 are reserved for a change being made alongside this one; they
+        // stay unknown here until that change defines them.
+        27..=30 => Some(2),
         _ => None,
     }
 }
@@ -864,6 +882,11 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             out.push(29);
             out.extend_from_slice(&version.to_le_bytes());
         }
+        LedgerEvent::DetachedSettlerBound { attempt, settler } => {
+            out.push(30);
+            put_u64(&mut out, attempt.0);
+            put_string(&mut out, &settler.0);
+        }
     }
     out
 }
@@ -1124,6 +1147,10 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             }
             LedgerEvent::CodecCeilingRaised { version }
         }
+        30 => LedgerEvent::DetachedSettlerBound {
+            attempt: CommitIndex(cursor.u64()?),
+            settler: NodeId(cursor.string()?),
+        },
         other => {
             // `tag_codec_version` is the table this match must agree with; the
             // test `every_tag_the_table_admits_decodes` holds the two together.
@@ -2998,7 +3025,32 @@ mod codec_version_tests {
                 peer: NodeId::from("k-peer"),
             },
             LedgerEvent::CodecCeilingRaised { version: 2 },
+            LedgerEvent::DetachedSettlerBound {
+                attempt: CommitIndex(7),
+                settler: NodeId::from("k-peer"),
+            },
         ]
+    }
+
+    /// Tag 30 is version 2, and the two tags after it are reserved for a parallel
+    /// change: this build must refuse them as unknown rather than read them.
+    #[test]
+    fn a_settler_binding_is_tag_thirty_and_the_next_two_tags_stay_unknown() {
+        let event = LedgerEvent::DetachedSettlerBound {
+            attempt: CommitIndex(7),
+            settler: NodeId::from("k-peer"),
+        };
+        let bytes = encode_event(&event);
+        assert_eq!(bytes[0], 30);
+        let mut expected = vec![30];
+        expected.extend_from_slice(&7u64.to_le_bytes());
+        expected.extend_from_slice(&6u32.to_le_bytes());
+        expected.extend_from_slice(b"k-peer");
+        assert_eq!(bytes, expected);
+        assert_eq!(tag_codec_version(30), Some(2));
+        for reserved in [31, 32] {
+            assert_eq!(tag_codec_version(reserved), None, "tag {reserved}");
+        }
     }
 
     #[test]

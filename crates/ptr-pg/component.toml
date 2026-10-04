@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-10-04"
 
 implemented = [
+  "DetachedSettlerBound has its own topic (detached.settler_bound), changes no lifecycle catalog entry, and partitions by its attempt's subject (effect:<attempt>), so the attempt, its settler and its settlement stay in one stream",
   "PeerAdmitted, PeerWithdrawn and CodecCeilingRaised have their own topics (peer.admitted, peer.withdrawn, ledger.codec_ceiling_raised), change no lifecycle catalog entry, and partition by the membership projection's own key so a peer's admission and withdrawal stay in one stream",
   "An instance is the three schemas SchemaSet::with_prefix makes of one prefix, never pg or a prefix beginning pg_, whose names PostgreSQL reserves for system schemas and would refuse to create; connect_with refuses any other set (InvalidSchemaSet) before it connects, so the names are distinct and no two instances share a schema, and a rebuild, a migration or the projector never touches another instance's",
   "Identifiers are a lowercase ASCII letter followed by at most 39 lowercase ASCII letters, digits or underscores, and never a keyword PostgreSQL 16 to 18 reserves (pg_get_keywords categories R and T), so every schema and space name interpolates into DDL unquoted",
@@ -92,6 +93,7 @@ decisions = [
 ]
 
 checks = [
+  "contracts.rs: a_settler_binding_publishes_under_its_attempts_subject_without_changing_lifecycle (topic, subject effect:<attempt>, payload the projection's detached-settler key)",
   "a merged outcome is refused before its merge is projected, at another index than the projected one, and for a branch whose id only begins like a merged one's, writing nothing; the projected index is recorded once; after a projection rebuild it is refused until the projection has caught up (a_merged_outcome_must_match_the_projected_merge)",
   "unit tests for identifiers, catalogs, capability parsing, lifecycle mapping and metric SQL",
   "tests/postgres.rs against a real server behind postgres-backend (CI job state-postgres)",

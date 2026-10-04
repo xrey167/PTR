@@ -825,3 +825,55 @@ fn membership_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_proj
         );
     }
 }
+
+/// C4 in issue #23: a detached attempt's bound settler is carried by PTRLC003 and
+/// by no earlier lifecycle section, and only as a binding record projects it.
+#[test]
+fn settler_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection() {
+    let original = legacy_fixture();
+    let snapshot = original.export_compacted_snapshot().unwrap();
+    let key = ptr_state::detached_settler_key(7);
+    // This build's layout carries it, as history: the snapshot carries no
+    // unsettled attempt 7, so the key binds nothing.
+    let (current, anchor) =
+        with_materialized(snapshot.bytes(), snapshot.anchor(), &key, "k-settler");
+    let restored =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &current, anchor, &[]).unwrap();
+    assert_eq!(
+        restored
+            .materialized_state()
+            .values
+            .get(&key)
+            .map(String::as_str),
+        Some("k-settler")
+    );
+    assert_eq!(restored.detached_settler(CommitIndex(7)), None);
+    assert!(restored.outstanding_detached().is_empty());
+    // No earlier layout could have carried it, so each refuses it by version.
+    for (outer, lifecycle) in [(b"PTRCS004", b"PTRLC002"), (b"PTRCS003", b"PTRLC001")] {
+        let (earlier, anchor) = with_magics(&current, anchor, outer, lifecycle);
+        assert_eq!(
+            restore_error(&earlier, anchor),
+            Some(RuntimeError::Compacted(CompactedError::UnsupportedVersion)),
+            "{key} in {}",
+            String::from_utf8_lossy(outer)
+        );
+    }
+    // In this build's layout, a key or value no binding record projects is refused.
+    let long = "a".repeat(ptr_runtime::execution::MAX_MEMBER_FIELD_BYTES + 1);
+    for (key, value) in [
+        ("detached-settler:07", "k-settler"),
+        ("detached-settler:0", "k-settler"),
+        ("detached-settler:", "k-settler"),
+        ("detached-settler:x", "k-settler"),
+        ("detached-settler:7", " k-settler"),
+        ("detached-settler:7", long.as_str()),
+    ] {
+        let (bytes, anchor) = with_materialized(snapshot.bytes(), snapshot.anchor(), key, value);
+        assert_eq!(
+            restore_error(&bytes, anchor),
+            Some(RuntimeError::Compacted(CompactedError::NoncanonicalSection)),
+            "{key} = {value:?}"
+        );
+    }
+}

@@ -367,6 +367,18 @@ each a bounded identifier — and a ceiling exactly the decimal of a version thi
 build defines above the base, or the section is refused as noncanonical
 (`membership_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
 
+`PTRLC003` also carries the third key family journaled with codec version 2: a
+detached attempt's bound settler, `detached-settler:<attempt index>` holding the
+settler's node id (`ptr_state::DETACHED_SETTLER_PREFIX`, C4 in issue #23,
+`32-execution-wire.md`). No earlier lifecycle section could have held one, so a
+`PTRLC002` or `PTRLC001` section that does is refused by version; in `PTRLC003` the
+index must be a decimal commit position without a sign or leading zero and the value
+a bounded identifier, or the section is refused as noncanonical
+(`settler_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
+The key is written once and never rewritten, so it outlives its attempt's settlement:
+a restore reinstates a binding only for an attempt the execution section carries as
+unsettled, and a key for a settled attempt is history that binds nothing.
+
 `covers()` is taken from the snapshot, not chosen by the caller: reporting a
 position the snapshot does not hold would let a cutover discard records whose
 state nothing describes.
@@ -377,7 +389,7 @@ Those are not history and cannot be replayed.
 
 ### Executed evidence
 
-`crates/ptr-runtime/tests/compacted_snapshot.rs`, 16 integration tests over a
+`crates/ptr-runtime/tests/compacted_snapshot.rs`, 17 integration tests over a
 fixture covering semantic payload bytes, dependencies, capsule commit and
 supersession, hard constraints, procedures and a revocation:
 
@@ -412,6 +424,9 @@ supersession, hard constraints, procedures and a revocation:
 - Membership and codec-ceiling keys are refused by version in `PTRLC002` and
   `PTRLC001`, and held to their projection in `PTRLC003`
   (`membership_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
+- Settler-binding keys likewise, and one for an attempt the snapshot does not carry
+  as unsettled restores as state and binds nothing
+  (`settler_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
 
 ### Not yet covered
 

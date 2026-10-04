@@ -174,6 +174,28 @@ fn verifier_attestations_publish_results_without_changing_lifecycle_admission() 
 }
 
 #[test]
+fn a_settler_binding_publishes_under_its_attempts_subject_without_changing_lifecycle() {
+    // The attempt's own subject, so a consumer partitioning by subject keeps the
+    // attempt, its settler and its settlement in one stream (C4 in issue #23).
+    let committed = CommittedEvent {
+        index: CommitIndex(12),
+        event: LedgerEvent::DetachedSettlerBound {
+            attempt: CommitIndex(11),
+            settler: ptr_types::NodeId::from("k-settler"),
+        },
+    };
+    assert_eq!(lifecycle_change(&committed), LifecycleChange::None);
+    assert_eq!(event_subject(&committed), "effect:11");
+    assert_eq!(event_topic(&committed.event), "detached.settler_bound");
+    assert_eq!(
+        event_payload(&committed),
+        serde_json::json!({
+            "commit_index": 12, "entries": { "detached-settler:11": "k-settler" },
+        })
+    );
+}
+
+#[test]
 fn the_reserved_key_check_of_work_migration_9_is_exactly_the_ingress_prefixes() {
     // Work migration 9 twins SealedBranch::from_parts in the database: no stored
     // operation may write a namespace reserved to ingress. Migrations are

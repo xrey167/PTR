@@ -541,6 +541,15 @@ pub enum RuntimeError {
         peer: ptr_types::NodeId,
         reason: &'static str,
     },
+    /// A settler binding this runtime refuses to commit or replay (C4 in issue
+    /// #23): one that does not immediately follow the attempt it names, names an
+    /// attempt already bound, or names a settler that is not a member. The same
+    /// check refuses it live and in replay, so a history cannot bind a settler
+    /// after the fact or to a key the host never admitted.
+    InvalidSettlerBinding {
+        attempt: CommitIndex,
+        reason: &'static str,
+    },
     /// A settlement or reconciliation names an attempt that is not awaiting one.
     UnknownEffectAttempt {
         attempt: CommitIndex,
@@ -2373,11 +2382,24 @@ impl PtrRuntime {
         })
     }
 
-    /// Settling or reconciling an attempt is the act that ends a fence, so it
-    /// cannot be gated on the fence it ends. Ambiguity about this runtime's own
-    /// last append still blocks it: appending onto a history whose last outcome
-    /// is unknown would build on a position the runtime cannot describe.
-    pub(crate) fn commit_settlement(
+    /// The records that may be appended while an unsettled attempt fences the
+    /// runtime, and only those:
+    ///
+    /// - settling or reconciling an attempt, which is the act that ends a fence
+    ///   and so cannot be gated on the fence it ends;
+    /// - binding a detached attempt's settler, which is the step that makes that
+    ///   end reachable and is taken while the attempt it names already fences the
+    ///   runtime (C4 in issue #23);
+    /// - withdrawing a peer. Narrowing authority depends on no effect's outcome,
+    ///   and a fence can stand for as long as detached work is outstanding — a
+    ///   host that could not withdraw a key until the work ended would have to
+    ///   wait for the very report the withdrawn key should no longer make.
+    ///   Admission widens authority and stays behind the fence.
+    ///
+    /// Ambiguity about this runtime's own last append still blocks every one of
+    /// them: appending onto a history whose last outcome is unknown would build on
+    /// a position the runtime cannot describe.
+    pub(crate) fn commit_past_fence(
         &mut self,
         event: LedgerEvent,
     ) -> Result<CommitIndex, RuntimeError> {
@@ -2541,6 +2563,30 @@ impl PtrRuntime {
                 }
             }
             LedgerEvent::CodecCeilingRaised { .. } => Ok(()),
+            LedgerEvent::DetachedSettlerBound { attempt, settler } => {
+                // Adjacent to its attempt, which is the record just applied: a
+                // binding is written in the same step that commits the attempt,
+                // before the work is handed out, so one that arrives later is a
+                // history nobody's dispatch wrote.
+                let reason = if *attempt != CommitIndex(self.state.last_applied) {
+                    Some("the binding does not immediately follow its attempt")
+                } else if !self.execution.is_unsettled(*attempt) {
+                    Some("the attempt is not awaiting an outcome")
+                } else if self.execution.settler_of(*attempt).is_some() {
+                    Some("the attempt is already bound")
+                } else if !self.execution.members().contains_key(settler) {
+                    Some("the settler is not a member")
+                } else {
+                    None
+                };
+                match reason {
+                    None => Ok(()),
+                    Some(reason) => Err(RuntimeError::InvalidSettlerBinding {
+                        attempt: *attempt,
+                        reason,
+                    }),
+                }
+            }
             LedgerEvent::ScopeLifecycle(event) => {
                 if event.revision != self.revision() {
                     return Err(RuntimeError::ScopeRevisionMismatch {
@@ -2935,6 +2981,9 @@ impl PtrRuntime {
             // runtime's own log is written by one build, which reads what it
             // writes. It is projected, and there is nothing further to apply.
             LedgerEvent::CodecCeilingRaised { .. } => {}
+            LedgerEvent::DetachedSettlerBound { attempt, settler } => {
+                self.execution.bind_settler(*attempt, settler.clone());
+            }
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }
             | LedgerEvent::TierReplicaLifecycle { .. } => {

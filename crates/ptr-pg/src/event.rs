@@ -94,7 +94,8 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::TierReplicaLifecycle { .. }
         | LedgerEvent::PeerAdmitted { .. }
         | LedgerEvent::PeerWithdrawn { .. }
-        | LedgerEvent::CodecCeilingRaised { .. } => LifecycleChange::None,
+        | LedgerEvent::CodecCeilingRaised { .. }
+        | LedgerEvent::DetachedSettlerBound { .. } => LifecycleChange::None,
     }
 }
 
@@ -130,6 +131,7 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::PeerAdmitted { .. } => "peer.admitted",
         LedgerEvent::PeerWithdrawn { .. } => "peer.withdrawn",
         LedgerEvent::CodecCeilingRaised { .. } => "ledger.codec_ceiling_raised",
+        LedgerEvent::DetachedSettlerBound { .. } => "detached.settler_bound",
     }
 }
 
@@ -208,6 +210,9 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             ptr_state::member_key(&peer.0)
         }
         LedgerEvent::CodecCeilingRaised { .. } => ptr_state::CODEC_CEILING_KEY.to_owned(),
+        // The attempt's own subject, so a consumer partitioning by subject sees
+        // the attempt, the settler bound to it and its settlement in one stream.
+        LedgerEvent::DetachedSettlerBound { attempt, .. } => format!("effect:{}", attempt.0),
     }
 }
 

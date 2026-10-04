@@ -24,6 +24,11 @@ Spoken today:
 - `ptr-raft/1` — raft traffic between cluster members (`31-cluster-integrity.md`)
 - `ptr-podwire/1` — Pod access (`33-pod-wire.md`)
 - `ptr-exec/1` — execution requests and receipts (`32-execution-wire.md`)
+- `ptr-settle/1` — settlements of detached work, accepted only from the peer the host
+  bound to settle the attempt, and their signed receipts (`32-execution-wire.md`,
+  C4 in issue #23). Its own ALPN rather than a frame kind on `ptr-exec/1`: a request
+  asks the host to cause an effect and a settlement reports what one did, and a host
+  that read either as the other would act on a report or record a request as done
 
 Declared and not yet spoken:
 - `ptr-model/1`

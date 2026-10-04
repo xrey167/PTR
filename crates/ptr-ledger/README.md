@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 9 Rust source files · 6829 nonblank source lines · 14 integration-test files · 135 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 6880 nonblank source lines · 14 integration-test files · 136 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- DetachedSettlerBound { attempt, settler } is tag 30, a codec-version-2 record (C4 in issue #23): the peer bound to settle a detached attempt it requested, encoded as the attempt index (u64) and the settler's node id; the version table admits 27 to 30, and 31 and 32 stay unknown for a change being made alongside, so a raft group carries a binding only once its ceiling is 2
 - LedgerEvent codec version 2 (D5 in issue #23): LEDGER_CODEC_VERSION, a tag-to-version table the decoder is held to, event_codec_version; PeerAdmitted, PeerWithdrawn and CodecCeilingRaised are the version-2 records; an unknown tag is refused by name (PTR_LEDGER_UNKNOWN_TAG) with the version this build reads, never skipped; every base record keeps its exact bytes
 - Committed codec ceiling for a replicated group: RaftNode::propose refuses a record above the ceiling (PTR_LEDGER_CODEC_CEILING) and refuses a ceiling record outright; propose_codec_ceiling is leader-only, needs a CodecReports entry at or above the version for every voter, and is refused while a membership change is pending; propose_membership refuses a joiner reported below the ceiling and any joiner while a raised ceiling is in flight; the ceiling is durable in the PTRRST03 state file (PTRRST02 still read, as the base version) and travels in a raft snapshot payload once above the base, stripped before the application or a retained anchor sees the bytes
 - check_encodable refuses a MeshTunnelLifecycle event whose endpoint binding the decoder would refuse (for example a relayed route without a relay id), so an append path cannot write a record the log cannot read back
@@ -101,6 +102,7 @@
 
 ### Current automated checks
 
+- codec_version_tests::a_settler_binding_is_tag_thirty_and_the_next_two_tags_stay_unknown pins tag 30's exact bytes and its version and holds 31 and 32 unknown; version_two_records_round_trip_and_name_their_version and every_tag_the_table_admits_decodes cover it with the other version-2 records
 - the mesh tunnel event round-trips with tag 15 (effect_record_tests::mesh_tunnel_events_round_trip_with_a_stable_tag) and the protected-state reference round-trips with tag 14 without a payload marker in its bytes (semantic_origin_tests::protected_state_reference_round_trips_without_payload_or_key_material)
 - tests/pod_evidence.rs, tests/pod_output.rs (admission and hypothesis with payload and lineage) and the extended all_event_variants_roundtrip_across_reopen (now including ScopeLifecycle) reopen each new record from a FileLedger unchanged; the unknown-origin-kind test now refuses kinds 0, 6 and 255
 - all ten effect and verification codes are pinned to exact bytes, unknown codes are refused at a position located by diffing two records, and invalid presence bytes, truncated digests and trailing bytes are each rejected

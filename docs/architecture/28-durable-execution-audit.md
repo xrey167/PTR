@@ -287,6 +287,35 @@ never handed out would be inventing that distinction. After a restart the fence
 stands and reconciliation is the way forward — the same answer a crash inside a
 synchronous effect gets.
 
+**Work a peer asked for is the exception, because its history says more** (C4 in
+issue #23). When the session that dispatches detached work came from an admitted
+peer, the attempt is followed at once — before the work is handed out — by a
+`DetachedSettlerBound { attempt, settler }` record (tag 30) naming the peer the
+transport authenticated. That record is exactly the statement the attempt alone
+lacks: this attempt was dispatched detached, and this key reports its outcome. It is
+replayed on every open, so the window it opens survives a restart with its settler
+(`the_binding_survives_a_restart`), and only that peer can close it through
+`settle_detached_from(&AuthenticatedPeer, attempt, response)` — once, while the
+attempt is outstanding, and while the peer is still a member whose grant set the
+host defines, re-derived at use
+(`another_admitted_peer_is_refused_and_nothing_is_recorded`,
+`a_second_settlement_is_refused`,
+`a_settler_withdrawn_during_the_work_is_refused_and_the_host_reconciles`). The
+in-process `settle_detached` refuses a bound attempt (`BoundToSettler`), so one
+attempt has one reporter. The report can only be that the work applied: "did not
+apply" releases an at-most-once key, and stays reconciliation's. A binding that
+cannot be committed hands nothing out and leaves the attempt to be reconciled as not
+applied (`a_binding_the_host_cannot_record_hands_nothing_out`). The wire that carries
+this is `32-execution-wire.md`.
+
+**A withdrawal does not wait for the fence; an admission does.** Withdrawing a peer
+narrows authority and depends on no effect's outcome, and a fence can stand for as
+long as detached work is outstanding — a host that could withdraw a settler only
+after the work ended would have to accept the very report it no longer trusts. So
+`withdraw_peer` is committed while an unsettled attempt fences the runtime (never while
+its own last append is uncertain), and `admit_member` is not: a withdrawn settler
+cannot be readmitted to settle its outstanding work, which is then the operator's.
+
 Either answer closes the window, and the first one recorded is the one that holds. A
 detached attempt a person reconciles is no longer outstanding, and an adapter answer
 that arrives afterwards is refused with `NotDetached` before anything is appended,
@@ -355,10 +384,15 @@ telling:
   the `PTRCS002` refusal, where reading the older section would have lost what a
   key is bound to.
 - **Nothing that belongs to a process travels.** Sessions, the admission policy,
-  detached dispatch and commit-level `uncertain` are this process's, not
+  in-process detached dispatch and commit-level `uncertain` are this process's, not
   committed history's. Carrying any of them would let a restored runtime claim
   knowledge it never had — the same reason `detached` is not rebuilt from history
-  on an ordinary restart.
+  on an ordinary restart. A detached attempt's bound settler *is* history (C4): it
+  is projected as `detached-settler:<attempt>`, carried by `PTRLC003` and by no
+  earlier lifecycle section, and restored for the attempts the execution section
+  carries as unsettled — which, since a fenced runtime exports no snapshot, is in
+  practice none; a binding crosses a compaction as a record above the floor
+  (`the_binding_survives_a_compacted_restore`).
 
 ## A key names one action
 

@@ -58,8 +58,13 @@ a replicated group exchange (D5 in issue #23), and it had none of the above.
 - **Schema version:** `ptr_ledger::LEDGER_CODEC_VERSION` (now 2). A record carries
   no version byte of its own; its tag says which version introduced it
   (`event_codec_version`), so every record written before versioning keeps its
-  exact bytes (`a_base_record_keeps_its_bytes`). Version 2 adds `PeerAdmitted`,
-  `PeerWithdrawn` and `CodecCeilingRaised`.
+  exact bytes (`a_base_record_keeps_its_bytes`). Version 2 adds `PeerAdmitted`
+  (tag 27), `PeerWithdrawn` (28), `CodecCeilingRaised` (29) and
+  `DetachedSettlerBound { attempt, settler }` (30: the peer bound to settle a
+  detached attempt it requested, C4 in issue #23, `32-execution-wire.md`;
+  `a_settler_binding_is_tag_thirty_and_the_next_two_tags_stay_unknown`). Tags 31
+  and 32 are reserved for a change being made alongside it and are refused as
+  unknown by this build.
 - **Unknown tag:** refused by name, `PTR_LEDGER_UNKNOWN_TAG`, with the version this
   build reads — never skipped, because skipping would make two members' histories
   mean different things at the same index

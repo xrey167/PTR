@@ -41,6 +41,16 @@ pub const ALPN_EVENTS: &[u8] = b"ptr-events/1";
 /// for one gets parsed by the other, and the parse that succeeds by accident is the
 /// dangerous one.
 pub const ALPN_EXEC: &[u8] = b"ptr-exec/1";
+/// The settlement channel: the outcome of detached work, reported by the peer the
+/// host bound to settle it (C4 in issue #23).
+///
+/// Its own ALPN rather than a frame kind on `ALPN_EXEC`, because the two carry
+/// opposite claims. A request asks the host to *cause* an effect; a settlement
+/// tells the host what an effect it already handed out *did*. A host that read one
+/// as the other would either attempt something a peer only reported, or record as
+/// done something a peer only asked for. The contract is
+/// `docs/architecture/32-execution-wire.md`.
+pub const ALPN_SETTLE: &[u8] = b"ptr-settle/1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeIdentity {
@@ -72,6 +82,10 @@ mod iroh_backend {
     pub struct IrohIncoming {
         /// The key the QUIC handshake verified. Never a value from the payload.
         pub peer: AuthenticatedPeer,
+        /// The protocol the handshake negotiated: one of the ALPNs this endpoint
+        /// was bound with. An endpoint that serves more than one protocol decides
+        /// how to read the payload from this, never from the payload itself.
+        pub alpn: Vec<u8>,
         pub payload: Vec<u8>,
         #[allow(dead_code)]
         connection: Connection,
@@ -236,6 +250,7 @@ mod iroh_backend {
 
             Ok(IrohIncoming {
                 peer,
+                alpn: connection.alpn().to_vec(),
                 payload,
                 connection,
                 send,
@@ -322,6 +337,7 @@ mod iroh_backend {
                 .map_err(|error| error.to_string())?;
             Ok(IrohIncoming {
                 peer: self.peer.clone(),
+                alpn: self.connection.alpn().to_vec(),
                 payload,
                 connection: self.connection.clone(),
                 send,

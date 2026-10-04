@@ -172,6 +172,32 @@ pub fn parse_member_entry(entry: &str) -> Option<Option<(&str, &str)>> {
     Some(Some((principal, grant_set)))
 }
 
+/// The projection key prefix for a detached attempt's bound settler (C4 in
+/// issue #23).
+///
+/// One key per bound attempt, `detached-settler:<attempt index>`, whose value is
+/// the settler's node id. The key is written once, by the binding, and never
+/// changed: whether the binding is still live is whether the attempt is still
+/// unsettled (`effect:<index>:state`), which is the fence's own record and not a
+/// second copy of it.
+pub const DETACHED_SETTLER_PREFIX: &str = "detached-settler:";
+
+/// The projection key for the settler bound to `attempt`.
+pub fn detached_settler_key(attempt: u64) -> String {
+    format!("{DETACHED_SETTLER_PREFIX}{attempt}")
+}
+
+/// The attempt a [`detached_settler_key`] names, or `None` for a key that is not
+/// exactly one: the prefix and a decimal index without a sign or a leading zero.
+/// Index 0 is no commit position, so it is not one either.
+pub fn detached_settler_of(key: &str) -> Option<u64> {
+    let index = key.strip_prefix(DETACHED_SETTLER_PREFIX)?;
+    let canonical = !index.is_empty()
+        && index.bytes().all(|byte| byte.is_ascii_digit())
+        && !index.starts_with('0');
+    canonical.then(|| index.parse().ok()).flatten()
+}
+
 /// The key/value entries one committed event projects to.
 ///
 /// This is the single definition of what an event means as current state; the
@@ -310,6 +336,9 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         }
         LedgerEvent::CodecCeilingRaised { version } => {
             vec![(CODEC_CEILING_KEY.to_owned(), version.to_string())]
+        }
+        LedgerEvent::DetachedSettlerBound { attempt, settler } => {
+            vec![(detached_settler_key(attempt.0), settler.0.clone())]
         }
         LedgerEvent::PodEvidenceCommitted { .. }
         | LedgerEvent::PodOutputAdmitted { .. }

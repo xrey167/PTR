@@ -4,10 +4,11 @@ maturity = "prototype"
 last_reviewed = "2026-10-04"
 
 implemented = [
+  "ALPN_SETTLE (ptr-settle/1) is the settlement channel for detached work (C4 in issue #23), its own ALPN rather than a frame kind on ALPN_EXEC because a request asks for an effect and a settlement reports one; IrohIncoming carries the ALPN its handshake negotiated, so an endpoint serving two protocols routes by the handshake and never by the payload",
   "NodeSigner and verify (D2 in issue #23): IrohTransport::signer hands out a signer over the endpoint's own Ed25519 key — the key the QUIC handshake authenticates, so a signature is attributable to exactly the identity a connection to that endpoint proves, with no second key to issue or rotate (rotation is a new identity). NodeSigner has no public constructor outside the test-support feature, no accessor for the secret and no Clone, and signs only domain ‖ message under a SigningDomain: a ptr- prefixed tag ending in its only NUL byte, checked at compile time, so the tags are prefix-free and no signed message can be the TLS transcript the same key signs. verify is in the transport-free base and accepts a key only in the canonical 64-lowercase-hex form the transport renders an endpoint id in, with verify_strict",
   "AuthenticatedPeer (D1 in issue #23): a peer key with no public constructor, built only by the iroh transport from the key the QUIC handshake verified; IrohIncoming, IrohServerSession and IrohSession carry it instead of a NodeIdentity, so every identity an authority table is consulted with is one a connection proved. The type is in the base crate, which has no transport, so ptr-runtime can require it without depending on iroh",
   "ReferenceMeshTunnelExecutor::active_peer answers only for a lease whose profile equals the admitted one, like every lifecycle call; a lease carrying an admitted lease id with another profile gets None",
-  "ALPN constants for raft, PodWire, model, blob, events and execution protocols",
+  "ALPN constants for raft, PodWire, model, blob, events, execution and settlement protocols",
   "The execution wire has its own ALPN rather than sharing the pod wire's: two protocols on one ALPN is how a request meant for one gets parsed by the other, and the parse that succeeds by accident is the dangerous one",
   "NodeIdentity scaffold",
   "Provider-independent Transport trait",
@@ -32,7 +33,7 @@ implemented = [
 
 missing = [
   "Peer discovery/session lifecycle",
-  "Any traffic on ALPN_MODEL, ALPN_BLOB or ALPN_EVENTS: three of the six ALPNs are still declared and unspoken",
+  "Any traffic on ALPN_MODEL, ALPN_BLOB or ALPN_EVENTS: three of the seven ALPNs are still declared and unspoken",
   "Discovery: finding the address for an id nobody told you is a mechanism choice with its own trust question, and iroh's own address lookup is disabled in this build, so turning it on is a decision about trusting a third party rather than a code change",
   "A journaled peer book, and any re-resolution of a stale address: the book is in memory and a deployment whose nodes move must record the new address",
   "Retry/idempotency semantics and automatic reconnect: backpressure is only a fail-fast per-session in-flight cap",
@@ -61,6 +62,7 @@ decisions = [
 ]
 
 checks = [
+  "iroh.rs: an_incoming_connection_carries_the_protocol_its_handshake_negotiated (the same bytes on ALPN_EXEC and ALPN_SETTLE arrive labelled with their own protocol, each as the control for the other)",
   "signing unit tests: a signature verifies under its key and domain and not under another key, another domain, another message or any single flipped signature byte; only the canonical spelling of a key verifies; Debug names the public key and not the secret; a domain without its terminator, with an inner NUL, or outside the ptr- prefix is refused (compile_fail doctest with a compiling control, and should_panic tests); tests/iroh.rs the_endpoint_signer_signs_as_the_identity_the_handshake_authenticates verifies over a real connection that the key a signature verifies under is the key the handshake authenticated, and not another endpoint's",
   "AuthenticatedPeer compile_fail doctests: a struct literal and a conversion from a bare NodeId both fail to compile; assume_authenticated exists only with the test-support feature, which scripts/check_repo.py refuses outside [dev-dependencies] (TestOnlyFeatures in scripts/tests/test_check_repo.py)",
   "Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing",

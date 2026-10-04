@@ -1,21 +1,27 @@
-//! An execution gateway and a requester, both over `ALPN_EXEC`.
+//! An execution gateway and a requester, over `ALPN_EXEC` and `ALPN_SETTLE`.
 //!
 //! Neither of these is a daemon. `serve_once` accepts one connection and answers
-//! it; `request` sends one request and checks one receipt. A caller decides when
-//! either happens, which is what keeps the tests free of sleeps and keeps "how long
-//! do we wait" and "how often do we accept" where they can be decided deliberately.
+//! it; `request` sends one request and checks one receipt, and `settle` sends one
+//! settlement and checks its receipt. A caller decides when any of them happens,
+//! which is what keeps the tests free of sleeps and keeps "how long do we wait" and
+//! "how often do we accept" where they can be decided deliberately.
 use crate::frame::{
     decode_request, encode_receipt, encode_request, request_digest, verify_receipt, FrameError,
     ReceiptError, RefusalCode, WireOutcome, WireReceipt, WireRequest, MAX_BODY_BYTES,
     MAX_FRAME_BYTES,
 };
+use crate::settlement::{
+    decode_settlement, encode_settlement, encode_settlement_receipt, settlement_digest,
+    verify_settlement_receipt, AdapterReport, SettlementOutcome, SettlementReceipt,
+    SettlementRefusal, WireSettlement,
+};
 use ptr_net::{
-    AuthenticatedPeer, EndpointAddr, IrohTransport, NodeIdentity, NodeSigner, PeerAddress,
-    ALPN_EXEC,
+    AuthenticatedPeer, EndpointAddr, IrohIncoming, IrohTransport, NodeIdentity, NodeSigner,
+    PeerAddress, ALPN_EXEC, ALPN_SETTLE,
 };
 use ptr_runtime::execution::{ExecutionError, ExecutionSession};
 use ptr_runtime::PtrRuntime;
-use ptr_types::NodeId;
+use ptr_types::{CommitIndex, NodeId};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -82,6 +88,14 @@ pub enum WireError {
     /// refuses a receipt the author could not later stand behind: one that would
     /// verify nowhere once it was stored. Refused before the outcome is read.
     BadSignature,
+    /// A settlement receipt answering a different attempt than the settlement
+    /// named.
+    WrongAttempt { expected: u64, answered: u64 },
+    /// A connection on a protocol this host does not serve. Unreachable through
+    /// the transport, which accepts only the ALPNs the endpoint was bound with;
+    /// named so that a later build binding a third protocol and forgetting to
+    /// route it fails here rather than reading its bytes as one of these two.
+    UnservedProtocol { alpn: Vec<u8> },
 }
 
 impl WireError {
@@ -97,6 +111,8 @@ impl WireError {
             Self::WrongRequest { .. } => "PTR_EXECW_WRONG_REQUEST",
             Self::UnboundReceipt => "PTR_EXECW_UNBOUND_RECEIPT",
             Self::BadSignature => "PTR_EXECW_BAD_SIGNATURE",
+            Self::WrongAttempt { .. } => "PTR_EXECW_WRONG_ATTEMPT",
+            Self::UnservedProtocol { .. } => "PTR_EXECW_UNSERVED_PROTOCOL",
         }
     }
 }
@@ -129,6 +145,48 @@ pub struct Serviced {
     pub reported: WireOutcome,
     /// The local reason behind a refusal, which the receipt does not carry.
     pub refused: Option<WireError>,
+}
+
+/// What one served settlement did, for the host's own caller.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Settled {
+    /// The peer the connection authenticated — the only candidate for the
+    /// attempt's settler, since a settlement names none.
+    pub peer: AuthenticatedPeer,
+    /// The attempt the settlement named, when it decoded far enough to name one.
+    pub attempt: Option<u64>,
+    /// What the receipt told the peer.
+    pub reported: SettlementOutcome,
+    /// The local reason behind a refusal, which the receipt does not carry.
+    pub refused: Option<WireError>,
+}
+
+/// One served connection: an execution request or a settlement, by the protocol
+/// the connection negotiated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Served {
+    /// A connection on `ALPN_EXEC`.
+    Execution(Serviced),
+    /// A connection on `ALPN_SETTLE`.
+    Settlement(Settled),
+}
+
+impl Served {
+    /// The execution request this served, or `None` for a settlement.
+    pub fn execution(self) -> Option<Serviced> {
+        match self {
+            Self::Execution(serviced) => Some(serviced),
+            Self::Settlement(_) => None,
+        }
+    }
+
+    /// The settlement this served, or `None` for an execution request.
+    pub fn settlement(self) -> Option<Settled> {
+        match self {
+            Self::Settlement(settled) => Some(settled),
+            Self::Execution(_) => None,
+        }
+    }
 }
 
 /// Which request ids a peer has already spent.
@@ -183,11 +241,16 @@ impl ReplayWindow {
     }
 }
 
-/// A runtime reachable over `ALPN_EXEC`.
+/// A runtime reachable over `ALPN_EXEC`, and over `ALPN_SETTLE` for the settlers of
+/// the detached work it hands out.
 ///
 /// The host owns the runtime because a request must not be able to reach one through
 /// anything but this path. What a peer may ask for is the runtime's admission policy,
 /// installed by the host before any of this, and re-derived on every request.
+///
+/// Both protocols are served by one endpoint, and must be: a settlement has to reach
+/// the runtime that handed the work out, and its receipt has to be signed by the key
+/// the `Pending` receipt was signed by.
 pub struct ExecutionHost {
     runtime: Mutex<PtrRuntime>,
     transport: IrohTransport,
@@ -209,7 +272,7 @@ impl ExecutionHost {
     /// before binding.
     pub async fn bind(mut runtime: PtrRuntime) -> Result<Self, WireError> {
         drop(runtime.take_reconciliation_authority());
-        let transport = IrohTransport::bind(&[ALPN_EXEC])
+        let transport = IrohTransport::bind(&[ALPN_EXEC, ALPN_SETTLE])
             .await
             .map_err(WireError::Transport)?;
         Ok(Self {
@@ -273,12 +336,46 @@ impl ExecutionHost {
     ///
     /// The receipt is signed with this endpoint's key, refusals included: a refusal
     /// is a statement this runtime makes about a request as much as an outcome is.
-    pub async fn serve_once(&self) -> Result<Serviced, WireError> {
+    ///
+    /// A detached grant answers `Pending` rather than an outcome (C4 in issue #23):
+    /// the runtime committed the attempt, bound the connection's peer to settle it
+    /// and handed the work out, and the receipt names the attempt so that peer can.
+    ///
+    /// A connection on `ALPN_SETTLE` is a settlement instead, served in its own
+    /// order:
+    ///
+    /// 1. The settler is the **authenticated connection**; a settlement names none.
+    /// 2. The frame must decode.
+    /// 3. It must be addressed to this endpoint's key, so attempt 7 here is not
+    ///    attempt 7 at another host.
+    /// 4. The runtime records it only from the attempt's bound settler, while the
+    ///    attempt is outstanding and the settler is still a member
+    ///    ([`PtrRuntime::settle_detached_from`]) — so once. No session is admitted
+    ///    and no replay window spent: the runtime is fenced by the very attempt
+    ///    being settled, and exactly-once is the runtime's durable record rather
+    ///    than a cheap window.
+    ///
+    /// The settlement receipt is signed with the same key, refusals included, and
+    /// every refusal of authority is one code.
+    ///
+    /// Which protocol a connection is is the handshake's answer, never the payload's.
+    pub async fn serve_once(&self) -> Result<Served, WireError> {
         let incoming = self
             .transport
             .accept_once(MAX_FRAME_BYTES)
             .await
             .map_err(WireError::Transport)?;
+        if incoming.alpn == ALPN_SETTLE {
+            return self
+                .serve_settlement(incoming)
+                .await
+                .map(Served::Settlement);
+        }
+        if incoming.alpn != ALPN_EXEC {
+            return Err(WireError::UnservedProtocol {
+                alpn: incoming.alpn,
+            });
+        }
 
         // (1) The sender is the connection. There is no payload field to prefer over
         // it, which is the shape of the format rather than a check performed here.
@@ -298,12 +395,88 @@ impl ExecutionHost {
             .await
             .map_err(WireError::Transport)?;
 
-        Ok(Serviced {
+        Ok(Served::Execution(Serviced {
             peer,
             request_id,
             reported: outcome,
             refused,
+        }))
+    }
+
+    /// Answer one settlement, received on `ALPN_SETTLE`.
+    async fn serve_settlement(&self, incoming: IrohIncoming) -> Result<Settled, WireError> {
+        // (1) The settler is the connection.
+        let peer = incoming.peer.clone();
+        let digest = settlement_digest(&incoming.payload);
+        let (attempt, outcome, refused) = self.decide_settlement(&peer, &incoming.payload);
+        let receipt = SettlementReceipt {
+            responder: self.identity().public_key,
+            attempt: attempt.unwrap_or(0),
+            settlement_digest: digest,
+            outcome,
+        };
+        let frame = encode_settlement_receipt(&receipt, &self.signer)?;
+        incoming
+            .respond(&frame)
+            .await
+            .map_err(WireError::Transport)?;
+        Ok(Settled {
+            peer,
+            attempt,
+            reported: outcome,
+            refused,
         })
+    }
+
+    /// Everything between a settlement arriving and its receipt going out.
+    fn decide_settlement(
+        &self,
+        peer: &AuthenticatedPeer,
+        payload: &[u8],
+    ) -> (Option<u64>, SettlementOutcome, Option<WireError>) {
+        // (2) The frame must decode.
+        let settlement = match decode_settlement(payload) {
+            Ok(settlement) => settlement,
+            Err(error) => {
+                return (
+                    None,
+                    SettlementOutcome::Refused {
+                        code: SettlementRefusal::Malformed,
+                    },
+                    Some(WireError::Frame(error)),
+                )
+            }
+        };
+        let attempt = Some(settlement.attempt);
+
+        // (3) Addressed here, or nowhere.
+        let expected = self.identity().public_key;
+        if settlement.addressed_to != expected {
+            return (
+                attempt,
+                SettlementOutcome::Refused {
+                    code: SettlementRefusal::Misaddressed,
+                },
+                Some(WireError::Misaddressed {
+                    addressed_to: settlement.addressed_to,
+                    expected,
+                }),
+            );
+        }
+
+        // (4) The runtime decides, from the binding and membership it holds.
+        let AdapterReport::Applied { response } = settlement.report;
+        let recorded =
+            self.runtime()
+                .settle_detached_from(peer, CommitIndex(settlement.attempt), response);
+        match recorded {
+            Ok(_) => (attempt, SettlementOutcome::Recorded, None),
+            Err(error) => (
+                attempt,
+                settlement_refused_by_runtime(&error),
+                Some(WireError::Runtime(error)),
+            ),
+        }
     }
 
     /// Everything between the bytes arriving and the receipt going out.
@@ -392,7 +565,8 @@ impl ExecutionHost {
         }
     }
 
-    /// Prepare and dispatch one request.
+    /// Prepare and dispatch one request, synchronously or detached as its grant
+    /// says.
     fn dispatch(
         &self,
         runtime: &mut PtrRuntime,
@@ -414,6 +588,20 @@ impl ExecutionHost {
                 self.permit_ttl,
             )?,
         };
+        if permit.is_detached() {
+            // The runtime binds this connection's peer to settle the attempt
+            // before the work is handed out (C4 in issue #23). A retry under a key
+            // whose effect already applied hands nothing out and is answered as
+            // applied; the response stays with the runtime, which answers the
+            // synchronous path's retries and has no detached equivalent.
+            let detached = runtime.dispatch_detached(session, permit)?;
+            if detached.already_applied {
+                return Ok(WireOutcome::AppliedWithoutResponse);
+            }
+            return Ok(WireOutcome::Pending {
+                attempt: detached.attempt.0,
+            });
+        }
         let response = runtime.execute_prepared(session, permit)?;
         // An answer that does not fit in a frame is not a refusal: the effect
         // applied. Saying "refused" here would invite a retry of something that
@@ -456,6 +644,13 @@ fn refused_by_runtime(error: &ExecutionError) -> WireOutcome {
         ExecutionError::KeyBoundToAnotherAction { .. } => WireOutcome::Refused {
             code: RefusalCode::Runtime,
         },
+        // A detached attempt was committed and its settler could not be bound, so
+        // the work was never handed out: nothing was attempted outside the host.
+        // The attempt fences the host until its operator reconciles it as not
+        // applied, which a retry under the same key then gets past.
+        ExecutionError::SettlerNotBound { .. } => WireOutcome::Refused {
+            code: RefusalCode::Runtime,
+        },
         // Everything else: nothing was attempted, and the reason stays here.
         ExecutionError::InvalidSession
         | ExecutionError::InvalidGrant
@@ -482,13 +677,74 @@ fn refused_by_runtime(error: &ExecutionError) -> WireOutcome {
         // session exists, so nothing was attempted for it either.
         | ExecutionError::UnknownGrantSet { .. }
         | ExecutionError::DuplicateGrantSet { .. }
+        // The host dispatches by the grant's own kind, so a mismatch is not
+        // reachable from here; it would be a refusal before any record if it were.
         | ExecutionError::DispatchMismatch { .. }
+        // Settlement refusals, which no execution request produces; each leaves
+        // nothing recorded.
         | ExecutionError::NotDetached { .. }
+        | ExecutionError::NotSettler { .. }
+        | ExecutionError::SettlerWithdrawn { .. }
+        | ExecutionError::BoundToSettler { .. }
         | ExecutionError::Audit(_)
         | ExecutionError::AuthorizationDenied(_)
         | ExecutionError::VerificationRejected { .. }
         | ExecutionError::HardFinding => WireOutcome::Refused {
             code: RefusalCode::Runtime,
+        },
+    }
+}
+
+/// Map a runtime refusal of a settlement onto what the settler is told.
+///
+/// Exhaustive for the reason [`refused_by_runtime`] is: one variant here means the
+/// report is in the host's history and must not be told otherwise, and a variant a
+/// later build adds has to be placed on purpose. Only a settlement the host could
+/// not *record* is not a refusal — the settler was entitled to report and the
+/// binding stands, so it is told to report again rather than that it may not.
+fn settlement_refused_by_runtime(error: &ExecutionError) -> SettlementOutcome {
+    match error {
+        ExecutionError::SettlementNotRecorded { .. } => SettlementOutcome::NotRecorded,
+        // Every refusal of authority, and everything a settlement cannot produce,
+        // is one code: a peer that could tell "not yours" from "already settled"
+        // from "no such attempt" could map the host's outstanding work.
+        ExecutionError::NotDetached { .. }
+        | ExecutionError::NotSettler { .. }
+        | ExecutionError::SettlerWithdrawn { .. }
+        | ExecutionError::UnknownGrantSet { .. }
+        | ExecutionError::BoundToSettler { .. }
+        | ExecutionError::SettlerNotBound { .. }
+        | ExecutionError::InvalidSession
+        | ExecutionError::InvalidGrant
+        | ExecutionError::DuplicateScope
+        | ExecutionError::CapacityExceeded
+        | ExecutionError::CounterExhausted
+        | ExecutionError::InvalidTtl
+        | ExecutionError::ForeignRuntime
+        | ExecutionError::SessionClosed
+        | ExecutionError::SessionMismatch
+        | ExecutionError::Expired
+        | ExecutionError::StalePermit
+        | ExecutionError::ScopeDenied
+        | ExecutionError::ProjectMismatch
+        | ExecutionError::RuntimeFenced
+        | ExecutionError::AmbiguousOutcome { .. }
+        | ExecutionError::ResponseNotRetained { .. }
+        | ExecutionError::KeyBoundToAnotherAction { .. }
+        | ExecutionError::UnknownAttempt { .. }
+        | ExecutionError::InvalidKey
+        | ExecutionError::InvalidEvidence
+        | ExecutionError::UnknownPeer { .. }
+        | ExecutionError::PeerNotAdmitted { .. }
+        | ExecutionError::DuplicatePeerEntry { .. }
+        | ExecutionError::DuplicateGrantSet { .. }
+        | ExecutionError::DispatchMismatch { .. }
+        | ExecutionError::Audit(_)
+        | ExecutionError::AuthorizationDenied(_)
+        | ExecutionError::VerificationRejected { .. }
+        | ExecutionError::HardFinding
+        | ExecutionError::Executor(_) => SettlementOutcome::Refused {
+            code: SettlementRefusal::Runtime,
         },
     }
 }
@@ -500,7 +756,9 @@ pub struct ExecutionClient {
 }
 
 impl ExecutionClient {
-    /// Bind an endpoint for `ALPN_EXEC`.
+    /// Bind an endpoint for `ALPN_EXEC`. The same endpoint settles over
+    /// `ALPN_SETTLE`, and must: the host bound *this* key to settle what it asked
+    /// for.
     pub async fn bind() -> Result<Self, WireError> {
         let transport = IrohTransport::bind(&[ALPN_EXEC])
             .await
@@ -596,6 +854,62 @@ impl ExecutionClient {
             });
         }
         if receipt.request_digest != digest {
+            return Err(WireError::UnboundReceipt);
+        }
+        Ok(receipt)
+    }
+
+    /// Report the outcome of detached work this endpoint asked `host` for, and
+    /// return the host's signed settlement receipt, or refuse it (C4 in issue #23).
+    ///
+    /// `settlement.attempt` is the attempt a `Pending` receipt named. The host
+    /// accepts it only from the key it bound to that attempt — this endpoint's, if
+    /// this endpoint asked — once, while the attempt is outstanding.
+    ///
+    /// The receipt is checked as an execution receipt is: the author against the
+    /// authenticated connection, then the signature against that key
+    /// ([`verify_settlement_receipt`]), then the attempt, then the digest of the
+    /// exact bytes sent. A `Refused` or `NotRecorded` receipt is returned, not an
+    /// error: it is the host's signed answer.
+    pub async fn settle(
+        &self,
+        host: PeerAddress,
+        settlement: &WireSettlement,
+    ) -> Result<SettlementReceipt, WireError> {
+        let host: EndpointAddr = host.into_address();
+        let authenticated = host.id.to_string();
+        let frame = encode_settlement(settlement)?;
+        let digest = settlement_digest(&frame);
+
+        let response = tokio::time::timeout(
+            self.request_timeout,
+            self.transport
+                .request(host, ALPN_SETTLE, &frame, MAX_FRAME_BYTES),
+        )
+        .await
+        .map_err(|_| WireError::Transport("the host did not answer in time".to_owned()))?
+        .map_err(WireError::Transport)?;
+
+        let receipt =
+            verify_settlement_receipt(&response, &NodeId(authenticated)).map_err(|error| {
+                match error {
+                    ReceiptError::Frame(error) => WireError::Frame(error),
+                    ReceiptError::WrongResponder { expected, claimed } => {
+                        WireError::ForgedReceipt {
+                            authenticated: expected,
+                            claimed,
+                        }
+                    }
+                    ReceiptError::BadSignature => WireError::BadSignature,
+                }
+            })?;
+        if receipt.attempt != settlement.attempt {
+            return Err(WireError::WrongAttempt {
+                expected: settlement.attempt,
+                answered: receipt.attempt,
+            });
+        }
+        if receipt.settlement_digest != digest {
             return Err(WireError::UnboundReceipt);
         }
         Ok(receipt)

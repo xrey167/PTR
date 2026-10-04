@@ -1,8 +1,9 @@
 # 32 — The execution wire: authenticating a peer is not authorizing an action
 
-Status: **implemented for the request/receipt exchange**, and this document says in
-its last two sections exactly what that exchange does not establish. It closes the
-wire-protocol requirement of issue #20's Gate 1 and nothing beyond it.
+Status: **implemented for the request/receipt exchange and for the settlement of
+detached work it hands out**, and this document says in its last two sections exactly
+what those exchanges do not establish. It closes the wire-protocol requirement of
+issue #20's Gate 1 and gate C4 of issue #23, and nothing beyond them.
 
 The sentence in the title is the whole design. A QUIC connection proves which key is
 at the other end. It does not say what that key may ask for, who it counts as inside
@@ -90,13 +91,14 @@ returned at admission time, so a policy later replaced with *narrower* grants fo
 same peer would not narrow anything until the cache expired. Authority re-derived at
 use means re-derived at use.
 
-## Four outcomes, because two would be a lie
+## Five outcomes, because two would be a lie
 
 | Outcome | What it means |
 |---|---|
 | `Applied` | the effect applied, and this is what it returned |
-| `AppliedWithoutResponse` | it applied and the bytes are not coming: not retained, too large for a frame, or the host could not record its settlement |
+| `AppliedWithoutResponse` | it applied and the bytes are not coming: not retained, too large for a frame, the host could not record its settlement, or a detached retry under a key that already applied |
 | `Uncertain` | it **may** have applied and the receiver does not know |
+| `Pending { attempt }` | detached work was handed out, and the requester itself is bound to report how it ended (below) |
 | `Refused` | nothing was attempted |
 
 `Uncertain` is the one that earns this table. The runtime keeps a fence precisely
@@ -145,7 +147,8 @@ The full reason still exists; it stays on the host, in `Serviced::refused`, for 
 operator. A diagnosis is a thing you give the person running the system, not the
 person asking it for something.
 
-**Two things an admitted peer can learn**, stated rather than glossed. First,
+**Three things an admitted peer can learn**, stated rather than glossed. The third
+is the attempt position a `Pending` receipt names, in the section on detached work. First,
 because the request id is spent only after admission (step 5), a peer that replays
 its own frame gets "replayed" if it is admitted and "refused" if it is not. That is
 a fact about its own key. The alternative is spending window entries before
@@ -191,6 +194,137 @@ whichever principal spends a key first makes it refused to every other principal
 project for as long as the host remembers it. So a requester should choose keys
 nobody else can guess, such as random 128-bit values, and should not share a key
 space with another principal.
+
+## Detached work, and the second protocol that settles it (C4 in issue #23)
+
+This document used to say *detached work cannot be requested over this wire*: a
+detached grant is audited by an attempt that stays unsettled until the adapter
+reports back (`28-durable-execution-audit.md`), there was no channel for that report,
+and an outcome the requester can never be told is not an outcome. *A settlement
+channel is a second protocol*, it said. That protocol now exists, on its own ALPN,
+`ALPN_SETTLE` (`ptr-settle/1`, `07-network-protocol.md`).
+
+**Who settles, and why it is the requester.** When an admitted peer's request reaches
+a detached grant, the runtime commits the attempt and then, *before the work is handed
+out*, a `DetachedSettlerBound { attempt, settler }` record (ledger tag 30, codec
+version 2) naming the peer the connection authenticated. The requester is the settler
+because it is the only authenticated principal the dispatch involves: the host's
+`DetachedExecutor` is an in-process object with no key of its own, and a grant names a
+scope, not an adapter. The peer that asked for detached work under its own grant is the
+party that can say when that work finished — a worker reporting "I have started X"
+and later "X is done" is the shape this models. The binding comes first so that every
+detached effect a peer can be told about has a durable answer to *who reports it*; a
+binding the host cannot commit hands nothing out (`SettlerNotBound`), and the attempt
+fences the host until it is reconciled as not applied
+(`a_binding_the_host_cannot_record_hands_nothing_out`). A session the host registered
+itself has no peer and no binding, and is settled in process as before.
+
+**What the requester is told.** `Pending { attempt }`, signed like every receipt. The
+attempt is a position in the host's ledger, and it is the one exception to a receipt
+naming none: a settlement must name what it settles, and the position is what the
+host's history names it by. What it reveals is how many records the host committed
+between two of the same peer's detached requests — a measure of traffic, not the
+content of any record. An opaque handle would need a durable secret to derive it from,
+and the host has none but its signing key, which signs only under a domain.
+
+**The settlement.** A frame with its own magic and layout (`PTRSTREQ`, version 1):
+the length-prefixed `addressed_to` (the host's key), `attempt` (u64), a report code
+from an explicit table, and the report's own field. The table has one entry,
+`Applied { response }` (code 1, the response bounded like any body); zero and every
+other code are refused rather than guessed. **There is deliberately no "did not
+apply".** That claim releases an at-most-once key for another attempt, and a wrong one
+lets the effect apply twice; a wrong "applied" only refuses a retry. So the negative
+claim stays the host operator's, through reconciliation (D6). Like a request, a
+settlement has no field naming its sender.
+
+The host serves it in this order, after which nothing else is weighed:
+
+1. The settler is the **authenticated connection**.
+2. The frame must decode (`Malformed`).
+3. It must be addressed to this host's key (`Misaddressed`), so attempt 7 here is not
+   attempt 7 elsewhere.
+4. The runtime records it — `settle_detached_from(&AuthenticatedPeer, attempt,
+   response)`, the transport-free entry point — only if the attempt has an outstanding
+   binding (`NotDetached` otherwise: never bound, bound at another runtime, already
+   settled or reconciled), only from the bound peer (`NotSettler`), and only while
+   that peer is a member whose grant set the host defines (`SettlerWithdrawn`,
+   `UnknownGrantSet`). Both are re-derived at use. No session is admitted and no
+   replay window is spent: the runtime is fenced by the very attempt being settled,
+   and exactly-once is the runtime's durable record rather than a cheap window.
+
+Every refusal of authority crosses as one code, `Runtime`, for the reason every
+execution refusal does: a peer that could tell "not yours" from "already settled" from
+"no such attempt" could map the host's outstanding work. A host that could not
+*record* an entitled report says `NotRecorded`, which is not a refusal — the binding
+stands, and the settler sends the same settlement again after the host is reopened.
+The runtime's refusals map onto these by an exhaustive match, as the execution
+outcomes do.
+
+**The settlement receipt** (`PTRSTRCP`, version 1, signed from its first version): the
+length-prefixed `responder`, `attempt`, a digest of the exact settlement bytes that
+arrived (domain `PTRSTL01-SETTLE`), the outcome code (`Recorded` 1, `NotRecorded` 2,
+`Refused` 3 with its code), and an Ed25519 signature by the host's endpoint key, through
+`NodeSigner`, over `ptr-settle-receipt/v1\0` followed by every frame byte before the
+signature. A different domain from an execution receipt's, so a signature over one
+kind verifies as nothing of the other. `verify_settlement_receipt(bytes, &NodeId)`
+checks it without a transport, in the order author, then signature, and the client
+then checks the attempt and the digest.
+
+- **What a `Recorded` receipt attests:** that the runtime holding key *R* recorded the
+  settlement with digest *D* as the outcome of its attempt *A*. Because the host
+  accepts a settlement only from *A*'s bound settler and only once, it also says the
+  host treated the connection that sent those bytes as that settler.
+- **What it does not attest:** that the work applied — the settler said so, and the
+  receipt makes the *host's record* of that attributable, not true; who the settler
+  was — a settlement names no sender and the receipt carries none; when; or that *R* is
+  still trusted.
+
+**Durability.** The binding is a ledger record, so it is replayed on every open: a
+restarted host still refuses every other peer and still accepts the bound one
+(`the_binding_survives_a_restart`). It is projected as `detached-settler:<attempt>`,
+which only the `PTRLC003` lifecycle section of a compacted snapshot may carry; an
+earlier section holding one is refused by version, and a key or value no binding
+projects is refused as noncanonical
+(`settler_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`,
+`24-protected-anchors.md`). A fenced runtime exports no snapshot, so in practice a
+binding crosses a compaction as a record above the floor
+(`the_binding_survives_a_compacted_restore`); a key for a settled attempt is history
+and binds nothing. A binding a dispatch did not write — one that does not immediately
+follow its attempt, a second binding, a settler that is not a member — is refused in
+replay as it is live (`a_binding_a_dispatch_did_not_write_is_refused_in_replay`).
+
+**Reconciliation stays the path for everything else.** A withdrawn settler's attempt,
+one whose settler went away, one whose binding could not be recorded: the host's
+operator reconciles them with the `ReconciliationAuthority`, which still never crosses
+a wire. The two close the same window and the first recorded holds — a settled attempt
+can no longer be reconciled and a reconciled one can no longer be settled
+(`a_bound_attempt_is_not_settled_in_process_and_a_settled_one_is_not_reconciled`,
+`a_settler_withdrawn_during_the_work_is_refused_and_the_host_reconciles`). A host can
+withdraw the settler *during* the work — a withdrawal narrows authority and does not
+wait for the fence — and cannot readmit it until the window has closed, because
+admission does wait. An in-process `settle_detached` of a bound attempt is refused
+(`BoundToSettler`): one attempt, one reporter.
+
+**Held by tests.** At the runtime: the bound settler settles and the fence lifts
+(`the_bound_settler_settles_and_the_fence_lifts`); another admitted peer is refused
+and nothing is recorded, with the bound peer's identical report as the control
+(`another_admitted_peer_is_refused_and_nothing_is_recorded`); a second settlement is
+refused (`a_second_settlement_is_refused`); an index that is no attempt, an attempt
+bound at another runtime, and the host's own unbound detached attempt are refused, with
+the host settling the last in process as the control
+(`a_foreign_or_unbound_attempt_is_refused`). Over real connections: a detached request
+is answered `Pending`, the bound peer settles over `ALPN_SETTLE`, the fence lifts, and
+the stored settlement receipt verifies offline after the host has closed and is refused
+once edited or presented as anybody else's
+(`a_detached_request_is_pending_and_its_bound_peer_settles_it_with_a_signed_receipt`);
+another admitted peer's settlement, a misaddressed one and a replayed one are each
+refused and write nothing, with the bound peer's first settlement as the control
+(`only_the_bound_peer_settles_and_only_once_over_the_wire`). The frames: round trips,
+neither a settlement nor its receipt read as a request or an execution receipt, every
+field and bit of a stored receipt signed, every prefix, trailing byte, unknown layout
+and unknown code refused
+(`a_stored_settlement_receipt_verifies_offline_and_a_change_to_any_field_is_refused`,
+`a_settlement_is_never_read_as_a_request_nor_its_receipt_as_an_execution_receipt`).
 
 ## A receipt, and what a receipt is not
 
@@ -264,24 +398,30 @@ verifies under the old key and under nothing else.
 - **No accept loop, no timer, no retry.** A caller drives `serve_once` and
   `request`. The same deliberate omission as `ptr-cluster`: a loop in the wrong place
   makes scheduling implicit, and "when do we give up" is a policy decision.
-- **Detached work cannot be requested over this wire.** A detached grant is audited
-  by an attempt that stays unsettled until the adapter reports back
-  (`28-durable-execution-audit.md`), and there is no channel here for that report. So
-  it is refused — by the runtime, before the attempt is committed, which is why the
-  refusal leaves the runtime unfenced. An outcome the requester can never be told is
-  not an outcome. A settlement channel is a second protocol.
+- **A settlement is a report, not evidence of an effect.** The settlement channel
+  (above) establishes *who* may report a detached outcome, *once*, and makes the
+  host's record of the report attributable. It does not make the report true, it
+  cannot say that work did not apply, and it does not supervise the work: there is no
+  timeout, and a settler that never reports leaves a fence, which is the operator's
+  to reconcile. While the window is open the host is fenced for every peer, as for any
+  detached work (`28-durable-execution-audit.md`).
+- **The settler is the requester.** A grant does not name a separate adapter key, so
+  work cannot be requested by one peer and settled by another; a deployment that needs
+  that needs a grant that names its settler, which nothing here offers.
 - **Nothing here reconciles, and nothing here can.** An `Uncertain` outcome is
   reported and then it is the host operator's, through `reconcile_effect`, which
   needs the runtime's `ReconciliationAuthority`; `ExecutionHost::bind` seals that
   away unless the host took it first (D6 in issue #23,
   `28-durable-execution-audit.md`). The requester's only handle on it is its own
   at-most-once key, deliberately: a remote peer must not be able to declare what
-  happened to an effect.
-- **No position in the host's ledger crosses the wire.** How far that ledger has got
-  is a fact about every other principal's activity too. A requester gets the outcome
-  of its own request and not a measure of the host's traffic — with the one
-  exception stated above: a refusal under an at-most-once key can say that another
-  principal spent that key.
+  happened to an effect. The one exception is a settler reporting that work *it was
+  bound to* applied, and only that (above).
+- **No position in the host's ledger crosses the wire, except a pending attempt's.**
+  How far that ledger has got is a fact about every other principal's activity too. A
+  requester gets the outcome of its own request and not a measure of the host's
+  traffic — with two exceptions stated above: a refusal under an at-most-once key can
+  say that another principal spent that key, and a `Pending` receipt names the
+  attempt its settlement must name.
 - **One connection per request**, which is correct and wasteful — the same open item
   `31-cluster-integrity.md` records.
 - **No discovery.** Which address belongs to an id nobody told you is a mechanism

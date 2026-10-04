@@ -1091,6 +1091,7 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::PeerAdmitted { .. } => "peer.admitted",
         LedgerEvent::PeerWithdrawn { .. } => "peer.withdrawn",
         LedgerEvent::CodecCeilingRaised { .. } => "ledger.codec_ceiling_raised",
+        LedgerEvent::DetachedSettlerBound { .. } => "detached.settler_bound",
     }
 }
 
@@ -1172,6 +1173,8 @@ fn expected_subject(record: &CommittedEvent) -> String {
             format!("peer:{}", peer.0)
         }
         LedgerEvent::CodecCeilingRaised { .. } => "ledger:codec-ceiling".to_owned(),
+        // The attempt the settler is bound to, as for its attempt and settlement.
+        LedgerEvent::DetachedSettlerBound { attempt, .. } => format!("effect:{}", attempt.0),
     }
 }
 

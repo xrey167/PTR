@@ -141,7 +141,11 @@ for the same action again, and this step does not persist an execution/idempoten
 journal. Before reopening after an ambiguous external result, the host must
 reconcile that result; reconstructing the runtime alone is not reconciliation.
 Network fencing, crash recovery and durable audit must be added before production
-execution is exposed. Detached executor work is outside the synchronous contract.
+execution is exposed. Detached executor work is outside the synchronous contract:
+it is audited by an attempt that stays open until it is settled
+(`28-durable-execution-audit.md`), and detached work a peer requests over the wire is
+settled by that peer alone, through a binding the runtime journals before the work is
+handed out (`32-execution-wire.md`, C4 in issue #23).
 
 Session/grant limits bound registry size (1024 live sessions; 64 grants per
 session). Expired sessions are removed before registration; counters fail closed

@@ -149,6 +149,23 @@ pub enum WireOutcome {
     /// The effect may have applied and the receiver does not know. **Not** a
     /// refusal: a retry without an at-most-once key could apply it a second time.
     Uncertain,
+    /// Detached work was handed out and its outcome is owed by the requester
+    /// itself (C4 in issue #23): the host committed attempt `attempt`, bound the
+    /// connection's peer to settle it, and is fenced until that peer reports over
+    /// `ALPN_SETTLE` or the host's operator reconciles it.
+    ///
+    /// Like `Uncertain`, not a refusal and not an application. Unlike it, the
+    /// receiver knows who will say which it was, and names the attempt so the
+    /// settler can. `attempt` **is a position in the host's ledger** — the one
+    /// exception to a receipt naming none, stated in
+    /// `32-execution-wire.md`: a settlement must name what it settles, and the
+    /// position is what the host's history names it by. It tells the requester
+    /// how many records the host has committed, and so how much happened between
+    /// two of its own detached requests; it tells it nothing about any record.
+    Pending {
+        /// The attempt record the settlement must name.
+        attempt: u64,
+    },
     /// Nothing was attempted. The code says only as much as a requester is entitled
     /// to know, with one exception: at-most-once keys are one namespace per host
     /// runtime, so a `Runtime` refusal under a key can tell a requester that another
@@ -365,6 +382,7 @@ fn outcome_code(outcome: &WireOutcome) -> u8 {
         WireOutcome::AppliedWithoutResponse => 2,
         WireOutcome::Uncertain => 3,
         WireOutcome::Refused { .. } => 4,
+        WireOutcome::Pending { .. } => 5,
     }
 }
 
@@ -488,6 +506,9 @@ pub fn encode_receipt(receipt: &WireReceipt, signer: &NodeSigner) -> Result<Vec<
         WireOutcome::Refused { code } => {
             frame.extend_from_slice(&refusal_code(*code).to_le_bytes());
         }
+        WireOutcome::Pending { attempt } => {
+            frame.extend_from_slice(&attempt.to_le_bytes());
+        }
     }
     let signature = signer.sign(RECEIPT_DOMAIN, &frame);
     frame.extend_from_slice(&signature);
@@ -545,7 +566,7 @@ fn parse_receipt(bytes: &[u8]) -> Result<ParsedReceipt<'_>, FrameError> {
     let mut at = open_receipt(bytes)?;
     let responder = take_str(bytes, &mut at, "responder")?;
     let request_id = take_u64(bytes, &mut at, "request_id")?;
-    let request_digest = take_digest(bytes, &mut at)?;
+    let request_digest = take_digest(bytes, &mut at, "request_digest")?;
     let outcome = match take_u8(bytes, &mut at, "outcome")? {
         1 => WireOutcome::Applied {
             response: take_bytes(bytes, &mut at, "response", MAX_BODY_BYTES)?,
@@ -554,6 +575,9 @@ fn parse_receipt(bytes: &[u8]) -> Result<ParsedReceipt<'_>, FrameError> {
         3 => WireOutcome::Uncertain,
         4 => WireOutcome::Refused {
             code: refusal_from_code(take_u16(bytes, &mut at, "refusal")?)?,
+        },
+        5 => WireOutcome::Pending {
+            attempt: take_u64(bytes, &mut at, "attempt")?,
         },
         other => {
             return Err(FrameError::UnknownCode {
@@ -578,7 +602,7 @@ fn parse_receipt(bytes: &[u8]) -> Result<ParsedReceipt<'_>, FrameError> {
 }
 
 /// Refuse a frame this build built over the bound, rather than sending it.
-fn bound_frame(frame: Vec<u8>) -> Result<Vec<u8>, FrameError> {
+pub(crate) fn bound_frame(frame: Vec<u8>) -> Result<Vec<u8>, FrameError> {
     if frame.len() > MAX_FRAME_BYTES {
         return Err(FrameError::TooLarge {
             field: "frame",
@@ -611,7 +635,7 @@ fn open_receipt(bytes: &[u8]) -> Result<usize, FrameError> {
 }
 
 /// Check the bound and the magic, and read the layout version.
-fn open_any(bytes: &[u8], magic: &[u8; 8]) -> Result<(usize, u16), FrameError> {
+pub(crate) fn open_any(bytes: &[u8], magic: &[u8; 8]) -> Result<(usize, u16), FrameError> {
     if bytes.len() > MAX_FRAME_BYTES {
         return Err(FrameError::TooLarge {
             field: "frame",
@@ -628,7 +652,7 @@ fn open_any(bytes: &[u8], magic: &[u8; 8]) -> Result<(usize, u16), FrameError> {
 }
 
 /// Refuse bytes after the last field.
-fn close(bytes: &[u8], at: usize) -> Result<(), FrameError> {
+pub(crate) fn close(bytes: &[u8], at: usize) -> Result<(), FrameError> {
     if at != bytes.len() {
         return Err(FrameError::TrailingBytes {
             extra: bytes.len() - at,
@@ -638,12 +662,16 @@ fn close(bytes: &[u8], at: usize) -> Result<(), FrameError> {
 }
 
 /// Write a bounded, length-prefixed string.
-fn put_str(frame: &mut Vec<u8>, field: &'static str, value: &str) -> Result<(), FrameError> {
+pub(crate) fn put_str(
+    frame: &mut Vec<u8>,
+    field: &'static str,
+    value: &str,
+) -> Result<(), FrameError> {
     put_bytes(frame, field, value.as_bytes(), MAX_FIELD_BYTES)
 }
 
 /// Write a bounded, length-prefixed byte string.
-fn put_bytes(
+pub(crate) fn put_bytes(
     frame: &mut Vec<u8>,
     field: &'static str,
     value: &[u8],
@@ -665,7 +693,7 @@ fn put_bytes(
 ///
 /// The length is a claim: one past the bound is refused by the bound rather than by
 /// reserving for it.
-fn take_bytes(
+pub(crate) fn take_bytes(
     bytes: &[u8],
     at: &mut usize,
     field: &'static str,
@@ -688,14 +716,21 @@ fn take_bytes(
 }
 
 /// Read a bounded, length-prefixed string.
-fn take_str(bytes: &[u8], at: &mut usize, field: &'static str) -> Result<String, FrameError> {
+pub(crate) fn take_str(
+    bytes: &[u8],
+    at: &mut usize,
+    field: &'static str,
+) -> Result<String, FrameError> {
     let raw = take_bytes(bytes, at, field, MAX_FIELD_BYTES)?;
     String::from_utf8(raw).map_err(|_| FrameError::NotUtf8 { field })
 }
 
 /// Read a digest.
-fn take_digest(bytes: &[u8], at: &mut usize) -> Result<[u8; 32], FrameError> {
-    let field = "request_digest";
+pub(crate) fn take_digest(
+    bytes: &[u8],
+    at: &mut usize,
+    field: &'static str,
+) -> Result<[u8; 32], FrameError> {
     let slice = bytes
         .get(*at..at.checked_add(32).ok_or(FrameError::Truncated { field })?)
         .ok_or(FrameError::Truncated { field })?;
@@ -706,14 +741,18 @@ fn take_digest(bytes: &[u8], at: &mut usize) -> Result<[u8; 32], FrameError> {
 }
 
 /// Read a `u8`.
-fn take_u8(bytes: &[u8], at: &mut usize, field: &'static str) -> Result<u8, FrameError> {
+pub(crate) fn take_u8(bytes: &[u8], at: &mut usize, field: &'static str) -> Result<u8, FrameError> {
     let value = *bytes.get(*at).ok_or(FrameError::Truncated { field })?;
     *at += 1;
     Ok(value)
 }
 
 /// Read a little-endian `u16`.
-fn take_u16(bytes: &[u8], at: &mut usize, field: &'static str) -> Result<u16, FrameError> {
+pub(crate) fn take_u16(
+    bytes: &[u8],
+    at: &mut usize,
+    field: &'static str,
+) -> Result<u16, FrameError> {
     let slice = take_fixed::<2>(bytes, at, field)?;
     Ok(u16::from_le_bytes(slice))
 }
@@ -725,13 +764,17 @@ fn take_u32(bytes: &[u8], at: &mut usize, field: &'static str) -> Result<u32, Fr
 }
 
 /// Read a little-endian `u64`.
-fn take_u64(bytes: &[u8], at: &mut usize, field: &'static str) -> Result<u64, FrameError> {
+pub(crate) fn take_u64(
+    bytes: &[u8],
+    at: &mut usize,
+    field: &'static str,
+) -> Result<u64, FrameError> {
     let slice = take_fixed::<8>(bytes, at, field)?;
     Ok(u64::from_le_bytes(slice))
 }
 
 /// Read a fixed-width field.
-fn take_fixed<const N: usize>(
+pub(crate) fn take_fixed<const N: usize>(
     bytes: &[u8],
     at: &mut usize,
     field: &'static str,
@@ -819,6 +862,7 @@ mod tests {
             WireOutcome::Refused {
                 code: RefusalCode::Replayed,
             },
+            WireOutcome::Pending { attempt: 41 },
         ] {
             let answered = WireReceipt {
                 outcome,
@@ -1197,6 +1241,13 @@ mod tests {
                     outcome: WireOutcome::Refused {
                         code: RefusalCode::Malformed,
                     },
+                    ..receipt()
+                },
+            ),
+            (
+                "pending",
+                WireReceipt {
+                    outcome: WireOutcome::Pending { attempt: 41 },
                     ..receipt()
                 },
             ),

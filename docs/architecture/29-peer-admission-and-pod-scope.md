@@ -64,7 +64,12 @@ the half that is behaviour:
   record live and in replay — a field that is not a bounded identifier
   (`MAX_MEMBER_FIELD_BYTES`), a second admission, a withdrawal of a non-member — so
   a history cannot hold an admission the runtime would not have written
-  (`a_history_that_admits_a_peer_twice_is_refused_on_replay`).
+  (`a_history_that_admits_a_peer_twice_is_refused_on_replay`). A withdrawal is
+  committed even while an unsettled attempt fences the runtime, and an admission
+  is not: narrowing authority waits on no effect's outcome, and a peer bound to
+  settle detached work has to be withdrawable while that work is outstanding
+  (C4 in issue #23, `28-durable-execution-audit.md`,
+  `a_settler_withdrawn_during_the_work_is_refused_and_the_host_reconciles`).
 - **Authority is not.** What a grant set permits is a verifier and an executor,
   which cannot be replayed out of a log. The host installs `GrantSets` at every
   start; until it does, a member is still a member and reaches nothing
