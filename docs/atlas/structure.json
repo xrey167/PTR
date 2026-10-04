@@ -588,7 +588,6 @@
       }
      ],
      "uses": [
-      "certify",
       "digest",
       "error",
       "ops"
@@ -851,7 +850,6 @@
       }
      ],
      "uses": [
-      "certify",
       "error"
      ],
      "path": "ops.rs",
@@ -1388,7 +1386,11 @@
        "name": "PtrCoreConfig"
       }
      ],
-     "uses": [],
+     "uses": [
+      "ptr_ar",
+      "ptr_diff",
+      "typed_attention"
+     ],
      "path": "model.rs",
      "name": "model",
      "declared": []
@@ -3705,9 +3707,7 @@
        "name": "constant_time_eq"
       }
      ],
-     "uses": [
-      "anchor"
-     ],
+     "uses": [],
      "path": "integrity.rs",
      "name": "integrity",
      "declared": [
@@ -4000,6 +4000,7 @@
       }
      ],
      "uses": [
+      "integrity",
       "raft_storage"
      ],
      "path": "raft_node.rs",
@@ -6036,7 +6037,10 @@
        "name": "NoopTraceSink"
       }
      ],
-     "uses": [],
+     "uses": [
+      "fields",
+      "macros"
+     ],
      "path": "trace.rs",
      "name": "trace",
      "declared": [
@@ -6055,7 +6059,9 @@
        "name": "TracingSink"
       }
      ],
-     "uses": [],
+     "uses": [
+      "fields"
+     ],
      "path": "tracing_adapter.rs",
      "name": "tracing_adapter",
      "declared": []
@@ -9261,8 +9267,7 @@
       }
      ],
      "uses": [
-      "execution",
-      "persistence"
+      "execution"
      ],
      "path": "compacted.rs",
      "name": "compacted",
@@ -10586,9 +10591,7 @@
        "name": "evict_denied"
       }
      ],
-     "uses": [
-      "compacted"
-     ],
+     "uses": [],
      "path": "neural.rs",
      "name": "neural",
      "declared": [
