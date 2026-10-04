@@ -11,4 +11,15 @@ min_seeds = 3
 each_regression_falsifies_independently = true
 # Preregistered choices for this experiment (no code default exists).
 training_steps_per_arm = 2000
-load_cv_definition = "std(per_expert_token_load) / mean(per_expert_token_load)"
+load_cv_definition = "population_std(per_expert_token_load) / mean(per_expert_token_load), per layer"
+comparison_arms = ["auxiliary_balance_loss", "phi_balancing"]
+margins_apply_to_each_comparison_arm = true
+# Preregistered choices for this experiment (no code default exists).
+hyperparameter_tuning_budget_trials_per_arm = 8
+hyperparameters_frozen_before_seeds = true
+max_dead_experts = 0
+max_violation_role = "reported_only"
+load_cv_aggregation = "per layer (population std / mean), mean over layers, at the final step"
+search_space = ["learning_rate", "batch_size", "aux_coefficient", "bias_update_rate", "lora_rank", "lora_alpha"]
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

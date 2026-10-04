@@ -13,3 +13,9 @@ min_span_insertions = 1
 min_span_evictions = 1
 min_downstream_recomputations = 1
 min_canary_probes = 1
+# Preregistered choices for this experiment (no code default exists).
+max_canary_logit_shift_when_bitwise_identical = 0
+max_stale_downstream_rows_reused = 0
+recompute_tokens_equals_tokens_after_span = true
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

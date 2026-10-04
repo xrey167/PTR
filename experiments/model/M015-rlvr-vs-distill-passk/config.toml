@@ -12,3 +12,15 @@ min_pass_at_1_gain_rlvr_points = 2.0
 max_pass_at_256_gain_rlvr_points = 2.0
 min_pass_at_256_gain_distill_points = 2.0
 min_seeds = 3
+# Preregistered choices for this experiment (no code default exists).
+teacher_model_recorded_before_first_run = true
+sampling_temperature = 1.0
+sampling_top_p = 1.0
+problem_set_size = 500
+problem_set_held_out = true
+distillation_data_disjoint_from_problem_set = true
+distillation_compute_matched_to_rlvr = true
+hyperparameter_tuning_budget_trials_per_arm = 8
+hyperparameters_frozen_before_seeds = true
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

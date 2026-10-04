@@ -15,3 +15,12 @@ crash_step_censoring = "final_step"
 max_rl_steps = 2000
 same_step_budget_all_arms = true
 gspo_sapo_crash_while_grpo_survives_falsifies = true
+# Preregistered choices for this experiment (no code default exists).
+hyperparameter_tuning_budget_trials_per_arm = 8
+hyperparameters_frozen_before_seeds = true
+collapse_smoothing_window_steps = 20
+max_rl_steps_unit = "optimizer_steps"
+search_space = ["learning_rate", "batch_size", "clip_epsilons", "sapo_tau_pos", "sapo_tau_neg", "gspo_range"]
+policy_ratio_variance_per_token_definition = "variance over all tokens of a rollout batch, averaged over steps"
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

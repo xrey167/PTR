@@ -23,3 +23,17 @@ min_retained_pages_reused_after_revocation = 1
 min_recomputed_pages_above_j_served = 1
 test_model_layers = 4
 revoked_expert_layer_j = 1
+# Preregistered choices for this experiment (no code default exists).
+min_invalidation_suppressed_arms = 1
+min_restore_arms = 1
+min_post_event_lookups = 1
+max_stale_hits = 0
+min_input_revocations_performed = 1
+min_post_revocation_lookups_matching_tokens = 1
+max_revoked_lineage_entry_hits = 0
+min_same_tokens_different_generation_cases = 1
+max_mismatching_runs_tagged_exact = 0
+min_nondeterministic_divergence_observed = 1
+claim_scope = "kv_memory_only"
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

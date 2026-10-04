@@ -1,16 +1,16 @@
 # R008-lossy-kv-tier
 
 ## Hypothesis
-a ShadowKV/TailorKV-style lossy tier object reduces KV memory by at least 2x at top-1 next-token agreement of at least 98%, and is always tagged Approximate.
+a ShadowKV/TailorKV-style lossy tier object reduces KV memory by at least 2x at top-1 next-token agreement of at least 98%, and is always tagged Approximate; lossy bytes count all tiers plus index and metadata, a lossy object is never served when allow_approximate is false, and it does not survive revocation or restart.
 
 ## Primary metrics
-kv_memory_reduction, top1_agreement, approximate_tag_violations, lossy_reuse_events
+kv_memory_reduction, top1_agreement, approximate_tag_violations, lossy_reuse_events, lossy_hits_with_allow_approximate_false, allow_approximate_false_attempts, lossy_hits_after_revocation_or_restart, lossy_revocation_restart_attempts
 
 ## Baseline
 exact KvSnapshot tier
 
 ## Falsification
-no lossy configuration reaches >=98% top-1 agreement, or the best configuration reaching >=98% top-1 agreement reduces KV memory by less than 2x, or any lossy reuse is not tagged Approximate; the candidate lossy configurations are pinned in config.toml before running and the best configuration is the one with the highest kv_memory_reduction among those reaching the agreement threshold; approximate_tag_violations == 0 counts only if lossy_reuse_events >= 1, otherwise the run is vacuous and falsified; kv_memory_reduction = exact_kv_bytes / lossy_kv_bytes (higher is better, >= 2.0 required) and top1_agreement is the fraction of positions whose argmax next token equals the exact tier's.
+no lossy configuration reaches >=98% top-1 agreement, or the best configuration reaching >=98% top-1 agreement reduces KV memory by less than 2x, or any lossy reuse is not tagged Approximate; the candidate lossy configurations are pinned in config.toml before running and the best configuration is the one with the highest kv_memory_reduction among those reaching the agreement threshold; approximate_tag_violations == 0 counts only if lossy_reuse_events >= 1, otherwise the run is vacuous and falsified; kv_memory_reduction = exact_kv_bytes / lossy_kv_bytes (higher is better, >= 2.0 required) and top1_agreement is the fraction of positions whose argmax next token equals the exact tier's; results must be recorded for every pinned candidate keep fraction (0.5, 0.25, 0.125) with both top1_agreement and kv_memory_reduction, and the best-configuration selection applies only over complete rows; lossy_kv_bytes counts all tiers plus index and metadata; allow_approximate_false_attempts >= 1 and lossy_hits_with_allow_approximate_false == 0; a KvSnapshotLossy object must not survive revocation or restart (lossy_revocation_restart_attempts >= 1, lossy_hits_after_revocation_or_restart == 0); top1_agreement is evaluated on the pinned model, context length and positions in config.toml; every seed must meet every criterion.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

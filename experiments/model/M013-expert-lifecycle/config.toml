@@ -24,10 +24,21 @@ gate_must_pass_and_average_forgetting_strictly_below_static = true
 # Preregistered choices for this experiment (no code default exists).
 max_recovery_steps = 5000
 min_proposals_generated_per_arm = 20
-min_proposals_accepted_per_arm = 1
+min_proposals_accepted_per_arm = 10
 # Preregistered choice: margin by which full-context net quality change must be at least both baselines.
 net_quality_vs_baseline_margin = 0.0
 # Preregistered choices for this experiment (no code default exists).
 flops_relative_tolerance = 0.01
 active_params_relative_tolerance = 0.0
 backward_transfer_definition = "ForgettingGate AccuracyMatrix definition"
+# Preregistered choices for this experiment (no code default exists).
+lifecycle_operations = ["birth", "merge", "split", "freeze", "prune", "reactivate"]
+min_operation_count_per_type = 1
+# Preregistered choices for this experiment (no code default exists).
+net_quality_metric = "held-out domain-suite accuracy delta, disjoint from the gate suite"
+domain_sequence = ["code", "math", "tool", "code"]
+training_flops_includes = ["discarded_candidates", "l3_policy", "gate_evaluation"]
+hyperparameter_tuning_budget_trials_per_arm = 8
+hyperparameters_frozen_before_seeds = true
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

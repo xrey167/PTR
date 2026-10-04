@@ -14,9 +14,36 @@ min_interior_configs = 1
 min_alora_prefix_reuse_attempts = 1
 min_adapter_revocations_performed = 1
 shared_fraction_tolerance = 0.0
-adapter_types_run = ["qkv_lora", "q_only_lora", "alora"]
+adapter_types_run = ["qkv_lora", "q_only_lora", "mlp_only_lora", "alora"]
 max_revoked_adapter_entry_hits = 0
 alora_invocation_offset_in_page = 7
 min_alora_boundary_page_cases = 1
 page_tokens = 16
 min_post_revocation_lookups_on_adapter_entries = 1
+# Preregistered choices for this experiment (no code default exists).
+sharing_measured_in = "kv_rows"
+shared_row_fraction_definition = "shared_kv_rows / total_kv_rows"
+min_adapter_revocations_per_type = 1
+min_adapter_reuse_attempts_per_type = 1
+# Preregistered choices for this experiment (no code default exists).
+min_input_revocations_performed = 1
+min_post_revocation_lookups_matching_tokens = 1
+max_revoked_lineage_entry_hits = 0
+min_same_tokens_different_generation_cases = 1
+min_invalidation_suppressed_arms = 1
+min_restore_arms = 1
+min_post_event_lookups = 1
+max_stale_hits = 0
+min_base_pages_before_revoke = 1
+min_adapter_entries_before_revocation = 1
+max_adapter_logits_bitwise_mismatch_count = 0
+min_cross_adapter_attempts = 1
+max_cross_adapter_hits_on_mismatched_chain = 0
+qkv_lora_first_layers = [0, 2]
+q_only_lora_first_layers = [0, 2]
+mlp_only_lora_first_layers = [2]
+alora_invocation_position_tokens = 39
+prompt_tokens = 64
+claim_scope = "kv_memory_only"
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

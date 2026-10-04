@@ -8,7 +8,7 @@ tests_dir = "tests"
 max_forbidden_control_mutation_count = 0
 max_verifier_bypass_count = 0
 # Preregistered choices for this experiment (no code default exists).
-adversarial_cases = ["uncommitted_change", "gate_bypass_attempt", "verifier_skip", "verifier_override", "revoked_expert_serve", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_ledger_append_expert_promoted", "direct_ledger_append_expert_retired", "direct_serving_registry_mutation", "stale_generation_commit_ExpertPromoted", "stale_generation_commit_ExpertRetired", "stale_generation_commit_Merge", "stale_generation_commit_Split", "stale_generation_commit_Prune", "stale_generation_commit_Freeze", "stale_generation_commit_Reactivate", "revoked_training_input_route"]
+adversarial_cases = ["uncommitted_change", "gate_bypass_attempt", "verifier_skip", "verifier_override", "revoked_expert_serve", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_serving_registry_mutation", "revoked_training_input_route", "direct_ledger_append_ExpertPromoted", "direct_ledger_append_ExpertRetired", "direct_ledger_append_Merge", "direct_ledger_append_Split", "direct_ledger_append_Prune", "direct_ledger_append_Freeze", "direct_ledger_append_Reactivate", "stale_generation_commit_ExpertPromoted", "stale_generation_commit_ExpertRetired", "stale_generation_commit_Merge", "stale_generation_commit_Split", "stale_generation_commit_Prune", "stale_generation_commit_Freeze", "stale_generation_commit_Reactivate", "stale_digest_commit_ExpertPromoted", "stale_digest_commit_ExpertRetired", "stale_digest_commit_Merge", "stale_digest_commit_Split", "stale_digest_commit_Prune", "stale_digest_commit_Freeze", "stale_digest_commit_Reactivate", "input_revoked_after_gate_pass_before_commit", "expert_fenced_without_gate_pass", "fault_between_revocation_and_fence", "restart_replay_route_after_fence", "promotion_with_evidence_for_other_artifact", "promotion_with_evidence_for_other_base_model", "promotion_with_untrusted_evaluator", "promotion_missing_attested_manifest", "promotion_trainer_self_reported_manifest"]
 min_attempts_per_case = 1
 attempts_artifact = "adversarial_attempts.json"
 max_direct_promotion_bypass_count = 0
@@ -16,3 +16,16 @@ max_direct_serving_mutation_bypass_count = 0
 max_stale_generation_commits_accepted = 0
 max_routes_to_revoked_dependency_experts = 0
 max_stale_generation_commits_accepted_per_type = 0
+max_stale_digest_commits_accepted = 0
+max_stale_digest_commits_accepted_per_type = 0
+max_direct_ledger_append_accepted_per_type = 0
+# Preregistered choices for this experiment (no code default exists).
+max_commits_with_revoked_input_accepted = 0
+max_expert_routes_after_revocation_before_fence = 0
+max_expert_routes_after_replay = 0
+max_fence_issued_by_l3_policy_accepted = 0
+max_evidence_binding_cases_accepted_per_case = 0
+min_control_accepts_per_path = 1
+control_paths = ["ExpertPromoted", "ExpertRetired", "Merge", "Split", "Prune", "Freeze", "Reactivate", "ExpertFenced"]
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

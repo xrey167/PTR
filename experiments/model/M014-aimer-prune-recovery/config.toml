@@ -24,3 +24,10 @@ gate_max_public_regression = 0.01
 vram_batch_size = 4
 vram_sequence_length = 2048
 quality_retention_definition = "quality_pruned_recovered / quality_unpruned"
+# Preregistered choices for this experiment (no code default exists).
+recovery_order = ["sft", "gspo"]
+pruned_experts_physically_removed = true
+quality_metric = "macro average task accuracy"
+quality_suite = "public suite"
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

@@ -12,3 +12,14 @@ specialisation_margin_points = 1.0
 trainable_params_relative_tolerance = 0.01
 training_steps_per_arm = 2000
 min_seeds = 3
+# Preregistered choices for this experiment (no code default exists).
+domains = ["code", "math", "tool"]
+per_domain_results_required = true
+# Preregistered choices for this experiment (no code default exists).
+hyperparameter_tuning_budget_trials_per_arm = 8
+hyperparameters_frozen_before_seeds = true
+emergent_noninferiority_margin_points = 1.0
+mean_task_accuracy = "macro average over domains"
+search_space = ["learning_rate", "batch_size", "lora_rank", "lora_alpha"]
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

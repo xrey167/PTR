@@ -28,3 +28,27 @@ candidate_k_tokens = [4, 7, 10, 13]
 test_model_layers = 4
 prefill_speedup_definition = "full_prefill_wall_time / reuse_prefill_wall_time"
 top1_agreement_definition = "fraction of positions where argmax == full-prefill argmax"
+candidate_shift_results_artifact = "candidate_shift_results.json"
+expected_candidate_shift_cells = 12
+incomplete_rows_ineligible = true
+# Preregistered choices for this experiment (no code default exists).
+calibration_prompts = 100
+heldout_prompts = 100
+k_selection_rule = "smallest k in [4, 7, 10, 13] with top1_agreement >= 0.99 at every shift on the calibration split"
+recomputed_token_rule = "CacheBlend-style highest-deviation tokens, every layer >= 1"
+prompt_tokens = 512
+reused_chunks_per_prompt = 4
+warmup_runs = 3
+timed_runs = 11
+prefill_speedup_statistic = "median"
+min_canary_removing_edit_cases = 1
+max_canary_logit_shift_after_removal = 0
+max_approximate_tag_violations = 0
+max_revoked_page_layers_reused = 0
+min_post_revocation_secondary_lookups_matching_content = 1
+min_invalidation_suppressed_arms = 1
+min_restore_arms = 1
+min_post_event_lookups = 1
+max_stale_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"

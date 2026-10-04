@@ -1,16 +1,16 @@
 # R006-positional-reuse-oracle
 
 ## Hypothesis
-with pre-RoPE key storage, reusing a chunk at a shifted position in a one-layer decoder is bit-identical to recomputation.
+with pre-RoPE key storage, reusing a chunk at a shifted position in a one-layer decoder is bit-identical to recomputation; reuse is exercised through the catalog and its secondary index for every pinned shift, and a revoked upstream segment leaves its content unreachable through the secondary index.
 
 ## Primary metrics
-bitwise_mismatch_count, reuse_latency_ms, reuse_attempts_per_shift, secondary_index_lookups, nonaligned_insertion_cases, upstream_revocation_cases, revoked_upstream_page_reachable_count, fresh_prefill_after_revocation
+bitwise_mismatch_count, reuse_latency_ms, reuse_attempts_per_shift, secondary_index_lookups, nonaligned_insertion_cases, upstream_revocation_cases, revoked_upstream_page_reachable_count, fresh_prefill_after_revocation, reused_tokens_per_shift, secondary_index_hits_per_shift, post_revocation_secondary_lookups_matching_content
 
 ## Baseline
-recompute at the new position
+PreRope full prefill at the new position
 
 ## Falsification
-any bitwise mismatch at any pinned shift distance (config.toml position_shift_tokens = [1, 7, 64, 513, 4096]); zero bitwise mismatches are required for every pinned distance; reuse_attempts_per_shift must record >= 1 reuse result for each of the 5 pinned shifts, and a missing or zero entry for any shift is falsified; reuse must be exercised through the catalog and its position-independent secondary index (secondary_index_lookups >= 1), not pages handed to the backend, and must include non-page-aligned insertions of 1 token and 7 tokens (nonaligned_insertion_cases >= 1 for each) and a case where an upstream segment is revoked after the page was cached (upstream_revocation_cases >= 1): the page must be unreachable (revoked_upstream_page_reachable_count == 0) and the affected span freshly prefilled (fresh_prefill_after_revocation >= 1; the oracle is one layer, so there are no layers >= 1); any zero attempt counter makes the run vacuous and falsified.
+any bitwise mismatch at any pinned shift distance (config.toml position_shift_tokens = [1, 7, 64, 513, 4096]); zero bitwise mismatches are required for every pinned distance; reuse_attempts_per_shift must record >= 1 reuse result for each of the 5 pinned shifts, and a missing or zero entry for any shift is falsified; reuse must be exercised through the catalog and its position-independent secondary index (secondary_index_lookups >= 1), not pages handed to the backend, and must include non-page-aligned insertions of 1 token and 7 tokens (nonaligned_insertion_cases >= 1 for each) and a case where an upstream segment is revoked after the page was cached (upstream_revocation_cases >= 1): the page must be unreachable (revoked_upstream_page_reachable_count == 0) and the affected span freshly prefilled (fresh_prefill_after_revocation >= 1; the oracle is one layer, so there are no layers >= 1); any zero attempt counter makes the run vacuous and falsified; also falsified if for any pinned shift reused_tokens_per_shift == 0 or secondary_index_hits_per_shift < 1 (the shift would be vacuous), or if post_revocation_secondary_lookups_matching_content < 1 or any such lookup returns the revoked page; the comparison baseline is a PreRope full prefill at the new position; every seed must meet every criterion.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.
