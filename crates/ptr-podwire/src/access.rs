@@ -12,113 +12,70 @@
 //! which would make `PodRegistry`'s project key, in its own words, *advisory*. So
 //! the project is looked up from the authenticated peer, in the same table and for
 //! the same reason that the execution wire looks up a principal.
+//!
+//! **The table is history.** Which scope a peer holds is committed to the host
+//! runtime's ledger and read from it at every request ([`PodAccessPolicy`]), so
+//! Pod access and execution membership share one durability story.
 use crate::frame::RefusalCode;
 use ptr_net::AuthenticatedPeer;
 #[cfg(feature = "podwire-backend")]
 use ptr_pods::PodManifest;
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
+pub use ptr_runtime::PodScope;
+use ptr_runtime::PtrRuntime;
 #[cfg(feature = "podwire-backend")]
 use ptr_types::PodId;
-use ptr_types::{CapabilityId, Effect, NodeId, ProjectId, TypeId};
+use ptr_types::{CapabilityId, Effect, NodeId};
 use ptr_verifier::{VerificationStatus, Verifier};
-use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
-/// What one peer may reach: one project, and an exact set of `(capability,
-/// payload type)` pairs inside it.
+/// Which peers may reach Pods, and what each may reach: read from the host
+/// runtime's committed history, never installed beside it.
 ///
-/// Exact, never a prefix or a wildcard, for the reason `ActionScope` gives in the
-/// runtime: a scope that matched by prefix would grow every time somebody
-/// registered a Pod with a longer name. The pair is the pair `PodRegistry::resolve`
-/// keys on, so a scope cannot be expressed that resolution would not honour.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PodScope {
-    project: ProjectId,
-    allow: BTreeSet<(CapabilityId, TypeId)>,
-}
-
-impl PodScope {
-    /// A scope over one project that allows nothing yet.
-    pub fn new(project: ProjectId) -> Self {
-        Self {
-            project,
-            allow: BTreeSet::new(),
-        }
-    }
-
-    /// Allow one exact capability and payload type.
-    pub fn allow(mut self, capability: CapabilityId, input_type: TypeId) -> Self {
-        self.allow.insert((capability, input_type));
-        self
-    }
-
-    /// The project this scope is confined to.
-    pub fn project(&self) -> &ProjectId {
-        &self.project
-    }
-
-    /// Whether this exact pair is allowed.
-    pub fn covers(&self, capability: &CapabilityId, input_type: &TypeId) -> bool {
-        self.allow
-            .contains(&(capability.clone(), input_type.clone()))
-    }
-}
-
-/// Which peers may reach Pods, and what each may reach.
+/// **One durability story.** Execution membership is journaled (D5 in issue
+/// #23): a peer withdrawn before a restart is still withdrawn after it. Pod
+/// access used to be a table the host installed in memory, so the same
+/// withdrawal of Pod access was forgotten by every restart, and the two
+/// policies answered "is this peer still admitted?" differently. Now a scope is
+/// committed by `PtrRuntime::admit_pod_scope` and withdrawn by
+/// `PtrRuntime::withdraw_pod_scope`, both replayed on every open and carried by
+/// compaction, and this type is only the read side: it holds the runtime the
+/// host process shares and asks it, at every request, which scope its history
+/// binds the peer to.
 ///
-/// Installed by the trusted host. A peer with no entry is not a peer with fewer
-/// rights; it reaches nothing at all.
-#[derive(Default)]
+/// **Read, never write.** The runtime handle is private to this module and the
+/// only thing done with it is `PtrRuntime::pod_scope`. `PodHost` holds this
+/// type and no runtime of its own, so a Pod invoked over the wire still has no
+/// path to the host's history: the module that could reach the handle is these
+/// lines, and they read.
+///
+/// A peer with no committed scope is not a peer with fewer rights; it reaches
+/// nothing at all.
+#[derive(Clone)]
 pub struct PodAccessPolicy {
-    entries: BTreeMap<NodeId, PodScope>,
+    runtime: Arc<Mutex<PtrRuntime>>,
 }
-
-/// Why a scope could not be admitted into the policy.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PolicyError {
-    /// This peer already has an entry.
-    ///
-    /// Refused rather than replaced, for the reason `AdmissionPolicy::admit` gives:
-    /// a silent replacement is how a later entry widens or narrows an earlier one
-    /// without anybody deciding to.
-    DuplicatePeer { peer: NodeId },
-}
-
-impl std::fmt::Display for PolicyError {
-    /// Render the stable refusal code.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DuplicatePeer { .. } => f.write_str("PTR_PODW_DUPLICATE_PEER"),
-        }
-    }
-}
-
-impl std::error::Error for PolicyError {}
 
 impl PodAccessPolicy {
-    /// An empty policy: nobody reaches anything.
-    pub fn new() -> Self {
-        Self::default()
+    /// The access policy the runtime's committed Pod scopes describe.
+    ///
+    /// Shared rather than owned, for the reason `ExecutionHost::bind_shared`
+    /// gives: one host process has one runtime over one ledger, and the scope a
+    /// host admits through it is the scope this policy reads on the very next
+    /// request.
+    pub fn from_runtime(runtime: Arc<Mutex<PtrRuntime>>) -> Self {
+        Self { runtime }
     }
 
-    /// Bind a peer the transport authenticated to one scope.
-    pub fn admit(&mut self, peer: NodeId, scope: PodScope) -> Result<(), PolicyError> {
-        if self.entries.contains_key(&peer) {
-            return Err(PolicyError::DuplicatePeer { peer });
-        }
-        self.entries.insert(peer, scope);
-        Ok(())
-    }
-
-    /// Withdraw a peer. It reaches nothing from the next request onward, because
-    /// the scope is read from this table at every request rather than remembered.
-    pub fn withdraw(&mut self, peer: &NodeId) -> bool {
-        self.entries.remove(peer).is_some()
-    }
-
-    /// The scope bound to a peer, if any.
-    pub fn scope(&self, peer: &NodeId) -> Option<&PodScope> {
-        self.entries.get(peer)
+    /// The scope committed history binds this peer to now, if any.
+    ///
+    /// Copied out so the lock is released before any Pod runs: a slow Pod must
+    /// not hold the runtime the execution wire and the HTTP API also serve. A
+    /// runtime whose lock was poisoned by a panic mid-commit reaches nothing
+    /// rather than being read in whatever state the panic left it.
+    pub fn scope(&self, peer: &NodeId) -> Option<PodScope> {
+        self.runtime.lock().ok()?.pod_scope(peer).cloned()
     }
 }
 
@@ -127,8 +84,8 @@ impl PodAccessPolicy {
 /// The order below is the protocol, and it is an order rather than a set. Read it
 /// as the answer to "what can a requester learn by asking":
 ///
-/// 1. **Admitted?** A peer with no entry is refused before the registry is
-///    touched, so an unadmitted peer cannot probe for Pods at all.
+/// 1. **Admitted?** A peer with no committed scope is refused before the
+///    registry is touched, so an unadmitted peer cannot probe for Pods at all.
 /// 2. **In scope?** Checked against the peer's own scope, still before the
 ///    registry is touched. A capability outside the scope is refused with the same
 ///    code as one nothing serves, so the scope itself is not a directory.

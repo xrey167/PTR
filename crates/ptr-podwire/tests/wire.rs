@@ -9,6 +9,7 @@
 //! Every test drives one exchange with `tokio::join!` rather than a background
 //! loop, so a failure is a failure of the protocol and never of a race with a
 //! server task.
+use ptr_config::PtrConfig;
 use ptr_net::{EndpointAddr, IrohTransport, PeerAddress, PeerBook, ALPN_PODWIRE};
 use ptr_pods::{
     DynPod, ExecutionManifest, LineageBinding, PodManifest, PodRegistry, ProtocolBinding,
@@ -20,7 +21,7 @@ use ptr_podwire::{
     MAX_BODY_BYTES,
 };
 use ptr_protocol::TypedPayload;
-use ptr_runtime::{ExecutionManifestRegistry, ValidatedExecutionManifest};
+use ptr_runtime::{ExecutionManifestRegistry, PtrRuntime, ValidatedExecutionManifest};
 use ptr_types::{
     ArtifactId, CapabilityId, Effect, Generation, NodeId, PodId, PrincipalId, Probability,
     ProjectId, Revision, ScopeId, SessionId, StatefulRequestRecovery, TypeId, UncertainRequest,
@@ -149,6 +150,21 @@ fn scope(project: &str) -> PodScope {
         .allow(CapabilityId::from(SUMMARIZE), TypeId::from(DOCUMENT))
 }
 
+/// A host runtime whose committed history admits these scopes, as a host
+/// commits them: through the journal, never into a table beside it.
+fn runtime_with(scopes: Vec<(ptr_types::NodeId, PodScope)>) -> Arc<Mutex<PtrRuntime>> {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    for (peer, scope) in scopes {
+        runtime.admit_pod_scope(peer, &scope).unwrap();
+    }
+    Arc::new(Mutex::new(runtime))
+}
+
+/// The access policy those committed scopes describe.
+fn policy_of(scopes: Vec<(ptr_types::NodeId, PodScope)>) -> PodAccessPolicy {
+    PodAccessPolicy::from_runtime(runtime_with(scopes))
+}
+
 /// Where to dial, on the deployment's authority.
 ///
 /// A `PodClient` accepts nothing else, so every test here goes through a book — which
@@ -234,10 +250,7 @@ async fn an_admitted_peer_reaches_its_project_s_pod_over_a_real_connection() {
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
     registry.register(pod("alpha", &invocations));
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
 
     let asked = request(host.identity().public_key, 1);
@@ -284,10 +297,7 @@ async fn the_accept_loop_answers_as_serve_once_does_until_shutdown() {
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
     registry.register(pod("alpha", &invocations));
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = Arc::new(PodHost::bind(registry, policy, Pass).await.unwrap());
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serve_policy = ptr_net::ServePolicy {
@@ -344,10 +354,7 @@ async fn v2_binds_manifest_artifact_generation_and_revision_over_a_real_connecti
 
     let mut registry = PodRegistry::default();
     registry.register(admitted);
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
     let binding = host
         .bind_v2_addressed(
@@ -399,10 +406,7 @@ async fn v2_rejects_a_stale_generation_before_invoking_the_pod() {
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
     registry.register(admitted);
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
     let binding = host
         .bind_v2_addressed(
@@ -451,10 +455,7 @@ async fn v2_rejects_a_protocol_binding_mismatch_before_invoking_the_pod() {
 
     let mut registry = PodRegistry::default();
     registry.register(admitted);
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
     let binding = host
         .bind_v2_addressed_with_protocol(
@@ -610,13 +611,10 @@ async fn two_peers_send_the_same_bytes_and_reach_two_different_projects_pods() {
     let mut registry = PodRegistry::default();
     registry.register(pod("alpha", &alpha_runs));
     registry.register(pod("beta", &beta_runs));
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(alpha_client.identity().public_key), scope("alpha"))
-        .unwrap();
-    policy
-        .admit(NodeId(beta_client.identity().public_key), scope("beta"))
-        .unwrap();
+    let policy = policy_of(vec![
+        (NodeId(alpha_client.identity().public_key), scope("alpha")),
+        (NodeId(beta_client.identity().public_key), scope("beta")),
+    ]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
 
     let asked = request(host.identity().public_key, 7);
@@ -667,7 +665,7 @@ async fn a_peer_the_host_never_admitted_is_refused_and_no_pod_runs() {
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
     registry.register(pod("alpha", &invocations));
-    let host = PodHost::bind(registry, PodAccessPolicy::new(), Pass)
+    let host = PodHost::bind(registry, policy_of(Vec::new()), Pass)
         .await
         .unwrap();
 
@@ -701,11 +699,9 @@ async fn withdrawing_a_peer_takes_effect_on_its_very_next_request_over_the_wire(
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
     registry.register(pod("alpha", &invocations));
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
-    let mut host = PodHost::bind(registry, policy, Pass).await.unwrap();
+    let runtime = runtime_with(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
+    let policy = PodAccessPolicy::from_runtime(Arc::clone(&runtime));
+    let host = PodHost::bind(registry, policy, Pass).await.unwrap();
 
     // The control first: the same peer, the same request, admitted.
     let asked = request(host.identity().public_key, 1);
@@ -716,8 +712,13 @@ async fn withdrawing_a_peer_takes_effect_on_its_very_next_request_over_the_wire(
         PodOutcome::Answered { .. }
     ));
 
-    host.policy_mut()
-        .withdraw(&NodeId(client.identity().public_key));
+    // Withdrawn through the journal of the runtime the host reads, the only
+    // way there is: the host itself has no admit or withdraw.
+    runtime
+        .lock()
+        .unwrap()
+        .withdraw_pod_scope(&NodeId(client.identity().public_key))
+        .unwrap();
 
     let asked = request(host.identity().public_key, 2);
     let address = host.address();
@@ -743,10 +744,7 @@ async fn a_request_addressed_to_another_host_is_refused_and_no_pod_runs() {
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
     registry.register(pod("alpha", &invocations));
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
 
     // Sent to this host, addressed to another. Without this check a request
@@ -790,10 +788,7 @@ async fn a_damaged_frame_is_refused_before_any_pod_and_still_answered() {
     let invocations = Arc::new(Mutex::new(0));
     let mut registry = PodRegistry::default();
     registry.register(pod("alpha", &invocations));
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(raw.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(raw.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
 
     let garbage = b"PTRPWREQ\x01\x00 and then nothing that parses".to_vec();
@@ -1095,10 +1090,7 @@ async fn an_answer_that_will_not_fit_in_a_frame_is_still_an_answer() {
             protocol_version: 1,
         },
     }));
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
 
     let asked = request(host.identity().public_key, 41);
@@ -1132,10 +1124,7 @@ async fn an_answer_that_will_not_fit_in_a_frame_is_still_an_answer() {
     let mut registry = PodRegistry::default();
     let invocations = Arc::new(Mutex::new(0));
     registry.register(pod("alpha", &invocations));
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
     let asked = request(host.identity().public_key, 42);
     let address = host.address();
@@ -1154,10 +1143,7 @@ async fn v2_session_reuses_one_authenticated_connection() {
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
     registry.register(admitted);
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
     let binding = host
         .bind_v2_stateful_addressed(
@@ -1208,10 +1194,7 @@ async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
 
     let mut pods = PodRegistry::default();
     pods.register(admitted);
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(pods, policy, Pass)
         .await
         .unwrap()
@@ -1260,10 +1243,7 @@ async fn v2_session_replays_identical_request_ids_but_rejects_conflicting_bytes(
     let manifest = admitted.manifest().clone();
     let mut registry = PodRegistry::default();
     registry.register(admitted);
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
     let binding = host
         .bind_v2_addressed(
@@ -1429,10 +1409,7 @@ async fn v2_binding_rejects_a_manifest_digest_that_is_not_the_registered_manifes
     altered.protocol_version = 2;
     let mut registry = PodRegistry::default();
     registry.register(admitted);
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(NodeId(client.identity().public_key), scope("alpha"))
-        .unwrap();
+    let policy = policy_of(vec![(NodeId(client.identity().public_key), scope("alpha"))]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
     let binding = host
         .bind_v2_addressed(
@@ -1467,4 +1444,174 @@ async fn v2_binding_rejects_a_manifest_digest_that_is_not_the_registered_manifes
         Some(PodWireError::V2BindingUnavailable)
     );
     assert_eq!(*invocations.lock().unwrap(), 0);
+}
+
+struct Temp(std::path::PathBuf);
+
+impl Temp {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "ptr-podwire-wire-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+
+    fn log(&self) -> std::path::PathBuf {
+        self.0.join("journal.log")
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// One V1 exchange: `client` asks `host` for the summarizer, and the outcome it
+/// was told comes back with what the host recorded behind it.
+async fn exchange(
+    client: &PodClient,
+    host: &PodHost,
+    capability: &str,
+    request_id: u64,
+) -> (PodOutcome, Option<PodWireError>) {
+    let mut asked = request(host.identity().public_key, request_id);
+    asked.capability = CapabilityId::from(capability);
+    let (answered, served) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        host.serve_once()
+    );
+    (answered.unwrap().outcome, served.unwrap().refused)
+}
+
+/// The access decision over real connections, against a host whose runtime was
+/// reopened from its journal after the scopes were admitted and one withdrawn —
+/// the restart an in-memory policy did not survive.
+///
+/// After the reopen: an admitted scope answers; the withdrawn one is refused
+/// `NotAdmitted` before any Pod runs; and a peer whose scope names a project with
+/// no such Pod gets exactly the answer a request for a capability nothing serves
+/// gets, so the cross-project refusal is still indistinguishable from absence.
+/// The V2 path, which reads the same committed scope, refuses the withdrawn peer
+/// and answers the admitted one too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_committed_scope_decides_over_the_wire_after_the_host_runtime_is_reopened() {
+    let admitted = PodClient::bind().await.unwrap();
+    let withdrawn = PodClient::bind().await.unwrap();
+    let elsewhere = PodClient::bind().await.unwrap();
+    let temp = Temp::new();
+    {
+        let mut runtime = PtrRuntime::open_durable(PtrConfig::default(), temp.log()).unwrap();
+        // The admitted peer's scope also names a pair nothing anywhere serves,
+        // so the "does not exist" refusal is reachable inside its own scope.
+        let with_absent_pair = scope("alpha").allow(
+            CapabilityId::from("Translate<Document>"),
+            TypeId::from(DOCUMENT),
+        );
+        runtime
+            .admit_pod_scope(NodeId(admitted.identity().public_key), &with_absent_pair)
+            .unwrap();
+        runtime
+            .admit_pod_scope(NodeId(withdrawn.identity().public_key), &scope("alpha"))
+            .unwrap();
+        runtime
+            .admit_pod_scope(NodeId(elsewhere.identity().public_key), &scope("gamma"))
+            .unwrap();
+        runtime
+            .withdraw_pod_scope(&NodeId(withdrawn.identity().public_key))
+            .unwrap();
+    }
+
+    let reopened = PtrRuntime::open_durable(PtrConfig::default(), temp.log()).unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let summarizer = pod("alpha", &invocations);
+    let manifest = summarizer.manifest().clone();
+    let mut registry = PodRegistry::default();
+    registry.register(summarizer);
+    registry.register(pod("beta", &invocations));
+    let host = PodHost::bind(
+        registry,
+        PodAccessPolicy::from_runtime(Arc::new(Mutex::new(reopened))),
+        Pass,
+    )
+    .await
+    .unwrap();
+
+    let (outcome, refused) = exchange(&admitted, &host, SUMMARIZE, 1).await;
+    assert!(
+        matches!(outcome, PodOutcome::Answered { .. }),
+        "the admitted scope survived the reopen and answers: {outcome:?}"
+    );
+    assert_eq!(refused, None);
+    assert_eq!(*invocations.lock().unwrap(), 1);
+
+    let (outcome, refused) = exchange(&withdrawn, &host, SUMMARIZE, 2).await;
+    assert_eq!(
+        outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::NotAdmitted
+        },
+        "withdrawn before the restart, refused after it"
+    );
+    assert_eq!(
+        refused,
+        Some(PodWireError::Refused(RefusalCode::NotAdmitted))
+    );
+    assert_eq!(*invocations.lock().unwrap(), 1, "no Pod ran for it");
+
+    let across = exchange(&elsewhere, &host, SUMMARIZE, 3).await;
+    let absent = exchange(&admitted, &host, "Translate<Document>", 4).await;
+    assert_eq!(
+        across, absent,
+        "a Pod in another project and a Pod that does not exist are one answer"
+    );
+    assert_eq!(
+        across.0,
+        PodOutcome::Refused {
+            code: RefusalCode::Unavailable
+        }
+    );
+    assert_eq!(*invocations.lock().unwrap(), 1);
+
+    // The generation-bound path reads the same committed scope.
+    let generation = Generation(7);
+    let revision = Revision(12);
+    let binding = host
+        .bind_v2_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            generation,
+            revision,
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, generation, revision))
+        .unwrap();
+    for (client, request_id, expected) in [
+        (&withdrawn, 5, Some(RefusalCode::NotAdmitted)),
+        (&admitted, 6, None),
+    ] {
+        let asked = request_v2(
+            host.identity().public_key,
+            request_id,
+            &manifest,
+            generation,
+            revision,
+        );
+        let (answered, _) = tokio::join!(
+            client.request_v2(located(host.address()), &asked),
+            host.serve_once_v2(&binding)
+        );
+        match (answered.unwrap().outcome, expected) {
+            (PodOutcome::Refused { code }, Some(expected)) => assert_eq!(code, expected),
+            (PodOutcome::Answered { .. }, None) => {}
+            (outcome, expected) => panic!("expected {expected:?}, got {outcome:?}"),
+        }
+    }
+    assert_eq!(*invocations.lock().unwrap(), 2);
+    host.close().await;
 }

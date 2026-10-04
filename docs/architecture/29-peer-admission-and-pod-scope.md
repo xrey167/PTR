@@ -110,6 +110,21 @@ The records are codec version 2 (`docs/COMPONENT_CONTRACTS.md`): a replicated gr
 carries them only after every voter is reported to read them
 (`31-cluster-integrity.md`).
 
+**Pod scope follows the same design, journaled whole.** The project scope a Pod
+peer reaches (`PodScope`, below and in `33-pod-wire.md`) was a second policy with a
+second durability story: execution membership survived a restart and Pod access
+did not. It is now history too — `PodScopeAdmitted { peer, project, entries }` and
+`PodScopeWithdrawn { peer }`, ledger tags 31 and 32 at codec version 2, committed by
+`PtrRuntime::admit_pod_scope` and `withdraw_pod_scope`, refused live and in replay by
+one rule, replayed in order on every open and projected as `pod-scope:<id>` into
+the same `PTRLC003` lifecycle section. It differs from membership in exactly the way
+its content does: a scope is data rather than behaviour, so the record carries all
+of it and there is no host-supplied half to resolve by name at use. A Pod scope
+withdrawn before a restart stays withdrawn after it
+(`a_pod_scope_withdrawn_before_a_restart_is_still_withdrawn_after_it`), and the two
+families are withdrawn independently — withdrawing a Pod scope leaves the same
+peer's execution membership standing, which that test checks as part of its control.
+
 This is the same rule `27-neural-state-admission.md` applies to cached state, and
 it is here for the same reason: a session that was admissible when it was issued
 says nothing about whether its peer is admissible now, and revocation is

@@ -37,6 +37,21 @@ const CAPABILITY: &str = "Infer<Document>";
 const INPUT: &str = "Document";
 const OUTPUT: &str = "Answer";
 
+/// A host runtime whose committed history admits these scopes, as a host
+/// commits them: through the journal, never into a table beside it.
+fn runtime_with(scopes: Vec<(ptr_types::NodeId, PodScope)>) -> Arc<Mutex<PtrRuntime>> {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    for (peer, scope) in scopes {
+        runtime.admit_pod_scope(peer, &scope).unwrap();
+    }
+    Arc::new(Mutex::new(runtime))
+}
+
+/// The access policy those committed scopes describe.
+fn policy_of(scopes: Vec<(ptr_types::NodeId, PodScope)>) -> PodAccessPolicy {
+    PodAccessPolicy::from_runtime(runtime_with(scopes))
+}
+
 fn execution_manifest(
     manifest: &PodManifest,
     generation: Generation,
@@ -450,14 +465,11 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
         calls: calls.clone(),
     }));
     let client = PodClient::bind().await.unwrap();
-    let mut policy = PodAccessPolicy::new();
-    policy
-        .admit(
-            ptr_types::NodeId(client.identity().public_key.clone()),
-            PodScope::new(ProjectId::from(PROJECT))
-                .allow(CapabilityId::from(CAPABILITY), TypeId::from(INPUT)),
-        )
-        .unwrap();
+    let policy = policy_of(vec![(
+        ptr_types::NodeId(client.identity().public_key.clone()),
+        PodScope::new(ProjectId::from(PROJECT))
+            .allow(CapabilityId::from(CAPABILITY), TypeId::from(INPUT)),
+    )]);
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
     let binding = host
         .bind_v2_admitted_addressed(
@@ -669,14 +681,11 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
         calls: calls.clone(),
     }));
     let next_client = PodClient::bind().await.unwrap();
-    let mut next_policy = PodAccessPolicy::new();
-    next_policy
-        .admit(
-            ptr_types::NodeId(next_client.identity().public_key.clone()),
-            PodScope::new(ProjectId::from(PROJECT))
-                .allow(CapabilityId::from(CAPABILITY), TypeId::from(INPUT)),
-        )
-        .unwrap();
+    let next_policy = policy_of(vec![(
+        ptr_types::NodeId(next_client.identity().public_key.clone()),
+        PodScope::new(ProjectId::from(PROJECT))
+            .allow(CapabilityId::from(CAPABILITY), TypeId::from(INPUT)),
+    )]);
     let next_host = PodHost::bind(next_registry, next_policy, Pass)
         .await
         .unwrap();

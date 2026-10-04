@@ -10,10 +10,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 4 Rust source files · 3807 nonblank source lines · 3 integration-test files · 51 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 4 Rust source files · 3781 nonblank source lines · 3 integration-test files · 53 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- The access policy is journaled (the Pod-access follow-up to D5 in issue #23): PodAccessPolicy::from_runtime reads the scope a peer holds from the host runtime's committed history (PtrRuntime::pod_scope) at every request, so a scope withdrawn before a restart stays withdrawn after it and Pod access shares execution membership's durability story; PodAccessPolicy has no admit or withdraw and PodHost no policy_mut, so no scope can be in force that the journal does not hold, and the refusal semantics are unchanged (NotAdmitted before any registry lookup, out of scope indistinguishable from unavailable)
+- PodScope is ptr-runtime's journaled type, re-exported: one definition of what a scope is for the record, the projection and the access decision
 - PodHost::serve (D4 in issue #23) runs exactly serve_once's per-connection code under ptr_net::serve with the host's ServePolicy; serve_once_v2 and the session path now share one per-connection function instead of two copies
 - Signed answers (D2 in issue #23): the host signs every answer, refusals included, in all three layouts with its endpoint key through ptr-net's NodeSigner; the signed message is the tag ptr-pod-answer/v1 and its NUL terminator followed by every frame byte before the signature, so the layout version, responder, request id, request digest, outcome and output or refusal code — and for V2/V3 the echoed generation, revision, state binding, identity digest, session id, policy revision, address binding and execution manifest — are all covered. The signature attests that host R stated outcome O for request X bound to digest D, and not that the output is correct, nor anything about another principal, nor when, nor that R is still trusted; a rotated key is a new identity
 - Answers are numbered apart from requests: SIGNED_ANSWER_V1/V2/V3 (4, 5, 6) are the signed layouts, requests keep FORMAT_V1/V2/V3, and an answer in an old unsigned layout is refused by name (FrameError::UnsignedAnswer, PTR_PODW_UNSIGNED_ANSWER) rather than as an unknown version
@@ -27,11 +29,11 @@
 - One refusal code covers out of scope, not registered and registered in another project, so a cross-project Pod is refused in exactly the same words as one that does not exist and a scope cannot be read as a directory of what the host serves
 - Admission and scope are decided before the registry is touched, so an unadmitted or out-of-scope requester cannot probe for Pods at all
 - PodScope matches an exact capability and payload type pair, never a prefix or a wildcard, and it is the same pair PodRegistry::resolve keys on so no scope can be written that resolution would not honour
-- One peer holds one entry: a second admit is refused rather than replacing the first, and a withdrawal takes effect on the peer's very next request because the scope is read from the table at every request
+- One peer holds one scope: a second PtrRuntime::admit_pod_scope is refused live and on replay rather than replacing the first, and a withdrawal (a commit) takes effect on the peer's very next request because the scope is read from committed history at every request
 - Only Pure and Read Pods are reachable; an effectful Pod is refused with a code that names the action boundary, because this protocol commits no attempt and can report no uncertainty
 - PodManifest::protocol_version is checked against the version the requester composed its payload for — the first place anything reads that field, and the only place where the caller and the Pod are not built together
 - A Pod's output is verified by the host's verifier before it leaves, and a Pod that failed is a different refusal from an output the host will not vouch for; a verification report that carries any hard finding is refused as Unverified even when its status is Pass, on both the V1 and the V2 path
-- The host holds no runtime and no ledger, so a Pod invoked over this wire cannot write to the host's history: a property of the type rather than a promise about the code
+- The host's only handle on a runtime is its access policy's, private to the access module and used only to read a peer's scope, so a Pod invoked over this wire cannot write to the host's history: a property of the code's shape rather than a promise about its behaviour
 - Two outcomes rather than the execution wire's four, and no replay window and no at-most-once key, each absent by derivation rather than omission because nothing reachable here has an effect that could half-apply
 - A request/answer frame format with distinct magics per direction, its own digest domain, an explicit layout version, bounded length-prefixed fields, an explicit two-way code table for every enumeration, and a distinct diagnostic code per refusal
 - Every request is answered, including one this build cannot parse — its answer is bound to the bytes that arrived and reports no request id rather than inventing one
@@ -53,7 +55,7 @@
 
 - Authentication itself is the transport's: the AuthenticatedPeer is exactly as good as the QUIC handshake that verified it, and nothing in this crate re-checks it
 - A record of when a key was admitted: a signed answer outlives its responder's admission, and whether an answer from a since-withdrawn host still counts is the verifier's policy with nothing here to consult
-- A journaled access policy: the scope table is in memory, so it does not survive a restart and nothing records who was admitted to which project when
+- Pod registration is still declared, not journaled: which Pods exist and which project each serves is the PodRegistry the host registers at start; a scope says what a peer may ask for, the registry what there is to answer it
 - Discovery: which address belongs to an id nobody told you is a mechanism choice with its own trust question, recorded as the owner's rather than invented
 - An accept loop for generation-bound V2 requests: serve runs the V1 path; V2 is still served by serve_once_v2 and serve_session_v2. And backpressure per peer: the loop's limit is per service
 - Session reuse by default: PodClient::request and request_v2 still open a connection per request; reuse is opt-in through PodSession, and the in-flight bound's Backpressure error is not exercised by any test in this crate
@@ -62,7 +64,7 @@
 
 ### Next milestones
 
-- Decide whether the access policy and the execution admission policy share one durability story before journaling either
+- An accept loop for generation-bound V2 requests, reading the same committed scope
 
 ### Linked experiments
 
@@ -87,7 +89,10 @@
 - a Pod in another project is refused with a refusal asserted equal to the one for a capability nobody serves, with the same Pod reachable from inside its own project as the control
 - a capability outside a peer's scope is refused with that same code, and a scope matches the exact pair: right capability with the wrong type and right type with the wrong capability are both refused
 - a peer the policy never bound is refused and no Pod runs; withdrawing a peer takes effect on its very next request over the wire
-- a second entry for one peer is refused and the first entry is still the one in force
+- a second entry for one peer is refused by the runtime with InvalidPodScope and the first entry is still the one in force
+- the_access_decision_after_a_reopen_is_the_one_history_describes (tests/access.rs): after a durable runtime is reopened, a scope withdrawn before the restart is NotAdmitted, the one not withdrawn answers, and another project's Pod is still refused identically to none
+- the_committed_scope_decides_over_the_wire_after_the_host_runtime_is_reopened (tests/wire.rs): over real connections to a host whose runtime was reopened from its journal, an admitted scope answers, a withdrawn one is NotAdmitted on the V1 and generation-bound paths with no Pod run, and a cross-project request gets exactly the answer a request for a capability nothing serves gets
+- withdrawing_a_peer_takes_effect_on_its_very_next_request: a withdrawal committed to the runtime is seen by the same policy on the next request, withdrawing twice is refused, and re-admitting through the runtime is seen too
 - an effectful Pod is refused with the code that names the action boundary, with the same Pod declared Read as the control
 - a payload composed for another protocol version is refused, with the version the Pod declares as the control
 - a Pod that fails and an output the host will not vouch for are different refusals, each with a passing control

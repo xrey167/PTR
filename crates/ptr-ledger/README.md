@@ -10,11 +10,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 9 Rust source files · 6829 nonblank source lines · 14 integration-test files · 135 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 7169 nonblank source lines · 14 integration-test files · 137 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
 - LedgerEvent codec version 2 (D5 in issue #23): LEDGER_CODEC_VERSION, a tag-to-version table the decoder is held to, event_codec_version; PeerAdmitted, PeerWithdrawn and CodecCeilingRaised are the version-2 records; an unknown tag is refused by name (PTR_LEDGER_UNKNOWN_TAG) with the version this build reads, never skipped; every base record keeps its exact bytes
+- PodScopeAdmitted (tag 31: peer, project, (capability, payload type) pairs) and PodScopeWithdrawn (tag 32) are version-2 records carrying a Pod scope whole; tag 30 is reserved and stays an unknown tag. A scope is canonical or refused: pairs strictly ascending (so without duplicates), at most MAX_POD_SCOPE_ENTRIES (16), every field a valid_pod_scope_field (non-empty, at most MAX_POD_SCOPE_FIELD_BYTES = 112 bytes, no surrounding whitespace, no control character); check_pod_scope and check_pod_scope_record are the one definition, called by check_encodable, by the decoder (which checks an invented count against the bound before reading a pair) and by ptr-runtime and ptr-state, each refusal naming its rule (PodScopeShapeError: PTR_LEDGER_POD_SCOPE_FIELD, _LIMIT, _ORDER)
 - Committed codec ceiling for a replicated group: RaftNode::propose refuses a record above the ceiling (PTR_LEDGER_CODEC_CEILING) and refuses a ceiling record outright; propose_codec_ceiling is leader-only, needs a CodecReports entry at or above the version for every voter, and is refused while a membership change is pending; propose_membership refuses a joiner reported below the ceiling and any joiner while a raised ceiling is in flight; the ceiling is durable in the PTRRST03 state file (PTRRST02 still read, as the base version) and travels in a raft snapshot payload once above the base, stripped before the application or a retained anchor sees the bytes
 - check_encodable refuses a MeshTunnelLifecycle event whose endpoint binding the decoder would refuse (for example a relayed route without a relay id), so an append path cannot write a record the log cannot read back
 - EffectAttempted/EffectSettled/EffectReconciled records (tags 9-11, beside the unchanged 0-8 and the semantic tag 12) carry an execution audit: the attempt is addressed by its own commit index, and a settled response keeps its digest unconditionally and its bytes up to MAX_RETAINED_RESPONSE
@@ -107,6 +108,7 @@
 - an exhausted anchor epoch refuses both acknowledge and compacted advance without republishing the record
 - a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected
 - an exhausted commit index is refused rather than repeated, leaving the ledger unchanged
+- codec_version_tests: pod_scope_records_are_version_two_and_tag_thirty_stays_unknown (tags 31 and 32 at version 2, 30 and 33 refused as unknown) and a_noncanonical_pod_scope_is_refused_on_encode_and_on_decode (unsorted, duplicated, one pair too many, a tab in a capability, an empty type, a padded or oversized project and a control character or empty peer each refused by check_encodable and, written by hand, by the decoder with the same code; an invented count refused by the bound; exactly the bound and the canonical scope accepted with identical bytes as the controls); the Pod-scope records also round-trip and name version 2 in version_two_records_round_trip_and_name_their_version
 - Every single-bit mutation of the reference log, independent hashlib golden vector, ordering and hostile-length rejection
 - Every partial-frame cut, wrong anchor, complete suffix loss and rehashed alternative-history rejection
 - Create-new destination safety, guarded legacy migration and duplicate-descriptor unlock regression

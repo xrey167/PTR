@@ -13,9 +13,10 @@
 //!   `ptrd` installs none, so in this milestone every request is refused with the one
 //!   authority code — the wire is served, and nobody has been granted anything on it.
 //! - **`pod`** is a `PodHost` over an empty registry — the HTTP API's is empty too —
-//!   and an empty access policy, so every request is answered `NotAdmitted`.
-//!   Admitting a peer to a project is a decision `[wire]` does not make on anybody's
-//!   behalf.
+//!   whose access policy is read from the *same* runtime's committed Pod scopes, so a
+//!   scope withdrawn before a restart stays withdrawn after it. `ptrd` admits none,
+//!   so every request is answered `NotAdmitted`. Admitting a peer to a project is a
+//!   decision `[wire]` does not make on anybody's behalf.
 //!
 //! Every answer either wire sends is signed with its endpoint key (D2), and the
 //! endpoints bind loopback only, as `ptrd`'s HTTP bind does.
@@ -90,7 +91,7 @@ impl Wires {
 }
 
 /// Bind and start every service `[wire]` names, the execution wire sharing `runtime`
-/// with the HTTP API. Each runs until `shutdown` reads `true`.
+/// with the HTTP API and the pod wire reading its Pod scopes from it. Each runs until `shutdown` reads `true`.
 pub async fn start(
     wire: &WireConfig,
     runtime: Arc<Mutex<PtrRuntime>>,
@@ -100,7 +101,7 @@ pub async fn start(
     let mut tasks = tokio::task::JoinSet::new();
     if wire.serves("exec") {
         let host = Arc::new(
-            ExecutionHost::bind_shared(runtime)
+            ExecutionHost::bind_shared(Arc::clone(&runtime))
                 .await
                 .map_err(|error| format!("execution wire: {error}"))?,
         );
@@ -116,7 +117,7 @@ pub async fn start(
         let host = Arc::new(
             PodHost::bind(
                 PodRegistry::default(),
-                PodAccessPolicy::new(),
+                PodAccessPolicy::from_runtime(Arc::clone(&runtime)),
                 SharedVerifier(verifier),
             )
             .await

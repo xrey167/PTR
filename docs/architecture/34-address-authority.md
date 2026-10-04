@@ -52,8 +52,8 @@ there is no path by which the network can add an entry.
 
 ## Why this table replaces and the authority tables refuse
 
-`AdmissionPolicy::admit` and `PodAccessPolicy::admit` refuse a second entry for one
-peer. `PeerBook::record` **replaces** it and returns what it replaced. That is a
+`PtrRuntime::admit_member` and `PtrRuntime::admit_pod_scope` refuse a second entry
+for one peer, live and when a history holding one is replayed. `PeerBook::record` **replaces** it and returns what it replaced. That is a
 deliberate difference and it is about what the entry means:
 
 - an **address** is a fact about where a node is, and a node legitimately moves.

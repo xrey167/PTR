@@ -333,10 +333,15 @@ pub struct Served {
 
 /// Pods reachable over `ALPN_PODWIRE`.
 ///
-/// The host owns the registry, the policy and the verifier. What it does **not**
-/// own is a runtime or a ledger, and that absence is the protocol's strongest
-/// claim: a Pod invoked through this endpoint cannot write to the host's history,
-/// because this endpoint has no history to write to. The in-process loop promotes
+/// The host owns the registry, the policy and the verifier. The policy reads
+/// which scope each peer holds from the host runtime's committed history, and
+/// there is no other way in: admitting or withdrawing a scope is
+/// `PtrRuntime::admit_pod_scope` or `PtrRuntime::withdraw_pod_scope` on that
+/// runtime, never a call on this host, so nothing here can hold a scope the
+/// journal does not. What the host does **not** own is a way to write to that
+/// history, and that absence is the protocol's strongest claim: a Pod invoked
+/// through this endpoint cannot write to the host's history, because the only
+/// handle on it here is the policy's, which reads. The in-process loop promotes
 /// a Pod's output into the semantic state of the model run that asked for it;
 /// there is no such run behind a request that arrived over a wire, and inventing
 /// one would let a peer write to a host's semantic store through a Read-only door.
@@ -351,8 +356,9 @@ pub struct PodHost {
 }
 
 impl PodHost {
-    /// Bind an endpoint for `ALPN_PODWIRE` around a registry, a policy and the
-    /// verifier every answer must pass before it leaves.
+    /// Bind an endpoint for `ALPN_PODWIRE` around a registry, the access policy
+    /// the host runtime's history describes ([`PodAccessPolicy::from_runtime`])
+    /// and the verifier every answer must pass before it leaves.
     pub async fn bind<V>(
         registry: PodRegistry,
         policy: PodAccessPolicy,
@@ -564,12 +570,6 @@ impl PodHost {
         self.transport.direct_addr()
     }
 
-    /// The policy, for the host's own trusted use — admitting and withdrawing
-    /// peers between requests.
-    pub fn policy_mut(&mut self) -> &mut PodAccessPolicy {
-        &mut self.policy
-    }
-
     /// Accept one connection, serve what it carries, and answer.
     ///
     /// Every request is answered, including every refused one: leaving a peer
@@ -584,7 +584,8 @@ impl PodHost {
     /// 2. The frame must decode.
     /// 3. The request must be addressed to this endpoint's key. A request
     ///    legitimate at another host is not legitimate here.
-    /// 4. [`answer`] decides the rest, from the policy and the registry.
+    /// 4. [`answer`] decides the rest, from the committed scope the policy reads
+    ///    and the registry.
     ///
     /// The answer is signed with this endpoint's key, refusals included: a refusal is
     /// a statement this host makes about a request as much as an output is.

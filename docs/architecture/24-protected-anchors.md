@@ -355,17 +355,29 @@ noncanonical: the runtime reads a branch as merged from that key, and a spelling
 could not read would let the branch merge a second time.
 
 `PTRCS005` differs from `PTRCS004` only in its lifecycle section, `PTRLC003`, the
-first that may carry peer membership (`peer:<id>`, `ptr_state::MEMBER_PREFIX`) and
-the codec ceiling (`ptr_state::CODEC_CEILING_KEY`) — D5 in issue #23,
-`29-peer-admission-and-pod-scope.md`. A build from before journaled membership
+first that may carry peer membership (`peer:<id>`, `ptr_state::MEMBER_PREFIX`), Pod
+scopes (`pod-scope:<id>`, `ptr_state::POD_SCOPE_PREFIX`) and the codec ceiling
+(`ptr_state::CODEC_CEILING_KEY`) — D5 in issue #23 and its Pod-access follow-up,
+`29-peer-admission-and-pod-scope.md` and `33-pod-wire.md`. A build from before journaled membership
 stops at the new magic instead of restoring a runtime that has forgotten every
 withdrawal. A `PTRCS004` snapshot is still read, only with a `PTRLC002` section,
-and refused by version if that section holds either kind of key; so is a
+and refused by version if that section holds any of these keys; so is a
 `PTRCS003` one. In a `PTRLC003` section a membership value must be exactly what a
 record projects — `withdrawn`, or `admitted`, a principal and a grant set name,
 each a bounded identifier — and a ceiling exactly the decimal of a version this
 build defines above the base, or the section is refused as noncanonical
 (`membership_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
+A Pod-scope value must likewise be `withdrawn`, or `admitted` and the project
+followed by one line per `(capability, payload type)` pair separated by a tab,
+canonical by the codec's own rule (`ptr_ledger::check_pod_scope`: strictly
+ascending pairs, at most 16, every field a bounded identifier without control
+characters), under a key whose node id obeys the same field rule; a scope's
+projection is bounded so the largest one fits the section's string limit, which the
+runtime asserts at compile time
+(`pod_scope_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
+The key family was added inside `PTRLC003` rather than under a new magic because
+`PTRLC003` is introduced by the same unreleased D5 change set, so no released build
+writes or reads that layout without this family.
 
 `covers()` is taken from the snapshot, not chosen by the caller: reporting a
 position the snapshot does not hold would let a cutover discard records whose
@@ -377,7 +389,7 @@ Those are not history and cannot be replayed.
 
 ### Executed evidence
 
-`crates/ptr-runtime/tests/compacted_snapshot.rs`, 16 integration tests over a
+`crates/ptr-runtime/tests/compacted_snapshot.rs`, 17 integration tests over a
 fixture covering semantic payload bytes, dependencies, capsule commit and
 supersession, hard constraints, procedures and a revocation:
 
@@ -412,6 +424,10 @@ supersession, hard constraints, procedures and a revocation:
 - Membership and codec-ceiling keys are refused by version in `PTRLC002` and
   `PTRLC001`, and held to their projection in `PTRLC003`
   (`membership_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
+- Pod-scope keys likewise: refused by version in `PTRLC002` and `PTRLC001`, held to
+  their projection in `PTRLC003`, and a canonical one restored as the scope the
+  access decision reads
+  (`pod_scope_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
 
 ### Not yet covered
 

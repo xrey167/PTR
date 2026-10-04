@@ -10,11 +10,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 1 Rust source files · 431 nonblank source lines · 3 integration-test files · 13 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 1 Rust source files · 512 nonblank source lines · 3 integration-test files · 15 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
 - Peer membership projects to one key per peer, peer:<node id>, holding member_entry (admitted, principal and grant set separated by line feeds) or withdrawn; the codec ceiling projects to ledger:codec-ceiling; parse_member_entry accepts exactly what the projection writes (D5 in issue #23)
+- A Pod scope projects whole to one key per peer, pod-scope:<node id>, holding pod_scope_entry (admitted and the project, then one capability-tab-payload-type line per pair) or withdrawn; parse_pod_scope_entry accepts exactly what a committed record projects, holding the parsed scope to ptr_ledger::check_pod_scope so a value with pairs out of order, duplicated, too many or with an empty field is no scope at all
 - ATTESTED_MARKER (semdb:attested) and MERGED_BRANCH_PREFIX (branch-merge:) name the materialized keys that record attributed semantic records and merged branches: every attributed semantic record projects the marker and every merge record its branch's key, and ptr-runtime refuses a compacted snapshot in the pre-attestation lifecycle layout (PTRLC001) that carries either
 - Semantic transaction position and revision materialization without duplicated payload ownership; every semantic record with an attributed origin also projects the semdb:attested marker (value 1), and ptr-runtime replays a record without an origin only in the absence of that marker
 - A merge record projects merged_branch_key(branch), branch-merge:<byte length>:<id>, so no branch id aliases another's key, with merged_branch_entry(index, plan), the commit index and the plan digest in lowercase hexadecimal; merged_branch_of and parse_merged_branch_entry read back exactly what a merge projects and nothing else, and ptr-runtime refuses a second merge of a branch whose key is present
@@ -58,6 +59,7 @@
 ### Current automated checks
 
 - replay.rs: membership projects to one key per peer and a withdrawal overwrites it, with a node id containing the separator reading back whole; a member entry has exactly one reading; a codec ceiling projects to its own key
+- replay.rs: a_pod_scope_projects_whole_to_one_key_per_peer (admission, withdrawal and re-admission of an empty scope overwrite one key, and no peer: key is written) and a_pod_scope_entry_has_exactly_one_reading (the canonical value parses; fourteen values differing in one way each, including unsorted, duplicated and one-too-many pairs and an oversized project, are refused)
 - an attributed semantic record of each ingress and host kind projects the revision and the semdb:attested marker, never its payload
 - a merge projects its branch's key with its index and plan digest (a_merge_projects_its_branch_key_with_its_index_and_plan), and merge keys are length-delimited: ids that share a character prefix or a length written into them project distinct keys, and merged_branch_of and parse_merged_branch_entry refuse every other spelling (branch_merge_keys_are_length_delimited)
 - replay ordering/idempotency integration test

@@ -825,3 +825,98 @@ fn membership_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_proj
         );
     }
 }
+
+/// The Pod-access follow-up to D5: Pod scopes are carried by PTRLC003 and by no
+/// earlier lifecycle section, and only in the exact form a committed record
+/// projects. An earlier layout was written by a build that had no journaled
+/// scope, so a scope in one is not a summary of any history and is refused by
+/// version rather than restored.
+#[test]
+fn pod_scope_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection() {
+    let original = legacy_fixture();
+    let snapshot = original.export_compacted_snapshot().unwrap();
+    let admitted = ptr_state::pod_scope_entry(
+        &ptr_types::ProjectId::from("alpha"),
+        &[
+            (
+                ptr_types::CapabilityId::from("classify"),
+                ptr_types::TypeId::from("Text"),
+            ),
+            (
+                ptr_types::CapabilityId::from("summarize"),
+                ptr_types::TypeId::from("Text"),
+            ),
+        ],
+    );
+    for value in [
+        admitted.as_str(),
+        "admitted\nalpha",
+        ptr_state::WITHDRAWN_POD_SCOPE,
+    ] {
+        let key = "pod-scope:k-peer";
+        // This build's layout carries it, and restores it as a scope.
+        let (current, anchor) = with_materialized(snapshot.bytes(), snapshot.anchor(), key, value);
+        assert_eq!(restore_error(&current, anchor), None, "{key} = {value:?}");
+        // No earlier layout could have, so each refuses it by version.
+        for (outer, lifecycle) in [(b"PTRCS004", b"PTRLC002"), (b"PTRCS003", b"PTRLC001")] {
+            let (earlier, anchor) = with_magics(&current, anchor, outer, lifecycle);
+            assert_eq!(
+                restore_error(&earlier, anchor),
+                Some(RuntimeError::Compacted(CompactedError::UnsupportedVersion)),
+                "{key} in {}",
+                String::from_utf8_lossy(outer)
+            );
+        }
+    }
+    let (current, anchor) = with_materialized(
+        snapshot.bytes(),
+        snapshot.anchor(),
+        "pod-scope:k-peer",
+        &admitted,
+    );
+    let restored =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &current, anchor, &[]).unwrap();
+    assert_eq!(
+        restored.pod_scope(&ptr_types::NodeId::from("k-peer")),
+        Some(
+            &ptr_runtime::PodScope::new(ptr_types::ProjectId::from("alpha"))
+                .allow(
+                    ptr_types::CapabilityId::from("summarize"),
+                    ptr_types::TypeId::from("Text")
+                )
+                .allow(
+                    ptr_types::CapabilityId::from("classify"),
+                    ptr_types::TypeId::from("Text")
+                )
+        ),
+        "the projected row is a scope the access decision reads"
+    );
+
+    // In this build's layout, a value no committed record projects is refused.
+    let long_peer = format!(
+        "pod-scope:{}",
+        "k".repeat(ptr_ledger::MAX_POD_SCOPE_FIELD_BYTES + 1)
+    );
+    for (key, value) in [
+        ("pod-scope:k-peer", "admitted"),
+        ("pod-scope:k-peer", "Withdrawn"),
+        (
+            "pod-scope:k-peer",
+            "admitted\nalpha\nsummarize\tText\nclassify\tText",
+        ),
+        (
+            "pod-scope:k-peer",
+            "admitted\nalpha\nclassify\tText\nclassify\tText",
+        ),
+        ("pod-scope:k-peer", "admitted\nalpha\nclassify"),
+        ("pod-scope:", ptr_state::WITHDRAWN_POD_SCOPE),
+        (long_peer.as_str(), ptr_state::WITHDRAWN_POD_SCOPE),
+    ] {
+        let (bytes, anchor) = with_materialized(snapshot.bytes(), snapshot.anchor(), key, value);
+        assert_eq!(
+            restore_error(&bytes, anchor),
+            Some(RuntimeError::Compacted(CompactedError::NoncanonicalSection)),
+            "{key} = {value:?}"
+        );
+    }
+}

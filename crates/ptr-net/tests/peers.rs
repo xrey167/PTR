@@ -56,8 +56,8 @@ async fn an_address_is_recorded_under_the_peer_it_names_and_nowhere_else() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn re_recording_replaces_because_a_node_moves() {
-    // Deliberately unlike `AdmissionPolicy::admit` and `PodAccessPolicy::admit`,
-    // which refuse a second entry. An address is a fact about where a node is, and a
+    // Deliberately unlike `PtrRuntime::admit_member` and
+    // `PtrRuntime::admit_pod_scope`, which refuse a second entry. An address is a fact about where a node is, and a
     // node legitimately moves; refusing an update would leave a deployment unable to
     // follow one. An admission grant is a decision, and a decision that changed
     // silently would be authority nobody took.

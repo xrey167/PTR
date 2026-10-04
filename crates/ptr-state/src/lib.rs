@@ -172,6 +172,86 @@ pub fn parse_member_entry(entry: &str) -> Option<Option<(&str, &str)>> {
     Some(Some((principal, grant_set)))
 }
 
+/// The projection key prefix for Pod scopes (the Pod-access follow-up to D5 in
+/// issue #23).
+///
+/// One key per peer, `pod-scope:<node id>`, whose value is either
+/// [`pod_scope_entry`] or [`WITHDRAWN_POD_SCOPE`]. A family of its own rather
+/// than a field of [`MEMBER_PREFIX`]'s value: execution membership and Pod scope
+/// are admitted and withdrawn independently, and one key holding both would make
+/// every record of one rewrite the other.
+pub const POD_SCOPE_PREFIX: &str = "pod-scope:";
+
+/// The value a withdrawn Pod scope's key holds.
+pub const WITHDRAWN_POD_SCOPE: &str = "withdrawn";
+
+/// The projection key for one peer's Pod scope.
+pub fn pod_scope_key(peer: &str) -> String {
+    format!("{POD_SCOPE_PREFIX}{peer}")
+}
+
+/// The peer a [`pod_scope_key`] names, or `None` for any other key.
+pub fn pod_scope_of(key: &str) -> Option<&str> {
+    key.strip_prefix(POD_SCOPE_PREFIX)
+        .filter(|peer| !peer.is_empty())
+}
+
+/// The value an admitted Pod scope's key holds: `admitted` and the project,
+/// then one line per pair, its capability and payload type separated by a tab.
+///
+/// The scope is the whole record (a Pod scope is data, so nothing about it is
+/// left for a host to supply), and the separators are control characters no
+/// field of a committed scope may contain ([`ptr_ledger::valid_pod_scope_field`]),
+/// so the value has exactly one reading.
+pub fn pod_scope_entry(
+    project: &ptr_types::ProjectId,
+    entries: &[(ptr_types::CapabilityId, ptr_types::TypeId)],
+) -> String {
+    let mut value = format!("admitted\n{project}");
+    for (capability, input) in entries {
+        value.push('\n');
+        value.push_str(&capability.0);
+        value.push('\t');
+        value.push_str(&input.0);
+    }
+    value
+}
+
+/// A Pod scope as its projection describes it: the project and the pairs.
+pub type ProjectedPodScope = (
+    ptr_types::ProjectId,
+    Vec<(ptr_types::CapabilityId, ptr_types::TypeId)>,
+);
+
+/// The scope of a [`pod_scope_entry`], `Some(None)` for [`WITHDRAWN_POD_SCOPE`],
+/// and `None` for any value no committed record projects.
+///
+/// Strict, not merely structural: the scope read back must also be canonical
+/// by [`ptr_ledger::check_pod_scope`], the rule the codec holds the record to.
+/// A value with pairs out of order, a duplicated pair, a pair too many or an
+/// empty field is therefore not a scope at all, rather than one that differs
+/// from the history it claims to summarise.
+pub fn parse_pod_scope_entry(entry: &str) -> Option<Option<ProjectedPodScope>> {
+    if entry == WITHDRAWN_POD_SCOPE {
+        return Some(None);
+    }
+    let mut lines = entry.split('\n');
+    let (Some("admitted"), Some(project)) = (lines.next(), lines.next()) else {
+        return None;
+    };
+    let mut entries = Vec::new();
+    for line in lines {
+        let (capability, input) = line.split_once('\t')?;
+        entries.push((
+            ptr_types::CapabilityId::from(capability),
+            ptr_types::TypeId::from(input),
+        ));
+    }
+    let project = ptr_types::ProjectId::from(project);
+    ptr_ledger::check_pod_scope(&project, &entries).ok()?;
+    Some(Some((project, entries)))
+}
+
 /// The key/value entries one committed event projects to.
 ///
 /// This is the single definition of what an event means as current state; the
@@ -310,6 +390,14 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         }
         LedgerEvent::CodecCeilingRaised { version } => {
             vec![(CODEC_CEILING_KEY.to_owned(), version.to_string())]
+        }
+        LedgerEvent::PodScopeAdmitted {
+            peer,
+            project,
+            entries,
+        } => vec![(pod_scope_key(&peer.0), pod_scope_entry(project, entries))],
+        LedgerEvent::PodScopeWithdrawn { peer } => {
+            vec![(pod_scope_key(&peer.0), WITHDRAWN_POD_SCOPE.to_owned())]
         }
         LedgerEvent::PodEvidenceCommitted { .. }
         | LedgerEvent::PodOutputAdmitted { .. }

@@ -1091,6 +1091,8 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::PeerAdmitted { .. } => "peer.admitted",
         LedgerEvent::PeerWithdrawn { .. } => "peer.withdrawn",
         LedgerEvent::CodecCeilingRaised { .. } => "ledger.codec_ceiling_raised",
+        LedgerEvent::PodScopeAdmitted { .. } => "pod_scope.admitted",
+        LedgerEvent::PodScopeWithdrawn { .. } => "pod_scope.withdrawn",
     }
 }
 
@@ -1172,6 +1174,9 @@ fn expected_subject(record: &CommittedEvent) -> String {
             format!("peer:{}", peer.0)
         }
         LedgerEvent::CodecCeilingRaised { .. } => "ledger:codec-ceiling".to_owned(),
+        LedgerEvent::PodScopeAdmitted { peer, .. } | LedgerEvent::PodScopeWithdrawn { peer } => {
+            format!("pod-scope:{}", peer.0)
+        }
     }
 }
 

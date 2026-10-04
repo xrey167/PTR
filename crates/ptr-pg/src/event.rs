@@ -94,7 +94,9 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::TierReplicaLifecycle { .. }
         | LedgerEvent::PeerAdmitted { .. }
         | LedgerEvent::PeerWithdrawn { .. }
-        | LedgerEvent::CodecCeilingRaised { .. } => LifecycleChange::None,
+        | LedgerEvent::CodecCeilingRaised { .. }
+        | LedgerEvent::PodScopeAdmitted { .. }
+        | LedgerEvent::PodScopeWithdrawn { .. } => LifecycleChange::None,
     }
 }
 
@@ -130,6 +132,8 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::PeerAdmitted { .. } => "peer.admitted",
         LedgerEvent::PeerWithdrawn { .. } => "peer.withdrawn",
         LedgerEvent::CodecCeilingRaised { .. } => "ledger.codec_ceiling_raised",
+        LedgerEvent::PodScopeAdmitted { .. } => "pod_scope.admitted",
+        LedgerEvent::PodScopeWithdrawn { .. } => "pod_scope.withdrawn",
     }
 }
 
@@ -208,6 +212,12 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             ptr_state::member_key(&peer.0)
         }
         LedgerEvent::CodecCeilingRaised { .. } => ptr_state::CODEC_CEILING_KEY.to_owned(),
+        // The Pod-scope projection's own key, for the same reason: a peer's
+        // scope admissions and withdrawals stay in one stream, and apart from
+        // its execution membership, which is admitted and withdrawn on its own.
+        LedgerEvent::PodScopeAdmitted { peer, .. } | LedgerEvent::PodScopeWithdrawn { peer } => {
+            ptr_state::pod_scope_key(&peer.0)
+        }
     }
 }
 
@@ -322,5 +332,38 @@ mod tests {
             assert_eq!(event_topic(&delta.event), "semantic.delta_committed");
             assert_eq!(event_subject(&delta), "revision:3");
         }
+    }
+
+    /// A Pod scope's admission and withdrawal share one subject, its projection
+    /// key, and are no lifecycle change; the control is the same peer's
+    /// execution membership, which is published under a different subject so a
+    /// consumer never conflates the two.
+    #[test]
+    fn a_pod_scope_is_published_under_its_own_topic_and_projection_key() {
+        let peer = ptr_types::NodeId::from("k-peer");
+        let admitted = committed(
+            7,
+            LedgerEvent::PodScopeAdmitted {
+                peer: peer.clone(),
+                project: ProjectId::from("alpha"),
+                entries: vec![(
+                    ptr_types::CapabilityId::from("summarize"),
+                    ptr_types::TypeId::from("Text"),
+                )],
+            },
+        );
+        let withdrawn = committed(8, LedgerEvent::PodScopeWithdrawn { peer: peer.clone() });
+        assert_eq!(event_topic(&admitted.event), "pod_scope.admitted");
+        assert_eq!(event_topic(&withdrawn.event), "pod_scope.withdrawn");
+        assert_eq!(event_subject(&admitted), "pod-scope:k-peer");
+        assert_eq!(event_subject(&withdrawn), "pod-scope:k-peer");
+        assert_eq!(lifecycle_change(&admitted), LifecycleChange::None);
+        assert_eq!(
+            event_payload(&admitted)["entries"]["pod-scope:k-peer"],
+            "admitted\nalpha\nsummarize\tText"
+        );
+
+        let member = committed(9, LedgerEvent::PeerWithdrawn { peer });
+        assert_eq!(event_subject(&member), "peer:k-peer");
     }
 }

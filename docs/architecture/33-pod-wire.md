@@ -68,10 +68,14 @@ exists to send a requester somewhere else.
 
 ## The host has nothing to write to
 
-A `PodHost` holds a registry, an access policy and a verifier. It holds **no runtime
-and no ledger**. "A Pod invoked over this wire writes nothing to the host's history"
-is therefore a fact about the type rather than a promise about the code: there is
-nothing there to write to.
+A `PodHost` holds a registry, an access policy and a verifier. The access policy
+reads the host runtime's committed Pod scopes (below), so the host does reach a
+runtime — but only through `PodAccessPolicy`, whose runtime handle is private to the
+access module and whose one use of it is `PtrRuntime::pod_scope`, a read. Nothing
+on a path from a request commits anything. "A Pod invoked over this wire writes
+nothing to the host's history" is therefore still a fact about the code's shape
+rather than a promise about its behaviour: the only handle on that history here
+reads it.
 
 That is deliberate and it is the reason the in-process path and this one differ.
 `run_model_with_pods` promotes a Pod's output into the semantic state of the model
@@ -124,11 +128,14 @@ The pair is the pair `PodRegistry::resolve` keys on, so no scope can be expresse
 that resolution would not honour, and a scope holding only half of it cannot be
 written.
 
-A peer holds one entry. A second `admit` for the same peer is refused rather than
-replacing the first, which is `AdmissionPolicy`'s rule kept deliberately so the two
-policies cannot disagree about what admitting a peer twice means. Withdrawal takes
-effect on the very next request, because the scope is read from the table at every
-request rather than remembered.
+A peer holds one scope. A second `PtrRuntime::admit_pod_scope` for the same peer is
+refused rather than replacing the first — live and when a history holding one is
+replayed, by the one rule both run — which is execution membership's rule kept
+deliberately so the two policies cannot disagree about what admitting a peer twice
+means (`a_duplicate_pod_scope_admission_is_refused_live_and_on_replay`). Withdrawal
+is a commit, `PtrRuntime::withdraw_pod_scope`, and takes effect on the very next
+request, because the scope is read from committed history at every request rather
+than remembered (`withdrawing_a_peer_takes_effect_on_its_very_next_request`).
 
 ## `protocol_version` now means something
 
@@ -254,12 +261,54 @@ and the peer the decision runs under.
   (`an_answer_with_a_bad_signature_from_an_otherwise_honest_endpoint_is_refused`).
 - **Pod project membership is still declared, not proven.** A Pod says which project
   it serves in its own manifest, and whoever registers it decides that.
-- **The access policy is in memory.** It is not journaled, so it does not survive a
-  restart, and nothing anywhere records who was admitted to which project when.
-  Execution membership is now journaled (D5 in issue #23,
-  `29-peer-admission-and-pod-scope.md`); a `PodScope` holds only data, so unlike an
-  `ExecutionGrant` it can be journaled whole, and it follows the same design in its
-  own change rather than leaving two policies with two durability stories.
+- **The access policy is journaled.** This bullet said the access policy was in
+  memory — not journaled, gone at a restart, with nothing recording who was admitted
+  to which project when — while execution membership had become history (D5 in issue
+  #23, `29-peer-admission-and-pod-scope.md`): two policies with two durability
+  stories. It now follows D5's design, and more simply, because a `PodScope` holds
+  only data where an `ExecutionGrant` owns behaviour: the scope is journaled
+  **whole**. `PtrRuntime::admit_pod_scope` commits `PodScopeAdmitted { peer, project,
+  entries }` (ledger tag 31) and `withdraw_pod_scope` commits `PodScopeWithdrawn
+  { peer }` (tag 32), both at codec version 2. `entries` is canonical — strictly
+  ascending, so free of duplicates, at most `MAX_POD_SCOPE_ENTRIES` (16) pairs, every
+  field a non-empty identifier of at most `MAX_POD_SCOPE_FIELD_BYTES` (112) bytes
+  with no control character — and the codec refuses anything else on encode and on
+  decode with `PTR_LEDGER_POD_SCOPE_FIELD`, `_LIMIT` or `_ORDER`. Every open replays
+  the records in order through the one rule a live commit runs (duplicate admission,
+  withdrawal of a peer with no scope and a non-canonical record are each
+  `RuntimeError::InvalidPodScope`), and the projection `pod-scope:<node id>` carries
+  them across compaction in the `PTRLC003` lifecycle section. `PodAccessPolicy` is
+  derived from that history (`PodAccessPolicy::from_runtime` over the runtime the
+  host process shares — in `ptrd`, the one its HTTP API and execution wire serve)
+  and has no `admit` or `withdraw` of its own, and `PodHost` no longer offers
+  `policy_mut`, so no scope can be in force that the journal does not hold. A scope
+  withdrawn before a restart stays withdrawn after it, with the scope that was not
+  withdrawn as the control
+  (`a_pod_scope_withdrawn_before_a_restart_is_still_withdrawn_after_it`); admit,
+  withdraw, admit replays to the last (`admit_withdraw_admit_replays_to_the_last_pod_scope`);
+  a malformed or non-canonical record is refused live and on replay
+  (`a_malformed_or_noncanonical_pod_scope_is_refused_live_and_on_replay`); compaction
+  carries scopes and withdrawals across its floor
+  (`pod_scopes_survive_compaction_withdrawals_included`), and an earlier lifecycle
+  section refuses the key by version
+  (`pod_scope_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
+  The refusal semantics are unchanged: a peer with no committed scope is
+  `NotAdmitted` before any registry lookup, and out of scope is indistinguishable
+  from unavailable — over real connections against a host whose runtime was reopened
+  from its journal, an admitted scope answers, a withdrawn one is `NotAdmitted` on
+  both the V1 and the generation-bound path, and another project's Pod gets the
+  answer a Pod that does not exist gets
+  (`the_committed_scope_decides_over_the_wire_after_the_host_runtime_is_reopened`,
+  and without a transport `the_access_decision_after_a_reopen_is_the_one_history_describes`).
+
+  **What stays out.** Which Pods exist and which project each serves is still the
+  `PodRegistry` the host registers at start (the bullet above): a scope says what a
+  peer may ask for, the registry what there is to answer it. A scope binds a node id
+  rather than an `AuthenticatedPeer`, because admitting is the host's decision about a
+  key made before that key connects; the access decision itself still takes only the
+  identity the connection authenticated. And a scope, unlike a membership, binds no
+  session — nothing on this wire outlives one request — so there is no commit index to
+  revive or refuse.
 - **No discovery.** Which address belongs to an id nobody told you is a mechanism
   choice with its own trust question, and it is the owner's.
 

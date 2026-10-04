@@ -31,8 +31,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// PTRCS005 is the layout this build writes: its lifecycle section is
 /// PTRLC003, the first that may carry peer membership
-/// ([`ptr_state::MEMBER_PREFIX`]) and the codec ceiling
-/// ([`ptr_state::CODEC_CEILING_KEY`]) — D5 in issue #23.
+/// ([`ptr_state::MEMBER_PREFIX`]), Pod scopes ([`ptr_state::POD_SCOPE_PREFIX`])
+/// and the codec ceiling ([`ptr_state::CODEC_CEILING_KEY`]) — D5 in issue #23
+/// and its Pod-access follow-up.
 ///
 /// The magic moved so that a build from before journaled membership stops
 /// here. Reading such a snapshot, it would restore a runtime that had forgotten
@@ -41,7 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const MAGIC: &[u8; 8] = b"PTRCS005";
 /// PTRCS004, the layout before membership: still read, never written, and only
 /// with a PTRLC002 lifecycle section, which may carry the attested marker and
-/// merged-branch keys and must carry no membership or codec-ceiling key.
+/// merged-branch keys and must carry no membership, Pod-scope or codec-ceiling key.
 const PRE_MEMBERSHIP_MAGIC: &[u8; 8] = b"PTRCS004";
 /// PTRCS003, the layout before attributed records: still read, never written,
 /// and only with a PTRLC001 lifecycle section. Such a snapshot describes a
@@ -395,6 +396,13 @@ impl LifecycleState {
     /// [`ptr_state::merged_branch_key`] holding exactly a
     /// [`ptr_state::merged_branch_entry`], as a merge projects them, or the
     /// section is refused as noncanonical.
+    ///
+    /// Membership, Pod-scope and codec-ceiling keys appear only in PTRLC003 and
+    /// are refused by version in an earlier section; in PTRLC003 each value must
+    /// be exactly what a committed record projects (a Pod scope by
+    /// `ptr_ledger::check_pod_scope`, through
+    /// [`ptr_state::parse_pod_scope_entry`]), or the section is refused as
+    /// noncanonical.
     fn decode(bytes: &[u8], layout: Layout) -> Result<Self, RuntimeError> {
         if bytes.len() > MAX_SECTION_BYTES {
             return Err(invalid(CompactedError::SizeLimit));
@@ -422,6 +430,7 @@ impl LifecycleState {
             }
             if layout != Layout::Membership
                 && (key.starts_with(ptr_state::MEMBER_PREFIX)
+                    || key.starts_with(ptr_state::POD_SCOPE_PREFIX)
                     || key == ptr_state::CODEC_CEILING_KEY)
             {
                 return Err(invalid(CompactedError::UnsupportedVersion));
@@ -429,6 +438,11 @@ impl LifecycleState {
             if key.starts_with(ptr_state::MEMBER_PREFIX)
                 && (ptr_state::member_of(&key).is_none_or(|peer| !valid_member_field(peer))
                     || !canonical_member_entry(&value))
+            {
+                return Err(invalid(CompactedError::NoncanonicalSection));
+            }
+            if key.starts_with(ptr_state::POD_SCOPE_PREFIX)
+                && !super::pod_scope::canonical_pod_scope_projection(&key, &value)
             {
                 return Err(invalid(CompactedError::NoncanonicalSection));
             }
@@ -816,6 +830,9 @@ impl PtrRuntime {
             &lifecycle.materialized,
             trusted.floor.index,
         ));
+        // Pod scopes are history for the same reason and cross the floor the
+        // same way.
+        runtime.pod_scopes = super::pod_scope::pod_scopes_from_projection(&lifecycle.materialized);
         runtime.state = MaterializedState {
             values: lifecycle.materialized,
             last_applied: trusted.floor.index.0,

@@ -11,6 +11,7 @@ pub mod migration;
 pub mod neural;
 pub mod persistence;
 pub mod placement;
+pub mod pod_scope;
 pub mod policy;
 pub mod protected_state;
 pub mod sandbox;
@@ -42,6 +43,7 @@ pub use placement::{
     DeviceHealth, DeviceRecord, FencedStateLease, FencingToken, NodeHealth, NodeRecord, Placement,
     PlacementEpoch, PlacementError, PodPlacementController,
 };
+pub use pod_scope::PodScope;
 #[cfg(feature = "oidc-http")]
 pub use policy::ReqwestPolicyBundleLoader;
 pub use policy::{
@@ -541,6 +543,15 @@ pub enum RuntimeError {
         peer: ptr_types::NodeId,
         reason: &'static str,
     },
+    /// A Pod-scope record this runtime refuses to commit or replay: one the
+    /// codec would not encode (`reason` is then its `PTR_LEDGER_POD_SCOPE_*`
+    /// code), an admission for a peer that already has a scope, or a withdrawal
+    /// for one that has none. The same check refuses it live and in replay, so a
+    /// history cannot hold a scope the runtime would not have written.
+    InvalidPodScope {
+        peer: ptr_types::NodeId,
+        reason: &'static str,
+    },
     /// A settlement or reconciliation names an attempt that is not awaiting one.
     UnknownEffectAttempt {
         attempt: CommitIndex,
@@ -619,6 +630,9 @@ pub struct PtrRuntime {
     revoked_sessions: BTreeSet<ptr_types::SessionId>,
     hypotheses: BTreeMap<String, PodHypothesis>,
     tier_journal: TierJournalProjection,
+    /// The Pod scopes committed history admits, rebuilt from it on every open
+    /// and from the projection a compacted snapshot carries.
+    pod_scopes: pod_scope::PodScopes,
 }
 
 impl PtrRuntime {
@@ -668,6 +682,7 @@ impl PtrRuntime {
             revoked_sessions: BTreeSet::new(),
             hypotheses: BTreeMap::new(),
             tier_journal: TierJournalProjection::default(),
+            pod_scopes: pod_scope::PodScopes::new(),
         })
     }
 
@@ -2541,6 +2556,12 @@ impl PtrRuntime {
                 }
             }
             LedgerEvent::CodecCeilingRaised { .. } => Ok(()),
+            LedgerEvent::PodScopeAdmitted { .. } | LedgerEvent::PodScopeWithdrawn { .. } => {
+                match pod_scope::pod_scope_refusal(&self.pod_scopes, event) {
+                    None => Ok(()),
+                    Some(refusal) => Err(refusal),
+                }
+            }
             LedgerEvent::ScopeLifecycle(event) => {
                 if event.revision != self.revision() {
                     return Err(RuntimeError::ScopeRevisionMismatch {
@@ -2935,6 +2956,9 @@ impl PtrRuntime {
             // runtime's own log is written by one build, which reads what it
             // writes. It is projected, and there is nothing further to apply.
             LedgerEvent::CodecCeilingRaised { .. } => {}
+            LedgerEvent::PodScopeAdmitted { .. } | LedgerEvent::PodScopeWithdrawn { .. } => {
+                pod_scope::apply_pod_scope(&mut self.pod_scopes, &committed.event);
+            }
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }
             | LedgerEvent::TierReplicaLifecycle { .. } => {

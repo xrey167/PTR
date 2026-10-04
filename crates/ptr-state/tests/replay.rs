@@ -363,3 +363,122 @@ fn a_codec_ceiling_projects_to_its_own_key() {
         Some("2")
     );
 }
+
+fn projected_pairs(pairs: &[(&str, &str)]) -> Vec<(ptr_types::CapabilityId, ptr_types::TypeId)> {
+    pairs
+        .iter()
+        .map(|(capability, input)| {
+            (
+                ptr_types::CapabilityId::from(*capability),
+                ptr_types::TypeId::from(*input),
+            )
+        })
+        .collect()
+}
+
+/// A Pod scope is journaled whole, so its projection carries the whole scope:
+/// admitted, the project and every pair, under one key per peer that a
+/// withdrawal overwrites and a later admission overwrites again.
+#[test]
+fn a_pod_scope_projects_whole_to_one_key_per_peer() {
+    let peer = ptr_types::NodeId::from("k51:with:colons");
+    let project = ptr_types::ProjectId::from("alpha");
+    let pairs = projected_pairs(&[("classify", "Text"), ("summarize", "Text")]);
+    let mut state = MaterializedState::default();
+    let admitted = CommittedEvent {
+        index: CommitIndex(1),
+        event: LedgerEvent::PodScopeAdmitted {
+            peer: peer.clone(),
+            project: project.clone(),
+            entries: pairs.clone(),
+        },
+    };
+    assert_eq!(state.try_apply(&admitted), ApplyOutcome::Applied);
+    let key = ptr_state::pod_scope_key(&peer.0);
+    assert_eq!(ptr_state::pod_scope_of(&key), Some(peer.0.as_str()));
+    assert_eq!(
+        state.values.get(&key).map(String::as_str),
+        Some("admitted\nalpha\nclassify\tText\nsummarize\tText")
+    );
+    assert_eq!(
+        ptr_state::parse_pod_scope_entry(state.values.get(&key).unwrap()),
+        Some(Some((project.clone(), pairs)))
+    );
+    // Execution membership is a different family: a Pod scope writes no
+    // `peer:` key, so neither can be mistaken for the other.
+    assert!(state
+        .values
+        .keys()
+        .all(|key| !key.starts_with(ptr_state::MEMBER_PREFIX)));
+
+    let withdrawn = CommittedEvent {
+        index: CommitIndex(2),
+        event: LedgerEvent::PodScopeWithdrawn { peer: peer.clone() },
+    };
+    assert_eq!(state.try_apply(&withdrawn), ApplyOutcome::Applied);
+    assert_eq!(
+        ptr_state::parse_pod_scope_entry(state.values.get(&key).unwrap()),
+        Some(None)
+    );
+
+    let readmitted = CommittedEvent {
+        index: CommitIndex(3),
+        event: LedgerEvent::PodScopeAdmitted {
+            peer: peer.clone(),
+            project: project.clone(),
+            entries: Vec::new(),
+        },
+    };
+    assert_eq!(state.try_apply(&readmitted), ApplyOutcome::Applied);
+    assert_eq!(
+        ptr_state::parse_pod_scope_entry(state.values.get(&key).unwrap()),
+        Some(Some((project, Vec::new()))),
+        "the last record is the one the key holds; an empty scope is still a scope"
+    );
+}
+
+/// The parse accepts exactly what a committed record projects. Each malformed
+/// value differs from a canonical one in one way, so the control (the canonical
+/// value, parsed) shows the parse is not refusing everything.
+#[test]
+fn a_pod_scope_entry_has_exactly_one_reading() {
+    let project = ptr_types::ProjectId::from("p");
+    let pairs = projected_pairs(&[("a", "T"), ("b", "T")]);
+    let entry = ptr_state::pod_scope_entry(&project, &pairs);
+    assert_eq!(
+        ptr_state::parse_pod_scope_entry(&entry),
+        Some(Some((project, pairs)))
+    );
+    let too_many: String = (0..=ptr_ledger::MAX_POD_SCOPE_ENTRIES)
+        .map(|index| format!("\nc{index:02}\tT"))
+        .collect();
+    let too_many = format!("admitted\np{too_many}");
+    let long = format!(
+        "admitted\n{}",
+        "p".repeat(ptr_ledger::MAX_POD_SCOPE_FIELD_BYTES + 1)
+    );
+    for malformed in [
+        "",
+        "admitted",
+        "Admitted\np",
+        "admitted\n",
+        "admitted\np\n",
+        "admitted\np\na",
+        "admitted\np\na\t",
+        "admitted\np\na\tT\tU",
+        "admitted\np\nb\tT\na\tT",
+        "admitted\np\na\tT\na\tT",
+        "admitted\n p",
+        "withdrawn\n",
+        too_many.as_str(),
+        long.as_str(),
+    ] {
+        assert_eq!(
+            ptr_state::parse_pod_scope_entry(malformed),
+            None,
+            "{malformed:?} is refused"
+        );
+    }
+    assert_eq!(ptr_state::pod_scope_of("pod-scope:"), None);
+    assert_eq!(ptr_state::pod_scope_of("peer:k"), None);
+}

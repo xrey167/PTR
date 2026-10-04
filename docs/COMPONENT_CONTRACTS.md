@@ -58,8 +58,19 @@ a replicated group exchange (D5 in issue #23), and it had none of the above.
 - **Schema version:** `ptr_ledger::LEDGER_CODEC_VERSION` (now 2). A record carries
   no version byte of its own; its tag says which version introduced it
   (`event_codec_version`), so every record written before versioning keeps its
-  exact bytes (`a_base_record_keeps_its_bytes`). Version 2 adds `PeerAdmitted`,
-  `PeerWithdrawn` and `CodecCeilingRaised`.
+  exact bytes (`a_base_record_keeps_its_bytes`). Version 2 adds `PeerAdmitted`
+  (tag 27), `PeerWithdrawn` (28), `CodecCeilingRaised` (29), `PodScopeAdmitted`
+  (31) and `PodScopeWithdrawn` (32); tag 30 is reserved and undefined in this
+  build, so it is refused as unknown like any other
+  (`pod_scope_records_are_version_two_and_tag_thirty_stays_unknown`).
+- **Canonical form:** a record with a single valid reading has a single encoding.
+  `PodScopeAdmitted` carries its `(capability, payload type)` pairs strictly
+  ascending (so without duplicates), at most `MAX_POD_SCOPE_ENTRIES` of them, every
+  field a non-empty identifier of at most `MAX_POD_SCOPE_FIELD_BYTES` bytes with no
+  control character; `check_encodable` refuses anything else before it is written
+  and the decoder refuses its bytes, each with the code of the rule broken
+  (`PTR_LEDGER_POD_SCOPE_FIELD`, `_LIMIT`, `_ORDER`;
+  `a_noncanonical_pod_scope_is_refused_on_encode_and_on_decode`).
 - **Unknown tag:** refused by name, `PTR_LEDGER_UNKNOWN_TAG`, with the version this
   build reads — never skipped, because skipping would make two members' histories
   mean different things at the same index

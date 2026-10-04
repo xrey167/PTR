@@ -271,6 +271,157 @@ pub enum LedgerEvent {
     CodecCeilingRaised {
         version: u16,
     },
+    /// The host bound a peer to one Pod scope: the project it may reach Pods
+    /// in, and the exact `(capability, payload type)` pairs it may ask for
+    /// there (the Pod-access follow-up to D5 in issue #23).
+    ///
+    /// **Journaled whole, unlike [`LedgerEvent::PeerAdmitted`].** An execution
+    /// grant owns a verifier and an executor, which are behaviour and cannot be
+    /// replayed, so a membership names its grant set and the host supplies it.
+    /// A Pod scope is only data, so the record carries all of it and nothing is
+    /// left for the host to supply at start: the access decision reads exactly
+    /// what history says.
+    ///
+    /// **Canonical or refused.** `entries` is strictly ascending, which also
+    /// makes it free of duplicates, holds at most [`MAX_POD_SCOPE_ENTRIES`]
+    /// pairs, and every field is a [`valid_pod_scope_field`]. One scope
+    /// therefore has exactly one encoding, and the projection a reader builds
+    /// from it has exactly one reading. [`check_encodable`] refuses a record
+    /// that is not canonical and the decoder refuses its bytes, each with the
+    /// code of the rule broken ([`PodScopeShapeError`]).
+    ///
+    /// Codec version 2.
+    PodScopeAdmitted {
+        peer: NodeId,
+        project: ProjectId,
+        entries: Vec<(CapabilityId, TypeId)>,
+    },
+    /// The host withdrew a peer's Pod scope. Replayed in order with
+    /// [`LedgerEvent::PodScopeAdmitted`], so a scope withdrawn before a restart
+    /// is still withdrawn after it.
+    ///
+    /// Codec version 2.
+    PodScopeWithdrawn {
+        peer: NodeId,
+    },
+}
+
+/// Most `(capability, payload type)` pairs one [`LedgerEvent::PodScopeAdmitted`]
+/// carries.
+///
+/// A scope is projected into committed state as one value, and a compacted
+/// snapshot carries every value as one bounded string (4096 bytes); this bound
+/// and [`MAX_POD_SCOPE_FIELD_BYTES`] keep the largest scope's projection inside
+/// it, so a scope that commits is never one that later fails every export.
+/// `ptr-runtime` asserts that arithmetic at compile time.
+pub const MAX_POD_SCOPE_ENTRIES: usize = 16;
+
+/// Most bytes in each field of a Pod-scope record: the peer, the project, and
+/// every capability and payload type. See [`MAX_POD_SCOPE_ENTRIES`] for why.
+pub const MAX_POD_SCOPE_FIELD_BYTES: usize = 112;
+
+/// Whether `value` may be a field of a Pod-scope record: non-empty, at most
+/// [`MAX_POD_SCOPE_FIELD_BYTES`] bytes, no leading or trailing whitespace and
+/// no control character.
+///
+/// The last rule is what lets a projection separate fields with control
+/// characters and still have exactly one reading; the others are the
+/// identifier rule every membership field is held to.
+pub fn valid_pod_scope_field(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_POD_SCOPE_FIELD_BYTES
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
+}
+
+/// Which rule a non-canonical Pod scope breaks, each with its own stable code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PodScopeShapeError {
+    /// A peer, project, capability or payload type that is not a
+    /// [`valid_pod_scope_field`]: `PTR_LEDGER_POD_SCOPE_FIELD`.
+    Field,
+    /// More than [`MAX_POD_SCOPE_ENTRIES`] pairs: `PTR_LEDGER_POD_SCOPE_LIMIT`.
+    Limit,
+    /// Pairs not strictly ascending, which includes a duplicated pair:
+    /// `PTR_LEDGER_POD_SCOPE_ORDER`.
+    Order,
+}
+
+impl PodScopeShapeError {
+    /// The stable refusal code.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Field => "PTR_LEDGER_POD_SCOPE_FIELD",
+            Self::Limit => "PTR_LEDGER_POD_SCOPE_LIMIT",
+            Self::Order => "PTR_LEDGER_POD_SCOPE_ORDER",
+        }
+    }
+}
+
+impl From<PodScopeShapeError> for io::Error {
+    /// The codec's refusal: `InvalidData`, carrying the code.
+    fn from(error: PodScopeShapeError) -> Self {
+        integrity::invalid(error.code())
+    }
+}
+
+/// Whether a Pod scope is canonical: a [`valid_pod_scope_field`] project, at
+/// most [`MAX_POD_SCOPE_ENTRIES`] pairs, every capability and payload type a
+/// valid field, and the pairs strictly ascending.
+///
+/// The one definition of a canonical scope. The encoder's check, the decoder,
+/// `ptr-runtime`'s live and replayed validation and the strict parse of the
+/// projected value all call it, so none of them can accept a scope another
+/// refuses.
+pub fn check_pod_scope(
+    project: &ProjectId,
+    entries: &[(CapabilityId, TypeId)],
+) -> Result<(), PodScopeShapeError> {
+    if !valid_pod_scope_field(&project.0) {
+        return Err(PodScopeShapeError::Field);
+    }
+    check_pod_scope_entry_count(entries.len())?;
+    if !entries.iter().all(|(capability, input)| {
+        valid_pod_scope_field(&capability.0) && valid_pod_scope_field(&input.0)
+    }) {
+        return Err(PodScopeShapeError::Field);
+    }
+    if !entries.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(PodScopeShapeError::Order);
+    }
+    Ok(())
+}
+
+/// A Pod scope carries at most [`MAX_POD_SCOPE_ENTRIES`] pairs. Checked by the
+/// decoder before it reads a pair, so an invented count is refused by the bound
+/// rather than by an allocation.
+fn check_pod_scope_entry_count(count: usize) -> Result<(), PodScopeShapeError> {
+    if count > MAX_POD_SCOPE_ENTRIES {
+        return Err(PodScopeShapeError::Limit);
+    }
+    Ok(())
+}
+
+/// The rules a Pod-scope record carries, for [`check_encodable`], the decoder
+/// and `ptr-runtime`'s validation alike: [`check_pod_scope`] for an admission,
+/// and a [`valid_pod_scope_field`] peer for both records.
+pub fn check_pod_scope_record(event: &LedgerEvent) -> Result<(), PodScopeShapeError> {
+    match event {
+        LedgerEvent::PodScopeAdmitted {
+            peer,
+            project,
+            entries,
+        } => {
+            if !valid_pod_scope_field(&peer.0) {
+                return Err(PodScopeShapeError::Field);
+            }
+            check_pod_scope(project, entries)
+        }
+        LedgerEvent::PodScopeWithdrawn { peer } if !valid_pod_scope_field(&peer.0) => {
+            Err(PodScopeShapeError::Field)
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The ledger codec version this build reads and writes.
@@ -302,7 +453,9 @@ pub const BASE_CODEC_VERSION: u16 = 1;
 fn tag_codec_version(tag: u8) -> Option<u16> {
     match tag {
         0..=26 => Some(BASE_CODEC_VERSION),
-        27..=29 => Some(2),
+        // Tag 30 is reserved for a parallel version-2 record and is not defined
+        // by this build, so it is refused as unknown like any other.
+        27..=29 | 31..=32 => Some(2),
         _ => None,
     }
 }
@@ -864,6 +1017,27 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             out.push(29);
             out.extend_from_slice(&version.to_le_bytes());
         }
+        LedgerEvent::PodScopeAdmitted {
+            peer,
+            project,
+            entries,
+        } => {
+            out.push(31);
+            put_string(&mut out, &peer.0);
+            put_string(&mut out, &project.0);
+            // `check_encodable` refuses more than `MAX_POD_SCOPE_ENTRIES`, which
+            // fits a byte; an unchecked caller panics here rather than writing a
+            // count that disagrees with the pairs after it.
+            out.push(u8::try_from(entries.len()).expect("Pod scope entry count is bounded"));
+            for (capability, input) in entries {
+                put_string(&mut out, &capability.0);
+                put_string(&mut out, &input.0);
+            }
+        }
+        LedgerEvent::PodScopeWithdrawn { peer } => {
+            out.push(32);
+            put_string(&mut out, &peer.0);
+        }
     }
     out
 }
@@ -1124,6 +1298,29 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             }
             LedgerEvent::CodecCeilingRaised { version }
         }
+        31 => {
+            let peer = NodeId(cursor.string()?);
+            let project = ProjectId(cursor.string()?);
+            let count = usize::from(cursor.u8()?);
+            check_pod_scope_entry_count(count).map_err(io::Error::from)?;
+            let entries = (0..count)
+                .map(|_| Ok((CapabilityId(cursor.string()?), TypeId(cursor.string()?))))
+                .collect::<io::Result<Vec<_>>>()?;
+            let event = LedgerEvent::PodScopeAdmitted {
+                peer,
+                project,
+                entries,
+            };
+            check_pod_scope_record(&event).map_err(io::Error::from)?;
+            event
+        }
+        32 => {
+            let event = LedgerEvent::PodScopeWithdrawn {
+                peer: NodeId(cursor.string()?),
+            };
+            check_pod_scope_record(&event).map_err(io::Error::from)?;
+            event
+        }
         other => {
             // `tag_codec_version` is the table this match must agree with; the
             // test `every_tag_the_table_admits_decodes` holds the two together.
@@ -1212,6 +1409,7 @@ fn verification_from_code(code: u8) -> io::Result<VerificationLevel> {
 /// ledger, which encodes nothing.
 pub fn check_encodable(event: &LedgerEvent) -> Result<(), io::Error> {
     check_origin_bounds(event)?;
+    check_pod_scope_record(event).map_err(io::Error::from)?;
     if let LedgerEvent::CodecCeilingRaised { version } = event {
         if *version <= BASE_CODEC_VERSION || *version > LEDGER_CODEC_VERSION {
             return Err(integrity::invalid("PTR_LEDGER_CODEC_CEILING"));
@@ -2998,7 +3196,165 @@ mod codec_version_tests {
                 peer: NodeId::from("k-peer"),
             },
             LedgerEvent::CodecCeilingRaised { version: 2 },
+            pod_scope(vec![("classify", "Text"), ("summarize", "Text")]),
+            pod_scope(Vec::new()),
+            LedgerEvent::PodScopeWithdrawn {
+                peer: NodeId::from("k-peer"),
+            },
         ]
+    }
+
+    fn pod_scope(entries: Vec<(&str, &str)>) -> LedgerEvent {
+        LedgerEvent::PodScopeAdmitted {
+            peer: NodeId::from("k-peer"),
+            project: ProjectId::from("alpha"),
+            entries: entries
+                .into_iter()
+                .map(|(capability, input)| (CapabilityId::from(capability), TypeId::from(input)))
+                .collect(),
+        }
+    }
+
+    /// The bytes a Pod-scope admission would have, written by hand rather than
+    /// by the encoder, so the decoder is tested against bytes no check made.
+    fn pod_scope_bytes(peer: &str, project: &str, count: u8, entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut out = vec![31];
+        put_string(&mut out, peer);
+        put_string(&mut out, project);
+        out.push(count);
+        for (capability, input) in entries {
+            put_string(&mut out, capability);
+            put_string(&mut out, input);
+        }
+        out
+    }
+
+    /// Tags 31 and 32 at codec version 2, tag 30 left undefined for the record
+    /// reserved for it, so a log holding a tag-30 record is refused by name.
+    #[test]
+    fn pod_scope_records_are_version_two_and_tag_thirty_stays_unknown() {
+        assert_eq!(tag_codec_version(31), Some(2));
+        assert_eq!(tag_codec_version(32), Some(2));
+        assert_eq!(tag_codec_version(30), None);
+        assert_eq!(tag_codec_version(33), None);
+        let error = decode_event(&[30]).unwrap_err().to_string();
+        assert!(error.contains("PTR_LEDGER_UNKNOWN_TAG"), "{error}");
+    }
+
+    /// A scope has exactly one encoding: pairs out of order, a duplicated pair,
+    /// one pair too many and a field the projection could not separate are each
+    /// refused on the way in and, written by hand, on the way out, each with the
+    /// code naming its rule. The control is the canonical scope, accepted by
+    /// both with the same bytes.
+    #[test]
+    fn a_noncanonical_pod_scope_is_refused_on_encode_and_on_decode() {
+        let canonical = [("classify", "Text"), ("summarize", "Text")];
+        let encoded = encode_event(&pod_scope(canonical.to_vec()));
+        assert!(check_encodable(&pod_scope(canonical.to_vec())).is_ok());
+        assert_eq!(
+            encoded,
+            pod_scope_bytes("k-peer", "alpha", 2, &canonical),
+            "the canonical scope decodes from the bytes it encodes to"
+        );
+        assert_eq!(
+            decode_event(&encoded).unwrap(),
+            pod_scope(canonical.to_vec())
+        );
+
+        let too_many: Vec<(String, String)> = (0..=MAX_POD_SCOPE_ENTRIES)
+            .map(|index| (format!("capability-{index:02}"), "Text".to_owned()))
+            .collect();
+        let too_many: Vec<(&str, &str)> = too_many
+            .iter()
+            .map(|(capability, input)| (capability.as_str(), input.as_str()))
+            .collect();
+        let long = "a".repeat(MAX_POD_SCOPE_FIELD_BYTES + 1);
+        // (peer, project, pairs, the code the case is refused with)
+        type Case<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>, &'a str);
+        let cases: Vec<Case<'_>> = vec![
+            (
+                "k-peer",
+                "alpha",
+                vec![("summarize", "Text"), ("classify", "Text")],
+                "PTR_LEDGER_POD_SCOPE_ORDER",
+            ),
+            (
+                "k-peer",
+                "alpha",
+                vec![("classify", "Text"), ("classify", "Text")],
+                "PTR_LEDGER_POD_SCOPE_ORDER",
+            ),
+            (
+                "k-peer",
+                "alpha",
+                too_many.clone(),
+                "PTR_LEDGER_POD_SCOPE_LIMIT",
+            ),
+            (
+                "k-peer",
+                "alpha",
+                vec![("class\tify", "Text")],
+                "PTR_LEDGER_POD_SCOPE_FIELD",
+            ),
+            (
+                "k-peer",
+                "alpha",
+                vec![("classify", "")],
+                "PTR_LEDGER_POD_SCOPE_FIELD",
+            ),
+            ("k-peer", " alpha", Vec::new(), "PTR_LEDGER_POD_SCOPE_FIELD"),
+            (
+                "k-peer",
+                long.as_str(),
+                Vec::new(),
+                "PTR_LEDGER_POD_SCOPE_FIELD",
+            ),
+            ("k\npeer", "alpha", Vec::new(), "PTR_LEDGER_POD_SCOPE_FIELD"),
+            ("", "alpha", Vec::new(), "PTR_LEDGER_POD_SCOPE_FIELD"),
+        ];
+        for (peer, project, entries, code) in cases {
+            let event = LedgerEvent::PodScopeAdmitted {
+                peer: NodeId::from(peer),
+                project: ProjectId::from(project),
+                entries: entries
+                    .iter()
+                    .map(|(capability, input)| {
+                        (CapabilityId::from(*capability), TypeId::from(*input))
+                    })
+                    .collect(),
+            };
+            let refused = check_encodable(&event).unwrap_err().to_string();
+            assert_eq!(refused, code, "{peer:?} {project:?} {entries:?} on encode");
+            let count = u8::try_from(entries.len()).unwrap();
+            let bytes = pod_scope_bytes(peer, project, count, &entries);
+            let refused = decode_event(&bytes).unwrap_err().to_string();
+            assert_eq!(refused, code, "{peer:?} {project:?} {entries:?} on decode");
+        }
+
+        // An invented count is refused by the bound before any pair is read.
+        let invented = pod_scope_bytes("k-peer", "alpha", u8::MAX, &[]);
+        assert_eq!(
+            decode_event(&invented).unwrap_err().to_string(),
+            "PTR_LEDGER_POD_SCOPE_LIMIT"
+        );
+        // Exactly the bound is canonical.
+        let at_bound = &too_many[..MAX_POD_SCOPE_ENTRIES];
+        assert!(check_encodable(&pod_scope(at_bound.to_vec())).is_ok());
+
+        // A withdrawal names a peer by the same field rule.
+        let withdrawn = LedgerEvent::PodScopeWithdrawn {
+            peer: NodeId::from("k\tpeer"),
+        };
+        assert_eq!(
+            check_encodable(&withdrawn).unwrap_err().to_string(),
+            "PTR_LEDGER_POD_SCOPE_FIELD"
+        );
+        assert_eq!(
+            decode_event(&encode_event(&withdrawn))
+                .unwrap_err()
+                .to_string(),
+            "PTR_LEDGER_POD_SCOPE_FIELD"
+        );
     }
 
     #[test]

@@ -22,12 +22,17 @@
 //! project because resolution is the only thing standing between a request and a
 //! Pod's data, so a requester that named its project would pick which project's
 //! Pods it reaches. The project comes from host policy, keyed by the peer the
-//! connection authenticated.
+//! connection authenticated, and that policy is committed history: a scope is
+//! admitted and withdrawn through the host runtime's journal and read from it at
+//! every request, so a withdrawal outlives a restart exactly as an execution
+//! membership's does (D5 in issue #23).
 //!
 //! **What this host cannot do to itself.** A `PodHost` holds a registry, a
-//! policy and a verifier. It holds no runtime and no ledger, so "a Pod invoked
-//! over this wire writes nothing to the host's history" is a fact about the type
-//! rather than a promise about the code: there is nothing here to write to.
+//! policy and a verifier. The policy reads the host's runtime and nothing else
+//! here can reach it: its handle is private to the access module, whose one use
+//! of it is to read a peer's scope. So "a Pod invoked over this wire writes
+//! nothing to the host's history" is still a fact about the code's shape rather
+//! than a promise about its behaviour: no path from a request leads to a write.
 //!
 //! What this is not: it is not a daemon of its own. Nothing here ticks or retries.
 //! A caller drives `serve_once` and `request`, or hands `PodHost::serve` a
@@ -36,7 +41,7 @@
 mod access;
 mod frame;
 
-pub use access::{answer, PodAccessPolicy, PodScope, PolicyError};
+pub use access::{answer, PodAccessPolicy, PodScope};
 pub use frame::{
     decode_request, decode_request_v2, encode_answer, encode_answer_v2, encode_request,
     encode_request_v2, request_digest, verify_answer, verify_answer_v2, AnswerError, FrameError,
