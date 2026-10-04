@@ -97,7 +97,7 @@ impl CliOverrides {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PtrConfig {
     pub server: ServerConfig,
     pub runtime: RuntimeConfig,
@@ -115,7 +115,9 @@ impl PtrConfig {
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, String> {
         let text = std::fs::read_to_string(path.as_ref()).map_err(|e| e.to_string())?;
-        Self::from_toml_str(&text).map_err(|e| e.to_string())
+        let config = Self::from_toml_str(&text).map_err(|e| e.to_string())?;
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn apply_env<I, K, V>(&mut self, values: I) -> Result<(), String>
@@ -234,7 +236,7 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, String> {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     pub bind: String,
     pub data_dir: String,
@@ -249,7 +251,7 @@ impl Default for ServerConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ModelConfig {
     pub backend: String,
 }
@@ -262,7 +264,7 @@ impl Default for ModelConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RuntimeConfig {
     pub mode: String,
     pub mailbox_capacity: usize,
@@ -279,7 +281,7 @@ impl Default for RuntimeConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SemanticConfig {
     pub cancel_stale_revisions: bool,
     pub retain_raw_evidence: bool,
@@ -294,7 +296,7 @@ impl Default for SemanticConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ActionBoundaryConfig {
     pub require_capability: bool,
     pub require_live_generation: bool,
@@ -311,7 +313,7 @@ impl Default for ActionBoundaryConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ObservabilityConfig {
     pub structured_tracing: bool,
     pub async_backtrace: bool,
@@ -326,7 +328,7 @@ impl Default for ObservabilityConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ResearchConfig {
     pub allow_unlocked_components: bool,
     pub require_experiment_manifest: bool,
