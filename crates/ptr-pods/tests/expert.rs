@@ -35,7 +35,9 @@ fn propose(
     targets: Vec<ExpertTarget>,
     birth_level: Option<ExpertLevel>,
 ) -> Result<ExpertProposal, ExpertProposalError> {
-    ExpertProposal::new(op, project(), targets, birth_level, RATIONALE)
+    // Birth names the base model of the newborn; other operations derive it from their targets.
+    let birth_base = (op == StructuralOp::Birth).then_some(BASE);
+    ExpertProposal::new(op, project(), targets, birth_level, birth_base, RATIONALE)
 }
 
 #[test]
@@ -221,9 +223,25 @@ fn merge_rejects_duplicates_and_mixed_levels() {
             generation: Generation(1)
         })
     );
-    // Same pod at another generation is a distinct target.
+    // Two generations of the same logical expert are never merged together, in either order.
     let newer = target("a", 2, token(3), ExpertState::Serving);
-    assert!(propose(StructuralOp::Merge, vec![serving("a"), newer], None).is_ok());
+    let multiple = Err(ExpertProposalError::MultipleGenerations {
+        pod: PodId::from("a"),
+        first: Generation(1),
+        second: Generation(2),
+    });
+    assert_eq!(
+        propose(StructuralOp::Merge, vec![serving("a"), newer.clone()], None),
+        multiple
+    );
+    assert_eq!(
+        propose(
+            StructuralOp::Merge,
+            vec![serving("b"), serving("a"), newer],
+            None
+        ),
+        multiple
+    );
 
     let other_layer = target("b", 1, token(4), ExpertState::Serving);
     assert_eq!(
@@ -254,6 +272,7 @@ fn malformed_targets_and_rationale_are_rejected() {
             StructuralOp::Freeze,
             project(),
             vec![serving("a")],
+            None,
             None,
             [0; 32]
         ),
@@ -326,6 +345,7 @@ fn proposal_has_no_override_surface() {
         project: parts_project,
         targets,
         birth_level,
+        birth_base_model,
         rationale_digest,
     } = proposal.parts();
     assert_eq!(op, StructuralOp::Merge);
@@ -333,6 +353,7 @@ fn proposal_has_no_override_surface() {
     assert_eq!(proposal.project(), &project());
     assert_eq!(targets.len(), 2);
     assert_eq!(birth_level, None);
+    assert_eq!(birth_base_model, None);
     assert_eq!(rationale_digest, &RATIONALE);
     assert_eq!(targets, proposal.targets());
 }
@@ -401,6 +422,7 @@ fn targets_must_belong_to_the_proposals_project() {
         ProjectId::from("other"),
         vec![foreign],
         None,
+        None,
         RATIONALE,
     )
     .unwrap();
@@ -411,6 +433,7 @@ fn targets_must_belong_to_the_proposals_project() {
         ProjectId::from("other"),
         vec![],
         Some(token(0)),
+        Some(BASE),
         RATIONALE,
     )
     .unwrap();
@@ -421,6 +444,7 @@ fn targets_must_belong_to_the_proposals_project() {
             ProjectId::from(""),
             vec![],
             Some(token(0)),
+            Some(BASE),
             RATIONALE
         ),
         Err(ExpertProposalError::BlankProject)
@@ -460,4 +484,53 @@ fn same_pod_id_in_different_projects_is_a_distinct_expert() {
     };
     assert_ne!(spec("proj"), spec("other"));
     assert_eq!(spec("other").project(), &ProjectId::from("other"));
+}
+
+#[test]
+fn birth_must_bind_a_base_model_and_others_must_not() {
+    let birth = |base| {
+        ExpertProposal::new(
+            StructuralOp::Birth,
+            project(),
+            vec![],
+            Some(token(0)),
+            base,
+            RATIONALE,
+        )
+    };
+    let ok = birth(Some(BASE)).unwrap();
+    assert_eq!(ok.birth_base_model(), Some(&BASE));
+    assert_eq!(birth(None), Err(ExpertProposalError::BirthWithoutBaseModel));
+    assert_eq!(
+        birth(Some([0; 32])),
+        Err(ExpertProposalError::ZeroBirthBaseModel)
+    );
+    for op in [
+        StructuralOp::Merge,
+        StructuralOp::Split,
+        StructuralOp::Freeze,
+        StructuralOp::Reactivate,
+        StructuralOp::Prune,
+        StructuralOp::Retire,
+    ] {
+        assert_eq!(
+            ExpertProposal::new(
+                op,
+                project(),
+                vec![serving("a"), serving("b")],
+                None,
+                Some(BASE),
+                RATIONALE
+            ),
+            Err(ExpertProposalError::UnexpectedBirthBaseModel { op })
+        );
+    }
+    let freeze = propose(StructuralOp::Freeze, vec![serving("a")], None).unwrap();
+    assert_eq!(freeze.birth_base_model(), None);
+    let readable = ExpertProposalError::MultipleGenerations {
+        pod: PodId::from("a"),
+        first: Generation(1),
+        second: Generation(2),
+    };
+    assert!(readable.to_string().contains("generations 1 and 2"));
 }

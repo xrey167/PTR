@@ -25,7 +25,7 @@
 //!
 //! An [`ExpertProposal`] has no threshold, gate, verifier, score-override or policy-parameter
 //! field, and no field that could hold one. It carries exactly the operation, the project the
-//! experts belong to, the experts it targets, the level of a newborn expert and a digest of the
+//! experts belong to, the experts it targets, the level and base-model digest of a newborn expert and a digest of the
 //! proposer's rationale. The project is identity (pods are registered per `(ProjectId, PodId)`),
 //! not a policy knob. A proposer
 //! therefore cannot loosen a gate or switch off a verifier by what it submits. This protects
@@ -36,7 +36,7 @@
 //! field is a visible, breaking change.
 
 use ptr_types::{Digest, Generation, PodId, ProjectId};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fmt;
 
 const ZERO_DIGEST: Digest = [0; 32];
@@ -212,6 +212,7 @@ pub struct ProposalParts<'a> {
     pub project: &'a ProjectId,
     pub targets: &'a [ExpertTarget],
     pub birth_level: Option<ExpertLevel>,
+    pub birth_base_model: Option<&'a Digest>,
     pub rationale_digest: &'a Digest,
 }
 
@@ -222,6 +223,7 @@ pub struct ExpertProposal {
     project: ProjectId,
     targets: Vec<ExpertTarget>,
     birth_level: Option<ExpertLevel>,
+    birth_base_model: Option<Digest>,
     rationale_digest: Digest,
 }
 
@@ -237,14 +239,26 @@ pub enum ExpertProposalError {
     BirthWithoutLevel,
     /// Only Birth may carry a birth level.
     UnexpectedBirthLevel { op: StructuralOp },
+    /// Birth must name the base model of the new expert.
+    BirthWithoutBaseModel,
+    /// Only Birth may carry a birth base model; other operations derive it from their targets.
+    UnexpectedBirthBaseModel { op: StructuralOp },
+    /// The birth base-model digest is all zero.
+    ZeroBirthBaseModel,
     /// A target's state does not allow the operation.
     WrongTargetState {
         op: StructuralOp,
         pod: PodId,
         state: ExpertState,
     },
-    /// Merge lists the same (pod, generation) twice.
+    /// Merge lists the same (project, pod, generation) twice.
     DuplicateTarget { pod: PodId, generation: Generation },
+    /// Merge lists two generations of the same logical expert (project, pod).
+    MultipleGenerations {
+        pod: PodId,
+        first: Generation,
+        second: Generation,
+    },
     /// Merge mixes levels, or Token experts of different layers.
     MixedLevels,
     /// Merge combines experts adapted from different base models.
@@ -274,6 +288,19 @@ impl fmt::Display for ExpertProposalError {
             Self::UnexpectedBirthLevel { op } => {
                 write!(f, "{op} must not carry a birth level; only birth may")
             }
+            Self::BirthWithoutBaseModel => {
+                f.write_str("birth must name the base model of the new expert")
+            }
+            Self::UnexpectedBirthBaseModel { op } => {
+                write!(f, "{op} must not carry a birth base model; only birth may")
+            }
+            Self::ZeroBirthBaseModel => f.write_str("birth base model digest is all zero"),
+            Self::MultipleGenerations { pod, first, second } => write!(
+                f,
+                "merge lists expert {pod} at generations {} and {}; one logical expert may \
+                 appear once",
+                first.0, second.0
+            ),
             Self::WrongTargetState { op, pod, state } => {
                 write!(f, "{op} cannot target expert {pod} in state {state:?}")
             }
@@ -311,6 +338,7 @@ impl ExpertProposal {
         project: ProjectId,
         targets: Vec<ExpertTarget>,
         birth_level: Option<ExpertLevel>,
+        birth_base_model: Option<Digest>,
         rationale_digest: Digest,
     ) -> Result<Self, ExpertProposalError> {
         if rationale_digest == ZERO_DIGEST {
@@ -340,6 +368,15 @@ impl ExpertProposal {
             (StructuralOp::Birth, None) => return Err(ExpertProposalError::BirthWithoutLevel),
             (StructuralOp::Birth, Some(_)) => {}
             (_, Some(_)) => return Err(ExpertProposalError::UnexpectedBirthLevel { op }),
+            (_, None) => {}
+        }
+        match (op, birth_base_model) {
+            (StructuralOp::Birth, None) => return Err(ExpertProposalError::BirthWithoutBaseModel),
+            (StructuralOp::Birth, Some(base)) if base == ZERO_DIGEST => {
+                return Err(ExpertProposalError::ZeroBirthBaseModel);
+            }
+            (StructuralOp::Birth, Some(_)) => {}
+            (_, Some(_)) => return Err(ExpertProposalError::UnexpectedBirthBaseModel { op }),
             (_, None) => {}
         }
         const LIVE: &[ExpertState] = &[ExpertState::Serving, ExpertState::Frozen];
@@ -382,6 +419,7 @@ impl ExpertProposal {
             project,
             targets,
             birth_level,
+            birth_base_model,
             rationale_digest,
         })
     }
@@ -401,6 +439,12 @@ impl ExpertProposal {
 
     pub fn birth_level(&self) -> Option<ExpertLevel> {
         self.birth_level
+    }
+
+    /// Base model of a newborn expert; `Some` exactly for Birth. Other operations derive the base
+    /// model from their targets (a merge requires them to agree).
+    pub fn birth_base_model(&self) -> Option<&Digest> {
+        self.birth_base_model.as_ref()
     }
 
     pub fn rationale_digest(&self) -> &Digest {
@@ -432,6 +476,7 @@ impl ExpertProposal {
             project,
             targets,
             birth_level,
+            birth_base_model,
             rationale_digest,
         } = self;
         ProposalParts {
@@ -439,6 +484,7 @@ impl ExpertProposal {
             project,
             targets,
             birth_level: *birth_level,
+            birth_base_model: birth_base_model.as_ref(),
             rationale_digest,
         }
     }
@@ -477,12 +523,22 @@ fn check_states(
 }
 
 fn check_merge(targets: &[ExpertTarget]) -> Result<(), ExpertProposalError> {
-    let mut seen = BTreeSet::new();
+    // One logical expert is (project, pod); two generations of it are never merged together
+    // (the older one is superseded). All targets share the proposal's project by now.
+    let mut seen = BTreeMap::new();
     for target in targets {
-        if !seen.insert((&target.pod, target.generation)) {
-            return Err(ExpertProposalError::DuplicateTarget {
-                pod: target.pod.clone(),
-                generation: target.generation,
+        if let Some(first) = seen.insert((&target.project, &target.pod), target.generation) {
+            return Err(if first == target.generation {
+                ExpertProposalError::DuplicateTarget {
+                    pod: target.pod.clone(),
+                    generation: target.generation,
+                }
+            } else {
+                ExpertProposalError::MultipleGenerations {
+                    pod: target.pod.clone(),
+                    first,
+                    second: target.generation,
+                }
             });
         }
     }
