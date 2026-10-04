@@ -8,8 +8,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 322 nonblank source lines · 4 integration-test files · 7 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-04  
+**Code footprint:** 1 Rust source files · 324 nonblank source lines · 4 integration-test files · 9 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -21,6 +21,7 @@
 - Typed server bind configuration with PTR_BIND and --bind overrides
 - ServerConfig::data_dir (default data) and a new ModelConfig::backend section (default reference-echo), overridable by PTR_DATA_DIR/--data-dir and PTR_MODEL_BACKEND/--backend, with the same file→environment→CLI precedence
 - PtrConfig::validate_daemon, a stricter check for the standalone daemon boundary on top of validate: only runtime.mode standalone, only a loopback server.bind, an explicit server.data_dir that already exists as a directory, and an explicit model.backend. Nothing in the workspace outside ptr-config calls it yet
+- Every configuration section refuses unknown keys (deny_unknown_fields), so a misspelled key or section fails the load instead of silently falling back to a default, and PtrConfig::from_path validates the loaded configuration before returning it
 
 ### Missing for the target architecture
 
@@ -54,6 +55,7 @@
 - CLI precedence and unknown-argument tests
 - server bind environment/CLI override test
 - daemon_validation_rejects_non_loopback_and_missing_persistence (validate_daemon refuses 0.0.0.0 and a missing data_dir, accepts loopback with an existing directory)
+- a_misspelled_key_is_refused_instead_of_silently_ignored and loading_from_a_path_validates_the_result
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
