@@ -8,6 +8,8 @@ because every item below refers to code that exists only there.*
 is recorded in "What this document got wrong" at the end, rather than quietly
 fixed — the same rule #20 applied to its own four wrong findings.*
 
+> **Status note, 2026-10-04.** This plan is a dated record and its body is not rewritten. Since it was written, several items it lists as open have been implemented: Pod access over the network (C3, `ptr-podwire`), membership changes one voter at a time (C5, `propose_membership`), the fencing token (C2, checked before each write but not atomic with it, as document 31 states), and an address authority (`PeerBook`, the half of C8 that is not discovery). C6 has an API (`take_installed_snapshot_matching`) but the host must still supply the independent anchor, and C7 is half closed. For what remains, the maintained record is the "does not close" section of each architecture contract. [`RECOMMENDATIONS_20260924.md`](RECOMMENDATIONS_20260924.md) is a dated successor of this plan: its progress notes are updated as items land, but its body describes the repository as it was on 2026-09-24 and is not a current inventory.
+
 ## Why this document exists
 
 PR #21 closed every requirement box in #20, with implementation, positive **and**

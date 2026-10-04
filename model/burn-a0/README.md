@@ -96,14 +96,16 @@ The remaining alignment work is explicit:
 
 This workspace is excluded from the root workspace and requires **1.95**
 (`Cargo.toml`), which is why `.github/workflows/burn-a0.yml` runs it on stable and
-on 1.95.0 rather than on the repository's own MSRV. The bridge member requires
-1.99 and has its own job, `bridge`, on 1.99.0.
+on 1.95.0 rather than on the root workspace's 1.99.0 toolchain. The bridge member
+requires 1.99 and has its own job, `bridge`, on 1.99.0.
 
 It carries its own `clippy.toml`. Clippy takes its MSRV from the nearest
 `clippy.toml` walking upward and that file wins over `rust-version`, so without
-one here the crate was linted at the root's `1.85.0` and every lint whose
-suggestion needs a newer compiler was suppressed. Clippy does report the
-disagreement on every run, but the message is not a named lint, so `-D warnings`
+one here the crate would be linted at the root's `1.99.0`. That is newer than this
+crate's 1.95, so lints could suggest APIs the crate's own minimum compiler does not
+have. (Earlier the root's MSRV was the older one, and the opposite happened: every
+lint whose suggestion needed a newer compiler was suppressed.) Clippy does report
+the disagreement on every run, but the message is not a named lint, so `-D warnings`
 cannot promote it and the job exits 0 either way.
 `scripts/check_msrv_alignment.py` is what keeps the two equal.
 
@@ -129,7 +131,7 @@ See `bridge/README.md` and `docs/architecture/26-cognitive-codebook.md`.
 - a checkpoint written through this crate's own `save` is still unbound: binding as it is saved is what `bridge/`'s `save_bound_checkpoint` does, and nothing forces a trainer to use it;
 - CUDA/CubeCL benchmark evidence.
 
-This isolated prototype pins **Burn 0.22.0-pre.3**, uses **Rust 1.95**, and keeps its own lockfile. This explicit prerelease/device-API migration removes the old bincode recording dependency. It does not raise the default runtime core's Rust 1.85 gate or establish a production framework choice. Training uses `Device::flex().autodiff()`.
+This isolated prototype pins **Burn 0.22.0-pre.3**, uses **Rust 1.95**, and keeps its own lockfile. This explicit prerelease/device-API migration removes the old bincode recording dependency. It does not change the default runtime core's Rust 1.99 gate or establish a production framework choice. Training uses `Device::flex().autodiff()`.
 
 `examples/write_checkpoint.rs` regenerates `crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt`, the artifact the production runtime's tests bind. The two workspaces do not build together, so a committed artifact is the only thing that would catch them disagreeing about the format.
 

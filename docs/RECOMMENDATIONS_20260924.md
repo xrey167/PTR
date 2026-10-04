@@ -50,6 +50,37 @@ the matched baseline comparison, which still waits on 1.6 (owner decision O2):
 | 1.4 | `hardware/a0-cpu-4core.toml` holds measured values, and every run record embeds the profile's contents, the host and rustc. The M001–M004 manifests name it; the baseline comparison must name its own host's profile | `scripts/tests/test_run_experiment.py` |
 | 1.5 | `benchmarks/operator-routing/` has a generator, a scorer written independently of it, references, a split lock and 53 tests; CI regenerates the data and runs the tests | `benchmarks/operator-routing/README.md` |
 
+*Progress on Step 3 (2026-10-04).* Items 3.3 and 3.5 are done, 3.6 is half done (the
+L001 numbers are marked as historical v1-format evidence; the rerun on PTRLOG02 is
+still open), and so is most of 3.7: `STATUS.md`, `docs/CONFIGURATION.md`, `sdk/README.md`, `docs/PRIORITIES.md`,
+`docs/ROADMAP.md`, architecture documents 26, 27 and 31 and a status note on
+`OPEN_ITEMS_PLAN_20260921.md` were brought in line with the code, and the root
+`README.md`, `CONTRIBUTING.md` and the Burn A0 documents now state the current
+toolchains (1.99.0 for the root workspace, 1.95.0 for A0). Still open: 3.2 (generating
+the "Upstream / Downstream" lines from `cargo metadata`), the stale id of the
+`burn-0.18-ndarray-a0` evaluation candidate, and the historical MSRV 1.85 mentions in
+ADR-0016, in the research documents and in a comment in `crates/ptr-net/Cargo.toml`
+(the last needs a `component.toml` change in the same commit, per the freshness rule).
+
+One item outside Step 3 was found done during the same pass: 2.5. `bins/ptrd` now
+exits on a configuration error instead of falling back to defaults, and opens the
+durable runtime with `PtrRuntime::open_durable`.
+
+*Crate-by-crate review fixes (2026-10-04).* The verified findings of the crate-by-crate
+review were merged in four batches, each finding with a test that failed before the
+change: PR 96 (`PodRevisionAddress::parse` accepts only the canonical spelling, a
+mesh endpoint is validated before encoding, Pod evidence decoding no longer sizes an
+allocation from a stored count), PR 98 (`ptr-config` refuses unknown keys and
+validates a configuration loaded from a path), PR 99 (`PodHeader::validate` and
+`PodRoute::validate` refuse a zero placement epoch, `PodHeader` also a zero fencing
+token) and PR 104 (a policy bundle is bounded by item count and byte length
+separately and `verify` refuses what replay could not read, a merge cannot be approved
+by the branch's own author, a scope that ended but was never released is
+recovery-pending after a restart); PR 108 extended the `verify` bound to the signing
+key identifier. PR 97 fixed three `ptr-pg` tests that assumed one
+SQLSTATE for every PostgreSQL version. The review's complete list of findings is not
+in the repository, so this note records what was merged and not what remains.
+
 The rest of this document is unchanged and still describes `e93ed99`.
 
 ## 1. The diagnosis in one paragraph

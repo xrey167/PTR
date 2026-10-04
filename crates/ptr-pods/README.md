@@ -1,7 +1,7 @@
 # ptr-pods — Cognitive Pod Fabric
 
 > **Role:** Defines specialist computational modules through semantic contracts rather than fragile tool names.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status

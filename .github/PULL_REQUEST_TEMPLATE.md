@@ -16,6 +16,6 @@
 
 ## Checks
 ```
-make ci-local   # everything .github/workflows/ci.yml runs
+make ci-local   # the Linux jobs of .github/workflows/ci.yml; CONTRIBUTING.md lists what it does not reproduce
 make a0         # when model/burn-a0, anything under crates/ (the A0 bridge depends on ptr-runtime), root Cargo.toml, the codebook or vendor/ changed
 ```

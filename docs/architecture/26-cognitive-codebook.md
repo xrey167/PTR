@@ -337,6 +337,7 @@ Every refusal is distinct and none of them falls back:
 | `PTR_CKPT_NOT_A_CHECKPOINT` | foreign or empty bytes |
 | `PTR_CKPT_UNKNOWN_FORMAT` | a layout this build does not know, rather than parsing it anyway |
 | `PTR_CKPT_TRUNCATED` / `PTR_CKPT_PAYLOAD_LENGTH` | an artifact that ends inside a field or inside its payload |
+| `PTR_CKPT_NOT_UTF8` | a string field that is not UTF-8 |
 | `PTR_CKPT_TRAILING_BYTES` | writer and reader disagreeing about the layout |
 | `PTR_CKPT_UNKNOWN_FAMILY` | a family name this build does not define |
 | `PTR_CKPT_DUPLICATE_FAMILY` | one family with two widths, so neither is its width |
@@ -344,6 +345,7 @@ Every refusal is distinct and none of them falls back:
 | `PTR_CKPT_CODEBOOK_MOVED` | **the same version with a different assignment** |
 | `PTR_CKPT_TABLE_SIZE` | weights built for eight roles where the kernel defines nine |
 | `PTR_CKPT_MISSING_TABLE` | a family the reader requires and the artifact never recorded |
+| `PTR_CKPT_ENCODING_MOVED` | an artifact whose recorded slot-encoding version is not the one this build produces; the encoding makes the model's input and no weights, so no tensor shape would reveal it |
 
 `CODEBOOK_MOVED` is the one the version number cannot catch, and it is why the
 assignment is carried at all.
