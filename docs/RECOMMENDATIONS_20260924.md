@@ -76,7 +76,8 @@ validates a configuration loaded from a path), PR 99 (`PodHeader::validate` and
 token) and PR 104 (a policy bundle is bounded by item count and byte length
 separately and `verify` refuses what replay could not read, a merge cannot be approved
 by the branch's own author, a scope that ended but was never released is
-recovery-pending after a restart). PR 97 fixed three `ptr-pg` tests that assumed one
+recovery-pending after a restart); PR 108 extended the `verify` bound to the signing
+key identifier. PR 97 fixed three `ptr-pg` tests that assumed one
 SQLSTATE for every PostgreSQL version. The review's complete list of findings is not
 in the repository, so this note records what was merged and not what remains.
 
