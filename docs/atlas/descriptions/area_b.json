@@ -409,7 +409,7 @@
      "from": "ptrd",
      "to": "runtime",
      "label": "PtrRuntime::open_durable on data_dir/ledger.log",
-     "note": "Opens the file ledger and replays every persisted record through lifecycle validation and state application, then marks scopes as needing recovery. An unsettled effect attempt found in the log fences the runtime from the start.",
+     "note": "Opens the file ledger and replays every persisted record through lifecycle validation and state application, then marks every scope that was not yet released as needing recovery, including scopes that had ended but were never cleaned up. An unsettled effect attempt found in the log fences the runtime from the start.",
      "evidence": "bins/ptrd/src/main.rs:66-67"
     },
     {
@@ -452,14 +452,14 @@
      "to": "ledger",
      "label": "append_semantic through append_checked to append_durable",
      "note": "Marks the commit uncertain, then the file ledger writes a framed hash-chained record and syncs it to disk before anything else is applied.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:2393-2409"
+     "evidence": "crates/ptr-runtime/src/lib.rs:2399-2415"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "apply_committed publishes the delta and projects state",
      "note": "The prepared delta becomes the live semantic snapshot and the materialized state applies the record; the uncertainty flag clears only after this succeeds.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:2802-2810"
+     "evidence": "crates/ptr-runtime/src/lib.rs:2808-2816"
     },
     {
      "from": "runtime",
@@ -473,14 +473,14 @@
      "to": "model",
      "label": "backend.infer with the semantic context",
      "note": "The backend receives the request id, the sorted semantic context at the new revision and the raw text. The echo backend returns Token then Finished; the scenario backend returns Token then a mutation ActionReady.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1412-1423"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1418-1429"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "Classify events: finish, action, or pod request",
      "note": "More than one control event is refused. Finished with no control event emits RequestFinished and returns; an action is returned without emitting RequestFinished; a pod request goes to the pod loop, which with the daemon's empty registry ends in PodUnavailable.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1425-1487"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1431-1493"
     },
     {
      "from": "server",
@@ -541,28 +541,28 @@
      "to": "model",
      "label": "Ingest the request and call backend.infer",
      "note": "Ingress commit first, then the backend is asked for its first batch of events. run_model_with_pods is the older single-pass variant that never resumes.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1412-1423"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1418-1429"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "Split events into pod requests and actions, refuse mixes",
      "note": "Each round extracts PodRequested and ActionReady events. Two or more control events are refused (MixedControlEvents or MultipleControlEvents); no control event and no Finished is ModelNoProgress.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1425-1472"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1431-1478"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "Bound the loop at max_rounds",
      "note": "A pod request on the last round fails with ModelResumeLimit instead of invoking another Pod.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1474-1476"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1480-1482"
     },
     {
      "from": "runtime",
      "to": "router",
      "label": "PodRouter::select(project, capability, input_type)",
      "note": "The router asks the project-scoped registry for candidates, scores them equally and takes the highest by Pod id. A missing Pod and a Pod in another project give the same PodUnavailable error.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1478-1487"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1484-1493"
     },
     {
      "from": "router",
@@ -576,14 +576,14 @@
      "to": "runtime",
      "label": "Effect gate: only Pure or Read Pods may run here",
      "note": "Any other declared effect returns PodEffectRequiresActionBoundary before the Pod is invoked; effects must go through the action gateway.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1489-1498"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1495-1504"
     },
     {
      "from": "runtime",
      "to": "pods",
      "label": "Emit PodInvoked and call pod.invoke(TypedPayload)",
      "note": "The payload is wrapped with the requested input type and the Pod returns a typed output or an error.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1500-1506"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1506-1512"
     },
     {
      "from": "runtime",
@@ -604,14 +604,14 @@
      "to": "model",
      "label": "backend.resume with a ModelObservation",
      "note": "The observation carries the new revision, Pod id, type and bytes; the semantic context is refreshed first and the round number increments, then the loop repeats until Finished or an action.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1508-1527"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1514-1533"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "Alternative entry: admit_pod_output with manifest bindings",
      "note": "A separate admission path for mesh-style outputs: it checks fence, scope, session and lease binding, manifest digest, generation, artifact and dependencies, verifies, commits PodOutputAdmitted first, then routes by output kind to candidate, hypothesis (a second record), action proposal or promotion. A retry replays the earlier answer only when the follow-up record is already in the ledger, otherwise it completes the missing step. Not called by the daemon.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1821-2147"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1827-2153"
     }
    ]
   },
@@ -658,7 +658,7 @@
      "to": "security",
      "label": "authorize_action: permissions, revision, generation",
      "note": "The runtime builds an ActionAuthorization from the permission set, live generation and revocations and maps denials to StaleRevision, StaleGeneration, UnknownGeneration or PermissionDenied.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1533-1575"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1539-1581"
     },
     {
      "from": "server",
@@ -706,7 +706,7 @@
      "from": "gateway",
      "to": "executor",
      "label": "executor.execute(VerifiedDispatch)",
-     "note": "Only the runtime builds a VerifiedDispatch. The demo executor re-checks the contract and creates demo-note.txt with create_new and a sync; a second distinct note fails because the file exists.",
+     "note": "Only the runtime builds a VerifiedDispatch. The demo executor re-checks the contract and replaces demo-note.txt atomically (temporary file, fsync, rename), so a second distinct note overwrites the first and does not fail or fence the runtime.",
      "evidence": "crates/ptr-runtime/src/execution.rs:1118-1128"
     },
     {
@@ -823,57 +823,57 @@
      "from": "host",
      "to": "merge",
      "label": "merge_branch with Triage or Reviewed authority",
-     "note": "Refuses a fenced runtime or no grant; Triage needs a grant merge policy and Reviewed needs a reviewer the grant lists.",
-     "evidence": "crates/ptr-runtime/src/merge.rs:848-883"
+     "note": "Refuses a fenced runtime or no grant; Triage needs a grant merge policy; Reviewed needs a reviewer the grant lists who is not the branch's own author (SelfApproval).",
+     "evidence": "crates/ptr-runtime/src/merge.rs:849-889"
     },
     {
      "from": "merge",
      "to": "branch",
      "label": "certify_merge: provenance, once-only, ptr_branch::certify",
      "note": "Branch id and author must be valid provenance text, a branch already merged is refused, and certification checks the sealed branch against current state and the generations it relied on, producing a merge plan and its digest.",
-     "evidence": "crates/ptr-runtime/src/merge.rs:994-1021"
+     "evidence": "crates/ptr-runtime/src/merge.rs:1000-1027"
     },
     {
      "from": "merge",
      "to": "merge",
      "label": "Reviewed: approved plan digest must equal the current one",
      "note": "If anything in the plan changed since approval, MergePlanChanged is returned and nothing is judged.",
-     "evidence": "crates/ptr-runtime/src/merge.rs:885-892"
+     "evidence": "crates/ptr-runtime/src/merge.rs:891-898"
     },
     {
      "from": "merge",
      "to": "verifier",
      "label": "judge_merge: reserved keys, prepare, every verifier",
      "note": "A plan that writes, removes or derives an ingress key, or evicts one, is refused; otherwise the prepared change is judged by all verifiers.",
-     "evidence": "crates/ptr-runtime/src/merge.rs:1025-1059"
+     "evidence": "crates/ptr-runtime/src/merge.rs:1031-1065"
     },
     {
      "from": "merge",
      "to": "merge",
      "label": "Decide: hold, escalate, no change or commit",
      "note": "A verifier rejection is held whatever the authority. Under Triage, a policy that does not auto-propose is held as Escalated for a person to approve by plan digest. A change that alters nothing returns NoChange and does not mark the branch merged.",
-     "evidence": "crates/ptr-runtime/src/merge.rs:926-948"
+     "evidence": "crates/ptr-runtime/src/merge.rs:932-954"
     },
     {
      "from": "merge",
      "to": "semantic",
      "label": "Build the Merge origin and validate it as replay will",
      "note": "The record names branch, author, seal, plan, dependencies, rebased keys, attestation and authority; rules R3 and R4 check provenance, score range, no dependency entry, plan digest equality and branch not yet merged.",
-     "evidence": "crates/ptr-runtime/src/merge.rs:950-962"
+     "evidence": "crates/ptr-runtime/src/merge.rs:956-968"
     },
     {
      "from": "merge",
      "to": "ledger",
      "label": "Append and mark the branch merged",
      "note": "The record is checked for encodability, appended, and state projects the merged-branch key so a second merge of the same id is refused. A MergeReceipt is returned.",
-     "evidence": "crates/ptr-runtime/src/merge.rs:963-989"
+     "evidence": "crates/ptr-runtime/src/merge.rs:969-995"
     },
     {
      "from": "host",
      "to": "merge",
      "label": "merge_pod_hypothesis rebuilds a Pod hypothesis as a branch",
      "note": "A persisted PodHypothesis is turned into a sealed branch and sent through merge_branch, so a hypothesis never publishes semantics by itself.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:725-758"
+     "evidence": "crates/ptr-runtime/src/lib.rs:731-764"
     }
    ]
   },
@@ -999,7 +999,7 @@
      "to": "tier",
      "label": "Journaled replica transfer and residency control",
      "note": "transfer_tier_replica_journaled commits Preparing, runs the controller transfer (budget, source readable, destination available) and commits Available, or Corrupt on failure; TierJournalProjection rebuilds backend, object and replica state from the ledger.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1758-1816"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1764-1822"
     },
     {
      "from": "migration",
@@ -1081,35 +1081,35 @@
      "to": "runtime",
      "label": "revoke_identity_session journals a SessionRevoked tombstone",
      "note": "The tombstone is committed before it is materialized, and a repeat is idempotent.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:871-893"
+     "evidence": "crates/ptr-runtime/src/lib.rs:877-899"
     },
     {
      "from": "runtime",
      "to": "manifest",
      "label": "admit_identity_context names the principal issuer:subject",
      "note": "A revoked session is refused, otherwise the manifest authority registry records the principal that later manifests must name.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:900-917"
+     "evidence": "crates/ptr-runtime/src/lib.rs:906-923"
     },
     {
      "from": "policy",
      "to": "policy",
      "label": "SignedPolicyBundle::verify against the trust store",
-     "note": "Checks key id, signature length, revision, payload validity, digest equality, validity window, known and unrevoked key, and the Ed25519 signature.",
-     "evidence": "crates/ptr-runtime/src/policy.rs:305-335"
+     "note": "Checks key id, signature length, revision, payload validity (which includes a dry-run decode of the canonical payload and its size bound, so nothing verifies that replay could not read back), digest equality, validity window, known and unrevoked key, and the Ed25519 signature.",
+     "evidence": "crates/ptr-runtime/src/policy.rs:315-345"
     },
     {
      "from": "runtime",
      "to": "runtime",
      "label": "activate_policy_bundle commits PolicyBundleActivated",
      "note": "Verification, then a projection update, then the ledger record, then the live authority registry is replaced; policy_authority_ready becomes true.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:994-1027"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1000-1033"
     },
     {
      "from": "runtime",
      "to": "manifest",
      "label": "admit_execution_manifest_from_runtime binds the manifest",
      "note": "The manifest principal must equal the identity's issuer:subject and the identity must be valid at the given time, the policy authority must be ready, the identity must be admitted, and the manifest snapshot revision and protected snapshot digest must equal the live ones.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:957-992"
+     "evidence": "crates/ptr-runtime/src/lib.rs:963-998"
     },
     {
      "from": "manifest",
@@ -1123,7 +1123,7 @@
      "to": "runtime",
      "label": "Commit ExecutionManifestAdmitted and register it",
      "note": "The canonical manifest is committed, then the authority projection observes it; replay rebuilds the registry, and resolve_execution_manifest returns the immutable record by digest.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:800-833"
+     "evidence": "crates/ptr-runtime/src/lib.rs:806-839"
     },
     {
      "from": "directory",

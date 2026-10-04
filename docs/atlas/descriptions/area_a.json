@@ -807,15 +807,15 @@
      "from": "ptrd",
      "to": "cfg",
      "label": "PtrConfig::from_path loads the file over defaults",
-     "note": "Every section uses serde default, so keys missing from the TOML keep built-in defaults such as 127.0.0.1:8080 and a mailbox capacity of 128. The path comes from --config, PTR_CONFIG or config/default.toml.",
-     "evidence": "crates/ptr-config/src/lib.rs:116-119"
+     "note": "Every section uses serde default, so keys missing from the TOML keep built-in defaults such as 127.0.0.1:8080 and a mailbox capacity of 128, while an unknown key or section is refused. The loaded configuration is validated before it is returned. The path comes from --config, PTR_CONFIG or config/default.toml.",
+     "evidence": "crates/ptr-config/src/lib.rs:116-121"
     },
     {
      "from": "ptrd",
      "to": "cfg",
      "label": "apply_env overrides the file",
      "note": "A fixed table of PTR_ variables is applied; an unknown name is ignored; a bad number or boolean is an error; then validate runs.",
-     "evidence": "crates/ptr-config/src/lib.rs:121-172"
+     "evidence": "crates/ptr-config/src/lib.rs:123-174"
     },
     {
      "from": "ptrd",
@@ -829,28 +829,28 @@
      "to": "cfg",
      "label": "validate_daemon is the stricter startup gate",
      "note": "Requires standalone mode, a loopback bind, an existing explicit data directory and a named model backend.",
-     "evidence": "crates/ptr-config/src/lib.rs:193-214"
+     "evidence": "crates/ptr-config/src/lib.rs:195-216"
     },
     {
      "from": "ptrd",
      "to": "rt",
      "label": "PtrRuntime::open_durable opens the ledger file",
      "note": "Calls FileLedger::open on data_dir/ledger.log and replays what it holds.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:620-623"
+     "evidence": "crates/ptr-runtime/src/lib.rs:626-629"
     },
     {
      "from": "rt",
      "to": "led",
      "label": "Replay each persisted event",
      "note": "Each event passes lifecycle and semantic validation before apply_committed.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:626-636"
+     "evidence": "crates/ptr-runtime/src/lib.rs:632-642"
     },
     {
      "from": "rt",
      "to": "state",
      "label": "apply_committed ends in MaterializedState::apply",
      "note": "After the event-specific handling the runtime applies the committed event to its projection.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:3059"
+     "evidence": "crates/ptr-runtime/src/lib.rs:3065"
     },
     {
      "from": "state",

@@ -941,14 +941,14 @@
      "to": "registry",
      "label": "Route and fetch the Pod inside the request's project",
      "note": "Another project's Pod is unavailable in the same words as a missing one.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1343-1349"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1349-1355"
     },
     {
      "from": "loop",
      "to": "loop",
      "label": "Effect gate: only Pure or Read Pods run here",
      "note": "Any other effect returns PodEffectRequiresActionBoundary.",
-     "evidence": "crates/ptr-runtime/src/lib.rs:1351-1360"
+     "evidence": "crates/ptr-runtime/src/lib.rs:1357-1366"
     },
     {
      "from": "loop",

@@ -573,7 +573,7 @@
      "to": "runtime",
      "label": "certify_merge, then judge_merge",
      "note": "The runtime certifies again against its own state, refuses a branch already merged, and lets the host grant's verifiers judge the exact state it would publish.",
-     "evidence": "crates/ptr-runtime/src/merge.rs:994"
+     "evidence": "crates/ptr-runtime/src/merge.rs:1000"
     },
     {
      "from": "runtime",
@@ -594,7 +594,7 @@
      "to": "runtime",
      "label": "Commit or hold under the grant",
      "note": "Auto-propose commits the plan once per branch id with a MergeRecord; escalate or verifier rejection returns MergeOutcome::Held. certify() itself never commits anything.",
-     "evidence": "crates/ptr-runtime/src/merge.rs:927-974"
+     "evidence": "crates/ptr-runtime/src/merge.rs:933-980"
     }
    ]
   },

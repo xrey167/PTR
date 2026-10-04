@@ -1141,7 +1141,7 @@
    "dev_deps": {},
    "modules": [
     {
-     "loc": 322,
+     "loc": 324,
      "doc": "",
      "tests": 0,
      "items": [
@@ -1224,8 +1224,8 @@
     },
     {
      "path": "tests/config.rs",
-     "loc": 18,
-     "tests": 2
+     "loc": 37,
+     "tests": 4
     },
     {
      "path": "tests/env.rs",
@@ -1238,9 +1238,9 @@
      "tests": 1
     }
    ],
-   "src_loc": 322,
+   "src_loc": 324,
    "src_tests": 0,
-   "integration_tests": 7,
+   "integration_tests": 9,
    "used_by": [
     "ptr-bench",
     "ptr-runtime",
@@ -6881,7 +6881,7 @@
     },
     {
      "path": "tests/postgres.rs",
-     "loc": 10261,
+     "loc": 10286,
      "tests": 120
     }
    ],
@@ -9709,7 +9709,7 @@
      "declared": []
     },
     {
-     "loc": 2980,
+     "loc": 2986,
      "doc": "",
      "tests": 2,
      "items": [
@@ -10154,7 +10154,7 @@
      "declared": []
     },
     {
-     "loc": 1060,
+     "loc": 1066,
      "doc": "The host policy every semantic write that is not ingress is admitted under, what its verifiers judge, and the one way an agent branch is merged.  A semantic record reaches the ledger in one of three ways. Ingress writes the raw text of a request ([`PtrRuntime::ingest_text`]) or a Pod's verified output, in shapes the runtime fixes and replay checks again. A host write ([`PtrRuntime::apply_verified_semantic_delta`]) is admitted only by every verifier of the [`SemanticGrant`] the host installed, and its record names the principal, the verifiers, the level they reached and their soft findings. A merge ([`PtrRuntime::merge_branch`]) certifies a sealed agent branch against the runtime's own state, is admitted by the same verifiers, commits only under the grant's merge policy or the approval of a reviewer the grant lists, and its record names the branch, its author, the sealed branch, the plan, the verifiers and the authority, at most once per branch id.  A grant is installed once and is not history: nothing of it is journaled but what a record it admits names. Replay re-checks everything that is deterministic about a record and never runs a verifier again.  [`PtrRuntime::ingest_text`]: crate::PtrRuntime::ingest_text [`PtrRuntime::apply_verified_semantic_delta`]: crate::PtrRuntime::apply_verified_semantic_delta [`PtrRuntime::merge_branch`]: crate::PtrRuntime::merge_branch",
      "tests": 0,
      "items": [
@@ -10790,9 +10790,9 @@
      "declared": []
     },
     {
-     "loc": 502,
+     "loc": 618,
      "doc": "",
-     "tests": 4,
+     "tests": 6,
      "items": [
       {
        "kind": "struct",
@@ -10991,7 +10991,7 @@
      ]
     },
     {
-     "loc": 541,
+     "loc": 543,
      "doc": "",
      "tests": 1,
      "items": [
@@ -11560,8 +11560,8 @@
     },
     {
      "path": "tests/branch_merge.rs",
-     "loc": 1677,
-     "tests": 28
+     "loc": 1720,
+     "tests": 29
     },
     {
      "path": "tests/checkpoint_binding.rs",
@@ -11735,8 +11735,8 @@
     },
     {
      "path": "tests/scope_journal.rs",
-     "loc": 325,
-     "tests": 6
+     "loc": 390,
+     "tests": 7
     },
     {
      "path": "tests/scopes.rs",
@@ -11784,9 +11784,9 @@
      "tests": 16
     }
    ],
-   "src_loc": 14703,
-   "src_tests": 37,
-   "integration_tests": 366,
+   "src_loc": 14833,
+   "src_tests": 39,
+   "integration_tests": 368,
    "used_by": [
     "ptr-bench",
     "ptr-execwire",
@@ -13441,9 +13441,9 @@
      "declared": []
     },
     {
-     "loc": 469,
+     "loc": 525,
      "doc": "",
-     "tests": 5,
+     "tests": 6,
      "items": [
       {
        "kind": "struct",
@@ -13716,8 +13716,8 @@
      "tests": 1
     }
    ],
-   "src_loc": 2975,
-   "src_tests": 34,
+   "src_loc": 3031,
+   "src_tests": 35,
    "integration_tests": 42,
    "used_by": [
     "ptr-bench",
