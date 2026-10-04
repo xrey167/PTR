@@ -321,7 +321,7 @@ maturity this mapping found. *Used by* lists crates that actually import it.
 | `ptr-net` | 305 | 7 / 1 (8 with `iroh-backend`) | prototype → **external adapter** | cluster, podwire, execwire (optional) | Six ALPN constants; `IrohTransport` (feature-gated iroh 1.2, needs Rust 1.91); `PeerBook` address authority. Binds only `127.0.0.1` with relays off and a fresh key on every bind (`src/lib.rs:48-52`). The `Transport` trait has no implementor. |
 | `ptr-podwire` | 1,486 | 33 / 24 (34 with feature) | prototype → **implemented** (loopback) | none | Pod access protocol on `ptr-podwire/1`: `PTRPWREQ`/`PTRPWANS` frames, per-peer project scope, Pure/Read only, protocol-version check, verifier gate. |
 | `ptr-execwire` | 1,447 | 27 / 14 (28 with feature) | prototype → **implemented** (loopback) | none | Execution requests and receipts on `ptr-exec/1` (`PTREXREQ`/`PTREXRCP`) driving the real runtime gateway; the peer is the authenticated QUIC key. |
-| `ptr-cluster` | 726 | 15 / 6 (15 with feature) | prototype → **partial** | none | Raft batches on `ptr-raft/1` (`PTRRAFTW`) wrapping ptr-ledger's `RaftNode`. No accept loop; `serve_once` returns messages for other members with no public way to deliver them. |
+| `ptr-cluster` | 726 | 15 / 6 (15 with feature) | prototype → **partial** | none | Raft batches on `ptr-raft/1` (`PTRRAFTW`) wrapping ptr-ledger's `RaftNode`. `ClusterMember::serve` runs `serve_once` under `ptr_net::serve` and delivers the messages each step produced for other members after answering (D4 in issue #23); nothing composes a member yet and no tick service runs. |
 
 ### 5.6 Edge: observability and server
 
@@ -412,9 +412,12 @@ projection > cache > transient model state. No layer promotes itself upward.
 - **Single host only:** the transport binds `127.0.0.1` with relays disabled
   (`crates/ptr-net/src/lib.rs:48-52`). Every bind generates a fresh identity, so a
   restarted node has a new id.
-- **No composition:** there is no accept loop, retry policy or connection reuse,
-  and no binary composes any of the three wires. `runtime.mode = "cluster"` changes
-  nothing.
+- **Composition is partial:** `ptr_net::serve` is one accept loop for every wire,
+  with a host-written `ServePolicy` (limit, deadline, shutdown; D4 in issue #23), and
+  `ptrd` composes the execution and Pod wires from `[wire]` next to its HTTP API.
+  There is still no retry policy or connection reuse, `ptrd` admits no peer on
+  either wire, and no binary composes a cluster member: `runtime.mode = "cluster"`
+  changes nothing.
 - **Toolchain:** the iroh-backed features need Rust 1.91. The workspace's declared
   MSRV (1.85) holds only for default features.
 
@@ -512,8 +515,8 @@ an explicit migration step converts, writing a new file.
 | `PTRCODEBOOK\0` | C | ptr-types `codebook.rs:357` | Canonical codebook bytes, fingerprinted into `datasets/generated/codebook.json` | Codebook V1; append-only per version |
 | `PTR-SLOT-ENCODING-V1` | D | ptr-types `slot_encoding.rs:223` | Seed of the slot-vector mixer | output values pinned by a test |
 | `PTRRAFTW` | W | ptr-cluster `frame.rs:13` | Raft batch on `ptr-raft/1` | `FORMAT_V1` `u16` |
-| `PTREXREQ`, `PTREXRCP`, `PTREXW01-REQUEST` | W, W, D | ptr-execwire `frame.rs:24-31` | Execution request, receipt, request digest on `ptr-exec/1` | `FORMAT_V1` `u16` |
-| `PTRPWREQ`, `PTRPWANS`, `PTRPW001-REQUEST` | W, W, D | ptr-podwire `frame.rs:33-41` | Pod request, answer, request digest on `ptr-podwire/1` | `FORMAT_V1` `u16` |
+| `PTREXREQ`, `PTREXRCP`, `PTREXW01-REQUEST`, `ptr-exec-receipt/v2\0` | W, W, D, D | ptr-execwire `frame.rs` | Execution request, signed receipt, request digest, receipt signature domain (Ed25519, endpoint key) on `ptr-exec/1` | request `FORMAT_V1`, receipt `RECEIPT_FORMAT_V2` (signed; the unsigned V1 receipt is refused by name) `u16` |
+| `PTRPWREQ`, `PTRPWANS`, `PTRPW001-REQUEST`, `ptr-pod-answer/v1\0` | W, W, D, D | ptr-podwire `frame.rs` | Pod request, signed answer, request digest, answer signature domain (Ed25519, endpoint key) on `ptr-podwire/1` | request `FORMAT_V1`/`V2`/`V3`, answer `SIGNED_ANSWER_V1`/`V2`/`V3` = 4/5/6 (unsigned 1/2/3 refused by name) `u16` |
 
 **Unwritten policies:**
 

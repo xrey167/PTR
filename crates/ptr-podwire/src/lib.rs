@@ -29,18 +29,20 @@
 //! over this wire writes nothing to the host's history" is a fact about the type
 //! rather than a promise about the code: there is nothing here to write to.
 //!
-//! What this is not: it is not a daemon. Nothing here loops, ticks or retries. A
-//! caller drives `serve_once` and `request`.
+//! What this is not: it is not a daemon of its own. Nothing here ticks or retries.
+//! A caller drives `serve_once` and `request`, or hands `PodHost::serve` a
+//! `ptr_net::ServePolicy` — the loop is `ptr-net`'s mechanism and when it gives up
+//! is the host's written policy (D4 in issue #23).
 mod access;
 mod frame;
 
 pub use access::{answer, PodAccessPolicy, PodScope, PolicyError};
 pub use frame::{
-    decode_answer, decode_answer_v2, decode_request, decode_request_v2, encode_answer,
-    encode_answer_v2, encode_request, encode_request_v2, request_digest, FrameError,
+    decode_request, decode_request_v2, encode_answer, encode_answer_v2, encode_request,
+    encode_request_v2, request_digest, verify_answer, verify_answer_v2, AnswerError, FrameError,
     PodAddressBinding, PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome, PodRequest,
-    PodRequestV2, RefusalCode, FORMAT_V1, FORMAT_V2, FORMAT_V3, MAX_BODY_BYTES, MAX_FIELD_BYTES,
-    MAX_FRAME_BYTES,
+    PodRequestV2, RefusalCode, ANSWER_DOMAIN, FORMAT_V1, FORMAT_V2, FORMAT_V3, MAX_BODY_BYTES,
+    MAX_FIELD_BYTES, MAX_FRAME_BYTES, SIGNED_ANSWER_V1, SIGNED_ANSWER_V2, SIGNED_ANSWER_V3,
 };
 
 #[cfg(feature = "podwire-backend")]

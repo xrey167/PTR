@@ -14,4 +14,11 @@ ptr-pods = { workspace = true }
 ptr-router = { workspace = true }
 ptr-ledger = { workspace = true }
 ptr-types = { workspace = true }
+ptr-protocol = { workspace = true }
+ptr-verifier = { workspace = true }
+# The wires `[wire]` names (D4 in issue #23). The transport is a feature of each, so
+# a host that serves a wire is the one place it is switched on.
+ptr-net = { workspace = true, features = ["iroh-backend"] }
+ptr-execwire = { workspace = true, features = ["execwire-backend"] }
+ptr-podwire = { workspace = true, features = ["podwire-backend"] }
 tokio = { workspace = true }

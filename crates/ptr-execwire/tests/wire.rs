@@ -327,7 +327,7 @@ async fn a_receipt_naming_another_runtime_is_refused_and_an_honest_one_is_not() 
             },
         };
         incoming
-            .respond(&encode_receipt(&receipt).unwrap())
+            .respond(&encode_receipt(&receipt, &rogue.signer()).unwrap())
             .await
             .unwrap();
     };
@@ -363,7 +363,7 @@ async fn a_receipt_naming_another_runtime_is_refused_and_an_honest_one_is_not() 
             },
         };
         incoming
-            .respond(&encode_receipt(&receipt).unwrap())
+            .respond(&encode_receipt(&receipt, &rogue.signer()).unwrap())
             .await
             .unwrap();
     };
@@ -376,6 +376,169 @@ async fn a_receipt_naming_another_runtime_is_refused_and_an_honest_one_is_not() 
         "an honest receipt from the same endpoint is accepted"
     );
     let _ = elsewhere;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_receipt_with_a_bad_signature_from_an_otherwise_honest_endpoint_is_refused() {
+    // Everything about this receipt is right — the author is the authenticated peer,
+    // the request id and the digest are the request's — except that the endpoint
+    // signed it with a key that is not its own. Inside the exchange the connection
+    // would vouch for it; stored, it would verify nowhere. So it is refused here, and
+    // before the outcome is read.
+    let client = ExecutionClient::bind().await.unwrap();
+
+    for (label, wrong_key) in [("a signature by another key", true), ("control", false)] {
+        let rogue = IrohTransport::bind(&[ALPN_EXEC]).await.unwrap();
+        let key = rogue.identity().public_key;
+        let address = rogue.direct_addr();
+        let asked = WireRequest {
+            addressed_to: key.clone(),
+            request_id: 31,
+            project: ProjectId::from("p"),
+            action: ActionIr {
+                operation: "write".into(),
+                target: "capsule:a".into(),
+                capability: CapabilityId::from("file.write"),
+                effect: Effect::Mutation,
+                input_type: TypeId::from("Bytes"),
+                generation: Generation(1),
+                revision: ptr_types::Revision(1),
+                payload: b"verified payload".to_vec(),
+            },
+            once_key: None,
+        };
+        let serving = async move {
+            let incoming = rogue.accept_once(1 << 20).await.unwrap();
+            let decoded = decode_request(&incoming.payload).unwrap();
+            let receipt = WireReceipt {
+                responder: key,
+                request_id: decoded.request_id,
+                request_digest: request_digest(&incoming.payload),
+                outcome: WireOutcome::Applied {
+                    response: b"executed".to_vec(),
+                },
+            };
+            let signer = if wrong_key {
+                IrohTransport::bind(&[ALPN_EXEC]).await.unwrap().signer()
+            } else {
+                rogue.signer()
+            };
+            incoming
+                .respond(&encode_receipt(&receipt, &signer).unwrap())
+                .await
+                .unwrap();
+        };
+        let (answer, ()) = tokio::join!(client.request(located(address), &asked), serving);
+        if wrong_key {
+            assert_eq!(answer.expect_err(label), WireError::BadSignature, "{label}");
+        } else {
+            assert_eq!(
+                answer.expect(label).outcome,
+                WireOutcome::Applied {
+                    response: b"executed".to_vec()
+                },
+                "the same endpoint signing with its own key is accepted"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_receipt_from_a_real_exchange_verifies_offline_against_the_host_alone() {
+    // The point of signing: the receipt the client returned can be stored and shown
+    // to somebody who was not on the connection, and checked with nothing but the
+    // host's id.
+    // An admitted peer speaking the raw transport, because the raw bytes are what
+    // gets stored and so they are what is kept here.
+    let raw = IrohTransport::bind(&[ALPN_EXEC]).await.unwrap();
+    let (host, action, probe) = host_admitting(&raw.identity(), Mode::Success).await;
+    let host_id = NodeId(host.identity().public_key);
+
+    let frame = encode_request(&request(&host, &action, 41)).unwrap();
+    let serving = Arc::clone(&host);
+    let (answer, served) = tokio::join!(
+        raw.request(host.address(), ALPN_EXEC, &frame, 1 << 20),
+        serving.serve_once()
+    );
+    let stored = answer.unwrap();
+    assert_eq!(served.unwrap().refused, None);
+    assert_eq!(probe.executions(), 1);
+
+    // Close the host: what follows involves no connection at all.
+    host.close().await;
+    let receipt = ptr_execwire::verify_receipt(&stored, &host_id).unwrap();
+    assert_eq!(receipt.request_id, 41);
+    assert_eq!(receipt.request_digest, request_digest(&frame));
+    assert_eq!(
+        receipt.outcome,
+        WireOutcome::Applied {
+            response: b"executed".to_vec()
+        }
+    );
+
+    // Shown as the requester's — or anybody else's — it is refused.
+    let somebody = NodeId(raw.identity().public_key);
+    assert!(matches!(
+        ptr_execwire::verify_receipt(&stored, &somebody),
+        Err(ptr_execwire::ReceiptError::WrongResponder { .. })
+    ));
+    let mut edited = stored.clone();
+    let last_field = edited.len() - ptr_net::SIGNATURE_BYTES - 1;
+    edited[last_field] ^= 1;
+    assert!(ptr_execwire::verify_receipt(&edited, &host_id).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_accept_loop_serves_requests_exactly_as_serve_once_does_until_shutdown() {
+    // D4 in issue #23: `serve` is `serve_once`'s per-connection code under
+    // `ptr_net::serve`. What a request is told does not change — a grant applies, a
+    // replay is refused by the window, the receipt is signed — and after the host's
+    // shutdown nothing is answered.
+    let client = ExecutionClient::bind().await.unwrap();
+    let (host, action, probe) = host_admitting(&client.identity(), Mode::Success).await;
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let policy = ptr_net::ServePolicy {
+        max_concurrent: std::num::NonZeroUsize::new(4).unwrap(),
+        per_connection_deadline: Duration::from_secs(10),
+        shutdown,
+    };
+
+    let first = request(&host, &action, 1);
+    let driving = async {
+        let applied = client.request(located(host.address()), &first).await;
+        // The same frame again: the loop keeps one replay window across
+        // connections, exactly as repeated `serve_once` calls did.
+        let replayed = client.request(located(host.address()), &first).await;
+        stop.send(true).unwrap();
+        (applied, replayed)
+    };
+    let (report, (applied, replayed)) = tokio::join!(host.serve(policy), driving);
+
+    let applied = applied.unwrap();
+    assert_eq!(
+        applied.outcome,
+        WireOutcome::Applied {
+            response: b"executed".to_vec()
+        }
+    );
+    assert_eq!(
+        replayed.unwrap().outcome,
+        WireOutcome::Refused {
+            code: RefusalCode::Replayed
+        }
+    );
+    assert_eq!(probe.executions(), 1, "the replay applied nothing");
+    let report = report.unwrap();
+    assert_eq!((report.handled, report.failed), (2, 0));
+
+    // After shutdown the host answers nothing.
+    let mut late = ExecutionClient::bind().await.unwrap();
+    late.with_request_timeout(Duration::from_millis(1500));
+    assert!(late
+        .request(located(host.address()), &request(&host, &action, 2))
+        .await
+        .is_err());
+    assert_eq!(probe.executions(), 1, "nothing applied after shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -437,7 +600,7 @@ async fn a_receipt_that_answers_a_different_request_is_refused() {
                 },
             };
             incoming
-                .respond(&encode_receipt(&receipt).unwrap())
+                .respond(&encode_receipt(&receipt, &rogue.signer()).unwrap())
                 .await
                 .unwrap();
         };
@@ -733,7 +896,9 @@ async fn a_damaged_frame_is_refused_before_it_reaches_the_runtime() {
     let response = answer.unwrap();
     let served = served.unwrap();
 
-    let receipt = ptr_execwire::decode_receipt(&response).unwrap();
+    // Signed even though it is a refusal of bytes nobody could parse.
+    let receipt =
+        ptr_execwire::verify_receipt(&response, &NodeId(host.identity().public_key)).unwrap();
     assert_eq!(
         receipt.outcome,
         WireOutcome::Refused {

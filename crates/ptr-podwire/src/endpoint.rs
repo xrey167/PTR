@@ -1,27 +1,28 @@
 //! A Pod gateway and a requester, both over `ALPN_PODWIRE`.
 //!
 //! Neither is a daemon. `serve_once` accepts one connection and answers it;
-//! `request` sends one request and checks one answer. A caller decides when either
-//! happens, which keeps the tests free of sleeps and keeps "how long do we wait"
-//! and "how often do we accept" where they can be decided deliberately.
+//! `request` sends one request and checks one answer. `serve` runs `serve_once`'s
+//! per-connection code under `ptr_net::serve`, the one accept loop, with a
+//! `ServePolicy` the host writes: "how long do we wait" and "how many do we hold"
+//! stay the host's decision rather than this crate's (D4 in issue #23).
 use crate::access::{answer, answer_bound, PodAccessPolicy};
 use crate::frame::{
-    decode_answer, decode_answer_v2, decode_request, decode_request_v2, encode_answer,
-    encode_answer_v2, encode_request, encode_request_v2, request_digest, FrameError,
+    decode_request, decode_request_v2, encode_answer, encode_answer_v2, encode_request,
+    encode_request_v2, request_digest, verify_answer, verify_answer_v2, AnswerError, FrameError,
     PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome, PodRequest, PodRequestV2, RefusalCode,
     MAX_FRAME_BYTES,
 };
 use ptr_net::{
-    AuthenticatedPeer, EndpointAddr, IrohSession, IrohTransport, NodeIdentity, PeerAddress,
-    ALPN_PODWIRE,
+    AuthenticatedPeer, EndpointAddr, IrohSession, IrohTransport, NodeIdentity, NodeSigner,
+    PeerAddress, ServeError, ServePolicy, ServeReport, ALPN_PODWIRE,
 };
 use ptr_pods::ProtocolBinding;
 use ptr_pods::{ExecutionManifest, PodManifest, PodRegistry, RegisteredPodBinding};
 use ptr_protocol::TypedPayload;
 use ptr_runtime::RuntimeExecutionManifestResolver;
 use ptr_types::{
-    ArtifactId, Digest, Generation, MeshEndpointBinding, PodId, ProjectId, Revision, ScopeId,
-    SessionId, StatefulRequestRecovery, UncertainRequest,
+    ArtifactId, Digest, Generation, MeshEndpointBinding, NodeId, PodId, ProjectId, Revision,
+    ScopeId, SessionId, StatefulRequestRecovery, UncertainRequest,
 };
 use ptr_verifier::Verifier;
 use std::collections::{BTreeMap, BTreeSet};
@@ -255,6 +256,25 @@ pub enum PodWireError {
         request_id: u64,
     },
     V2BindingUnavailable,
+    /// An answer from the authenticated peer whose signature is not that peer's.
+    ///
+    /// Inside one exchange the connection already vouches for the author, so this
+    /// refuses an answer its author could not later stand behind: one that would
+    /// verify nowhere once stored. Refused before the outcome is read.
+    BadSignature,
+}
+
+/// Carry an answer's verification refusal onto the requester's error, keeping the
+/// name every earlier build reported a wrong author under.
+fn refused_answer(error: AnswerError) -> PodWireError {
+    match error {
+        AnswerError::Frame(error) => PodWireError::Frame(error),
+        AnswerError::WrongResponder { expected, claimed } => PodWireError::ForgedAnswer {
+            authenticated: expected,
+            claimed,
+        },
+        AnswerError::BadSignature => PodWireError::BadSignature,
+    }
 }
 
 impl PodWireError {
@@ -276,6 +296,7 @@ impl PodWireError {
             Self::SessionClosed => "PTR_PODW_SESSION_CLOSED",
             Self::RequestUncertain { .. } => "PTR_PODW_REQUEST_UNCERTAIN",
             Self::V2BindingUnavailable => "PTR_PODW_V2_BINDING_UNAVAILABLE",
+            Self::BadSignature => "PTR_PODW_BAD_SIGNATURE",
         }
     }
 }
@@ -324,6 +345,8 @@ pub struct PodHost {
     policy: PodAccessPolicy,
     verifier: Box<dyn Verifier<TypedPayload> + Send + Sync>,
     transport: IrohTransport,
+    /// The endpoint's own key, which signs every answer (D2 in issue #23).
+    signer: NodeSigner,
     runtime_manifest_registry: Option<Arc<RwLock<ptr_runtime::ExecutionManifestRegistry>>>,
 }
 
@@ -345,6 +368,7 @@ impl PodHost {
             registry,
             policy,
             verifier: Box::new(verifier),
+            signer: transport.signer(),
             transport,
             runtime_manifest_registry: None,
         })
@@ -561,13 +585,23 @@ impl PodHost {
     /// 3. The request must be addressed to this endpoint's key. A request
     ///    legitimate at another host is not legitimate here.
     /// 4. [`answer`] decides the rest, from the policy and the registry.
+    ///
+    /// The answer is signed with this endpoint's key, refusals included: a refusal is
+    /// a statement this host makes about a request as much as an output is.
     pub async fn serve_once(&self) -> Result<Served, PodWireError> {
         let incoming = self
             .transport
             .accept_once(MAX_FRAME_BYTES)
             .await
             .map_err(PodWireError::Transport)?;
+        self.serve_incoming(incoming).await
+    }
 
+    /// Answer one V1 connection that has already been accepted and read.
+    async fn serve_incoming(
+        &self,
+        incoming: ptr_net::IrohIncoming,
+    ) -> Result<Served, PodWireError> {
         // (1) The sender is the connection. There is no payload field to prefer
         // over it, which is the shape of the format rather than a check made here.
         let peer = incoming.peer.clone();
@@ -589,14 +623,14 @@ impl PodHost {
         //
         // Nothing applied, so there is nothing for the requester to reconcile; it is
         // told the answer exists and does not fit, which it can act on.
-        let frame = match encode_answer(&answered) {
+        let frame = match encode_answer(&answered, &self.signer) {
             Ok(frame) => frame,
             Err(error) => {
                 answered.outcome = PodOutcome::Refused {
                     code: RefusalCode::AnswerTooLarge,
                 };
                 refused = Some(PodWireError::Frame(error));
-                encode_answer(&answered)?
+                encode_answer(&answered, &self.signer)?
             }
         };
         incoming
@@ -619,129 +653,29 @@ impl PodHost {
             .accept_once(MAX_FRAME_BYTES)
             .await
             .map_err(PodWireError::Transport)?;
-        let peer = incoming.peer.clone();
-        let digest = request_digest(&incoming.payload);
-        let request = decode_request_v2(&incoming.payload);
-        let request_execution_manifest = request
-            .as_ref()
-            .ok()
-            .and_then(|request| request.execution_manifest);
-        let answer_address = request
-            .as_ref()
-            .ok()
-            .and_then(|request| request.address.clone());
-        let state_binding = request
-            .as_ref()
-            .ok()
-            .map(|request| (request.placement_epoch, request.fencing_token));
-        let (
-            request_id,
-            generation,
-            revision,
-            identity_digest,
-            session_id,
-            policy_revision,
-            outcome,
-            refused,
-        ) = match request {
-            Ok(request) => {
-                let request_id = Some(request.request_id);
-                if request.addressed_to != self.identity().public_key {
-                    (
-                        request_id,
-                        request.generation,
-                        request.revision,
-                        request.identity_digest,
-                        request.session_id.clone(),
-                        request.policy_revision,
-                        PodOutcome::Refused {
-                            code: RefusalCode::Misaddressed,
-                        },
-                        Some(PodWireError::Misaddressed {
-                            addressed_to: request.addressed_to,
-                            expected: self.identity().public_key,
-                        }),
-                    )
-                } else if !binding.accepts(&request) {
-                    (
-                        request_id,
-                        request.generation,
-                        request.revision,
-                        request.identity_digest,
-                        request.session_id.clone(),
-                        request.policy_revision,
-                        PodOutcome::Refused {
-                            code: RefusalCode::Unavailable,
-                        },
-                        Some(PodWireError::V2BindingUnavailable),
-                    )
-                } else if let Some(registry) = &self.runtime_manifest_registry {
-                    let current = request
-                        .execution_manifest
-                        .and_then(|digest| registry.read().ok()?.resolve(&digest).ok());
-                    if current
-                        .as_ref()
-                        .map(|manifest| manifest.manifest.manifest_digest)
-                        != request.execution_manifest
-                    {
-                        (
-                            request_id,
-                            request.generation,
-                            request.revision,
-                            request.identity_digest,
-                            request.session_id.clone(),
-                            request.policy_revision,
-                            PodOutcome::Refused {
-                                code: RefusalCode::Unavailable,
-                            },
-                            Some(PodWireError::V2BindingUnavailable),
-                        )
-                    } else {
-                        self.answer_v2_bound_request(&peer, binding, request, request_id)
-                    }
-                } else {
-                    self.answer_v2_bound_request(&peer, binding, request, request_id)
-                }
+        self.serve_v2_incoming(binding, incoming).await
+    }
+
+    /// Serve V1 connections until `policy.shutdown` reads `true` (D4 in issue #23).
+    ///
+    /// The loop is `ptr_net::serve`; each connection is answered by exactly the code
+    /// [`Self::serve_once`] runs, so the loop adds scheduling and changes nothing
+    /// about what a request is told. How many connections are held at once and how
+    /// long each may take are the host's `ServePolicy`, with no default here. A
+    /// refusal is answered on its connection as always and counted as handled; only a
+    /// connection that could not be answered at all is counted as failed.
+    pub async fn serve(self: &Arc<Self>, policy: ServePolicy) -> Result<ServeReport, ServeError> {
+        let host = Arc::clone(self);
+        ptr_net::serve(&self.transport, MAX_FRAME_BYTES, policy, move |incoming| {
+            let host = Arc::clone(&host);
+            async move {
+                host.serve_incoming(incoming)
+                    .await
+                    .map(drop)
+                    .map_err(|error| error.to_string())
             }
-            Err(error) => (
-                None,
-                Generation(0),
-                Revision(0),
-                [0; 32],
-                SessionId::from("malformed"),
-                Revision(0),
-                PodOutcome::Refused {
-                    code: RefusalCode::Malformed,
-                },
-                Some(PodWireError::Frame(error)),
-            ),
-        };
-        let answer = PodAnswerV2 {
-            address: answer_address,
-            execution_manifest: request_execution_manifest,
-            responder: self.identity().public_key,
-            request_id: request_id.unwrap_or(0),
-            request_digest: digest,
-            generation,
-            revision,
-            identity_digest,
-            session_id,
-            policy_revision,
-            placement_epoch: state_binding.and_then(|binding| binding.0),
-            fencing_token: state_binding.and_then(|binding| binding.1),
-            outcome,
-        };
-        let frame = encode_answer_v2(&answer)?;
-        incoming
-            .respond(&frame)
-            .await
-            .map_err(PodWireError::Transport)?;
-        Ok(Served {
-            peer,
-            request_id,
-            reported: answer.outcome,
-            refused,
         })
+        .await
     }
 
     /// Accept one authenticated QUIC connection and serve a bounded number of
@@ -951,7 +885,7 @@ impl PodHost {
             fencing_token: state_binding.and_then(|binding| binding.1),
             outcome,
         };
-        let frame = encode_answer_v2(&answer)?;
+        let frame = encode_answer_v2(&answer, &self.signer)?;
         incoming
             .respond(&frame)
             .await
@@ -1112,9 +1046,9 @@ impl PodSession {
             self.mark_uncertain_v1(request.request_id);
             session_error(error)
         })?;
-        let answered = decode_answer(&response).map_err(|error| {
+        let answered = verify_answer(&response, self.peer().id()).map_err(|error| {
             self.mark_uncertain_v1(request.request_id);
-            PodWireError::Frame(error)
+            refused_answer(error)
         })?;
         let answer = validate_answer(
             &answered,
@@ -1170,9 +1104,9 @@ impl PodSession {
             self.mark_uncertain_v2(request.request_id);
             session_error(error)
         })?;
-        let answered = decode_answer_v2(&response).map_err(|error| {
+        let answered = verify_answer_v2(&response, self.peer().id()).map_err(|error| {
             self.mark_uncertain_v2(request.request_id);
-            PodWireError::Frame(error)
+            refused_answer(error)
         })?;
         let answer = validate_answer_v2(&answered, request, digest, self.peer().public_key())
             .inspect_err(|_| {
@@ -1436,17 +1370,19 @@ impl PodClient {
     /// property — the host checks the name it was sent, and must, since a requester is
     /// not trusted about it.
     ///
-    /// Then three checks on the answer, in this order. The **author** first: an
+    /// Then four checks on the answer, in this order. The **author** first: an
     /// answer from an endpoint other than the one the connection authenticated is
     /// refused before anything in it is read, because nothing in it is worth
-    /// reading. Then the request id, then the digest of the exact bytes that were
+    /// reading. Then the **signature**, against that same authenticated key
+    /// ([`verify_answer`]), so the answer this returns is one that will still verify
+    /// once stored. Then the request id, then the digest of the exact bytes that were
     /// sent.
     ///
-    /// What this does **not** establish: an answer is not signed. Inside this call
-    /// the connection vouches for its author; once the bytes are stored or
-    /// forwarded, nothing does. And the book cannot tell a *wrong* address for the
-    /// right peer from a right one — that dial fails on the authenticated key rather
-    /// than reaching the wrong host.
+    /// What a returned answer is, beyond this call: a statement signed by the host's
+    /// endpoint key, which [`verify_answer`] checks again from the stored bytes
+    /// alone; what that does and does not attest is written there. And the book
+    /// cannot tell a *wrong* address for the right peer from a right one — that dial
+    /// fails on the authenticated key rather than reaching the wrong host.
     pub async fn request(
         &self,
         host: PeerAddress,
@@ -1466,13 +1402,9 @@ impl PodClient {
         .map_err(|_| PodWireError::Transport("the host did not answer in time".to_owned()))?
         .map_err(PodWireError::Transport)?;
 
-        let answered = decode_answer(&response)?;
-        if answered.responder != authenticated {
-            return Err(PodWireError::ForgedAnswer {
-                authenticated,
-                claimed: answered.responder,
-            });
-        }
+        // The author, then the signature, against the key the connection
+        // authenticated and never against the name the answer carries.
+        let answered = verify_answer(&response, &NodeId(authenticated)).map_err(refused_answer)?;
         if answered.request_id != request.request_id {
             return Err(PodWireError::WrongRequest {
                 expected: request.request_id,
@@ -1502,13 +1434,8 @@ impl PodClient {
         .await
         .map_err(|_| PodWireError::Transport("the host did not answer in time".to_owned()))?
         .map_err(PodWireError::Transport)?;
-        let answered = decode_answer_v2(&response)?;
-        if answered.responder != authenticated {
-            return Err(PodWireError::ForgedAnswer {
-                authenticated,
-                claimed: answered.responder,
-            });
-        }
+        let answered =
+            verify_answer_v2(&response, &NodeId(authenticated)).map_err(refused_answer)?;
         if answered.request_id != request.request_id {
             return Err(PodWireError::WrongRequest {
                 expected: request.request_id,

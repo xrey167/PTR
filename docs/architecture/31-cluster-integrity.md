@@ -215,10 +215,12 @@ involved. Two suites, each proving the thing it can actually prove.
 
 ### Not a daemon
 
-There is no background loop, no timer and no retry policy in this crate. A caller
-drives `serve_once` and `dispatch`. That is a deliberate omission rather than an
-unfinished one: a loop in the wrong place makes scheduling implicit, and "when do we
-give up on a member that does not answer" is a policy decision, not a detail. It is
+There is no timer and no retry policy in this crate. A caller drives `serve_once`
+and `dispatch`, or hands `ClusterMember::serve` a `ServePolicy` and lets `ptr-net`'s
+one accept loop drive `serve_once`'s code (D4 in issue #23). The loop lives in
+`ptr-net` rather than here because a loop in the wrong place makes scheduling
+implicit, and "when do we give up on a member that does not answer" is a policy
+decision, not a detail: the policy has no default, so the host writes it. That is
 also what keeps these tests free of sleeps.
 
 ## Snapshot transfer
@@ -407,9 +409,17 @@ section depends on.
   process, with delivery in FIFO order. Real reordering, concurrent stepping and
   partial writes under load are outside it, and the network tests run two members
   on localhost.
-- **Nothing runs the loop.** `ptr-cluster` provides the pieces and no deployment
-  drives them: there is no accept/tick service, no policy for a member that stops
-  answering, and no backpressure toward one that answers slowly.
+- **The accept loop runs; the clock does not.** **D4 in issue #23: decided — the loop is mechanism in `ptr-net`, the policy is the host's.** This bullet
+  used to say nothing runs the loop. `ClusterMember::serve` runs `serve_once`'s
+  per-connection code under `ptr_net::serve` and then delivers what each step
+  produced for other members, after the answer has gone; a refused frame is
+  counted and the loop keeps serving the admitted members
+  (`the_accept_loop_serves_a_follower_through_a_refusal_until_shutdown`). The
+  `ServePolicy` — connection limit, per-connection deadline, shutdown — is the
+  host's, with no default, which is what keeps "when do we give up on a member" a
+  written decision. Still open: no tick service drives a member's logical clock,
+  no deployment composes a cluster member (`ptrd` permits only standalone mode),
+  and a member that answers slowly is bounded by the deadline, not slowed toward.
 - **Membership changes one voter at a time, and a joiner must be admitted
   first.** `propose_membership` adds or removes a single voter; a batch API is
   not offered, because raft's single-step change is safe only while consecutive

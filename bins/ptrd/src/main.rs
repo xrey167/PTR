@@ -5,7 +5,9 @@ use ptr_pods::PodRegistry;
 use ptr_router::PodRouter;
 use ptr_runtime::PtrRuntime;
 use ptr_types::{CapabilityId, CapsuleId, Generation};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+mod wire;
 
 #[tokio::main]
 async fn main() {
@@ -59,6 +61,20 @@ async fn main() {
         std::process::exit(2);
     }
 
+    let wire_config = config.wire.clone();
+    // Rebuilt from the operator's list at every start; held for the process's life.
+    // Nothing in `ptrd` dials a peer yet, so the book's only effect today is that a
+    // configured id that is not a key refuses the start rather than a later dial.
+    let peer_book = match &wire_config {
+        Some(wire) => match wire::peer_book(wire) {
+            Ok(book) => Some(book),
+            Err(err) => {
+                eprintln!("refusing to start ptrd: {err}");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
     let bind = config.server.bind.clone();
     let ledger_path = std::path::Path::new(&config.server.data_dir).join("ledger.log");
     let backend_name = config.model.backend.clone();
@@ -89,18 +105,63 @@ async fn main() {
         .await
         .unwrap_or_else(|err| panic!("failed to bind {bind}: {err}"));
 
+    // One runtime, shared by the HTTP API and the execution wire: two runtimes over
+    // one ledger would be two writers of one history.
+    let runtime = Arc::new(Mutex::new(runtime));
+    let verifier = ptr_server::default_verifier();
+    // One shutdown for everything this process serves (D4 in issue #23): the HTTP
+    // API and every wire stop on the same instruction.
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let wires = match &wire_config {
+        Some(wire) => match wire::start(
+            wire,
+            Arc::clone(&runtime),
+            Arc::clone(&verifier),
+            shutdown.clone(),
+        )
+        .await
+        {
+            Ok(wires) => Some(wires),
+            Err(err) => {
+                eprintln!("refusing to start ptrd: {err}");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+    if let Some(book) = &peer_book {
+        println!("ptrd peer book: {} configured peers", book.len());
+    }
+    let interrupt = stop.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = interrupt.send(true);
+        }
+    });
+    let mut http_shutdown = shutdown;
+
     println!("ptrd listening on http://{bind}");
-    if let Err(err) = ptr_server::serve_with_dependencies(
-        listener,
+    let app = ptr_server::router_with_shared_runtime(
         runtime,
         backend,
         PodRouter,
         Arc::new(PodRegistry::default()),
-        ptr_server::default_verifier(),
+        verifier,
         effect_grants,
-    )
-    .await
-    {
+    );
+    let served = ptr_server::serve_until(listener, app, async move {
+        let _ = http_shutdown.wait_for(|stopped| *stopped).await;
+    })
+    .await;
+    // Whatever ended the HTTP API ends the wires with it.
+    let _ = stop.send(true);
+    if let Some(wires) = wires {
+        for (name, report) in wires.stopped().await {
+            println!("ptrd {name} wire stopped: {report:?}");
+        }
+    }
+    drop(peer_book);
+    if let Err(err) = served {
         eprintln!("ptrd server error: {err}");
         std::process::exit(1);
     }

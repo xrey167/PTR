@@ -215,8 +215,29 @@ impl ServerState {
         verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
         effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
     ) -> Self {
+        Self::with_shared_runtime(
+            Arc::new(Mutex::new(runtime)),
+            backend,
+            router,
+            pods,
+            verifier,
+            effect_grants,
+        )
+    }
+
+    /// The same state over a runtime the host process also hands to something else
+    /// — `ptrd`'s execution wire. Shared rather than reopened, because two runtimes
+    /// over one ledger would be two writers of one history.
+    pub fn with_shared_runtime(
+        runtime: Arc<Mutex<PtrRuntime>>,
+        backend: Arc<dyn ResumableInferenceBackend>,
+        router: PodRouter,
+        pods: Arc<PodRegistry>,
+        verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
+        effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+    ) -> Self {
         Self {
-            runtime: Arc::new(Mutex::new(runtime)),
+            runtime,
             backend,
             router,
             pods,
@@ -246,6 +267,45 @@ pub fn router_with_dependencies(
         verifier,
         effect_grants,
     ))
+}
+
+/// The router over a runtime shared with the rest of the host process. See
+/// [`ServerState::with_shared_runtime`].
+pub fn router_with_shared_runtime(
+    runtime: Arc<Mutex<PtrRuntime>>,
+    backend: Arc<dyn ResumableInferenceBackend>,
+    router: PodRouter,
+    pods: Arc<PodRegistry>,
+    verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
+    effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+) -> Router {
+    router_with_state(ServerState::with_shared_runtime(
+        runtime,
+        backend,
+        router,
+        pods,
+        verifier,
+        effect_grants,
+    ))
+}
+
+/// Serve `app` until `shutdown` completes, then stop accepting and let requests in
+/// flight finish.
+///
+/// The host decides when to stop and hands the same signal to everything else it
+/// runs — `ptrd` gives one to this and to its network wires — so one instruction
+/// stops the process rather than one listener.
+pub async fn serve_until<F>(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    shutdown: F,
+) -> std::io::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await
 }
 
 fn router_with_state(state: ServerState) -> Router {

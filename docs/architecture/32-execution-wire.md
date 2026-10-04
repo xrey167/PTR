@@ -195,29 +195,89 @@ space with another principal.
 ## A receipt, and what a receipt is not
 
 A receipt names its own author and is bound to a digest of the exact bytes that
-arrived. A requester checks three things, in this order: the author against the peer
+arrived. A requester checks four things, in this order: the author against the peer
 the connection authenticated — first, because a receipt from somebody else is not
-worth reading further; then the request id; then the digest. Without the digest, a
-host, or anything between, could answer an expensive request with a cheap request's
-receipt and both would be well formed.
+worth reading further; then the signature, against that same authenticated key; then
+the request id; then the digest. Without the digest, a host, or anything between,
+could answer an expensive request with a cheap request's receipt and both would be
+well formed.
 
 The digest is taken over the received bytes rather than over a decoded request, so
 even a request this build cannot parse gets a receipt its sender can check.
 
-**A receipt is not signed.** Inside that exchange the connection vouches for its
-author. Once the bytes are stored, forwarded or shown to somebody, nothing does:
-anyone can write those bytes. This crate offers no way to verify a receipt out of
-band, on purpose — the alternative is an artifact that looks like evidence and is
-not. A receipt is the answer to your own request, not a certificate.
+### A receipt is signed (D2 in issue #23: yes)
+
+This section used to say *a receipt is not signed*, and that this crate offered no
+way to verify one out of band rather than producing an artifact that looks like
+evidence and is not. D2 is decided **yes**, and the reason it costs nothing new is
+that the key already exists: an iroh endpoint id *is* an Ed25519 public key, and the
+QUIC handshake proves possession of its secret half. The host signs every receipt —
+refusals included — with that key, so a signature is attributable to exactly the
+identity a connection to the host authenticates, and there is no second key to issue,
+rotate or revoke. **Rotation is a new identity**: a receipt signed by an old key
+verifies under the old key and under nothing else.
+
+- **What is signed.** `ptr-exec-receipt/v2\0` followed by every byte of the receipt
+  frame before the signature: magic, layout version, `responder`, `request_id`,
+  `request_digest`, outcome code and the outcome's own fields. The frame is the
+  message, so there is no second encoding of the fields to drift from the first. The
+  receipt layout is `RECEIPT_FORMAT_V2`; requests keep `FORMAT_V1`, because nothing
+  in a request changes. A receipt in the old unsigned layout is refused by name
+  (`PTR_EXECW_UNSIGNED_RECEIPT`), not as an unknown version — and a V1 label on a
+  signed frame is refused the same way, so a stripped signature cannot pass as an old
+  peer (`an_unsigned_receipt_from_an_earlier_build_is_refused_by_version`).
+- **What it attests:** that the runtime holding key *R* recorded outcome *O* for
+  request id *X*, bound to request digest *D* of the bytes it received. Every word is
+  about *R*'s own statement.
+- **What it does not attest:** that the effect happened — `Applied` is the runtime's
+  record of what its adapter reported, now attributable and no truer; anything about
+  another principal — not who sent the request (a request names no sender), not which
+  principal the host audited it under, not anything about another runtime; when it
+  was made, or that it is the only receipt for *X* — nothing in it is a timestamp or
+  a ledger position, and the plan's audit position is deliberately absent because a
+  receipt carries none (see below); and that *R* is still trusted, which is the
+  verifier's policy.
+- **How it is checked.** `verify_receipt(bytes, &NodeId)` needs no transport: it
+  refuses a frame that is not a signed receipt, then one naming another author, then
+  a bad signature, and is the only way this crate reads a receipt out of bytes. A
+  stored receipt verifies offline, and every field edited after signing, every bit
+  flipped, a signature by another key and a receipt re-addressed to another responder
+  are each refused, with the untouched receipt as the control
+  (`a_stored_receipt_verifies_offline_and_a_change_to_any_field_is_refused`,
+  `a_receipt_signed_by_another_key_is_refused`,
+  `a_receipt_readdressed_to_another_responder_is_refused`). Over a real connection
+  the client refuses a receipt from the authenticated peer whose signature is not that
+  peer's (`a_receipt_with_a_bad_signature_from_an_otherwise_honest_endpoint_is_refused`),
+  and a receipt from a real exchange verifies after the host has closed
+  (`a_receipt_from_a_real_exchange_verifies_offline_against_the_host_alone`).
+- **The key never leaves `ptr-net`.** A composition gets a `NodeSigner` from
+  `IrohTransport::signer()`, which signs only under a `SigningDomain` — a `ptr-`
+  prefixed, NUL-terminated tag checked at compile time, so the key is never an oracle
+  for bytes a caller chose in full — and has no accessor for the secret.
 
 ## What this does not close
 
-- **No signed receipts, so no third-party evidence.** As above. Making one would
-  need a signing key and a statement about what it attests to, which is a larger
-  decision than a wire format.
-- **No accept loop, no timer, no retry.** A caller drives `serve_once` and
-  `request`. The same deliberate omission as `ptr-cluster`: a loop in the wrong place
-  makes scheduling implicit, and "when do we give up" is a policy decision.
+- **A signed receipt is evidence of a statement, not of an effect.** As above: it
+  makes the host's record attributable to the host's key and says nothing more. Whether
+  a receipt from a peer since withdrawn still counts is the verifier's policy, and
+  nothing here records a key's admission history for it to consult.
+- **An accept loop, and still no timer and no retry.** **D4 in issue #23: decided — the loop is mechanism in `ptr-net`, the policy is the host's.** This
+  bullet used to say there was no accept loop, because a loop in the wrong place
+  makes scheduling implicit and "when do we give up" is a policy decision. That
+  reasoning decided where the loop went rather than whether there is one:
+  `ptr_net::serve` is the one accept loop, shared by every wire, and it decides
+  nothing on its own — `ServePolicy` has a connection limit, a per-connection
+  deadline and a shutdown signal, every field the host's and none with a default.
+  Over the limit a connection is refused before its handshake, not queued; a
+  connection still open at its deadline is closed and its slot freed; after shutdown
+  nothing is accepted (`a_connection_over_the_limit_is_refused_and_the_limit_is_served`,
+  `a_hanging_peer_is_cut_at_the_deadline_without_holding_up_another`,
+  `after_shutdown_nothing_is_accepted`). `ExecutionHost::serve` runs exactly
+  `serve_once`'s per-connection code under it, one replay window across connections
+  (`the_accept_loop_serves_requests_exactly_as_serve_once_does_until_shutdown`), and
+  `ptrd` composes it from `[wire]` next to its HTTP API on the same runtime, with one
+  shutdown for both. Still no retry, anywhere: retrying is the requester's decision,
+  under its at-most-once key.
 - **Detached work cannot be requested over this wire.** A detached grant is audited
   by an attempt that stays unsettled until the adapter reports back
   (`28-durable-execution-audit.md`), and there is no channel here for that report. So

@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 3 Rust source files · 750 nonblank source lines · 1 integration-test files · 15 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 3 Rust source files · 797 nonblank source lines · 1 integration-test files · 16 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -27,12 +27,13 @@
 - take_installed_snapshot_matching lets a host that retains snapshot anchors out of band refuse a payload the elected leader sent but the host did not expect; take_installed_snapshot remains for deployments with no second channel and documents what it trusts
 - propose_membership adds or removes one voter from the leader and drives it to quiescence, and voters() reports the group in ascending order
 - Snapshot payloads are carried unread, and the test carries a real PTRCS005 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes
-- No background loop, timer or retry policy: the caller drives accept and dispatch, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
+- No timer or retry policy of its own: the caller drives accept and dispatch, or ClusterMember::serve with a ServePolicy the host writes, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
+- ClusterMember::serve (D4 in issue #23) runs serve_once's per-connection code under ptr_net::serve with the host's ServePolicy and then delivers what each step produced for other members, after the answer has gone so a member never dials a peer that waits on it; a refused frame is answered with an empty batch, counted as failed, and the loop keeps serving the admitted members
 - The whole composition is feature-gated, so iroh and raft stay out of every other workspace build exactly as ptr-net and ptr-ledger keep their own backends out
 
 ### Missing for the target architecture
 
-- An accept/tick loop that a deployment would run, including when to give up on a member that does not answer and what backpressure applies to one that answers slowly
+- A tick service and a composing deployment: serve accepts and delivers, but nothing advances a member's logical clock on its own and no binary composes a member (ptrd permits standalone mode only); a member that answers slowly is bounded by the per-connection deadline rather than slowed toward
 - Discovery of a joining member's address: propose_membership changes who votes, but a new voter must still be admitted with an address out of band
 - The snapshot anchor travels from the authenticated leader rather than being retained independently, which is weaker than an out-of-band anchor: a compromised leader could send a consistent pair, and what this rules out is a stranger doing so
 - Session reuse: every exchange opens a connection, which is correct and wasteful
@@ -41,7 +42,6 @@
 ### Next milestones
 
 - Retain snapshot anchors independently of the leader that sends them
-- Decide where the accept/tick loop belongs before adding one, since a loop in the wrong place makes the scheduling implicit again
 
 ### Linked experiments
 
@@ -57,6 +57,7 @@
 
 ### Current automated checks
 
+- the_accept_loop_serves_a_follower_through_a_refusal_until_shutdown: a follower under serve refuses an unadmitted peer with an empty batch and counts it as failed, then serves the leader's election and commit so both hold the same history; after shutdown the leader's next round finds it unreached
 - a two-member group elects a leader over a real ALPN_RAFT connection and both members end with the same history in the same order; a majority of two needs the peer's vote, so the wire is necessary rather than incidental
 - a peer holding the key admitted for one member cannot send messages claiming to come from another; the refusal names both ids and the member's state is unchanged
 - a peer that was never admitted is refused by key; a message addressed to another member is refused; a damaged frame arriving on a real connection is refused before it reaches the node
@@ -86,9 +87,11 @@ stepped.
 
 ## What it is not
 
-It is not a daemon. There is no background loop, no timer and no retry policy here:
-a caller drives `serve_once` and `dispatch`. That keeps the scheduling decisions —
-how often to tick, when to give up on a peer — somewhere they can be made
-deliberately, and it keeps the tests free of sleeps.
+It is not a daemon of its own. There is no timer and no retry policy here: a caller
+drives `serve_once` and `dispatch`, or hands `ClusterMember::serve` a
+`ptr_net::ServePolicy` and lets `ptr-net`'s one accept loop run `serve_once`'s code
+(D4 in issue #23). That keeps the scheduling decisions — how often to tick, when to
+give up on a peer — somewhere they are written down, and it keeps the tests free of
+sleeps.
 
 See [`docs/architecture/31-cluster-integrity.md`](../../docs/architecture/31-cluster-integrity.md).

@@ -225,10 +225,33 @@ and the peer the decision runs under.
   transport constructs (D1 in issue #23, decided yes; `32-execution-wire.md`). The
   boundary that remains is the transport's own: the identity is exactly as good as
   the QUIC handshake that verified it.
-- **An answer is not signed.** Inside one exchange the connection vouches for its
-  author; once the bytes are stored or forwarded, nothing does. This crate offers no
-  way to verify a stored answer rather than producing an artifact that looks like
-  evidence and is not — D2's question, with the same answer for now.
+- **An answer is signed, and that is evidence of a statement, not of a correct
+  output (D2 in issue #23: yes).** This bullet used to say an answer is not signed
+  and that this crate offered no way to verify a stored one. The host now signs every
+  answer — refusals included, in all three layouts — with its endpoint key, which *is*
+  the Ed25519 key the QUIC handshake authenticates, so there is no new key
+  infrastructure and a rotated key is a new identity. The signed message is
+  `ptr-pod-answer/v1\0` followed by every byte of the answer frame before the
+  signature, so every field the layout carries is covered: `responder`, `request_id`,
+  `request_digest`, the outcome and its output or refusal code, and for V2/V3 the
+  echoed generation, revision, state binding, identity digest, session id, policy
+  revision, address binding and execution manifest. Answers are now numbered apart
+  from requests — `SIGNED_ANSWER_V1`/`V2`/`V3` (4, 5, 6) — and an answer in an old
+  unsigned layout is refused by name, `PTR_PODW_UNSIGNED_ANSWER`
+  (`an_unsigned_answer_from_an_earlier_build_is_refused_by_version`). The signature
+  **attests** that host *R* stated outcome *O* for request *X* bound to digest *D*
+  (and to the bindings it echoes); it **does not attest** that the output is correct
+  — only that *R*'s verifier passed it — nor anything about another principal, nor
+  when it was made, nor that *R* is still trusted. `verify_answer` and
+  `verify_answer_v2` check a stored answer with nothing but *R*'s id, and are the only
+  way this crate reads an answer out of bytes; an edit to any field after signing,
+  any flipped bit, another key's signature and a re-addressed answer are each refused
+  with the untouched answer as the control
+  (`a_stored_answer_verifies_offline_and_a_change_to_any_field_is_refused`,
+  `an_answer_signed_by_another_key_or_readdressed_to_another_responder_is_refused`),
+  and over a real connection the client and a reused session both refuse an answer
+  from the authenticated peer signed by another key
+  (`an_answer_with_a_bad_signature_from_an_otherwise_honest_endpoint_is_refused`).
 - **Pod project membership is still declared, not proven.** A Pod says which project
   it serves in its own manifest, and whoever registers it decides that.
 - **The access policy is in memory.** It is not journaled, so it does not survive a
@@ -246,9 +269,16 @@ and the peer the decision runs under.
   `request` takes a `ptr_net::PeerAddress`, which only a `PeerBook` the deployment
   installed can produce, and a wrong address fails on the authenticated key before
   the host is asked anything. See `34-address-authority.md`.
-- **No accept loop, and no backpressure.** `serve_once` answers one connection. A
-  peer that asks faster than the host can answer is the deployment's problem, and
-  where the loop belongs is D4.
+- **The accept loop and its backpressure are the host's policy.** **D4 in issue #23: decided — the loop is mechanism in `ptr-net`, the policy is the host's.**
+  This bullet used to say `serve_once` answers one connection and where a loop
+  belongs is D4. `PodHost::serve` now runs `serve_once`'s per-connection code under
+  `ptr_net::serve`, whose `ServePolicy` — connection limit, per-connection deadline,
+  shutdown, no defaults — is written by the host: a connection over the limit is
+  refused rather than queued, a peer that stops talking is cut at its deadline, and
+  after shutdown nothing is answered
+  (`the_accept_loop_answers_as_serve_once_does_until_shutdown`). What is still the
+  deployment's: a limit is per service, not per peer, so one admitted peer can hold
+  every slot until its deadlines run out.
 - **Session reuse.** Every request opens a connection, which is correct and wasteful
   — the same sentence `31-cluster-integrity.md` and `32-execution-wire.md` already
   carry.

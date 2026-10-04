@@ -15,8 +15,14 @@
 //! as an explicit code from a two-way table rather than a cast of a discriminant,
 //! and a frame that disagrees with itself is refused whole. A partially read
 //! request would be an action nobody composed.
+//!
+//! **A receipt is signed** (D2 in issue #23) by the responder's endpoint key, which
+//! is the key its `responder` field names and the key a connection to it
+//! authenticates. What the signature attests, and what it does not, is written on
+//! [`verify_receipt`]; the bytes it covers are written on [`RECEIPT_DOMAIN`].
 use ptr_core::action_head::ActionIr;
-use ptr_types::{CapabilityId, Effect, Generation, ProjectId, Revision, TypeId};
+use ptr_net::{NodeSigner, SigningDomain, SIGNATURE_BYTES};
+use ptr_types::{CapabilityId, Effect, Generation, NodeId, ProjectId, Revision, TypeId};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
@@ -30,8 +36,35 @@ const RECEIPT_MAGIC: &[u8; 8] = b"PTREXRCP";
 /// collide with a digest taken over anything else in the system.
 const DIGEST_DOMAIN: &[u8] = b"PTREXW01-REQUEST";
 
-/// The only frame layout this build writes and reads.
+/// The only request layout this build writes and reads.
+///
+/// It is also the layout of the *unsigned* receipt earlier builds wrote. A receipt
+/// carrying it is refused by name ([`FrameError::UnsignedReceipt`]) rather than as
+/// an unknown layout: this build knows exactly what it is, and that is why it is
+/// refused.
 pub const FORMAT_V1: u16 = 1;
+
+/// The only receipt layout this build writes and reads: the V1 fields followed by
+/// a signature.
+///
+/// Requests and receipts are versioned independently from here on. A request
+/// carries nothing a signature would change, so its layout stays where it was.
+pub const RECEIPT_FORMAT_V2: u16 = 2;
+
+/// The domain a receipt signature is made in.
+///
+/// The signed message is this tag followed by **every byte of the receipt frame
+/// before the signature**: the magic, the layout version, the length-prefixed
+/// `responder`, `request_id`, `request_digest`, the outcome code and the outcome's
+/// own fields (the response, or the refusal code). Every field the frame carries is
+/// covered because the frame *is* the message — there is no second encoding of the
+/// same fields to drift from the first, and a field added to a later layout is
+/// signed without anyone remembering to sign it.
+///
+/// No position in the host's ledger is signed, because none is carried: a receipt
+/// deliberately names none (see [`WireOutcome`]). Signing one in would hand every
+/// requester a measure of every other principal's traffic.
+pub const RECEIPT_DOMAIN: SigningDomain = SigningDomain::new(b"ptr-exec-receipt/v2\0");
 
 /// Bound on one frame in either direction. A peer does not get to decide how much
 /// a receiver reads.
@@ -202,6 +235,13 @@ pub enum FrameError {
     UnknownCode { field: &'static str, code: u64 },
     /// A field that should be UTF-8 and is not.
     NotUtf8 { field: &'static str },
+    /// A receipt in the unsigned layout earlier builds wrote ([`FORMAT_V1`]).
+    ///
+    /// Its own refusal rather than [`Self::UnknownFormat`], because this build knows
+    /// the layout and refuses it on purpose: an unsigned receipt is exactly the
+    /// hearsay a signature exists to replace, and reading one alongside signed ones
+    /// would let a stripped signature pass as an old peer.
+    UnsignedReceipt,
 }
 
 impl FrameError {
@@ -215,6 +255,7 @@ impl FrameError {
             Self::TooLarge { .. } => "PTR_EXECW_FRAME_TOO_LARGE",
             Self::UnknownCode { .. } => "PTR_EXECW_UNKNOWN_CODE",
             Self::NotUtf8 { .. } => "PTR_EXECW_NOT_UTF8",
+            Self::UnsignedReceipt => "PTR_EXECW_UNSIGNED_RECEIPT",
         }
     }
 }
@@ -227,6 +268,52 @@ impl fmt::Display for FrameError {
 }
 
 impl std::error::Error for FrameError {}
+
+/// Why a receipt did not verify.
+///
+/// Three refusals, checked in this order: the bytes must be a well-formed signed
+/// receipt, it must name the responder it is being verified against, and the
+/// signature must be that responder's over the frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReceiptError {
+    /// The bytes are not a well-formed signed receipt.
+    Frame(FrameError),
+    /// The receipt names an author other than the one it is verified against.
+    ///
+    /// Checked before the signature, because a receipt from somebody else is not
+    /// worth verifying: a valid signature by the wrong author attests nothing about
+    /// the right one.
+    WrongResponder { expected: String, claimed: String },
+    /// The signature is not the named responder's over these bytes.
+    BadSignature,
+}
+
+impl ReceiptError {
+    /// Stable diagnostic code for this refusal.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Frame(error) => error.code(),
+            Self::WrongResponder { .. } => "PTR_EXECW_WRONG_RESPONDER",
+            Self::BadSignature => "PTR_EXECW_BAD_SIGNATURE",
+        }
+    }
+}
+
+impl From<FrameError> for ReceiptError {
+    /// Carry a framing refusal through unchanged.
+    fn from(error: FrameError) -> Self {
+        Self::Frame(error)
+    }
+}
+
+impl fmt::Display for ReceiptError {
+    /// Render the stable refusal code.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+impl std::error::Error for ReceiptError {}
 
 /// The digest a receipt is bound to: taken over the bytes that actually arrived.
 ///
@@ -377,11 +464,16 @@ pub fn decode_request(bytes: &[u8]) -> Result<WireRequest, FrameError> {
     })
 }
 
-/// Encode a receipt.
-pub fn encode_receipt(receipt: &WireReceipt) -> Result<Vec<u8>, FrameError> {
-    let mut frame = Vec::with_capacity(128);
+/// Encode a receipt and sign it.
+///
+/// The signer is whoever is answering; nothing here checks that it is the key the
+/// receipt's `responder` names. A receipt that names one key and is signed by
+/// another is refused by every verifier, and making it impossible to write would
+/// only make that refusal impossible to test.
+pub fn encode_receipt(receipt: &WireReceipt, signer: &NodeSigner) -> Result<Vec<u8>, FrameError> {
+    let mut frame = Vec::with_capacity(128 + SIGNATURE_BYTES);
     frame.extend_from_slice(RECEIPT_MAGIC);
-    frame.extend_from_slice(&FORMAT_V1.to_le_bytes());
+    frame.extend_from_slice(&RECEIPT_FORMAT_V2.to_le_bytes());
     put_str(&mut frame, "responder", &receipt.responder)?;
     frame.extend_from_slice(&receipt.request_id.to_le_bytes());
     frame.extend_from_slice(&receipt.request_digest);
@@ -397,12 +489,60 @@ pub fn encode_receipt(receipt: &WireReceipt) -> Result<Vec<u8>, FrameError> {
             frame.extend_from_slice(&refusal_code(*code).to_le_bytes());
         }
     }
+    let signature = signer.sign(RECEIPT_DOMAIN, &frame);
+    frame.extend_from_slice(&signature);
     bound_frame(frame)
 }
 
-/// Decode a receipt, or refuse it.
-pub fn decode_receipt(bytes: &[u8]) -> Result<WireReceipt, FrameError> {
-    let mut at = open(bytes, RECEIPT_MAGIC)?;
+/// Verify a receipt as having been written by `responder`, and return it.
+///
+/// This is the only way to read a receipt out of bytes, on purpose: a receipt that
+/// has not been verified is not one this crate hands anybody. It needs no
+/// connection, so a receipt stored for a year is checked exactly as one that
+/// arrived a moment ago.
+///
+/// **What a receipt that verifies attests:** that the runtime holding the endpoint
+/// key `responder` recorded outcome *O* for the request id *X* it was asked under,
+/// bound to the request digest *D* — the digest of the exact bytes it received.
+/// Every word of that is about the responder's own statement.
+///
+/// **What it does not attest:**
+/// - that the effect happened. `Applied` is the runtime's record of what its adapter
+///   reported, and the signature makes that record attributable, not true;
+/// - anything about a principal other than the responder — not who sent the request
+///   (a request names no sender), not which principal the host audited it under, not
+///   anything about another runtime;
+/// - when it was made, or that it is the only receipt for *X*: nothing in it is a
+///   timestamp or a position in the host's ledger;
+/// - that `responder` is still trusted. A signature outlives its key's admission,
+///   and whether a receipt from a withdrawn peer still counts is the verifier's
+///   policy. A rotated key is a new identity, so a receipt signed by the old key
+///   verifies under the old key and under nothing else.
+///
+/// The checks run in the order they are worth doing: a frame that is not a signed
+/// receipt is refused first, then a receipt naming another author, and only then
+/// the signature.
+pub fn verify_receipt(bytes: &[u8], responder: &NodeId) -> Result<WireReceipt, ReceiptError> {
+    let (receipt, signed, signature) = parse_receipt(bytes)?;
+    if receipt.responder != responder.0 {
+        return Err(ReceiptError::WrongResponder {
+            expected: responder.0.clone(),
+            claimed: receipt.responder,
+        });
+    }
+    if !ptr_net::verify(&responder.0, RECEIPT_DOMAIN, signed, &signature) {
+        return Err(ReceiptError::BadSignature);
+    }
+    Ok(receipt)
+}
+
+/// A signed receipt's fields, the bytes its signature covers, and the signature —
+/// read without checking it. Private: see [`verify_receipt`].
+type ParsedReceipt<'a> = (WireReceipt, &'a [u8], [u8; SIGNATURE_BYTES]);
+
+/// Read a signed receipt without verifying it.
+fn parse_receipt(bytes: &[u8]) -> Result<ParsedReceipt<'_>, FrameError> {
+    let mut at = open_receipt(bytes)?;
     let responder = take_str(bytes, &mut at, "responder")?;
     let request_id = take_u64(bytes, &mut at, "request_id")?;
     let request_digest = take_digest(bytes, &mut at)?;
@@ -422,13 +562,19 @@ pub fn decode_receipt(bytes: &[u8]) -> Result<WireReceipt, FrameError> {
             })
         }
     };
+    let signed = &bytes[..at];
+    let signature = take_fixed::<SIGNATURE_BYTES>(bytes, &mut at, "signature")?;
     close(bytes, at)?;
-    Ok(WireReceipt {
-        responder,
-        request_id,
-        request_digest,
-        outcome,
-    })
+    Ok((
+        WireReceipt {
+            responder,
+            request_id,
+            request_digest,
+            outcome,
+        },
+        signed,
+        signature,
+    ))
 }
 
 /// Refuse a frame this build built over the bound, rather than sending it.
@@ -446,6 +592,26 @@ fn bound_frame(frame: Vec<u8>) -> Result<Vec<u8>, FrameError> {
 /// Check the bound, the magic and the layout version, and return where the fields
 /// begin.
 fn open(bytes: &[u8], magic: &[u8; 8]) -> Result<usize, FrameError> {
+    let (at, format) = open_any(bytes, magic)?;
+    if format != FORMAT_V1 {
+        return Err(FrameError::UnknownFormat { format });
+    }
+    Ok(at)
+}
+
+/// Check a receipt's bound, magic and layout version. The unsigned layout is refused
+/// by name.
+fn open_receipt(bytes: &[u8]) -> Result<usize, FrameError> {
+    let (at, format) = open_any(bytes, RECEIPT_MAGIC)?;
+    match format {
+        RECEIPT_FORMAT_V2 => Ok(at),
+        FORMAT_V1 => Err(FrameError::UnsignedReceipt),
+        other => Err(FrameError::UnknownFormat { format: other }),
+    }
+}
+
+/// Check the bound and the magic, and read the layout version.
+fn open_any(bytes: &[u8], magic: &[u8; 8]) -> Result<(usize, u16), FrameError> {
     if bytes.len() > MAX_FRAME_BYTES {
         return Err(FrameError::TooLarge {
             field: "frame",
@@ -458,10 +624,7 @@ fn open(bytes: &[u8], magic: &[u8; 8]) -> Result<usize, FrameError> {
     }
     let mut at = magic.len();
     let format = take_u16(bytes, &mut at, "format")?;
-    if format != FORMAT_V1 {
-        return Err(FrameError::UnknownFormat { format });
-    }
-    Ok(at)
+    Ok((at, format))
 }
 
 /// Refuse bytes after the last field.
@@ -605,9 +768,24 @@ mod tests {
         }
     }
 
+    /// The runtime's endpoint key.
+    fn signer() -> NodeSigner {
+        NodeSigner::from_test_seed([7; 32])
+    }
+
+    /// Somebody else's.
+    fn stranger() -> NodeSigner {
+        NodeSigner::from_test_seed([8; 32])
+    }
+
+    /// The id a verifier expects the receipt from.
+    fn responder() -> NodeId {
+        NodeId(signer().public_key().to_owned())
+    }
+
     fn receipt() -> WireReceipt {
         WireReceipt {
-            responder: "key-of-the-runtime".to_owned(),
+            responder: signer().public_key().to_owned(),
             request_id: 7,
             request_digest: request_digest(b"whatever arrived"),
             outcome: WireOutcome::Applied {
@@ -623,8 +801,8 @@ mod tests {
         assert_eq!(decode_request(&frame).unwrap(), request);
 
         let receipt = receipt();
-        let frame = encode_receipt(&receipt).unwrap();
-        assert_eq!(decode_receipt(&frame).unwrap(), receipt);
+        let frame = encode_receipt(&receipt, &signer()).unwrap();
+        assert_eq!(verify_receipt(&frame, &responder()).unwrap(), receipt);
 
         // Every outcome is a receipt, including the two that carry nothing and the
         // refusal. A round trip that only covered the happy answer would leave the
@@ -646,8 +824,8 @@ mod tests {
                 outcome,
                 ..receipt.clone()
             };
-            let frame = encode_receipt(&answered).unwrap();
-            assert_eq!(decode_receipt(&frame).unwrap(), answered);
+            let frame = encode_receipt(&answered, &signer()).unwrap();
+            assert_eq!(verify_receipt(&frame, &responder()).unwrap(), answered);
         }
     }
 
@@ -656,8 +834,8 @@ mod tests {
         // A receipt whose outcome this build cannot name is refused rather than read
         // as the nearest one it knows. Guessing here would turn an outcome a later
         // build invented — say, one that means "applied" — into "nothing happened".
-        let frame = encode_receipt(&receipt()).unwrap();
-        let kind_at = frame.len() - 1 - 4 - b"executed".len();
+        let frame = encode_receipt(&receipt(), &signer()).unwrap();
+        let kind_at = frame.len() - SIGNATURE_BYTES - 1 - 4 - b"executed".len();
         assert_eq!(
             frame[kind_at], 1,
             "the outcome kind is where it is expected"
@@ -665,11 +843,11 @@ mod tests {
         let mut unknown = frame.clone();
         unknown[kind_at] = 9;
         assert_eq!(
-            decode_receipt(&unknown).expect_err("an outcome kind from a later build"),
-            FrameError::UnknownCode {
+            verify_receipt(&unknown, &responder()).expect_err("an outcome kind from a later build"),
+            ReceiptError::Frame(FrameError::UnknownCode {
                 field: "outcome",
                 code: 9
-            }
+            })
         );
     }
 
@@ -702,10 +880,10 @@ mod tests {
         // frames mean opposite things, so reading one as the other must not be a
         // matter of the fields happening not to line up.
         let request = encode_request(&request()).unwrap();
-        let receipt = encode_receipt(&receipt()).unwrap();
+        let receipt = encode_receipt(&receipt(), &signer()).unwrap();
         assert_eq!(
-            decode_receipt(&request).expect_err("a request is not a receipt"),
-            FrameError::WrongKind
+            verify_receipt(&request, &responder()).expect_err("a request is not a receipt"),
+            ReceiptError::Frame(FrameError::WrongKind)
         );
         assert_eq!(
             decode_request(&receipt).expect_err("a receipt is not a request"),
@@ -721,14 +899,17 @@ mod tests {
     fn every_prefix_of_each_frame_is_refused() {
         for frame in [
             encode_request(&request()).unwrap(),
-            encode_receipt(&receipt()).unwrap(),
+            encode_receipt(&receipt(), &signer()).unwrap(),
         ] {
             let is_request = decode_request(&frame).is_ok();
             for length in 0..frame.len() {
                 let error = if is_request {
                     decode_request(&frame[..length]).expect_err("a prefix is not a request")
                 } else {
-                    decode_receipt(&frame[..length]).expect_err("a prefix is not a receipt")
+                    match verify_receipt(&frame[..length], &responder()) {
+                        Err(ReceiptError::Frame(error)) => error,
+                        other => panic!("a prefix of {length} is not a receipt: {other:?}"),
+                    }
                 };
                 assert!(
                     matches!(error, FrameError::WrongKind | FrameError::Truncated { .. }),
@@ -775,11 +956,12 @@ mod tests {
             FrameError::UnknownFormat { format: 2 }
         );
 
-        let mut future_receipt = encode_receipt(&receipt()).unwrap();
+        let mut future_receipt = encode_receipt(&receipt(), &signer()).unwrap();
         future_receipt[8..10].copy_from_slice(&9_u16.to_le_bytes());
         assert_eq!(
-            decode_receipt(&future_receipt).expect_err("a receipt layout from elsewhere"),
-            FrameError::UnknownFormat { format: 9 }
+            verify_receipt(&future_receipt, &responder())
+                .expect_err("a receipt layout from elsewhere"),
+            ReceiptError::Frame(FrameError::UnknownFormat { format: 9 })
         );
     }
 
@@ -813,9 +995,13 @@ mod tests {
     #[test]
     fn a_frame_over_the_bound_is_refused_before_it_is_parsed() {
         let oversize = vec![0_u8; MAX_FRAME_BYTES + 1];
+        let receipt_error = match verify_receipt(&oversize, &responder()) {
+            Err(ReceiptError::Frame(error)) => error,
+            other => panic!("over the bound: {other:?}"),
+        };
         for error in [
             decode_request(&oversize).expect_err("over the bound"),
-            decode_receipt(&oversize).expect_err("over the bound"),
+            receipt_error,
         ] {
             assert_eq!(
                 error,
@@ -935,13 +1121,206 @@ mod tests {
                 code: 0,
             },
             FrameError::NotUtf8 { field: "x" },
+            FrameError::UnsignedReceipt,
         ];
         let mut codes: Vec<&str> = frame_errors.iter().map(FrameError::code).collect();
         codes.extend(RefusalCode::ALL.iter().map(|code| code.code()));
+        codes.extend(
+            [
+                ReceiptError::WrongResponder {
+                    expected: String::new(),
+                    claimed: String::new(),
+                },
+                ReceiptError::BadSignature,
+            ]
+            .iter()
+            .map(ReceiptError::code),
+        );
         let total = codes.len();
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), total, "two refusals share a diagnostic code");
+    }
+
+    /// The bytes of `changed`, encoded, carrying the signature `original` was sent
+    /// with: one field edited after signing, exactly as a stored receipt would be.
+    fn with_original_signature(changed: &WireReceipt, original: &[u8]) -> Vec<u8> {
+        let mut frame = encode_receipt(changed, &signer()).unwrap();
+        frame.truncate(frame.len() - SIGNATURE_BYTES);
+        frame.extend_from_slice(&original[original.len() - SIGNATURE_BYTES..]);
+        frame
+    }
+
+    #[test]
+    fn a_stored_receipt_verifies_offline_and_a_change_to_any_field_is_refused() {
+        // The control first: the stored bytes, untouched, verify with nothing but the
+        // responder's id — no connection, no transport, no clock.
+        let stored = encode_receipt(&receipt(), &signer()).unwrap();
+        assert_eq!(verify_receipt(&stored, &responder()).unwrap(), receipt());
+
+        // Each field edited after signing, with the signature it was sent with. The
+        // edits that keep a frame well formed are the ones a forger would make.
+        let edits = [
+            (
+                "request_id",
+                WireReceipt {
+                    request_id: 8,
+                    ..receipt()
+                },
+            ),
+            (
+                "request_digest",
+                WireReceipt {
+                    request_digest: request_digest(b"another request"),
+                    ..receipt()
+                },
+            ),
+            (
+                "outcome",
+                WireReceipt {
+                    outcome: WireOutcome::Uncertain,
+                    ..receipt()
+                },
+            ),
+            (
+                "response",
+                WireReceipt {
+                    outcome: WireOutcome::Applied {
+                        response: b"executeD".to_vec(),
+                    },
+                    ..receipt()
+                },
+            ),
+            (
+                "refusal code",
+                WireReceipt {
+                    outcome: WireOutcome::Refused {
+                        code: RefusalCode::Malformed,
+                    },
+                    ..receipt()
+                },
+            ),
+        ];
+        for (field, changed) in edits {
+            let forged = with_original_signature(&changed, &stored);
+            assert_eq!(
+                verify_receipt(&forged, &responder()).expect_err(field),
+                ReceiptError::BadSignature,
+                "{field} edited after signing"
+            );
+        }
+        // A refusal edited into another refusal is refused too, so the code a refusal
+        // carries is signed and not only the fact of it.
+        let refused = WireReceipt {
+            outcome: WireOutcome::Refused {
+                code: RefusalCode::Runtime,
+            },
+            ..receipt()
+        };
+        let stored_refusal = encode_receipt(&refused, &signer()).unwrap();
+        assert!(verify_receipt(&stored_refusal, &responder()).is_ok());
+        let replayed = WireReceipt {
+            outcome: WireOutcome::Refused {
+                code: RefusalCode::Replayed,
+            },
+            ..receipt()
+        };
+        assert_eq!(
+            verify_receipt(
+                &with_original_signature(&replayed, &stored_refusal),
+                &responder()
+            ),
+            Err(ReceiptError::BadSignature)
+        );
+
+        // And every single bit of the stored frame, signature included: none yields a
+        // receipt that verifies.
+        for index in 0..stored.len() {
+            for bit in 0..8 {
+                let mut damaged = stored.clone();
+                damaged[index] ^= 1 << bit;
+                assert!(
+                    verify_receipt(&damaged, &responder()).is_err(),
+                    "byte {index} bit {bit} still verifies"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_receipt_signed_by_another_key_is_refused() {
+        // Names the right responder and is signed by somebody else: the case a
+        // receipt passed through an untrusted hand would be.
+        let forged = encode_receipt(&receipt(), &stranger()).unwrap();
+        assert_eq!(
+            verify_receipt(&forged, &responder()),
+            Err(ReceiptError::BadSignature)
+        );
+        // The control: the same receipt, signed by its responder.
+        let honest = encode_receipt(&receipt(), &signer()).unwrap();
+        assert_eq!(verify_receipt(&honest, &responder()), Ok(receipt()));
+    }
+
+    #[test]
+    fn a_receipt_readdressed_to_another_responder_is_refused() {
+        let stored = encode_receipt(&receipt(), &signer()).unwrap();
+        let other = NodeId(stranger().public_key().to_owned());
+
+        // Presented as somebody else's receipt: refused on the name, before the
+        // signature is looked at.
+        assert_eq!(
+            verify_receipt(&stored, &other),
+            Err(ReceiptError::WrongResponder {
+                expected: other.0.clone(),
+                claimed: responder().0,
+            })
+        );
+
+        // The name rewritten to the other key, with the signature it was sent with:
+        // the name now matches and the signature is not that key's.
+        let readdressed = WireReceipt {
+            responder: other.0.clone(),
+            ..receipt()
+        };
+        assert_eq!(
+            verify_receipt(&with_original_signature(&readdressed, &stored), &other),
+            Err(ReceiptError::BadSignature)
+        );
+
+        // The other key re-signing the receipt as its own: valid under that key, and
+        // refused as the original responder's — a signature makes a statement the
+        // signer's, never somebody else's.
+        let adopted = encode_receipt(&readdressed, &stranger()).unwrap();
+        assert!(verify_receipt(&adopted, &other).is_ok());
+        assert!(matches!(
+            verify_receipt(&adopted, &responder()),
+            Err(ReceiptError::WrongResponder { .. })
+        ));
+    }
+
+    #[test]
+    fn an_unsigned_receipt_from_an_earlier_build_is_refused_by_version() {
+        // Exactly the layout earlier builds wrote: the V1 fields and no signature.
+        let signed = encode_receipt(&receipt(), &signer()).unwrap();
+        let mut unsigned = signed[..signed.len() - SIGNATURE_BYTES].to_vec();
+        unsigned[8..10].copy_from_slice(&FORMAT_V1.to_le_bytes());
+        assert_eq!(
+            verify_receipt(&unsigned, &responder()),
+            Err(ReceiptError::Frame(FrameError::UnsignedReceipt))
+        );
+        // A signature left on does not rescue the old layout: the version is read
+        // before anything else, and a signed V1 frame is not a format.
+        let mut relabelled = signed.clone();
+        relabelled[8..10].copy_from_slice(&FORMAT_V1.to_le_bytes());
+        assert_eq!(
+            verify_receipt(&relabelled, &responder()),
+            Err(ReceiptError::Frame(FrameError::UnsignedReceipt))
+        );
+        // The control: the frame both were made from verifies.
+        assert_eq!(verify_receipt(&signed, &responder()), Ok(receipt()));
+        // And requests keep the layout they had: nothing a signature changes is in one.
+        let request = encode_request(&request()).unwrap();
+        assert_eq!(&request[8..10], &FORMAT_V1.to_le_bytes());
     }
 
     #[test]

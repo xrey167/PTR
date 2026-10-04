@@ -24,11 +24,16 @@
 //! Every field is length-prefixed and bounded, every enumeration crosses as an
 //! explicit code from a two-way table rather than a cast of a discriminant, and a
 //! frame that disagrees with itself is refused whole.
+//!
+//! **An answer is signed** (D2 in issue #23) by the responder's endpoint key, in
+//! every layout. What the signature attests, and what it does not, is written on
+//! [`verify_answer`]; the bytes it covers are written on [`ANSWER_DOMAIN`].
+use ptr_net::{NodeSigner, SigningDomain, SIGNATURE_BYTES};
 use ptr_pods::ProtocolBinding;
 use ptr_protocol::TypedPayload;
 use ptr_types::{
     ArtifactId, CapabilityId, Generation, IdentityContext, MeshEndpointBinding, MeshRouteKind,
-    PeerId, PodAddress, PodRevisionAddress, Revision, SessionId, TraceId, TypeId,
+    NodeId, PeerId, PodAddress, PodRevisionAddress, Revision, SessionId, TraceId, TypeId,
 };
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -53,6 +58,37 @@ pub const FORMAT_V1: u16 = 1;
 pub const FORMAT_V2: u16 = 2;
 /// Address-bound extension of V2. FORMAT_V2 remains readable for legacy peers.
 pub const FORMAT_V3: u16 = 3;
+
+/// The signed answer to a [`FORMAT_V1`] request: the V1 answer's fields followed by
+/// a signature.
+///
+/// From here on answers are numbered apart from requests. A request carries nothing
+/// a signature changes, so requests keep [`FORMAT_V1`], [`FORMAT_V2`] and
+/// [`FORMAT_V3`]; an *answer* in any of those three layouts is the unsigned one
+/// earlier builds wrote, and is refused by name ([`FrameError::UnsignedAnswer`]).
+pub const SIGNED_ANSWER_V1: u16 = 4;
+
+/// The signed answer to a [`FORMAT_V2`] request.
+pub const SIGNED_ANSWER_V2: u16 = 5;
+
+/// The signed answer to a [`FORMAT_V3`] request, carrying the address binding.
+pub const SIGNED_ANSWER_V3: u16 = 6;
+
+/// The domain an answer signature is made in, for all three signed layouts.
+///
+/// The signed message is this tag followed by **every byte of the answer frame
+/// before the signature**: the magic, the layout version — which tells the three
+/// layouts apart, so one cannot be re-read as another — and every field the layout
+/// carries, in frame order. For V3 that is the address binding and execution
+/// manifest; for V2 and V3 the generation, revision, state binding, identity digest,
+/// session id and policy revision; for every layout the `responder`, `request_id`,
+/// `request_digest`, the outcome code and the outcome's own fields (the output type
+/// and bytes, or the refusal code). The frame *is* the message, so there is no
+/// second encoding of the same fields to drift from the first.
+///
+/// Distinct from the execution wire's domain, so a receipt is never read as an
+/// answer or an answer as a receipt even by a verifier that skipped the magic.
+pub const ANSWER_DOMAIN: SigningDomain = SigningDomain::new(b"ptr-pod-answer/v1\0");
 
 /// Bound on one frame in either direction. A peer does not get to decide how much
 /// a receiver reads.
@@ -406,6 +442,13 @@ pub enum FrameError {
     NotUtf8 { field: &'static str },
     /// A typed field failed local admission validation.
     InvalidField { field: &'static str },
+    /// An answer in one of the unsigned layouts earlier builds wrote.
+    ///
+    /// Its own refusal rather than [`Self::UnknownFormat`], because this build knows
+    /// those layouts and refuses them on purpose: an unsigned answer is exactly the
+    /// hearsay a signature exists to replace, and reading one alongside signed ones
+    /// would let a stripped signature pass as an old peer.
+    UnsignedAnswer { format: u16 },
 }
 
 impl FrameError {
@@ -420,6 +463,7 @@ impl FrameError {
             Self::UnknownCode { .. } => "PTR_PODW_UNKNOWN_CODE",
             Self::NotUtf8 { .. } => "PTR_PODW_NOT_UTF8",
             Self::InvalidField { .. } => "PTR_PODW_INVALID_FIELD",
+            Self::UnsignedAnswer { .. } => "PTR_PODW_UNSIGNED_ANSWER",
         }
     }
 }
@@ -432,6 +476,51 @@ impl fmt::Display for FrameError {
 }
 
 impl std::error::Error for FrameError {}
+
+/// Why an answer did not verify.
+///
+/// Three refusals, checked in this order: the bytes must be a well-formed signed
+/// answer, it must name the responder it is being verified against, and the
+/// signature must be that responder's over the frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AnswerError {
+    /// The bytes are not a well-formed signed answer.
+    Frame(FrameError),
+    /// The answer names an author other than the one it is verified against.
+    ///
+    /// Checked before the signature: a valid signature by the wrong author attests
+    /// nothing about the right one.
+    WrongResponder { expected: String, claimed: String },
+    /// The signature is not the named responder's over these bytes.
+    BadSignature,
+}
+
+impl AnswerError {
+    /// Stable diagnostic code for this refusal.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Frame(error) => error.code(),
+            Self::WrongResponder { .. } => "PTR_PODW_WRONG_RESPONDER",
+            Self::BadSignature => "PTR_PODW_BAD_SIGNATURE",
+        }
+    }
+}
+
+impl From<FrameError> for AnswerError {
+    /// Carry a framing refusal through unchanged.
+    fn from(error: FrameError) -> Self {
+        Self::Frame(error)
+    }
+}
+
+impl fmt::Display for AnswerError {
+    /// Render the stable refusal code.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+impl std::error::Error for AnswerError {}
 
 /// The digest an answer is bound to: taken over the bytes that actually arrived.
 ///
@@ -531,11 +620,16 @@ pub fn decode_request(bytes: &[u8]) -> Result<PodRequest, FrameError> {
     })
 }
 
-/// Encode an answer.
-pub fn encode_answer(answer: &PodAnswer) -> Result<Vec<u8>, FrameError> {
-    let mut frame = Vec::with_capacity(128);
+/// Encode an answer to a V1 request and sign it.
+///
+/// The signer is whoever is answering; nothing here checks that it is the key the
+/// answer's `responder` names. An answer that names one key and is signed by another
+/// is refused by every verifier, and making it impossible to write would only make
+/// that refusal impossible to test.
+pub fn encode_answer(answer: &PodAnswer, signer: &NodeSigner) -> Result<Vec<u8>, FrameError> {
+    let mut frame = Vec::with_capacity(128 + SIGNATURE_BYTES);
     frame.extend_from_slice(ANSWER_MAGIC);
-    frame.extend_from_slice(&FORMAT_V1.to_le_bytes());
+    frame.extend_from_slice(&SIGNED_ANSWER_V1.to_le_bytes());
     put_str(&mut frame, "responder", &answer.responder)?;
     frame.extend_from_slice(&answer.request_id.to_le_bytes());
     frame.extend_from_slice(&answer.request_digest);
@@ -549,7 +643,89 @@ pub fn encode_answer(answer: &PodAnswer) -> Result<Vec<u8>, FrameError> {
             frame.extend_from_slice(&refusal_code(*code).to_le_bytes());
         }
     }
+    sign_frame(frame, signer)
+}
+
+/// Append the signature over everything written so far, then bound the result.
+fn sign_frame(mut frame: Vec<u8>, signer: &NodeSigner) -> Result<Vec<u8>, FrameError> {
+    let signature = signer.sign(ANSWER_DOMAIN, &frame);
+    frame.extend_from_slice(&signature);
     bound_frame(frame)
+}
+
+/// Check what [`verify_answer`] and [`verify_answer_v2`] share: the author named in
+/// the frame, then the signature over the bytes it covers.
+fn verify_signed(
+    claimed: &str,
+    signed: &[u8],
+    signature: &[u8; SIGNATURE_BYTES],
+    responder: &NodeId,
+) -> Result<(), AnswerError> {
+    if claimed != responder.0 {
+        return Err(AnswerError::WrongResponder {
+            expected: responder.0.clone(),
+            claimed: claimed.to_owned(),
+        });
+    }
+    if !ptr_net::verify(&responder.0, ANSWER_DOMAIN, signed, signature) {
+        return Err(AnswerError::BadSignature);
+    }
+    Ok(())
+}
+
+/// Verify an answer to a V1 request as having been written by `responder`, and
+/// return it.
+///
+/// The only way to read a V1 answer out of bytes, on purpose: an answer that has
+/// not been verified is not one this crate hands anybody. It needs no connection, so
+/// a stored answer is checked exactly as one that just arrived.
+///
+/// **What an answer that verifies attests:** that the host holding the endpoint key
+/// `responder` stated outcome *O* — a Pod output its verifier passed, or a refusal
+/// with its code — for request id *X*, bound to the request digest *D* of the exact
+/// bytes it received (and, for V2/V3, for the generation, revision, state binding,
+/// identity digest, session and policy revision, and address binding it echoes).
+/// Every word of that is about the responder's own statement.
+///
+/// **What it does not attest:**
+/// - that the output is correct. It is what the host's Pod produced and the host's
+///   verifier passed; the signature makes that attributable, not true;
+/// - anything about a principal other than the responder — not who asked (a request
+///   names no sender), not which project the host resolved it in, not anything
+///   about another host;
+/// - when it was made: nothing in it is a timestamp;
+/// - that `responder` is still trusted. A signature outlives its key's admission,
+///   and whether an answer from a withdrawn peer still counts is the verifier's
+///   policy. A rotated key is a new identity, so an answer signed by the old key
+///   verifies under the old key and under nothing else.
+pub fn verify_answer(bytes: &[u8], responder: &NodeId) -> Result<PodAnswer, AnswerError> {
+    let (answer, signed, signature) = parse_answer(bytes)?;
+    verify_signed(&answer.responder, signed, &signature, responder)?;
+    Ok(answer)
+}
+
+/// Verify an answer to a V2 or V3 request as having been written by `responder`,
+/// and return it. Attests exactly what [`verify_answer`] says, and no more.
+pub fn verify_answer_v2(bytes: &[u8], responder: &NodeId) -> Result<PodAnswerV2, AnswerError> {
+    let (answer, signed, signature) = parse_answer_v2(bytes)?;
+    verify_signed(&answer.responder, signed, &signature, responder)?;
+    Ok(answer)
+}
+
+/// A signed answer's fields, the bytes its signature covers, and the signature —
+/// read without checking it.
+type Parsed<'a, T> = (T, &'a [u8], [u8; SIGNATURE_BYTES]);
+
+/// Read the trailing signature and close the frame.
+fn take_signature<'a, T>(
+    bytes: &'a [u8],
+    mut at: usize,
+    answer: T,
+) -> Result<Parsed<'a, T>, FrameError> {
+    let signed = &bytes[..at];
+    let signature = take_fixed::<SIGNATURE_BYTES>(bytes, &mut at, "signature")?;
+    close(bytes, at)?;
+    Ok((answer, signed, signature))
 }
 
 pub fn encode_request_v2(request: &PodRequestV2) -> Result<Vec<u8>, FrameError> {
@@ -639,13 +815,15 @@ pub fn decode_request_v2(bytes: &[u8]) -> Result<PodRequestV2, FrameError> {
     })
 }
 
-pub fn encode_answer_v2(answer: &PodAnswerV2) -> Result<Vec<u8>, FrameError> {
-    let mut frame = Vec::with_capacity(192);
+/// Encode an answer to a V2 or V3 request and sign it. See [`encode_answer`] on who
+/// the signer is.
+pub fn encode_answer_v2(answer: &PodAnswerV2, signer: &NodeSigner) -> Result<Vec<u8>, FrameError> {
+    let mut frame = Vec::with_capacity(192 + SIGNATURE_BYTES);
     frame.extend_from_slice(ANSWER_MAGIC);
     let format = if answer.address.is_some() {
-        FORMAT_V3
+        SIGNED_ANSWER_V3
     } else {
-        FORMAT_V2
+        SIGNED_ANSWER_V2
     };
     frame.extend_from_slice(&format.to_le_bytes());
     if let Some(address) = &answer.address {
@@ -675,11 +853,14 @@ pub fn encode_answer_v2(answer: &PodAnswerV2) -> Result<Vec<u8>, FrameError> {
         }
         PodOutcome::Refused { code } => frame.extend_from_slice(&refusal_code(*code).to_le_bytes()),
     }
-    bound_frame(frame)
+    sign_frame(frame, signer)
 }
 
-pub fn decode_answer_v2(bytes: &[u8]) -> Result<PodAnswerV2, FrameError> {
-    let (mut at, has_address) = open_v2_compatible(bytes, ANSWER_MAGIC)?;
+/// Read a signed V2/V3 answer without verifying it. Private: see
+/// [`verify_answer_v2`].
+fn parse_answer_v2(bytes: &[u8]) -> Result<Parsed<'_, PodAnswerV2>, FrameError> {
+    let mut at = open_answer(bytes, &[SIGNED_ANSWER_V2, SIGNED_ANSWER_V3])?;
+    let has_address = u16::from_le_bytes([bytes[8], bytes[9]]) == SIGNED_ANSWER_V3;
     let address = has_address
         .then(|| take_address_binding(bytes, &mut at))
         .transpose()?;
@@ -712,27 +893,30 @@ pub fn decode_answer_v2(bytes: &[u8]) -> Result<PodAnswerV2, FrameError> {
             })
         }
     };
-    close(bytes, at)?;
-    Ok(PodAnswerV2 {
-        address,
-        execution_manifest,
-        responder,
-        request_id,
-        request_digest,
-        generation,
-        revision,
-        placement_epoch,
-        fencing_token,
-        identity_digest,
-        session_id,
-        policy_revision,
-        outcome,
-    })
+    take_signature(
+        bytes,
+        at,
+        PodAnswerV2 {
+            address,
+            execution_manifest,
+            responder,
+            request_id,
+            request_digest,
+            generation,
+            revision,
+            placement_epoch,
+            fencing_token,
+            identity_digest,
+            session_id,
+            policy_revision,
+            outcome,
+        },
+    )
 }
 
-/// Decode an answer, or refuse it.
-pub fn decode_answer(bytes: &[u8]) -> Result<PodAnswer, FrameError> {
-    let mut at = open(bytes, ANSWER_MAGIC)?;
+/// Read a signed V1 answer without verifying it. Private: see [`verify_answer`].
+fn parse_answer(bytes: &[u8]) -> Result<Parsed<'_, PodAnswer>, FrameError> {
+    let mut at = open_answer(bytes, &[SIGNED_ANSWER_V1])?;
     let responder = take_str(bytes, &mut at, "responder")?;
     let request_id = take_u64(bytes, &mut at, "request_id")?;
     let request_digest = take_digest(bytes, &mut at)?;
@@ -753,13 +937,16 @@ pub fn decode_answer(bytes: &[u8]) -> Result<PodAnswer, FrameError> {
             })
         }
     };
-    close(bytes, at)?;
-    Ok(PodAnswer {
-        responder,
-        request_id,
-        request_digest,
-        outcome,
-    })
+    take_signature(
+        bytes,
+        at,
+        PodAnswer {
+            responder,
+            request_id,
+            request_digest,
+            outcome,
+        },
+    )
 }
 
 /// Refuse a frame this build built over the bound, rather than sending it.
@@ -797,6 +984,31 @@ fn open_format(bytes: &[u8], magic: &[u8; 8], expected: u16) -> Result<usize, Fr
         return Err(FrameError::UnknownFormat { format });
     }
     Ok(at)
+}
+
+/// Check an answer's bound, magic and layout version against the signed layouts a
+/// caller reads. The unsigned layouts are refused by name; a signed layout the
+/// caller does not read is an unknown one, as it always was.
+fn open_answer(bytes: &[u8], signed: &[u16]) -> Result<usize, FrameError> {
+    if bytes.len() > MAX_FRAME_BYTES {
+        return Err(FrameError::TooLarge {
+            field: "frame",
+            bytes: bytes.len(),
+            limit: MAX_FRAME_BYTES,
+        });
+    }
+    if bytes.len() < ANSWER_MAGIC.len() || &bytes[..ANSWER_MAGIC.len()] != ANSWER_MAGIC {
+        return Err(FrameError::WrongKind);
+    }
+    let mut at = ANSWER_MAGIC.len();
+    let format = take_u16(bytes, &mut at, "format")?;
+    if signed.contains(&format) {
+        return Ok(at);
+    }
+    match format {
+        FORMAT_V1 | FORMAT_V2 | FORMAT_V3 => Err(FrameError::UnsignedAnswer { format }),
+        other => Err(FrameError::UnknownFormat { format: other }),
+    }
 }
 
 fn open_v2_compatible(bytes: &[u8], magic: &[u8; 8]) -> Result<(usize, bool), FrameError> {
@@ -1216,9 +1428,24 @@ mod tests {
         }
     }
 
+    /// The host's endpoint key.
+    fn signer() -> NodeSigner {
+        NodeSigner::from_test_seed([5; 32])
+    }
+
+    /// Somebody else's.
+    fn stranger() -> NodeSigner {
+        NodeSigner::from_test_seed([6; 32])
+    }
+
+    /// The id a verifier expects an answer from.
+    fn responder() -> NodeId {
+        NodeId(signer().public_key().to_owned())
+    }
+
     fn answer() -> PodAnswer {
         PodAnswer {
-            responder: "key-of-the-host".to_owned(),
+            responder: signer().public_key().to_owned(),
             request_id: 7,
             request_digest: request_digest(b"whatever arrived"),
             outcome: PodOutcome::Answered {
@@ -1237,8 +1464,8 @@ mod tests {
         assert_eq!(decode_request(&frame).unwrap(), request);
 
         let answer = answer();
-        let frame = encode_answer(&answer).unwrap();
-        assert_eq!(decode_answer(&frame).unwrap(), answer);
+        let frame = encode_answer(&answer, &signer()).unwrap();
+        assert_eq!(verify_answer(&frame, &responder()).unwrap(), answer);
 
         // Every refusal is an answer, not only the happy one. A round trip covering
         // one outcome would leave the eight that carry the protocol's decisions
@@ -1259,8 +1486,8 @@ mod tests {
                 outcome,
                 ..answer.clone()
             };
-            let frame = encode_answer(&answered).unwrap();
-            assert_eq!(decode_answer(&frame).unwrap(), answered);
+            let frame = encode_answer(&answered, &signer()).unwrap();
+            assert_eq!(verify_answer(&frame, &responder()).unwrap(), answered);
         }
     }
 
@@ -1310,7 +1537,7 @@ mod tests {
         let answer = PodAnswerV2 {
             address: request.address.clone(),
             execution_manifest: request.execution_manifest,
-            responder: "key-of-the-host".into(),
+            responder: signer().public_key().into(),
             request_id: 42,
             request_digest: request_digest(&frame),
             generation: Generation(3),
@@ -1327,8 +1554,15 @@ mod tests {
                 },
             },
         };
-        let answer_frame = encode_answer_v2(&answer).unwrap();
-        assert_eq!(decode_answer_v2(&answer_frame).unwrap(), answer);
+        let answer_frame = encode_answer_v2(&answer, &signer()).unwrap();
+        assert_eq!(
+            u16::from_le_bytes([answer_frame[8], answer_frame[9]]),
+            SIGNED_ANSWER_V3
+        );
+        assert_eq!(
+            verify_answer_v2(&answer_frame, &responder()).unwrap(),
+            answer
+        );
     }
 
     #[test]
@@ -1380,7 +1614,7 @@ mod tests {
         let answer = PodAnswerV2 {
             address: None,
             execution_manifest: None,
-            responder: "key-of-the-host".into(),
+            responder: signer().public_key().into(),
             request_id: request.request_id,
             request_digest: request_digest(&frame),
             generation: request.generation,
@@ -1394,12 +1628,15 @@ mod tests {
                 code: RefusalCode::Unavailable,
             },
         };
-        let answer_frame = encode_answer_v2(&answer).unwrap();
+        let answer_frame = encode_answer_v2(&answer, &signer()).unwrap();
         assert_eq!(
             u16::from_le_bytes([answer_frame[8], answer_frame[9]]),
-            FORMAT_V2
+            SIGNED_ANSWER_V2
         );
-        assert_eq!(decode_answer_v2(&answer_frame).unwrap(), answer);
+        assert_eq!(
+            verify_answer_v2(&answer_frame, &responder()).unwrap(),
+            answer
+        );
     }
 
     #[test]
@@ -1408,8 +1645,9 @@ mod tests {
         // a later build invents must not silently become "answered" with whatever
         // bytes follow.
         let answer = answer();
-        let frame = encode_answer(&answer).unwrap();
-        let kind_at = frame.len() - 1 - (4 + b"Summary".len()) - (4 + b"summarized".len());
+        let frame = encode_answer(&answer, &signer()).unwrap();
+        let kind_at =
+            frame.len() - SIGNATURE_BYTES - 1 - (4 + b"Summary".len()) - (4 + b"summarized".len());
         assert_eq!(
             frame[kind_at], 1,
             "the outcome kind is where it is expected"
@@ -1417,11 +1655,11 @@ mod tests {
         let mut unknown = frame.clone();
         unknown[kind_at] = 9;
         assert_eq!(
-            decode_answer(&unknown).expect_err("an outcome kind from a later build"),
-            FrameError::UnknownCode {
+            verify_answer(&unknown, &responder()).expect_err("an outcome kind from a later build"),
+            AnswerError::Frame(FrameError::UnknownCode {
                 field: "outcome",
                 code: 9
-            }
+            })
         );
     }
 
@@ -1460,10 +1698,10 @@ mod tests {
     fn an_answer_is_never_read_as_a_request_and_a_request_never_as_an_answer() {
         // Decided by the magic, before a version or a field is looked at.
         let request = encode_request(&request()).unwrap();
-        let answer = encode_answer(&answer()).unwrap();
+        let answer = encode_answer(&answer(), &signer()).unwrap();
         assert_eq!(
-            decode_answer(&request).expect_err("a request is not an answer"),
-            FrameError::WrongKind
+            verify_answer(&request, &responder()).expect_err("a request is not an answer"),
+            AnswerError::Frame(FrameError::WrongKind)
         );
         assert_eq!(
             decode_request(&answer).expect_err("an answer is not a request"),
@@ -1482,14 +1720,17 @@ mod tests {
     fn every_prefix_of_each_frame_is_refused() {
         for frame in [
             encode_request(&request()).unwrap(),
-            encode_answer(&answer()).unwrap(),
+            encode_answer(&answer(), &signer()).unwrap(),
         ] {
             let is_request = decode_request(&frame).is_ok();
             for length in 0..frame.len() {
                 let error = if is_request {
                     decode_request(&frame[..length]).expect_err("a prefix is not a request")
                 } else {
-                    decode_answer(&frame[..length]).expect_err("a prefix is not an answer")
+                    match verify_answer(&frame[..length], &responder()) {
+                        Err(AnswerError::Frame(error)) => error,
+                        other => panic!("a prefix of {length} is not an answer: {other:?}"),
+                    }
                 };
                 assert!(
                     matches!(error, FrameError::WrongKind | FrameError::Truncated { .. }),
@@ -1536,11 +1777,12 @@ mod tests {
             FrameError::UnknownFormat { format: 2 }
         );
 
-        let mut future_answer = encode_answer(&answer()).unwrap();
+        let mut future_answer = encode_answer(&answer(), &signer()).unwrap();
         future_answer[8..10].copy_from_slice(&9_u16.to_le_bytes());
         assert_eq!(
-            decode_answer(&future_answer).expect_err("an answer layout from elsewhere"),
-            FrameError::UnknownFormat { format: 9 }
+            verify_answer(&future_answer, &responder())
+                .expect_err("an answer layout from elsewhere"),
+            AnswerError::Frame(FrameError::UnknownFormat { format: 9 })
         );
     }
 
@@ -1574,9 +1816,13 @@ mod tests {
     #[test]
     fn a_frame_over_the_bound_is_refused_before_it_is_parsed() {
         let oversize = vec![0_u8; MAX_FRAME_BYTES + 1];
+        let answer_error = match verify_answer(&oversize, &responder()) {
+            Err(AnswerError::Frame(error)) => error,
+            other => panic!("over the bound: {other:?}"),
+        };
         for error in [
             decode_request(&oversize).expect_err("over the bound"),
-            decode_answer(&oversize).expect_err("over the bound"),
+            answer_error,
         ] {
             assert_eq!(
                 error,
@@ -1610,7 +1856,7 @@ mod tests {
             ..answer()
         };
         assert_eq!(
-            encode_answer(&huge_answer).expect_err("an output over its bound"),
+            encode_answer(&huge_answer, &signer()).expect_err("an output over its bound"),
             FrameError::TooLarge {
                 field: "output",
                 bytes: MAX_BODY_BYTES + 1,
@@ -1701,13 +1947,286 @@ mod tests {
                 code: 0,
             },
             FrameError::NotUtf8 { field: "x" },
+            FrameError::InvalidField { field: "x" },
+            FrameError::UnsignedAnswer { format: 1 },
         ];
         let mut codes: Vec<&str> = frame_errors.iter().map(FrameError::code).collect();
         codes.extend(RefusalCode::ALL.iter().map(|code| code.code()));
+        codes.extend(
+            [
+                AnswerError::WrongResponder {
+                    expected: String::new(),
+                    claimed: String::new(),
+                },
+                AnswerError::BadSignature,
+            ]
+            .iter()
+            .map(AnswerError::code),
+        );
         let total = codes.len();
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), total, "two refusals share a diagnostic code");
+    }
+
+    /// A V2 answer with every optional binding present, so every echoed field is in
+    /// the signed bytes.
+    fn bound_answer() -> PodAnswerV2 {
+        PodAnswerV2 {
+            address: Some(PodAddressBinding {
+                source: None,
+                destination: ptr_types::PodRevisionAddress {
+                    address: ptr_types::PodAddress::new(
+                        "project".into(),
+                        "namespace".into(),
+                        "pod".into(),
+                    )
+                    .unwrap(),
+                    semantic_revision: [6; 32],
+                    generation: Generation(3),
+                },
+                trace_id: "frame-test".into(),
+                hop_limit: 8,
+                visited: Vec::new(),
+                protocol: Some(ProtocolBinding::Ssh),
+                mesh: None,
+            }),
+            execution_manifest: Some([9; 32]),
+            responder: signer().public_key().into(),
+            request_id: 42,
+            request_digest: request_digest(b"the request"),
+            generation: Generation(3),
+            revision: Revision(11),
+            placement_epoch: Some(4),
+            fencing_token: Some(99),
+            identity_digest: [8; 32],
+            session_id: SessionId::from("session-1"),
+            policy_revision: Revision(5),
+            outcome: PodOutcome::Answered {
+                output: TypedPayload {
+                    type_id: TypeId::from("Summary"),
+                    bytes: b"output".to_vec(),
+                },
+            },
+        }
+    }
+
+    /// `changed`, encoded, carrying the signature `original` was sent with: one field
+    /// edited after signing, exactly as a stored answer would be.
+    fn spliced(mut changed: Vec<u8>, original: &[u8]) -> Vec<u8> {
+        changed.truncate(changed.len() - SIGNATURE_BYTES);
+        changed.extend_from_slice(&original[original.len() - SIGNATURE_BYTES..]);
+        changed
+    }
+
+    #[test]
+    fn a_stored_answer_verifies_offline_and_a_change_to_any_field_is_refused() {
+        // The control first: stored bytes, untouched, verify with nothing but the
+        // responder's id.
+        let stored = encode_answer(&answer(), &signer()).unwrap();
+        assert_eq!(verify_answer(&stored, &responder()), Ok(answer()));
+        let edits = [
+            (
+                "request_id",
+                PodAnswer {
+                    request_id: 8,
+                    ..answer()
+                },
+            ),
+            (
+                "request_digest",
+                PodAnswer {
+                    request_digest: request_digest(b"another request"),
+                    ..answer()
+                },
+            ),
+            (
+                "output",
+                PodAnswer {
+                    outcome: PodOutcome::Answered {
+                        output: TypedPayload {
+                            type_id: TypeId::from("Summary"),
+                            bytes: b"summarizeD".to_vec(),
+                        },
+                    },
+                    ..answer()
+                },
+            ),
+            (
+                "output type",
+                PodAnswer {
+                    outcome: PodOutcome::Answered {
+                        output: TypedPayload {
+                            type_id: TypeId::from("Summarx"),
+                            bytes: b"summarized".to_vec(),
+                        },
+                    },
+                    ..answer()
+                },
+            ),
+            (
+                "outcome",
+                PodAnswer {
+                    outcome: PodOutcome::Refused {
+                        code: RefusalCode::Unavailable,
+                    },
+                    ..answer()
+                },
+            ),
+        ];
+        for (field, changed) in edits {
+            let forged = spliced(encode_answer(&changed, &signer()).unwrap(), &stored);
+            assert_eq!(
+                verify_answer(&forged, &responder()),
+                Err(AnswerError::BadSignature),
+                "{field} edited after signing"
+            );
+        }
+
+        // Every field a V2/V3 answer echoes is signed too: each edited after signing
+        // is refused, and the untouched answer is the control.
+        let stored_v2 = encode_answer_v2(&bound_answer(), &signer()).unwrap();
+        assert_eq!(
+            verify_answer_v2(&stored_v2, &responder()),
+            Ok(bound_answer())
+        );
+        let mut edits_v2: Vec<(&str, PodAnswerV2)> = Vec::new();
+        let mut edit = |field, change: fn(&mut PodAnswerV2)| {
+            let mut answer = bound_answer();
+            change(&mut answer);
+            edits_v2.push((field, answer));
+        };
+        edit("request_id", |a| a.request_id += 1);
+        edit("request_digest", |a| a.request_digest[0] ^= 1);
+        edit("generation", |a| a.generation = Generation(4));
+        edit("revision", |a| a.revision = Revision(12));
+        edit("placement_epoch", |a| a.placement_epoch = Some(5));
+        edit("fencing_token", |a| a.fencing_token = Some(100));
+        edit("identity_digest", |a| a.identity_digest[0] ^= 1);
+        edit("session_id", |a| {
+            a.session_id = SessionId::from("session-2")
+        });
+        edit("policy_revision", |a| a.policy_revision = Revision(6));
+        edit("execution_manifest", |a| {
+            a.execution_manifest = Some([1; 32])
+        });
+        edit("address hop_limit", |a| {
+            a.address.as_mut().unwrap().hop_limit = 7;
+        });
+        edit("address trace_id", |a| {
+            a.address.as_mut().unwrap().trace_id = "frame-tesT".into();
+        });
+        edit("outcome", |a| {
+            a.outcome = PodOutcome::Refused {
+                code: RefusalCode::PodFailed,
+            };
+        });
+        for (field, changed) in edits_v2 {
+            let forged = spliced(encode_answer_v2(&changed, &signer()).unwrap(), &stored_v2);
+            assert_eq!(
+                verify_answer_v2(&forged, &responder()),
+                Err(AnswerError::BadSignature),
+                "{field} edited after signing"
+            );
+        }
+
+        // And every single bit of the stored V1 frame, signature included.
+        for index in 0..stored.len() {
+            for bit in 0..8 {
+                let mut damaged = stored.clone();
+                damaged[index] ^= 1 << bit;
+                assert!(
+                    verify_answer(&damaged, &responder()).is_err(),
+                    "V1 byte {index} bit {bit} still verifies"
+                );
+            }
+        }
+        // Every byte of the larger V3 frame, one bit each, rotating through the bit
+        // positions: the same coverage of fields at an eighth of the verifications.
+        for index in 0..stored_v2.len() {
+            let mut damaged = stored_v2.clone();
+            damaged[index] ^= 1 << (index % 8);
+            assert!(
+                verify_answer_v2(&damaged, &responder()).is_err(),
+                "V3 byte {index} still verifies"
+            );
+        }
+    }
+
+    #[test]
+    fn an_answer_signed_by_another_key_or_readdressed_to_another_responder_is_refused() {
+        let stored = encode_answer(&answer(), &signer()).unwrap();
+        let other = NodeId(stranger().public_key().to_owned());
+
+        // Names the right responder, signed by somebody else.
+        assert_eq!(
+            verify_answer(
+                &encode_answer(&answer(), &stranger()).unwrap(),
+                &responder()
+            ),
+            Err(AnswerError::BadSignature)
+        );
+        // Presented as another responder's: refused on the name.
+        assert_eq!(
+            verify_answer(&stored, &other),
+            Err(AnswerError::WrongResponder {
+                expected: other.0.clone(),
+                claimed: responder().0,
+            })
+        );
+        // Re-addressed to the other key with the original signature.
+        let readdressed = PodAnswer {
+            responder: other.0.clone(),
+            ..answer()
+        };
+        let forged = spliced(encode_answer(&readdressed, &signer()).unwrap(), &stored);
+        assert_eq!(
+            verify_answer(&forged, &other),
+            Err(AnswerError::BadSignature)
+        );
+        // A V1 answer is not a V2 answer even with its signature intact: the layout
+        // version is in the signed bytes and each reader takes only its own.
+        assert_eq!(
+            verify_answer_v2(&stored, &responder()),
+            Err(AnswerError::Frame(FrameError::UnknownFormat {
+                format: SIGNED_ANSWER_V1
+            }))
+        );
+        // The control.
+        assert_eq!(verify_answer(&stored, &responder()), Ok(answer()));
+    }
+
+    #[test]
+    fn an_unsigned_answer_from_an_earlier_build_is_refused_by_version() {
+        // Exactly the layouts earlier builds wrote: the same fields under the old
+        // version number and no signature.
+        let signed_v1 = encode_answer(&answer(), &signer()).unwrap();
+        let mut unsigned_v1 = signed_v1[..signed_v1.len() - SIGNATURE_BYTES].to_vec();
+        unsigned_v1[8..10].copy_from_slice(&FORMAT_V1.to_le_bytes());
+        assert_eq!(
+            verify_answer(&unsigned_v1, &responder()),
+            Err(AnswerError::Frame(FrameError::UnsignedAnswer {
+                format: FORMAT_V1
+            }))
+        );
+
+        let mut legacy = bound_answer();
+        legacy.address = None;
+        legacy.execution_manifest = None;
+        for (answer, old) in [(bound_answer(), FORMAT_V3), (legacy, FORMAT_V2)] {
+            let signed = encode_answer_v2(&answer, &signer()).unwrap();
+            let mut unsigned = signed[..signed.len() - SIGNATURE_BYTES].to_vec();
+            unsigned[8..10].copy_from_slice(&old.to_le_bytes());
+            assert_eq!(
+                verify_answer_v2(&unsigned, &responder()),
+                Err(AnswerError::Frame(FrameError::UnsignedAnswer {
+                    format: old
+                }))
+            );
+            // The control: the frame it was made from verifies.
+            assert_eq!(verify_answer_v2(&signed, &responder()), Ok(answer));
+        }
+        assert_eq!(verify_answer(&signed_v1, &responder()), Ok(answer()));
     }
 
     #[test]

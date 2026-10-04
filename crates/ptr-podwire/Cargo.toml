@@ -32,8 +32,9 @@ ptr-runtime = { workspace = true }
 # three digests for the bytes they are all taken over.
 sha2 = { version = "=0.11.0", default-features = false }
 # The base only, for `AuthenticatedPeer` (D1 in issue #23): the access decision
-# takes an identity only a transport can construct. The transport itself is the
-# `podwire-backend` feature.
+# takes an identity only a transport can construct; and for signing and verifying
+# an answer with the endpoint key (D2), so `verify_answer` needs no transport. The
+# transport itself is the `podwire-backend` feature.
 ptr-net = { workspace = true }
 # Only for a deadline on one exchange. How long to wait for an answer is this
 # layer's policy, so the clock belongs here rather than in the transport.
