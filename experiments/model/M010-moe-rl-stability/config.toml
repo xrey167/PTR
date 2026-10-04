@@ -9,3 +9,5 @@ collapse_reward_drop_fraction = 0.5
 collapse_on_non_finite_loss = true
 null_control_pass_at_1_tolerance_points = 2.0
 min_seeds = 3
+crash_comparison_only_if_control_crashes = true
+crash_step_censoring = "final_step"

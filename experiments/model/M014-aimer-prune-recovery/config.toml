@@ -8,3 +8,4 @@ tests_dir = "tests"
 pruning_fractions = [0.25, 0.5]
 min_seeds = 3
 min_quality_retention_at_25pct = 0.90
+min_quality_retention_at_50pct = 0.80

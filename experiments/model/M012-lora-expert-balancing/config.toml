@@ -8,3 +8,4 @@ tests_dir = "tests"
 task_accuracy_margin_points = 1.0
 load_cv_margin = 0.05
 min_seeds = 3
+each_regression_falsifies_independently = true

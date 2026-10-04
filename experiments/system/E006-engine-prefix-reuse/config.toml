@@ -7,4 +7,4 @@ tests_dir = "tests"
 [pinned_thresholds]
 min_ttft_gain = 1.5
 shared_prefix_fraction = 0.5
-max_post_revocation_hits_salted = 0
+max_stale_block_hits_salted = 0

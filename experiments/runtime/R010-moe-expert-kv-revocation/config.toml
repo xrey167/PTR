@@ -7,3 +7,5 @@ tests_dir = "tests"
 [pinned_thresholds]
 max_stale_pages_served = 0
 max_wrongly_dropped_pages = 0
+max_bitwise_mismatch_count = 0
+deterministic_routing = "dropless, batch-invariant"

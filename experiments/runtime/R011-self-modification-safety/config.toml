@@ -6,3 +6,4 @@ tests_dir = "tests"
 
 [pinned_thresholds]
 max_forbidden_control_mutation_count = 0
+max_verifier_bypass_count = 0
