@@ -661,6 +661,28 @@ async fn remove_fastmem_writes(
         Removal::Exactly => "=",
         Removal::Older => "<",
     };
+    // Lock the rows first, in the order a checkpoint writer takes them.
+    //
+    // `put_checkpoint` holds its memory's journal prefix `FOR SHARE`, taken in
+    // ascending `seq`. A bare `DELETE` locks whatever it matches in scan order,
+    // and once revocations have freed heap space a later write can sit at an
+    // earlier position, so the delete could hold a later row while waiting for
+    // an earlier one the writer already shares — and the writer, holding that
+    // one, waits for the later: PostgreSQL breaks the cycle with 40P01 and one
+    // side fails. Taking the locks in `(memory, seq)` order here means both
+    // sides acquire every row they share in the same order, so whichever
+    // reaches a row first holds it and the other waits; no cycle can form.
+    transaction
+        .execute(
+            &format!(
+                "SELECT 1 FROM {work}.fastmem_write \
+                 WHERE source_key = $1 AND source_generation {comparison} $2 \
+                 ORDER BY memory, seq FOR UPDATE"
+            ),
+            &[&key, &generation],
+        )
+        .await
+        .map_err(database)?;
     let removed = transaction
         .query(
             &format!(
