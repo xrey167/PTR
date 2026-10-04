@@ -206,7 +206,10 @@ chain(l) = H( chain(l-1),
                 K/V projections (pre-attention norm weights, eps/config), + generations,
               K/V weights of layer l incl. adapter,
               numerics config: dtype, quantization, kernel set / batch-invariance,
-                               TP/EP layout, inter-pod activation precision )
+                               TP/EP layout, inter-pod activation precision,
+              if KvKeyEncoding = PostRope:
+                positional-encoding config: rope_theta, rope_scaling policy,
+                head_dim split (rotated vs pass-through dims), + their generation )
 ```
 
 General rule: the key covers **every transformation applied to the residual stream
@@ -216,11 +219,29 @@ Qwen2 reference path that includes `input_layernorm` and `rms_norm_eps`, which
 (`crates/ptr-pods/src/qwen.rs:313-321`, weights field at `:115`); changing them
 changes K and V of layer l even though no K/V weight changed.
 
+**The positional encoding is part of the key for post-RoPE keys.** With
+`KvKeyEncoding::PostRope` the stored key is already rotated, so the rotation
+configuration is baked into the cached bytes: `Qwen2PagedDecoder` passes
+`self.config.rope_theta` to `apply_rope` while it builds the key that is appended
+to the cache (`crates/ptr-pods/src/qwen.rs:328-334`; the config field is at `:22`,
+validated at `:45`). Therefore a `PostRope` chain key must also bind `rope_theta`,
+the `rope_scaling` policy (any context-extension scheme, including its factors),
+the `head_dim` split between rotated and pass-through dimensions, and the
+generation of that configuration. Changing any of them changes every stored key
+of every layer even though no weight changed, so it invalidates **all layers**
+(`l >= 0`). For `KvKeyEncoding::PreRope` the stored key carries no rotation, so
+the RoPE configuration is **not** in the chain key; it is bound at use, in the
+attention step that rotates the key (section B, key insight), and a RoPE change
+invalidates nothing in the cache but changes the use-time binding checked at
+admission.
+
 Consequences:
 
 | Change | Layers invalidated |
 |---|---|
 | pre-attention norm weights or eps at layer k | layers >= k |
+| `rope_theta`, `rope_scaling` or `head_dim` split, `PostRope` keys | every layer |
+| `rope_theta`, `rope_scaling` or `head_dim` split, `PreRope` keys | none (bound at use, not in the key) |
 | QKV-LoRA attached at layer k | layers >= k |
 | Q-only or MLP-only LoRA at layer k | layers >= k+1 |
 | aLoRA | every layer before the invocation token is shared with the base |
@@ -262,11 +283,11 @@ experiment that can fail.
 | P1 | token-aware contract in `ptr-model-api`: `TokenId`, `Tokenizer` trait, `ByteTokenizer`, `PromptSegment` (with `content_digest` and source `Raw` / `Semantic` / `Memory`), `SegmentedModelRequest`, `KvReuseHint`, `KvReuseReport`, `ModelRun`, and a **new trait** `KvReusingBackend`. Existing backends are untouched. A real HF tokenizer comes later in a new crate `ptr-tokenizers` | contract tests only |
 | P2 | exact prefix reuse on CPU. A `retire_prefix` trait method with default `Unsupported` (the candle path is not compiled in CI). `ptr-runtime/src/kv_prefix.rs`: `KvPrefixCatalog`, a radix tree over `KvChunkKey { parent, chunk (16 tokens), salt }` with `salt = H(principal, execution manifest, model, adapter, tokenizer, schema)`; admission at the deepest node, then a walk back to the admitted ancestor; subtree invalidation; semdb `PreparedDelta::affected()` wired to `invalidate_inputs`; `ReferenceKvReuseBackend` | **R005 exact-prefix-reuse**: falsified by any bitwise difference against full prefill, any successful fork of a revoked generation, or a hit rate below 40% at 50% shared prefix |
 | P2a | `KvReuseTaint` carried with every model event and with `ResumableRun::action`, checked by action admission and `authorize_action`, propagated transitively to derived candidates (section C) | **R005** additionally falsified by any action admitted from a run whose reuse mode was Approximate |
-| P2b | LoRA layer sharing and aLoRA | **R009 layer-shared-lora-kv** |
-| P2c | MoE expert generations | **R010 moe-expert-kv-revocation** |
+| P2b | LoRA layer sharing and aLoRA | **R009 layer-shared-lora-kv**, falsified if shared pages differ bitwise from the base pages, the measured sharing deviates from the predicted f/L fraction, revoking the adapter drops any base-keyed page, or the aLoRA prefix is not bit-identical |
+| P2c | MoE expert generations | **R010 moe-expert-kv-revocation**, falsified if any page above j that was created before the revocation is served after it, any page at or below j is dropped because of the revocation, or any nondeterministic-routing run is tagged Exact (pages recomputed after the revocation are allowed) |
 | P3 | pre-RoPE keys: `KvKeyEncoding { PostRope, PreRope }` with a versioned digest; N-layer `Qwen2PagedStack` | **R006 positional-reuse-oracle** (one layer, bit-identical); **M016 approximate-chunk-reuse**, falsified if top-1 agreement is below 99% or the saving is below 2x at the best k |
 | P4 | span eviction without hidden carry-over (Leyline FORGET) | **R007 span-forget**, falsified if the state differs from a fresh prefill without the span, or a canary token remains probeable |
-| P5a | pipeline and expert split. Includes an explicit **wire-type denial**: KV handle, page and state type ids are rejected by `ptr-protocol` conversion and by PodWire admission, with a test. Until it lands, "no KV handle on the wire" is a design rule, not an enforced guarantee (section A) | **E007 split-pod-kv** (its `wire_kv_handle_count` check depends on the denial) |
+| P5a | pipeline and expert split. Includes an explicit **wire-type denial**: KV handle, page and state type ids are rejected by `ptr-protocol` conversion and by PodWire admission, with a test. Until it lands, "no KV handle on the wire" is a design rule, not an enforced guarantee (section A). It also settles the size of an `ActivationFrame`: PodWire bounds one payload at `MAX_BODY_BYTES = 4 MiB` (`crates/ptr-podwire/src/frame.rs:65`, enforced on the request body at `:503-508`), and one frame of 2048 tokens x 2048 width in bf16 is 8 MiB, which does not fit. P5a therefore specifies **bounded chunking of activation frames**: each chunk is its own `TypedPayload` below the body bound and carries `{ chunk_index, chunk_total, chunk_digest, upstream_chain }`; `upstream_chain` is repeated on **every** chunk so a stage can refuse a chunk stored under a mismatched chain without waiting for the rest; the receiver reassembles into a **bounded queue** (invariant #8) with a limit on chunks in flight, and rejects a frame that is incomplete, duplicated, reordered beyond the window, or whose per-chunk digests do not match. The alternative is an explicit, tested **supported-shape limit** (tokens x width x dtype below one body) that fails closed with a typed error; the document does not claim to support larger shapes under that alternative | **E007 split-pod-kv** (its `wire_kv_handle_count` check depends on the denial; it must also run at least one frame larger than one body, 8 MiB at the shape above, bit-identical to the single-pod run, or, under the shape-limit alternative, show the typed refusal) |
 | P5 | engine adapter crate `ptr-model-engine` (`vllm-http`, `sglang-http`); the salt is always taken from the **currently admitted** binding, so revocation works by unreachability; router cost term `KvReuseEstimate` | **E006 engine-prefix-reuse**, falsified if the TTFT gain is below 1.5x at 50% shared prefix, or any hit lands on a pre-revocation block |
 | P6 | lossy tier `TierObjectDomain::KvSnapshotLossy` | **R008 lossy-kv-tier**, falsified if memory reduction is below 2x at top-1 agreement of at least 98% |
 
@@ -319,9 +340,12 @@ flowchart LR
     K2 -->|"..."| KL["chain(l)"]
     N["numerics config\ndtype, kernels, TP/EP"] --> K0
     PN["pre-attention norm of layer l\nweights, eps, generation"] --> KL
+    RP["PostRope only: rope_theta, rope_scaling,\nhead_dim split, generation"] --> K0
     KV["K/V weights of layer l\nincl. adapter"] --> KL
 ```
 
 A changed weight, adapter or expert generation at layer j changes `chain(l)` for
 every l > j (and for l = j when it touches the pre-attention norm or K/V), and
-changes nothing below.
+changes nothing below. A changed RoPE configuration is the exception: with
+`PostRope` keys it enters at `chain(0)` and so changes every layer; with `PreRope`
+keys it is not in the chain at all and is checked at use.

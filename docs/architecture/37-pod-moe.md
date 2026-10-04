@@ -9,6 +9,9 @@ binding (`bindings/ptr-py`, PyO3; a separate work package, not in the tree). The
 smoke pipeline: **no quality claim is made**, and every claim beyond the cited code is an
 experiment (§5) with a falsification rule, per invariant 15.
 
+This document references `crates/ptr-pods/src/expert.rs` (#115) and `ptr-router`'s
+`Router`/`RoutedChoice`/`Propensity` (#116), which land before it.
+
 ## 1. Principle
 
 Every expert is a pod: it has a manifest, a generation, a lineage record, a
@@ -55,6 +58,21 @@ model can read them as context. They are derived and non-authoritative
    `chance_overlap`, the verifier and the public suites.
 5. Only then is it committed as a ledger event (`ExpertPromoted` / `ExpertRetired`).
 
+**Gate evidence must be bound to the evaluated artifact.** This is a design
+requirement, not existing behaviour. `ForgettingGate::evaluate` takes an `AdapterId`
+plus caller-supplied matrices and scores (`crates/ptr-lineage/src/forgetting.rs:235`),
+and `GateReport` binds the verdict to that id and to nothing else: the gate cannot
+tell which adapter the accuracy matrix and public-suite scores were measured on, so
+matching the measurements to the adapter is the caller's obligation
+(`forgetting.rs:172-176`). A promotion that rests on such a report would only be as
+trustworthy as its caller. Therefore the `ExpertPromoted` event must bind **trusted
+evidence**: the artifact digest and generation of the evaluated expert, the digest of
+the evaluation-data manifest, the digest of the gate configuration (thresholds), and
+the evaluator identity. The evaluation must run in a **trusted evaluator**, not in
+the proposer's sandbox, which produced the candidate and could hand the gate
+measurements of a different artifact. The Python binding (§6) only calls the gate; it
+does not make the result trustworthy.
+
 `ExpertPromoted` and `ExpertRetired` are **not implemented yet**. The `ptr-lineage`
 README lists the `AdapterPromoted` ledger event as a next milestone
 (`crates/ptr-lineage/README.md:39`), and
@@ -71,8 +89,17 @@ Invariants preserved:
   (`crates/ptr-runtime/src/merge.rs:11`, ADR-0020); an expert promotion
   must be routed through the same grant-controlled path once it exists.
 - **#15 falsifiability:** R011 (§5) states the failure criterion.
-- **#17 revocable derivation:** an expert names the input generations it depends on,
-  so revoking an input identifies the experts it influenced (`affected_by`, §4).
+- **#17 revocable derivation:** the intent is that an expert names the input
+  generations it depends on, so revoking an input identifies the experts it influenced
+  (`affected_by`, §4). **Existing behaviour falls short of this:** `affected_by`
+  intersects unstructured `data_manifest: BTreeSet<String>` entries
+  (`crates/ptr-lineage/src/lineage.rs:109`, `:264-268`), with no generation and no
+  digest, so a revocation of one generation of an input cannot be told from another
+  and an id that was never bound to content matches by name only. Revocable
+  derivation for experts therefore **requires** validated
+  `(input identity, generation, digest)` bindings in the expert lineage record. This
+  is a required extension, not existing behaviour, and a prerequisite of M013 and
+  R011 (§5).
 
 Hard invariants are excluded from learnable optimisation
 ([09-training.md](09-training.md)). The L3 policy can never alter gates, thresholds
@@ -85,12 +112,12 @@ field list (`crates/ptr-pods/src/expert.rs`).
 | Operator | Mechanism | Existing code / status |
 |---|---|---|
 | Birth | New expert registered as Candidate; DynMoE-style initialisation from unrouted tokens | `Lineage::register` sets `AdapterStatus::Candidate` (`crates/ptr-lineage/src/lineage.rs:151`, status set at `:183`); initialisation is *new* |
-| Merge | `subspace_overlap` above `chance_overlap`, or `ConsolidationPolicy::consolidation_due`, then `ties_merge`, new Candidate, then gate | `subspace_overlap` `crates/ptr-lineage/src/subspace.rs:444`, `chance_overlap` `:462`; `consolidation_due` `crates/ptr-lineage/src/lineage.rs:341`; `ties_merge` `crates/ptr-lineage/src/merge.rs:32` |
+| Merge | `subspace_overlap` above a **preregistered margin or a calibrated null threshold**, or `ConsolidationPolicy::consolidation_due`, then `ties_merge`, new Candidate, then gate. `chance_overlap` is the *expected* overlap of two random subspaces (`max(rank_a, rank_b) / dim`, `crates/ptr-lineage/src/subspace.rs:452-456`), a mean and not an upper confidence bound, so a merge must never trigger merely because the overlap exceeds it: about half of independent random pairs do. The threshold is a high quantile of overlaps between independently trained random adapters of the same shape, fixed before the runs | `subspace_overlap` `crates/ptr-lineage/src/subspace.rs:444`, `chance_overlap` `:462`; `consolidation_due` `crates/ptr-lineage/src/lineage.rs:341`; `ties_merge` `crates/ptr-lineage/src/merge.rs:32` |
 | Split | High load plus bimodal routing clusters, then duplicate (expert upcycling), then fine-tune | *new* |
 | Freeze | Stop gate updates after convergence (continual-learning theory, 2406.16437) | *new* flag |
 | Prune | AIMER score plus usage; `ForgettingGate` on a public suite; then `retire` | `ForgettingGate::evaluate` `crates/ptr-lineage/src/forgetting.rs:235` (type at `:132`); `retire` `crates/ptr-lineage/src/lineage.rs:220`; `aimer_score` and `rank_experts_for_pruning` (`crates/ptr-lineage/src/aimer.rs`) |
 | Reactivate | `Retired` is final today: `retire` refuses a retired adapter (`lineage.rs:225`) and no transition leaves it | Open research question with its own claim; no literature (§7) |
-| Revoke | `affected_by` finds the adapters that depend on a revoked input; the per-layer KV chain key invalidates layers after the affected layer j | `affected_by` `crates/ptr-lineage/src/lineage.rs:264`; per-layer KV chain key in [36](36-kv-reuse.md), section D |
+| Revoke | `affected_by` finds the adapters that depend on a revoked input, by comparing unstructured `data_manifest` string ids; the per-layer KV chain key invalidates layers after the affected layer j. Reliable revocation needs validated `(input identity, generation, digest)` bindings in the expert lineage: a **required extension, not existing behaviour**, and a prerequisite of M013 and R011 | `affected_by` `crates/ptr-lineage/src/lineage.rs:264` (manifest type at `:109`); per-layer KV chain key in [36](36-kv-reuse.md), section D |
 
 ## 5. Training programme
 
@@ -100,8 +127,13 @@ below exists yet.
 - **SFT of PERFT-R LoRA experts on OLMoE.** Router balancing compared across
   auxiliary-loss-free bias, auxiliary loss and φ-balancing. Ablation: prescribed
   specialisation (code / math / tool) versus emergent specialisation.
-- **RLVR.** Reward is the `ptr-verifier` `VerificationReport` (status Pass/Fail plus
-  `score`; `crates/ptr-verifier/src/lib.rs:19`). Arms: GRPO (clip-higher), GRPO with
+- **RLVR.** Reward is derived from the `ptr-verifier` `VerificationReport` (a status
+  plus `score` and findings; `crates/ptr-verifier/src/lib.rs:19`) and is defined for
+  **all four** `VerificationStatus` values (`lib.rs:4-10`): `Pass` yields the
+  report's `score`; `Fail`, `Disputed` and `Unknown` yield 0. A non-Pass report never
+  receives a passing reward and its independent `score` is never used, so a high
+  score on a disputed or unknown report is worth nothing. A hard finding
+  (`Finding::hard`) forces `Fail` whatever the reported status or score. Arms: GRPO (clip-higher), GRPO with
   routing replay, GSPO, SAPO, REINFORCE++. Factors: mini-steps 1 versus 4 (at 1
   mini-step GRPO, GSPO and SAPO coincide, which is the null control among those
   three; REINFORCE++ uses a different advantage estimator, global batch
@@ -134,7 +166,12 @@ will be extended to exclude it like `model/burn-a0`. It is intended to expose
 `ForgettingGate` evaluate, `measure_interference` / `subspace_overlap` /
 `chance_overlap`, `ties_merge` and `aimer_score`. Python is to call it at every
 lifecycle gate; the import will be guarded so the CPU smoke pipeline still runs without
-the extension, reporting the gate as not evaluated rather than passed.
+the extension, reporting the gate as not evaluated rather than passed. The binding
+only calls the gate: it does not make the gate's result trustworthy. A promotion
+must rest on the trusted evidence of §3 (artifact digest and generation,
+evaluation-data manifest digest, gate configuration digest, evaluator identity),
+produced by a trusted evaluator and not by the proposer's sandbox, because the gate
+binds its verdict only to the `AdapterId` it is given.
 
 ## 7. Verified literature
 
