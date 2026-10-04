@@ -282,9 +282,23 @@ impl ExpertProposal {
                 check_states(op, &targets, LIVE)?;
                 check_merge(&targets)?;
             }
-            StructuralOp::Split | StructuralOp::Prune | StructuralOp::Retire => {
+            StructuralOp::Split | StructuralOp::Prune => {
                 check_count(op, &targets, "exactly one", |n| n == 1)?;
                 check_states(op, &targets, LIVE)?;
+            }
+            // A candidate that fails its gate is retired, as `Lineage::retire` allows; only a
+            // retired expert cannot be retired again.
+            StructuralOp::Retire => {
+                check_count(op, &targets, "exactly one", |n| n == 1)?;
+                check_states(
+                    op,
+                    &targets,
+                    &[
+                        ExpertState::Candidate,
+                        ExpertState::Serving,
+                        ExpertState::Frozen,
+                    ],
+                )?;
             }
             StructuralOp::Freeze => {
                 check_count(op, &targets, "exactly one", |n| n == 1)?;

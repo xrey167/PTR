@@ -142,15 +142,26 @@ fn wrong_target_state_is_rejected() {
         )),
         ExpertState::Frozen
     );
-    for op in [
-        StructuralOp::Split,
-        StructuralOp::Prune,
-        StructuralOp::Retire,
-    ] {
+    for op in [StructuralOp::Split, StructuralOp::Prune] {
         for s in [ExpertState::Candidate, ExpertState::Retired] {
             assert_eq!(wrong(propose(op, vec![in_state(s)], None)), s);
         }
     }
+    // A candidate that failed its gate can be retired; a retired expert cannot be retired again.
+    assert!(propose(
+        StructuralOp::Retire,
+        vec![in_state(ExpertState::Candidate)],
+        None
+    )
+    .is_ok());
+    assert_eq!(
+        wrong(propose(
+            StructuralOp::Retire,
+            vec![in_state(ExpertState::Retired)],
+            None
+        )),
+        ExpertState::Retired
+    );
     let candidate = target("b", 1, token(3), ExpertState::Candidate);
     assert_eq!(
         wrong(propose(
