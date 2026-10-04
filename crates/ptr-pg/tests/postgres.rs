@@ -160,6 +160,22 @@ async fn refused_sqlstate(raw: &tokio_postgres::Client, sql: &str) -> String {
         .to_owned()
 }
 
+/// The SQLSTATE the server reports for a row an `ON DELETE RESTRICT` key
+/// refuses to orphan: `restrict_violation` (23001) from PostgreSQL 18, which
+/// 16 and 17 report as `foreign_key_violation` (23503) for the same refusal.
+async fn restrict_sqlstate(raw: &tokio_postgres::Client) -> &'static str {
+    let version: i32 = raw
+        .query_one("SELECT current_setting('server_version_num')::int", &[])
+        .await
+        .expect("read server_version_num")
+        .get(0);
+    if version >= 180_000 {
+        "23001"
+    } else {
+        "23503"
+    }
+}
+
 /// A migrated substrate in a fresh schema prefix.
 async fn substrate() -> PgSubstrate {
     substrate_at(&dsn()).await
@@ -4439,7 +4455,10 @@ async fn triage_policies_record_their_calibration_and_hold_out_everything_else()
         .execute(&format!("DELETE FROM {work}.branch WHERE id = 'c00'"), &[])
         .await
         .unwrap_err();
-    assert_eq!(error.as_db_error().unwrap().code().code(), "23001");
+    assert_eq!(
+        error.as_db_error().unwrap().code().code(),
+        restrict_sqlstate(&raw).await
+    );
     substrate.drop_all().await.unwrap();
 }
 
@@ -8513,7 +8532,10 @@ async fn a_calibration_branch_deleted_and_written_again_in_one_statement_is_refu
         deletes.join(", "),
         counts.join(" + ")
     );
-    assert_eq!(refused_sqlstate(&raw, &rewrite).await, "23001");
+    assert_eq!(
+        refused_sqlstate(&raw, &rewrite).await,
+        restrict_sqlstate(&raw).await
+    );
     // The verdict written again, reversed, finds the stored one in its way.
     assert_eq!(
         refused_sqlstate(
@@ -8833,7 +8855,11 @@ async fn a_label_schema_or_function_a_row_names_is_never_deleted_and_written_aga
             ),
         ),
     ] {
-        assert_eq!(refused_sqlstate(&raw, &sql).await, "23001", "{why}");
+        assert_eq!(
+            refused_sqlstate(&raw, &sql).await,
+            restrict_sqlstate(&raw).await,
+            "{why}"
+        );
     }
 
     // Nothing changed: the schemas keep their classes, the function its

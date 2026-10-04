@@ -404,10 +404,17 @@ itself. `crates/ptr-ledger/tests/raft_fence.rs` opens *two* handles on one
 directory — the shared-storage case in miniature — and a mutation that consults
 memory rather than disk fails exactly the three tests that use two writers.
 
-Two consequences, stated rather than discovered:
+Three consequences, stated rather than discovered:
 
 - **A read precedes every write.** That is what a fence costs. It is a small file,
   and the alternative is a token that cannot see the writer it exists to exclude.
+- **The check and the write are not atomic.** `fenced_to` reads the state file and
+  returns; the truncation and the writes that follow happen later, and nothing holds
+  an interprocess lock or compares-and-writes in between. A lower-term writer that
+  passes the read just before another process persists a higher term can still
+  perform that one mutation, and is refused only on its next write. Closing the
+  window needs an interprocess lock or an atomic compare-and-write, which is not
+  built.
 - **It is a fence, not a lock.** A writer that has caught up to the recorded term
   proceeds, which is what a legitimate restart does; a second handle is not refused
   for being second. `the_same_writer_proceeds_once_it_is_no_longer_behind` is the
@@ -445,11 +452,14 @@ unfenced is the failure this exists to prevent.
   `FileLedger` takes an advisory lock, which makes one writer per file on one
   machine and says nothing about a second. What raft adds is a safety argument
   among correct members — a deposed leader cannot commit, tested — and not a fence
-  against a writer that is not one. **Durable leadership fencing is a protocol
-  property and it is not implemented**, which is the last clause of #15's Gate 2
-  sentence and is carried forward in `docs/OPEN_ITEMS_PLAN_20260921.md` rather than
-  closed here. This document used to assert the opposite in its own body, fourteen
-  lines above this section; that is corrected.
+  against a writer that is not one. The fence against such a writer is the fencing
+  token described in "The fencing token" above (`PTR_RAFT_FENCED`), bounded by the
+  previous bullet and by the non-atomic check stated there: it refuses a superseded
+  writer's next write on the storage that sees the token, but a write that passes
+  the check just before a higher term is persisted still lands, and it says nothing
+  about any other copy. This bullet used to say that durable leadership fencing "is
+  not implemented", which contradicted that section; it is corrected here, and the
+  fence is described as implemented with that window, not as complete.
 - **Raft's floor is bounded by the retention floor it is given, not by one it
   can verify.** C7 of issue #23 is closed in the sense above: raft cannot discard
   an entry whose event lies past the `RetentionFloor` it is handed, and cannot

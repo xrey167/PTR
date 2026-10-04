@@ -5,8 +5,10 @@
 The next work follows [Step 01: cognitive contract](architecture/20-cognitive-contract-step-01.md),
 not a repository-wide type/backend refactor. Confidence targets, the narrow A0 bias correction, scoped local execution and
 semantic replay/integrity recovery now have bounded implementation contracts.
-The next cognitive increment remains minimum semantic values and a versioned
-codebook, followed by actual tensor/data integration and controlled training. After each code change, update its component metadata, generated README
+Minimum semantic values and a versioned codebook now exist
+([document 26](architecture/26-cognitive-codebook.md)). The next cognitive increment is
+connecting actual semantic payloads to a model end to end, followed by controlled
+training against matched baselines. After each code change, update its component metadata, generated README
 and status, architecture contract and test evidence before widening scope.
 
 1. Cognitive contract and reference cases (first ptr-types increment).
