@@ -73,6 +73,36 @@ class MoeRewardTests(unittest.TestCase):
         self.assertEqual(r.status, "Unknown")
         self.assertEqual(reward.rl_reward(r), 0.0)
 
+    def test_levels_match_rust_order(self):
+        self.assertEqual(
+            reward.LEVELS,
+            ("Unverified", "LatentAgreement", "SampleVerified", "FullSemantic", "Deterministic"),
+        )
+        self.assertIn(reward.LEVEL, reward.LEVELS)
+
+    def test_invalid_level_rejected(self):
+        with self.assertRaisesRegex(ValueError, "level"):
+            reward.VerificationReport("Pass", "Strong", 1.0, [])
+        with self.assertRaisesRegex(ValueError, "level"):
+            reward.rl_reward(reward.VerificationReport("Pass", reward.LEVEL, 1.0, []), "bogus")
+
+    def test_reward_gated_on_verification_level(self):
+        high = reward.VerificationReport("Pass", "SampleVerified", 0.9, [])
+        self.assertEqual(reward.rl_reward(high, "Deterministic"), 0.0)
+        self.assertEqual(reward.rl_reward(high, "FullSemantic"), 0.0)
+        self.assertEqual(reward.rl_reward(high, "SampleVerified"), 0.9)
+        self.assertEqual(reward.rl_reward(high, "Unverified"), 0.9)
+        det = reward.VerificationReport("Pass", "Deterministic", 0.9, [])
+        self.assertEqual(reward.rl_reward(det, "Deterministic"), 0.9)
+        self.assertEqual(reward.rl_reward(det), 0.9)  # default minimum = LEVEL
+
+    def test_make_reward_fn_threads_level(self):
+        fn = reward.make_reward_fn("Deterministic")
+        self.assertEqual(fn.__name__, "reward_batch")
+        self.assertEqual(fn(["12"], kind=["arith"], spec=['{"value": 12}']), [1.0])
+        with self.assertRaises(ValueError):
+            reward.make_reward_fn("nope")
+
     def test_non_pass_independent_score_is_never_reward(self):
         for status in ("Fail", "Disputed", "Unknown"):
             r = reward.VerificationReport(status, reward.LEVEL, 0.9, [])

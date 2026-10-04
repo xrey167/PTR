@@ -21,6 +21,12 @@ def collate(tokenizer, tasks: list[Task], max_length: int):
     import torch
 
     rows = [_encode_example(tokenizer, t, max_length) for t in tasks]
+    for task, (_, labels) in zip(tasks, rows, strict=True):
+        if all(x == -100 for x in labels):
+            raise ValueError(
+                f"max_length={max_length} truncates away every supervised label for prompt "
+                f"{task.prompt!r}; refusing to train on an empty-label example"
+            )
     width = max(len(ids) for ids, _ in rows)
     pad = tokenizer.pad_token_id
     input_ids = [ids + [pad] * (width - len(ids)) for ids, _ in rows]

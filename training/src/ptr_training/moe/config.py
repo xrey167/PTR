@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from ptr_training.moe.reward import LEVEL, LEVELS
+from ptr_training.moe.tasks import longest_answer_chars, longest_prompt_chars
 
 MODEL_KINDS = ("tiny-random", "pretrained")
 ALGORITHMS = ("gspo", "sapo")
@@ -23,9 +27,16 @@ _RL_KEYS = {
     "algorithms", "steps", "num_generations", "mini_steps", "beta", "epsilon", "epsilon_high",
     "gspo_epsilon", "gspo_epsilon_high", "sapo_temperature_pos", "sapo_temperature_neg", "lr",
     "prompts_per_step", "max_prompt_length", "max_completion_length", "temperature",
+    "min_verification_level",
 }
 _LORA_KEYS = {"enabled", "rank", "alpha", "dropout", "target_modules", "target_parameters"}
 _OUTPUT_KEYS = {"dir", "probe_tokens"}
+# Architecture keys that only configure the tiny-random model; a pretrained model's
+# architecture comes from the Hub config and these would be silently ignored.
+_TINY_ONLY_KEYS = (
+    "layers", "hidden", "intermediate", "heads", "experts", "top_k", "max_positions",
+    "router_aux_loss_coef",
+)
 # Mutable refs: resolving them would make a "pinned" run drift.
 _FLOATING_REVISIONS = {"main", "master", "HEAD"}
 
@@ -62,12 +73,21 @@ def _get(table: dict, key: str, typ, where: str, default=None):
         value, ok = float(value), True
     if not ok:
         raise ConfigError(f"{where}.{key} must be {typ.__name__}, got {value!r}")
+    if typ is float and not math.isfinite(value):
+        raise ConfigError(f"{where}.{key} must be finite, got {value!r}")
     return value
 
 
+def _str_list(table: dict, key: str, where: str) -> tuple[str, ...]:
+    value = table.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
+        raise ConfigError(f"{where}.{key} must be a list of non-empty strings, got {value!r}")
+    return tuple(value)
+
+
 def _positive(value, where: str):
-    if value <= 0:
-        raise ConfigError(f"{where} must be > 0, got {value}")
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigError(f"{where} must be a finite number > 0, got {value}")
     return value
 
 
@@ -115,6 +135,7 @@ class RlConfig:
     max_prompt_length: int
     max_completion_length: int
     temperature: float = 1.0
+    min_verification_level: str = LEVEL
 
 
 @dataclass(frozen=True)
@@ -162,6 +183,12 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             raise ConfigError("model.hf_id is required when model.kind = 'pretrained'")
     revision = m.get("revision")
     if kind == "pretrained":
+        tiny_only = [k for k in _TINY_ONLY_KEYS if k in m]
+        if tiny_only:
+            raise ConfigError(
+                f"{['model.' + k for k in tiny_only]} only apply to model.kind = 'tiny-random'; a pretrained "
+                "model's architecture comes from the Hub config (recorded in the metrics)"
+            )
         if not isinstance(revision, str) or not revision.strip():
             raise ConfigError(
                 "model.revision is required when model.kind = 'pretrained' "
@@ -208,6 +235,12 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     )
     if sft.steps < 0:
         raise ConfigError("moe.sft.steps must be >= 0")
+    longest_prompt = longest_prompt_chars()
+    if sft.max_length <= longest_prompt + 1:
+        raise ConfigError(
+            f"moe.sft.max_length ({sft.max_length}) must exceed the longest task prompt "
+            f"({longest_prompt} chars) + 1, or truncation can leave no supervised label"
+        )
 
     r = _table(moe, "rl")
     _check_keys(r, _RL_KEYS, "moe.rl")
@@ -248,12 +281,24 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             _get(r, "max_completion_length", int, "moe.rl", 12), "moe.rl.max_completion_length"
         ),
         temperature=_positive(_get(r, "temperature", float, "moe.rl", 1.0), "moe.rl.temperature"),
+        min_verification_level=_get(r, "min_verification_level", str, "moe.rl", LEVEL),
     )
+    if rl.min_verification_level not in LEVELS:
+        raise ConfigError(
+            f"moe.rl.min_verification_level must be one of {LEVELS}, "
+            f"got {rl.min_verification_level!r}"
+        )
     if rl.steps < 1:
         # transformers only honours a positive max_steps; 0 would silently fall back to the
         # default epoch count. Disable RL with `algorithms = []` instead.
         raise ConfigError(
             f"moe.rl.steps must be >= 1, got {rl.steps} (to disable RL set moe.rl.algorithms = [])"
+        )
+    longest_answer = longest_answer_chars() + 1  # + EOS
+    if rl.max_completion_length < longest_answer:
+        raise ConfigError(
+            f"moe.rl.max_completion_length ({rl.max_completion_length}) is below the longest "
+            f"canonical answer + EOS over the task space ({longest_answer} tokens)"
         )
     if rl.num_generations < 2:
         raise ConfigError("moe.rl.num_generations must be >= 2 (group-relative advantages)")
@@ -272,8 +317,8 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         rank=_positive(_get(lo, "rank", int, "moe.lora", 16), "moe.lora.rank"),
         alpha=_positive(_get(lo, "alpha", int, "moe.lora", 32), "moe.lora.alpha"),
         dropout=_get(lo, "dropout", float, "moe.lora", 0.0),
-        target_modules=tuple(lo.get("target_modules", ())),
-        target_parameters=tuple(lo.get("target_parameters", ())),
+        target_modules=_str_list(lo, "target_modules", "moe.lora"),
+        target_parameters=_str_list(lo, "target_parameters", "moe.lora"),
     )
     if enabled and not (lora.target_modules or lora.target_parameters):
         raise ConfigError("moe.lora is enabled but has no target_modules or target_parameters")

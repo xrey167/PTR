@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,13 +30,20 @@ class MoeTaskSplitTests(unittest.TestCase):
 
 
 class MoeRunDirTests(unittest.TestCase):
+    def test_immediate_calls_give_distinct_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dirs = {pipeline.unique_run_dir(Path(tmp), "r", "h") for _ in range(20)}
+            self.assertEqual(len(dirs), 20)
+
     def test_unique_dir_never_reused_and_metrics_not_overwritten(self):
         now = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as tmp:
             first = pipeline.unique_run_dir(Path(tmp), "my run", "abcd1234", now)
-            self.assertEqual(first.name, "my-run-20260102T030405Z-abcd1234")
-            with self.assertRaises(FileExistsError):
+            self.assertRegex(first.name, r"^my-run-20260102T030405000000Z-abcd1234-[0-9a-f]{6}$")
+            with mock.patch.object(pipeline.secrets, "token_hex", return_value="aaaaaa"):
                 pipeline.unique_run_dir(Path(tmp), "my run", "abcd1234", now)
+                with self.assertRaises(FileExistsError):
+                    pipeline.unique_run_dir(Path(tmp), "my run", "abcd1234", now)
             later = pipeline.unique_run_dir(Path(tmp), "my run", "abcd1234", now.replace(second=6))
             self.assertNotEqual(first, later)
             path = pipeline.write_metrics({"a": 1}, first)

@@ -8,6 +8,7 @@ seeded) -> snapshot -> gates -> metrics JSON. `run_config` is the direct entry p
 from __future__ import annotations
 
 import hashlib
+import secrets
 import json
 import math
 import os
@@ -189,9 +190,9 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
 
     with _Timer(timings, "snapshot_init"):
         snap("init")
-        evals["init"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new)
+        evals["init"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
 
-    track_gates = cfg.model.kind == "tiny-random"
+    track_gates = cfg.model.kind == "tiny-random" and not cfg.lora.enabled
     w_init = gates.flatten_experts(model) if track_gates else None
 
     torch.manual_seed(seed)
@@ -199,7 +200,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         sft = run_sft(model, tokenizer, sft_tasks, cfg.sft, seed)
     with _Timer(timings, "snapshot_after_sft"):
         snap("after_sft")
-        evals["after_sft"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new)
+        evals["after_sft"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
     w_sft = gates.flatten_experts(model) if track_gates else None
     sft_state = model_mod.trainable_state(model)
 
@@ -213,7 +214,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
             rl_results[algo] = run_rl(model, tokenizer, rl_tasks, algo, cfg.rl, seed)
         with _Timer(timings, f"snapshot_after_rl_{algo}"):
             snap(f"after_rl_{algo}")
-            evals[f"after_rl_{algo}"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new)
+            evals[f"after_rl_{algo}"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
         churn[f"after_sft_to_after_rl_{algo}"] = routing_metrics.snapshot_churn(
             snapshots["after_sft"], snapshots[f"after_rl_{algo}"], k
         )
@@ -236,8 +237,17 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         "run": {"name": cfg.name, "seed": seed, "config_path": cfg.source_path},
         "model": {
             "kind": cfg.model.kind,
-            "class": type(getattr(model, "base_model", model)).__name__
-            if cfg.lora.enabled else type(model).__name__,
+            "class": type(
+                model.get_base_model() if hasattr(model, "get_base_model") else model
+            ).__name__,
+            "architecture": {
+                key: getattr(model.config, key, None)
+                for key in (
+                    "hidden_size", "intermediate_size", "num_attention_heads", "num_experts",
+                    "num_experts_per_tok", "num_hidden_layers", "max_position_embeddings",
+                    "router_aux_loss_coef",
+                )
+            },
             "num_parameters": sum(p.numel() for p in model.parameters()),
             "experts": getattr(model.config, "num_experts", None),
             "top_k": k,
@@ -288,10 +298,10 @@ def config_hash(config_path: Path) -> str:
 
 
 def unique_run_dir(base: Path, name: str, cfg_hash: str, now: datetime | None = None) -> Path:
-    """Create `<base>/<name>-<UTC timestamp>-<config hash>`; never reuses an existing dir."""
-    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    """Create `<base>/<name>-<UTC timestamp(us)>-<config hash>-<random>`; never reuses a dir."""
+    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%S%fZ")
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "run"
-    path = base / f"{safe}-{stamp}-{cfg_hash}"
+    path = base / f"{safe}-{stamp}-{cfg_hash}-{secrets.token_hex(3)}"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.mkdir(exist_ok=False)  # FileExistsError rather than overwriting a previous run
     return path

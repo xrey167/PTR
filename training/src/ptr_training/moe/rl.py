@@ -28,7 +28,7 @@ import math
 import tempfile
 
 from ptr_training.moe.config import RlConfig
-from ptr_training.moe.reward import reward_batch, rl_reward, verify
+from ptr_training.moe.reward import LEVEL, make_reward_fn, rl_reward, verify
 from ptr_training.moe.tasks import Task
 
 
@@ -91,6 +91,20 @@ def check_prompt_lengths(tokenizer, tasks: list[Task], max_prompt_length: int) -
     return longest
 
 
+def check_completion_length(tokenizer, tasks: list[Task], max_completion_length: int) -> int:
+    """Longest canonical answer + EOS in tokens; ValueError if it cannot fit."""
+    longest = 0
+    for task in tasks:
+        n = len(tokenizer(task.answer, add_special_tokens=False)["input_ids"]) + 1
+        if n > max_completion_length:
+            raise ValueError(
+                f"answer {task.answer!r} needs {n} tokens (with EOS) but "
+                f"moe.rl.max_completion_length={max_completion_length}"
+            )
+        longest = max(longest, n)
+    return longest
+
+
 def _assert_peft_reference(model, cfg: RlConfig) -> None:
     """With PEFT and beta > 0 the KL reference must be a frozen copy of the SFT adapter."""
     if cfg.beta <= 0 or not hasattr(model, "peft_config"):
@@ -109,7 +123,9 @@ def _assert_peft_reference(model, cfg: RlConfig) -> None:
                 raise RuntimeError(f"'ref' adapter differs from the SFT adapter at {name}")
 
 
-def evaluate_policy(model, tokenizer, tasks: list[Task], max_new_tokens: int) -> dict:
+def evaluate_policy(
+    model, tokenizer, tasks: list[Task], max_new_tokens: int, min_level: str = LEVEL
+) -> dict:
     """Greedy-decode every task and score it with the verifier."""
     import torch
 
@@ -117,6 +133,7 @@ def evaluate_policy(model, tokenizer, tasks: list[Task], max_new_tokens: int) ->
     was_training = model.training
     model.eval()
     rewards, scores, statuses = [], [], {}
+    by_kind: dict = {}
     sample = None
     for task in tasks:
         enc = tokenizer(task.prompt, return_tensors="pt", add_special_tokens=False).to(device)
@@ -130,9 +147,12 @@ def evaluate_policy(model, tokenizer, tasks: list[Task], max_new_tokens: int) ->
             )
         text = tokenizer.decode(out[0, enc["input_ids"].shape[1] :], skip_special_tokens=True)
         report = verify(task.kind, task.spec, text)
-        rewards.append(rl_reward(report))
+        rewards.append(rl_reward(report, min_level))
         scores.append(report.score)
         statuses[report.status] = statuses.get(report.status, 0) + 1
+        counts = by_kind.setdefault(task.kind, {"n": 0, "pass": 0})
+        counts["n"] += 1
+        counts["pass"] += report.status == "Pass"
         if sample is None:
             sample = {"prompt": task.prompt, "completion": text, "report": report.to_dict()}
     model.train(was_training)
@@ -141,6 +161,7 @@ def evaluate_policy(model, tokenizer, tasks: list[Task], max_new_tokens: int) ->
         "mean_report_score": sum(scores) / len(scores),
         "pass_rate": statuses.get("Pass", 0) / len(scores),
         "status_counts": statuses,
+        "by_kind": by_kind,
         "n": len(scores),
         "sample": sample,
     }
@@ -157,6 +178,7 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
     from trl import GRPOTrainer
 
     check_prompt_lengths(tokenizer, tasks, cfg.max_prompt_length)
+    check_completion_length(tokenizer, tasks, cfg.max_completion_length)
     bf16 = next(model.parameters()).dtype == torch.bfloat16
     is_peft = hasattr(model, "peft_config")
     if is_peft and "ref" in model.peft_config:
@@ -172,7 +194,7 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
             model.config._name_or_path = ref_dir
         trainer = GRPOTrainer(
             model=model,
-            reward_funcs=reward_batch,
+            reward_funcs=make_reward_fn(cfg.min_verification_level),
             args=args,
             train_dataset=Dataset.from_list([t.to_row() for t in tasks]),
             processing_class=tokenizer,

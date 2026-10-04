@@ -59,6 +59,8 @@ class MoeConfigTests(unittest.TestCase):
     def test_pretrained_requires_pinned_revision(self):
         def mutate(r):
             r["model"].update(kind="pretrained", hf_id="org/model")
+            for key in ("layers", "hidden", "intermediate", "heads", "experts", "top_k", "max_positions"):
+                r["model"].pop(key)
 
         with self.assertRaisesRegex(ConfigError, r"model\.revision is required"):
             moe_config.parse(self._mutate(mutate))
@@ -171,6 +173,73 @@ class MoeConfigTests(unittest.TestCase):
     def test_smoke_logs_kl_and_olmoe_mini_steps(self):
         self.assertGreater(moe_config.load(CONFIGS / "stage-moe-smoke.toml").rl.beta, 0)
         self.assertEqual(moe_config.load(CONFIGS / "stage-moe-olmoe.toml").rl.mini_steps, 4)
+
+    def test_nonfinite_floats_rejected(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            for table, key in (("sft", "lr"), ("rl", "lr"), ("rl", "temperature"),
+                               ("rl", "beta"), ("rl", "epsilon"), ("rl", "gspo_epsilon_high")):
+                with self.subTest(key=key, value=bad):
+                    raw = self._mutate(lambda r: r["moe"][table].update({key: bad}))
+                    with self.assertRaisesRegex(ConfigError, rf"moe\.{table}\.{key}"):
+                        moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["model"].update(router_aux_loss_coef=float("nan")))
+        with self.assertRaisesRegex(ConfigError, "router_aux_loss_coef"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"].update(lora={"enabled": False, "dropout": float("inf")}))
+        with self.assertRaisesRegex(ConfigError, "dropout"):
+            moe_config.parse(raw)
+
+    def test_lora_targets_must_be_string_lists(self):
+        for key in ("target_modules", "target_parameters"):
+            for bad in ("q_proj", 3, ["q_proj", 1], [""]):
+                with self.subTest(key=key, bad=bad):
+                    raw = self._mutate(
+                        lambda r: r["moe"].update(lora={"enabled": True, "target_modules": ["q"], key: bad})
+                    )
+                    with self.assertRaisesRegex(ConfigError, rf"moe\.lora\.{key}"):
+                        moe_config.parse(raw)
+
+    def test_sft_max_length_must_leave_a_label(self):
+        from ptr_training.moe.tasks import longest_prompt_chars
+
+        longest = longest_prompt_chars()
+        raw = self._mutate(lambda r: r["moe"]["sft"].update(max_length=longest + 1))
+        with self.assertRaisesRegex(ConfigError, r"moe\.sft\.max_length"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"]["sft"].update(max_length=longest + 2))
+        moe_config.parse(raw)
+
+    def test_max_completion_length_must_fit_longest_answer(self):
+        from ptr_training.moe.tasks import longest_answer_chars
+
+        need = longest_answer_chars() + 1
+        self.assertEqual(need, 14)  # {"a":9,"b":9} + EOS
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(max_completion_length=need - 1))
+        with self.assertRaisesRegex(ConfigError, r"moe\.rl\.max_completion_length"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(max_completion_length=need))
+        moe_config.parse(raw)
+
+    def test_pretrained_rejects_tiny_only_keys(self):
+        for key, value in (("layers", 2), ("hidden", 64), ("intermediate", 64), ("heads", 4),
+                           ("experts", 8), ("top_k", 2), ("max_positions", 64),
+                           ("router_aux_loss_coef", 0.01)):
+            with self.subTest(key=key):
+                raw = _raw("stage-moe-olmoe.toml")
+                raw["model"][key] = value
+                with self.assertRaisesRegex(ConfigError, key):
+                    moe_config.parse(raw)
+
+    def test_min_verification_level_default_and_validation(self):
+        from ptr_training.moe import reward
+
+        cfg = moe_config.load(CONFIGS / "stage-moe-smoke.toml")
+        self.assertEqual(cfg.rl.min_verification_level, reward.LEVEL)
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(min_verification_level="SampleVerified"))
+        self.assertEqual(moe_config.parse(raw).rl.min_verification_level, "SampleVerified")
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(min_verification_level="Strong"))
+        with self.assertRaisesRegex(ConfigError, "moe.rl.min_verification_level"):
+            moe_config.parse(raw)
 
     def test_epsilon_high_below_epsilon(self):
         raw = self._mutate(lambda r: r["moe"]["rl"].update(epsilon=0.3, epsilon_high=0.2))

@@ -49,7 +49,8 @@ steps = 200
 lr = 0.003
 batch = 16
 examples = 256
-max_length = 24
+# >= longest prompt + answer + EOS (12 + 13 + 1) so no SFT example is truncated.
+max_length = 26
 
 [moe.rl]
 algorithms = ["gspo", "sapo"]
@@ -69,7 +70,8 @@ sapo_temperature_neg = 1.05
 lr = 0.002
 prompts_per_step = 2
 max_prompt_length = 16
-max_completion_length = 10
+# >= longest canonical answer + EOS over the task space ({"a":9,"b":9} = 13 chars + EOS).
+max_completion_length = 14
 temperature = 1.0
 
 [moe.lora]

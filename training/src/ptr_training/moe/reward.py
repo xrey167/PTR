@@ -6,7 +6,9 @@ Report shape (crates/ptr-verifier/src/lib.rs): `status` is one of FOUR values, "
 
 Reward mapping (`rl_reward`), the only number RL ever sees:
 
-* Pass     -> `score`, which must be in (0, 1] (exact-answer tasks: 1.0).
+* Pass     -> `score`, which must be in (0, 1] (exact-answer tasks: 1.0), but only when
+              `report.level` is at or above the configured minimum verification level
+              (`moe.rl.min_verification_level`); a Pass below it earns 0.0.
 * Fail     -> 0.0
 * Disputed -> 0.0
 * Unknown  -> 0.0
@@ -34,6 +36,10 @@ FAIL = "Fail"
 DISPUTED = "Disputed"
 UNKNOWN = "Unknown"
 STATUSES = (PASS, FAIL, DISPUTED, UNKNOWN)
+# ptr_types::VerificationLevel, weakest -> strongest (crates/ptr-types/src/lib.rs; the same
+# order as `level_rank` in crates/ptr-verifier/src/lib.rs).
+LEVELS = ("Unverified", "LatentAgreement", "SampleVerified", "FullSemantic", "Deterministic")
+# What this module's deterministic verifiers produce, and the default minimum for RL.
 LEVEL = "Deterministic"
 
 SHAPE_CREDIT = 0.2
@@ -59,6 +65,8 @@ class VerificationReport:
     def __post_init__(self) -> None:
         if self.status not in STATUSES:
             raise ValueError(f"status must be one of {STATUSES}, got {self.status!r}")
+        if self.level not in LEVELS:
+            raise ValueError(f"level must be one of {LEVELS}, got {self.level!r}")
         if not 0.0 <= self.score <= 1.0:
             raise ValueError(f"score must be in [0, 1], got {self.score}")
         if self.status == PASS and (self.score <= 0.0 or any(f.hard for f in self.findings)):
@@ -75,8 +83,17 @@ def _report(score: float, findings: list[Finding]) -> VerificationReport:
     return VerificationReport(status=status, level=LEVEL, score=score, findings=findings)
 
 
-def rl_reward(report: VerificationReport) -> float:
-    """RL reward of a report: its score if (and only if) status is Pass, else 0.0."""
+def level_at_least(level: str, minimum: str) -> bool:
+    for name in (level, minimum):
+        if name not in LEVELS:
+            raise ValueError(f"level must be one of {LEVELS}, got {name!r}")
+    return LEVELS.index(level) >= LEVELS.index(minimum)
+
+
+def rl_reward(report: VerificationReport, min_level: str = LEVEL) -> float:
+    """RL reward: the score iff status is Pass and level >= `min_level`, else 0.0."""
+    if not level_at_least(report.level, min_level):
+        return 0.0
     if report.status == PASS and 0.0 < report.score <= 1.0 and not any(
         f.hard for f in report.findings
     ):
@@ -154,17 +171,29 @@ def verify(kind: str, spec: str | dict, completion: str) -> VerificationReport:
     raise ValueError(f"unknown task kind: {kind!r}")
 
 
-def reward(kind: str, spec: str | dict, completion: str) -> float:
-    return rl_reward(verify(kind, spec, completion))
+def reward(kind: str, spec: str | dict, completion: str, min_level: str = LEVEL) -> float:
+    return rl_reward(verify(kind, spec, completion), min_level)
 
 
 def reward_batch(
-    completions: list, kind: list[str], spec: list[str], **_ignored
+    completions: list, kind: list[str], spec: list[str], *, min_level: str = LEVEL, **_ignored
 ) -> list[float]:
     """TRL-compatible reward function (extra dataset columns arrive as keyword lists)."""
     out = []
     for completion, k, s in zip(completions, kind, spec, strict=True):
         if not isinstance(completion, str):  # conversational format: [{"role","content"}]
             completion = completion[-1]["content"]
-        out.append(reward(k, s, completion))
+        out.append(reward(k, s, completion, min_level))
     return out
+
+
+def make_reward_fn(min_level: str):
+    """TRL reward function with the verification-level gate bound (TRL needs `__name__`)."""
+    if min_level not in LEVELS:
+        raise ValueError(f"min_level must be one of {LEVELS}, got {min_level!r}")
+
+    def reward_batch_gated(completions, kind, spec, **ignored):
+        return reward_batch(completions, kind, spec, min_level=min_level)
+
+    reward_batch_gated.__name__ = "reward_batch"
+    return reward_batch_gated

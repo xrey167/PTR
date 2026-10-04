@@ -117,10 +117,21 @@ router stays frozen.
   `rl._assert_peft_reference` checks `ref` exists and equals the SFT adapter before training and
   raises otherwise; the `ref` adapter is deleted after each arm. Cost: a second copy of the LoRA
   weights only.
+- Float config values must be finite (nan/inf rejected); `moe.lora.target_modules` /
+  `target_parameters` must be lists of non-empty strings.
+- `moe.sft.max_length` must exceed the longest task prompt + 1 and `moe.rl.max_completion_length`
+  must be >= the longest canonical answer + EOS over the whole task space (14 for the
+  built-in tasks; measured in characters at config time, which equals tokens for the tiny
+  tokenizer and is conservative for BPE). `run_rl` re-checks with the real tokenizer and
+  `sft.collate` refuses an example whose labels were all truncated away.
+- `kind = "pretrained"` rejects the tiny-only keys (`layers`, `hidden`, `intermediate`, `heads`,
+  `experts`, `top_k`, `max_positions`, `router_aux_loss_coef`); `model.architecture` in the
+  metrics records the loaded model's actual values, and `model.class` is the base architecture
+  even under LoRA.
 - Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
 - `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
   actually present (PEFT may keep LoRA weights in fp32).
-- Each run writes to a fresh `<output.dir>/<run name>-<UTC timestamp>-<config sha8>/`;
+- Each run writes to a fresh `<output.dir>/<run name>-<UTC timestamp (microseconds)>-<config sha8>-<6 hex random>/`;
   `metrics.json` is created exclusively and never overwritten.
 - Evaluation tasks are held out first (32 distinct prompts, `tasks.generate_heldout`); SFT and RL
   tasks are sampled with replacement from the remaining prompts, so eval is disjoint by
@@ -136,10 +147,15 @@ router stays frozen.
 
 | status | reward |
 |---|---|
-| Pass | `score`, in (0, 1] (exact-answer tasks: 1.0) |
+| Pass, `level` >= `moe.rl.min_verification_level` | `score`, in (0, 1] (exact-answer tasks: 1.0) |
+| Pass, `level` below the minimum | 0.0 |
 | Fail | 0.0 |
 | Disputed | 0.0 |
 | Unknown | 0.0 |
+
+`level` is one of `LEVELS` = Unverified < LatentAgreement < SampleVerified < FullSemantic <
+Deterministic (mirrors `ptr_types::VerificationLevel`; an unknown level is rejected). The
+minimum defaults to `Deterministic`, which is what this module's verifiers produce.
 
 A non-Pass report never receives a passing reward and its own `score` (diagnostic partial
 credit such as "right shape, wrong value") is recorded in the report but never used as

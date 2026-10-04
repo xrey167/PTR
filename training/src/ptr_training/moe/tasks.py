@@ -133,6 +133,16 @@ def _enumerate(kind: str, max_operand: int):
                        json.dumps({"values": values}, sort_keys=True))
 
 
+def longest_prompt_chars(kinds: tuple[str, ...] = KINDS, max_operand: int = 9) -> int:
+    """Longest prompt (characters) over the whole task space of `kinds`."""
+    return max(len(t.prompt) for k in kinds for t in _enumerate(k, max_operand))
+
+
+def longest_answer_chars(kinds: tuple[str, ...] = KINDS, max_operand: int = 9) -> int:
+    """Longest canonical answer (characters) over the whole task space of `kinds`."""
+    return max(len(t.answer) for k in kinds for t in _enumerate(k, max_operand))
+
+
 def generate_heldout(
     n: int, *, seed: int, kinds: tuple[str, ...] = KINDS, max_operand: int = 9
 ) -> list[Task]:

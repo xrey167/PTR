@@ -66,7 +66,7 @@ class MoeTorchPipelineTests(unittest.TestCase):
 
         rl = dataclasses.replace(
             self.cfg.rl, steps=1, mini_steps=1, num_generations=2, prompts_per_step=1,
-            max_completion_length=6,
+            max_completion_length=14,
         )
         model, tok = self.model_mod.build(self.cfg.model, self.cfg.lora)
         out = run_rl(model, tok, generate_tasks(8, seed=2), "gspo", rl, seed=2)
@@ -183,7 +183,7 @@ class MoeTorchPipelineTests(unittest.TestCase):
                     p.add_(0.05)
         cfg = dataclasses.replace(
             self.cfg.rl, steps=1, mini_steps=1, num_generations=2, prompts_per_step=1,
-            max_completion_length=4, beta=0.04,
+            max_completion_length=14, beta=0.04,
         )
         seen = {}
         original = rl_mod._assert_peft_reference
@@ -208,6 +208,41 @@ class MoeTorchPipelineTests(unittest.TestCase):
                 self.assertNotIn("ref", model.peft_config)
         finally:
             rl_mod._assert_peft_reference = original
+
+    def test_model_class_is_base_architecture_for_peft(self):
+        from ptr_training.moe import pipeline
+
+        import dataclasses
+
+        small = dataclasses.replace(
+            self.cfg,
+            lora=self._lora(),
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(self.cfg.rl, algorithms=()),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            data = pipeline.execute(small, Path(tmp))
+        self.assertTrue(data["model"]["lora"])
+        self.assertEqual(data["model"]["class"], "OlmoeForCausalLM")
+        self.assertEqual(data["model"]["architecture"]["num_experts"], 8)
+
+    def test_sft_collate_rejects_empty_label_example(self):
+        from ptr_training.moe.sft import collate
+        from ptr_training.moe.tasks import generate_tasks
+
+        t = generate_tasks(2, seed=1)
+        with self.assertRaisesRegex(ValueError, "empty-label"):
+            collate(self.tok, t, max_length=3)
+        collate(self.tok, t, max_length=self.cfg.sft.max_length)
+
+    def test_completion_length_check_with_tokenizer(self):
+        from ptr_training.moe.rl import check_completion_length
+        from ptr_training.moe.tasks import generate_tasks
+
+        tasks = generate_tasks(40, seed=3)
+        self.assertLessEqual(check_completion_length(self.tok, tasks, 14), 14)
+        with self.assertRaisesRegex(ValueError, "max_completion_length"):
+            check_completion_length(self.tok, tasks, 5)
 
     def test_empty_algorithms_skips_rl(self):
         import dataclasses
@@ -235,7 +270,7 @@ class MoeTorchPipelineTests(unittest.TestCase):
             sft=dataclasses.replace(self.cfg.sft, steps=3, batch=4, examples=16),
             rl=dataclasses.replace(
                 self.cfg.rl, steps=1, mini_steps=1, num_generations=2, prompts_per_step=1,
-                max_completion_length=6,
+                max_completion_length=14,
             ),
         )
         with tempfile.TemporaryDirectory() as tmp:
