@@ -12,6 +12,13 @@ pub enum LineageError {
     /// A matrix, vector or scalar input holds NaN or infinity, or an update
     /// would store one.
     NonFinite { field: &'static str },
+    /// A vector whose norm must be positive is all zero.
+    ZeroNorm { field: &'static str },
+    /// An expert's weights could not be scored; `source` says why.
+    ExpertRejected {
+        expert: String,
+        source: Box<LineageError>,
+    },
     /// A matrix has no rows or no columns, or a set that needs a member has
     /// none.
     Empty { field: &'static str },
@@ -52,6 +59,8 @@ impl LineageError {
             Self::ShapeMismatch { .. } => "PTR_LINEAGE_SHAPE_MISMATCH",
             Self::NonFinite { .. } => "PTR_LINEAGE_NON_FINITE",
             Self::Empty { .. } => "PTR_LINEAGE_EMPTY",
+            Self::ZeroNorm { .. } => "PTR_LINEAGE_ZERO_NORM",
+            Self::ExpertRejected { .. } => "PTR_LINEAGE_EXPERT_REJECTED",
             Self::DuplicateAdapter { .. } => "PTR_LINEAGE_DUPLICATE",
             Self::UnknownAdapter { .. } => "PTR_LINEAGE_UNKNOWN",
             Self::BaseMismatch { .. } => "PTR_LINEAGE_BASE_MISMATCH",
@@ -77,6 +86,10 @@ impl fmt::Display for LineageError {
             } => write!(formatter, "{field}: expected {expected}, got {actual}"),
             Self::NonFinite { field } => write!(formatter, "{field} holds a non-finite value"),
             Self::Empty { field } => write!(formatter, "{field} is empty"),
+            Self::ZeroNorm { field } => write!(formatter, "{field} is all zero"),
+            Self::ExpertRejected { expert, source } => {
+                write!(formatter, "expert {expert:?} cannot be scored: {source}")
+            }
             Self::DuplicateAdapter { id } => write!(formatter, "adapter {id:?} already registered"),
             Self::UnknownAdapter { id } => write!(formatter, "adapter {id:?} is not registered"),
             Self::BaseMismatch { expected, actual } => write!(
@@ -109,4 +122,11 @@ impl fmt::Display for LineageError {
     }
 }
 
-impl std::error::Error for LineageError {}
+impl std::error::Error for LineageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ExpertRejected { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
