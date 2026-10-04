@@ -219,7 +219,10 @@ The stale single documents for 3.7:
     only tests are the ones in 4.1 that CI never runs.
   - C7 is half closed: at-most-once keys survive compaction (`06cbf09`), but the
     raft floor and the ledger floor are still independent.
-  - C9 is closed (`ef8ad5f`, `ptrctl seal`).
+  - C9 is closed (`ef8ad5f`, `ptrctl seal`). *Corrected 2026-10-04:* that
+    overstated it. `ef8ad5f` made a run refuse a checkpoint without its seal, but
+    binding stayed a separate step after saving; a trainer binding as it saves is
+    `save_bound_checkpoint` in `ptr-a0-bridge` (#107).
 - `docs/architecture/31-cluster-integrity.md:389-393` says durable leadership
   fencing "is not implemented", while `:326-330` of the same document describes
   the fencing token. It is the same self-contradiction that open item A6 fixed once.
@@ -306,7 +309,7 @@ The others block nothing in Steps 1 to 4.
 | O1 | How should A0 grow after the M001–M004 run? It has no LM head, one layer and single-head attention. | If M001–M004 show an effect, test the mechanisms as an adapter on a small pretrained backbone rather than scaling A0 from scratch. If they do not, record the negative result before changing the design. |
 | O2 | Which backbone for the plain-model baseline and for continued pretraining (ADR-0015)? | Pick one small open model, pin its revision once, and use it for both. It unblocks E002, the M00x gates and R003 together. |
 | O3 | Continued pretraining for a coding Pod (ADR-0015, Proposed) | Pause it until Step 1 has a result. The corpus `own_code_corpus_v0_1` does not exist, so the dry-run manifest cannot even be built (`training/configs/run-coding-pod-cpt.toml:16`). The R003 trust gate is procedural only, because `check_research_gates.py` has no R003 rule. |
-| O4 | Tier B items B1–B5 in the open-items plan, renumbered D1–D6 in issue #23 (runtime→net dependency, signed receipts, authenticated codebook, accept-loop location, admission-policy journaling, authenticated reconciliation) | Defer them all. They matter for a multi-host deployment, and no binary deploys the network crates yet. `IrohTransport` binds only `127.0.0.1` and gets a new key on every bind (`crates/ptr-net/src/lib.rs:49-52`). |
+| O4 | Tier B items B1–B5 in the open-items plan, renumbered D1–D6 in issue #23 (runtime→net dependency, signed receipts, authenticated codebook, accept-loop location, admission-policy journaling, authenticated reconciliation) | Defer them all. They matter for a multi-host deployment, and no binary deploys the network crates yet. `IrohTransport` binds only `127.0.0.1` and gets a new key on every bind (`crates/ptr-net/src/lib.rs:49-52`). *Superseded 2026-10-04:* all six were decided instead (ADR-0021) — each either removed a way to write a wrong program or stated a property the code already almost had, and none widened what the contracts claim about multi-host deployment. |
 | O5 | The eight unconsumed crates (Step 5) | Freeze, as described in Step 5. |
 | O6 | May a runtime path reach A0? A0 is a separate workspace on Rust 1.95; the root workspace declares 1.85. Issue #23 asked for this to be filed as a decision rather than made quietly. | Yes, but keep the edge out of `ptr-runtime`. Put a small adapter crate in the A0 workspace that implements `ptr-model-api`'s `InferenceBackend`, so the runtime workspace keeps its MSRV and gains no Burn dependency. Take this decision after Step 1 shows whether A0's mechanisms are worth connecting. |
 

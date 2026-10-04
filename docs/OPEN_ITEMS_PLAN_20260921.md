@@ -643,3 +643,30 @@ Legal clearance for distribution; any claim about model quality, latency,
 throughput or behaviour under load; Byzantine fault tolerance; obtaining licence
 texts for the 117 packages that ship none; and the six Tier B decisions, which are
 recorded rather than taken.
+
+## Addendum (2026-10-04): how every item closed
+
+This plan's Tier B became D1–D6 in issue #23, and its Tier C plus two clauses no
+checkbox covered became C3–C9, G1 and G2. Everything in them is now decided or
+closed; the reasoning for the six decisions is ADR-0021.
+
+| Item | Outcome | Pull request |
+|---|---|---|
+| D1 (B1) runtime → net | yes: `AuthenticatedPeer`, unforgeable identity | #102 |
+| D2 (B2) signed receipt | yes: receipts and Pod answers signed, verifiable offline | #111 |
+| D3 (B2b) codebook authentication | no, recorded with its reason in doc 26 | #101 |
+| D4 (B3) accept loop | `ptr-net::serve` with host policy; `ptrd` composes it | #112 |
+| D5 (B4) journaled admission | membership is history, authority the host's; ledger codec versioned | #106 |
+| D6 (B5) reconciliation | `ReconciliationAuthority`, never across a wire | #109 |
+| G1 semantic payloads to A0 | `ptr-a0-bridge` | #107 |
+| G2 cross-node fencing | the fencing token; doc 31's contradiction removed | #101 |
+| C3 Pod access over the network | `ptr-podwire` (earlier); three unspoken ALPNs removed | #110 |
+| C4 settlement channel | `ALPN_SETTLE`, bound settler, signed settlement receipt | #119 |
+| C5 membership over the wire | closed earlier (`29510ad`); now gated by the codec ceiling | #106 |
+| C6 snapshot anchor | mechanism closed earlier; the leader-only case recorded as an accepted boundary | #101 |
+| C7 raft floor vs retention floor | raft compacts only to the ledger's retention floor | #110 |
+| C8 discovery and address authority | address authority earlier; no discovery (decided); book rebuilt from config | #101, #112 |
+| C9 trainer binds as it saves | `seal_checkpoint`, `save_bound_checkpoint` | #107 |
+
+Found on the way and fixed, not on this list: the L003 racing-checkpoint deadlock
+(#113), and a feature-gated exhaustive match the D5 records broke (#106).
