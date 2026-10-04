@@ -276,6 +276,23 @@ class MoeTorchPipelineTests(unittest.TestCase):
         self.assertIsNone(data["routing_churn"]["init_to_after_sft"])
         self.assertIsNotNone(data["routing"]["init"]["per_layer"])
 
+    def test_metrics_record_model_and_run_seed_separately(self):
+        import dataclasses
+
+        from ptr_training.moe import pipeline
+
+        small = dataclasses.replace(
+            self.cfg,
+            seed=5,
+            model=dataclasses.replace(self.cfg.model, seed=11),
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(self.cfg.rl, algorithms=()),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            data = pipeline.execute(small, Path(tmp))
+        self.assertEqual(data["run"]["seed"], 5)
+        self.assertEqual(data["model"]["seed"], 11)
+
     def test_empty_algorithms_skips_rl(self):
         import dataclasses
 

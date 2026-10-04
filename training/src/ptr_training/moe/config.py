@@ -215,6 +215,10 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         precision=precision,
         router_aux_loss_coef=_get(m, "router_aux_loss_coef", float, "model", 0.01),
     )
+    if model.router_aux_loss_coef < 0:
+        raise ConfigError(
+            f"model.router_aux_loss_coef must be >= 0, got {model.router_aux_loss_coef}"
+        )
     if kind == "tiny-random":
         if model.top_k > model.experts:
             raise ConfigError(f"model.top_k ({model.top_k}) exceeds model.experts ({model.experts})")

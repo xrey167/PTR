@@ -174,6 +174,13 @@ class MoeConfigTests(unittest.TestCase):
         self.assertGreater(moe_config.load(CONFIGS / "stage-moe-smoke.toml").rl.beta, 0)
         self.assertEqual(moe_config.load(CONFIGS / "stage-moe-olmoe.toml").rl.mini_steps, 4)
 
+    def test_router_aux_loss_coef_non_negative(self):
+        raw = self._mutate(lambda r: r["model"].update(router_aux_loss_coef=-0.1))
+        with self.assertRaisesRegex(ConfigError, "router_aux_loss_coef"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["model"].update(router_aux_loss_coef=0))
+        self.assertEqual(moe_config.parse(raw).model.router_aux_loss_coef, 0.0)
+
     def test_lora_dropout_range(self):
         for bad in (-0.1, 1.0, 2.0):
             with self.subTest(dropout=bad):

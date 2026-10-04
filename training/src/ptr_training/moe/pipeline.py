@@ -253,6 +253,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         "run": {"name": cfg.name, "seed": seed, "config_path": cfg.source_path},
         "model": {
             "kind": cfg.model.kind,
+            "seed": cfg.model.seed,  # init seed actually used (run.seed above is separate)
             "class": type(
                 model.get_base_model() if hasattr(model, "get_base_model") else model
             ).__name__,

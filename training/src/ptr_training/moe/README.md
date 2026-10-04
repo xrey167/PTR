@@ -136,6 +136,8 @@ router stays frozen.
   still makes it `error`. Non-finite router logits raise `NonFiniteRouterLogits`; the pipeline
   records the stage under `router_errors` / `nan_check.router_errors`, sets
   `nan_check.nonfinite_values_found = true` and leaves that stage's metrics and churn `null`.
+- `model.router_aux_loss_coef` must be finite and >= 0. Metrics record `run.seed` and `model.seed`
+  (the init seed actually used; it defaults to the run seed) separately.
 - Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
 - `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
   actually present (PEFT may keep LoRA weights in fp32).
