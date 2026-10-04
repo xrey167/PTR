@@ -66,6 +66,20 @@ One item outside Step 3 was found done during the same pass: 2.5. `bins/ptrd` no
 exits on a configuration error instead of falling back to defaults, and opens the
 durable runtime with `PtrRuntime::open_durable`.
 
+*Crate-by-crate review fixes (2026-10-04).* The verified findings of the crate-by-crate
+review were merged in four batches, each finding with a test that failed before the
+change: PR 96 (`PodRevisionAddress::parse` accepts only the canonical spelling, a
+mesh endpoint is validated before encoding, Pod evidence decoding no longer sizes an
+allocation from a stored count), PR 98 (`ptr-config` refuses unknown keys and
+validates a configuration loaded from a path), PR 99 (`PodHeader::validate` and
+`PodRoute::validate` refuse a zero placement epoch, `PodHeader` also a zero fencing
+token) and PR 104 (a policy bundle is bounded by item count and byte length
+separately and `verify` refuses what replay could not read, a merge cannot be approved
+by the branch's own author, a scope that ended but was never released is
+recovery-pending after a restart). PR 97 fixed three `ptr-pg` tests that assumed one
+SQLSTATE for every PostgreSQL version. The review's complete list of findings is not
+in the repository, so this note records what was merged and not what remains.
+
 The rest of this document is unchanged and still describes `e93ed99`.
 
 ## 1. The diagnosis in one paragraph
