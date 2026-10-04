@@ -10853,9 +10853,9 @@
      "declared": []
     },
     {
-     "loc": 618,
+     "loc": 656,
      "doc": "",
-     "tests": 6,
+     "tests": 7,
      "items": [
       {
        "kind": "struct",
@@ -11848,8 +11848,8 @@
      "tests": 16
     }
    ],
-   "src_loc": 14833,
-   "src_tests": 39,
+   "src_loc": 14871,
+   "src_tests": 40,
    "integration_tests": 368,
    "used_by": [
     "ptr-bench",
