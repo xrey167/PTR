@@ -15,7 +15,9 @@ Open `atlas.html` in a browser. It is one self-contained file.
 - `build_atlas.py` merges both into `atlas.html` using `atlas_template.html`.
 
 Imports are read from `crate::`, `self::` and `super::` paths, including grouped `use`
-trees, with comments and string literals removed. A relative path such as
+trees, with comments and string literals removed. A path that names an item rather than a
+module counts as an import of the module that provides it (the crate root for
+`crate::Item`, the parent for `super::Item`). A relative path such as
 `pub use child::Item` (a re-export of a child module) and an inline `mod` block (which
 changes what `super::` means) are not tracked.
 

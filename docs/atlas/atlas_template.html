@@ -344,7 +344,7 @@ table.matrix tr:hover th { background: var(--wash); }
         <span class="chip dashed"><span class="swatch" style="background:transparent;border:1.5px dashed var(--text-muted)"></span> no consumer</span>
       </div>
       <div class="graph-wrap" style="margin-top:12px">
-        <div class="scroll-x" id="architecture-scroll"><svg class="diagram" id="architecture-svg" role="img" aria-label="Package dependency map"></svg></div>
+        <div class="scroll-x" id="architecture-scroll"><svg class="diagram" id="architecture-svg" role="group" aria-label="Package dependency map"></svg></div>
         <aside class="panel card" id="architecture-panel" aria-live="polite"></aside>
       </div>
       <details style="margin-top:12px">
@@ -367,7 +367,7 @@ table.matrix tr:hover th { background: var(--wash); }
             <option value="tests">Sort by tests</option>
           </select>
         </div>
-        <div class="list" id="crate-list" role="list"></div>
+        <div class="list" id="crate-list"></div>
       </div>
       <div class="detail" id="crate-detail"></div>
     </div>
@@ -376,7 +376,7 @@ table.matrix tr:hover th { background: var(--wash); }
   <!-- Flows -->
   <section class="view" id="view-flows" role="tabpanel" aria-labelledby="tab-flows" hidden>
     <div class="split">
-      <div class="flow-list" id="flow-list" role="list"></div>
+      <div class="flow-list" id="flow-list"></div>
       <div class="detail" id="flow-detail"></div>
     </div>
     <div class="card">
@@ -684,6 +684,8 @@ table.matrix tr:hover th { background: var(--wash); }
   }
 
   function edgeIsVisible(edge) {
+    var fromPackage = packageByName[edge.from], toPackage = packageByName[edge.to];
+    if ((fromPackage && state.hiddenLayers[fromPackage.layer]) || (toPackage && state.hiddenLayers[toPackage.layer])) { return false; }
     if (!state.showTypesEdges && edge.to === 'ptr-types') { return false; }
     if (!state.showUnusedEdges && edge.kind === 'unused') { return false; }
     if (!state.showDevelopmentEdges && edge.kind === 'development') { return false; }
@@ -968,7 +970,7 @@ table.matrix tr:hover th { background: var(--wash); }
     var matches = sortedPackages().filter(function (entry) { return packageMatchesSearch(entry, query); });
     if (!matches.length) { list.appendChild(htmlElement('p', { class: 'empty-note', style: 'padding:12px', text: 'No package or module matches that text.' })); return; }
     matches.forEach(function (entry) {
-      var item = htmlElement('button', { class: 'list-item', type: 'button', role: 'listitem', 'aria-current': entry.name === state.crate ? 'true' : null }, [
+      var item = htmlElement('button', { class: 'list-item', type: 'button', 'aria-current': entry.name === state.crate ? 'true' : null }, [
         htmlElement('span', { class: 'dot', style: 'background:' + layerColor(entry.layer) }),
         htmlElement('span', { class: 'name', text: entry.name }),
         htmlElement('span', { class: 'meta', text: formatCompact(entry.src_loc) })
@@ -1300,7 +1302,7 @@ table.matrix tr:hover th { background: var(--wash); }
         currentArea = flow.area;
         list.appendChild(htmlElement('div', { class: 'flow-group', text: currentArea }));
       }
-      var item = htmlElement('button', { class: 'flow-item', type: 'button', role: 'listitem', 'aria-current': flow.id === state.flow ? 'true' : null }, [
+      var item = htmlElement('button', { class: 'flow-item', type: 'button', 'aria-current': flow.id === state.flow ? 'true' : null }, [
         htmlElement('span', { class: 'title', text: flow.title }),
         flowStatusPill(flow.status)
       ]);

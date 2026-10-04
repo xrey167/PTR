@@ -31,6 +31,11 @@ RAW_STRING = re.compile(r'b?r(#*)"')
 CHAR_LITERAL = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|.)|[^\\'\n])'")
 
 
+def posix(path):
+    """A relative path with `/` separators, so keys match the description files on any OS."""
+    return path.replace(os.sep, "/")
+
+
 def read(path):
     with open(path, errors="ignore") as handle:
         return handle.read()
@@ -138,7 +143,7 @@ def module_path_of(rel):
 
     `lib.rs` and `main.rs` are the crate root, `a/mod.rs` is `a`, `a/b.rs` is `a::b`.
     """
-    parts = rel[:-3].split(os.sep)
+    parts = posix(rel)[:-3].split("/")
     if parts[-1] in ("lib", "main") and len(parts) == 1:
         return ()
     if parts[-1] == "mod":
@@ -152,8 +157,10 @@ def resolve_use(path, module_paths, current):
     The path is walked from its base (the crate root, the current module, or the
     current module's parent for each `super`) and the longest prefix that is a known
     module of this package wins, so `crate::experiments::json::json_string` names the
-    module `json` and not `experiments`. A path that reaches no module (a function
-    or type declared in the crate root, for example) names none.
+    module `json` and not `experiments`. A path that reaches no module below its base
+    names an item the base module defines or re-exports, so it names the base module
+    (the crate root for `crate::Item`, the parent for `super::Item`), unless the base
+    is the current module itself.
     """
     segments = path.split("::")
     base = {"crate": (), "self": current}.get(segments[0])
@@ -168,6 +175,10 @@ def resolve_use(path, module_paths, current):
         candidate = base + tuple(rest[:length])
         if candidate in module_paths:
             return module_paths[candidate]
+    # No module below the base matches, so the path names an item the base module
+    # itself defines or re-exports (`use super::{PgSubstrate}`): a dependency on the base.
+    if rest and base != current and base in module_paths:
+        return module_paths[base]
     return None
 
 
@@ -229,11 +240,11 @@ def package_info(directory, kind):
     src_files = sorted(glob.glob(os.path.join(directory, "src", "**", "*.rs"), recursive=True))
     module_paths = {}
     for f in src_files:
-        rel_file = os.path.relpath(f, os.path.join(directory, "src"))
+        rel_file = posix(os.path.relpath(f, os.path.join(directory, "src")))
         module_paths[module_path_of(rel_file)] = module_name_of(rel_file)
     modules = []
     for path in src_files:
-        rel = os.path.relpath(path, os.path.join(directory, "src"))
+        rel = posix(os.path.relpath(path, os.path.join(directory, "src")))
         text = read(path)
         info = analyse_source(path, text, module_paths, module_path_of(rel))
         info["path"] = rel
@@ -245,7 +256,7 @@ def package_info(directory, kind):
     for path in sorted(glob.glob(os.path.join(directory, "tests", "**", "*.rs"), recursive=True)):
         text = read(path)
         tests.append({
-            "path": os.path.relpath(path, directory),
+            "path": posix(os.path.relpath(path, directory)),
             "loc": non_blank(text),
             "tests": len(TEST_ATTR.findall(text)),
         })
@@ -254,7 +265,7 @@ def package_info(directory, kind):
     return {
         "name": name,
         "kind": kind,
-        "path": os.path.relpath(directory, ROOT),
+        "path": posix(os.path.relpath(directory, ROOT)),
         "description": package.get("description", ""),
         "features": features,
         "deps": ptr_deps("dependencies"),
@@ -282,7 +293,7 @@ def main():
             if directory == "fuzz":
                 for path in glob.glob(os.path.join(full, "fuzz_targets", "*.rs")):
                     text = read(path)
-                    rel = os.path.relpath(path, full)
+                    rel = posix(os.path.relpath(path, full))
                     info["modules"].append({
                         "path": rel, "name": os.path.basename(path)[:-3], "loc": non_blank(text),
                         "doc": "", "tests": 0, "items": [], "uses": [], "declared": [],

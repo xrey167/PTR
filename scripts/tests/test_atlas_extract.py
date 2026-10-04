@@ -40,22 +40,50 @@ class ResolveUse(unittest.TestCase):
         self.assertEqual(mod.resolve_use("crate::experiments::json::json_string", MODULES, ("c",)), "json")
         self.assertEqual(mod.resolve_use("crate::experiments::s003::params::Params", MODULES, ("c",)), "params")
 
-    def test_the_longest_known_prefix_wins_and_a_plain_item_names_no_module(self):
+    def test_the_longest_known_prefix_wins(self):
         self.assertEqual(mod.resolve_use("crate::a::b::Item", MODULES, ("c",)), "b")
         self.assertEqual(mod.resolve_use("crate::a::Item", MODULES, ("c",)), "a")
-        self.assertIsNone(mod.resolve_use("crate::RootItem", MODULES, ("c",)))
 
     def test_self_and_super_start_from_the_current_module(self):
         params = ("experiments", "s003", "params")
         # self:: starts at the current module
         self.assertEqual(mod.resolve_use("self::b::Item", MODULES, ("a",)), "b")
-        # super:: starts at the parent: the parent of a::b is a, and a has no child c
-        self.assertIsNone(mod.resolve_use("super::c::Item", MODULES, ("a", "b")))
+        # super:: starts at the parent: the parent of a::b is a, and a has no child c,
+        # so `c::Item` is an item of a
+        self.assertEqual(mod.resolve_use("super::c::Item", MODULES, ("a", "b")), "a")
         # the parent of experiments::s003::params is experiments::s003, which has a
         # child params but no child json; json lives one level higher
         self.assertEqual(mod.resolve_use("super::params::P", MODULES, params), "params")
         self.assertIsNone(mod.resolve_use("super::json::f", MODULES, params))
         self.assertEqual(mod.resolve_use("super::super::json::f", MODULES, params), "json")
+
+
+class ResolveItems(unittest.TestCase):
+    def test_an_item_path_names_the_module_that_provides_it(self):
+        # `use super::{PgSubstrate}` in a::b imports from the parent module a;
+        # `use crate::Item` imports from the crate root.
+        self.assertEqual(mod.resolve_use("super::PgSubstrate", MODULES, ("a", "b")), "a")
+        self.assertEqual(mod.resolve_use("crate::Item", MODULES, ("a", "b")), "(root)")
+
+    def test_an_item_of_the_current_module_is_not_an_import(self):
+        self.assertIsNone(mod.resolve_use("self::helper", MODULES, ("a",)))
+        # the crate root importing its own item is not an edge either
+        self.assertIsNone(mod.resolve_use("crate::Item", MODULES, ()))
+
+    def test_a_bare_glob_of_the_parent_names_nothing(self):
+        self.assertIsNone(mod.resolve_use("super", MODULES, ("a", "b")))
+
+
+class Posix(unittest.TestCase):
+    def test_a_windows_relative_path_is_stored_with_forward_slashes(self):
+        original = mod.os.sep
+        try:
+            mod.os.sep = "\\"
+            self.assertEqual(mod.posix("adapters\\branch.rs"), "adapters/branch.rs")
+        finally:
+            mod.os.sep = original
+        self.assertEqual(mod.module_path_of("adapters/branch.rs"), ("adapters", "branch"))
+        self.assertEqual(mod.module_path_of("experiments/mod.rs"), ("experiments",))
 
 
 class CodeOnly(unittest.TestCase):
