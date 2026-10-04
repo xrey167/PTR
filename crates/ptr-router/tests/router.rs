@@ -1,7 +1,8 @@
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_router::{
-    PodRouter, Propensity, RouteError, RouteFeatures, RouteRequest, RoutedChoice, Router,
+    route_checked, CheckedRouter, PodRoute, PodRouter, PolicyFailure, Propensity, RouteError,
+    RouteFeatures, RouteRequest, RoutedChoice, Router,
 };
 use ptr_types::{CapabilityId, Effect, PodId, Probability, ProjectId, RequestId, TypeId};
 use std::sync::Arc;
@@ -90,7 +91,7 @@ fn router_without_candidates_returns_ok_none_like_select() {
     let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
     assert!(PodRouter.select(&registry, &project, &cap, &ty).is_none());
     let result = PodRouter.route(&request(&registry, &project, &cap, &ty, &id, &features));
-    assert_eq!(result, Ok(None));
+    assert!(matches!(result, Ok(None)));
 }
 
 /// Picks the lesser pod id when the token budget is small, else the greater, with a
@@ -173,9 +174,10 @@ impl Router for FailingRouter {
         if !has_candidate {
             return Ok(None);
         }
-        Err(RouteError::Policy {
-            message: "inference backend unavailable".into(),
-        })
+        Err(RouteError::policy(
+            PolicyFailure::Unavailable,
+            "inference backend unavailable",
+        ))
     }
 }
 
@@ -194,10 +196,10 @@ fn router_failure_is_distinguishable_from_no_candidate() {
     assert!(err.to_string().contains("inference backend unavailable"));
 
     let without = registry(&project, &[]);
-    assert_eq!(
+    assert!(matches!(
         router.route(&request(&without, &project, &cap, &ty, &id, &features)),
         Ok(None)
-    );
+    ));
 }
 
 #[test]
@@ -245,4 +247,161 @@ fn propensity_rejects_subnormals_with_infinite_reciprocal() {
     }
     let p = Propensity::new(f64::MIN_POSITIVE).unwrap();
     assert!((1.0 / p.get()).is_finite());
+}
+
+#[derive(Debug)]
+struct BackendTimeout {
+    millis: u64,
+}
+impl std::fmt::Display for BackendTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "backend timed out after {} ms", self.millis)
+    }
+}
+impl std::error::Error for BackendTimeout {}
+
+#[test]
+fn policy_error_preserves_kind_and_source_chain() {
+    let error = RouteError::policy(PolicyFailure::Timeout, BackendTimeout { millis: 250 });
+    match &error {
+        RouteError::Policy { kind, .. } => assert_eq!(*kind, PolicyFailure::Timeout),
+        other => panic!("unexpected {other:?}"),
+    }
+    let source = std::error::Error::source(&error).expect("source preserved");
+    let timeout = source
+        .downcast_ref::<BackendTimeout>()
+        .expect("downcast to the original error type");
+    assert_eq!(timeout.millis, 250);
+    assert!(error.to_string().contains("timeout"));
+    assert!(error.to_string().contains("250 ms"));
+
+    let other = RouteError::policy(PolicyFailure::InvalidOutput, "bad logits");
+    assert!(matches!(
+        other,
+        RouteError::Policy {
+            kind: PolicyFailure::InvalidOutput,
+            ..
+        }
+    ));
+}
+
+/// Returns a fixed pod id with propensity 1 regardless of the registry.
+struct FixedRouter(&'static str);
+impl Router for FixedRouter {
+    fn route(&self, _request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RouteError> {
+        Ok(Some(RoutedChoice::new(
+            PodRoute {
+                pod_id: PodId::from(self.0),
+                score: Probability::new(1.0).unwrap(),
+            },
+            Propensity::CERTAIN,
+        )))
+    }
+}
+
+fn registry_with_unsupported(project: &ProjectId) -> PodRegistry {
+    let mut registry = registry(project, &["alpha"]);
+    registry.register(Arc::new(TestPod(PodManifest {
+        project: project.clone(),
+        id: PodId::from("writer"),
+        capabilities: vec![CapabilityId::from("write")],
+        accepts: vec![TypeId::from("Image")],
+        produces: vec![TypeId::from("Text")],
+        effects: vec![Effect::Pure],
+        protocol_version: 1,
+    })));
+    registry
+}
+
+#[test]
+fn checked_route_rejects_unknown_pod() {
+    let project = ProjectId::from("demo");
+    let registry = registry_with_unsupported(&project);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+
+    let err = route_checked(&FixedRouter("ghost"), &req).unwrap_err();
+    assert!(
+        matches!(err, RouteError::IneligibleChoice { ref pod } if *pod == PodId::from("ghost"))
+    );
+    assert!(err.to_string().contains("ghost"));
+}
+
+#[test]
+fn checked_route_rejects_registered_pod_lacking_capability_or_input_type() {
+    let project = ProjectId::from("demo");
+    let registry = registry_with_unsupported(&project);
+    let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
+
+    // `writer` is registered but supports neither `read` nor `Text`.
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+    assert!(matches!(
+        route_checked(&FixedRouter("writer"), &req),
+        Err(RouteError::IneligibleChoice { .. })
+    ));
+
+    // Capability matches but the input type does not.
+    let (cap, ty) = (CapabilityId::from("write"), TypeId::from("Text"));
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+    assert!(matches!(
+        route_checked(&FixedRouter("writer"), &req),
+        Err(RouteError::IneligibleChoice { .. })
+    ));
+}
+
+#[test]
+fn checked_route_passes_valid_candidate_and_wrapper_matches() {
+    let project = ProjectId::from("demo");
+    let registry = registry_with_unsupported(&project);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+
+    let choice = route_checked(&FixedRouter("alpha"), &req).unwrap().unwrap();
+    assert_eq!(choice.route().pod_id, PodId::from("alpha"));
+
+    let wrapped = CheckedRouter::new(FixedRouter("ghost"));
+    assert!(matches!(
+        wrapped.route(&req),
+        Err(RouteError::IneligibleChoice { .. })
+    ));
+    let dynamic: &dyn Router = &CheckedRouter::new(FixedRouter("alpha"));
+    assert!(matches!(dynamic.route(&req), Ok(Some(_))));
+}
+
+#[test]
+fn checked_pod_router_behaves_exactly_like_unchecked() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["zeta", "alpha"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+
+    let raw = PodRouter.route(&req).unwrap().unwrap();
+    let checked = route_checked(&PodRouter, &req).unwrap().unwrap();
+    assert_eq!(raw, checked);
+    assert_eq!(checked.route().pod_id, PodId::from("zeta"));
+    assert_eq!(checked.propensity().get(), 1.0);
+
+    let empty = self::registry(&project, &[]);
+    let req = request(&empty, &project, &cap, &ty, &id, &features);
+    assert!(matches!(route_checked(&PodRouter, &req), Ok(None)));
+}
+
+#[test]
+fn checked_route_propagates_policy_errors_unchanged() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["alpha"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+    assert!(matches!(
+        route_checked(&FailingRouter, &req),
+        Err(RouteError::Policy {
+            kind: PolicyFailure::Unavailable,
+            ..
+        })
+    ));
 }

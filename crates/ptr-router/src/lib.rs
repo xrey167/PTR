@@ -2,7 +2,10 @@ mod propensity;
 mod router;
 
 pub use propensity::{Propensity, PropensityError};
-pub use router::{RouteError, RouteFeatures, RouteRequest, RoutedChoice, Router};
+pub use router::{
+    route_checked, CheckedRouter, PolicyFailure, RouteError, RouteFeatures, RouteRequest,
+    RoutedChoice, Router,
+};
 
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, PodId, Probability, ProjectId, TypeId};
