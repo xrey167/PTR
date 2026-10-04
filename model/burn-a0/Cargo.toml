@@ -14,7 +14,15 @@ bytemuck = "1.23.1"
 sha2 = "0.10.9"
 burn = { version = "=0.22.0-pre.3", default-features = false, features = ["std", "flex", "autodiff", "optim"] }
 
+# `bridge` joins A0 to the PTR runtime (issue #23's G1). It is a member here rather
+# than of the root workspace so that it shares this workspace's lockfile and vendor
+# patches, and burn resolves for it exactly as it does for A0. The root package
+# stays the only default member, so `cargo +1.95.0 test --manifest-path` on this
+# file builds A0 and nothing else; the bridge needs 1.99 and is selected with `-p`.
 [workspace]
+members = [".", "bridge"]
+default-members = ["."]
+
 [patch.crates-io]
 
 burn_dispatch_pastey_0_22_0_pre_3 = { package = "burn-dispatch", path = "../../vendor/burn-dispatch-0.22.0-pre.3" }

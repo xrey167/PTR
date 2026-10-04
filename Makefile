@@ -1,4 +1,4 @@
-.PHONY: check test fmt a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
+.PHONY: check test fmt a0 a0-stable a0-msrv a0-bridge repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
 	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers
@@ -9,8 +9,8 @@
 # be able to get a clean result on half the code they changed and a red CI on the
 # other half. `make a0` is the `burn-a0` workflow's job, step for step.
 #
-# `a0` is the workflow's two jobs, `a0-stable` and `a0-msrv`, and every step names
-# its toolchain: the root `rust-toolchain.toml` pins 1.99.0 for every bare `cargo`
+# `a0` is the workflow's three jobs, `a0-stable`, `a0-msrv` and `a0-bridge`, and
+# every step names its toolchain: the root `rust-toolchain.toml` pins 1.99.0 for every bare `cargo`
 # run from here, and `model/burn-a0` requires 1.95, so a bare `cargo` could not
 # build the crate at all. `a0-stable` lints on your `stable`, as CI lints on the
 # current one: run `rustup update stable` first, or a lint newer than your
@@ -19,6 +19,8 @@
 PYTHON ?= python3
 A0_STABLE ?= stable
 A0_MSRV ?= 1.95.0
+# `model/burn-a0/bridge` depends on ptr-runtime, which requires the root's 1.99.
+A0_BRIDGE ?= 1.99.0
 # The metadata gate compares against where this branch left main, as CI's
 # pull-request run compares against the pull request's base.
 BASE ?= $(shell git merge-base HEAD origin/main 2>/dev/null)
@@ -29,8 +31,9 @@ check:
 fmt:
 	cargo fmt --all -- --check
 	cargo fmt --manifest-path model/burn-a0/Cargo.toml -- --check
+	cargo fmt --manifest-path model/burn-a0/Cargo.toml -p ptr-a0-bridge -- --check
 
-a0: a0-stable a0-msrv
+a0: a0-stable a0-msrv a0-bridge
 
 a0-stable:
 	cargo +$(A0_STABLE) fmt --manifest-path model/burn-a0/Cargo.toml -- --check
@@ -42,6 +45,13 @@ a0-msrv:
 	rustup toolchain install $(A0_MSRV) --profile minimal
 	cargo +$(A0_MSRV) test --manifest-path model/burn-a0/Cargo.toml --locked
 	cargo +$(A0_MSRV) check --manifest-path model/burn-a0/Cargo.toml --examples --locked
+
+a0-bridge:
+	rustup toolchain install $(A0_BRIDGE) --profile minimal --component rustfmt,clippy
+	cargo +$(A0_BRIDGE) fmt --manifest-path model/burn-a0/Cargo.toml -p ptr-a0-bridge -- --check
+	cargo +$(A0_BRIDGE) test --manifest-path model/burn-a0/Cargo.toml -p ptr-a0-bridge --locked
+	cargo +$(A0_BRIDGE) check --manifest-path model/burn-a0/Cargo.toml -p ptr-a0-bridge --examples --locked
+	cargo +$(A0_BRIDGE) clippy --manifest-path model/burn-a0/Cargo.toml -p ptr-a0-bridge --all-targets --locked -- -D warnings
 
 test:
 	cargo test --workspace --locked

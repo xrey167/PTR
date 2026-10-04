@@ -1,0 +1,10 @@
+# This package requires 1.99 (`Cargo.toml`): it depends on ptr-runtime and
+# ptr-semdb, which take their MSRV from the root workspace. Clippy takes its MSRV
+# from the nearest `clippy.toml` walking upward, which without this file is A0's
+# 1.95, so every lint whose suggestion needs 1.96 to 1.99 would be suppressed here.
+#
+# `scripts/check_msrv_alignment.py` is what makes the two stay equal.
+msrv = "1.99.0"
+# Unchanged from the root and from A0, so this file moves the MSRV and nothing else.
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold = 8

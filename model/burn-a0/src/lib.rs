@@ -837,6 +837,15 @@ impl PtrA0 {
         self.operator_count
     }
 
+    /// The model's width, which is also the width every slot vector must have.
+    ///
+    /// Public so that a caller encoding committed payloads asks the model rather
+    /// than repeating the number it was built with; [`PtrA0::forward`] refuses
+    /// slot values of any other width.
+    pub fn d_model(&self) -> usize {
+        self.d_model
+    }
+
     pub fn typed_attention_mode(&self) -> TypedAttentionMode {
         TypedAttentionMode::from_code(self.typed_attention_mode)
     }

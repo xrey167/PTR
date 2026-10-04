@@ -47,6 +47,9 @@ compaction, secure-erasure and deployment trust requirements were carried from
 issue #15 into #20, which PR #21 closes; what survives that pull request is
 recorded in `OPEN_ITEMS_PLAN_20260921.md` — among it two clauses of #15's own gate
 sentences that no checkbox ever covered, connecting actual semantic payloads to the
-model and durable cross-node leadership fencing. They still block their respective
-production claims. They do not turn a
-local CPU/model experiment into a production release.
+model (G1) and durable cross-node leadership fencing (G2). G1 is closed by
+`model/burn-a0/bridge` (`ptr-a0-bridge`): committed payloads reach A0 through the
+runtime's snapshot, admission comes from its lifecycle state, and a checkpoint saved
+that way is bound and sealed as it is written (C9); the contract, and what it does not
+prove about model quality, is in `architecture/26-cognitive-codebook.md`. These
+clauses do not turn a local CPU/model experiment into a production release.

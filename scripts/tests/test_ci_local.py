@@ -258,28 +258,32 @@ class A0MirrorsTheBurnWorkflow(unittest.TestCase):
         cls.defaults = dict(re.findall(r"^(A0_\w+) \?= (\S+)$", makefile, re.M))
 
     def test_a0_runs_one_target_per_workflow_job(self):
-        """Require the A0 target to run both the stable and MSRV workflow counterparts."""
+        """Require the A0 target to run the stable, MSRV and bridge workflow counterparts."""
         expected = {f"a0-{job}" for job in self.jobs}
-        self.assertEqual(expected, {"a0-stable", "a0-msrv"})
+        self.assertEqual(expected, {"a0-stable", "a0-msrv", "a0-bridge"})
         self.assertEqual(set(self.targets["a0"][0].split()), expected)
 
     def test_every_step_runs_on_the_toolchain_its_job_uses(self):
         """Match Burn workflow commands to recipes with explicit per-job toolchain variables."""
         msrv = self.defaults["A0_MSRV"]
+        bridge = self.defaults["A0_BRIDGE"]
         self.assertEqual(self.defaults["A0_STABLE"], "stable")
         for job, data in self.jobs.items():
             recipe = self.targets[f"a0-{job}"][1]
             for line in recipe:
                 if line.startswith("cargo "):
                     with self.subTest(line=line):
-                        self.assertRegex(line, r"^cargo \+\$\(A0_(STABLE|MSRV)\) ")
+                        self.assertRegex(line, r"^cargo \+\$\(A0_(STABLE|MSRV|BRIDGE)\) ")
             for step in data["steps"]:
                 self.assertIsNone(step["block"], "a0 has no multi-line steps to mirror")
                 if step["run"] is None:
                     continue
                 with self.subTest(job=job, step=step["run"]):
-                    wanted = step["run"].replace("+stable ", "+$(A0_STABLE) ").replace(
-                        msrv, "$(A0_MSRV)"
+                    wanted = (
+                        step["run"]
+                        .replace("+stable ", "+$(A0_STABLE) ")
+                        .replace(msrv, "$(A0_MSRV)")
+                        .replace(bridge, "$(A0_BRIDGE)")
                     )
                     self.assertNotIn("+stable", wanted.replace("$(A0_STABLE)", ""))
                     self.assertIn(wanted, recipe)
@@ -291,6 +295,23 @@ class A0MirrorsTheBurnWorkflow(unittest.TestCase):
             if s["run"] and s["run"].startswith("rustup toolchain install ")
         ]
         self.assertEqual(installs, [f"rustup toolchain install {self.defaults['A0_MSRV']} --profile minimal"])
+
+    def test_the_bridge_toolchain_is_the_root_pin(self):
+        """The bridge builds ptr-runtime, so it runs on the toolchain the root pins."""
+        pinned = re.search(
+            r'^channel = "([^"]+)"$',
+            (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"),
+            re.M,
+        ).group(1)
+        self.assertEqual(self.defaults["A0_BRIDGE"], pinned)
+        installs = [
+            s["run"] for s in self.jobs["bridge"]["steps"]
+            if s["run"] and s["run"].startswith("rustup toolchain install ")
+        ]
+        self.assertEqual(
+            installs,
+            [f"rustup toolchain install {pinned} --profile minimal --component rustfmt,clippy"],
+        )
 
 
 if __name__ == "__main__":

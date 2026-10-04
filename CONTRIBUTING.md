@@ -35,14 +35,15 @@ Before submitting, run what CI runs:
 ```bash
 make ci-local                  # every job in .github/workflows/ci.yml, step for step
 make ci-repository-invariants  # or one job: every target is ci-<job name>
-make a0                        # also when you touch model/burn-a0, crates/ptr-types, the root Cargo.toml, the codebook or crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt
+make a0                        # also when you touch model/burn-a0, anything under crates/ (the A0 bridge depends on ptr-runtime), the root Cargo.toml, the codebook or vendor/
 ```
 
 `make ci-local` needs the `stable`, `1.85.0` and `1.91.0` toolchains (it installs
 the pinned two the way CI does) and builds every feature backend, so it is slow
 the first time. It reads `BASE` from `origin/main`; without that ref, pass
-`BASE=<commit>`. `make a0` is burn-a0.yml's two jobs: `a0-stable` formats, tests
-and lints on your `stable`, and `a0-msrv` tests on 1.95.0. CI's stable is always
+`BASE=<commit>`. `make a0` is burn-a0.yml's three jobs: `a0-stable` formats, tests
+and lints on your `stable`, `a0-msrv` tests on 1.95.0, and `a0-bridge` formats,
+tests and lints the runtime-to-A0 bridge on the root's pinned 1.99.0. CI's stable is always
 the current release, so run `rustup update stable` first, or a lint newer than
 your toolchain passes here and fails there (Burn A0 needs at least 1.95).
 `scripts/tests/test_ci_local.py` fails when a CI step, a step's `env:`, or a

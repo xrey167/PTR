@@ -404,7 +404,9 @@ and the trainer does not hold one. That is why the artifact and its binding were
 produced by different programs, and why a checkpoint could reach a loader having
 never been bound at all.
 
-`ptrctl seal` is the step that joins them. It opens the journal, resolves each
+`ptrctl seal` is the step that joins them — and since C9 it does so by calling
+`PtrRuntime::seal_checkpoint`, which a trainer saving through `ptr-a0-bridge` calls
+too (see "A trainer binds as it saves" below). It opens the journal, resolves each
 declared semantic key against its committed value and each declared target against
 its live generation, binds the artifact through the same `bind_state` path every
 other neural state uses, and writes two files: the sealed artifact, and the anchor.
@@ -449,20 +451,19 @@ as a bullet under what Gate 3 did not close. Everything above this section is th
 identity layer such a connection needs. This section is the **channel** that carries a
 payload — built, typed, versioned, and exercised from both ends.
 
-**It is not an integrated path, and G1 is not closed by it.** Nothing in this
-repository calls `SemanticSnapshot::slot_vector`, and nothing outside
-`model/burn-a0` constructs a `SlotValues`. No caller joins the two halves, and none
-can: `model/burn-a0` is an isolated workspace that no PTR crate depends on, so A0 is
-not reachable from the runtime at all. That was true before this work and is
-unchanged by it — the only contact between the two is the shared `ptr-types` kernel
-and a committed checkpoint fixture.
+**On its own it was not an integrated path, and G1 was not closed by it.** When this
+section was written nothing in the repository called `SemanticSnapshot::slot_vector`,
+nothing outside `model/burn-a0` constructed a `SlotValues`, and no PTR crate depended
+on A0, so A0 was not reachable from the runtime at all — the only contact between the
+two was the shared `ptr-types` kernel and a committed checkpoint fixture. The edge
+that joins them, and closes G1, is the section after this one; what follows here is
+kept as the record of what the channel is and why it is shaped this way.
 
 So what this section establishes is precise and worth stating without inflation: a
 committed value can become a slot vector, a slot vector can reach the router's
 logits, both sides are pinned to one definition in `ptr-types`, and each half has its
-own tests with controls. What is still missing is anything that *runs* the two
-together — which needs A0 to be reachable from the runtime, a larger question nobody
-has taken.
+own tests with controls. What it lacked was anything that *runs* the two together,
+which needed A0 to be reachable from the runtime; `ptr-a0-bridge` below is that.
 
 ### The gap, measured rather than asserted
 
@@ -523,12 +524,11 @@ Three decisions worth stating because each could have gone otherwise:
 
 `crates/ptr-semdb/tests/slot_vectors.rs` covers committed value → slot vector;
 `model/burn-a0/tests/semantic_payload.rs` covers slot vector → what the model
-produces. They cannot be one test, and — more importantly — there is no production
-caller joining them either: A0 depends on `ptr-types` and nothing else of PTR's, and
-the two workspaces do not build together. `ptr-types` is the seam, which is why the
-encoding lives there.
+produces. A0 itself depends on `ptr-types` and nothing else of PTR's, so they cannot
+be one test inside A0; `ptr-types` is the seam, which is why the encoding lives there.
+The test that runs both halves together lives in the bridge, below.
 
-What holds the halves to each other in the absence of a caller is that they compute
+What held the halves to each other before there was a caller is that they compute
 the same function. `a_committed_value_encodes_exactly_as_the_model_side_encodes_it`
 asserts that a snapshot's vector for a committed payload is byte-identical to the
 `SlotEncoding::V1.encode` call the model-side tests make for the same type and bytes.
@@ -576,6 +576,131 @@ the test aimed at it.
 
 A payload-length absorption in the mixer was also removed: the payload is last, so
 nothing follows it to be confused with, and no test could justify the line.
+
+## The runtime path — G1 closed
+
+`model/burn-a0/bridge` (`ptr-a0-bridge`) is the edge: a package that depends on
+`ptr-burn-a0`, `ptr-runtime`, `ptr-semdb` and `ptr-types` and does nothing but join
+them. With it, a committed payload reaches what A0 produces through the runtime, and a
+checkpoint trained that way is bound as it is saved.
+
+### Why it lives in A0's workspace
+
+The bridge is a **member of the A0 workspace**, not of the root one. Burn is pinned to
+a prerelease whose vendor patches exist only in A0's `[patch.crates-io]` and A0's
+lockfile; a root member depending on A0 would have to carry both into the production
+workspace, which is exactly the coupling A0's isolation exists to avoid. Inside A0's
+workspace the bridge resolves burn exactly as A0 does — adding it changed no existing
+entry of `model/burn-a0/Cargo.lock` and only added the PTR crates and their
+dependencies, every one of which the root lockfile already pins at the same version,
+so the set of third-party packages `THIRD-PARTY-NOTICES.md` covers did not change.
+
+A0 stays at 1.95 and the bridge needs 1.99, because `ptr-runtime` takes the root's.
+The root package stays the only `default-members` entry, so `cargo +1.95.0 test
+--manifest-path model/burn-a0/Cargo.toml` still builds A0 and nothing else; the bridge
+is selected with `-p ptr-a0-bridge` and has its own `clippy.toml` at 1.99, which
+`scripts/check_msrv_alignment.py` holds to its `rust-version`. The `burn-a0` workflow
+runs it as a third job, `bridge`, and `make a0-bridge` mirrors it.
+
+The cost is stated rather than discovered: A0's lockfile now pins the dependencies of
+most of `crates/`, so a dependency change there has to refresh
+`model/burn-a0/Cargo.lock` too, or every `--locked` step of that workflow fails, A0's
+own included. The workflow therefore triggers on `crates/**`.
+
+### What it does
+
+- **Payloads come from one snapshot.** `slot_values_from` calls
+  `SemanticSnapshot::slot_vector` for every slot and assembles the batch with A0's own
+  `SlotValues::new`. There is no second encoding: the definition is the one in
+  `ptr-types`, the width is the model's (`PtrA0::d_model`), and a key nothing committed
+  is refused, never fed as zeros.
+- **Admission comes from committed lifecycle state.** `admission_from` asks
+  `PtrRuntime::generation_validity` for each slot's target and generation and narrows a
+  `ValidityMask` from there: a live generation admits, and superseded, revoked,
+  ahead-of-authority and unknown generations are all excluded — "cannot say" does not
+  read as admitted.
+- **`forward_from_runtime`** takes both from one `&PtrRuntime`, so nothing can commit
+  between the payloads and the admission, and returns the output together with what it
+  read: the position, and the keys and targets of the **admitted** slots only. An
+  excluded slot reached nothing, and its target may be revoked, which a binding could
+  not name.
+
+Role, epistemic state, provenance bucket and confidence are still the caller's, as they
+were at every A0 call site before: nothing committed records them. G1 is about the
+payload, and the payload is now the runtime's.
+
+### What the tests show, and the controls that make them evidence
+
+`model/burn-a0/bridge/tests/runtime_payload.rs` commits payloads to a runtime and
+compares the router's logits **bitwise**:
+
+- two runtimes that differ only in the payload of an admitted slot produce different
+  logits, and two built separately with identical payloads produce identical ones
+  (`a_changed_payload_in_an_admitted_slot_changes_the_output_and_an_identical_one_does_not`);
+- the same difference placed in a slot whose generation is revoked changes the logits
+  by exactly nothing — and the same slot with the same difference does move them once
+  its generation is live, so the observable responds to that slot and only the mask
+  kept it out (`the_same_difference_in_an_excluded_slot_changes_the_output_by_exactly_nothing`);
+- what the model receives is, bit for bit, the kernel's encoding applied directly to
+  the committed type and bytes (`a_payload_survives_the_trip_to_slot_values_bit_for_bit`);
+- an uncommitted key is refused (`a_key_nothing_committed_is_refused_rather_than_fed_as_zeros`),
+  and only a live generation is admitted (`only_a_live_generation_is_admitted`).
+
+### What it does not prove
+
+Nothing about model quality. The slot encoding preserves identity and not similarity,
+and a test that a payload *reaches* the logits says nothing about whether a model
+*learns* anything from it. Nor is this the runtime's request path: `ModelRequest` still
+carries no snapshot content, and no runtime code calls A0 — the bridge is a library a
+trainer or host calls with a `&PtrRuntime`. What is closed is the clause as written:
+actual committed semantic payloads are connected to the model, through the runtime's
+own snapshot and lifecycle state.
+
+## A trainer binds as it saves — C9 closed
+
+`ptrctl seal` made binding *available*; it was still a second program, so a trainer
+that wrote a checkpoint left it on disk unbound until somebody ran the seal step.
+
+The sealing step itself now lives in `ptr-runtime` as `PtrRuntime::seal_checkpoint`:
+bind through `bind_checkpoint`, seal, and write the sealed artifact and its separately
+retained anchor — and the checkpoint itself, when the caller names where. `ptrctl seal`
+calls it for a checkpoint another program saved; `ptr-a0-bridge`'s
+`save_bound_checkpoint` calls it for the model it is saving, so there is one definition
+of a sealed save and not two that can drift. Three properties:
+
+- **Refuse before writing.** Binding and sealing happen in memory first; a refusal
+  writes nothing, not even the checkpoint
+  (`a_refused_binding_writes_nothing_not_even_the_checkpoint`).
+- **Each file whole.** Every file is written beside its destination, synchronized,
+  renamed into place, and the directory synchronized.
+- **The set or nothing.** The anchor goes last, and a failed write removes what the
+  call had installed, so the anchor's presence marks a complete save
+  (`a_save_whose_anchor_cannot_be_written_removes_the_checkpoint_and_seal_it_wrote`).
+
+`save_bound_checkpoint`'s declaration is not the trainer's claim. It is the read set
+the bridge recorded while feeding the model, and the save is refused if the runtime has
+committed anything since those reads, because binding then would pin values and
+generations the model never saw
+(`a_save_after_the_runtime_moved_is_refused_and_writes_nothing`). A bound save reopens
+under the anchor read back from disk, is admitted, and names exactly the admitted
+slots' keys and generation
+(`a_bound_save_is_sealed_admitted_and_names_exactly_what_the_model_read`); the control
+is that the same verifier refuses a sealed file with one byte changed, the bare
+checkpoint offered as a sealed state, and the intact seal once its generation is
+revoked (`a_tampered_or_unsealed_checkpoint_is_refused_and_a_revocation_denies_the_seal`).
+
+The training pipeline's `require_seal` accepts what this writes:
+`model/burn-a0/bridge/examples/bound_checkpoint.rs` trains A0 for a few steps on
+payloads read through the bridge and saves with `save_bound_checkpoint`, and its output
+is committed as `training/tests/fixtures/bound-a0`, which `test_checkpoint_seal.py`
+feeds to `require_seal`, checking the anchor's digest against the sealed bytes as well.
+The example demonstrates the mechanics on two synthetic rows; its weights are not
+byte-reproducible across runs and are evidence of nothing about training.
+
+What C9 does not cover: a trainer that serializes weights some other way — A0's own
+`save`, its `write_checkpoint` example, a detached adapter — still writes an unbound
+artifact, and nothing can see it. Binding as part of saving is now the path the bridge
+provides, not a property the repository enforces.
 
 ## What this does not close
 
@@ -633,18 +758,19 @@ nothing follows it to be confused with, and no test could justify the line.
   definition**, exactly as the codebook guard is, and with the same caveat: a
   test-only constructor is not a second version, and the guard will not meet a real
   foreign artifact until one exists.
-- **A model still gets its slot values from whoever calls it.** `SemanticSnapshot`
-  is the door on the PTR side, and A0 cannot see it — the workspaces do not build
-  together, so nothing in the type system forces a caller to have come through that
-  door rather than encoding bytes it made up. The same boundary
-  `29-peer-admission-and-pod-scope.md` states for a peer identity, for the same
-  reason, and it would close the same way: a dependency edge somebody has to decide
-  on.
+- **A model can still get its slot values from somewhere else.** The bridge is a
+  door that goes through `SemanticSnapshot`, and it is the path a runtime-fed caller
+  takes. But `SlotValues::new` stays public, because A0's own studies encode
+  synthetic payloads with no runtime at all, so nothing in the type system forces a
+  caller through that door rather than encoding bytes it made up. Making A0 accept
+  only snapshot-derived values would make A0 itself depend on `ptr-semdb`, which is
+  exactly the edge its isolation avoids.
 - **The artifact is trusted as data, not as authentication.** A fingerprint detects
   a mismatch; it cannot detect someone who recomputes it. That was true of
   `canonical_bytes` from the start and is unchanged by writing it to a file.
-- **No semantic payloads reach the model.** "Connect actual semantic payloads to the
-  model" remains open; this supplies the identity layer such a connection needs.
+- **The runtime does not call the model.** G1 is closed by the bridge, a library a
+  trainer or host calls with a `&PtrRuntime`; `ModelRequest` still carries no
+  snapshot content and no runtime request path reaches A0.
 - Nothing here is evidence about model quality, reasoning improvement or the
   research Definition of Done. A codebook makes a claim checkable; it does not make
   it true.

@@ -96,7 +96,8 @@ The remaining alignment work is explicit:
 
 This workspace is excluded from the root workspace and requires **1.95**
 (`Cargo.toml`), which is why `.github/workflows/burn-a0.yml` runs it on stable and
-on 1.95.0 rather than on the repository's 1.85.0 MSRV.
+on 1.95.0 rather than on the repository's own MSRV. The bridge member requires
+1.99 and has its own job, `bridge`, on 1.99.0.
 
 It carries its own `clippy.toml`. Clippy takes its MSRV from the nearest
 `clippy.toml` walking upward and that file wins over `rust-version`, so without
@@ -106,6 +107,17 @@ disagreement on every run, but the message is not a named lint, so `-D warnings`
 cannot promote it and the job exits 0 either way.
 `scripts/check_msrv_alignment.py` is what keeps the two equal.
 
+## The runtime bridge
+
+`bridge/` is the package `ptr-a0-bridge`, a second member of this workspace and the
+only place A0 meets the PTR runtime (issue #23's G1 and C9). It reads slot payloads
+through a runtime's `SemanticSnapshot::slot_vector`, decides admission from the
+runtime's committed lifecycle state, runs `forward`, and saves a checkpoint bound and
+sealed as it is written through `PtrRuntime::seal_checkpoint`, the step `ptrctl seal`
+shares. It needs Rust 1.99 because `ptr-runtime` does, so it is selected with
+`-p ptr-a0-bridge` and this crate stays the workspace's only default member at 1.95.
+See `bridge/README.md` and `docs/architecture/26-cognitive-codebook.md`.
+
 ## Not implemented yet
 
 - pretrained language backbone;
@@ -114,7 +126,7 @@ cannot promote it and the job exits 0 either way.
 - ActionIR/verifier neural heads;
 - full language modeling / multi-objective PTR loss;
 - Torch numerical parity, and any checkpoint interchange beyond this workspace's own burnpack payload;
-- a training loop that binds a checkpoint as it saves one: the header carries the assignment, and attaching committed facts is something `ptr-runtime` does afterwards;
+- a checkpoint written through this crate's own `save` is still unbound: binding as it is saved is what `bridge/`'s `save_bound_checkpoint` does, and nothing forces a trainer to use it;
 - CUDA/CubeCL benchmark evidence.
 
 This isolated prototype pins **Burn 0.22.0-pre.3**, uses **Rust 1.95**, and keeps its own lockfile. This explicit prerelease/device-API migration removes the old bincode recording dependency. It does not raise the default runtime core's Rust 1.85 gate or establish a production framework choice. Training uses `Device::flex().autodiff()`.

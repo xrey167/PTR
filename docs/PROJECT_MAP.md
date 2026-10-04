@@ -177,6 +177,9 @@ flowchart TB
    (`crates/ptr-model-api/src/request.rs:4-8`), so no snapshot content ever reaches
    a backend. A0 can consume committed slot payloads
    (`model/burn-a0/tests/semantic_payload.rs`), but no runtime path calls A0.
+   *Since this map:* `model/burn-a0/bridge` (`ptr-a0-bridge`) feeds A0 from a
+   runtime's snapshot and lifecycle state and saves bound checkpoints, which closes
+   G1 and C9 as library edges; the runtime's own request path still does not call A0.
 2. **The model cannot propose actions.** `ModelEvent::ActionReady` carries only
    `operation: String` (`crates/ptr-model-api/src/event.rs:26-28`). The runtime acts
    only on `PodRequested` and `Finished` (`crates/ptr-runtime/src/lib.rs:293-301`).
@@ -809,7 +812,7 @@ The graft commit `55b5379` already contains the full 24-crate scaffold.
 | Step 01 | First cognitive increment (confidence contract) | doc 20 |
 | Gate 1–4 | Requirement blocks of issues #15/#20 (execution/network trust, cluster integrity, neural lifecycle, dependency retirement) | GitHub issues |
 | A1–A6, B1–B5, C1–C9 | Tiers of the open-items plan: done fixes, owner decisions, separate gates | `docs/OPEN_ITEMS_PLAN_20260921.md` |
-| G1, G2; D1–D6 | Issue #23's renumbering: G1 = semantic payloads to the model (**open**), G2 = durable cross-node fencing (closed in code; its only tests, `raft_fence.rs`, are run by no CI job; *in CI from this branch*); D1–D6 = owner decisions (all undecided) | issue #23 |
+| G1, G2; D1–D6 | Issue #23's renumbering: G1 = semantic payloads to the model (**open**; *closed by `ptr-a0-bridge` since this map*), G2 = durable cross-node fencing (closed in code; its only tests, `raft_fence.rs`, are run by no CI job; *in CI from this branch*); D1–D6 = owner decisions (all undecided) | issue #23 |
 | M/S/R/L/Q/F/E + 3 digits | Experiment ids: model, SemDB, runtime/Pods, lifecycle, retrieval, feedback, end-to-end system | `experiments/registry.toml` |
 | ADR-00NN | Architecture decision records | `research/decisions/` |
 | Phase A–G | Target roadmap phases | `docs/ROADMAP.md` |
@@ -821,7 +824,8 @@ The graft commit `55b5379` already contains the full 24-crate scaffold.
   1. Confidence contract: done.
   2. Codebook: done in substance.
   3. A complete typed source → snapshot → model → observation path: **open**
-     (G1).
+     (G1). *Since this map:* source → snapshot → model is joined by
+     `ptr-a0-bridge`; the observation half and a runtime request path are not.
   4. A0 ablations: only the pilot. *Since this map:* a preregistered 5-seed study
      of A0's own mechanisms has run (A0-internal; the matched baseline comparison
      still waits on the plain-model backbone).

@@ -33,3 +33,12 @@ typed_query = true
 latent_nonlinearity = true
 frozen_router = false
 latent_steps = 0
+
+# The second workspace member: the edge to the PTR runtime (issue #23's G1 and C9).
+# It needs the root's MSRV because it depends on ptr-runtime; see bridge/README.md.
+[bridge]
+package = "ptr-a0-bridge"
+path = "bridge"
+msrv = "1.99"
+runtime_fed_payloads = true
+binds_checkpoint_as_saved = true

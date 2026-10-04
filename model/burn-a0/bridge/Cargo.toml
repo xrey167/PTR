@@ -1,0 +1,25 @@
+[package]
+name = "ptr-a0-bridge"
+version = "0.1.0"
+edition = "2021"
+# ptr-runtime and ptr-semdb take 1.99 from the root workspace. A0 itself stays at
+# 1.95, which is why the bridge is a package of its own and not a module of A0.
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ptr-burn-a0 = { path = ".." }
+ptr-types = { path = "../../../crates/ptr-types" }
+ptr-semdb = { path = "../../../crates/ptr-semdb" }
+# Default features only: neither the OIDC client nor CUDA reaches this workspace.
+ptr-runtime = { path = "../../../crates/ptr-runtime" }
+# For `LogAnchor`, the committed position a read set and a binding name.
+ptr-ledger = { path = "../../../crates/ptr-ledger" }
+burn = { version = "=0.22.0-pre.3", default-features = false, features = ["std", "flex", "autodiff", "optim"] }
+
+[dev-dependencies]
+# The tests and the example commit the semantic values and generations they read,
+# which takes a configured runtime and a grant's verifier.
+ptr-config = { path = "../../../crates/ptr-config" }
+ptr-verifier = { path = "../../../crates/ptr-verifier" }

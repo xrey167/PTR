@@ -63,6 +63,28 @@ class Fixtures(unittest.TestCase):
         write(self.root, "model/burn-a0/clippy.toml", 'msrv = "1.95"\n')
         self.assertEqual(self.errors(), [])
 
+    def test_a_member_nested_in_a0_needs_its_own_clippy_toml_too(self):
+        # model/burn-a0/bridge: a member of A0's workspace that requires more than
+        # A0 does. Without its own file it is linted at A0's MSRV, one level down
+        # from the drift above.
+        self.test_its_own_clippy_toml_settles_it()
+        write(
+            self.root,
+            "model/burn-a0/bridge/Cargo.toml",
+            '[package]\nname = "bridge"\nrust-version = "1.99"\n',
+        )
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("model/burn-a0/bridge/Cargo.toml", errors[0])
+        self.assertIn("model/burn-a0/clippy.toml", errors[0])
+
+        write(self.root, "model/burn-a0/bridge/clippy.toml", 'msrv = "1.99.0"\n')
+        self.assertEqual(self.errors(), [])
+        self.assertIn(
+            "model/burn-a0/bridge/Cargo.toml: 1.99 == 1.99.0 (model/burn-a0/bridge/clippy.toml)",
+            self.checked(),
+        )
+
     def test_two_digit_and_three_digit_versions_are_the_same_version(self):
         # This repository's root. A string comparison reports it as a mismatch.
         write(self.root, "clippy.toml", 'msrv = "1.85.0"\n')

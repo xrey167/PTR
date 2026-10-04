@@ -6,7 +6,9 @@ the python job builds no Rust. What the binary produces is proven in
 run whose checkpoint is unbound, and refuses it one reason at a time.
 """
 
+import hashlib
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -126,6 +128,51 @@ class CheckpointSealTests(unittest.TestCase):
         (self.root / "bad.anchor.toml").write_text("not = = toml", encoding="utf-8")
         with self.assertRaises(SealError):
             require_seal(self.section(anchor="bad.anchor.toml"), self.root, where="cfg")
+
+
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "bound-a0"
+
+
+class BoundSaveFixtureTests(unittest.TestCase):
+    """A save the Rust side actually produced, not files this test wrote.
+
+    `fixtures/bound-a0` is written by `model/burn-a0/bridge/examples/bound_checkpoint.rs`,
+    a trainer that seals its checkpoint as it saves it through
+    `ptr_a0_bridge::save_bound_checkpoint`. The tests above prove the refusals on
+    files they compose; this proves the pipeline accepts what a sealed save really
+    looks like, so the two sides agree about the format and not only about the idea.
+    """
+
+    def section(self):
+        return {
+            "artifact": "model.ckpt",
+            "sealed": "model.sealed",
+            "anchor": "model.anchor.toml",
+        }
+
+    def test_a_save_sealed_as_it_was_written_is_accepted(self):
+        recorded = require_seal(self.section(), FIXTURE, where="fixture [checkpoint]")
+        self.assertEqual(recorded["codebook"], 1)
+        sealed = (FIXTURE / "model.sealed").read_bytes()
+        self.assertEqual(recorded["sealed"]["sha256"], hashlib.sha256(sealed).hexdigest())
+
+    def test_the_anchor_describes_these_sealed_bytes(self):
+        """What `require_seal` does not itself check, checked once against a real save.
+
+        A sealed state ends with the SHA-256 of everything before it, and the
+        anchor retains that digest. Holding here is what makes the accepted
+        fixture above a *matching* pair rather than two files that merely parse.
+        """
+        sealed = (FIXTURE / "model.sealed").read_bytes()
+        anchor = tomllib.loads((FIXTURE / "model.anchor.toml").read_text(encoding="utf-8"))
+        self.assertEqual(sealed[:8], b"PTRNEU01")
+        self.assertEqual(hashlib.sha256(sealed[:-32]).hexdigest(), sealed[-32:].hex())
+        self.assertEqual(anchor["digest"], sealed[-32:].hex())
+
+    def test_the_checkpoint_alone_is_refused_without_its_seal(self):
+        """The control: the same real checkpoint, declared with no seal."""
+        with self.assertRaisesRegex(SealError, "never bound"):
+            require_seal({"artifact": "model.ckpt"}, FIXTURE, where="fixture [checkpoint]")
 
 
 if __name__ == "__main__":

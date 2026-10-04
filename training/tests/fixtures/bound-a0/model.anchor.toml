@@ -1,0 +1,7 @@
+# Retained outside the artifact it describes. A digest read back
+# out of that artifact would prove nothing.
+sealed = "training/tests/fixtures/bound-a0/model.sealed"
+codebook = 1
+journal_index = 2
+journal_digest = "c49123a459403a10b40504bfad753339085c2c2b7612224d6fc4fa8a12659f82"
+digest = "1f9d279d165f0158c1b134c98ff853aa18bf3c31d16ceae6a0f423e0734d0794"
