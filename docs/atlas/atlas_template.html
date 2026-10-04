@@ -314,7 +314,7 @@ table.matrix tr:hover th { background: var(--wash); }
 <div class="shell">
   <header class="masthead">
     <h1>PTR Atlas</h1>
-    <p>Every crate, every module and every flow of the PTR workspace, read from the manifests and source files. Flow steps cite the line they were checked against.</p>
+    <p>Every crate, every module under <code>src/</code> and every flow of the PTR workspace, read from the manifests and source files. Examples, benches and build scripts are not mapped. Flow steps cite the line they were checked against.</p>
     <span class="provenance" id="provenance"></span>
   </header>
 
@@ -1439,9 +1439,15 @@ table.matrix tr:hover th { background: var(--wash); }
     var counts = flows.map(function (flow) {
       var perCrate = {};
       flow.steps.forEach(function (step) {
-        [step.from, step.to].filter(function (value, position, all) { return all.indexOf(value) === position; }).forEach(function (lane) {
+        // A step counts once for each package it touches, even when its two ends are
+        // different lanes of the same package.
+        var counted = {};
+        [step.from, step.to].forEach(function (lane) {
           var crateName = laneCrate(flow, lane);
-          if (crateName && packageByName[crateName]) { perCrate[crateName] = (perCrate[crateName] || 0) + 1; }
+          if (crateName && packageByName[crateName] && !counted[crateName]) {
+            counted[crateName] = true;
+            perCrate[crateName] = (perCrate[crateName] || 0) + 1;
+          }
         });
       });
       return perCrate;

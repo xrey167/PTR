@@ -24,7 +24,7 @@ PUB_ITEM = re.compile(
 )
 MOD_DECL = re.compile(r"^\s*(pub(?:\([a-z]+\))?\s+)?mod\s+([a-z_][a-z0-9_]*)\s*[;{]")
 TEST_ATTR = re.compile(r"#\[(?:tokio::)?test(?:\(|\])")
-USE_CRATE = re.compile(r"\b(?:crate|super|self)::([a-z_][a-z0-9_]*)")
+USE_PATH = re.compile(r"\b((?:crate|super|self)(?:::[a-z_][a-z0-9_]*)+)")
 
 
 def read(path):
@@ -36,7 +36,45 @@ def non_blank(text):
     return sum(1 for line in text.splitlines() if line.strip())
 
 
-def analyse_source(path, text, module_names):
+def module_path_of(rel):
+    """The module path of a source file under `src/`, as a tuple of segments.
+
+    `lib.rs` and `main.rs` are the crate root, `a/mod.rs` is `a`, `a/b.rs` is `a::b`.
+    """
+    parts = rel[:-3].split(os.sep)
+    if parts[-1] in ("lib", "main") and len(parts) == 1:
+        return ()
+    if parts[-1] == "mod":
+        parts = parts[:-1]
+    return tuple(parts)
+
+
+def resolve_use(path, module_paths, current):
+    """Resolve `crate::a::b::item`, `self::x` or `super::x` to the module it names.
+
+    The path is walked from its base (the crate root, the current module, or the
+    current module's parent for each `super`) and the longest prefix that is a known
+    module of this package wins, so `crate::experiments::json::json_string` names the
+    module `json` and not `experiments`. A path that reaches no module (a function
+    or type declared in the crate root, for example) names none.
+    """
+    segments = path.split("::")
+    base = {"crate": (), "self": current}.get(segments[0])
+    rest = segments[1:]
+    if base is None:  # one or more `super`
+        base = current
+        while segments and segments[0] == "super":
+            base = base[:-1]
+            segments = segments[1:]
+        rest = segments
+    for length in range(len(rest), 0, -1):
+        candidate = base + tuple(rest[:length])
+        if candidate in module_paths:
+            return module_paths[candidate]
+    return None
+
+
+def analyse_source(path, text, module_paths, current):
     doc = []
     for line in text.splitlines():
         if line.startswith("//!"):
@@ -49,10 +87,10 @@ def analyse_source(path, text, module_names):
         if match and not line.lstrip().startswith("//"):
             items.append({"kind": match.group(1), "name": match.group(2)})
     uses = set()
-    for match in USE_CRATE.finditer(text):
-        name = match.group(1)
-        if name in module_names:
-            uses.add(name)
+    for match in USE_PATH.finditer(text):
+        target = resolve_use(match.group(1), module_paths, current)
+        if target is not None:
+            uses.add(target)
     return {
         "loc": non_blank(text),
         "doc": " ".join(doc).strip(),
@@ -85,12 +123,15 @@ def package_info(directory, kind):
         return found
 
     src_files = sorted(glob.glob(os.path.join(directory, "src", "**", "*.rs"), recursive=True))
-    module_names = {module_name_of(os.path.relpath(f, os.path.join(directory, "src"))) for f in src_files}
+    module_paths = {}
+    for f in src_files:
+        rel_file = os.path.relpath(f, os.path.join(directory, "src"))
+        module_paths[module_path_of(rel_file)] = module_name_of(rel_file)
     modules = []
     for path in src_files:
         rel = os.path.relpath(path, os.path.join(directory, "src"))
         text = read(path)
-        info = analyse_source(path, text, module_names)
+        info = analyse_source(path, text, module_paths, module_path_of(rel))
         info["path"] = rel
         info["name"] = module_name_of(rel)
         info["declared"] = [m.group(2) for m in map(MOD_DECL.match, text.splitlines()) if m]

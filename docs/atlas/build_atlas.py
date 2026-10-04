@@ -121,13 +121,19 @@ def main():
         "meta": {"commit": commit, "generated": datetime.date.today().isoformat()},
         "layers": layers_out, "packages": packages, "flows": flows,
     }
+    if problems:
+        # A description that does not match the tree would put NaN coordinates or
+        # empty module cards into the page, so nothing is written and the exit code
+        # says so.
+        for problem in problems:
+            print("PROBLEM:", problem, file=sys.stderr)
+        print("not writing %s: %d problem(s)" % (OUTPUT_PATH, len(problems)), file=sys.stderr)
+        sys.exit(1)
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     template = open(os.path.join(HERE, "atlas_template.html")).read()
     assert "/*__DATA__*/" in template
     open(OUTPUT_PATH, "w").write(template.replace("/*__DATA__*/", payload))
     print("wrote %s (%d bytes); %d packages, %d flows" % (OUTPUT_PATH, os.path.getsize(OUTPUT_PATH), len(packages), len(flows)))
-    for problem in problems:
-        print("PROBLEM:", problem)
 
 
 if __name__ == "__main__":

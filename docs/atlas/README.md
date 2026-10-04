@@ -1,6 +1,9 @@
 # PTR Atlas
 
-An interactive map of every package, module and verified flow in the workspace.
+An interactive map of every package, every module under `src/` and the verified flows of the
+workspace. Example targets (such as `model/burn-a0/examples/` and
+`crates/ptr-types/examples/`), benches and build scripts are not mapped, so the line and test
+totals count `src/` only.
 Open `atlas.html` in a browser. It is one self-contained file.
 
 - `extract_atlas.py` reads Cargo manifests and source files into `structure.json`
