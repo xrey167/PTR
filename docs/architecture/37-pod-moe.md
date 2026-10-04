@@ -58,7 +58,8 @@ the template reads it from `LoggedTriage.reward`
 outcome field bound to `(request_id, chosen action)`: the verifier's
 `VerificationStatus` and the derived reward, using the four-status mapping of §5
 (`Pass` yields the report's `score`; `Fail`, `Disputed` and `Unknown` yield 0, and
-a report below the task's minimum `VerificationLevel` also yields 0).
+an output whose **weakest** per-verifier `VerificationLevel` is below the task's
+minimum also yields 0; see §5).
 It is written **after** verification, as an update of the record the routing decision
 created, never by the router at decision time. Outcomes must not be censored by the action
 taken, so a failure is an outcome and is **not** excluded: a timeout, crash,
@@ -168,12 +169,18 @@ below exists yet.
   **all four** `VerificationStatus` values (`lib.rs:4-10`): `Pass` yields the
   report's `score`; `Fail`, `Disputed` and `Unknown` yield 0. A non-Pass report never
   receives a passing reward and its independent `score` is never used, so a high
-  score on a disputed or unknown report is worth nothing. The reward is also **gated on
-`VerificationReport.level`**: the minimum acceptable `VerificationLevel`
+  score on a disputed or unknown report is worth nothing. The reward is also **gated on the weakest verification level**:
+the minimum acceptable `VerificationLevel`
 (`Unverified`, `LatentAgreement`, `SampleVerified`, `FullSemantic`, `Deterministic`,
-`crates/ptr-types/src/lib.rs:425-431`; the report field is at
-`crates/ptr-verifier/src/lib.rs:21`) is preregistered per task, and a report below it
-yields reward 0 regardless of status or score. A hard finding
+`crates/ptr-types/src/lib.rs:425-431`) is preregistered per task. The gate must
+**not** read the combined `VerificationReport.level` of a `VerifierFabric`: the fabric
+reports as its level "the strongest level any report reached" and documents that this
+"is not an admission rule" (`crates/ptr-verifier/src/lib.rs:34-41`, computed with
+`max_by_key` at `:81-85`). The reward is therefore gated on the **weakest** level
+among all individual verifier reports for that output, or on an admission verdict
+that records the weakest level (as the runtime's semantic grant does). An output
+whose weakest level is below the minimum yields reward 0 regardless of status or
+score. A hard finding
   (`Finding::hard`) forces `Fail` whatever the reported status or score. Arms: GRPO (clip-higher), GRPO with
   routing replay, GSPO, SAPO, REINFORCE++. Factors: mini-steps 1 versus 4 (at 1
   mini-step GRPO, GSPO and SAPO coincide, which is the null control among those
