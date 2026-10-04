@@ -7,7 +7,6 @@ tests_dir = "tests"
 [pinned_thresholds]
 task_accuracy_margin_points = 1.0
 load_cv_margin = 0.05
-min_seeds = 3
 each_regression_falsifies_independently = true
 # Preregistered choices for this experiment (no code default exists).
 training_steps_per_arm = 2000
@@ -23,3 +22,7 @@ load_cv_aggregation = "per layer (population std / mean), mean over layers, at t
 search_space = ["learning_rate", "batch_size", "aux_coefficient", "bias_update_rate", "lora_rank", "lora_alpha"]
 # Preregistered choices for this experiment (no code default exists).
 seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+min_seeds = 5
+dead_expert_eval_set = "pinned held-out evaluation split of the task suite, 8192 tokens"
+load_cv_computed_on_eval_set = true

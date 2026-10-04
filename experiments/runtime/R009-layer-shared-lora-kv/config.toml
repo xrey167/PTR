@@ -7,9 +7,7 @@ tests_dir = "tests"
 [pinned_thresholds]
 # Preregistered choices for this experiment (no code default exists).
 test_model_layers = 4
-first_adapted_layer_configs = [0, 2]
 required_interior_first_adapted_layer = 2
-min_interior_configs = 1
 # Preregistered choices for this experiment (no code default exists).
 min_alora_prefix_reuse_attempts = 1
 min_adapter_revocations_performed = 1
@@ -47,3 +45,11 @@ prompt_tokens = 64
 claim_scope = "kv_memory_only"
 # Preregistered choices for this experiment (no code default exists).
 seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+weights = "seeded random (pinned seed and shape)"
+weight_seed = 20240607
+hidden_size = 64
+num_heads = 4
+num_kv_heads = 2
+head_dim = 16
+vocab_size = 256

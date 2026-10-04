@@ -5,8 +5,6 @@ path = "experiments/runtime/R007-span-forget"
 tests_dir = "tests"
 
 [pinned_thresholds]
-noise_control_prompts = 100
-noise_percentile = 99
 # Preregistered choices for this experiment (no code default exists).
 canary_bearing_span_cases = 1
 min_span_insertions = 1
@@ -14,8 +12,18 @@ min_span_evictions = 1
 min_downstream_recomputations = 1
 min_canary_probes = 1
 # Preregistered choices for this experiment (no code default exists).
-max_canary_logit_shift_when_bitwise_identical = 0
 max_stale_downstream_rows_reused = 0
 recompute_tokens_equals_tokens_after_span = true
 # Preregistered choices for this experiment (no code default exists).
 seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+max_canary_logit_shift = 0
+noise_threshold = "none (bitwise only)"
+# Preregistered choices for this experiment (no code default exists).
+weights = "seeded random (pinned seed and shape)"
+weight_seed = 20240607
+hidden_size = 64
+num_heads = 4
+num_kv_heads = 2
+head_dim = 16
+vocab_size = 256

@@ -17,7 +17,6 @@ max_non_allowlisted_payloads_admitted = 0
 min_mislabelled_kv_payload_attempts = 1
 min_interleaved_frame_pairs = 1
 max_cross_frame_mixing_count = 0
-min_abandoned_frame_cases = 1
 min_large_frame_cases = 1
 large_frame_tokens = 2048
 large_frame_width = 2048
@@ -29,7 +28,7 @@ shape_limit_alternative_requires_typed_refusal = true
 # Preregistered choices for this experiment (no code default exists).
 boundary_dtype = "F32"
 model_width = 2048
-vocab_size = 32000
+vocab_size = 256
 min_chain_mismatch_attempts = 1
 min_duplicate_chunk_attempts = 1
 min_out_of_window_attempts = 1
@@ -47,3 +46,27 @@ max_stale_upstream_kv_served = 0
 output_definition = "final logits bytes plus per-layer KV bytes on each pod"
 # Preregistered choices for this experiment (no code default exists).
 seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+large_frame_chunks = 5
+max_chunk_bytes = 3670016
+reorder_window = 4
+frame_deadline_ms = 5000
+max_incomplete_frames_per_peer = 8
+max_chunks_in_flight = 32
+min_splice_attempts = 1
+min_non_allowlisted_type_attempts = 1
+min_activation_shaped_kv_smuggling_attempts = 1
+max_kv_pages_installed_from_wire = 0
+min_abandoned_frame_cases = 1
+min_abandoned_chunks_sent = 1
+min_stale_upstream_entries_before_revocation = 1
+min_revoke_messages_dropped_or_delayed = 1
+frames_with_consistent_whole_frame_digest_equals_frames_sent = true
+wire_kv_page_bytes_definition = "bytes of any payload not decoding as an allowlisted schema, or matching the digest of a KV page held by either pod"
+# Preregistered choices for this experiment (no code default exists).
+weights = "seeded random (pinned seed and shape)"
+weight_seed = 20240607
+hidden_size = 64
+num_heads = 4
+num_kv_heads = 2
+head_dim = 16

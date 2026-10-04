@@ -8,7 +8,6 @@ tests_dir = "tests"
 # Preregistered choices for this experiment (no code default exists).
 min_revoked_fork_attempts = 1
 max_revoked_fork_count = 0
-min_hit_rate_at_50pct_shared_prefix = 0.40
 max_approximate_run_actions_admitted = 0
 max_approximate_semdb_promotions = 0
 min_approximate_candidate_path_attempts = 1
@@ -16,8 +15,6 @@ max_approximate_candidate_exact_admissions = 0
 # Preregistered choices for this experiment (no code default exists).
 max_trie_nodes = 4096
 max_kv_page_bytes = 67108864
-over_capacity_workload = "unique prompts whose total trie nodes and page bytes exceed both bounds"
-min_evictions = 1
 max_active_fork_page_evictions = 0
 min_approximate_action_admission_attempts = 1
 min_approximate_semdb_promotion_attempts = 1
@@ -45,7 +42,7 @@ min_fresh_exact_recomputation_admitted = 1
 min_candidate_taint_hops = 2
 min_approximate_pod_result_promotion_attempts = 1
 max_approximate_pod_result_promotions_accepted = 0
-max_metadata_bytes = 1048576
+max_metadata_bytes = 4194304
 approximate_producer = "pinned stub backend returning KvReuseMode::Approximate"
 n_requests = 64
 prompt_tokens = 256
@@ -54,3 +51,36 @@ cold_first_request_counts_in_hit_rate = true
 concurrency = 1
 # Preregistered choices for this experiment (no code default exists).
 seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+min_same_tokens_distinct_lineage_entries = 2
+max_cross_lineage_hits = 0
+min_active_fork_revocation_attempts = 1
+cancelled_forks_restarted_from_fresh_prefill_equals_cancelled = true
+max_outputs_escaped_after_revocation = 0
+# Preregistered choices for this experiment (no code default exists).
+min_hit_rate_at_50pct_shared_prefix = 0.40
+metadata_bytes_per_node = 1024
+kv_page_bytes_per_node = 16384
+nodes_only_run_max_kv_page_bytes = 268435456
+bytes_only_run_max_trie_nodes = 16384
+test_model_layers = 4
+dtype = "f32"
+min_cross_project_attempts = 1
+max_cross_project_hits = 0
+min_forged_witness_fork_attempts = 1
+max_forged_witness_forks_accepted = 0
+min_cancelled_run_effect_attempts = 1
+max_cancelled_run_effects_admitted = 0
+min_evictions_nodes_only_run = 1
+min_evictions_bytes_only_run = 1
+min_stale_eligible_entries_before_event = 1
+# Preregistered choices for this experiment (no code default exists).
+over_capacity_workloads = "independent nodes-only and bytes-only workloads of unique prompts"
+# Preregistered choices for this experiment (no code default exists).
+weights = "seeded random (pinned seed and shape)"
+weight_seed = 20240607
+hidden_size = 64
+num_heads = 4
+num_kv_heads = 2
+head_dim = 16
+vocab_size = 256

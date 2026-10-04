@@ -10,7 +10,6 @@ min_top1_agreement = 0.99
 min_prefill_saving = 2.0
 # Preregistered choices for this experiment (no code default exists).
 candidate_recompute_fractions = [0.05, 0.10, 0.15, 0.20]
-candidate_recompute_rounding = "ceil_to_whole_tokens"
 single_k_must_meet_all_shifts = true
 # Preregistered choices for this experiment (no code default exists).
 min_secondary_index_lookups = 1
@@ -19,25 +18,19 @@ min_nonaligned_insertion_cases_per_size = 1
 min_upstream_revocation_cases = 1
 max_revoked_upstream_page_reachable_count = 0
 # Preregistered choices for this experiment (no code default exists).
-min_live_lineage_edit_cases = 1
-saving_measured_on = "live_lineage_edit_path_only"
 live_lineage_results_tagged = "Approximate"
 # Preregistered choices for this experiment (no code default exists).
 chunk_tokens = 64
 candidate_k_tokens = [4, 7, 10, 13]
-test_model_layers = 4
 prefill_speedup_definition = "full_prefill_wall_time / reuse_prefill_wall_time"
 top1_agreement_definition = "fraction of positions where argmax == full-prefill argmax"
 candidate_shift_results_artifact = "candidate_shift_results.json"
-expected_candidate_shift_cells = 12
 incomplete_rows_ineligible = true
 # Preregistered choices for this experiment (no code default exists).
 calibration_prompts = 100
 heldout_prompts = 100
-k_selection_rule = "smallest k in [4, 7, 10, 13] with top1_agreement >= 0.99 at every shift on the calibration split"
 recomputed_token_rule = "CacheBlend-style highest-deviation tokens, every layer >= 1"
 prompt_tokens = 512
-reused_chunks_per_prompt = 4
 warmup_runs = 3
 timed_runs = 11
 prefill_speedup_statistic = "median"
@@ -52,3 +45,25 @@ min_post_event_lookups = 1
 max_stale_hits = 0
 # Preregistered choices for this experiment (no code default exists).
 seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+expected_candidate_shift_cells = 20
+test_model = "Qwen/Qwen2.5-0.5B"
+test_model_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+test_model_layers = 24
+test_model_vocab_size = 151936
+reused_chunks_per_prompt = 7
+reused_tokens = 448
+suffix_tokens = 64
+min_live_lineage_insert_shift_cases = 1
+min_in_segment_insertion_cases = 1
+saving_measured_on = "live_lineage_insert_shift_path_only"
+candidate_recompute_rounding = "ceil_to_whole_tokens"
+k_selection_rule = "k_sel = smallest k in [4, 7, 10, 13] with calibration top1_agreement >= 0.99 at every shift; falsified if none"
+heldout_criteria = "k_sel: top1_agreement >= 0.99 and median prefill_speedup >= 2.0 at every shift"
+agreement_positions = "only positions whose K/V used approximate rows"
+flop_cost_model = "layer-token units; deviation-selection pass costs one layer over reused tokens; attention quadratic terms ignored"
+analytic_speedup_k4 = 4.68
+analytic_speedup_k7 = 3.95
+analytic_speedup_k10 = 3.42
+analytic_speedup_k13 = 3.01
+candidates_dropped_as_infeasible = []
