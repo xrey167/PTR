@@ -207,9 +207,11 @@ chain(l) = H( chain(l-1),
               K/V weights of layer l incl. adapter,
               numerics config: dtype, quantization, kernel set / batch-invariance,
                                TP/EP layout, inter-pod activation precision,
-              if KvKeyEncoding = PostRope:
-                positional-encoding config: rope_theta, rope_scaling policy,
-                head_dim split (rotated vs pass-through dims), + their generation )
+              positional-encoding config: rope_theta, rope_scaling policy,
+                head_dim split (rotated vs pass-through dims), + their generation,
+                included if l >= 1 (attention of layers < l rotated Q/K and so
+                shaped the residual) or if KvKeyEncoding = PostRope (the stored
+                key itself is rotated, so layer 0 too) )
 ```
 
 General rule: the key covers **every transformation applied to the residual stream
@@ -219,21 +221,34 @@ Qwen2 reference path that includes `input_layernorm` and `rms_norm_eps`, which
 (`crates/ptr-pods/src/qwen.rs:313-321`, weights field at `:115`); changing them
 changes K and V of layer l even though no K/V weight changed.
 
-**The positional encoding is part of the key for post-RoPE keys.** With
-`KvKeyEncoding::PostRope` the stored key is already rotated, so the rotation
-configuration is baked into the cached bytes: `Qwen2PagedDecoder` passes
-`self.config.rope_theta` to `apply_rope` while it builds the key that is appended
-to the cache (`crates/ptr-pods/src/qwen.rs:328-334`; the config field is at `:22`,
-validated at `:45`). Therefore a `PostRope` chain key must also bind `rope_theta`,
-the `rope_scaling` policy (any context-extension scheme, including its factors),
-the `head_dim` split between rotated and pass-through dimensions, and the
-generation of that configuration. Changing any of them changes every stored key
-of every layer even though no weight changed, so it invalidates **all layers**
-(`l >= 0`). For `KvKeyEncoding::PreRope` the stored key carries no rotation, so
-the RoPE configuration is **not** in the chain key; it is bound at use, in the
-attention step that rotates the key (section B, key insight), and a RoPE change
-invalidates nothing in the cache but changes the use-time binding checked at
-admission.
+**The positional encoding is part of the key, for every layer l >= 1 and, with
+post-RoPE keys, for layer 0 too.** Two separate effects bind it:
+
+- *Stored rotation (`PostRope`).* The stored key is already rotated, so the rotation
+  configuration is baked into the cached bytes: `Qwen2PagedDecoder` passes
+  `self.config.rope_theta` to `apply_rope` while it builds the key that is appended
+  to the cache (`crates/ptr-pods/src/qwen.rs:328-334`; the config field is at `:22`,
+  validated at `:45`). A `PostRope` chain key therefore binds `rope_theta`, the
+  `rope_scaling` policy (any context-extension scheme, including its factors), the
+  `head_dim` split between rotated and pass-through dimensions, and the generation
+  of that configuration at **every** layer, including layer 0.
+- *Rotation upstream of the residual (both encodings).* With `PreRope` storage the
+  RoPE configuration is bound at use for **layer 0's own K/V only**: layer 0 projects
+  K/V from the embedding, before any attention has run, so its cached pre-RoPE
+  tensors do not depend on the rotation. For every layer `l >= 1` the cached
+  pre-RoPE K/V was projected from a residual that went through the attention of
+  layers `< l`, and that attention rotated Q and K under the RoPE configuration in
+  force. The residual, and so layer l's K/V, therefore depends on `rope_theta`,
+  scaling and the rotated-dimension split even though the stored tensor carries no
+  rotation. The configuration must enter the per-layer chain key at every `l >= 1`
+  (equivalently: it enters above the first attention layer, at the step from
+  `chain(0)` to `chain(1)`). Binding it only at use would classify layers `>= 1` as
+  valid after a RoPE change and serve stale tensors as Exact.
+
+So a RoPE configuration change invalidates layers `>= 1` for `PreRope` storage and
+all layers for `PostRope` storage. In a single-layer model (the reference path)
+`PreRope` has no layer `>= 1`, which is why the one-layer positional-reuse check in
+section B holds and does not extend to deep models.
 
 Consequences:
 
@@ -241,11 +256,56 @@ Consequences:
 |---|---|
 | pre-attention norm weights or eps at layer k | layers >= k |
 | `rope_theta`, `rope_scaling` or `head_dim` split, `PostRope` keys | every layer |
-| `rope_theta`, `rope_scaling` or `head_dim` split, `PreRope` keys | none (bound at use, not in the key) |
+| `rope_theta`, `rope_scaling` or `head_dim` split, `PreRope` keys | layers >= 1 (layer 0's own K/V is unaffected and is bound at use; layers >= 1 see the rotation through the residual) |
 | QKV-LoRA attached at layer k | layers >= k |
 | Q-only or MLP-only LoRA at layer k | layers >= k+1 |
 | aLoRA | every layer before the invocation token is shared with the base |
 | swap or revoke expert (j, i) | only layers > j |
+
+### The token trie is independent of adapter identity
+
+The prefix catalog has two levels, and adapter identity belongs only to the second:
+
+1. **Token trie (radix over token ids).** `KvChunkKey { parent, chunk (16 tokens),
+   salt }` with `salt = H(tenant / security principal, base-model identity,
+   tokenizer, numerics config, schema version)`. The salt contains **neither the
+   adapter nor the execution-manifest digest.** Tenant isolation is unchanged: two
+   tenants have different salts and diverge at the first node.
+2. **Per-layer entries on each trie node**, keyed by the per-layer chain key
+   `chain(l)` above. A node holds one entry per layer range, and a request can hit
+   only an entry whose `chain(l)` equals the one computed for **its own** adapter
+   binding. The adapter enters `chain(l)` only for layers at or after the first
+   layer the adapter touches (`AdapterAttachment::first_layer`, plus one for a
+   Q-only or MLP-only adapter, table below), and for an aLoRA adapter only for
+   tokens after the activation point. Layers below that point have the same
+   `chain(l)` for the base model and for every adapter, which is what lets them be
+   shared.
+
+**Why the manifest digest cannot be in the trie salt.** The execution-manifest digest
+folds in the adapter binding: `calculate_digest` hashes the manifest generation
+(`crates/ptr-pods/src/manifest.rs:229`) and then, in one loop over knowledge,
+artifacts, reader **and adapter** bindings (`:230-236`), each binding's key,
+generation and digest (`:237-239`). Any adapter key, generation or digest change
+therefore changes the manifest digest. A salt that mixed in the manifest digest, or
+the adapter value, would differ between a base request and a LoRA or aLoRA request,
+so the two would diverge at the **first radix node**, before any per-layer chain
+could discover that the lower-layer pages are identical. Layer sharing (P2b) and
+R009 could not work as specified. Partitioning the token trie by the whole adapter
+binding is therefore rejected.
+
+**Adapter admission metadata lives on the per-layer entries**, not in the trie salt:
+each entry records the adapter key, generation and the manifest digest it was
+produced under, and admission re-checks them against the **currently admitted**
+binding at use (as in `NeuralStateCache::admit`, section A). A base-keyed entry
+carries no adapter metadata, so revoking an adapter drops only the entries that name
+it and never a base-keyed page.
+
+**Security property kept:** a request can hit only per-layer entries whose chain key
+matches exactly the one derived from its own tenant salt, base model, adapter
+binding, numerics and RoPE configuration, and only after admission against its
+current binding. Sharing a trie node never lets a request read an entry computed
+under a different adapter, generation or tenant; it only lets requests with
+different adapters reach the same node, where the chain keys then decide.
 
 **Disaggregated expert pods are KV-stateless**: KV lives with attention
 (MegaScale-Infer, arXiv 2504.02263; Step-3 attention-FFN disaggregation,
@@ -281,9 +341,9 @@ experiment that can fail.
 |---|---|---|
 | P0 | this document, experiment records | none |
 | P1 | token-aware contract in `ptr-model-api`: `TokenId`, `Tokenizer` trait, `ByteTokenizer`, `PromptSegment` (with `content_digest` and source `Raw` / `Semantic` / `Memory`), `SegmentedModelRequest`, `KvReuseHint`, `KvReuseReport`, `ModelRun`, and a **new trait** `KvReusingBackend`. Existing backends are untouched. A real HF tokenizer comes later in a new crate `ptr-tokenizers` | contract tests only |
-| P2 | exact prefix reuse on CPU. A `retire_prefix` trait method with default `Unsupported` (the candle path is not compiled in CI). `ptr-runtime/src/kv_prefix.rs`: `KvPrefixCatalog`, a radix tree over `KvChunkKey { parent, chunk (16 tokens), salt }` with `salt = H(principal, execution manifest, model, adapter, tokenizer, schema)`; admission at the deepest node, then a walk back to the admitted ancestor; subtree invalidation; semdb `PreparedDelta::affected()` wired to `invalidate_inputs`; `ReferenceKvReuseBackend` | **R005 exact-prefix-reuse**: falsified by any bitwise difference against full prefill, any successful fork of a revoked generation, or a hit rate below 40% at 50% shared prefix |
+| P2 | exact prefix reuse on CPU. A `retire_prefix` trait method with default `Unsupported` (the candle path is not compiled in CI). `ptr-runtime/src/kv_prefix.rs`: `KvPrefixCatalog`, a radix tree over `KvChunkKey { parent, chunk (16 tokens), salt }` with `salt = H(principal, model, tokenizer, numerics, schema)`, deliberately **without** the adapter or the execution-manifest digest (section D); per-layer entries on each node keyed by `chain(l)`; per-layer admission at the deepest node against the currently admitted binding, then a walk back to the admitted ancestor; subtree invalidation; semdb `PreparedDelta::affected()` wired to `invalidate_inputs`; `ReferenceKvReuseBackend` | **R005 exact-prefix-reuse**: falsified by any bitwise difference against full prefill, any successful fork of a revoked generation, or a hit rate below 40% at 50% shared prefix |
 | P2a | `KvReuseTaint` carried with every model event and with `ResumableRun::action`, checked by action admission and `authorize_action`, propagated transitively to derived candidates (section C) | **R005** additionally falsified by any action admitted from a run whose reuse mode was Approximate |
-| P2b | LoRA layer sharing and aLoRA | **R009 layer-shared-lora-kv**, falsified if shared pages differ bitwise from the base pages, the measured sharing deviates from the predicted f/L fraction, revoking the adapter drops any base-keyed page, or the aLoRA prefix is not bit-identical |
+| P2b | LoRA layer sharing and aLoRA: base and adapter requests share one token trie and discover shared lower-layer pages through per-layer chain keys; adapter admission metadata sits on the per-layer entries (section D) | **R009 layer-shared-lora-kv**, falsified if shared pages differ bitwise from the base pages, the measured sharing deviates from the predicted f/L fraction, revoking the adapter drops any base-keyed page, or the aLoRA prefix is not bit-identical |
 | P2c | MoE expert generations | **R010 moe-expert-kv-revocation**, falsified if any page above j that was created before the revocation is served after it, any page at or below j is dropped because of the revocation, or any nondeterministic-routing run is tagged Exact (pages recomputed after the revocation are allowed) |
 | P3 | pre-RoPE keys: `KvKeyEncoding { PostRope, PreRope }` with a versioned digest; N-layer `Qwen2PagedStack` | **R006 positional-reuse-oracle** (one layer, bit-identical); **M016 approximate-chunk-reuse**, falsified if top-1 agreement is below 99% or the saving is below 2x at the best k |
 | P4 | span eviction without hidden carry-over (Leyline FORGET) | **R007 span-forget**, falsified if the state differs from a fresh prefill without the span, or a canary token remains probeable |
@@ -340,7 +400,8 @@ flowchart LR
     K2 -->|"..."| KL["chain(l)"]
     N["numerics config\ndtype, kernels, TP/EP"] --> K0
     PN["pre-attention norm of layer l\nweights, eps, generation"] --> KL
-    RP["PostRope only: rope_theta, rope_scaling,\nhead_dim split, generation"] --> K0
+    RP["rope_theta, rope_scaling,\nhead_dim split, generation"] -->|"PostRope: layer 0 too"| K0
+    RP -->|"every l >= 1 (both encodings)"| K1
     KV["K/V weights of layer l\nincl. adapter"] --> KL
 ```
 
@@ -348,4 +409,5 @@ A changed weight, adapter or expert generation at layer j changes `chain(l)` for
 every l > j (and for l = j when it touches the pre-attention norm or K/V), and
 changes nothing below. A changed RoPE configuration is the exception: with
 `PostRope` keys it enters at `chain(0)` and so changes every layer; with `PreRope`
-keys it is not in the chain at all and is checked at use.
+keys it enters at `chain(1)` and so changes every layer `>= 1`, leaving only layer
+0's own K/V reusable (its use-time rotation is checked at admission).

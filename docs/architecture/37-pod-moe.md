@@ -38,6 +38,18 @@ reports it, a validated `Propensity` of the chosen pod in (0, 1]) and a categori
 IPS / SNIPS / doubly-robust estimator. The
 arbiter's estimators are a template only.
 
+**The log must also record the observed outcome.** Context, action and propensity are
+not enough: IPS, SNIPS and doubly-robust estimators weight an observed reward, and
+the template reads it from `LoggedTriage.reward`
+(`crates/ptr-branch/src/arbiter.rs:924`). Each L2 record therefore carries an
+outcome field bound to `(request_id, chosen action)`: the verifier's
+`VerificationStatus` and the derived reward, using the four-status mapping of §5
+(`Pass` yields the report's `score`; `Fail`, `Disputed` and `Unknown` yield 0).
+It is written **after** verification, as an update of the record the routing decision
+created, never by the router at decision time. Records without an outcome (pending,
+timed out, never verified) are **excluded** from off-policy estimation, not imputed,
+and the number excluded is reported next to every estimate.
+
 Token-level experts must be co-located, because every MoE layer finishes routing
 before the next layer starts. Request-level experts can be networked services,
 because there is one routing decision per call.
@@ -152,10 +164,21 @@ below exists yet.
 | M010 `moe-rl-stability` | Which RL arm keeps routing stable, by factor |
 | M011 `routed-peft` | Does PERFT-R help OLMoE under our verifiers |
 | M012 `lora-expert-balancing` | Aux-free bias vs aux loss vs φ-balancing |
-| M013 `expert-lifecycle` | Does the gated lifecycle forget less than a static expert set at equal compute, and does reactivation beat a new expert |
+| M013 `expert-lifecycle` | Does the gated lifecycle forget less than a static expert set at equal compute, and does reactivation beat a new expert. It also carries the **context-ablation arm** below |
 | M014 `aimer-prune-recovery` | Quality against VRAM after pruning and recovery |
 | M015 `rlvr-vs-distill-passk` | RLVR vs distillation at large k |
 | R011 `self-modification-safety` | The L3 policy cannot reach gates, thresholds or verifiers |
+
+**M013 context-ablation arm** (claim 13; the arm is added to `experiments/model/M013`
+in a separate change and is cited here, not defined by it). L3 proposals are
+generated with full self-observation context (routing traces, load, churn,
+interference, AIMER) versus the same policy with that context removed, versus a
+fixed heuristic baseline (threshold rules on load and overlap). Metrics: the
+fraction of proposals that pass the gates, and the net quality change per accepted
+proposal. Falsified if the full-context policy does not beat both the
+context-ablated policy and the heuristic baseline on gate pass rate by a
+pre-registered margin in at least 3 seeds. R011 is a different question (can the
+policy reach gates at all) and does not test this claim.
 
 ## 6. Rust binding
 
