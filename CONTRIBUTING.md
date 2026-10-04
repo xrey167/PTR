@@ -33,18 +33,29 @@ This refreshes the generated block in each crate README and `docs/components/STA
 Before submitting, run what CI runs:
 
 ```bash
-make ci-local                  # every job in .github/workflows/ci.yml, step for step
+make ci-local                  # the Linux jobs of .github/workflows/ci.yml (see the list of what it does not reproduce below)
 make ci-repository-invariants  # or one job: every target is ci-<job name>
 make a0                        # also when you touch model/burn-a0, crates/ptr-types, the root Cargo.toml, the codebook or crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt
 ```
 
-`make ci-local` needs the `stable`, `1.85.0` and `1.91.0` toolchains (it installs
-the pinned two the way CI does) and builds every feature backend, so it is slow
-the first time. It reads `BASE` from `origin/main`; without that ref, pass
-`BASE=<commit>`. `make a0` is burn-a0.yml's two jobs: `a0-stable` formats, tests
-and lints on your `stable`, and `a0-msrv` tests on 1.95.0. CI's stable is always
-the current release, so run `rustup update stable` first, or a lint newer than
-your toolchain passes here and fails there (Burn A0 needs at least 1.95).
+`make ci-local` needs the `stable` and `1.99.0` toolchains (it installs the
+workspace MSRV, 1.99.0, the way CI does) and builds every feature backend, so it
+is slow the first time. It does not reproduce the Windows leg of `rust-stable`,
+the Python 3.11 leg of `python-training`, `pip install -e training` (it sets
+`PYTHONPATH` instead) or `security.yml`, which needs cargo-audit and cargo-deny.
+It runs `python3` as it finds it (`PYTHON` in the Makefile), while CI uses 3.13 for
+`repository-invariants` and 3.11 and 3.13 for `python-training`, so a Python-version
+failure shows up only if you pass `PYTHON=` an interpreter of that version. A green
+`make ci-local` is therefore not a green CI. Its `ci-state-postgres` target needs a
+PostgreSQL server with the pgvector extension on the loopback address the Makefile
+exports in `PTR_PG_TEST_DSN` and `PTR_PG_EXPERIMENT_DSN` (CI runs a
+`pgvector/pgvector:pg18` service container); start one first or point both variables
+at yours. It reads `BASE` from `origin/main`;
+without that ref, pass `BASE=<commit>`. `make a0` is burn-a0.yml's two jobs:
+`a0-stable` formats, tests and lints on your `stable`, and `a0-msrv` tests on
+1.95.0, the Rust version Burn A0 requires. CI's stable is always the current
+release, so run `rustup update stable` first, or a lint newer than your toolchain
+passes here and fails there.
 `scripts/tests/test_ci_local.py` fails when a CI step, a step's `env:`, or a
 multi-line script step has no counterpart in these targets, so they cannot
 silently fall behind CI.
