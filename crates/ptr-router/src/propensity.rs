@@ -3,10 +3,12 @@ use std::fmt;
 /// Probability with which a router would choose the action it chose, given the same inputs.
 ///
 /// A propensity is logged next to every routing decision so a different policy can later be
-/// evaluated off-policy by inverse-propensity weighting (the same convention as
-/// `LoggedTriage::auto_propensity` in `ptr-branch`). Weighting divides by this value, so the
-/// range is `(0, 1]`: zero is excluded because a router can never have chosen, with probability
-/// zero, an action it actually took.
+/// evaluated off-policy by inverse-propensity weighting. It is the probability of the action
+/// actually *taken*. That differs from `LoggedTriage::auto_propensity` in `ptr-branch`, which is
+/// the probability of one fixed action (auto-propose) whatever was taken, may be 0 for an
+/// ineligible record, and gives the other action's probability as its complement; the two must
+/// not be exchanged. Weighting divides by this value, so the range is `(0, 1]`: zero is excluded
+/// because a router can never have chosen, with probability zero, an action it actually took.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Propensity(f64);
 
