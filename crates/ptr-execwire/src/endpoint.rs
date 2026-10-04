@@ -187,8 +187,16 @@ pub struct ExecutionHost {
 
 impl ExecutionHost {
     /// Bind an endpoint for `ALPN_EXEC` around a runtime the host has already
-    /// configured, admission policy included.
-    pub async fn bind(runtime: PtrRuntime) -> Result<Self, WireError> {
+    /// configured, membership and grant sets included.
+    ///
+    /// The runtime's reconciliation authority is sealed away here if the host
+    /// has not taken it already (D6 in issue #23): reconciliation never crosses
+    /// this wire, and anything that reaches the runtime through this host —
+    /// [`ExecutionHost::runtime`] included — must not be able to declare what
+    /// happened to an effect. A host that will reconcile takes the authority
+    /// before binding.
+    pub async fn bind(mut runtime: PtrRuntime) -> Result<Self, WireError> {
+        drop(runtime.take_reconciliation_authority());
         let transport = IrohTransport::bind(&[ALPN_EXEC])
             .await
             .map_err(WireError::Transport)?;

@@ -473,8 +473,16 @@ fn an_unsettled_effect_attempt_fences_the_plan_until_it_is_reconciled() {
 
     // Reconciling the attempt lifts the fence without moving the revision,
     // and the same approval then commits.
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     runtime
-        .reconcile_effect(attempt, false, "operator-confirmed-not-sent")
+        .reconcile_effect(
+            &runtime_authority,
+            attempt,
+            false,
+            "operator-confirmed-not-sent",
+        )
         .unwrap();
     assert_eq!(preview.revision, runtime.revision());
     let receipt = committed(

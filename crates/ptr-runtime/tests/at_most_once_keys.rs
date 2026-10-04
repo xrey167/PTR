@@ -362,8 +362,16 @@ fn a_key_reconciled_as_applied_is_bound_to_the_action_its_attempt_recorded() {
     let permit = once(&runtime, &alice, &uncertain, "invoice-7");
     assert!(runtime.execute_prepared(&alice, permit).is_err());
     let attempt = attempts(&runtime)[0];
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     runtime
-        .reconcile_effect(attempt, true, "receiving system shows it")
+        .reconcile_effect(
+            &runtime_authority,
+            attempt,
+            true,
+            "receiving system shows it",
+        )
         .unwrap();
 
     // Reconciliation establishes that the effect applied and never what it
@@ -397,8 +405,16 @@ fn a_key_reconciled_as_not_applied_binds_no_action() {
     let permit = once(&runtime, &alice, &uncertain, "invoice-7");
     assert!(runtime.execute_prepared(&alice, permit).is_err());
     let first = attempts(&runtime)[0];
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     runtime
-        .reconcile_effect(first, false, "receiving system has no record")
+        .reconcile_effect(
+            &runtime_authority,
+            first,
+            false,
+            "receiving system has no record",
+        )
         .unwrap();
 
     // Nothing applied under the key, so there is no response to give the
@@ -537,8 +553,16 @@ fn a_restored_runtime_keeps_each_spent_key_bound_to_its_action_principal_and_att
     let permit = once(&runtime, &alice, &uncertain, "invoice-8");
     assert!(runtime.execute_prepared(&alice, permit).is_err());
     let unretained = attempts(&runtime)[1];
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     runtime
-        .reconcile_effect(unretained, true, "receiving system shows it")
+        .reconcile_effect(
+            &runtime_authority,
+            unretained,
+            true,
+            "receiving system shows it",
+        )
         .unwrap();
 
     // Every record that named these attempts is below the floor now; the
@@ -639,14 +663,27 @@ fn a_refused_retry_names_the_attempt_that_settled_its_key_not_the_first_attempt_
     let permit = once(&runtime, &alice, &uncertain, "invoice-7");
     assert!(runtime.execute_prepared(&alice, permit).is_err());
     let first = attempts(&runtime)[0];
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     runtime
-        .reconcile_effect(first, false, "receiving system has no record")
+        .reconcile_effect(
+            &runtime_authority,
+            first,
+            false,
+            "receiving system has no record",
+        )
         .unwrap();
     let permit = once(&runtime, &alice, &uncertain, "invoice-7");
     assert!(runtime.execute_prepared(&alice, permit).is_err());
     let second = attempts(&runtime)[1];
     runtime
-        .reconcile_effect(second, true, "receiving system shows it")
+        .reconcile_effect(
+            &runtime_authority,
+            second,
+            true,
+            "receiving system shows it",
+        )
         .unwrap();
 
     // Two attempts under one key, and only the second applied. The first
@@ -1113,6 +1150,9 @@ fn a_keyed_attempt_under_any_principal_is_committed_and_a_snapshot_carries_it() 
     // as given, opens on every rebuild path however its key ended, and once
     // applied still exports and restores, with the key bound to it: a
     // session's request under the key is refused.
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     let mut spent = Vec::new();
     for (key, principal) in [
         ("invoice-1", ""),
@@ -1125,7 +1165,9 @@ fn a_keyed_attempt_under_any_principal_is_committed_and_a_snapshot_carries_it() 
             assert_opens_on_every_rebuild_path(&keyed, applied);
         }
         let attempt = runtime.commit(keyed).unwrap();
-        runtime.reconcile_effect(attempt, true, "operator").unwrap();
+        runtime
+            .reconcile_effect(&runtime_authority, attempt, true, "operator")
+            .unwrap();
         spent.push((key, attempt));
     }
     let mut restored = round_trip(&runtime, &action);
@@ -1226,6 +1268,9 @@ fn a_keyed_attempt_under_any_project_is_committed_and_a_snapshot_carries_it() {
     // under a key with such a project opens on every rebuild path however its
     // key ended, and once applied still exports and restores with the key
     // bound to it, so alice's request in project p under the key is refused.
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     let mut spent = Vec::new();
     for (key, project) in [("invoice-1", ""), ("invoice-2", long.as_str())] {
         let keyed = recorded(&action, Some(key), project, "alice");
@@ -1233,7 +1278,9 @@ fn a_keyed_attempt_under_any_project_is_committed_and_a_snapshot_carries_it() {
             assert_opens_on_every_rebuild_path(&keyed, applied);
         }
         let attempt = runtime.commit(keyed).unwrap();
-        runtime.reconcile_effect(attempt, true, "operator").unwrap();
+        runtime
+            .reconcile_effect(&runtime_authority, attempt, true, "operator")
+            .unwrap();
         spent.push((key, attempt));
     }
     let mut restored = round_trip(&runtime, &action);

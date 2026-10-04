@@ -240,8 +240,16 @@ fn an_adapter_that_would_not_take_the_work_still_leaves_the_window_open() {
 
     // Only evidence moves it, because the runtime has no way to find out.
     let attempt = runtime.unsettled_effects()[0].attempt;
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     runtime
-        .reconcile_effect(attempt, false, "queue-audit-showed-nothing-was-enqueued")
+        .reconcile_effect(
+            &runtime_authority,
+            attempt,
+            false,
+            "queue-audit-showed-nothing-was-enqueued",
+        )
         .unwrap();
     assert!(runtime.unsettled_effects().is_empty());
 }
@@ -322,8 +330,11 @@ fn a_detached_attempt_survives_a_restart_as_a_fence_that_only_evidence_moves() {
 
     // Reconciliation is the way forward, which is the same answer a crash inside a
     // synchronous effect gets.
+    let reopened_authority = reopened
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     reopened
-        .reconcile_effect(attempt, true, "broker-receipt-9182")
+        .reconcile_effect(&reopened_authority, attempt, true, "broker-receipt-9182")
         .unwrap();
     assert!(reopened.unsettled_effects().is_empty());
 }
@@ -511,9 +522,17 @@ fn a_reconciled_detached_attempt_is_no_longer_outstanding_and_a_late_answer_is_r
             .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
             .unwrap();
         let dispatched = runtime.dispatch_detached(&session, permit).unwrap();
+        let runtime_authority = runtime
+            .take_reconciliation_authority()
+            .expect("the test is this runtime's host");
 
         runtime
-            .reconcile_effect(dispatched.attempt, applied, "queue-audit-established-it")
+            .reconcile_effect(
+                &runtime_authority,
+                dispatched.attempt,
+                applied,
+                "queue-audit-established-it",
+            )
             .unwrap();
         assert!(
             runtime.outstanding_detached().is_empty(),

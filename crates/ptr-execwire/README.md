@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 5 Rust source files · 1602 nonblank source lines · 3 integration-test files · 36 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 1610 nonblank source lines · 3 integration-test files · 36 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- ExecutionHost::bind seals the runtime's reconciliation authority away unless the host took it first (D6 in issue #23), so nothing that reaches the runtime through the wire host can declare what happened to an effect
 - UnknownGrantSet and DuplicateGrantSet map to a runtime refusal in the exhaustive mapping: a member whose grant set the host does not define is refused before a session exists, so nothing was attempted for it
 - The authenticated peer is passed to admit_peer as the AuthenticatedPeer the transport produced, never rebuilt from its text (D1 in issue #23)
 - ExecutionHost and ExecutionClient carry one execution request and its receipt over ALPN_EXEC, composing ptr-runtime's execution authority with ptr-net's transport so neither of them has to know about the other
@@ -65,6 +66,7 @@
 
 ### Current automated checks
 
+- an uncertain wire execution journals an attempt that only a reopened runtime's own authority reconciles; the authority of the runtime inside the wire host is not on offer
 - an admitted peer's action is executed over a real ALPN_EXEC connection and the audited principal is the policy's, not a name written into the payload the peer controls
 - a receipt naming another runtime is refused, with the same endpoint answering honestly as the control so the refusal is about the name and not about that endpoint
 - a receipt answering another request id, and one bound to other bytes, are each refused

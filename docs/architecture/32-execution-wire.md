@@ -224,10 +224,13 @@ not. A receipt is the answer to your own request, not a certificate.
   it is refused — by the runtime, before the attempt is committed, which is why the
   refusal leaves the runtime unfenced. An outcome the requester can never be told is
   not an outcome. A settlement channel is a second protocol.
-- **Nothing here reconciles.** An `Uncertain` outcome is reported and then it is the
-  host operator's, through `reconcile_effect`. The requester's only handle on it is
-  its own at-most-once key, deliberately: a remote peer must not be able to declare
-  what happened to an effect.
+- **Nothing here reconciles, and nothing here can.** An `Uncertain` outcome is
+  reported and then it is the host operator's, through `reconcile_effect`, which
+  needs the runtime's `ReconciliationAuthority`; `ExecutionHost::bind` seals that
+  away unless the host took it first (D6 in issue #23,
+  `28-durable-execution-audit.md`). The requester's only handle on it is its own
+  at-most-once key, deliberately: a remote peer must not be able to declare what
+  happened to an effect.
 - **No position in the host's ledger crosses the wire.** How far that ledger has got
   is a fact about every other principal's activity too. A requester gets the outcome
   of its own request and not a measure of the host's traffic — with the one

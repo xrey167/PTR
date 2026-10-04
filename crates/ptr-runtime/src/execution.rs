@@ -280,6 +280,38 @@ impl VerifiedDispatch<'_> {
     }
 }
 
+/// The capability to record how an ambiguous effect turned out (D6 in issue #23).
+///
+/// Reconciliation lifts the fence a crash or an unreported adapter left standing,
+/// on an operator's evidence, so whoever can call it decides what the audit says
+/// happened. It stays a privileged host API — it never crosses a wire — and this
+/// type makes "privileged" a property of the code rather than of a comment: it has
+/// no public constructor, it is not `Clone`, and a runtime hands out one, once
+/// ([`PtrRuntime::take_reconciliation_authority`]).
+///
+/// ```compile_fail
+/// // It cannot be forged...
+/// let _ = ptr_runtime::execution::ReconciliationAuthority { issuer: todo!() };
+/// ```
+///
+/// ```compile_fail
+/// // ...nor duplicated: there is no owned copy to be had from a borrow.
+/// fn copy(
+///     a: &ptr_runtime::execution::ReconciliationAuthority,
+/// ) -> ptr_runtime::execution::ReconciliationAuthority {
+///     a.clone()
+/// }
+/// ```
+pub struct ReconciliationAuthority {
+    issuer: Arc<()>,
+}
+
+impl fmt::Debug for ReconciliationAuthority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ReconciliationAuthority")
+    }
+}
+
 /// Bound on a member's node id, principal and grant set name, in bytes.
 ///
 /// A membership is projected into committed state and carried by every compacted
@@ -719,6 +751,8 @@ pub(super) struct ExecutionState {
     /// The host's grant sets. Not history: a runtime rebuilt from its log has
     /// none until the host installs them, and refuses every peer until then.
     grant_sets: GrantSets,
+    /// Whether the reconciliation authority has been handed out.
+    authority_taken: bool,
 }
 
 impl Default for ExecutionState {
@@ -734,6 +768,7 @@ impl Default for ExecutionState {
             settled: BTreeMap::new(),
             members: BTreeMap::new(),
             grant_sets: GrantSets::new(),
+            authority_taken: false,
         }
     }
 }
@@ -1247,6 +1282,22 @@ impl PtrRuntime {
         self.execution.unsettled_effects()
     }
 
+    /// Take this runtime's reconciliation authority (D6 in issue #23).
+    ///
+    /// `Some` exactly once per runtime, `None` after. The host that opens a runtime
+    /// takes it before handing the runtime to anything else — a wire host, a
+    /// scheduler — so code that is given a runtime is not thereby given the power
+    /// to declare what happened to an effect.
+    pub fn take_reconciliation_authority(&mut self) -> Option<ReconciliationAuthority> {
+        if self.execution.authority_taken {
+            return None;
+        }
+        self.execution.authority_taken = true;
+        Some(ReconciliationAuthority {
+            issuer: self.execution.issuer.clone(),
+        })
+    }
+
     /// Resolve an attempt this runtime could not observe, with evidence from the
     /// system that received the effect.
     ///
@@ -1254,15 +1305,24 @@ impl PtrRuntime {
     /// never retries the effect: a runtime that could work out what happened
     /// would not have been fenced.
     ///
+    /// Only the holder of this runtime's [`ReconciliationAuthority`] may call it,
+    /// and it never crosses a wire: a remote peer must not be able to declare
+    /// what happened to an effect. An authority taken from another runtime is
+    /// refused with [`ExecutionError::ForeignRuntime`].
+    ///
     /// A detached attempt it closes is no longer outstanding, as after
     /// [`PtrRuntime::settle_detached`], so an adapter answer that arrives later is
     /// refused with [`ExecutionError::NotDetached`].
     pub fn reconcile_effect(
         &mut self,
+        authority: &ReconciliationAuthority,
         attempt: CommitIndex,
         applied: bool,
         evidence: impl Into<String>,
     ) -> Result<CommitIndex, ExecutionError> {
+        if !Arc::ptr_eq(&authority.issuer, &self.execution.issuer) {
+            return Err(ExecutionError::ForeignRuntime);
+        }
         let evidence = evidence.into();
         if !valid_identifier(&evidence) {
             return Err(ExecutionError::InvalidEvidence);

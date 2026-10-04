@@ -222,8 +222,16 @@ async fn durable_restart_fences_open_effect_until_explicit_reconciliation() {
     drop(app);
 
     let mut reconciled = PtrRuntime::open_durable(PtrConfig::default(), &log).unwrap();
+    let reconciled_authority = reconciled
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     reconciled
-        .reconcile_effect(attempt, false, "crash window inspected; no file present")
+        .reconcile_effect(
+            &reconciled_authority,
+            attempt,
+            false,
+            "crash window inspected; no file present",
+        )
         .unwrap();
     reconciled.permissions_mut().allow_mutation = true;
     reconciled

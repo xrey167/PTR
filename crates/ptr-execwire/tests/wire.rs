@@ -874,6 +874,13 @@ async fn an_uncertain_execwire_attempt_replays_as_a_durable_runtime_fence() {
     assert_eq!(served.unwrap().request_id, Some(41));
     assert_eq!(probe.executions(), 1);
 
+    // Nothing that reaches the runtime through the wire host can reconcile it:
+    // binding sealed the authority away (D6 in issue #23).
+    assert!(
+        host.runtime().take_reconciliation_authority().is_none(),
+        "the authority of a runtime inside a wire host is not on offer"
+    );
+
     // The host's exact committed history is the only input to reopen. No
     // transport receipt or in-memory uncertainty flag is carried across.
     let history = host.runtime().committed_events().to_vec();
@@ -896,8 +903,16 @@ async fn an_uncertain_execwire_attempt_replays_as_a_durable_runtime_fence() {
 
     // Recovery is explicit and durable; the runtime never retries the wire
     // request from the uncertain receipt.
+    let reopened_authority = reopened
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     reopened
-        .reconcile_effect(attempt, false, "execwire-host-reconciliation")
+        .reconcile_effect(
+            &reopened_authority,
+            attempt,
+            false,
+            "execwire-host-reconciliation",
+        )
         .unwrap();
     assert!(reopened.unsettled_effects().is_empty());
 }

@@ -370,9 +370,17 @@ fn reconciliation_records_what_an_operator_established_and_lifts_the_fence() {
             .unwrap();
         assert!(runtime.execute_prepared(&session, permit).is_err());
         let attempt = runtime.unsettled_effects()[0].attempt;
+        let runtime_authority = runtime
+            .take_reconciliation_authority()
+            .expect("the test is this runtime's host");
 
         let index = runtime
-            .reconcile_effect(attempt, applied, "operator checked the receiving system")
+            .reconcile_effect(
+                &runtime_authority,
+                attempt,
+                applied,
+                "operator checked the receiving system",
+            )
             .unwrap();
         assert!(runtime.unsettled_effects().is_empty());
         assert_eq!(
@@ -405,8 +413,11 @@ fn reconciliation_records_what_an_operator_established_and_lifts_the_fence() {
 #[test]
 fn reconciling_an_attempt_that_awaits_nothing_is_refused() {
     let (mut runtime, _) = fixture();
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     assert_eq!(
-        runtime.reconcile_effect(CommitIndex(1), true, "no such attempt"),
+        runtime.reconcile_effect(&runtime_authority, CommitIndex(1), true, "no such attempt"),
         Err(ExecutionError::UnknownAttempt {
             attempt: CommitIndex(1)
         })
@@ -414,7 +425,7 @@ fn reconciling_an_attempt_that_awaits_nothing_is_refused() {
     // Control characters would make an audit line unreadable at best and
     // forgeable at worst.
     assert_eq!(
-        runtime.reconcile_effect(CommitIndex(1), true, "bad\nevidence"),
+        runtime.reconcile_effect(&runtime_authority, CommitIndex(1), true, "bad\nevidence"),
         Err(ExecutionError::InvalidEvidence)
     );
     assert!(attempts(&runtime).is_empty());
@@ -505,8 +516,16 @@ fn a_key_reconciled_as_unapplied_may_be_attempted_again() {
         .unwrap();
     assert!(runtime.execute_prepared(&session, permit).is_err());
     let attempt = runtime.unsettled_effects()[0].attempt;
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     runtime
-        .reconcile_effect(attempt, false, "receiving system has no record")
+        .reconcile_effect(
+            &runtime_authority,
+            attempt,
+            false,
+            "receiving system has no record",
+        )
         .unwrap();
 
     // Nothing applied, so the at-most-once budget was never spent.
@@ -874,8 +893,16 @@ fn an_effect_whose_settlement_cannot_be_recorded_is_reported_as_applied_and_fenc
 
     // Nor can this process record the outcome another way: the ambiguity about
     // its own last append blocks a reconciliation as it blocks every settlement.
+    let runtime_authority = runtime
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     assert_eq!(
-        runtime.reconcile_effect(CommitIndex(u64::MAX), true, "operator saw it applied"),
+        runtime.reconcile_effect(
+            &runtime_authority,
+            CommitIndex(u64::MAX),
+            true,
+            "operator saw it applied"
+        ),
         Err(ExecutionError::Audit(Box::new(
             RuntimeError::ExecutionFenced
         )))
@@ -912,8 +939,16 @@ fn a_settlement_lost_to_an_exhausted_ledger_fences_even_after_a_reopen() {
         vec![CommitIndex(u64::MAX)],
         "the reopened runtime replays the attempt and no settlement"
     );
+    let reopened_authority = reopened
+        .take_reconciliation_authority()
+        .expect("the test is this runtime's host");
     assert_eq!(
-        reopened.reconcile_effect(CommitIndex(u64::MAX), true, "operator saw it applied"),
+        reopened.reconcile_effect(
+            &reopened_authority,
+            CommitIndex(u64::MAX),
+            true,
+            "operator saw it applied"
+        ),
         Err(ExecutionError::Audit(Box::new(RuntimeError::Ledger(
             "PTR_LEDGER_INDEX_EXHAUSTED".to_owned()
         ))))
@@ -954,4 +989,47 @@ fn an_attempt_the_ledger_cannot_record_is_an_audit_failure_and_reaches_no_execut
         runtime.prepare_execution_once(&session, &ProjectId::from("p"), &action, TTL, "invoice-7"),
         Err(ExecutionError::RuntimeFenced)
     ));
+}
+
+/// D6 in issue #23: reconciliation is a privileged host API, and the privilege is
+/// a value the runtime hands out once rather than a comment.
+#[test]
+fn a_runtime_hands_out_its_reconciliation_authority_once() {
+    let (mut runtime, _) = fixture();
+    assert!(runtime.take_reconciliation_authority().is_some());
+    assert!(
+        runtime.take_reconciliation_authority().is_none(),
+        "code given the runtime later is not given the authority with it"
+    );
+}
+
+#[test]
+fn another_runtime_s_authority_reconciles_nothing_here() {
+    let probe = Probe::default();
+    let (mut runtime, action) = fixture();
+    let session = session_with(&mut runtime, &action, &probe, "alice", ExecutorMode::Error);
+    let permit = runtime
+        .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
+        .unwrap();
+    assert!(runtime.execute_prepared(&session, permit).is_err());
+    let attempt = runtime.unsettled_effects()[0].attempt;
+
+    let (mut other, _) = fixture();
+    let foreign = other.take_reconciliation_authority().unwrap();
+    assert_eq!(
+        runtime.reconcile_effect(&foreign, attempt, false, "forged-from-elsewhere"),
+        Err(ExecutionError::ForeignRuntime)
+    );
+    assert_eq!(
+        runtime.unsettled_effects().len(),
+        1,
+        "the fence stands: nothing was recorded"
+    );
+
+    // The control: this runtime's own authority lifts it.
+    let own = runtime.take_reconciliation_authority().unwrap();
+    runtime
+        .reconcile_effect(&own, attempt, false, "receiving-system-has-no-record")
+        .unwrap();
+    assert!(runtime.unsettled_effects().is_empty());
 }

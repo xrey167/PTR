@@ -611,9 +611,18 @@ the code before the fix:
 - **What replaces it, and is true:** reconciliation remains unauthenticated (below),
   and `PodRegistry` scopes by a project a Pod *declares* in its own manifest, which
   is a claim by whoever registers it rather than a proof.
-- **Reconciliation is not authenticated here.** `reconcile_effect` is a
-  privileged host API like the rest of the gateway; who may call it is the
-  embedding host's question.
+- **Reconciliation is a capability, and it never crosses a wire (D6 in issue
+  #23).** `reconcile_effect` takes a `ReconciliationAuthority`, which has no public
+  constructor, is not `Clone` (both held by `compile_fail` doctests, the second
+  mutation-checked), and is handed out by a runtime exactly once
+  (`a_runtime_hands_out_its_reconciliation_authority_once`). Another runtime's
+  authority is refused with `ForeignRuntime` and the fence stands
+  (`another_runtime_s_authority_reconciles_nothing_here`, with the runtime's own
+  authority lifting it as the control). `ExecutionHost::bind` seals the authority
+  away if the host has not taken it, so code that reaches a runtime through the
+  wire host cannot reconcile it. What stays the host's: *who* inside the host
+  process holds the authority, and what evidence it accepts — this layer records
+  the evidence string, it does not judge it.
 - **A spent key is refused at admission, not at validation.** Validation refuses a
   second *live* attempt under a key, not an attempt under a spent one, so a host
   that commits an `EffectAttempted` record directly under a spent key can have it
