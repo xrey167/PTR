@@ -1,8 +1,10 @@
 # This workspace requires 1.95 (`Cargo.toml`), and clippy takes its MSRV from the
-# nearest `clippy.toml` walking upward — which, without this file, was the root's
-# 1.85.0. Every lint whose suggestion needs anything newer than 1.85 was therefore
-# suppressed here. Clippy does say so on every run ("the MSRV in `clippy.toml` and
-# `Cargo.toml` differ; using `1.85.0`"), but it is not a named lint, so `-D
+# nearest `clippy.toml` walking upward — which, without this file, is the root's
+# 1.99.0. That is newer than this crate's 1.95, so lints could suggest APIs this
+# crate's minimum compiler lacks. (While the root's MSRV was the older 1.85.0, the
+# opposite happened: every lint whose suggestion needed anything newer than 1.85
+# was suppressed here.) Clippy does say so on every run ("the MSRV in
+# `clippy.toml` and `Cargo.toml` differ"), but it is not a named lint, so `-D
 # warnings` cannot promote it and the job exits 0 regardless.
 #
 # `scripts/check_msrv_alignment.py` is what makes the two stay equal.

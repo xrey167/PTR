@@ -15,8 +15,11 @@
 //! lineage grows too deep or too entangled, the next step is a consolidation
 //! (a TIES merge) rather than another link. Replay samples are scheduled by a
 //! forgetting model fitted from probe losses on a training clock, and sampled
-//! stratified and without replacement.
+//! stratified and without replacement. Experts of a layer can be ranked for
+//! pruning by the calibration-free AIMER score of their weights; that only
+//! orders them, and a prune still has to pass the gate.
 
+mod aimer;
 mod error;
 mod forgetting;
 mod lineage;
@@ -25,6 +28,7 @@ mod replay;
 mod scale;
 mod subspace;
 
+pub use aimer::{aimer_score, rank_experts_for_pruning, ExpertWeights};
 pub use error::LineageError;
 pub use forgetting::{AccuracyMatrix, ForgettingGate, GateReport, GateViolation, PublicSuite};
 pub use lineage::{

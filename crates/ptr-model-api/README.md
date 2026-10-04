@@ -1,7 +1,7 @@
 # ptr-model-api — Model Backend & Event API
 
 > **Role:** Keeps the runtime independent of any single inference server or model implementation.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
