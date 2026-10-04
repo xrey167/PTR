@@ -38,6 +38,19 @@ reports it, a validated `Propensity` of the chosen pod in (0, 1]) and a categori
 IPS / SNIPS / doubly-robust estimator. The
 arbiter's estimators are a template only.
 
+**Actions and candidates are generation-qualified.** The log records, for every
+candidate and for the chosen action, `(PodId, generation, artifact digest)`. The Pod
+manifest alone does not carry a generation: `PodManifest` has `id: PodId` and a
+`digest()` over the invocation contract (`crates/ptr-pods/src/lib.rs:96` and `:107`),
+while the generation and the `manifest_digest` live in the `ExecutionManifest`
+(`crates/ptr-pods/src/manifest.rs:14` and `:26`) that binds the served artifacts. The
+log therefore takes the execution-manifest digest (or the artifact digest) together
+with its generation, so rewards and propensities from different artifacts never
+collapse onto one action label. Off-policy estimation groups actions by this
+generation-qualified identity, and a record whose chosen generation was revoked or
+replaced before verification is evaluated against **that** generation, not the new
+one.
+
 **The log must also record the observed outcome.** Context, action and propensity are
 not enough: IPS, SNIPS and doubly-robust estimators weight an observed reward, and
 the template reads it from `LoggedTriage.reward`
@@ -181,9 +194,12 @@ generated with full self-observation context (routing traces, load, churn,
 interference, AIMER) versus the same policy with that context removed, versus a
 fixed heuristic baseline (threshold rules on load and overlap). Metrics: the
 fraction of proposals that pass the gates, and the net quality change per accepted
-proposal. Falsified if the full-context policy does not beat both the
-context-ablated policy and the heuristic baseline on gate pass rate by a
-pre-registered margin in at least 3 seeds. R011 is a different question (can the
+proposal. The test is **joint**, because a conservative policy can pass the gates
+more often while gaining nothing. Falsified if the full-context policy does not beat
+both the context-ablated policy and the heuristic baseline on gate pass rate by a
+pre-registered margin, **or** if its mean net quality change per accepted proposal is
+not greater than 0 and not at least that of both baselines (by a pinned margin), in
+at least 3 seeds. R011 is a different question (can the
 policy reach gates at all) and does not test this claim.
 
 ## 6. Rust binding
