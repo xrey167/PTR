@@ -1,16 +1,16 @@
 # E006-engine-prefix-reuse
 
 ## Hypothesis
-binding an engine's prefix cache to a PTR-derived salt from the currently admitted binding yields at least 1.5x TTFT gain at 50% shared prefix while never hitting stale blocks (blocks created under any revoked or replaced model, adapter or expert generation, or under a pre-revocation salt; the engine salt must include these generations).
+binding an engine's prefix cache to a PTR-derived salt from the currently admitted binding yields at least 1.5x TTFT gain at 50% shared prefix while never hitting stale blocks (blocks created under any revoked or replaced model, adapter or expert generation, or under a pre-revocation salt; the engine salt must include these generations); the run pins at least one generation transition (revocation or replacement) followed by requests able to hit the old prefix.
 
 ## Primary metrics
-ttft_ms, hit_rate, stale_block_hits
+ttft_ms, hit_rate, stale_block_hits, generation_transitions
 
 ## Baseline
 primary comparator: same engine with prefix caching DISABLED (the denominator of the TTFT gain); secondary control: same engine with caching enabled WITHOUT salt (used only for the stale_block_hits check, where stale-block hits are expected and demonstrate that the salt matters)
 
 ## Falsification
-TTFT gain against the primary comparator (caching disabled) below 1.5x at 50% shared prefix, or stale_block_hits > 0 with the salted cache (any hit on a block created under any revoked or replaced model, adapter or expert generation, or a pre-revocation salt; the engine salt must include model, adapter and expert generations).
+TTFT gain against the primary comparator (caching disabled) below 1.5x at 50% shared prefix, or stale_block_hits > 0 with the salted cache (any hit on a block created under any revoked or replaced model, adapter or expert generation, or a pre-revocation salt; the engine salt must include model, adapter and expert generations); the run is invalid and counts as falsified (vacuous) if generation_transitions < 1, or if the unsalted positive-control arm shows stale_block_hits == 0 after the transition, and the salted arm must show stale_block_hits == 0.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

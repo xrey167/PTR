@@ -7,8 +7,12 @@ tests_dir = "tests"
 [pinned_thresholds]
 min_gate_pass_rate_margin_absolute = 0.05
 min_seeds_context_ablation = 3
-# Preregistered value chosen for this experiment: ForgettingGate has no default; max_average_forgetting is caller-supplied.
-forgetting_gate_max_average_forgetting = 0.02
+# Preregistered choices for this experiment (ForgettingGate has no default; all four thresholds are caller-supplied).
+# Names follow crates/ptr-lineage/src/forgetting.rs ForgettingGate; values are accuracy fractions.
+gate_max_average_forgetting = 0.02
+gate_max_task_forgetting = 0.05
+gate_min_backward_transfer = -0.02
+gate_max_public_regression = 0.01
 public_suite_margin_points = 1.0
 recovery_target_fraction_of_pre_retirement_score = 0.95
 equal_compute_basis = "training FLOPs and active parameters"
@@ -16,3 +20,4 @@ min_seeds_claim_11 = 3
 min_seeds_claim_12 = 3
 min_mean_net_quality_change_per_accepted_proposal = 0.0
 net_quality_change_must_be_at_least_both_baselines = true
+gate_must_pass_and_average_forgetting_strictly_below_static = true

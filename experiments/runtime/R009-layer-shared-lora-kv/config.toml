@@ -3,3 +3,10 @@ kind = "workspace-area"
 name = "R009-layer-shared-lora-kv"
 path = "experiments/runtime/R009-layer-shared-lora-kv"
 tests_dir = "tests"
+
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+test_model_layers = 4
+first_adapted_layer_configs = [0, 2]
+required_interior_first_adapted_layer = 2
+min_interior_configs = 1

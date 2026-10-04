@@ -7,3 +7,9 @@ tests_dir = "tests"
 [pinned_thresholds]
 max_wire_kv_handle_count = 0
 max_wire_kv_page_bytes = 0
+
+# Preregistered choices for this experiment (no code default exists).
+test_model_layers = 4
+split_layer = 2
+min_split_layer_exclusive = 0
+min_activation_frames_crossed = 1

@@ -1,10 +1,10 @@
 version = 1
 id = "E007"
 status = "planned"
-hypothesis = "splitting a model's layers across two pods, with KV kept on the hosting pod and only activation frames crossing PodWire, is bit-identical to a single-pod run."
-metrics = "bitwise_mismatch_count, wire_kv_handle_count, wire_kv_page_bytes, chain_mismatch_stores"
+hypothesis = "splitting a model's layers across two pods, with KV kept on the hosting pod and only activation frames crossing PodWire, is bit-identical to a single-pod run over an internal split with at least one layer on each pod (0 < split_layer < L; pinned split_layer = L/2) that is shown to carry activation-frame traffic."
+metrics = "bitwise_mismatch_count, wire_kv_handle_count, wire_kv_page_bytes, chain_mismatch_stores, activation_frames_crossed"
 baseline = "single-pod run"
-falsification = "any output difference, any PodWire message carrying a KV handle (wire_kv_handle_count > 0) or KV page bytes (wire_kv_page_bytes > 0), as measured on the captured wire traffic in wire_capture.json, or any stage storing pages under a mismatched upstream chain."
+falsification = "any output difference, any PodWire message carrying a KV handle (wire_kv_handle_count > 0) or KV page bytes (wire_kv_page_bytes > 0), as measured on the captured wire traffic in wire_capture.json, or any stage storing pages under a mismatched upstream chain; the run is invalid and counts as falsified if activation_frames_crossed == 0 or the split is not internal (split_layer <= 0 or >= L), and equivalence and KV isolation are evaluated only after that check passes."
 hardware_profile = "hardware/default.toml"
 entrypoint = ""
 seeds = [17, 29, 43, 71, 101]

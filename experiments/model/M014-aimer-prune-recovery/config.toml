@@ -9,3 +9,14 @@ pruning_fractions = [0.25, 0.5]
 min_seeds = 3
 min_quality_retention_at_25pct = 0.90
 min_quality_retention_at_50pct = 0.80
+
+# Preregistered choices for this experiment (no code default exists).
+recovery_sft_steps = 2000
+recovery_rl_steps = 1000
+recovery_budget_identical_across_arms = true
+# Preregistered choices for this experiment (ForgettingGate has no default; all four thresholds are caller-supplied).
+# Names follow crates/ptr-lineage/src/forgetting.rs ForgettingGate; values are accuracy fractions.
+gate_max_average_forgetting = 0.02
+gate_max_task_forgetting = 0.05
+gate_min_backward_transfer = -0.02
+gate_max_public_regression = 0.01

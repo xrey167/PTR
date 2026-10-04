@@ -9,3 +9,6 @@ max_stale_pages_served = 0
 max_wrongly_dropped_pages = 0
 max_bitwise_mismatch_count = 0
 deterministic_routing = "dropless, batch-invariant"
+# Preregistered choices for this experiment (no code default exists).
+min_nondeterministic_reuse_attempts = 1
+max_nondeterministic_exact_tags = 0

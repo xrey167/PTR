@@ -3,3 +3,9 @@ kind = "workspace-area"
 name = "R005-exact-prefix-reuse"
 path = "experiments/runtime/R005-exact-prefix-reuse"
 tests_dir = "tests"
+
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+min_revoked_fork_attempts = 1
+max_revoked_fork_count = 0
+min_hit_rate_at_50pct_shared_prefix = 0.40
