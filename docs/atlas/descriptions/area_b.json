@@ -1095,7 +1095,7 @@
      "to": "policy",
      "label": "SignedPolicyBundle::verify against the trust store",
      "note": "Checks key id, signature length, revision, payload validity (which includes a dry-run decode of the canonical payload and its size bound, so nothing verifies that replay could not read back), digest equality, validity window, known and unrevoked key, and the Ed25519 signature.",
-     "evidence": "crates/ptr-runtime/src/policy.rs:315-345"
+     "evidence": "crates/ptr-runtime/src/policy.rs:315-349"
     },
     {
      "from": "runtime",

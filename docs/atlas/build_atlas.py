@@ -53,7 +53,7 @@ AREAS = {
 
 
 def main():
-    structure = json.load(open(os.path.join(HERE, "structure.json")))
+    structure = json.load(open(os.path.join(HERE, "structure.json"), encoding="utf-8"))
     packages = structure["packages"]
     by_name = {p["name"]: p for p in packages}
     layer_of = {}
@@ -70,7 +70,7 @@ def main():
         if not os.path.exists(path):
             problems.append("missing %s" % file_name)
             continue
-        document = json.load(open(path))
+        document = json.load(open(path, encoding="utf-8"))
         for name, info in document.get("crates", {}).items():
             package = by_name.get(name)
             if not package:
@@ -140,9 +140,9 @@ def main():
         print("not writing %s: %d problem(s)" % (OUTPUT_PATH, len(problems)), file=sys.stderr)
         sys.exit(1)
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
-    template = open(os.path.join(HERE, "atlas_template.html")).read()
+    template = open(os.path.join(HERE, "atlas_template.html"), encoding="utf-8").read()
     assert "/*__DATA__*/" in template
-    open(OUTPUT_PATH, "w").write(template.replace("/*__DATA__*/", payload))
+    open(OUTPUT_PATH, "w", encoding="utf-8", newline="\n").write(template.replace("/*__DATA__*/", payload))
     print("wrote %s (%d bytes); %d packages, %d flows" % (OUTPUT_PATH, os.path.getsize(OUTPUT_PATH), len(packages), len(flows)))
 
 

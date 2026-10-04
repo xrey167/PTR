@@ -37,7 +37,7 @@ def posix(path):
 
 
 def read(path):
-    with open(path, errors="ignore") as handle:
+    with open(path, encoding="utf-8", errors="ignore") as handle:
         return handle.read()
 
 
@@ -330,7 +330,7 @@ def main():
             other["name"] for other in packages if package["name"] in other["deps"]
         )
 
-    with open(OUT, "w") as handle:
+    with open(OUT, "w", encoding="utf-8", newline="\n") as handle:
         json.dump({"packages": packages}, handle, indent=1)
     print(f"{len(packages)} packages, {sum(len(p['modules']) for p in packages)} modules -> {OUT}")
 
