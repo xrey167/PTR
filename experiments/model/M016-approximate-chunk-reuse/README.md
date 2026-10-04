@@ -1,4 +1,4 @@
-# M009-approximate-chunk-reuse
+# M016-approximate-chunk-reuse
 
 ## Hypothesis
 on an N-layer decoder, position-independent chunk reuse with selective recompute (first k in {0,16,32} tokens or ~15%) keeps top-1 next-token agreement >=99% while saving >=2x prefill.

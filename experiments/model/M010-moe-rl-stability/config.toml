@@ -3,3 +3,9 @@ kind = "workspace-area"
 name = "M010-moe-rl-stability"
 path = "experiments/model/M010-moe-rl-stability"
 tests_dir = "tests"
+
+[pinned_thresholds]
+collapse_reward_drop_fraction = 0.5
+collapse_on_non_finite_loss = true
+null_control_pass_at_1_tolerance_points = 2.0
+min_seeds = 3

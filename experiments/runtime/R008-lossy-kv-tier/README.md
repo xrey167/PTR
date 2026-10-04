@@ -10,7 +10,7 @@ kv_bytes_ratio, top1_agreement, approximate_tag_violations
 exact KvSnapshot tier
 
 ## Falsification
-memory reduction below 2x at >=98% top-1 agreement, or any lossy reuse not tagged Approximate.
+no lossy configuration reaches >=98% top-1 agreement, or the best configuration reaching >=98% top-1 agreement reduces KV memory by less than 2x, or any lossy reuse is not tagged Approximate.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

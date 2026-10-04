@@ -10,7 +10,7 @@ pass_at_1, pass_at_k_curve (k up to 256, unbiased estimator)
 base model; SFT-distilled control
 
 ## Falsification
-RLVR raises pass@256 above base and distillation does not, over >=3 seeds.
+over >=3 seeds, any of: RLVR does not raise pass@1 over the base by at least 2 points; RLVR raises pass@256 over the base by more than 2 points; distillation does not raise pass@256 over the base by at least 2 points.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

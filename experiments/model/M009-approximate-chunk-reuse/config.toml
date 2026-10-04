@@ -1,5 +1,0 @@
-version = 1
-kind = "workspace-area"
-name = "M009-approximate-chunk-reuse"
-path = "experiments/model/M009-approximate-chunk-reuse"
-tests_dir = "tests"

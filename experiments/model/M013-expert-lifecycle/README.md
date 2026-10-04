@@ -10,7 +10,7 @@ average_forgetting, backward_transfer, accuracy_matrix, expert_count, steps_to_r
 static expert set at equal compute; naive adapter chain
 
 ## Falsification
-forgetting above the static baseline, or reactivation not faster than birth of a new expert.
+over >=3 seeds at equal compute: average_forgetting of the gated lifecycle is not strictly below the static expert set, or its final mean accuracy (accuracy_matrix) is more than 1 point below the static set, or reactivation of a retired expert does not reach the pre-retirement accuracy in fewer steps than birth of a new expert (steps_to_recover).
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

@@ -3,3 +3,8 @@ kind = "workspace-area"
 name = "M012-lora-expert-balancing"
 path = "experiments/model/M012-lora-expert-balancing"
 tests_dir = "tests"
+
+[pinned_thresholds]
+task_accuracy_margin_points = 1.0
+load_cv_margin = 0.05
+min_seeds = 3

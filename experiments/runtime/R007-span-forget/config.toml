@@ -3,3 +3,7 @@ kind = "workspace-area"
 name = "R007-span-forget"
 path = "experiments/runtime/R007-span-forget"
 tests_dir = "tests"
+
+[pinned_thresholds]
+noise_control_prompts = 100
+noise_percentile = 99

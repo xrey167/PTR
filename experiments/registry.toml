@@ -236,8 +236,8 @@ path = "runtime/R011-self-modification-safety"
 status = "planned"
 
 [[experiment]]
-id = "M009"
-path = "model/M009-approximate-chunk-reuse"
+id = "M016"
+path = "model/M016-approximate-chunk-reuse"
 status = "planned"
 
 [[experiment]]

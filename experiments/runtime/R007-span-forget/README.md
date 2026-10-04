@@ -10,7 +10,7 @@ bitwise_mismatch_count, canary_logit_shift, recompute_tokens
 fresh prefill of the prompt without the span
 
 ## Falsification
-any state difference or a canary logit shift above the noise floor.
+any state difference against a fresh prefill without the span, or a canary logit shift above the noise threshold, where the threshold is pinned before running as the 99th percentile of the canary logit shift over 100 seeded control prompts that never contained the canary.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.
