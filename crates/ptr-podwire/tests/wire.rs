@@ -28,6 +28,7 @@ use ptr_types::{
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 const SUMMARIZE: &str = "Summarize<Document>";
 const DOCUMENT: &str = "Document";
@@ -269,6 +270,66 @@ async fn an_admitted_peer_reaches_its_project_s_pod_over_a_real_connection() {
         client.identity().public_key,
         "the peer is the connection's, and the frame has no field it could have been"
     );
+    assert_eq!(*invocations.lock().unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_accept_loop_answers_as_serve_once_does_until_shutdown() {
+    // D4 in issue #23: `serve` is `serve_once`'s per-connection code under
+    // `ptr_net::serve`. An admitted peer is answered, a stranger is refused in the
+    // same words as before, every answer is signed — and after the host's shutdown
+    // nothing is answered.
+    let client = PodClient::bind().await.unwrap();
+    let stranger = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let mut registry = PodRegistry::default();
+    registry.register(pod("alpha", &invocations));
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = Arc::new(PodHost::bind(registry, policy, Pass).await.unwrap());
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let serve_policy = ptr_net::ServePolicy {
+        max_concurrent: std::num::NonZeroUsize::new(4).unwrap(),
+        per_connection_deadline: Duration::from_secs(10),
+        shutdown,
+    };
+
+    let asked = request(host.identity().public_key, 1);
+    let driving = async {
+        let admitted = client.request(located(host.address()), &asked).await;
+        let refused = stranger.request(located(host.address()), &asked).await;
+        stop.send(true).unwrap();
+        (admitted, refused)
+    };
+    let (report, (admitted, refused)) = tokio::join!(host.serve(serve_policy), driving);
+
+    assert!(matches!(
+        admitted.unwrap().outcome,
+        PodOutcome::Answered { .. }
+    ));
+    assert_eq!(
+        refused.unwrap().outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::NotAdmitted
+        },
+        "a refusal is answered on its connection, exactly as serve_once answers it"
+    );
+    let report = report.unwrap();
+    assert_eq!((report.handled, report.failed), (2, 0));
+    assert_eq!(*invocations.lock().unwrap(), 1);
+
+    // After shutdown the host answers nothing and no Pod runs.
+    let mut late = PodClient::bind().await.unwrap();
+    late.with_request_timeout(Duration::from_millis(1500));
+    assert!(late
+        .request(
+            located(host.address()),
+            &request(host.identity().public_key, 2)
+        )
+        .await
+        .is_err());
     assert_eq!(*invocations.lock().unwrap(), 1);
 }
 

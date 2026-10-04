@@ -10,10 +10,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 6 Rust source files · 1730 nonblank source lines · 5 integration-test files · 54 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 7 Rust source files · 1938 nonblank source lines · 6 integration-test files · 58 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- The accept loop (D4 in issue #23, feature iroh-backend): serve(transport, max_request, ServePolicy, handler) is the one loop every wire runs, mechanism only. ServePolicy has a NonZeroUsize connection limit, a per-connection deadline and a tokio watch shutdown, every field public and none defaulted, so when to give up is the host's written policy. Over the limit a connection is refused before its handshake rather than queued; handshake, request and handler share one deadline, after which the connection is closed with a reason and its slot freed; once shutdown reads true (or its sender is dropped) nothing more is accepted and the admitted connections finish within their deadlines; a zero deadline is refused before anything is accepted; nothing retries. A ServeReport counts handled, refused, cut and failed connections. accept_once and the loop read a request through one shared function
+- EndpointId is re-exported beside EndpointAddr, so a host builds an address from its own configuration without its own iroh pin; IrohSession::wait_closed observes a connection the far side closed
 - NodeSigner and verify (D2 in issue #23): IrohTransport::signer hands out a signer over the endpoint's own Ed25519 key — the key the QUIC handshake authenticates, so a signature is attributable to exactly the identity a connection to that endpoint proves, with no second key to issue or rotate (rotation is a new identity). NodeSigner has no public constructor outside the test-support feature, no accessor for the secret and no Clone, and signs only domain ‖ message under a SigningDomain: a ptr- prefixed tag ending in its only NUL byte, checked at compile time, so the tags are prefix-free and no signed message can be the TLS transcript the same key signs. verify is in the transport-free base and accepts a key only in the canonical 64-lowercase-hex form the transport renders an endpoint id in, with verify_strict
 - AuthenticatedPeer (D1 in issue #23): a peer key with no public constructor, built only by the iroh transport from the key the QUIC handshake verified; IrohIncoming, IrohServerSession and IrohSession carry it instead of a NodeIdentity, so every identity an authority table is consulted with is one a connection proved. The type is in the base crate, which has no transport, so ptr-runtime can require it without depending on iroh
 - ReferenceMeshTunnelExecutor::active_peer answers only for a lease whose profile equals the admitted one, like every lifecycle call; a lease carrying an admitted lease id with another profile gets None
@@ -45,7 +47,7 @@
 - Any traffic on ALPN_MODEL, ALPN_BLOB or ALPN_EVENTS: three of the six ALPNs are still declared and unspoken
 - Discovery: finding the address for an id nobody told you is a mechanism choice with its own trust question, and iroh's own address lookup is disabled in this build, so turning it on is a decision about trusting a third party rather than a code change
 - A journaled peer book, and any re-resolution of a stale address: the book is in memory and a deployment whose nodes move must record the new address
-- Retry/idempotency semantics and automatic reconnect: backpressure is only a fail-fast per-session in-flight cap
+- Retry/idempotency semantics and automatic reconnect: backpressure is a fail-fast per-session in-flight cap and the accept loop's per-service connection limit, neither of which is per peer
 - Mesh state is in memory and not journaled; MeshRegistry is not connected to Iroh peer admission
 - Raft/PodWire/blob stream adapters; ptr-cluster carries raft batches over ALPN_RAFT, ptr-execwire carries execution requests over ALPN_EXEC and ptr-podwire carries Pod access over ALPN_PODWIRE, all three using the request/response path, and a stream adapter would replace that rather than extend it
 
@@ -71,6 +73,7 @@
 
 ### Current automated checks
 
+- tests/serve.rs (feature iroh-backend): a_connection_over_the_limit_is_refused_and_the_limit_is_served (N held connections are served once released, the N+1st is refused immediately and never reaches a handler), a_hanging_peer_is_cut_at_the_deadline_without_holding_up_another (a peer that never opens a stream is closed at the deadline, not before, while another peer is answered well inside it), after_shutdown_nothing_is_accepted (served before, unanswered after, no handler runs; a loop started after the instruction or with a dropped sender accepts nothing), a_zero_deadline_is_refused_before_anything_is_accepted (with a running control)
 - signing unit tests: a signature verifies under its key and domain and not under another key, another domain, another message or any single flipped signature byte; only the canonical spelling of a key verifies; Debug names the public key and not the secret; a domain without its terminator, with an inner NUL, or outside the ptr- prefix is refused (compile_fail doctest with a compiling control, and should_panic tests); tests/iroh.rs the_endpoint_signer_signs_as_the_identity_the_handshake_authenticates verifies over a real connection that the key a signature verifies under is the key the handshake authenticated, and not another endpoint's
 - AuthenticatedPeer compile_fail doctests: a struct literal and a conversion from a bare NodeId both fail to compile; assume_authenticated exists only with the test-support feature, which scripts/check_repo.py refuses outside [dev-dependencies] (TestOnlyFeatures in scripts/tests/test_check_repo.py)
 - Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing

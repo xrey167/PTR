@@ -134,6 +134,68 @@ async fn a_group_forms_over_alpn_raft_and_both_members_hold_the_same_history() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_accept_loop_serves_a_follower_through_a_refusal_until_shutdown() {
+    // D4 in issue #23: the follower runs `ClusterMember::serve` instead of a
+    // hand-written `serve_once` loop. A peer it never admitted is refused and counted,
+    // the group still forms and commits over the same loop afterwards, and once the
+    // host stops it nothing more is served.
+    let temp = Temp::new("serve-loop");
+    let (one, two) = pair(&temp).await;
+    let follower = Arc::new(two);
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let policy = ptr_net::ServePolicy {
+        max_concurrent: std::num::NonZeroUsize::new(4).unwrap(),
+        per_connection_deadline: Duration::from_secs(10),
+        shutdown,
+    };
+    let stranger = IrohTransport::bind(&[ALPN_RAFT]).await.unwrap();
+
+    let driving = async {
+        // Refused: the follower never admitted this key. The answer is an empty
+        // batch, not a hang.
+        let refused = stranger
+            .request(follower.address(), ALPN_RAFT, &frame(1, 2), 1 << 20)
+            .await;
+        // The control: the admitted leader is served by the same loop afterwards.
+        assert!(
+            one.campaign().await.unwrap().is_empty(),
+            "both members answered"
+        );
+        one.propose(event(1)).await.unwrap();
+        one.tick().await.unwrap();
+        stop.send(true).unwrap();
+        refused
+    };
+    let (report, refused) = tokio::join!(follower.serve(policy), driving);
+
+    assert_eq!(
+        decode_batch(&refused.unwrap()).unwrap(),
+        Vec::<Vec<u8>>::new(),
+        "a refused peer is answered with an empty batch"
+    );
+    assert!(one.is_leader());
+    assert_eq!(follower.committed_events(), one.committed_events());
+    assert_eq!(follower.committed_events().len(), 1);
+    let report = report.unwrap();
+    assert_eq!(report.failed, 1, "exactly the stranger's frame was refused");
+    assert!(
+        report.handled >= 2,
+        "the leader's rounds were served: {report:?}"
+    );
+
+    // After shutdown the follower serves nothing: the leader's next round finds it
+    // unreached rather than answered.
+    let mut leader = one;
+    leader.with_request_timeout(Duration::from_millis(1500));
+    let unreached = leader.propose(event(2)).await.unwrap();
+    assert_eq!(unreached.ids(), vec![2]);
+    assert_eq!(follower.committed_events().len(), 1);
+
+    leader.close().await;
+    follower.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_peer_cannot_claim_another_member_s_id() {
     // The case the layer exists for. The impostor holds the key member 1 admitted
     // for member 2, and sends a message that says it comes from member 1.

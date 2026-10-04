@@ -1,9 +1,10 @@
 //! A Pod gateway and a requester, both over `ALPN_PODWIRE`.
 //!
 //! Neither is a daemon. `serve_once` accepts one connection and answers it;
-//! `request` sends one request and checks one answer. A caller decides when either
-//! happens, which keeps the tests free of sleeps and keeps "how long do we wait"
-//! and "how often do we accept" where they can be decided deliberately.
+//! `request` sends one request and checks one answer. `serve` runs `serve_once`'s
+//! per-connection code under `ptr_net::serve`, the one accept loop, with a
+//! `ServePolicy` the host writes: "how long do we wait" and "how many do we hold"
+//! stay the host's decision rather than this crate's (D4 in issue #23).
 use crate::access::{answer, answer_bound, PodAccessPolicy};
 use crate::frame::{
     decode_request, decode_request_v2, encode_answer, encode_answer_v2, encode_request,
@@ -13,7 +14,7 @@ use crate::frame::{
 };
 use ptr_net::{
     AuthenticatedPeer, EndpointAddr, IrohSession, IrohTransport, NodeIdentity, NodeSigner,
-    PeerAddress, ALPN_PODWIRE,
+    PeerAddress, ServeError, ServePolicy, ServeReport, ALPN_PODWIRE,
 };
 use ptr_pods::ProtocolBinding;
 use ptr_pods::{ExecutionManifest, PodManifest, PodRegistry, RegisteredPodBinding};
@@ -593,7 +594,14 @@ impl PodHost {
             .accept_once(MAX_FRAME_BYTES)
             .await
             .map_err(PodWireError::Transport)?;
+        self.serve_incoming(incoming).await
+    }
 
+    /// Answer one V1 connection that has already been accepted and read.
+    async fn serve_incoming(
+        &self,
+        incoming: ptr_net::IrohIncoming,
+    ) -> Result<Served, PodWireError> {
         // (1) The sender is the connection. There is no payload field to prefer
         // over it, which is the shape of the format rather than a check made here.
         let peer = incoming.peer.clone();
@@ -645,129 +653,29 @@ impl PodHost {
             .accept_once(MAX_FRAME_BYTES)
             .await
             .map_err(PodWireError::Transport)?;
-        let peer = incoming.peer.clone();
-        let digest = request_digest(&incoming.payload);
-        let request = decode_request_v2(&incoming.payload);
-        let request_execution_manifest = request
-            .as_ref()
-            .ok()
-            .and_then(|request| request.execution_manifest);
-        let answer_address = request
-            .as_ref()
-            .ok()
-            .and_then(|request| request.address.clone());
-        let state_binding = request
-            .as_ref()
-            .ok()
-            .map(|request| (request.placement_epoch, request.fencing_token));
-        let (
-            request_id,
-            generation,
-            revision,
-            identity_digest,
-            session_id,
-            policy_revision,
-            outcome,
-            refused,
-        ) = match request {
-            Ok(request) => {
-                let request_id = Some(request.request_id);
-                if request.addressed_to != self.identity().public_key {
-                    (
-                        request_id,
-                        request.generation,
-                        request.revision,
-                        request.identity_digest,
-                        request.session_id.clone(),
-                        request.policy_revision,
-                        PodOutcome::Refused {
-                            code: RefusalCode::Misaddressed,
-                        },
-                        Some(PodWireError::Misaddressed {
-                            addressed_to: request.addressed_to,
-                            expected: self.identity().public_key,
-                        }),
-                    )
-                } else if !binding.accepts(&request) {
-                    (
-                        request_id,
-                        request.generation,
-                        request.revision,
-                        request.identity_digest,
-                        request.session_id.clone(),
-                        request.policy_revision,
-                        PodOutcome::Refused {
-                            code: RefusalCode::Unavailable,
-                        },
-                        Some(PodWireError::V2BindingUnavailable),
-                    )
-                } else if let Some(registry) = &self.runtime_manifest_registry {
-                    let current = request
-                        .execution_manifest
-                        .and_then(|digest| registry.read().ok()?.resolve(&digest).ok());
-                    if current
-                        .as_ref()
-                        .map(|manifest| manifest.manifest.manifest_digest)
-                        != request.execution_manifest
-                    {
-                        (
-                            request_id,
-                            request.generation,
-                            request.revision,
-                            request.identity_digest,
-                            request.session_id.clone(),
-                            request.policy_revision,
-                            PodOutcome::Refused {
-                                code: RefusalCode::Unavailable,
-                            },
-                            Some(PodWireError::V2BindingUnavailable),
-                        )
-                    } else {
-                        self.answer_v2_bound_request(&peer, binding, request, request_id)
-                    }
-                } else {
-                    self.answer_v2_bound_request(&peer, binding, request, request_id)
-                }
+        self.serve_v2_incoming(binding, incoming).await
+    }
+
+    /// Serve V1 connections until `policy.shutdown` reads `true` (D4 in issue #23).
+    ///
+    /// The loop is `ptr_net::serve`; each connection is answered by exactly the code
+    /// [`Self::serve_once`] runs, so the loop adds scheduling and changes nothing
+    /// about what a request is told. How many connections are held at once and how
+    /// long each may take are the host's `ServePolicy`, with no default here. A
+    /// refusal is answered on its connection as always and counted as handled; only a
+    /// connection that could not be answered at all is counted as failed.
+    pub async fn serve(self: &Arc<Self>, policy: ServePolicy) -> Result<ServeReport, ServeError> {
+        let host = Arc::clone(self);
+        ptr_net::serve(&self.transport, MAX_FRAME_BYTES, policy, move |incoming| {
+            let host = Arc::clone(&host);
+            async move {
+                host.serve_incoming(incoming)
+                    .await
+                    .map(drop)
+                    .map_err(|error| error.to_string())
             }
-            Err(error) => (
-                None,
-                Generation(0),
-                Revision(0),
-                [0; 32],
-                SessionId::from("malformed"),
-                Revision(0),
-                PodOutcome::Refused {
-                    code: RefusalCode::Malformed,
-                },
-                Some(PodWireError::Frame(error)),
-            ),
-        };
-        let answer = PodAnswerV2 {
-            address: answer_address,
-            execution_manifest: request_execution_manifest,
-            responder: self.identity().public_key,
-            request_id: request_id.unwrap_or(0),
-            request_digest: digest,
-            generation,
-            revision,
-            identity_digest,
-            session_id,
-            policy_revision,
-            placement_epoch: state_binding.and_then(|binding| binding.0),
-            fencing_token: state_binding.and_then(|binding| binding.1),
-            outcome,
-        };
-        let frame = encode_answer_v2(&answer, &self.signer)?;
-        incoming
-            .respond(&frame)
-            .await
-            .map_err(PodWireError::Transport)?;
-        Ok(Served {
-            peer,
-            request_id,
-            reported: answer.outcome,
-            refused,
         })
+        .await
     }
 
     /// Accept one authenticated QUIC connection and serve a bounded number of

@@ -270,9 +270,16 @@ and the peer the decision runs under.
   `request` takes a `ptr_net::PeerAddress`, which only a `PeerBook` the deployment
   installed can produce, and a wrong address fails on the authenticated key before
   the host is asked anything. See `34-address-authority.md`.
-- **No accept loop, and no backpressure.** `serve_once` answers one connection. A
-  peer that asks faster than the host can answer is the deployment's problem, and
-  where the loop belongs is D4.
+- **The accept loop and its backpressure are the host's policy.** **D4 in issue #23: decided — the loop is mechanism in `ptr-net`, the policy is the host's.**
+  This bullet used to say `serve_once` answers one connection and where a loop
+  belongs is D4. `PodHost::serve` now runs `serve_once`'s per-connection code under
+  `ptr_net::serve`, whose `ServePolicy` — connection limit, per-connection deadline,
+  shutdown, no defaults — is written by the host: a connection over the limit is
+  refused rather than queued, a peer that stops talking is cut at its deadline, and
+  after shutdown nothing is answered
+  (`the_accept_loop_answers_as_serve_once_does_until_shutdown`). What is still the
+  deployment's: a limit is per service, not per peer, so one admitted peer can hold
+  every slot until its deadlines run out.
 - **Session reuse.** Every request opens a connection, which is correct and wasteful
   — the same sentence `31-cluster-integrity.md` and `32-execution-wire.md` already
   carry.

@@ -222,25 +222,7 @@ mod iroh_backend {
                     "Iroh endpoint closed before accepting a connection".to_string()
                 })?;
             let connection = incoming.await.map_err(|error| error.to_string())?;
-            let peer =
-                AuthenticatedPeer::from_transport(NodeId(connection.remote_id().to_string()));
-
-            let (send, mut recv) = connection
-                .accept_bi()
-                .await
-                .map_err(|error| error.to_string())?;
-            let payload = recv
-                .read_to_end(max_request)
-                .await
-                .map_err(|error| error.to_string())?;
-
-            Ok(IrohIncoming {
-                peer,
-                payload,
-                connection,
-                send,
-                close_after_respond: true,
-            })
+            read_request(connection, max_request).await
         }
 
         pub async fn accept_session(&self) -> Result<IrohServerSession, String> {
@@ -258,6 +240,30 @@ mod iroh_backend {
         pub async fn close(&self) {
             self.endpoint.close().await;
         }
+    }
+
+    /// Read the one request a connection carries: the per-connection half of
+    /// `accept_once`, shared with the accept loop so the two cannot drift.
+    async fn read_request(
+        connection: Connection,
+        max_request: usize,
+    ) -> Result<IrohIncoming, String> {
+        let peer = AuthenticatedPeer::from_transport(NodeId(connection.remote_id().to_string()));
+        let (send, mut recv) = connection
+            .accept_bi()
+            .await
+            .map_err(|error| error.to_string())?;
+        let payload = recv
+            .read_to_end(max_request)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(IrohIncoming {
+            peer,
+            payload,
+            connection,
+            send,
+            close_after_respond: true,
+        })
     }
 
     impl IrohIncoming {
@@ -307,6 +313,11 @@ mod iroh_backend {
             self.connection.close(0u32.into(), b"ptr session closed");
             self.connection.closed().await;
         }
+
+        /// Wait until the connection is closed, by either side.
+        pub async fn wait_closed(&self) {
+            self.connection.closed().await;
+        }
     }
 
     impl IrohServerSession {
@@ -340,6 +351,12 @@ mod iroh_backend {
         }
     }
 
+    /// The accept loop (D4 in issue #23), in `src/iroh_backend/serve.rs`. A child
+    /// module, so it reads a request exactly as `accept_once` does without widening
+    /// anything here.
+    mod serve;
+    pub use serve::{serve, ServeError, ServePolicy, ServeReport};
+
     pub use IrohIncoming as Incoming;
     pub use IrohServerSession as ServerSession;
     pub use IrohSession as Session;
@@ -347,12 +364,16 @@ mod iroh_backend {
     // Re-exported so a composing crate can name an address without declaring its
     // own iroh dependency: two pins of a transport would be two wire formats.
     pub use iroh::EndpointAddr as Address;
+    // The id an address is built from, for a host that reads one from its own
+    // configuration (`ptrd`'s `[[wire.peers]]`).
+    pub use iroh::EndpointId as Id;
 }
 
 #[cfg(feature = "iroh-backend")]
 pub use iroh_backend::{
-    Address as EndpointAddr, Incoming as IrohIncoming, ServerSession as IrohServerSession,
-    Session as IrohSession, Transport as IrohTransport,
+    serve, Address as EndpointAddr, Id as EndpointId, Incoming as IrohIncoming, ServeError,
+    ServePolicy, ServeReport, ServerSession as IrohServerSession, Session as IrohSession,
+    Transport as IrohTransport,
 };
 
 /// Where the deployment says each peer can be reached.

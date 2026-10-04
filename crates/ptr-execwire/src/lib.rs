@@ -18,9 +18,11 @@
 //! `request_id` with the *same* key, which is the only combination that says "this
 //! one again" rather than "do it once more".
 //!
-//! What this is not: it is not a daemon. Nothing here loops, ticks or retries. A
-//! caller drives `serve_once` and `request`, which keeps the tests free of sleeps
-//! and keeps scheduling decisions where they can be made deliberately.
+//! What this is not: it is not a daemon of its own. Nothing here ticks or retries.
+//! A caller drives `serve_once` and `request`, or hands `ExecutionHost::serve` a
+//! `ptr_net::ServePolicy` — the accept loop is `ptr-net`'s mechanism and when it
+//! gives up is the host's written policy (D4 in issue #23), so scheduling decisions
+//! stay where they can be made deliberately.
 mod frame;
 
 pub use frame::{

@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 5 Rust source files · 1977 nonblank source lines · 3 integration-test files · 42 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 2017 nonblank source lines · 3 integration-test files · 43 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- ExecutionHost::serve (D4 in issue #23) runs exactly serve_once's per-connection code under ptr_net::serve with the host's ServePolicy, one replay window across connections; ExecutionHost::bind_shared takes a runtime the host process shares with something else (ptrd's HTTP API), so one runtime, one ledger and one admission policy serve both
 - Signed receipts (D2 in issue #23): the host signs every receipt, refusals included, with its endpoint key through ptr-net's NodeSigner; the signed message is the tag ptr-exec-receipt/v2 and its NUL terminator followed by every frame byte before the signature (magic, layout version, responder, request_id, request_digest, outcome code and its fields), so no field is left out and no second encoding can drift. The signature attests that runtime R recorded outcome O for request id X bound to request digest D, and not that the effect happened, nor anything about another principal, nor when, nor that R is still trusted; a rotated key is a new identity
 - Receipts are versioned apart from requests: RECEIPT_FORMAT_V2 is the signed layout, requests keep FORMAT_V1, and a receipt in the old unsigned layout — or a signed frame relabelled V1 — is refused by name (FrameError::UnsignedReceipt, PTR_EXECW_UNSIGNED_RECEIPT) rather than as an unknown version
 - verify_receipt(bytes, &NodeId) works without a transport and is the only way to read a receipt out of bytes: it refuses a frame that is not a signed receipt, then a receipt naming another responder (ReceiptError::WrongResponder), then a bad signature (ReceiptError::BadSignature); the requester runs it against the key the connection authenticated before reading the outcome, mapping a wrong author onto the existing ForgedReceipt and a bad signature onto WireError::BadSignature
@@ -30,7 +31,7 @@
 - One session per request, revoked when the request is answered: caching it would keep the grants admission returned, so a policy later replaced with narrower grants would not narrow anything until the cache expired
 - Every request is answered, including a request this build cannot parse — its receipt is bound to the bytes that arrived, so its sender can still check it against what it sent
 - A request/receipt frame format with distinct magics per direction, an explicit layout version, bounded length-prefixed fields, explicit two-way code tables for every enumeration, and a distinct diagnostic code per refusal
-- No background loop, timer or retry policy: the caller drives serve_once and request, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
+- No timer or retry policy of its own: the caller drives serve_once and request, or serve with a ServePolicy the host writes, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
 - The whole composition is feature-gated, so iroh stays out of every other workspace build exactly as ptr-net keeps its own backend out
 - bind_action_admission (feature execwire-backend) turns a ptr-runtime ActionAdmission into a WireRequest for one concrete action, refusing an action whose digest is not the admitted one, a project other than the admission's, an empty address and an empty at-most-once key; it grants nothing, the receiving ExecutionHost still authenticates the peer and applies its own policy
 - recover_uncertain_receipt forwards a receipt with the Uncertain outcome exactly once to a caller-supplied StatefulRequestRecovery, through uncertain_request which builds the UncertainRequest (request id from the receipt, caller's scope id) and refuses any other outcome with RecoveryBindingError::NotUncertain; Internal: it writes no ledger record and never retries
@@ -43,14 +44,14 @@
 - Detached work over the wire: a detached grant is audited by an attempt that stays unsettled until the adapter reports back, and there is no channel here for that report, so it is refused before the attempt is committed
 - At-most-once keys scoped per principal or project: they are one namespace per host runtime, so a peer refused under a key it sent learns that another principal spent that key, and a principal that spends a key first makes it refused to every other; a requester has to choose keys nobody else can guess
 - Reconciliation: an uncertain outcome is reported and then belongs to the host's operator, because a remote peer must not be able to declare what happened to an effect
-- An accept loop a deployment would run, including backpressure toward a peer that asks faster than the runtime can answer
+- Backpressure per peer: the accept loop's limit is per service, so one admitted peer can hold every slot until its deadlines run out
 - Session reuse: every request opens a connection, which is correct and wasteful
 - Discovery: which address belongs to an id nobody told you is a mechanism choice with its own trust question, recorded as the owner's rather than invented
 - Any claim about latency, throughput or behaviour under load; the tests establish protocol and identity properties on localhost
 
 ### Next milestones
 
-- Decide where the accept loop belongs before adding one, since a loop in the wrong place makes the scheduling implicit again
+- None recorded.
 
 ### Linked experiments
 
@@ -66,6 +67,7 @@
 
 ### Current automated checks
 
+- the_accept_loop_serves_requests_exactly_as_serve_once_does_until_shutdown: under serve an admitted request applies, the same frame on a second connection is refused by the window, both are counted as handled, and after shutdown a request is not answered and nothing applies
 - frame tests: a_stored_receipt_verifies_offline_and_a_change_to_any_field_is_refused (each field edited after signing and every single bit of the stored frame refused, the untouched receipt verifying as the control), a_receipt_signed_by_another_key_is_refused, a_receipt_readdressed_to_another_responder_is_refused (wrong expected responder, rewritten name with the original signature, and another key re-signing as itself), an_unsigned_receipt_from_an_earlier_build_is_refused_by_version (stripped and relabelled frames, with the signed frame as control)
 - wire tests: a_receipt_with_a_bad_signature_from_an_otherwise_honest_endpoint_is_refused (BadSignature, with the same endpoint signing with its own key as the control) and a_receipt_from_a_real_exchange_verifies_offline_against_the_host_alone (an applied receipt verifies after the host closed, and is refused as anybody else's or once edited)
 - an admitted peer's action is executed over a real ALPN_EXEC connection and the audited principal is the policy's, not a name written into the payload the peer controls

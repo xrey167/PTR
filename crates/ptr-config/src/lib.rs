@@ -106,6 +106,9 @@ pub struct PtrConfig {
     pub observability: ObservabilityConfig,
     pub research: ResearchConfig,
     pub model: ModelConfig,
+    /// The network wires this host serves. Absent means none: there is no default
+    /// wire, and a section that is present must decide every field (D4 in issue #23).
+    pub wire: Option<WireConfig>,
 }
 
 impl PtrConfig {
@@ -184,9 +187,13 @@ impl PtrConfig {
             return Err("runtime.max_parallel_candidates must be greater than zero".into());
         }
         match self.runtime.mode.as_str() {
-            "standalone" | "cluster" => Ok(()),
-            other => Err(format!("unsupported runtime.mode: {other}")),
+            "standalone" | "cluster" => {}
+            other => return Err(format!("unsupported runtime.mode: {other}")),
         }
+        if let Some(wire) = &self.wire {
+            wire.validate().map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     /// Validation for the standalone daemon boundary. Library defaults remain
@@ -340,4 +347,204 @@ impl Default for ResearchConfig {
             require_experiment_manifest: true,
         }
     }
+}
+
+/// Upper bound on `wire.max_concurrent`. A limit is a decision about how much of the
+/// host one peer population may hold at once; one this large is no longer a limit.
+pub const MAX_WIRE_CONCURRENT: usize = 4096;
+
+/// Shortest `wire.per_connection_deadline_ms`: below this a handshake on loopback
+/// does not reliably finish, so every connection would be cut.
+pub const MIN_WIRE_DEADLINE_MS: u64 = 10;
+
+/// Longest `wire.per_connection_deadline_ms`: ten minutes. A connection allowed to
+/// stay open longer holds a slot for as long as a peer cares to keep it.
+pub const MAX_WIRE_DEADLINE_MS: u64 = 600_000;
+
+/// The network wires a host serves, and where the peers it knows can be reached
+/// (D4 in issue #23).
+///
+/// No field has a default, and the section itself is optional: a configuration
+/// without `[wire]` serves no wire at all, and one with it has said, field by field,
+/// how much it will hold and how long it will wait. "When do we give up" is the
+/// host's written policy, never a number a library picked.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireConfig {
+    /// Connections handled at once, per service. One more is refused, not queued.
+    pub max_concurrent: usize,
+    /// How long one connection may take, handshake to answer, in milliseconds.
+    pub per_connection_deadline_ms: u64,
+    /// Which wires to serve: `"exec"` and/or `"pod"`.
+    pub services: Vec<String>,
+    /// Where each peer the deployment knows can be reached. May be empty.
+    pub peers: Vec<WirePeerConfig>,
+}
+
+/// One peer's address, as the operator wrote it.
+///
+/// Addresses are deployment facts rather than history, so they come from here and
+/// are rebuilt at every start; nothing journals them (C8, `34-address-authority.md`).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WirePeerConfig {
+    /// The peer's endpoint id: its public key as 64 lowercase hex digits, exactly as
+    /// the transport renders it. No other spelling is accepted, because every
+    /// comparison of identities in this system is a comparison of this text.
+    pub id: String,
+    /// The socket address the peer is reachable at directly, as `IP:PORT`.
+    pub direct: String,
+}
+
+/// Why a `[wire]` section was refused. Each its own code, so an operator can tell
+/// which line to fix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WireConfigError {
+    /// `max_concurrent` is zero, or above [`MAX_WIRE_CONCURRENT`].
+    Concurrency { value: usize },
+    /// `per_connection_deadline_ms` is outside
+    /// [`MIN_WIRE_DEADLINE_MS`]..=[`MAX_WIRE_DEADLINE_MS`].
+    Deadline { value_ms: u64 },
+    /// `services` is empty: a `[wire]` section that serves nothing is a mistake,
+    /// not a configuration.
+    NoServices,
+    /// A service this build does not know.
+    UnknownService { service: String },
+    /// A service named twice.
+    DuplicateService { service: String },
+    /// A peer id that is not 64 lowercase hex digits.
+    MalformedPeerId { id: String },
+    /// A peer address that is not `IP:PORT`.
+    MalformedPeerAddress { id: String, direct: String },
+    /// Two entries for one peer id. The book keeps one address per peer, and which
+    /// of two the operator meant is not this crate's guess.
+    DuplicatePeer { id: String },
+}
+
+impl WireConfigError {
+    /// Stable diagnostic code for this refusal.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Concurrency { .. } => "PTR_CONFIG_WIRE_CONCURRENCY",
+            Self::Deadline { .. } => "PTR_CONFIG_WIRE_DEADLINE",
+            Self::NoServices => "PTR_CONFIG_WIRE_NO_SERVICES",
+            Self::UnknownService { .. } => "PTR_CONFIG_WIRE_UNKNOWN_SERVICE",
+            Self::DuplicateService { .. } => "PTR_CONFIG_WIRE_DUPLICATE_SERVICE",
+            Self::MalformedPeerId { .. } => "PTR_CONFIG_WIRE_MALFORMED_PEER_ID",
+            Self::MalformedPeerAddress { .. } => "PTR_CONFIG_WIRE_MALFORMED_PEER_ADDRESS",
+            Self::DuplicatePeer { .. } => "PTR_CONFIG_WIRE_DUPLICATE_PEER",
+        }
+    }
+}
+
+impl std::fmt::Display for WireConfigError {
+    /// The code, then what was wrong.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Concurrency { value } => write!(
+                f,
+                "{}: wire.max_concurrent must be 1..={MAX_WIRE_CONCURRENT}, got {value}",
+                self.code()
+            ),
+            Self::Deadline { value_ms } => write!(
+                f,
+                "{}: wire.per_connection_deadline_ms must be \
+                 {MIN_WIRE_DEADLINE_MS}..={MAX_WIRE_DEADLINE_MS}, got {value_ms}",
+                self.code()
+            ),
+            Self::NoServices => write!(f, "{}: wire.services must name a wire", self.code()),
+            Self::UnknownService { service } => {
+                write!(f, "{}: unknown wire service {service:?}", self.code())
+            }
+            Self::DuplicateService { service } => {
+                write!(f, "{}: wire service {service:?} named twice", self.code())
+            }
+            Self::MalformedPeerId { id } => write!(
+                f,
+                "{}: peer id {id:?} is not 64 lowercase hex digits",
+                self.code()
+            ),
+            Self::MalformedPeerAddress { id, direct } => write!(
+                f,
+                "{}: peer {id} address {direct:?} is not IP:PORT",
+                self.code()
+            ),
+            Self::DuplicatePeer { id } => {
+                write!(f, "{}: peer {id} is listed twice", self.code())
+            }
+        }
+    }
+}
+
+impl std::error::Error for WireConfigError {}
+
+/// The services a `[wire]` section may name.
+pub const WIRE_SERVICES: [&str; 2] = ["exec", "pod"];
+
+impl WireConfig {
+    /// Refuse a section that has not decided something it must, or decided it out of
+    /// range. Checked in the order the fields are written.
+    pub fn validate(&self) -> Result<(), WireConfigError> {
+        if self.max_concurrent == 0 || self.max_concurrent > MAX_WIRE_CONCURRENT {
+            return Err(WireConfigError::Concurrency {
+                value: self.max_concurrent,
+            });
+        }
+        if !(MIN_WIRE_DEADLINE_MS..=MAX_WIRE_DEADLINE_MS).contains(&self.per_connection_deadline_ms)
+        {
+            return Err(WireConfigError::Deadline {
+                value_ms: self.per_connection_deadline_ms,
+            });
+        }
+        if self.services.is_empty() {
+            return Err(WireConfigError::NoServices);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for service in &self.services {
+            if !WIRE_SERVICES.contains(&service.as_str()) {
+                return Err(WireConfigError::UnknownService {
+                    service: service.clone(),
+                });
+            }
+            if !seen.insert(service.as_str()) {
+                return Err(WireConfigError::DuplicateService {
+                    service: service.clone(),
+                });
+            }
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for peer in &self.peers {
+            if !is_canonical_key(&peer.id) {
+                return Err(WireConfigError::MalformedPeerId {
+                    id: peer.id.clone(),
+                });
+            }
+            if peer.direct.parse::<std::net::SocketAddr>().is_err() {
+                return Err(WireConfigError::MalformedPeerAddress {
+                    id: peer.id.clone(),
+                    direct: peer.direct.clone(),
+                });
+            }
+            if !ids.insert(peer.id.as_str()) {
+                return Err(WireConfigError::DuplicatePeer {
+                    id: peer.id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `service` is one this section serves.
+    pub fn serves(&self, service: &str) -> bool {
+        self.services.iter().any(|named| named == service)
+    }
+}
+
+/// 64 lowercase hex digits: the only spelling of an endpoint id that compares equal
+/// to the transport's.
+fn is_canonical_key(text: &str) -> bool {
+    text.len() == 64
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }

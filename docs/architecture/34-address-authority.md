@@ -145,9 +145,17 @@ against a compiling control.
 - **A stale address.** The book cannot tell a stale address from a current one; the
   dial fails and nothing here re-resolves. A deployment whose nodes move must update
   the book, which is what `record` replacing rather than refusing is for.
-- **The book is in memory.** It is not journaled and does not survive a restart —
-  the same sentence `33-pod-wire.md` records for the access policy, and the same
-  open question (D5).
+- **The book is rebuilt from operator configuration at every start.** It used to
+  be in memory only, with nothing to rebuild it from. `ptrd` now builds it with
+  `PeerBook::record` from `[[wire.peers]]` — an endpoint id in the transport's
+  canonical spelling and a direct `IP:PORT` per peer, a malformed entry or a
+  duplicate id refused by `[wire]` validation with a named error
+  (`a_malformed_or_duplicate_wire_peer_is_refused_by_name`), and an id that is not a
+  key refused at start (`the_peer_book_is_rebuilt_from_the_configured_list`,
+  `a_configured_id_that_is_not_a_key_is_refused_at_start`). That is the operator
+  authority C8 decided on. It is **not journaled, deliberately**: an address is a
+  deployment fact, true of where a node is now, and not a committed one — replaying
+  last month's address would be replaying a fact that has since stopped being true.
 - **Nothing here authenticates the *operator*.** Whoever can call `record` decides
   where a peer is dialled. That is the host's own trust boundary and this layer is
   inside it.

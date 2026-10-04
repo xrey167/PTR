@@ -101,3 +101,75 @@ async fn oversized_id_text_and_body_are_refused_before_the_runtime_sees_them() {
         assert_eq!(response.status(), expected);
     }
 }
+
+#[tokio::test]
+async fn a_shared_runtime_is_the_one_the_router_writes_to() {
+    // `ptrd` hands the same runtime to the HTTP API and to its execution wire. The
+    // property that makes that safe is that there is one runtime: a request through
+    // the router is visible to the other holder, with nothing reopened.
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(
+        PtrRuntime::new(PtrConfig::default()).unwrap(),
+    ));
+    let before = shared.lock().unwrap().committed_events().len();
+    let app = ptr_server::router_with_shared_runtime(
+        std::sync::Arc::clone(&shared),
+        std::sync::Arc::new(ptr_model_api::ReferenceEchoBackend),
+        ptr_router::PodRouter,
+        std::sync::Arc::new(ptr_pods::PodRegistry::default()),
+        ptr_server::default_verifier(),
+        std::sync::Arc::new(Vec::new),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/requests")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"r1","text":"hello"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        shared.lock().unwrap().committed_events().len() > before,
+        "the write landed in the runtime the other holder has"
+    );
+}
+
+#[tokio::test]
+async fn serve_until_answers_until_the_shutdown_and_then_returns() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(ptr_server::serve_until(
+        listener,
+        router(PtrRuntime::new(PtrConfig::default()).unwrap()),
+        async move {
+            let _ = stopped.await;
+        },
+    ));
+
+    // The control: before the shutdown it answers.
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    stream
+        .write_all(b"GET /health HTTP/1.1\r\nhost: ptr\r\nconnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+
+    stop.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), server)
+        .await
+        .expect("the server returns once told to stop")
+        .unwrap()
+        .unwrap();
+    assert!(
+        tokio::net::TcpStream::connect(address).await.is_err(),
+        "after it returns, nothing is listening"
+    );
+}

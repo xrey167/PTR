@@ -1,23 +1,24 @@
 //! An execution gateway and a requester, both over `ALPN_EXEC`.
 //!
 //! Neither of these is a daemon. `serve_once` accepts one connection and answers
-//! it; `request` sends one request and checks one receipt. A caller decides when
-//! either happens, which is what keeps the tests free of sleeps and keeps "how long
-//! do we wait" and "how often do we accept" where they can be decided deliberately.
+//! it; `request` sends one request and checks one receipt. `serve` runs
+//! `serve_once`'s per-connection code under `ptr_net::serve`, the one accept loop,
+//! with a `ServePolicy` the host writes: "how long do we wait" and "how many do we
+//! hold" stay the host's decision rather than this crate's (D4 in issue #23).
 use crate::frame::{
     decode_request, encode_receipt, encode_request, request_digest, verify_receipt, FrameError,
     ReceiptError, RefusalCode, WireOutcome, WireReceipt, WireRequest, MAX_BODY_BYTES,
     MAX_FRAME_BYTES,
 };
 use ptr_net::{
-    AuthenticatedPeer, EndpointAddr, IrohTransport, NodeIdentity, NodeSigner, PeerAddress,
-    ALPN_EXEC,
+    AuthenticatedPeer, EndpointAddr, IrohIncoming, IrohTransport, NodeIdentity, NodeSigner,
+    PeerAddress, ServeError, ServePolicy, ServeReport, ALPN_EXEC,
 };
 use ptr_runtime::execution::{ExecutionError, ExecutionSession};
 use ptr_runtime::PtrRuntime;
 use ptr_types::NodeId;
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// How long one exchange waits for an answer before giving up.
@@ -189,7 +190,10 @@ impl ReplayWindow {
 /// anything but this path. What a peer may ask for is the runtime's admission policy,
 /// installed by the host before any of this, and re-derived on every request.
 pub struct ExecutionHost {
-    runtime: Mutex<PtrRuntime>,
+    /// Shared, so a host process that also serves the runtime another way (`ptrd`'s
+    /// HTTP API) hands this wire the same runtime rather than opening a second one
+    /// over the same ledger — two runtimes over one history would be two writers.
+    runtime: Arc<Mutex<PtrRuntime>>,
     transport: IrohTransport,
     /// The endpoint's own key, which signs every receipt (D2 in issue #23).
     signer: NodeSigner,
@@ -201,11 +205,20 @@ impl ExecutionHost {
     /// Bind an endpoint for `ALPN_EXEC` around a runtime the host has already
     /// configured, admission policy included.
     pub async fn bind(runtime: PtrRuntime) -> Result<Self, WireError> {
+        Self::bind_shared(Arc::new(Mutex::new(runtime))).await
+    }
+
+    /// Bind around a runtime the host process already shares with something else.
+    ///
+    /// Every request still takes the runtime's lock for its whole decision, exactly as
+    /// with [`Self::bind`]: sharing the runtime shares its admission policy and its
+    /// ledger, and adds no path to either.
+    pub async fn bind_shared(runtime: Arc<Mutex<PtrRuntime>>) -> Result<Self, WireError> {
         let transport = IrohTransport::bind(&[ALPN_EXEC])
             .await
             .map_err(WireError::Transport)?;
         Ok(Self {
-            runtime: Mutex::new(runtime),
+            runtime,
             signer: transport.signer(),
             transport,
             window: Mutex::new(ReplayWindow::default()),
@@ -271,7 +284,34 @@ impl ExecutionHost {
             .accept_once(MAX_FRAME_BYTES)
             .await
             .map_err(WireError::Transport)?;
+        self.serve_incoming(incoming).await
+    }
 
+    /// Serve connections until `policy.shutdown` reads `true` (D4 in issue #23).
+    ///
+    /// The loop is `ptr_net::serve`; each connection is answered by exactly the code
+    /// [`Self::serve_once`] runs, in the same order, so the loop adds scheduling and
+    /// changes nothing about what a request is told. How many connections are held
+    /// at once and how long each may take are the host's `ServePolicy`, with no
+    /// default here. A connection's own refusal is answered on it as always and
+    /// counted as handled; only a connection that could not be answered at all is
+    /// counted as failed.
+    pub async fn serve(self: &Arc<Self>, policy: ServePolicy) -> Result<ServeReport, ServeError> {
+        let host = Arc::clone(self);
+        ptr_net::serve(&self.transport, MAX_FRAME_BYTES, policy, move |incoming| {
+            let host = Arc::clone(&host);
+            async move {
+                host.serve_incoming(incoming)
+                    .await
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            }
+        })
+        .await
+    }
+
+    /// Answer one connection that has already been accepted and read.
+    async fn serve_incoming(&self, incoming: IrohIncoming) -> Result<Serviced, WireError> {
         // (1) The sender is the connection. There is no payload field to prefer over
         // it, which is the shape of the format rather than a check performed here.
         let peer = incoming.peer.clone();

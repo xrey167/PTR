@@ -4846,13 +4846,18 @@ name = "ptrd"
 version = "0.1.0"
 dependencies = [
  "ptr-config",
+ "ptr-execwire",
  "ptr-ledger",
  "ptr-model-api",
+ "ptr-net",
  "ptr-pods",
+ "ptr-podwire",
+ "ptr-protocol",
  "ptr-router",
  "ptr-runtime",
  "ptr-server",
  "ptr-types",
+ "ptr-verifier",
  "tokio",
 ]
 

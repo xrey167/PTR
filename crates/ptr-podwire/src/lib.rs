@@ -29,8 +29,10 @@
 //! over this wire writes nothing to the host's history" is a fact about the type
 //! rather than a promise about the code: there is nothing here to write to.
 //!
-//! What this is not: it is not a daemon. Nothing here loops, ticks or retries. A
-//! caller drives `serve_once` and `request`.
+//! What this is not: it is not a daemon of its own. Nothing here ticks or retries.
+//! A caller drives `serve_once` and `request`, or hands `PodHost::serve` a
+//! `ptr_net::ServePolicy` — the loop is `ptr-net`'s mechanism and when it gives up
+//! is the host's written policy (D4 in issue #23).
 mod access;
 mod frame;
 

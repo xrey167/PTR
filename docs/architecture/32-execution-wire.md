@@ -261,9 +261,23 @@ verifies under the old key and under nothing else.
   makes the host's record attributable to the host's key and says nothing more. Whether
   a receipt from a peer since withdrawn still counts is the verifier's policy, and
   nothing here records a key's admission history for it to consult.
-- **No accept loop, no timer, no retry.** A caller drives `serve_once` and
-  `request`. The same deliberate omission as `ptr-cluster`: a loop in the wrong place
-  makes scheduling implicit, and "when do we give up" is a policy decision.
+- **An accept loop, and still no timer and no retry.** **D4 in issue #23: decided — the loop is mechanism in `ptr-net`, the policy is the host's.** This
+  bullet used to say there was no accept loop, because a loop in the wrong place
+  makes scheduling implicit and "when do we give up" is a policy decision. That
+  reasoning decided where the loop went rather than whether there is one:
+  `ptr_net::serve` is the one accept loop, shared by every wire, and it decides
+  nothing on its own — `ServePolicy` has a connection limit, a per-connection
+  deadline and a shutdown signal, every field the host's and none with a default.
+  Over the limit a connection is refused before its handshake, not queued; a
+  connection still open at its deadline is closed and its slot freed; after shutdown
+  nothing is accepted (`a_connection_over_the_limit_is_refused_and_the_limit_is_served`,
+  `a_hanging_peer_is_cut_at_the_deadline_without_holding_up_another`,
+  `after_shutdown_nothing_is_accepted`). `ExecutionHost::serve` runs exactly
+  `serve_once`'s per-connection code under it, one replay window across connections
+  (`the_accept_loop_serves_requests_exactly_as_serve_once_does_until_shutdown`), and
+  `ptrd` composes it from `[wire]` next to its HTTP API on the same runtime, with one
+  shutdown for both. Still no retry, anywhere: retrying is the requester's decision,
+  under its at-most-once key.
 - **Detached work cannot be requested over this wire.** A detached grant is audited
   by an attempt that stays unsettled until the adapter reports back
   (`28-durable-execution-audit.md`), and there is no channel here for that report. So

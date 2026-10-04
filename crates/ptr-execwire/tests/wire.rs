@@ -494,6 +494,59 @@ async fn a_receipt_from_a_real_exchange_verifies_offline_against_the_host_alone(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_accept_loop_serves_requests_exactly_as_serve_once_does_until_shutdown() {
+    // D4 in issue #23: `serve` is `serve_once`'s per-connection code under
+    // `ptr_net::serve`. What a request is told does not change — a grant applies, a
+    // replay is refused by the window, the receipt is signed — and after the host's
+    // shutdown nothing is answered.
+    let client = ExecutionClient::bind().await.unwrap();
+    let (host, action, probe) = host_admitting(&client.identity(), Mode::Success).await;
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let policy = ptr_net::ServePolicy {
+        max_concurrent: std::num::NonZeroUsize::new(4).unwrap(),
+        per_connection_deadline: Duration::from_secs(10),
+        shutdown,
+    };
+
+    let first = request(&host, &action, 1);
+    let driving = async {
+        let applied = client.request(located(host.address()), &first).await;
+        // The same frame again: the loop keeps one replay window across
+        // connections, exactly as repeated `serve_once` calls did.
+        let replayed = client.request(located(host.address()), &first).await;
+        stop.send(true).unwrap();
+        (applied, replayed)
+    };
+    let (report, (applied, replayed)) = tokio::join!(host.serve(policy), driving);
+
+    let applied = applied.unwrap();
+    assert_eq!(
+        applied.outcome,
+        WireOutcome::Applied {
+            response: b"executed".to_vec()
+        }
+    );
+    assert_eq!(
+        replayed.unwrap().outcome,
+        WireOutcome::Refused {
+            code: RefusalCode::Replayed
+        }
+    );
+    assert_eq!(probe.executions(), 1, "the replay applied nothing");
+    let report = report.unwrap();
+    assert_eq!((report.handled, report.failed), (2, 0));
+
+    // After shutdown the host answers nothing.
+    let mut late = ExecutionClient::bind().await.unwrap();
+    late.with_request_timeout(Duration::from_millis(1500));
+    assert!(late
+        .request(located(host.address()), &request(&host, &action, 2))
+        .await
+        .is_err());
+    assert_eq!(probe.executions(), 1, "nothing applied after shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_receipt_that_answers_a_different_request_is_refused() {
     // A receipt is bound to the bytes that arrived. Without that, a host — or anything
     // between — could answer an expensive request with a cheap request's receipt, and

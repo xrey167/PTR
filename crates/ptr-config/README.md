@@ -9,10 +9,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 1 Rust source files · 324 nonblank source lines · 4 integration-test files · 9 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 1 Rust source files · 518 nonblank source lines · 4 integration-test files · 15 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- An optional [wire] section (D4 in issue #23): max_concurrent, per_connection_deadline_ms, services and peers are all required, with no defaults — absent means no wire is served — and deny_unknown_fields refuses a misspelled key. WireConfig::validate refuses a limit outside 1..=4096, a deadline outside 10..=600000 ms, an empty, unknown or repeated service, a peer id not in the transport's canonical 64-lowercase-hex spelling, a direct address that is not IP:PORT and a duplicate peer id, each with its own WireConfigError code that PtrConfig::validate puts at the front of its message
 - Typed deserialization/defaults for runtime, semantic, action-boundary, observability and research sections
 - Repository default TOML parsing
 - Basic configuration validation
@@ -50,6 +51,7 @@
 
 ### Current automated checks
 
+- wire tests in tests/config.rs: a_wire_section_with_every_field_decided_validates_and_no_section_serves_nothing, a_wire_section_that_leaves_a_field_undecided_is_refused, a_wire_limit_or_deadline_out_of_range_is_refused_by_name (with each bound accepted as the control), a_wire_service_list_that_is_empty_unknown_or_repeated_is_refused_by_name, a_malformed_or_duplicate_wire_peer_is_refused_by_name (with a second distinct peer accepted), every_wire_refusal_has_its_own_code
 - repository default config parse/validate test
 - typed environment override tests
 - CLI precedence and unknown-argument tests

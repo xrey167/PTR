@@ -3,11 +3,14 @@ use crate::frame::{decode_batch, encode_batch, FrameError};
 use ptr_ledger::{
     decode_message, encode_message, CommittedEvent, LedgerEvent, RaftMessage, RaftNode,
 };
-use ptr_net::{AuthenticatedPeer, IrohTransport, NodeIdentity, ALPN_RAFT};
+use ptr_net::{
+    AuthenticatedPeer, IrohIncoming, IrohTransport, NodeIdentity, ServeError, ServePolicy,
+    ServeReport, ALPN_RAFT,
+};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Whether a refusal means "that member is away" rather than "something is wrong".
@@ -137,8 +140,9 @@ impl std::error::Error for ClusterError {}
 /// A raft member with an authenticated endpoint.
 ///
 /// Not a daemon: nothing here ticks or retries on its own. A caller decides when to
-/// accept, when to send and when to give up, which is also what keeps the tests
-/// free of sleeps.
+/// accept, when to send and when to give up — by calling `serve_once`, or by handing
+/// [`ClusterMember::serve`] a `ServePolicy` that writes those decisions down (D4 in
+/// issue #23) — which is also what keeps the tests free of sleeps.
 pub struct ClusterMember {
     id: u64,
     node: Mutex<RaftNode>,
@@ -311,7 +315,51 @@ impl ClusterMember {
             .accept_once(crate::MAX_FRAME_BYTES)
             .await
             .map_err(ClusterError::Transport)?;
+        self.serve_incoming(incoming).await
+    }
 
+    /// Serve connections until `policy.shutdown` reads `true` (D4 in issue #23).
+    ///
+    /// The loop is `ptr_net::serve`. Each connection is stepped and answered by
+    /// exactly the code [`Self::serve_once`] runs; what that step produced for
+    /// **other** members is then delivered, which is the part of "this member's own
+    /// loop" `serve_once` leaves to its caller — after the answer has gone, so this
+    /// member never dials a peer while that peer waits on it. A member that does not
+    /// answer is left for the next round, as everywhere else in this crate.
+    ///
+    /// A refused frame — an unadmitted peer, a forged sender — is answered with an
+    /// empty batch and counted as failed, and the loop goes on serving: a refusal is
+    /// not a reason to stop answering the members that are admitted. No tick runs
+    /// here; when this member's clock advances is still the caller's decision.
+    pub async fn serve(self: &Arc<Self>, policy: ServePolicy) -> Result<ServeReport, ServeError> {
+        let member = Arc::clone(self);
+        ptr_net::serve(
+            &self.transport,
+            crate::MAX_FRAME_BYTES,
+            policy,
+            move |incoming| {
+                let member = Arc::clone(&member);
+                async move {
+                    let leftover = member
+                        .serve_incoming(incoming)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    member
+                        .drive(leftover)
+                        .await
+                        .map(drop)
+                        .map_err(|error| error.to_string())
+                }
+            },
+        )
+        .await
+    }
+
+    /// Step and answer one connection that has already been accepted and read.
+    async fn serve_incoming(
+        &self,
+        incoming: IrohIncoming,
+    ) -> Result<Vec<RaftMessage>, ClusterError> {
         // The sender is the connection, not the payload. Everything below depends
         // on this line: a peer may write any id into a raft message, and a receiver
         // that trusts it accepts votes and appends from a member that never sent

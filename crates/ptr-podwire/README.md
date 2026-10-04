@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 4 Rust source files · 3898 nonblank source lines · 3 integration-test files · 50 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 4 Rust source files · 3807 nonblank source lines · 3 integration-test files · 51 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- PodHost::serve (D4 in issue #23) runs exactly serve_once's per-connection code under ptr_net::serve with the host's ServePolicy; serve_once_v2 and the session path now share one per-connection function instead of two copies
 - Signed answers (D2 in issue #23): the host signs every answer, refusals included, in all three layouts with its endpoint key through ptr-net's NodeSigner; the signed message is the tag ptr-pod-answer/v1 and its NUL terminator followed by every frame byte before the signature, so the layout version, responder, request id, request digest, outcome and output or refusal code — and for V2/V3 the echoed generation, revision, state binding, identity digest, session id, policy revision, address binding and execution manifest — are all covered. The signature attests that host R stated outcome O for request X bound to digest D, and not that the output is correct, nor anything about another principal, nor when, nor that R is still trusted; a rotated key is a new identity
 - Answers are numbered apart from requests: SIGNED_ANSWER_V1/V2/V3 (4, 5, 6) are the signed layouts, requests keep FORMAT_V1/V2/V3, and an answer in an old unsigned layout is refused by name (FrameError::UnsignedAnswer, PTR_PODW_UNSIGNED_ANSWER) rather than as an unknown version
 - verify_answer and verify_answer_v2 (bytes, &NodeId) work without a transport and are the only way to read an answer out of bytes: they refuse a frame that is not a signed answer of their layouts, then an answer naming another responder (AnswerError::WrongResponder), then a bad signature (AnswerError::BadSignature); PodClient and PodSession run them against the key the connection authenticated before reading the outcome, mapping a wrong author onto the existing ForgedAnswer and a bad signature onto PodWireError::BadSignature, and a session marks a request whose answer does not verify uncertain
@@ -54,7 +55,7 @@
 - A record of when a key was admitted: a signed answer outlives its responder's admission, and whether an answer from a since-withdrawn host still counts is the verifier's policy with nothing here to consult
 - A journaled access policy: the scope table is in memory, so it does not survive a restart and nothing records who was admitted to which project when
 - Discovery: which address belongs to an id nobody told you is a mechanism choice with its own trust question, recorded as the owner's rather than invented
-- An accept loop a deployment would run, including backpressure toward a peer that asks faster than the host can answer
+- An accept loop for generation-bound V2 requests: serve runs the V1 path; V2 is still served by serve_once_v2 and serve_session_v2. And backpressure per peer: the loop's limit is per service
 - Session reuse by default: PodClient::request and request_v2 still open a connection per request; reuse is opt-in through PodSession, and the in-flight bound's Backpressure error is not exercised by any test in this crate
 - Streaming, cancellation and partial answers: one request, one bounded answer
 - Any claim about latency, throughput or behaviour under load; the tests establish protocol and isolation properties on localhost
@@ -62,7 +63,6 @@
 ### Next milestones
 
 - Decide whether the access policy and the execution admission policy share one durability story before journaling either
-- Decide where the accept loop belongs before adding one, since a loop in the wrong place makes the scheduling implicit again
 
 ### Linked experiments
 
@@ -79,6 +79,7 @@
 
 ### Current automated checks
 
+- the_accept_loop_answers_as_serve_once_does_until_shutdown: under serve an admitted peer is answered, a stranger is refused NotAdmitted on its connection, both are counted as handled, the Pod runs once, and after shutdown nothing is answered and no Pod runs
 - frame tests: a_stored_answer_verifies_offline_and_a_change_to_any_field_is_refused (each V1 field and each V2/V3 echoed field edited after signing, and every single bit of a stored V1 frame and one bit in every byte of a stored V3 frame, refused, with the untouched answers verifying as the control), an_answer_signed_by_another_key_or_readdressed_to_another_responder_is_refused (and a V1 answer refused by the V2 reader), an_unsigned_answer_from_an_earlier_build_is_refused_by_version (all three old layouts, with each signed frame as the control)
 - wire test an_answer_with_a_bad_signature_from_an_otherwise_honest_endpoint_is_refused: over a real connection, a one-shot request and a reused session each refuse an answer from the authenticated peer signed by another key, the session marking the request uncertain, with the same endpoint signing with its own key as the control; a malformed request's answer is verified from the stored bytes and the host's id alone
 - two peers send byte-identical frames over two real connections to one host and reach two different projects' Pods, each Pod running exactly once
