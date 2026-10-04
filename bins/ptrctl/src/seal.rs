@@ -7,21 +7,18 @@
 //! and its binding have until now been produced by different programs, and why a
 //! checkpoint could reach a loader having never been bound at all.
 //!
-//! This is the step that joins them. It refuses before it writes: a declaration
-//! naming a key the journal does not have, or an artifact whose assignment this
-//! build cannot reproduce, leaves no output behind, because a half-written seal
-//! beside a checkpoint is worse than no seal — it looks like the binding
-//! succeeded.
-//!
-//! The anchor is written to a **separate** file on purpose. A digest read back out
-//! of the artifact it describes proves nothing; the anchor is only evidence while
-//! it is retained somewhere the artifact cannot rewrite.
+//! This command is the step that joins them for a checkpoint another program has
+//! already saved. What the step *is* — bind, seal, write the sealed artifact and its
+//! separately retained anchor, refusing before writing and leaving nothing behind
+//! when a write fails — lives in `ptr_runtime::neural` as
+//! `PtrRuntime::seal_checkpoint`, because a trainer that seals as it saves
+//! (`ptr-a0-bridge`'s `save_bound_checkpoint`) has to do exactly the same thing.
+//! What is left here is reading the declaration file and opening the journal.
 use ptr_config::PtrConfig;
-use ptr_runtime::neural::{NeuralAnchor, StateDeclaration};
+use ptr_runtime::neural::{NeuralAnchor, SealCheckpointError, SealTargets, StateDeclaration};
 use ptr_runtime::PtrRuntime;
 use ptr_types::{CodeFamily, CodebookVersion, ProvenanceRef};
 use serde::Deserialize;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// What the trainer declares about the checkpoint it just wrote.
@@ -105,52 +102,34 @@ pub fn seal(request: &SealRequest) -> Result<NeuralAnchor, String> {
     let runtime = PtrRuntime::open_durable(PtrConfig::default(), &request.journal)
         .map_err(|error| format!("cannot open journal {}: {error:?}", show(&request.journal)))?;
 
-    let state = runtime
-        .bind_checkpoint(&bytes, &declaration, &required)
-        .map_err(|error| format!("refused to bind {}: {error:?}", show(&request.checkpoint)))?;
-
-    let sealed = state
-        .seal()
-        .map_err(|error| format!("cannot seal {}: {error:?}", show(&request.checkpoint)))?;
-
-    // The two files have to arrive together or not at all. An anchor describing a
-    // sealed file that is not there points at nothing; a sealed file whose anchor
-    // was never retained cannot be reopened and still *reads* as a successful
-    // binding to anything that finds it, which is the worse of the two.
-    //
-    // They cannot be written atomically as a pair, so the second failing undoes
-    // the first.
-    std::fs::write(&request.out, sealed.bytes())
-        .map_err(|error| format!("cannot write {}: {error}", show(&request.out)))?;
-    let anchor = sealed.anchor();
-    if let Err(error) = std::fs::write(&request.anchor, anchor_toml(&request.out, anchor)) {
-        let _ = std::fs::remove_file(&request.out);
-        return Err(format!("cannot write {}: {error}", show(&request.anchor)));
-    }
-
-    Ok(anchor)
-}
-
-/// The retained form of an anchor: what it describes, and the three fields that
-/// identify it.
-fn anchor_toml(sealed: &Path, anchor: NeuralAnchor) -> String {
-    let mut text = String::new();
-    text.push_str("# Retained outside the artifact it describes. A digest read back\n");
-    text.push_str("# out of that artifact would prove nothing.\n");
-    let _ = writeln!(text, "sealed = {:?}", show(sealed));
-    let _ = writeln!(text, "codebook = {}", anchor.codebook.0);
-    let _ = writeln!(text, "journal_index = {}", anchor.journal.index.0);
-    let _ = writeln!(text, "journal_digest = {:?}", hex(&anchor.journal.digest));
-    let _ = writeln!(text, "digest = {:?}", hex(&anchor.digest));
-    text
-}
-
-fn hex(bytes: &[u8; 32]) -> String {
-    let mut text = String::with_capacity(64);
-    for byte in bytes {
-        let _ = write!(text, "{byte:02x}");
-    }
-    text
+    // Binding, sealing and writing both files is the runtime's one sealed-save step,
+    // which a trainer that seals as it saves calls too, so this command and that
+    // trainer cannot come to disagree about what a seal is. It refuses before it
+    // writes, installs each file whole, and removes the sealed artifact again if
+    // its anchor cannot be retained. The checkpoint itself is not rewritten: this
+    // command only checks bytes another program saved.
+    runtime
+        .seal_checkpoint(
+            &bytes,
+            &declaration,
+            &required,
+            &SealTargets {
+                checkpoint: None,
+                sealed: &request.out,
+                anchor: &request.anchor,
+            },
+        )
+        .map_err(|error| match error {
+            SealCheckpointError::Bind(error) => {
+                format!("refused to bind {}: {error:?}", show(&request.checkpoint))
+            }
+            SealCheckpointError::Seal(error) => {
+                format!("cannot seal {}: {error:?}", show(&request.checkpoint))
+            }
+            SealCheckpointError::Write { path, error } => {
+                format!("cannot write {}: {error}", show(&path))
+            }
+        })
 }
 
 fn read(path: &Path) -> Result<String, String> {

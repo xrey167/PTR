@@ -44,6 +44,12 @@ use ptr_types::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod retain;
+pub use retain::{
+    parse_retained_anchor, retained_anchor, RetainedAnchor, RetainedAnchorError,
+    SealCheckpointError, SealTargets,
+};
+
 const MAGIC: &[u8; 8] = b"PTRNEU01";
 const BINDING_MAGIC: &[u8; 8] = b"PTRNB001";
 const HEADER: usize = 32;
