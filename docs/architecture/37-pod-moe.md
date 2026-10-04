@@ -4,8 +4,8 @@ Status: **design**. Nothing in this document is implemented as a Pod-MoE. The pi
 it builds on exist as prototypes (`ptr-lineage`, `ptr-branch`, `ptr-router`,
 `ptr-pods`, `ptr-verifier`, see [35](35-agentic-substrate.md)); the parts marked
 *new* below do not exist yet. The base model is OLMoE-1B-7B. Training runs in Python
-(TRL/PEFT, later verl) with PTR governance reached through a Rust binding
-(`bindings/ptr-py`, PyO3). The first increment produces only contracts and a CPU
+(TRL/PEFT, later verl) with PTR governance reached through a **planned** Rust
+binding (`bindings/ptr-py`, PyO3; a separate work package, not in the tree). The first increment produces only contracts and a CPU
 smoke pipeline: **no quality claim is made**, and every claim beyond the cited code is an
 experiment (§5) with a falsification rule, per invariant 15.
 
@@ -23,8 +23,17 @@ at every level.
 | Level | Unit | Where it runs | Router | Evaluation / decision |
 |---|---|---|---|---|
 | L1 token | Frozen OLMoE base experts plus routed LoRA experts (PERFT-R) per layer | **In-process**, per token per layer; network latency is impossible here | Learned top-k router with auxiliary-loss-free bias | Training metrics (§5) and the lifecycle gates (§4) |
-| L2 segment / request | Whole models or adapter sets as networked pods over PodWire ([33](33-pod-wire.md)) | Separate pods, one routing decision per call | Learned router in `ptr-router` (Router-R1 / RouteLLM style) | Offline evaluation with the arbiter's off-policy estimators (`evaluate_off_policy`, `crates/ptr-branch/src/arbiter.rs:1027`) |
+| L2 segment / request | Whole models or adapter sets as networked pods over PodWire ([33](33-pod-wire.md)) | Separate pods, one routing decision per call | Learned router in `ptr-router` (Router-R1 / RouteLLM style) | Offline evaluation needs a *new* contextual-routing log and categorical estimator (see below) |
 | L3 meta | Structural operators Birth, Merge, Split, Freeze, Reactivate, Prune, Retire | Policy / agent pods | None; it proposes | Proposals are decided by the verifier and the gates, never by the policy |
+
+`evaluate_off_policy` (`crates/ptr-branch/src/arbiter.rs:1027`) cannot evaluate L2:
+it is specific to the fixed `TriageDecision` action space (`AutoPropose` / Escalate /
+Discard, `arbiter.rs:13`) and cannot score a categorical choice among pods. L2 needs
+a **new** contextual-routing log (request features, candidate set, chosen pod, and
+the logging propensity as the `RoutedChoice` of `ptr-router`'s `Router` trait
+reports it, a validated `Propensity` of the chosen pod in (0, 1]) and a categorical
+IPS / SNIPS / doubly-robust estimator. The
+arbiter's estimators are a template only.
 
 Token-level experts must be co-located, because every MoE layer finishes routing
 before the next layer starts. Request-level experts can be networked services,
@@ -94,7 +103,9 @@ below exists yet.
 - **RLVR.** Reward is the `ptr-verifier` `VerificationReport` (status Pass/Fail plus
   `score`; `crates/ptr-verifier/src/lib.rs:19`). Arms: GRPO (clip-higher), GRPO with
   routing replay, GSPO, SAPO, REINFORCE++. Factors: mini-steps 1 versus 4 (at 1
-  mini-step the arms coincide, which is the null control) and same versus separate
+  mini-step GRPO, GSPO and SAPO coincide, which is the null control among those
+  three; REINFORCE++ uses a different advantage estimator, global batch
+  normalisation, and is excluded from it) and same versus separate
   rollout engine (R3). At least 3 seeds. Collapse is defined before the runs.
 - **Distillation control** with pass@k up to 256. HSD later (no code).
 - **Routing alignment** (RA-MoE adapted to tasks) as an ablation. MTP deferred.
@@ -116,11 +127,13 @@ below exists yet.
 
 ## 6. Rust binding
 
-`bindings/ptr-py` is a PyO3/maturin crate in its own workspace, excluded from the
-root workspace like `model/burn-a0` (root `Cargo.toml:7`). It exposes
+`bindings/ptr-py` is **planned** (a separate work package and PR; the directory does
+not exist yet). It will be a PyO3/maturin crate in its own workspace, and the root
+`Cargo.toml` `exclude` list (`Cargo.toml:6`, today `fuzz`, `model/burn-a0`, `vendor/*`)
+will be extended to exclude it like `model/burn-a0`. It is intended to expose
 `ForgettingGate` evaluate, `measure_interference` / `subspace_overlap` /
-`chance_overlap`, `ties_merge` and `aimer_score`. Python calls it at every
-lifecycle gate; the import is guarded so the CPU smoke pipeline still runs without
+`chance_overlap`, `ties_merge` and `aimer_score`. Python is to call it at every
+lifecycle gate; the import will be guarded so the CPU smoke pipeline still runs without
 the extension, reporting the gate as not evaluated rather than passed.
 
 ## 7. Verified literature
@@ -214,8 +227,8 @@ The policy has no edge into `GATES`: it only proposes.
   there are no quality claims until GPU runs exist.
 - TRL API version drift: the training scripts must pin versions and the smoke test
   must fail loudly on a signature change.
-- The PyO3 binding is not built by `ci.yml` yet; until a job exists, a break in
-  `bindings/ptr-py` is invisible to CI.
+- The planned PyO3 binding will not be built by `ci.yml` until a job is added; until
+  then a break in `bindings/ptr-py` would be invisible to CI.
 - The L3 policy must never gain write access to gates, thresholds or the verifier.
   This is the claim R011 tries to falsify, and it holds only as long as
   `ExpertProposal` stays free of such parameters.

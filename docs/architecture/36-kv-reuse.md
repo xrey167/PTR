@@ -59,7 +59,12 @@ Around it in the runtime and memory crates:
   `TierObjectManifest` (`tier.rs:113`).
 - `proto/podwire.proto` deliberately removed `session_id` (`:6-13`, number and name reserved).
   **A KV handle must never cross the wire**; only activations and policy do
-  (doc 33).
+  (doc 33). Today this is a **design rule, not an enforced guarantee**: removing
+  `session_id` does not stop KV material from crossing PodWire, because
+  `TypedPayload` is an arbitrary `type_id` plus bytes (`crates/ptr-protocol/src/lib.rs:16-19`)
+  and the `PodCall` conversion checks only that the type id is non-empty
+  (`crates/ptr-protocol/src/lib.rs:61-85`, `MissingTypeId` at `:73`). Enforcement is
+  phase P5a.
 
 ### Five defects that block reuse
 
@@ -156,12 +161,32 @@ struct KvReusePolicy { allow_approximate: bool } // default: false
 
 - **Exact** means the logits are bitwise equal to a full prefill of the same
   tokens under the same numerics. Only Exact reuse is admitted by default.
-- **Approximate** reuse (positional re-encoding, selective recompute, lossy tiers,
-  non-dropless MoE) is admitted only when `allow_approximate` is set, and a run that
-  used it may only produce **candidates**.
+  The one **proven** Exact case is positional reuse with pre-RoPE keys in a
+  **single-layer** model, and only once R006 has passed.
+- **Approximate** reuse is admitted only when `allow_approximate` is set, and a run
+  that used it may only produce **candidates**. Approximate are: positional
+  re-encoding in multi-layer models, selective recompute, lossy tiers and
+  non-dropless MoE.
 - An effectful action reachable from a run with Approximate reuse fails with
   `RuntimeError::ApproximateStateAtEffectBoundary`.
-- The mode is recorded in provenance of the result.
+- The mode is recorded in provenance of the result, **but provenance alone does not
+  enforce the effect boundary** (next rule).
+
+**Design rule: the mode must travel with the action.** Today the runtime copies a
+bare `ActionIr` out of `ModelEvent::ActionReady` into `ResumableRun::action`
+(`crates/ptr-runtime/src/lib.rs:1446-1473`, assignment at `:1472`; field at `:567`),
+and `authorize_action` receives only that action (`:1558`), so a mode kept only in
+result provenance is lost before authorization. Therefore:
+
+- a `KvReuseTaint` (the mode, plus the reuse report digest) is carried with every
+  model event and with `ResumableRun::action`;
+- action admission and `authorize_action` check it and deny an Approximate-tainted
+  action with `ApproximateStateAtEffectBoundary`;
+- taint propagates **transitively**: a candidate derived from an Approximate run
+  stays tainted until it is recomputed Exact.
+
+This is phase P2a below; until it exists the effect-boundary sentence above is a
+design rule, not an enforced guarantee.
 
 This applies invariant #5 (a cache cannot self-promote to truth), #7 (hard effect
 boundary) and #11 (a learned or approximate signal cannot override a deterministic
@@ -177,15 +202,25 @@ experts, which run after attention. So a cache key is a chain over layers:
 ```
 chain(l) = H( chain(l-1),
               all weights of layer l-1 incl. router, experts, adapters, + their generations,
+              every transformation applied to the residual stream before layer l's
+                K/V projections (pre-attention norm weights, eps/config), + generations,
               K/V weights of layer l incl. adapter,
               numerics config: dtype, quantization, kernel set / batch-invariance,
                                TP/EP layout, inter-pod activation precision )
 ```
 
+General rule: the key covers **every transformation applied to the residual stream
+before layer l's K/V projections, with its configuration and generation**. In the
+Qwen2 reference path that includes `input_layernorm` and `rms_norm_eps`, which
+`Qwen2PagedDecoder` applies before the K and V projections
+(`crates/ptr-pods/src/qwen.rs:313-321`, weights field at `:115`); changing them
+changes K and V of layer l even though no K/V weight changed.
+
 Consequences:
 
 | Change | Layers invalidated |
 |---|---|
+| pre-attention norm weights or eps at layer k | layers >= k |
 | QKV-LoRA attached at layer k | layers >= k |
 | Q-only or MLP-only LoRA at layer k | layers >= k+1 |
 | aLoRA | every layer before the invocation token is shared with the base |
@@ -226,11 +261,12 @@ experiment that can fail.
 | P0 | this document, experiment records | none |
 | P1 | token-aware contract in `ptr-model-api`: `TokenId`, `Tokenizer` trait, `ByteTokenizer`, `PromptSegment` (with `content_digest` and source `Raw` / `Semantic` / `Memory`), `SegmentedModelRequest`, `KvReuseHint`, `KvReuseReport`, `ModelRun`, and a **new trait** `KvReusingBackend`. Existing backends are untouched. A real HF tokenizer comes later in a new crate `ptr-tokenizers` | contract tests only |
 | P2 | exact prefix reuse on CPU. A `retire_prefix` trait method with default `Unsupported` (the candle path is not compiled in CI). `ptr-runtime/src/kv_prefix.rs`: `KvPrefixCatalog`, a radix tree over `KvChunkKey { parent, chunk (16 tokens), salt }` with `salt = H(principal, execution manifest, model, adapter, tokenizer, schema)`; admission at the deepest node, then a walk back to the admitted ancestor; subtree invalidation; semdb `PreparedDelta::affected()` wired to `invalidate_inputs`; `ReferenceKvReuseBackend` | **R005 exact-prefix-reuse**: falsified by any bitwise difference against full prefill, any successful fork of a revoked generation, or a hit rate below 40% at 50% shared prefix |
+| P2a | `KvReuseTaint` carried with every model event and with `ResumableRun::action`, checked by action admission and `authorize_action`, propagated transitively to derived candidates (section C) | **R005** additionally falsified by any action admitted from a run whose reuse mode was Approximate |
 | P2b | LoRA layer sharing and aLoRA | **R009 layer-shared-lora-kv** |
 | P2c | MoE expert generations | **R010 moe-expert-kv-revocation** |
-| P3 | pre-RoPE keys: `KvKeyEncoding { PostRope, PreRope }` with a versioned digest; N-layer `Qwen2PagedStack` | **R006 positional-reuse-oracle** (one layer, bit-identical); **M009 approximate-chunk-reuse**, falsified if top-1 agreement is below 99% or the saving is below 2x at the best k |
+| P3 | pre-RoPE keys: `KvKeyEncoding { PostRope, PreRope }` with a versioned digest; N-layer `Qwen2PagedStack` | **R006 positional-reuse-oracle** (one layer, bit-identical); **M016 approximate-chunk-reuse**, falsified if top-1 agreement is below 99% or the saving is below 2x at the best k |
 | P4 | span eviction without hidden carry-over (Leyline FORGET) | **R007 span-forget**, falsified if the state differs from a fresh prefill without the span, or a canary token remains probeable |
-| P5a | pipeline and expert split | **E007 split-pod-kv** |
+| P5a | pipeline and expert split. Includes an explicit **wire-type denial**: KV handle, page and state type ids are rejected by `ptr-protocol` conversion and by PodWire admission, with a test. Until it lands, "no KV handle on the wire" is a design rule, not an enforced guarantee (section A) | **E007 split-pod-kv** (its `wire_kv_handle_count` check depends on the denial) |
 | P5 | engine adapter crate `ptr-model-engine` (`vllm-http`, `sglang-http`); the salt is always taken from the **currently admitted** binding, so revocation works by unreachability; router cost term `KvReuseEstimate` | **E006 engine-prefix-reuse**, falsified if the TTFT gain is below 1.5x at 50% shared prefix, or any hit lands on a pre-revocation block |
 | P6 | lossy tier `TierObjectDomain::KvSnapshotLossy` | **R008 lossy-kv-tier**, falsified if memory reduction is below 2x at top-1 agreement of at least 98% |
 
@@ -282,8 +318,10 @@ flowchart LR
     K1 -->|"weights of layer 1"| K2["chain(2)"]
     K2 -->|"..."| KL["chain(l)"]
     N["numerics config\ndtype, kernels, TP/EP"] --> K0
+    PN["pre-attention norm of layer l\nweights, eps, generation"] --> KL
     KV["K/V weights of layer l\nincl. adapter"] --> KL
 ```
 
 A changed weight, adapter or expert generation at layer j changes `chain(l)` for
-every l > j (and for l = j when it touches K/V), and changes nothing below.
+every l > j (and for l = j when it touches the pre-attention norm or K/V), and
+changes nothing below.
