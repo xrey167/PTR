@@ -371,6 +371,45 @@ fn checked_route_passes_valid_candidate_and_wrapper_matches() {
     assert!(matches!(dynamic.route(&req), Ok(Some(_))));
 }
 
+struct NoneRouter;
+impl Router for NoneRouter {
+    fn route(&self, _: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RouteError> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn checked_route_rejects_false_no_candidate_result() {
+    let project = ProjectId::from("demo");
+    let registry = registry_with_unsupported(&project);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+
+    let err = route_checked(&NoneRouter, &req).unwrap_err();
+    assert!(matches!(err, RouteError::MissingChoice { candidates: 1 }));
+    assert!(err.to_string().contains("1 eligible candidates"));
+    assert!(matches!(
+        CheckedRouter::new(NoneRouter).route(&req),
+        Err(RouteError::MissingChoice { candidates: 1 })
+    ));
+}
+
+#[test]
+fn checked_route_passes_no_candidate_result_when_registry_is_empty() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &[]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+
+    assert!(matches!(route_checked(&NoneRouter, &req), Ok(None)));
+    assert!(matches!(
+        CheckedRouter::new(NoneRouter).route(&req),
+        Ok(None)
+    ));
+}
+
 #[test]
 fn checked_pod_router_behaves_exactly_like_unchecked() {
     let project = ProjectId::from("demo");

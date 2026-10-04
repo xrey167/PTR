@@ -17,7 +17,9 @@
 //! [`Router::route`] returns `Result<Option<RoutedChoice>, RouteError>`:
 //!
 //! - `Ok(Some(choice))`: a pod was chosen.
-//! - `Ok(None)`: the registry offers no candidate for the request. This is not a failure.
+//! - `Ok(None)`: the registry offers no candidate for the request. This is not a failure, and
+//!   it is reserved for that case: [`route_checked`] rejects `Ok(None)` while eligible
+//!   candidates exist with [`RouteError::MissingChoice`].
 //! - `Err(error)`: candidates may exist but the router failed (model inference, scoring,
 //!   sampling, or an invalid propensity). Callers must not treat this as "no candidate".
 //!
@@ -166,6 +168,9 @@ pub enum RouteError {
     /// The router chose a pod that is not an eligible candidate of the request (unknown to the
     /// registry, or lacking the capability or input type). Raised by [`route_checked`].
     IneligibleChoice { pod: PodId },
+    /// The router returned `Ok(None)` although the registry offers eligible candidates, which
+    /// the trait defines as "no candidate". Raised by [`route_checked`].
+    MissingChoice { candidates: usize },
 }
 
 impl RouteError {
@@ -193,6 +198,10 @@ impl fmt::Display for RouteError {
                     "router chose pod {pod:?}, which is not an eligible candidate"
                 )
             }
+            Self::MissingChoice { candidates } => write!(
+                f,
+                "router returned no choice although {candidates} eligible candidates exist"
+            ),
         }
     }
 }
@@ -202,7 +211,9 @@ impl std::error::Error for RouteError {
         match self {
             Self::Policy { source, .. } => Some(source.as_ref()),
             Self::InvalidPropensity(error) => Some(error),
-            Self::InvalidFeatures { .. } | Self::IneligibleChoice { .. } => None,
+            Self::InvalidFeatures { .. }
+            | Self::IneligibleChoice { .. }
+            | Self::MissingChoice { .. } => None,
         }
     }
 }
@@ -223,34 +234,38 @@ impl From<PropensityError> for RouteError {
 /// through [`route_checked`] (or a [`CheckedRouter`]) and never act on a raw `route` result.
 /// The eligibility check lives outside the policy so a policy cannot bypass it.
 pub trait Router {
-    /// Chooses a pod for the request. `Ok(None)` means the registry offers no candidate;
-    /// `Err` means the router itself failed. The choice is not validated here; see the trait
+    /// Chooses a pod for the request. `Ok(None)` means exclusively that the registry offers no
+    /// candidate (returning it while candidates exist is a contract violation that
+    /// [`route_checked`] rejects); `Err` means the router itself failed. The choice is not validated here; see the trait
     /// documentation.
     fn route(&self, request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RouteError>;
 }
 
 /// Routes through `router` and rejects any choice whose pod is not among
-/// `request.registry.candidates(project, capability, input_type)`.
+/// `request.registry.candidates(project, capability, input_type)`, and any `Ok(None)` while that
+/// set is nonempty.
 ///
 /// This is the trusted path: the candidate set is recomputed from the registry here, not taken
-/// from the policy. A rejected choice yields [`RouteError::IneligibleChoice`].
+/// from the policy. A rejected choice yields [`RouteError::IneligibleChoice`]; a false
+/// no-candidate result yields [`RouteError::MissingChoice`].
 pub fn route_checked<R: Router + ?Sized>(
     router: &R,
     request: &RouteRequest<'_>,
 ) -> Result<Option<RoutedChoice>, RouteError> {
-    let Some(choice) = router.route(request)? else {
-        return Ok(None);
-    };
-    let eligible = request
-        .registry
-        .candidates(request.project, request.capability, request.input_type)
-        .contains(&choice.route().pod_id);
-    if eligible {
-        Ok(Some(choice))
-    } else {
-        Err(RouteError::IneligibleChoice {
+    let result = router.route(request)?;
+    let candidates =
+        request
+            .registry
+            .candidates(request.project, request.capability, request.input_type);
+    match result {
+        None if candidates.is_empty() => Ok(None),
+        None => Err(RouteError::MissingChoice {
+            candidates: candidates.len(),
+        }),
+        Some(choice) if candidates.contains(&choice.route().pod_id) => Ok(Some(choice)),
+        Some(choice) => Err(RouteError::IneligibleChoice {
             pod: choice.into_route().pod_id,
-        })
+        }),
     }
 }
 
