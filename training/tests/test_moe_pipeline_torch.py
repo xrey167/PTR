@@ -205,6 +205,12 @@ class MoeTorchPipelineTests(unittest.TestCase):
                 self.assertTrue(seen["ref_equals_sft"])
                 self.assertTrue(seen["ref_nonzero"])  # reference carries the SFT state, not zero/base
                 self.assertTrue(out["kl_per_step"])
+                if arm == "sapo":
+                    self.assertIsNone(out["clip_ratio_per_step"])
+                    self.assertIn("sapo", out["clip_ratio_unavailable_reason"])
+                else:
+                    self.assertTrue(out["clip_ratio_per_step"])
+                    self.assertNotIn("clip_ratio_unavailable_reason", out)
                 self.assertNotIn("ref", model.peft_config)
         finally:
             rl_mod._assert_peft_reference = original
@@ -292,6 +298,58 @@ class MoeTorchPipelineTests(unittest.TestCase):
             data = pipeline.execute(small, Path(tmp))
         self.assertEqual(data["run"]["seed"], 5)
         self.assertEqual(data["model"]["seed"], 11)
+
+    def test_missing_kl_is_null_with_reason(self):
+        import dataclasses
+
+        from ptr_training.moe.rl import run_rl
+        from ptr_training.moe.tasks import generate_tasks
+
+        rl = dataclasses.replace(
+            self.cfg.rl, steps=1, mini_steps=1, num_generations=2, prompts_per_step=1,
+            beta=0.0,
+        )
+        model, tok = self.model_mod.build(self.cfg.model, self.cfg.lora)
+        out = run_rl(model, tok, generate_tasks(8, seed=2), "gspo", rl, seed=2)
+        self.assertIsNone(out["kl_per_step"])
+        self.assertIn("beta = 0", out["kl_unavailable_reason"])
+
+    def test_sft_only_run_never_snapshots_trainable_state(self):
+        import dataclasses
+        from unittest import mock
+
+        from ptr_training.moe import pipeline
+
+        small = dataclasses.replace(
+            self.cfg,
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(self.cfg.rl, algorithms=()),
+        )
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            self.model_mod, "trainable_state", side_effect=AssertionError("called")
+        ) as spy:
+            pipeline.execute(small, Path(tmp))
+        spy.assert_not_called()
+
+    def test_broken_binding_reported_as_error_and_flag(self):
+        import dataclasses
+        from unittest import mock
+
+        from ptr_training.moe import gates, pipeline
+
+        small = dataclasses.replace(
+            self.cfg,
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(self.cfg.rl, algorithms=()),
+        )
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            gates.importlib, "import_module", side_effect=OSError("bad ELF")
+        ):
+            data = pipeline.execute(small, Path(tmp))
+        self.assertEqual(data["ptr_py_installed"], "broken")
+        self.assertEqual(data["gates"]["init_to_sft"]["status"], "error")
+        self.assertIn("bad ELF", data["gates"]["init_to_sft"]["error"])
+        self.assertEqual(data["backend_selection"]["status"], "unselected")
 
     def test_no_flattening_when_binding_absent(self):
         import dataclasses

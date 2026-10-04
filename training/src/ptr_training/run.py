@@ -242,6 +242,16 @@ def main() -> None:
     elif not out.is_absolute():
         out = ROOT / out
 
+    if manifest["config"]["training"].get("backend") == "trl-moe":
+        # Component decision for training-backend is still `unlocked` and trl-peft is
+        # `to-evaluate` (evaluations/components/training-backend/candidates.toml).
+        manifest["backend_selection"] = {
+            "status": "unselected",
+            "component": "training-backend",
+            "candidate": "trl-peft",
+            "note": "unselected backend, pipeline evidence only",
+        }
+
     write_manifest(out, manifest)
     print(out.relative_to(ROOT))
 
@@ -257,6 +267,13 @@ def main() -> None:
                 "training backend is not selected; run manifest prepared but no weights were trained"
             )
         if backend == "trl-moe":
+            if manifest["config"]["training"].get("allow_unselected_backend") is not True:
+                raise SystemExit(
+                    "training backend 'trl-moe' is not selected (component training-backend is "
+                    "unlocked, candidate trl-peft is to-evaluate); set "
+                    "[training] allow_unselected_backend = true to run it as pipeline-smoke "
+                    "evidence only"
+                )
             raise SystemExit(_execute_trl_moe(manifest, config_path))
         raise SystemExit(f"training backend {backend!r} is not implemented yet")
 

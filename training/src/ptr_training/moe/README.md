@@ -149,6 +149,23 @@ router stays frozen.
   must be canonical decimal). `nan_check.nonfinite_parameters` records, per stage (after SFT,
   after each RL arm, checked before the SFT state is restored), the count and first names of
   parameters containing NaN/inf, and sets `nonfinite_values_found`.
+- Interference gate: expert deltas are reduced to their top-`moe.gates.subspace_rank` left
+  singular subspaces (pure-Python orthogonal iteration) before `subspace_overlap` /
+  `chance_overlap`, because full-rank subspaces of the ambient space overlap ~1.0 with chance
+  1.0. Each pair records `informative` (false if r >= ambient dim, chance_overlap >= 0.99, or the
+  binding call failed); layers and the report carry `interference_informative`. The binding's
+  `measure_interference` takes LoRA `(layer, B, A)` factors per adapter, not dense expert
+  deltas, so the two-argument overlap functions are the right entry point here.
+  `binding_version` comes from distribution metadata (`ptr_py` / `ptr-py`).
+- Metrics TRL does not log are `null` with a reason, not `[]`: `kl_per_step` (beta = 0) and
+  `clip_ratio_per_step` (TRL 1.14.1 logs no `clip_ratio/*` and no other gate metric for
+  `loss_type="sapo"`; checked in `grpo_trainer.py`), with `kl_unavailable_reason` /
+  `clip_ratio_unavailable_reason`.
+- `--execute` refuses `trl-moe` unless `[training] allow_unselected_backend = true` (only the
+  smoke config sets it): the training-backend component decision is `unlocked` and `trl-peft`
+  is `to-evaluate`, and `evaluations/DECISION_PROCESS.md` requires gate tests plus evidence
+  comparing at least two candidates before selection. Manifests and metrics carry
+  `backend_selection: "unselected backend, pipeline evidence only"`.
 - Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
 - `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
   actually present (PEFT may keep LoRA weights in fp32).

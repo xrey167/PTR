@@ -25,6 +25,12 @@ from ptr_training.moe.tasks import generate_heldout, generate_tasks
 
 EVIDENCE_CLASS = "pipeline-smoke"
 EVIDENCE_NOTE = "mechanism check only, not evidence"
+BACKEND_SELECTION = {
+    "status": "unselected",
+    "component": "training-backend",
+    "candidate": "trl-peft",
+    "note": "unselected backend, pipeline evidence only",
+}
 ROOT = Path(__file__).resolve().parents[4]
 
 
@@ -271,8 +277,8 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         evals["init"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
 
     track_gates = cfg.model.kind == "tiny-random" and not cfg.lora.enabled
-    gate_skip = gates.binding_skip_reason() if track_gates else None
-    run_gate_calls = track_gates and gate_skip is None  # never flatten weights nobody will read
+    gate_problem = gates.binding_problem() if track_gates else None
+    run_gate_calls = track_gates and gate_problem is None  # never flatten weights nobody reads
     w_init = gates.flatten_experts(model) if run_gate_calls else None
 
     torch.manual_seed(seed)
@@ -283,7 +289,8 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         snap("after_sft")
         evals["after_sft"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
     w_sft = gates.flatten_experts(model) if run_gate_calls else None
-    sft_state = model_mod.trainable_state(model)
+    # Only needed to restore the SFT starting point before each RL arm.
+    sft_state = model_mod.trainable_state(model) if cfg.rl.algorithms else None
 
     rl_results: dict = {}
     churn = {"init_to_after_sft": churn_between("init", "after_sft")}
@@ -303,16 +310,20 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
             with _Timer(timings, f"gates_{algo}"):
                 if run_gate_calls:
                     gate_reports[f"sft_to_rl_{algo}"] = _gate_status(
-                        gates.run_gates(w_sft, gates.flatten_experts(model))
+                        gates.run_gates(
+                            w_sft, gates.flatten_experts(model), subspace_rank=cfg.gates.subspace_rank
+                        )
                     )
                 else:
-                    gate_reports[f"sft_to_rl_{algo}"] = {"status": "skipped", "reason": gate_skip}
+                    gate_reports[f"sft_to_rl_{algo}"] = dict(gate_problem)
     if track_gates:
         with _Timer(timings, "gates_sft"):
             gate_reports["init_to_sft"] = (
-                _gate_status(gates.run_gates(w_init, w_sft))
+                _gate_status(
+                    gates.run_gates(w_init, w_sft, subspace_rank=cfg.gates.subspace_rank)
+                )
                 if run_gate_calls
-                else {"status": "skipped", "reason": gate_skip}
+                else dict(gate_problem)
             )
     else:
         gate_reports = {"status": "skipped", "reason": "gates not run for pretrained/LoRA models"}
@@ -357,7 +368,10 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         "routing_churn": churn,
         "router_errors": router_errors,
         "gates": gate_reports,
-        "ptr_py_installed": gates.load_binding() is not None,
+        "ptr_py_installed": {"installed": True, "absent": False, "broken": "broken"}[
+            gates.binding_state()[0]
+        ],
+        "backend_selection": BACKEND_SELECTION,
         **(extra or {}),
     }
     flags: list = []

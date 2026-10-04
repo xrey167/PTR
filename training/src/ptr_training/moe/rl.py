@@ -171,6 +171,13 @@ def _clean(value):
     return value if isinstance(value, (int, float, str, bool)) or value is None else str(value)
 
 
+def _series(out: dict, steps: list, field: str, key: str, reason: str) -> None:
+    values = [h[key] for h in steps if key in h]
+    out[field] = values or None
+    if not values:
+        out[f"{field.removesuffix('_per_step')}_unavailable_reason"] = reason
+
+
 def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, seed: int) -> dict:
     """Train `model` in place with `algorithm`; returns logs and summary statistics."""
     import torch
@@ -212,13 +219,18 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
     steps = [h for h in history if "reward" in h]
     numeric = [v for h in history for v in h.values() if isinstance(v, float)]
     keys = sorted({k for h in steps for k in h if isinstance(h[k], (int, float))})
-    return {
+    out = {
         "algorithm": algorithm,
         "grpo_overrides": grpo_overrides(algorithm, cfg),
         "log_history": history,
         "reward_per_step": [h["reward"] for h in steps],
-        "kl_per_step": [h["kl"] for h in steps if "kl" in h],
-        "clip_ratio_per_step": [h["clip_ratio/region_mean"] for h in steps if "clip_ratio/region_mean" in h],
         "logged_metric_keys": keys,
         "nan": any(math.isnan(v) or math.isinf(v) for v in numeric),
     }
+    # A metric TRL did not log is `null` plus a reason, never a silent empty list.
+    _series(out, steps, "kl_per_step", "kl",
+            "beta = 0: TRL logs no kl" if cfg.beta == 0 else "trl logged no kl")
+    _series(out, steps, "clip_ratio_per_step", "clip_ratio/region_mean",
+            "trl 1.14.1 logs no clip_ratio for loss_type=sapo" if algorithm == "sapo"
+            else "trl logged no clip_ratio/region_mean")
+    return out

@@ -21,7 +21,8 @@ _MODEL_KEYS = {
     "family", "config", "kind", "hf_id", "revision", "seed", "layers", "hidden", "intermediate",
     "heads", "experts", "top_k", "max_positions", "precision", "router_aux_loss_coef",
 }
-_MOE_KEYS = {"sft", "rl", "lora", "output"}
+_MOE_KEYS = {"sft", "rl", "lora", "output", "gates"}
+_GATES_KEYS = {"subspace_rank"}
 _SFT_KEYS = {"steps", "lr", "batch", "examples", "max_length"}
 _RL_KEYS = {
     "algorithms", "steps", "num_generations", "mini_steps", "beta", "epsilon", "epsilon_high",
@@ -155,6 +156,13 @@ class LoraConfig:
 
 
 @dataclass(frozen=True)
+class GatesConfig:
+    # Rank of the expert-delta subspaces compared by the interference gate. Full-rank
+    # subspaces of the ambient space always overlap ~1.0 (chance 1.0): uninformative.
+    subspace_rank: int = 4
+
+
+@dataclass(frozen=True)
 class MoeConfig:
     name: str
     seed: int
@@ -164,6 +172,8 @@ class MoeConfig:
     lora: LoraConfig
     output_dir: str
     probe_tokens: int = 64
+    gates: GatesConfig = field(default_factory=GatesConfig)
+    allow_unselected_backend: bool = False
     source_path: str | None = field(default=None, compare=False)
 
 
@@ -175,6 +185,7 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     if training.get("backend") != "trl-moe":
         raise ConfigError(f"[training].backend must be 'trl-moe', got {training.get('backend')!r}")
 
+    allow_unselected = _get(training, "allow_unselected_backend", bool, "training", False)
     train_precision = training.get("precision")
     m = _table(raw, "model")
     _check_keys(m, _MODEL_KEYS, "model")
@@ -318,15 +329,22 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             f"moe.rl.max_completion_length ({rl.max_completion_length}) is below the longest "
             f"canonical answer + EOS over the task space ({longest_answer} tokens)"
         )
+    longest_prompt_tokens = longest_prompt_chars()  # 1 char = 1 token for the tiny tokenizer
     if kind == "tiny-random":
-        # positions needed: SFT sequences, and RL prompt + completion (also used by eval)
-        needed = max(sft.max_length, rl.max_prompt_length + rl.max_completion_length)
+        # Longest sequence the run builds: SFT sequences, and any task prompt plus a full
+        # generation (RL rollouts and the policy evaluation both generate max_completion_length).
+        needed = max(sft.max_length, longest_prompt_tokens + rl.max_completion_length)
         if needed > model.max_positions:
             raise ConfigError(
                 f"model.max_positions ({model.max_positions}) is below the longest sequence "
-                f"the run builds ({needed}: max of moe.sft.max_length and "
-                "moe.rl.max_prompt_length + moe.rl.max_completion_length)"
+                f"the run builds ({needed}: max of moe.sft.max_length and the longest task "
+                f"prompt ({longest_prompt_tokens}) + moe.rl.max_completion_length)"
             )
+    if algos and rl.max_prompt_length < longest_prompt_tokens and kind == "tiny-random":
+        raise ConfigError(
+            f"moe.rl.max_prompt_length ({rl.max_prompt_length}) is below the longest task "
+            f"prompt ({longest_prompt_tokens} tokens)"
+        )
     if rl.num_generations < 2:
         raise ConfigError("moe.rl.num_generations must be >= 2 (group-relative advantages)")
     if rl.beta < 0:
@@ -352,6 +370,18 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     if enabled and not (lora.target_modules or lora.target_parameters):
         raise ConfigError("moe.lora is enabled but has no target_modules or target_parameters")
 
+    g = _table(moe, "gates", required=False)
+    _check_keys(g, _GATES_KEYS, "moe.gates")
+    gates_cfg = GatesConfig(
+        subspace_rank=_positive(_get(g, "subspace_rank", int, "moe.gates", 4), "moe.gates.subspace_rank")
+    )
+    if kind == "tiny-random" and gates_cfg.subspace_rank >= min(model.hidden, model.intermediate):
+        raise ConfigError(
+            f"moe.gates.subspace_rank ({gates_cfg.subspace_rank}) must be below the expert delta "
+            f"dimensions (min(model.hidden, model.intermediate) = "
+            f"{min(model.hidden, model.intermediate)}): a full-rank comparison is uninformative"
+        )
+
     out = _table(moe, "output")
     _check_keys(out, _OUTPUT_KEYS, "moe.output")
     output_dir = _get(out, "dir", str, "moe.output")
@@ -364,6 +394,8 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         lora=lora,
         output_dir=output_dir,
         probe_tokens=_positive(_get(out, "probe_tokens", int, "moe.output", 64), "moe.output.probe_tokens"),
+        gates=gates_cfg,
+        allow_unselected_backend=allow_unselected,
         source_path=source_path,
     )
 

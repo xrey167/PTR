@@ -97,13 +97,110 @@ class MoeGatesTests(unittest.TestCase):
         skipped = {"status": "skipped", "reason": "r", "layers": []}
         self.assertEqual(_gate_status(skipped), skipped)
 
-    def test_skip_reason_helper(self):
-        with mock.patch.dict(sys.modules, {"ptr_py": None}):
-            self.assertEqual(gates.binding_skip_reason(), gates.SKIP_REASON)
+    def test_absent_binding_is_skipped_not_error(self):
+        for exc in (ModuleNotFoundError("x", name="ptr_py"),
+                    ModuleNotFoundError("x", name="ptr_py._native")):
+            with mock.patch.object(gates.importlib, "import_module", side_effect=exc):
+                self.assertEqual(gates.binding_state()[0], "absent")
+                self.assertEqual(gates.binding_problem()["status"], "skipped")
+                self.assertEqual(gates.run_gates(_weights(), _weights())["status"], "skipped")
+
+    def test_broken_binding_is_error_with_exception_text(self):
+        broken = (
+            ModuleNotFoundError("No module named 'numpy'", name="numpy"),
+            ImportError("libptr.so: cannot open shared object file"),
+            OSError("bad ELF header"),
+        )
+        for exc in broken:
+            with self.subTest(exc=repr(exc)), mock.patch.object(
+                gates.importlib, "import_module", side_effect=exc
+            ):
+                self.assertEqual(gates.binding_state()[0], "broken")
+                report = gates.run_gates(_weights(), _weights())
+                self.assertEqual(report["status"], "error")
+                self.assertIn(str(exc), report["error"])
+                self.assertIn("ptr_py import failed", report["error"])
+                self.assertIsNone(gates.load_binding())
+
+    def test_binding_problem_helper_with_stubs(self):
         with mock.patch.dict(sys.modules, {"ptr_py": types.ModuleType("ptr_py")}):
-            self.assertIn("lacks", gates.binding_skip_reason())
+            self.assertIn("lacks", gates.binding_problem()["reason"])
         with mock.patch.dict(sys.modules, {"ptr_py": self._stub()}):
-            self.assertIsNone(gates.binding_skip_reason())
+            self.assertIsNone(gates.binding_problem())
+
+    def _overlap_stub(self):
+        """Test double with the binding's chance formula max(rank)/dim (rank = #columns here)."""
+        stub = self._stub()
+        stub.subspace_overlap = lambda a, b: 0.5
+        stub.chance_overlap = lambda a, b: max(len(a[0]), len(b[0])) / len(a)
+        return stub
+
+    def _delta_weights(self, dim, k, seed):
+        import random
+
+        rng = random.Random(seed)
+        rows = [[rng.gauss(0, 1) for _ in range(k)] for _ in range(dim)]
+        return [_e([0.0, 0.0], rows)]
+
+    def test_top_left_subspace_recovers_dominant_directions(self):
+        m = [[5.0, 0, 0, 0], [0, 3.0, 0, 0], [0, 0, 0.1, 0], [0, 0, 0, 0.05]]
+        basis = gates.top_left_subspace(m, 2)  # dim x r row-major
+        self.assertEqual((len(basis), len(basis[0])), (4, 2))
+        for col in range(2):  # unit columns, supported on the first two coordinates
+            self.assertAlmostEqual(sum(row[col] ** 2 for row in basis), 1.0, places=6)
+            self.assertLess(sum(basis[i][col] ** 2 for i in (2, 3)), 1e-6)
+        self.assertEqual(gates.top_left_subspace([[0.0, 0.0], [0.0, 0.0]], 1), [])
+
+    def test_informative_flag_full_rank_vs_truncated(self):
+        # two experts per layer, 8x8 deltas (full rank in the 8-dim ambient space)
+        w0 = [[self._delta_weights(8, 8, 1)[0], self._delta_weights(8, 8, 2)[0]]]
+        w1 = [[_e([0.0, 0.0], [[0.0] * 8 for _ in range(8)]),
+               _e([0.0, 0.0], [[0.0] * 8 for _ in range(8)])]]
+        with mock.patch.dict(sys.modules, {"ptr_py": self._overlap_stub()}):
+            # full-rank comparison: chance = 8/8 = 1.0 -> not informative
+            full = gates.run_gates(w1, w0, max_pairs_per_layer=1)
+            pair = full["layers"][0]["delta_pairs"][0]
+            self.assertFalse(pair["informative"])
+            self.assertFalse(full["interference_informative"])
+            # truncated to r=2 of 8: chance = 0.25 -> informative
+            cut = gates.run_gates(w1, w0, max_pairs_per_layer=1, subspace_rank=2)
+            pair = cut["layers"][0]["delta_pairs"][0]
+            self.assertTrue(pair["informative"])
+            self.assertEqual((pair["subspace_rank"], pair["ambient_dim"]), (2, 8))
+            self.assertTrue(cut["interference_informative"])
+            # r >= ambient dim is never informative, whatever the binding says
+            wide = gates.run_gates(w1, w0, max_pairs_per_layer=1, subspace_rank=8)
+            self.assertFalse(wide["layers"][0]["delta_pairs"][0]["informative"])
+
+    def test_low_rank_inputs_are_informative_without_truncation(self):
+        w0 = [[self._delta_weights(8, 1, 1)[0], self._delta_weights(8, 1, 2)[0]]]
+        w1 = [[_e([0.0, 0.0], [[0.0] for _ in range(8)]) for _ in range(2)]]
+        with mock.patch.dict(sys.modules, {"ptr_py": self._overlap_stub()}):
+            report = gates.run_gates(w1, w0, max_pairs_per_layer=1)
+        self.assertTrue(report["layers"][0]["delta_pairs"][0]["informative"])
+
+    def test_zero_delta_with_truncation_is_not_informative(self):
+        z = [[_e([0.0, 0.0], [[0.0] * 4 for _ in range(4)]) for _ in range(2)]]
+        with mock.patch.dict(sys.modules, {"ptr_py": self._overlap_stub()}):
+            report = gates.run_gates(z, z, max_pairs_per_layer=1, subspace_rank=2)
+        pair = report["layers"][0]["delta_pairs"][0]
+        self.assertFalse(pair["informative"])
+        self.assertEqual(pair["subspace_overlap"]["status"], "skipped")
+
+    def test_binding_version_from_distribution_metadata(self):
+        stub = types.ModuleType("ptr_py")
+        with mock.patch.object(gates.metadata, "version", return_value="0.1.0"):
+            self.assertEqual(gates.binding_version(stub), "0.1.0")
+        stub.__version__ = "9.9"
+        err = gates.metadata.PackageNotFoundError("ptr_py")
+        with mock.patch.object(gates.metadata, "version", side_effect=err):
+            self.assertEqual(gates.binding_version(stub), "9.9")
+            self.assertEqual(gates.binding_version(types.ModuleType("ptr_py")), "unknown")
+        with mock.patch.dict(sys.modules, {"ptr_py": self._stub()}), mock.patch.object(
+            gates.metadata, "version", return_value="0.1.0"
+        ):
+            report = gates.run_gates(_weights(), _after())
+        self.assertEqual(report["binding_version"], "0.1.0")
 
     def test_binding_errors_are_recorded_not_hidden(self):
         stub = types.ModuleType("ptr_py")

@@ -33,6 +33,10 @@ precision = "fp32"
 
 [training]
 backend = "trl-moe"
+# Explicit opt-in: the training-backend component decision is still unlocked and trl-peft is
+# to-evaluate, so `--execute` refuses this backend unless a config says it knowingly runs an
+# unselected backend. Outputs are labelled "unselected backend, pipeline evidence only".
+allow_unselected_backend = true
 precision = "fp32"
 batch_size = 8
 gradient_accumulation = 1
@@ -76,6 +80,11 @@ temperature = 1.0
 
 [moe.lora]
 enabled = false
+
+# Interference gate compares the top-r left singular subspaces of each expert's down_proj
+# delta; full-rank subspaces of the 64-dim space overlap ~1.0 whatever happened (chance 1.0).
+[moe.gates]
+subspace_rank = 4
 
 [moe.output]
 dir = "training/runs/moe-smoke"

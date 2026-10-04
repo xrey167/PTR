@@ -197,11 +197,47 @@ class MoeConfigTests(unittest.TestCase):
             self.assertEqual(moe_config.parse(raw).seed, ok)
 
     def test_tiny_max_positions_must_cover_longest_sequence(self):
-        raw = self._mutate(lambda r: r["model"].update(max_positions=29))  # rl 16 + 14 = 30
+        # sft.max_length 26 and longest prompt 12 + max_completion_length 14 = 26
+        raw = self._mutate(lambda r: r["model"].update(max_positions=25))
         with self.assertRaisesRegex(ConfigError, "max_positions"):
             moe_config.parse(raw)
-        raw = self._mutate(lambda r: r["model"].update(max_positions=30))
+        raw = self._mutate(lambda r: r["model"].update(max_positions=26))
         moe_config.parse(raw)
+
+    def test_max_positions_review_example_rejected_even_without_rl(self):
+        def mutate(r):
+            r["model"]["max_positions"] = 15
+            r["moe"]["sft"]["max_length"] = 14
+            r["moe"]["rl"].update(max_prompt_length=1, max_completion_length=14, algorithms=[])
+
+        with self.assertRaisesRegex(ConfigError, "max_positions"):
+            moe_config.parse(self._mutate(mutate))
+
+    def test_max_prompt_length_must_cover_task_prompts_when_rl_runs(self):
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(max_prompt_length=11))
+        with self.assertRaisesRegex(ConfigError, "max_prompt_length"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(max_prompt_length=11, algorithms=[]))
+        moe_config.parse(raw)
+
+    def test_gates_subspace_rank(self):
+        self.assertEqual(moe_config.load(CONFIGS / "stage-moe-smoke.toml").gates.subspace_rank, 4)
+        for bad in (0, 64, 100):  # smoke: min(hidden, intermediate) = 64
+            raw = self._mutate(lambda r: r["moe"].setdefault("gates", {}).update(subspace_rank=bad))
+            with self.assertRaisesRegex(ConfigError, r"moe\.gates\.subspace_rank"):
+                moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"].setdefault("gates", {}).update(subspace_rnk=2))
+        with self.assertRaisesRegex(ConfigError, r"\[moe\.gates\]"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"].pop("gates"))
+        self.assertEqual(moe_config.parse(raw).gates.subspace_rank, 4)
+
+    def test_allow_unselected_backend_flag(self):
+        self.assertTrue(moe_config.load(CONFIGS / "stage-moe-smoke.toml").allow_unselected_backend)
+        self.assertFalse(moe_config.load(CONFIGS / "stage-moe-olmoe.toml").allow_unselected_backend)
+        raw = self._mutate(lambda r: r["training"].update(allow_unselected_backend="yes"))
+        with self.assertRaisesRegex(ConfigError, "allow_unselected_backend"):
+            moe_config.parse(raw)
 
     def test_head_dim_must_be_even(self):
         raw = self._mutate(lambda r: r["model"].update(hidden=60, heads=4))  # head dim 15
