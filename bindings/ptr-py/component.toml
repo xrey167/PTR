@@ -1,0 +1,33 @@
+version = 1
+id = "ptr-py"
+maturity = "prototype"
+last_reviewed = "2026-10-04"
+
+implemented = [
+  "PyO3 (abi3-py311) extension module ptr_py over ptr-lineage, built by maturin in its own excluded Cargo workspace: aimer_score, rank_experts_for_pruning, subspace_overlap, chance_overlap, measure_interference, ties_merge and forgetting_gate_evaluate, taking and returning plain Python types (lists, nested row-major lists, tuples, dicts)",
+  "Every LineageError becomes PtrLineageError (a ValueError) whose message is the Rust error code and Display text; malformed Python shapes (ragged rows) are ValueError before reaching Rust",
+  "The gate decides: forgetting_gate_evaluate returns the ForgettingGate verdict, violations and accuracy-matrix metrics unchanged, and the bindings add no thresholds or logic of their own",
+]
+
+missing = [
+  "Lineage registry (register, gate, serve, retire) and replay pool from Python",
+  "Published wheels; the module is built locally by make py-bindings",
+  "Caller in training/src/ptr_training/moe/gates.py (guarded import) is owned by the training package",
+]
+
+next = [
+  "Wire the guarded import in the MoE gates and compare its results with the pure-Python fallback",
+]
+
+experiments = [
+]
+
+evaluations = [
+]
+
+decisions = [
+]
+
+checks = [
+  "make py-bindings",
+]
