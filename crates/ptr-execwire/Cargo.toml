@@ -12,7 +12,6 @@ default = []
 # ptr-net keeps its own backend out.
 execwire-backend = [
   "dep:ptr-runtime",
-  "dep:ptr-net",
   "dep:tokio",
   "ptr-net/iroh-backend",
 ]
@@ -26,12 +25,18 @@ ptr-core = { workspace = true }
 # bytes they are both taken over.
 sha2 = { version = "=0.11.0", default-features = false }
 ptr-runtime = { workspace = true, optional = true }
-ptr-net = { workspace = true, optional = true }
+# The base only, for signing and verifying a receipt with the endpoint key (D2 in
+# issue #23): `verify_receipt` works without a transport, so a stored receipt can be
+# checked by a process that never opens a socket. The transport itself is the
+# `execwire-backend` feature.
+ptr-net = { workspace = true }
 # Only for a deadline on one exchange. How long to wait for an answer is this
 # layer's policy, so the clock belongs here rather than in the transport.
 tokio = { workspace = true, optional = true, features = ["time"] }
 
 [dev-dependencies]
+# `NodeSigner::from_test_seed`, for frame tests that sign without a network.
+ptr-net = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true }
 ptr-config = { workspace = true }
 ptr-verifier = { workspace = true }

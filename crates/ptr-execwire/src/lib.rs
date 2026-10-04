@@ -24,9 +24,9 @@
 mod frame;
 
 pub use frame::{
-    decode_receipt, decode_request, encode_receipt, encode_request, request_digest, FrameError,
-    RefusalCode, WireOutcome, WireReceipt, WireRequest, FORMAT_V1, MAX_BODY_BYTES, MAX_FIELD_BYTES,
-    MAX_FRAME_BYTES,
+    decode_request, encode_receipt, encode_request, request_digest, verify_receipt, FrameError,
+    ReceiptError, RefusalCode, WireOutcome, WireReceipt, WireRequest, FORMAT_V1, MAX_BODY_BYTES,
+    MAX_FIELD_BYTES, MAX_FRAME_BYTES, RECEIPT_DOMAIN, RECEIPT_FORMAT_V2,
 };
 
 #[cfg(feature = "execwire-backend")]

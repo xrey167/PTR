@@ -3,6 +3,9 @@ use ptr_types::NodeId;
 mod authenticated;
 pub use authenticated::AuthenticatedPeer;
 
+mod signing;
+pub use signing::{verify, NodeSigner, SigningDomain, SIGNATURE_BYTES};
+
 mod mesh;
 pub use mesh::{
     MembershipState, MeshEndpoint, MeshError, MeshInvitation, MeshMembership, MeshPeerIdentity,
@@ -51,7 +54,7 @@ pub trait Transport {
 
 #[cfg(feature = "iroh-backend")]
 mod iroh_backend {
-    use super::{AuthenticatedPeer, NodeIdentity};
+    use super::{AuthenticatedPeer, NodeIdentity, NodeSigner};
     use iroh::{
         endpoint::{Connection, SendStream},
         Endpoint, EndpointAddr,
@@ -134,6 +137,16 @@ mod iroh_backend {
                 id: NodeId(public_key.clone()),
                 public_key,
             }
+        }
+
+        /// A signer over this endpoint's own key (D2 in issue #23).
+        ///
+        /// The key that signs is the key the QUIC handshake proves, so a statement
+        /// this signer makes is attributable to exactly the identity a connection to
+        /// this endpoint authenticates — and to no other. The secret never leaves
+        /// `ptr-net`: the signer signs under a domain and has no accessor for it.
+        pub fn signer(&self) -> NodeSigner {
+            NodeSigner::from_secret(&self.endpoint.secret_key().to_bytes())
         }
 
         pub fn direct_addr(&self) -> EndpointAddr {

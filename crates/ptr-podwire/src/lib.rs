@@ -36,11 +36,11 @@ mod frame;
 
 pub use access::{answer, PodAccessPolicy, PodScope, PolicyError};
 pub use frame::{
-    decode_answer, decode_answer_v2, decode_request, decode_request_v2, encode_answer,
-    encode_answer_v2, encode_request, encode_request_v2, request_digest, FrameError,
+    decode_request, decode_request_v2, encode_answer, encode_answer_v2, encode_request,
+    encode_request_v2, request_digest, verify_answer, verify_answer_v2, AnswerError, FrameError,
     PodAddressBinding, PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome, PodRequest,
-    PodRequestV2, RefusalCode, FORMAT_V1, FORMAT_V2, FORMAT_V3, MAX_BODY_BYTES, MAX_FIELD_BYTES,
-    MAX_FRAME_BYTES,
+    PodRequestV2, RefusalCode, ANSWER_DOMAIN, FORMAT_V1, FORMAT_V2, FORMAT_V3, MAX_BODY_BYTES,
+    MAX_FIELD_BYTES, MAX_FRAME_BYTES, SIGNED_ANSWER_V1, SIGNED_ANSWER_V2, SIGNED_ANSWER_V3,
 };
 
 #[cfg(feature = "podwire-backend")]

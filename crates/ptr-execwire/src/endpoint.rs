@@ -5,14 +5,17 @@
 //! either happens, which is what keeps the tests free of sleeps and keeps "how long
 //! do we wait" and "how often do we accept" where they can be decided deliberately.
 use crate::frame::{
-    decode_receipt, decode_request, encode_receipt, encode_request, request_digest, FrameError,
-    RefusalCode, WireOutcome, WireReceipt, WireRequest, MAX_BODY_BYTES, MAX_FRAME_BYTES,
+    decode_request, encode_receipt, encode_request, request_digest, verify_receipt, FrameError,
+    ReceiptError, RefusalCode, WireOutcome, WireReceipt, WireRequest, MAX_BODY_BYTES,
+    MAX_FRAME_BYTES,
 };
 use ptr_net::{
-    AuthenticatedPeer, EndpointAddr, IrohTransport, NodeIdentity, PeerAddress, ALPN_EXEC,
+    AuthenticatedPeer, EndpointAddr, IrohTransport, NodeIdentity, NodeSigner, PeerAddress,
+    ALPN_EXEC,
 };
 use ptr_runtime::execution::{ExecutionError, ExecutionSession};
 use ptr_runtime::PtrRuntime;
+use ptr_types::NodeId;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -73,6 +76,12 @@ pub enum WireError {
     /// A receipt whose digest is not the request that was sent. A well-formed answer
     /// to a question nobody asked here.
     UnboundReceipt,
+    /// A receipt from the authenticated peer whose signature is not that peer's.
+    ///
+    /// Inside one exchange the connection already vouches for the author, so this
+    /// refuses a receipt the author could not later stand behind: one that would
+    /// verify nowhere once it was stored. Refused before the outcome is read.
+    BadSignature,
 }
 
 impl WireError {
@@ -87,6 +96,7 @@ impl WireError {
             Self::ForgedReceipt { .. } => "PTR_EXECW_FORGED_RECEIPT",
             Self::WrongRequest { .. } => "PTR_EXECW_WRONG_REQUEST",
             Self::UnboundReceipt => "PTR_EXECW_UNBOUND_RECEIPT",
+            Self::BadSignature => "PTR_EXECW_BAD_SIGNATURE",
         }
     }
 }
@@ -181,6 +191,8 @@ impl ReplayWindow {
 pub struct ExecutionHost {
     runtime: Mutex<PtrRuntime>,
     transport: IrohTransport,
+    /// The endpoint's own key, which signs every receipt (D2 in issue #23).
+    signer: NodeSigner,
     window: Mutex<ReplayWindow>,
     permit_ttl: Duration,
 }
@@ -202,6 +214,7 @@ impl ExecutionHost {
             .map_err(WireError::Transport)?;
         Ok(Self {
             runtime: Mutex::new(runtime),
+            signer: transport.signer(),
             transport,
             window: Mutex::new(ReplayWindow::default()),
             permit_ttl: DEFAULT_PERMIT_TTL,
@@ -257,6 +270,9 @@ impl ExecutionHost {
     ///    wire as one code, so a requester cannot tell a grant it does not have from a
     ///    verification that failed.
     /// 7. The session is revoked, because it existed for one request.
+    ///
+    /// The receipt is signed with this endpoint's key, refusals included: a refusal
+    /// is a statement this runtime makes about a request as much as an outcome is.
     pub async fn serve_once(&self) -> Result<Serviced, WireError> {
         let incoming = self
             .transport
@@ -276,7 +292,7 @@ impl ExecutionHost {
             request_digest: digest,
             outcome: outcome.clone(),
         };
-        let frame = encode_receipt(&receipt)?;
+        let frame = encode_receipt(&receipt, &self.signer)?;
         incoming
             .respond(&frame)
             .await
@@ -507,9 +523,11 @@ impl ExecutionClient {
 
     /// Send one request and return the receipt, or refuse it.
     ///
-    /// Three checks, in this order. The **author** first: a receipt from an endpoint
+    /// Four checks, in this order. The **author** first: a receipt from an endpoint
     /// other than the one the connection authenticated is refused before anything in
-    /// it is read, because nothing in it is worth reading. Then the request id, then
+    /// it is read, because nothing in it is worth reading. Then the **signature**,
+    /// against that same authenticated key ([`verify_receipt`]), so the receipt this
+    /// returns is one that will still verify once stored. Then the request id, then
     /// the digest of the exact bytes that were sent — so a receipt cannot be presented
     /// as the answer to a request it does not belong to.
     ///
@@ -533,12 +551,13 @@ impl ExecutionClient {
     /// longer send a misaddressed request at all, leaving the host's own check
     /// reachable only from a raw transport.
     ///
-    /// What this does **not** establish: a receipt is not signed. Inside this call the
-    /// connection vouches for its author; once the bytes are stored or forwarded,
-    /// nothing does. A receipt in a file is hearsay, and this crate refuses to pretend
-    /// otherwise by offering no way to verify one. Nor does the book know a *wrong*
-    /// address for the right runtime from a right one — that dial fails on the
-    /// authenticated key rather than executing at the wrong runtime.
+    /// What a returned receipt is, beyond this call: a statement signed by the host's
+    /// endpoint key, which [`verify_receipt`] checks again from the stored bytes alone.
+    /// What that signature does and does not attest is written there — in short, that
+    /// the host recorded this outcome for this request, and not that the effect
+    /// happened. Nor does the book know a *wrong* address for the right runtime from a
+    /// right one — that dial fails on the authenticated key rather than executing at
+    /// the wrong runtime.
     pub async fn request(
         &self,
         host: PeerAddress,
@@ -558,13 +577,18 @@ impl ExecutionClient {
         .map_err(|_| WireError::Transport("the host did not answer in time".to_owned()))?
         .map_err(WireError::Transport)?;
 
-        let receipt = decode_receipt(&response)?;
-        if receipt.responder != authenticated {
-            return Err(WireError::ForgedReceipt {
-                authenticated,
-                claimed: receipt.responder,
-            });
-        }
+        // The author, then the signature: `verify_receipt` checks them in that order,
+        // against the key the connection authenticated and never against the name
+        // the receipt carries.
+        let receipt =
+            verify_receipt(&response, &NodeId(authenticated)).map_err(|error| match error {
+                ReceiptError::Frame(error) => WireError::Frame(error),
+                ReceiptError::WrongResponder { expected, claimed } => WireError::ForgedReceipt {
+                    authenticated: expected,
+                    claimed,
+                },
+                ReceiptError::BadSignature => WireError::BadSignature,
+            })?;
         if receipt.request_id != request.request_id {
             return Err(WireError::WrongRequest {
                 expected: request.request_id,

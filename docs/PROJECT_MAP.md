@@ -512,8 +512,8 @@ an explicit migration step converts, writing a new file.
 | `PTRCODEBOOK\0` | C | ptr-types `codebook.rs:357` | Canonical codebook bytes, fingerprinted into `datasets/generated/codebook.json` | Codebook V1; append-only per version |
 | `PTR-SLOT-ENCODING-V1` | D | ptr-types `slot_encoding.rs:223` | Seed of the slot-vector mixer | output values pinned by a test |
 | `PTRRAFTW` | W | ptr-cluster `frame.rs:13` | Raft batch on `ptr-raft/1` | `FORMAT_V1` `u16` |
-| `PTREXREQ`, `PTREXRCP`, `PTREXW01-REQUEST` | W, W, D | ptr-execwire `frame.rs:24-31` | Execution request, receipt, request digest on `ptr-exec/1` | `FORMAT_V1` `u16` |
-| `PTRPWREQ`, `PTRPWANS`, `PTRPW001-REQUEST` | W, W, D | ptr-podwire `frame.rs:33-41` | Pod request, answer, request digest on `ptr-podwire/1` | `FORMAT_V1` `u16` |
+| `PTREXREQ`, `PTREXRCP`, `PTREXW01-REQUEST`, `ptr-exec-receipt/v2\0` | W, W, D, D | ptr-execwire `frame.rs` | Execution request, signed receipt, request digest, receipt signature domain (Ed25519, endpoint key) on `ptr-exec/1` | request `FORMAT_V1`, receipt `RECEIPT_FORMAT_V2` (signed; the unsigned V1 receipt is refused by name) `u16` |
+| `PTRPWREQ`, `PTRPWANS`, `PTRPW001-REQUEST`, `ptr-pod-answer/v1\0` | W, W, D, D | ptr-podwire `frame.rs` | Pod request, signed answer, request digest, answer signature domain (Ed25519, endpoint key) on `ptr-podwire/1` | request `FORMAT_V1`/`V2`/`V3`, answer `SIGNED_ANSWER_V1`/`V2`/`V3` = 4/5/6 (unsigned 1/2/3 refused by name) `u16` |
 
 **Unwritten policies:**
 

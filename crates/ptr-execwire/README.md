@@ -10,17 +10,20 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 5 Rust source files · 1610 nonblank source lines · 3 integration-test files · 36 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 1989 nonblank source lines · 3 integration-test files · 42 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
 - ExecutionHost::bind seals the runtime's reconciliation authority away unless the host took it first (D6 in issue #23), so nothing that reaches the runtime through the wire host can declare what happened to an effect
 - UnknownGrantSet and DuplicateGrantSet map to a runtime refusal in the exhaustive mapping: a member whose grant set the host does not define is refused before a session exists, so nothing was attempted for it
+- Signed receipts (D2 in issue #23): the host signs every receipt, refusals included, with its endpoint key through ptr-net's NodeSigner; the signed message is the tag ptr-exec-receipt/v2 and its NUL terminator followed by every frame byte before the signature (magic, layout version, responder, request_id, request_digest, outcome code and its fields), so no field is left out and no second encoding can drift. The signature attests that runtime R recorded outcome O for request id X bound to request digest D, and not that the effect happened, nor anything about another principal, nor when, nor that R is still trusted; a rotated key is a new identity
+- Receipts are versioned apart from requests: RECEIPT_FORMAT_V2 is the signed layout, requests keep FORMAT_V1, and a receipt in the old unsigned layout — or a signed frame relabelled V1 — is refused by name (FrameError::UnsignedReceipt, PTR_EXECW_UNSIGNED_RECEIPT) rather than as an unknown version
+- verify_receipt(bytes, &NodeId) works without a transport and is the only way to read a receipt out of bytes: it refuses a frame that is not a signed receipt, then a receipt naming another responder (ReceiptError::WrongResponder), then a bad signature (ReceiptError::BadSignature); the requester runs it against the key the connection authenticated before reading the outcome, mapping a wrong author onto the existing ForgedReceipt and a bad signature onto WireError::BadSignature
 - The authenticated peer is passed to admit_peer as the AuthenticatedPeer the transport produced, never rebuilt from its text (D1 in issue #23)
 - ExecutionHost and ExecutionClient carry one execution request and its receipt over ALPN_EXEC, composing ptr-runtime's execution authority with ptr-net's transport so neither of them has to know about the other
 - A request frame has no field naming its sender, so who is asking is the authenticated connection's answer and the principal an action is audited under is the admission policy's — the shape of the format rather than a check performed on it
 - A request names the endpoint it is for, so a request that was legitimate at one runtime is refused when relayed to another rather than being indistinguishable from one composed for it
-- A receipt names its own author and is bound to a digest of the exact bytes that arrived; a requester checks the author against the peer the connection authenticated before reading anything else, then the request id, then the digest
+- A receipt names its own author and is bound to a digest of the exact bytes that arrived; a requester checks the author against the peer the connection authenticated before reading anything else, then the signature against that same key, then the request id, then the digest
 - Four outcomes rather than two: applied, applied without a response, uncertain, refused — because a wire that reported an unknown outcome as a refusal would invite a retry of an effect that had already applied and throw the runtime's fence away at the last step
 - The mapping from runtime refusals onto wire outcomes is an exhaustive match, so a refusal a later build adds breaks the build rather than being reported as nothing having happened; a request under an at-most-once key spent on another action, project or principal (KeyBoundToAnotherAction) is reported as refused with the Runtime code, since nothing was attempted for it; an effect the adapter applied whose settlement the host could not commit (SettlementNotRecorded) is reported as applied without a response, since a refusal would invite a retry that applies it again; the action is compared at the revision and generation its attempt recorded, so a retry carrying the host's current ones is answered rather than refused
 - Every refusal of authority crosses the wire as one code, so a requester cannot tell a peer it never admitted from an action outside its grant; the full reason stays on the host for an operator
@@ -38,7 +41,7 @@
 
 ### Missing for the target architecture
 
-- Signed receipts, and therefore any third-party evidence: inside one exchange the connection vouches for a receipt's author and outside it nothing does, so this crate offers no way to verify one rather than producing an artifact that looks like evidence and is not
+- A record of when a key was admitted: a signed receipt outlives its responder's admission, and whether a receipt from a since-withdrawn peer still counts is the verifier's policy with nothing here to consult
 - Detached work over the wire: a detached grant is audited by an attempt that stays unsettled until the adapter reports back, and there is no channel here for that report, so it is refused before the attempt is committed
 - At-most-once keys scoped per principal or project: they are one namespace per host runtime, so a peer refused under a key it sent learns that another principal spent that key, and a principal that spends a key first makes it refused to every other; a requester has to choose keys nobody else can guess
 - Reconciliation: an uncertain outcome is reported and then belongs to the host's operator, because a remote peer must not be able to declare what happened to an effect
@@ -49,7 +52,6 @@
 
 ### Next milestones
 
-- Decide whether a receipt should be signed, and if so what it attests to, before anything treats one as evidence
 - Decide where the accept loop belongs before adding one, since a loop in the wrong place makes the scheduling implicit again
 
 ### Linked experiments
@@ -67,6 +69,8 @@
 ### Current automated checks
 
 - an uncertain wire execution journals an attempt that only a reopened runtime's own authority reconciles; the authority of the runtime inside the wire host is not on offer
+- frame tests: a_stored_receipt_verifies_offline_and_a_change_to_any_field_is_refused (each field edited after signing and every single bit of the stored frame refused, the untouched receipt verifying as the control), a_receipt_signed_by_another_key_is_refused, a_receipt_readdressed_to_another_responder_is_refused (wrong expected responder, rewritten name with the original signature, and another key re-signing as itself), an_unsigned_receipt_from_an_earlier_build_is_refused_by_version (stripped and relabelled frames, with the signed frame as control)
+- wire tests: a_receipt_with_a_bad_signature_from_an_otherwise_honest_endpoint_is_refused (BadSignature, with the same endpoint signing with its own key as the control) and a_receipt_from_a_real_exchange_verifies_offline_against_the_host_alone (an applied receipt verifies after the host closed, and is refused as anybody else's or once edited)
 - an admitted peer's action is executed over a real ALPN_EXEC connection and the audited principal is the policy's, not a name written into the payload the peer controls
 - a receipt naming another runtime is refused, with the same endpoint answering honestly as the control so the refusal is about the name and not about that endpoint
 - a receipt answering another request id, and one bound to other bytes, are each refused
