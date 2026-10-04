@@ -216,7 +216,8 @@ The stale single documents for 3.7:
   The code has 13.
 - The same plan also lists C2, C7 and C9 as open:
   - C2 (issue #23's G2, the fencing token) is closed in code at `d01336a`, but its
-    only tests are the ones in 4.1 that CI never runs.
+    only tests are the ones in 4.1 that CI never runs. *Corrected 2026-10-04:* CI
+    runs them now (see Step 4).
   - C7 is half closed: at-most-once keys survive compaction (`06cbf09`), but the
     raft floor and the ledger floor are still independent.
   - C9 is closed (`ef8ad5f`, `ptrctl seal`). *Corrected 2026-10-04:* that
@@ -234,6 +235,12 @@ The stale single documents for 3.7:
 ### Step 4 — Close the concrete defects found
 
 These are small and local, and each one can be verified on its own.
+
+*Progress (2026-10-04).* 4.1 is done: `crates/ptr-ledger/Cargo.toml` declares
+`raft_fence` with `required-features = ["raft-rs-backend"]`, and the `ledger-raft-rs`
+job runs it (`db01759`). The fence it tests is bounded, not complete: the check
+precedes the write and is not atomic with it, as `architecture/31-cluster-integrity.md`
+states.
 
 | # | Defect | Evidence | Fix |
 |---|---|---|---|

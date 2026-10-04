@@ -647,8 +647,9 @@ recorded rather than taken.
 ## Addendum (2026-10-04): how every item closed
 
 This plan's Tier B became D1–D6 in issue #23, and its Tier C plus two clauses no
-checkbox covered became C3–C9, G1 and G2. Everything in them is now decided or
-closed; the reasoning for the six decisions is ADR-0021.
+checkbox covered became C3–C9, G1 and G2. Everything in them is now decided,
+closed, or recorded as a stated bound (G2's non-atomic check, C6's trust in the
+leader without a second channel); the reasoning for the six decisions is ADR-0021.
 
 | Item | Outcome | Pull request |
 |---|---|---|
@@ -659,7 +660,7 @@ closed; the reasoning for the six decisions is ADR-0021.
 | D5 (B4) journaled admission | membership is history, authority the host's; ledger codec versioned; Pod access journaled the same way | #106, #121 |
 | D6 (B5) reconciliation | `ReconciliationAuthority`, never across a wire | #109 |
 | G1 semantic payloads to A0 | `ptr-a0-bridge` | #107 |
-| G2 cross-node fencing | the fencing token; doc 31's contradiction removed | #101 |
+| G2 cross-node fencing | the fencing token, checked before each write and not atomic with it (the window doc 31 states); doc 31's contradiction removed | #101 |
 | C3 Pod access over the network | `ptr-podwire` (earlier); three unspoken ALPNs removed | #110 |
 | C4 settlement channel | `ALPN_SETTLE`, bound settler, signed settlement receipt | #119 |
 | C5 membership over the wire | closed earlier (`29510ad`); now gated by the codec ceiling | #106 |
