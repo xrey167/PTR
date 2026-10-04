@@ -1,7 +1,7 @@
 # ptr-verifier — Verifier Fabric
 
 > **Role:** Combines deterministic, executable, statistical and learned checks into explicit verification reports.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status

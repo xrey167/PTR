@@ -4,4 +4,4 @@ SDKs are thin client contracts for PTR's public control plane. They must not dup
 
 ## TypeScript
 
-[`sdk/typescript`](typescript/) contains the first dependency-free HTTP client contract. It is intentionally marked contract-only until `ptr-server` implements and freezes the matching `/v1` API.
+[`sdk/typescript`](typescript/) contains the first dependency-free HTTP client contract. `ptr-server` now implements both routes the client calls (`/health` and `/v1/requests`), so it is no longer contract-only. The `/v1` API is not frozen: streaming, auth/session policy and a real configured model backend remain open.
