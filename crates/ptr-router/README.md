@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 3 Rust source files · 229 nonblank source lines · 2 integration-test files · 7 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 3 Rust source files · 335 nonblank source lines · 2 integration-test files · 12 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -18,7 +18,7 @@
 - RoutingPolicy scaffold with max_parallel and uncertainty_trigger
 - RouteDecision::best breaks equal scores by the greater target instead of leaving the winner to iteration order
 - PodRouter::candidates and select: candidates come only from the project-scoped ptr_pods::PodRegistry for a capability and input type, so an out-of-registry Pod identity is never returned. Every candidate scores a constant 1.0, so selection is not yet quality- or cost-aware; equal scores are broken by the greater PodId
-- Router trait (object safe) returning RoutedChoice { route, propensity } for off-policy evaluation, with the validated Propensity newtype (finite, in (0, 1], zero excluded, f64 like ptr-branch auto_propensity); PodRouter implements it deterministically with propensity exactly 1.0 and the same selection and tie-break as select
+- Router trait (object safe): route(&RouteRequest) -> Result<Option<RoutedChoice>, RouteError>, where RouteRequest carries the registry scope, request id and digest and typed RouteFeatures (uncertainty, token budget, finite feature vector) a learned router may condition on; Ok(None) means no candidate and Err(RouteError) a router failure (policy/model failure, invalid propensity, invalid features); RoutedChoice { route, propensity } supports off-policy evaluation, with the validated Propensity newtype (finite, in (0, 1], zero and values with a non-finite reciprocal excluded, f64 like ptr-branch auto_propensity); PodRouter implements it deterministically and infallibly with propensity exactly 1.0 and the same selection and tie-break as select
 
 ### Missing for the target architecture
 
@@ -53,7 +53,7 @@
 ### Current automated checks
 
 - pod_router_breaks_equal_scores_by_pod_id: two registered Pods of equal score select the greater id (zeta over alpha)
-- tests/router.rs: Router for PodRouter matches select including the zeta tie, logs propensity 1.0, works through &dyn Router and returns None without candidates; Propensity rejects 0, negatives, values above 1, NaN and infinities
+- tests/router.rs: Router for PodRouter matches select including the zeta tie, logs propensity 1.0, works through &dyn Router and returns Ok(None) without candidates; request features reach a test router that returns a non-1 propensity; a failing router yields Err distinguishable from Ok(None); Propensity rejects 0, negatives, values above 1, NaN, infinities and subnormals with an overflowing reciprocal and accepts f64::MIN_POSITIVE
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

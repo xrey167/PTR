@@ -9,6 +9,9 @@ use std::fmt;
 /// ineligible record, and gives the other action's probability as its complement; the two must
 /// not be exchanged. Weighting divides by this value, so the range is `(0, 1]`: zero is excluded
 /// because a router can never have chosen, with probability zero, an action it actually took.
+/// Values whose reciprocal is not finite (roughly everything below `1 / f64::MAX`, such as the
+/// smallest subnormals) are rejected too, so the weight `1 / p` is always finite;
+/// `f64::MIN_POSITIVE` stays accepted.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Propensity(f64);
 
@@ -16,9 +19,9 @@ impl Propensity {
     /// The propensity of a deterministic router.
     pub const CERTAIN: Self = Self(1.0);
 
-    /// Validates `value` as finite and in `(0, 1]`.
+    /// Validates `value` as finite, in `(0, 1]`, and with a finite reciprocal.
     pub fn new(value: f64) -> Result<Self, PropensityError> {
-        if value.is_finite() && value > 0.0 && value <= 1.0 {
+        if value.is_finite() && value > 0.0 && value <= 1.0 && (1.0 / value).is_finite() {
             Ok(Self(value))
         } else {
             Err(PropensityError { value })
@@ -46,7 +49,7 @@ impl fmt::Display for PropensityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "propensity {} is not a finite number in (0, 1]",
+            "propensity {} is not a finite number in (0, 1] with a finite reciprocal",
             self.value
         )
     }
