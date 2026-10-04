@@ -10,5 +10,9 @@
 8. Agent branches certified against value, range and lifecycle digests and merged through verified deltas let agents work concurrently without lost updates (S003), and a verifier-bounded arbiter with a uniform calibration slice keeps the harm rate of auto-proposals within a finite-sample bound (F003).
 9. An associative fast-weight memory can be made exactly revocable by attributing every write to an input generation and refolding deterministically (L003 passed on PostgreSQL 18) while still improving update-aware recall (M008).
 10. Gated adapter lineage with subspace-interference measurement, forgetting-driven replay and consolidation forgets less than a naive adapter chain (R004); verifier-precedence weak supervision is better calibrated than majority vote (F002); and the combined stack improves long-horizon agent memory benchmarks at equal budget (E005).
+11. Experts managed as pods with a ledger-committed, gate-checked lifecycle (Birth, Merge, Split, Freeze, Prune) keep forgetting at or below the ForgettingGate bounds while matching a static MoE at equal compute (M013, R011). Unproven.
+12. Re-gating a retired expert when its domain returns recovers performance faster than training a new expert (M013). Unproven.
+13. Exposing routing and interference observations to the model as context improves structural proposals over a heuristic baseline, without any self-promotion path (M013, R011). Unproven.
+14. Token-keyed, salt-bound prefix reuse with per-layer chain keys never serves revoked adapter or expert generations while remaining bit-identical to full prefill (R005, R009, R010). Unproven.
 
 Each claim remains provisional until benchmarked and compared with relevant prior work.

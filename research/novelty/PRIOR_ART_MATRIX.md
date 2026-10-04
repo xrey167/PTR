@@ -24,3 +24,39 @@ Rows for the mechanisms of [35 — Agentic substrate](../../docs/architecture/35
 | Dawid and Skene (JRSS C 1979); Ratner et al., Snorkel (arXiv:1711.10160) | Label models over noisy labeling functions | EM confusion-matrix model | Verifier-backed functions only veto and are never outvoted; Unknown and Disputed are outcomes; only uniform gold estimates accuracy | F002 |
 | Cormack, Clarke and Büttcher, reciprocal rank fusion (SIGIR 2009); Bruch, Gai and Ingber, fusion functions for hybrid retrieval (arXiv:2210.11934) | Rank and score fusion | Weighted RRF and convex fusion | Fusion keyed by capsule and generation, joined to the lifecycle catalog of the same snapshot | Q003 |
 | pgvector; VectorChord; ParadeDB pg_search; Tiger Data pg_textsearch | In-database vector and BM25 search | halfvec HNSW, iterative scans, BM25 candidates | Derived rows exist only for live generations, enforced by row-lock ordering with the projector | Q003 |
+
+## KV-cache reuse (doc 36)
+
+Rows for the mechanisms of [36 — KV reuse](../../docs/architecture/36-kv-reuse.md). "PTR difference" names what is claimed to differ; every such claim is provisional until its experiment runs. "Suffix Cache Reuse" is not a published method name and is not used as one.
+
+| System / paper | Mechanism | What PTR takes | PTR difference (claim) | Experiment |
+|---|---|---|---|---|
+| Kwon et al., PagedAttention / vLLM (arXiv:2309.06180) | Paged KV blocks with copy-on-write sharing | 16-token pages | Pages are bound to principal, manifest and generation; revocation is refused at admission | R005 |
+| Zheng et al., SGLang RadixAttention (arXiv:2312.07104); vLLM automatic prefix caching (documentation: parent-chained block hash, `cache_salt`) | Token-keyed radix prefix cache; chained block hashes with an optional salt | Token-keyed radix prefix catalog | The salt comes from the currently admitted binding, and revocation invalidates the affected subtree | R005, E006 |
+| Greenewald et al., Activated LoRA (arXiv:2504.12397) | Adapter weights apply only from the invocation tokens on, so all states before them equal the base model (Prop. 1) | Base-aligned prefix sharing | Per-layer chain key and adapter generations | R009 |
+| PIE (arXiv:2407.03157); Leyline (arXiv:2606.01065) | Positional re-rotation of cached keys; FORGET with re-prefill | Re-rotation and re-prefill | Pre-RoPE storage; an Approximate tag above one layer; span eviction without hidden carry-over | R006, R007 |
+| CacheBlend (arXiv:2405.16444); EPIC (arXiv:2410.15332; its 8x is measured against CacheBlend); MEPIC (arXiv:2512.16822) | Position-independent chunk reuse with selective recompute | Chunk reuse as an approximate path | Approximate results never reach effects | M009 |
+| ShadowKV (arXiv:2410.21465); TailorKV (arXiv:2505.19586); CacheGen (arXiv:2310.07240) | Lossy KV tiers (low-rank, hybrid, compressed streaming) | Lossy tiers | A derived lossy tier object that is always Approximate | R008 |
+| SnapKV (arXiv:2404.14469); Ada-KV (arXiv:2407.11550); K-VEC (arXiv:2606.29563) | Query-dependent KV eviction | Rejected: query-dependent eviction breaks prefix sharing | None | none |
+| KV-streams (arXiv:2609.35750); MEMENTO (arXiv:2604.09852); STILL (arXiv:2606.07878); DroidSpeak (arXiv:2411.02820) | Hidden-state or KV carry-over across spans, turns or models | Rejected as authoritative: hidden state carries deleted or revoked content. MEMENTO is used through its text channel only, as a ptr-memory object | None for the rejected paths | R007 |
+| MegaScale-Infer (arXiv:2504.02263); Step-3 AFD (arXiv:2507.19427) | Attention-FFN disaggregation: KV lives with attention, expert nodes are KV-stateless | KV stays with attention | Expert pods hold no KV; activation frames carry the upstream chain digest | E007 |
+| Thinking Machines, "Defeating Nondeterminism in LLM Inference" (Sep 2025); Soft MoE (arXiv:2308.00951, §2.2) | Batch-invariant kernels; capacity routing is batch-dependent | Batch-invariance as the condition for exactness | Exact requires dropless routing and batch-invariant kernels | R010 |
+
+## Pod-MoE (doc 37)
+
+Rows for the mechanisms of [37 — Pod-MoE](../../docs/architecture/37-pod-moe.md). "PTR difference" names what is claimed to differ; every such claim is provisional until its experiment runs. GSPO's statement that no routing replay is needed is contested by R3 (arXiv:2510.11370).
+
+| System / paper | Mechanism | What PTR takes | PTR difference (claim) | Experiment |
+|---|---|---|---|---|
+| GRPO (arXiv:2402.03300); GSPO (arXiv:2507.18071); SAPO (arXiv:2511.20347); REINFORCE++ (arXiv:2501.03262); R3 routing replay (arXiv:2510.11370) | RLVR policy-gradient algorithms; routing replay for MoE | RLVR algorithms | Reward comes from the ptr-verifier `VerificationReport`; routing churn is measured per layer | M010 |
+| Yue et al. (arXiv:2504.13837); ProRL (arXiv:2505.24864) | RLVR versus distillation compared by pass@k | The comparison protocol | Measured on our own MoE | M015 |
+| HSD (arXiv:2606.15576) | Path-conditioned self-distillation | A later arm; no public code | Not yet implemented | M010 (later) |
+| PERFT-R (arXiv:2508.02587; PERFT arXiv:2411.08212); MixLoRA (arXiv:2404.15159); Mixture of Routers (arXiv:2503.23362) | Routed parameter-efficient experts | Routed LoRA experts | Each LoRA expert is a versioned, revocable pod with lineage | M011 |
+| Aux-loss-free balancing (arXiv:2408.15664); its theory (arXiv:2512.03915, Dec 2025); φ-Balancing (arXiv:2605.15403) | Bias-based load balancing without an auxiliary loss | Bias-based balancing | Applied to the LoRA-expert router | M012 |
+| RA-MoE (arXiv:2605.28306, multilingual) | Routing alignment loss | Alignment loss | Adapted to tasks, as an ablation | M011 |
+| Li et al., MoE in continual learning theory (arXiv:2406.16437); DynMoE (arXiv:2405.14297); Lifelong-MoE (arXiv:2305.12281); MC-SMoE (arXiv:2310.01334); sparse upcycling (arXiv:2212.05055); expert upcycling (arXiv:2604.19835); BTX (arXiv:2403.07816); EMO (arXiv:2605.13247) | Individual lifecycle operations on experts (add, merge, upcycle, branch-train-mix) | The individual operations | Full gated lifecycle Birth, Merge, Split, Freeze, Reactivate and Prune with a ledger commit; we know of no prior work covering the full lifecycle, and Reactivate is unpublished | M013 |
+| AIMER (arXiv:2603.18492) | Weights-only expert ranking | Ranking as a candidate signal | Gate-checked prune with recovery | M014 |
+| Self-MoE (arXiv:2406.12034); Mixture-of-Agents (arXiv:2406.04692); Router-R1 (arXiv:2506.09033); RouteLLM (arXiv:2406.18665); BTM (arXiv:2208.03306) | Model-as-expert routing | Request-level experts | Experts are pods; the router is evaluated off-policy | M013, R011 |
+| Darwin Gödel Machine (arXiv:2505.22954); Gödel Agent (arXiv:2410.04444); AlphaEvolve (arXiv:2506.13131) | Self-modifying agents (code and scaffolding) | Self-modification as an idea | Self-modification of MoE structure only through proposals, gates and the ledger; the policy cannot alter gates or the verifier | R011 |
+| Gloeckle et al., MTP (arXiv:2404.19737); DeepSeek-V3 (arXiv:2412.19437); MTP curriculum (arXiv:2505.22757) | Multi-token prediction | Deferred: MTP hurts small models | None | none |
+| OLMoE (arXiv:2409.02060) | Fully open base MoE | Base model for pod-MoE | None | M010–M015 |
