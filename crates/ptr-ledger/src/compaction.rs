@@ -135,7 +135,7 @@ impl RetentionPolicy {
 /// configuration change, and a ledger index counts committed events. Discarding
 /// raft entries is only safe through the raft index whose prefix produced exactly
 /// this many events, and
-/// [`FileRaftStorage`](crate::raft_storage::FileRaftStorage) takes this floor as
+/// `FileRaftStorage` (the `raft-rs-backend` feature) takes this floor as
 /// an input so that conversion is made where the log is, not by its caller.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RetentionFloor(CommitIndex);
