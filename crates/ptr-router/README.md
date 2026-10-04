@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 120 nonblank source lines · 1 integration-test files · 2 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-04  
+**Code footprint:** 3 Rust source files · 227 nonblank source lines · 2 integration-test files · 7 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -18,13 +18,14 @@
 - RoutingPolicy scaffold with max_parallel and uncertainty_trigger
 - RouteDecision::best breaks equal scores by the greater target instead of leaving the winner to iteration order
 - PodRouter::candidates and select: candidates come only from the project-scoped ptr_pods::PodRegistry for a capability and input type, so an out-of-registry Pod identity is never returned. Every candidate scores a constant 1.0, so selection is not yet quality- or cost-aware; equal scores are broken by the greater PodId
+- Router trait (object safe) returning RoutedChoice { route, propensity } for off-policy evaluation, with the validated Propensity newtype (finite, in (0, 1], zero excluded, f64 like ptr-branch auto_propensity); PodRouter implements it deterministically with propensity exactly 1.0 and the same selection and tie-break as select
 
 ### Missing for the target architecture
 
 - Typed ExecutionRecipe
 - Separate reasoning/model/search/Pod routing policies
 - Cost, latency, uncertainty and capability-aware constraints
-- Learned router head integration and replayable routing telemetry
+- Learned router head integration and replayable routing telemetry (the propensity is defined, but no stochastic router or log sink exists yet)
 - Fallback/degradation plan when a backend is unavailable
 
 ### Next milestones
@@ -52,6 +53,7 @@
 ### Current automated checks
 
 - pod_router_breaks_equal_scores_by_pod_id: two registered Pods of equal score select the greater id (zeta over alpha)
+- tests/router.rs: Router for PodRouter matches select including the zeta tie, logs propensity 1.0, works through &dyn Router and returns None without candidates; Propensity rejects 0, negatives, values above 1, NaN and infinities
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
