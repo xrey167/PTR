@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-10-03  
-**Code footprint:** 8 Rust source files · 2975 nonblank source lines · 6 integration-test files · 76 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-04  
+**Code footprint:** 8 Rust source files · 3026 nonblank source lines · 6 integration-test files · 77 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- PodHeader::validate refuses a header whose placement_epoch or fencing_token is zero, as PodRoute, the runtime, the tunnel and the tier binding already do, so the one frame that carries both can no longer be the layer that lets an unfenced request through
 - CheckpointHeader carries a stored model artifact's identity: magic, an explicit format version, the model name, the codebook version, the whole assignment verbatim rather than a digest, the slot-encoding version, and the table widths the weights were built for; thirteen distinct refusals with no defaulting path
 - The header records the slot-encoding version because nothing else could: every other identity in it eventually shows up as a tensor shape, while an encoding produces the model's input and no parameters, so a checkpoint run under another definition has tensors that are the right shape all the way down
 - CodeFamily::from_name maps a stable family name back through an explicit table in both directions, never a position in ALL, so a reordering cannot silently follow

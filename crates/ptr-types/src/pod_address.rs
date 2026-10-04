@@ -323,6 +323,16 @@ impl PodHeader {
                 field: "typed_contract",
             });
         }
+        if self.placement_epoch == 0 {
+            return Err(ResolveError::MissingBinding {
+                field: "placement_epoch",
+            });
+        }
+        if self.fencing_token == 0 {
+            return Err(ResolveError::MissingBinding {
+                field: "fencing_token",
+            });
+        }
         if self.hop_limit == 0 {
             return Err(ResolveError::HopLimitExceeded);
         }
@@ -503,5 +513,50 @@ mod tests {
         route.hop_limit = 1;
         route.visited.push(route.destination.address.clone());
         assert_eq!(route.validate(), Err(ResolveError::RouteCycle));
+    }
+
+    fn pod_header() -> PodHeader {
+        PodHeader {
+            protocol_version: 1,
+            frame_kind: FrameKind::Request,
+            source: None,
+            destination: revision(),
+            capability: "infer".into(),
+            input_type: "input".into(),
+            expected_output_type: "output".into(),
+            execution_manifest: [1; 32],
+            artifact: [2; 32],
+            session_id: "session".into(),
+            scope_id: "scope".into(),
+            request_id: "request".into(),
+            placement_epoch: 1,
+            fencing_token: 1,
+            trace_id: "trace".into(),
+            deadline: super::super::Timestamp(10),
+            hop_limit: 1,
+        }
+    }
+
+    #[test]
+    fn header_without_placement_epoch_or_fencing_token_is_refused() {
+        assert_eq!(pod_header().validate(), Ok(()));
+
+        let mut without_epoch = pod_header();
+        without_epoch.placement_epoch = 0;
+        assert_eq!(
+            without_epoch.validate(),
+            Err(ResolveError::MissingBinding {
+                field: "placement_epoch"
+            })
+        );
+
+        let mut without_token = pod_header();
+        without_token.fencing_token = 0;
+        assert_eq!(
+            without_token.validate(),
+            Err(ResolveError::MissingBinding {
+                field: "fencing_token"
+            })
+        );
     }
 }
