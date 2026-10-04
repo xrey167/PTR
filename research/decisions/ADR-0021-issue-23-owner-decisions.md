@@ -11,7 +11,7 @@ answer over the alternative, so the choice is not reconstructed from six documen
 | D2 | Should a receipt be signed? | **Yes**, receipts and Pod answers, with the endpoint key | `32-execution-wire.md`, `33-pod-wire.md` | #111 |
 | D3 | Should the codebook artifact be authenticated? | **No** | `26-cognitive-codebook.md` | #101 |
 | D4 | Where does the accept loop live? | **Mechanism in `ptr-net`, policy in the host (`ptrd`)** | `15-deployment-topologies.md`, `31`, `32`, `33` | #112 |
-| D5 | Journaling the admission policy: which design? | **Membership is history; authority is the host's** | `29-peer-admission-and-pod-scope.md`, `COMPONENT_CONTRACTS.md`, `31` | #106 |
+| D5 | Journaling the admission policy: which design? | **Membership is history; authority is the host's** | `29-peer-admission-and-pod-scope.md`, `COMPONENT_CONTRACTS.md`, `31`, `33` | #106, #121 |
 | D6 | Should reconciliation be authenticated? | **Yes, as a capability; it never crosses a wire** | `28-durable-execution-audit.md`, `32` | #109 |
 
 ## Decisions
@@ -60,7 +60,8 @@ under, so a re-admission revives nothing. Because the ledger codec is also the r
 proposal payload, the decision brought the codec versioning `COMPONENT_CONTRACTS.md`
 requires: a version table, refusal of an unknown tag by name, and a committed codec
 ceiling that a leader raises only when every voter is reported to read it. The Pod
-access policy follows the same design.
+access policy follows the same design (#121): a `PodScope` is pure data, so it is
+journaled whole, and `ptr-podwire` only reads it from the runtime's history.
 
 **D6 — yes, as a capability.** `reconcile_effect` takes a
 `ReconciliationAuthority`: no public constructor, no `Clone`, handed out once per
@@ -70,7 +71,8 @@ effect. C4's settlement channel is a different path for a different party: the p
 a detached attempt was bound to may report that it applied, and only that.
 
 ## Consequences
-- `LedgerEvent` is at codec version 2 (tags 27–30, and the Pod scope records), the
+- `LedgerEvent` is at codec version 2 (tags 27–32: membership, the codec
+  ceiling, the detached settler binding and the Pod scope records), the
   compacted snapshot is `PTRCS005`/`PTRLC003`, and the raft state file is
   `PTRRST03`. Older builds stop at each by name; a log holding no version-2 record is
   byte-identical and still readable by them.

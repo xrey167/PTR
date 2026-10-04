@@ -656,7 +656,7 @@ closed; the reasoning for the six decisions is ADR-0021.
 | D2 (B2) signed receipt | yes: receipts and Pod answers signed, verifiable offline | #111 |
 | D3 (B2b) codebook authentication | no, recorded with its reason in doc 26 | #101 |
 | D4 (B3) accept loop | `ptr-net::serve` with host policy; `ptrd` composes it | #112 |
-| D5 (B4) journaled admission | membership is history, authority the host's; ledger codec versioned | #106 |
+| D5 (B4) journaled admission | membership is history, authority the host's; ledger codec versioned; Pod access journaled the same way | #106, #121 |
 | D6 (B5) reconciliation | `ReconciliationAuthority`, never across a wire | #109 |
 | G1 semantic payloads to A0 | `ptr-a0-bridge` | #107 |
 | G2 cross-node fencing | the fencing token; doc 31's contradiction removed | #101 |
