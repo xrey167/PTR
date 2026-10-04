@@ -65,6 +65,7 @@ def main():
 
     flows = []
     problems = []
+    described_crates = set()
     for file_name, area in AREAS.items():
         path = os.path.join(HERE, "descriptions", file_name)
         if not os.path.exists(path):
@@ -76,6 +77,7 @@ def main():
             if not package:
                 problems.append("unknown crate %s in %s" % (name, file_name))
                 continue
+            described_crates.add(name)
             package["role"] = info.get("role", "")
             package["summary"] = info.get("summary", "")
             package["maturity"] = info.get("maturity", "")
@@ -98,6 +100,12 @@ def main():
                     lane["crate"] = None
             flow["area"] = area
             flows.append(flow)
+
+    # A package that no description file mentions would otherwise get blank role,
+    # summary, maturity and module purposes without any complaint.
+    for package in packages:
+        if package["name"] not in described_crates:
+            problems.append("package %s is not described in any area file" % package["name"])
 
     for package in packages:
         package["layer"] = layer_of[package["name"]]
