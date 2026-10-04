@@ -1,7 +1,7 @@
 # ptr-search — Retrieval Planner & Evidence Search
 
 > **Role:** Routes queries across lexical, semantic, GPU, multimodal, distributed and structural search backends while keeping retrieval non-authoritative.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status

@@ -1,7 +1,7 @@
 # ptr-security — Capability, Trust & Effect Security
 
 > **Role:** Enforces the hard shell around uncertain reasoning: capabilities, permissions, trust levels, effects, secrets and sandbox requirements.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
