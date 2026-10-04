@@ -313,7 +313,13 @@ impl SignedPolicyBundle {
     }
 
     pub fn verify(&self, trust: &PolicyTrustStore, now: Timestamp) -> Result<(), PolicyError> {
-        if self.key_id.is_empty() || self.signature.len() != 64 || self.revision.0 == 0 {
+        // The key id is read back as an identifier, so it is bounded like one; the
+        // payload is bounded by `validate` below.
+        if self.key_id.is_empty()
+            || self.key_id.len() > MAX_STRING_BYTES
+            || self.signature.len() != 64
+            || self.revision.0 == 0
+        {
             return Err(PolicyError::InvalidBundle);
         }
         self.payload.validate()?;
@@ -634,6 +640,40 @@ mod tests {
         assert_eq!(
             SignedPolicyBundle::decode_for_ledger(&at_bound.encode_for_ledger()).unwrap(),
             at_bound
+        );
+    }
+
+    #[test]
+    fn a_key_id_longer_than_the_identifier_bound_does_not_verify() {
+        let signing = SigningKey::from_bytes(&[12; 32]);
+        // A host can install a trust key under any id, so the id has to be bounded
+        // by verify as well: the ledger encoding reads it back as an identifier.
+        let long_id = "k".repeat(MAX_STRING_BYTES + 1);
+        let mut trust = PolicyTrustStore::default();
+        trust.insert(long_id.clone(), signing.verifying_key());
+        let mut signed = bundle(&signing);
+        signed.key_id = long_id;
+        let signed = resigned(signed, &signing);
+        assert_eq!(
+            SignedPolicyBundle::decode_for_ledger(&signed.encode_for_ledger()),
+            Err(PolicyError::InvalidEncoding)
+        );
+        assert_eq!(
+            signed.verify(&trust, Timestamp(5)),
+            Err(PolicyError::InvalidBundle)
+        );
+
+        // Control: an id at the bound verifies and round-trips.
+        let at_bound = "k".repeat(MAX_STRING_BYTES);
+        let mut trust = PolicyTrustStore::default();
+        trust.insert(at_bound.clone(), signing.verifying_key());
+        let mut signed = bundle(&signing);
+        signed.key_id = at_bound;
+        let signed = resigned(signed, &signing);
+        signed.verify(&trust, Timestamp(5)).unwrap();
+        assert_eq!(
+            SignedPolicyBundle::decode_for_ledger(&signed.encode_for_ledger()).unwrap(),
+            signed
         );
     }
 
