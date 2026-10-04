@@ -1079,6 +1079,52 @@ fn a_reviewer_the_grant_does_not_list_is_refused() {
     assert!(unfenced(&runtime));
 }
 
+/// A branch `id` over `runtime`'s current state that reprices like [`repricing`],
+/// sealed by `author`.
+fn repricing_by(runtime: &PtrRuntime, id: &str, author: PrincipalId) -> SealedBranch {
+    let mut work = Branch::open(BranchId::from(id), author, runtime.snapshot());
+    work.rely_on("pricing-policy", Generation(1)).unwrap();
+    work.read("price:sku-1").unwrap();
+    work.put("price:sku-1", "11".into()).unwrap();
+    work.seal().unwrap()
+}
+
+#[test]
+fn a_reviewer_cannot_approve_the_branch_they_authored() {
+    let (mut runtime, watch) = runtime_watching_prices();
+    // The listed reviewer is also the author of this branch.
+    let own = repricing_by(&runtime, "b1", reviewer());
+    let preview = runtime.preview_merge(&own).unwrap();
+    let judged = watch.count();
+    let events = runtime.committed_events().len();
+    assert_eq!(
+        runtime.merge_branch(&own, reviewed(preview.plan_digest)),
+        Err(RuntimeError::SelfApproval {
+            reviewer: reviewer().0
+        })
+    );
+    // Refused before certification or verification, with nothing appended, the
+    // branch not marked merged and the runtime unfenced.
+    assert_eq!(watch.count(), judged);
+    assert_eq!(runtime.committed_events().len(), events);
+    assert_eq!(runtime.merged_at(&BranchId::from("b1")), None);
+    assert!(unfenced(&runtime));
+
+    // Controls: the same plan, approved by the same listed reviewer but authored
+    // by someone else, merges; and the author's own branch is not barred from the
+    // runtime's triage, which is not an approval by a person.
+    let other = repricing(&runtime, "b2");
+    let other_preview = runtime.preview_merge(&other).unwrap();
+    committed(
+        runtime
+            .merge_branch(&other, reviewed(other_preview.plan_digest))
+            .unwrap(),
+    );
+    let (mut runtime, _) = runtime_watching_prices();
+    let own = repricing_by(&runtime, "b3", reviewer());
+    committed(runtime.merge_branch(&own, auto()).unwrap());
+}
+
 #[test]
 fn an_escalated_or_calibration_slice_branch_appends_nothing_and_carries_its_triage() {
     // Below the threshold: escalated, eligible, outside the slice.

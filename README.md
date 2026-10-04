@@ -134,7 +134,7 @@ The Rust workspace is a compiling contract/scaffold baseline. Documentation inte
 
 ## Reproducibility and evidence
 
-- Rust is pinned by `rust-toolchain.toml` and `Cargo.lock`; CI tests Rust 1.85 MSRV plus current stable on Linux and Windows.
+- Rust is pinned by `rust-toolchain.toml` and `Cargo.lock`; CI tests the workspace at its Rust 1.99 MSRV on Linux and at current stable on Linux and Windows. `model/burn-a0` is a separate workspace that requires Rust 1.95 and has its own workflow.
 - Python training utilities are locked through `training/uv.lock`.
 - Component and experiment registries are validated in CI.
 - L001 currently has a scoped five-seed reference crash-tail run under `experiments/lifecycle/L001-revocation-crash/results/`; it remains `running`, not completed.
