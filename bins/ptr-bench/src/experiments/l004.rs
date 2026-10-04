@@ -1088,6 +1088,9 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::TierBackendLifecycle { .. } => "storage.tier_backend_lifecycle",
         LedgerEvent::TierObjectCommitted { .. } => "storage.tier_object_committed",
         LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
+        LedgerEvent::PeerAdmitted { .. } => "peer.admitted",
+        LedgerEvent::PeerWithdrawn { .. } => "peer.withdrawn",
+        LedgerEvent::CodecCeilingRaised { .. } => "ledger.codec_ceiling_raised",
     }
 }
 
@@ -1163,6 +1166,12 @@ fn expected_subject(record: &CommittedEvent) -> String {
             backend_id,
             ..
         } => format!("tier-replica:{}:{backend_id}", hex_of(root_digest)),
+        // Spelled out rather than taken from ptr_state's membership key, for the
+        // reason `expected_topic` gives.
+        LedgerEvent::PeerAdmitted { peer, .. } | LedgerEvent::PeerWithdrawn { peer } => {
+            format!("peer:{}", peer.0)
+        }
+        LedgerEvent::CodecCeilingRaised { .. } => "ledger:codec-ceiling".to_owned(),
     }
 }
 
