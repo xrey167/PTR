@@ -50,8 +50,9 @@ the matched baseline comparison, which still waits on 1.6 (owner decision O2):
 | 1.4 | `hardware/a0-cpu-4core.toml` holds measured values, and every run record embeds the profile's contents, the host and rustc. The M001–M004 manifests name it; the baseline comparison must name its own host's profile | `scripts/tests/test_run_experiment.py` |
 | 1.5 | `benchmarks/operator-routing/` has a generator, a scorer written independently of it, references, a split lock and 53 tests; CI regenerates the data and runs the tests | `benchmarks/operator-routing/README.md` |
 
-*Progress on Step 3 (2026-10-04).* Items 3.3, 3.5 and 3.6 are done, and so is most
-of 3.7: `STATUS.md`, `docs/CONFIGURATION.md`, `sdk/README.md`, `docs/PRIORITIES.md`,
+*Progress on Step 3 (2026-10-04).* Items 3.3 and 3.5 are done, 3.6 is half done (the
+L001 numbers are marked as historical v1-format evidence; the rerun on PTRLOG02 is
+still open), and so is most of 3.7: `STATUS.md`, `docs/CONFIGURATION.md`, `sdk/README.md`, `docs/PRIORITIES.md`,
 `docs/ROADMAP.md`, architecture documents 26, 27 and 31 and a status note on
 `OPEN_ITEMS_PLAN_20260921.md` were brought in line with the code, and the root
 `README.md`, `CONTRIBUTING.md` and the Burn A0 documents now state the current

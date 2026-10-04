@@ -42,8 +42,11 @@ make a0                        # also when you touch model/burn-a0, crates/ptr-t
 workspace MSRV, 1.99.0, the way CI does) and builds every feature backend, so it
 is slow the first time. It does not reproduce the Windows leg of `rust-stable`,
 the Python 3.11 leg of `python-training`, `pip install -e training` (it sets
-`PYTHONPATH` instead) or `security.yml`, which needs cargo-audit and cargo-deny,
-so a green `make ci-local` is not a green CI. It reads `BASE` from `origin/main`;
+`PYTHONPATH` instead) or `security.yml`, which needs cargo-audit and cargo-deny.
+It runs `python3` as it finds it (`PYTHON` in the Makefile), while CI uses 3.13 for
+`repository-invariants` and 3.11 and 3.13 for `python-training`, so a Python-version
+failure shows up only if you pass `PYTHON=` an interpreter of that version. A green
+`make ci-local` is therefore not a green CI. It reads `BASE` from `origin/main`;
 without that ref, pass `BASE=<commit>`. `make a0` is burn-a0.yml's two jobs:
 `a0-stable` formats, tests and lints on your `stable`, and `a0-msrv` tests on
 1.95.0, the Rust version Burn A0 requires. CI's stable is always the current

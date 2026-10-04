@@ -24,7 +24,7 @@ This is the implementation order after the architecture-scaffold phase. Status v
 | P1 | Multi-step model resume after verified Pod observation | prototype — bounded verified observation resume implemented |
 | P1 | L001 harder process/failpoint crash schedules | in progress — fail-rs + 250 real child-process abort cases executed |
 | P1 | Agentic substrate (doc 35): PostgreSQL projection substrate, certified branches, revocable fast memory, adapter lineage, weak supervision | prototype — anchor-verified projection, live-only derived caches, hybrid retrieval and working-state storage tested against a real server in CI; branches merge only through verified deltas; experiments L004 and L003 completed on PostgreSQL 18 (five seeds each, mutation-checked); Q003, S003, F003, M008, R004, F002 and E005 planned; TLS, roles, a business-table effect applier and lineage/labeling adapters remain |
-| P2 | raft-engine/raft-rs, Turso, Iroh production adapters | prototypes — raft-rs, raft-engine, Turso and direct Iroh adapters integrated; PR #21 adds durable Raft state on disk, a three-member group over ALPN_RAFT and snapshot transfer; the fencing token (`PTR_RAFT_FENCED`) and single-voter membership changes exist and are bounded as [doc 31](architecture/31-cluster-integrity.md) states; an accept loop, discovery, session reuse and an independently retained snapshot anchor remain |
+| P2 | raft-engine/raft-rs, Turso, Iroh production adapters | prototypes — raft-rs, raft-engine, Turso and direct Iroh adapters integrated; PR #21 adds durable Raft state on disk, a three-member group over ALPN_RAFT and snapshot transfer; the fencing token (`PTR_RAFT_FENCED`, a read before each write, not atomic with it) and single-voter membership changes exist and are bounded as [doc 31](architecture/31-cluster-integrity.md) states; an accept loop, discovery, session reuse and an independently retained snapshot anchor remain |
 | P2 | Full model training + matched M001–M005 ablations | planned — the A0 ablation study does not count toward this; the baseline comparisons need the plain model baseline (owner decision O2 in [the recommendations](RECOMMENDATIONS_20260924.md)) |
 | P2 | GitHub branch ruleset/admin metadata | setup scripts/templates ready; admin application remains manual |
 | P2 | Stable release/multi-platform packaging | planned |
@@ -48,7 +48,8 @@ issue #15 into #20, which PR #21 closes; what survives that pull request is
 recorded in `OPEN_ITEMS_PLAN_20260921.md` — among it two clauses of #15's own gate
 sentences that no checkbox ever covered, connecting actual semantic payloads to the
 model and durable cross-node leadership fencing. Connecting semantic payloads to the
-model is still open as an end-to-end path; durable fencing has since been closed in code by
-the fencing token, within the bounds `architecture/31-cluster-integrity.md` states. What
+model is still open as an end-to-end path; durable fencing is implemented as a fencing token
+checked before each write, which is not atomic with the write (a window
+`architecture/31-cluster-integrity.md` states), so it is not closed. What
 remains open still blocks the respective production claims. They do not turn a
 local CPU/model experiment into a production release.
