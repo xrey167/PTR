@@ -10,7 +10,7 @@ task_accuracy, max_violation, load_cv, dead_experts
 auxiliary balance loss; phi-balancing
 
 ## Falsification
-with equivalence margins pinned before running (task accuracy +-1 point absolute, load_cv +-0.05): auxiliary-loss-free bias has lower task quality than the auxiliary loss beyond the margin while its load_cv is within the margin, or worse load_cv beyond the margin while quality is within the margin, over >=3 seeds.
+with equivalence margins pinned before running (task accuracy +-1 point absolute, load_cv +-0.05): auxiliary-loss-free bias has lower task quality than the auxiliary loss beyond the margin while its load_cv is within the margin, or worse load_cv beyond the margin while quality is within the margin, or quality is worse beyond its margin AND load_cv is worse beyond its margin (dominated outcome), over >=3 seeds.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

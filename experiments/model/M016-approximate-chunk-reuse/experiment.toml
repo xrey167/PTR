@@ -1,10 +1,10 @@
 version = 1
 id = "M016"
 status = "planned"
-hypothesis = "on an N-layer decoder, position-independent chunk reuse with selective recompute (first k in {0,16,32} tokens or ~15%) keeps top-1 next-token agreement >=99% while saving >=2x prefill."
+hypothesis = "on an N-layer decoder, position-independent chunk reuse at nonzero position shifts (pinned shifts 16, 64 and 256 tokens) with selective recompute (first k in {0,16,32} tokens or ~15%) keeps top-1 next-token agreement >=99% while saving >=2x prefill."
 metrics = "top1_agreement, kl_vs_full, prefill_speedup, recompute_fraction"
 baseline = "full prefill"
-falsification = "at the best k, top-1 agreement below 99% or prefill saving below 2x."
+falsification = "at the best k, for ANY pinned nonzero position shift (16, 64, 256 per config.toml [pinned_thresholds]), top-1 agreement below 99% or prefill saving below 2x. Same-position (zero-shift) reuse does not count toward the hypothesis."
 hardware_profile = "hardware/default.toml"
 entrypoint = ""
 seeds = [17, 29, 43, 71, 101]

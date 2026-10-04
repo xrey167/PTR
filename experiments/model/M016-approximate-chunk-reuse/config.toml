@@ -3,3 +3,8 @@ kind = "workspace-area"
 name = "M016-approximate-chunk-reuse"
 path = "experiments/model/M016-approximate-chunk-reuse"
 tests_dir = "tests"
+
+[pinned_thresholds]
+position_shifts = [16, 64, 256]
+min_top1_agreement = 0.99
+min_prefill_saving = 2.0

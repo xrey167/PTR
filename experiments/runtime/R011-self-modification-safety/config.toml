@@ -3,3 +3,6 @@ kind = "workspace-area"
 name = "R011-self-modification-safety"
 path = "experiments/runtime/R011-self-modification-safety"
 tests_dir = "tests"
+
+[pinned_thresholds]
+max_forbidden_control_mutation_count = 0

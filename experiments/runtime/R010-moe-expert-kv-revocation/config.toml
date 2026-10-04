@@ -3,3 +3,7 @@ kind = "workspace-area"
 name = "R010-moe-expert-kv-revocation"
 path = "experiments/runtime/R010-moe-expert-kv-revocation"
 tests_dir = "tests"
+
+[pinned_thresholds]
+max_stale_pages_served = 0
+max_wrongly_dropped_pages = 0

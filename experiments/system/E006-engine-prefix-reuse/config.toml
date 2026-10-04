@@ -3,3 +3,8 @@ kind = "workspace-area"
 name = "E006-engine-prefix-reuse"
 path = "experiments/system/E006-engine-prefix-reuse"
 tests_dir = "tests"
+
+[pinned_thresholds]
+min_ttft_gain = 1.5
+shared_prefix_fraction = 0.5
+max_post_revocation_hits_salted = 0
