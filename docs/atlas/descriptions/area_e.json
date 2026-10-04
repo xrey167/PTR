@@ -1,0 +1,984 @@
+{
+ "crates": {
+  "ptr-pg": {
+   "role": "PostgreSQL substrate: ledger projection, derived search cache and non-authoritative work state in one database.",
+   "summary": "Three schemas per instance (projection, derived, work) built from checksummed migration catalogs. The projector (apply_committed) is the only writer of the projection and verifies the anchor chain on every record; adapters on PgSubstrate store branches, fast-memory journals, search documents, lineage interference, triage policies and metrics in the work and derived schemas. Everything beyond schemas, catalogs, capability parsing, event mapping and metric compilation needs the postgres-backend feature; no production binary links it, only tests and the feature-gated ptr-bench harnesses.",
+   "maturity": "built",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Crate root: declares modules and re-exports; adapters and the seal key sit behind the postgres-backend feature.",
+     "key_types": []
+    },
+    "config.rs": {
+     "purpose": "Safe SQL identifiers, the three-schema set made from one prefix, and the connection configuration naming an environment variable.",
+     "key_types": [
+      "Identifier",
+      "SchemaSet",
+      "PgConfig",
+      "check_identifier",
+      "RESERVED_KEYWORDS"
+     ]
+    },
+    "capability.rs": {
+     "purpose": "Parses server version and installed extensions; refuses a server older than 16 or without pgvector 0.8.",
+     "key_types": [
+      "Capabilities",
+      "LexicalBackend",
+      "MINIMUM_SERVER",
+      "MINIMUM_PGVECTOR",
+      "parse_version"
+     ]
+    },
+    "migrate.rs": {
+     "purpose": "Migration catalogs per schema class, with checksums, placeholder rendering, catalog validation and pending-migration planning.",
+     "key_types": [
+      "SchemaClass",
+      "Migration",
+      "PROJECTION_MIGRATIONS",
+      "DERIVED_MIGRATIONS",
+      "WORK_MIGRATIONS"
+     ]
+    },
+    "error.rs": {
+     "purpose": "The typed refusal set of the substrate with stable PTR_PG_* codes and no driver types.",
+     "key_types": [
+      "PgError"
+     ]
+    },
+    "event.rs": {
+     "purpose": "Maps one committed ledger event to its lifecycle effect, topic, subject and payload for the projection and its event log.",
+     "key_types": [
+      "LifecycleChange",
+      "lifecycle_change",
+      "event_topic",
+      "event_subject",
+      "event_payload"
+     ]
+    },
+    "metric.rs": {
+     "purpose": "Compiles a ptr-analytics metric specification into one query over the work schema.",
+     "key_types": [
+      "metric_sql"
+     ]
+    },
+    "seal.rs": {
+     "purpose": "Host-held key that tags stored branches with HMAC-SHA-256 and verifies tags in constant time; Debug is redacted.",
+     "key_types": [
+      "BranchSealKey"
+     ]
+    },
+    "adapters/mod.rs": {
+     "purpose": "PgSubstrate: loopback-only connect, capability reading, locked migrate, projection rebuild, drop, and driver-error mapping.",
+     "key_types": [
+      "PgSubstrate",
+      "MigrationReport",
+      "connect",
+      "connect_with",
+      "migrate"
+     ]
+    },
+    "adapters/projection.rs": {
+     "purpose": "The projector: applies one committed record per transaction behind the watermark lock, chain-verified, and answers lifecycle reads.",
+     "key_types": [
+      "ProjectionApply",
+      "SourceAdmission",
+      "apply_committed",
+      "check_against_ledger",
+      "watermark"
+     ]
+    },
+    "adapters/events.rs": {
+     "purpose": "Reads the projection event log in commit order and keeps per-consumer committed offsets that only move forward.",
+     "key_types": [
+      "ProjectionEventRow",
+      "events_after",
+      "consumer_offset",
+      "commit_consumer"
+     ]
+    },
+    "adapters/branch.rs": {
+     "purpose": "Stores and loads sealed agent branches, their triage log and outcomes in the work schema; a stored branch is only a candidate.",
+     "key_types": [
+      "BranchOutcome",
+      "store_branch",
+      "load_branch",
+      "seal_stored_branch",
+      "record_triage"
+     ]
+    },
+    "adapters/fastmem.rs": {
+     "purpose": "Fast-memory registrations, write journal and checkpoints in the work schema, stored as exact f32 bit patterns.",
+     "key_types": [
+      "FastMemoryRecord",
+      "FastMemoryCheckpoint",
+      "JOURNAL_SEQ_LIMIT",
+      "create_memory",
+      "append_write"
+     ]
+    },
+    "adapters/lineage.rs": {
+     "purpose": "Records and loads adapter interference reports; the rest of the lineage catalog has no adapter yet.",
+     "key_types": [
+      "record_interference",
+      "load_interference"
+     ]
+    },
+    "adapters/metrics.rs": {
+     "purpose": "Runs a compiled metric query and returns numerator and denominator per group.",
+     "key_types": [
+      "metric"
+     ]
+    },
+    "adapters/policy.rs": {
+     "purpose": "Records triage policies with their calibration branches and returns adjudicated calibration samples.",
+     "key_types": [
+      "record_policy",
+      "load_policy",
+      "adjudicated_samples"
+     ]
+    },
+    "adapters/search.rs": {
+     "purpose": "Derived search cache: embedding spaces, documents of live capsule generations, and hybrid lexical plus vector retrieval of candidates.",
+     "key_types": [
+      "EmbeddingSpace",
+      "SearchDocument",
+      "HybridQuery",
+      "SearchResults",
+      "upsert_document"
+     ]
+    }
+   }
+  },
+  "ptr-observe": {
+   "role": "Typed trace event, sink trait and field-name constants, with an optional adapter to the tracing crate.",
+   "summary": "Defines TraceEvent with typed values, the TraceSink trait, a no-op sink, field-name constants, a FlowSignature record and an optional TracingSink. No other crate in the repository depends on it and nothing outside its own tests builds or emits an event.",
+   "maturity": "scaffold",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Crate root re-exporting the trace types; the tracing adapter is behind the tracing-adapter feature.",
+     "key_types": []
+    },
+    "error.rs": {
+     "purpose": "Trace failure kinds with stable lowercase codes.",
+     "key_types": [
+      "TraceError"
+     ]
+    },
+    "fields.rs": {
+     "purpose": "String constants naming the standard trace fields such as ptr.request_id and error.code.",
+     "key_types": [
+      "REQUEST_ID",
+      "REVISION",
+      "GENERATION",
+      "ERROR_CODE",
+      "LATENCY_NS"
+     ]
+    },
+    "flow.rs": {
+     "purpose": "A plain record of a request's operators and state transitions; nothing builds or reads it.",
+     "key_types": [
+      "FlowSignature"
+     ]
+    },
+    "macros.rs": {
+     "purpose": "Internal From-impl macro for trace values plus the exported trace_event! builder macro.",
+     "key_types": [
+      "trace_event"
+     ]
+    },
+    "trace.rs": {
+     "purpose": "Trace level, typed value, event with ordered fields, the TraceSink trait and a no-op sink.",
+     "key_types": [
+      "TraceLevel",
+      "TraceValue",
+      "TraceEvent",
+      "TraceSink",
+      "NoopTraceSink"
+     ]
+    },
+    "tracing_adapter.rs": {
+     "purpose": "A sink that forwards each event to the tracing macros at the matching level with selected fields.",
+     "key_types": [
+      "TracingSink"
+     ]
+    }
+   }
+  },
+  "ptr-inspect": {
+   "role": "Inspection tree type, an Inspectable trait and a Secret wrapper that never renders its contents.",
+   "summary": "One file: InspectNode, the Inspectable trait and Secret<T>, whose Debug and inspect output are redacted. It is listed as a workspace member but no crate in the repository depends on it.",
+   "maturity": "scaffold",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Defines the inspection node tree, the Inspectable trait and the redacting Secret wrapper.",
+     "key_types": [
+      "InspectNode",
+      "Inspectable",
+      "Secret"
+     ]
+    }
+   }
+  },
+  "ptr-core": {
+   "role": "Placeholder core-model vocabulary: configs, a few small data types and the ActionIr re-export.",
+   "summary": "Thirteen tiny files of configuration structs and plain data holders (slots, workspace, branch frontier, router decision, verification result) with a handful of one-line helpers, and no model, attention or reasoning implementation. The only item other crates use is action_head::ActionIr, a re-export of the ptr-types type for compatibility; the rest is exercised only by a one-assert smoke test.",
+   "maturity": "scaffold",
+   "modules": {
+    "lib.rs": {
+     "purpose": "Declares the twelve modules and re-exports PtrCoreConfig.",
+     "key_types": [
+      "PtrCoreConfig"
+     ]
+    },
+    "action_head.rs": {
+     "purpose": "Re-exports ptr_types::ActionIr, the action type runtime and wire crates import from here.",
+     "key_types": [
+      "ActionIr"
+     ]
+    },
+    "branch_reasoner.rs": {
+     "purpose": "Branch state with probability and a frontier that drops branches below a threshold.",
+     "key_types": [
+      "BranchState",
+      "BranchFrontier",
+      "prune_below"
+     ]
+    },
+    "epistemic_workspace.rs": {
+     "purpose": "A list of semantic slots with a step counter and an iterator over live slots.",
+     "key_types": [
+      "EpistemicWorkspace",
+      "live_slots"
+     ]
+    },
+    "latent_reasoner.rs": {
+     "purpose": "Reasoning budget levels and a reasoner that only adds the budget's step count to the workspace counter.",
+     "key_types": [
+      "ReasoningBudget",
+      "LatentReasoner",
+      "steps",
+      "advance"
+     ]
+    },
+    "model.rs": {
+     "purpose": "Top-level core configuration choosing autoregressive or diffusion family with default sub-configs.",
+     "key_types": [
+      "CoreFamily",
+      "PtrCoreConfig"
+     ]
+    },
+    "operator_router.rs": {
+     "purpose": "Weighted operators and a router decision that returns the highest-weight operator.",
+     "key_types": [
+      "WeightedOperator",
+      "RouterDecision",
+      "top"
+     ]
+    },
+    "probabilistic_reasoner.rs": {
+     "purpose": "Normalizes non-negative finite scores into probabilities, all default when the sum is zero.",
+     "key_types": [
+      "normalize"
+     ]
+    },
+    "ptr_ar.rs": {
+     "purpose": "Configuration struct for the autoregressive family: layers, context, latent step maximum.",
+     "key_types": [
+      "PtrArConfig"
+     ]
+    },
+    "ptr_diff.rs": {
+     "purpose": "Configuration struct for the diffusion family: blocks, canvas slots, denoise steps.",
+     "key_types": [
+      "PtrDiffConfig"
+     ]
+    },
+    "semantic_slots.rs": {
+     "purpose": "Plain data holder for one semantic slot: role, epistemic state, validity, confidence, value and provenance.",
+     "key_types": [
+      "SemanticSlot"
+     ]
+    },
+    "typed_attention.rs": {
+     "purpose": "Configuration struct for typed attention: width, heads and bias and mask switches.",
+     "key_types": [
+      "TypedAttentionConfig"
+     ]
+    },
+    "verifier_head.rs": {
+     "purpose": "Plain result record: confidence, contradiction score and need for external verification.",
+     "key_types": [
+      "CoreVerification"
+     ]
+    }
+   }
+  },
+  "ptr-bench": {
+   "role": "Benchmark and experiment binary: micro benchmarks, the in-memory S003 certified-branches harness and feature-gated PostgreSQL experiments.",
+   "summary": "The default build runs semdb, mailbox and ledger recovery benchmarks and the S003 experiment, which drives a real PtrRuntime against an independent reference model with five arms, canaries and probes and prints one JSON result line. With the postgres-experiments feature it also runs L003 (fast-memory revocation) and L004 (projection equivalence) against a loopback PostgreSQL server through ptr-pg.",
+   "maturity": "built",
+   "modules": {
+    "main.rs": {
+     "purpose": "Command dispatcher for the benchmarks and experiments, plus the ledger recovery and crash benchmarks.",
+     "key_types": []
+    },
+    "experiments/mod.rs": {
+     "purpose": "Declares the experiment modules; the PostgreSQL ones compile only with the postgres-experiments feature.",
+     "key_types": []
+    },
+    "experiments/json.rs": {
+     "purpose": "Escapes a string as a JSON string for result lines.",
+     "key_types": [
+      "json_string"
+     ]
+    },
+    "experiments/rng.rs": {
+     "purpose": "Seeded SplitMix64 generator with forked streams so every case is reproducible from its seed.",
+     "key_types": [
+      "Rng"
+     ]
+    },
+    "experiments/pg.rs": {
+     "purpose": "Shared server access for the PostgreSQL experiments: fresh substrate instance per case, tagged sessions, commit-fault trigger.",
+     "key_types": [
+      "Instance",
+      "dsn",
+      "is_commit_fault",
+      "COMMIT_FAULT",
+      "DSN_VARIABLE"
+     ]
+    },
+    "experiments/l003.rs": {
+     "purpose": "L003 harness: checks no revoked input influences a fast-memory readout across revocation, replay, restore or crash.",
+     "key_types": [
+      "run"
+     ]
+    },
+    "experiments/l004.rs": {
+     "purpose": "L004 harness: checks the PostgreSQL projection equals runtime replay and refuses foreign or rolled-back histories.",
+     "key_types": [
+      "run"
+     ]
+    },
+    "experiments/s003/mod.rs": {
+     "purpose": "S003 entry: runs cases, each with canaries, probes and every arm, a rerun digest check, and prints the result line.",
+     "key_types": [
+      "run"
+     ]
+    },
+    "experiments/s003/params.rs": {
+     "purpose": "Preregistered parameters compiled in, and the canonical text of the frozen table that every result echoes.",
+     "key_types": [
+      "CONFIG_TOML",
+      "SEEDS",
+      "AGENTS",
+      "PROGRAMS",
+      "echo"
+     ]
+    },
+    "experiments/s003/workload.rs": {
+     "purpose": "Per-case contention level, genesis state, tasks with durations and scores, and background actor schedule drawn from seeded streams.",
+     "key_types": [
+      "Case",
+      "Genesis",
+      "Task",
+      "Background"
+     ]
+    },
+    "experiments/s003/program.rs": {
+     "purpose": "The nine agent programs, run identically against a real Branch view and a reference view, with footprints compared.",
+     "key_types": [
+      "Program",
+      "BranchView",
+      "RefView",
+      "Footprint",
+      "footprint"
+     ]
+    },
+    "experiments/s003/model.rs": {
+     "purpose": "Reference model of semdb values, deltas and lifecycle authority, reimplemented without calling certification code.",
+     "key_types": [
+      "Model",
+      "Val",
+      "Op",
+      "Delta",
+      "Lifecycle"
+     ]
+    },
+    "experiments/s003/oracle.rs": {
+     "purpose": "Decides from the model alone which hazards a merge would hit and exactly what the runtime must do.",
+     "key_types": [
+      "hazards",
+      "judge",
+      "Predicted",
+      "Judgement",
+      "merge_delta"
+     ]
+    },
+    "experiments/s003/verifier.rs": {
+     "purpose": "The two deterministic verifiers of the harness grant: domain rules for every change, counter-jump rule for host writes.",
+     "key_types": [
+      "Domain",
+      "Diff",
+      "COUNTER_NEGATIVE",
+      "UNKNOWN_FAMILY",
+      "COUNTER_JUMP"
+     ]
+    },
+    "experiments/s003/world.rs": {
+     "purpose": "The runtime under test beside the model: predicts, runs and compares every write, merge, background event and replay.",
+     "key_types": [
+      "World",
+      "Attempt",
+      "Settled",
+      "Authority",
+      "GrantKind"
+     ]
+    },
+    "experiments/s003/arms.rs": {
+     "purpose": "The five arms (serial, certified, certified-review, lww, occ) and the tick scheduler that runs a case's tasks.",
+     "key_types": [
+      "Arm",
+      "RunStats",
+      "Run",
+      "run_arm"
+     ]
+    },
+    "experiments/s003/canary.rs": {
+     "purpose": "Nine hand-written footprints with known verdicts that make the oracle itself falsifiable.",
+     "key_types": [
+      "Canary",
+      "canaries",
+      "run"
+     ]
+    },
+    "experiments/s003/probes.rs": {
+     "purpose": "Adversarial probes run on fixture runtimes: double merges, foreign bases, approvals, holds, sealing rules, forged histories.",
+     "key_types": [
+      "Outcome",
+      "run_all"
+     ]
+    },
+    "experiments/s003/metrics.rs": {
+     "purpose": "Hard, coverage and descriptive counters declared by one macro, plus FNV digesting and the merge wall-time histogram.",
+     "key_types": [
+      "Metrics",
+      "HARD",
+      "COVERAGE",
+      "DESCRIPTIVE",
+      "fnv"
+     ]
+    },
+    "experiments/s003/scratch.rs": {
+     "purpose": "Private exclusively created temporary directory for durable round trips, removed on drop.",
+     "key_types": [
+      "Scratch"
+     ]
+    }
+   }
+  },
+  "ptr-burn-a0": {
+   "role": "Burn-based research model A0: slot-typed cross-attention with admission masking, router logits and a codebook-bound checkpoint format.",
+   "summary": "Separate workspace. PtrA0 embeds raw tokens and typed slots, attends both ways with a validity-derived additive mask, refines slots and pools admitted slots into operator logits; typed inputs only enter through CodeGrid and SlotValues built from ptr-types. Checkpoints are written as a ptr-types header plus the Burn record and refused on codebook, encoding, table-size or architecture drift. It is exercised by its own tests and examples and used as a real fixture by ptr-runtime and ptrctl tests; the main runtime does not link it.",
+   "maturity": "partial",
+   "modules": {
+    "lib.rs": {
+     "purpose": "The PtrA0 model, its configuration, typed code and slot-value containers, admission_bias and the forward pass, plus a plain baseline.",
+     "key_types": [
+      "PtrA0",
+      "PtrA0Config",
+      "CodeGrid",
+      "SlotValues",
+      "admission_bias"
+     ]
+    },
+    "checkpoint.rs": {
+     "purpose": "Saves and loads weights inside a ptr-types checkpoint header with architecture digest, optionally bound to an M002-v5 contract.",
+     "key_types": [
+      "header",
+      "save",
+      "save_bound",
+      "load",
+      "load_bound"
+     ]
+    },
+    "m002_v5_contract.rs": {
+     "purpose": "Reads and digests a frozen M002-v5 contract file and verifies a config or training setup against it.",
+     "key_types": [
+      "M002V5Contract",
+      "M002V5ContractError"
+     ]
+    }
+   }
+  },
+  "ptr-fuzz": {
+   "role": "cargo-fuzz harness for the Pod wire protocol decoder.",
+   "summary": "One fuzz target decodes arbitrary bytes as a PodCall and converts any success into a CallFrame to check that the conversion never panics. It has no corpus or other targets in the repository.",
+   "maturity": "scaffold",
+   "modules": {
+    "fuzz_targets/podwire.rs": {
+     "purpose": "Fuzz target: decode bytes as PodCall and try CallFrame conversion.",
+     "key_types": []
+    }
+   }
+  }
+ },
+ "flows": [
+  {
+   "id": "pg-projection-and-adapters",
+   "title": "PostgreSQL projection and work adapters",
+   "summary": "A host configures, connects, migrates and then feeds committed ledger records to the projector, which is the only writer of the projection; consumers and work-schema adapters read or write around it.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "host",
+     "label": "Host (tests, ptr-bench L003/L004)",
+     "crate": "ptr-bench"
+    },
+    {
+     "id": "config",
+     "label": "config.rs / capability.rs",
+     "crate": "ptr-pg"
+    },
+    {
+     "id": "substrate",
+     "label": "PgSubstrate + migrate.rs",
+     "crate": "ptr-pg"
+    },
+    {
+     "id": "projector",
+     "label": "adapters/projection.rs",
+     "crate": "ptr-pg"
+    },
+    {
+     "id": "events",
+     "label": "adapters/events.rs",
+     "crate": "ptr-pg"
+    },
+    {
+     "id": "work",
+     "label": "work and derived adapters",
+     "crate": "ptr-pg"
+    },
+    {
+     "id": "seal",
+     "label": "seal.rs",
+     "crate": "ptr-pg"
+    }
+   ],
+   "steps": [
+    {
+     "from": "host",
+     "to": "config",
+     "label": "PgConfig::resolve_dsn",
+     "note": "The connection string is read from the environment variable the config names; unset or blank gives MissingDsn, so no secret lives in a config file.",
+     "evidence": "crates/ptr-pg/src/config.rs:249"
+    },
+    {
+     "from": "config",
+     "to": "config",
+     "label": "SchemaSet::with_prefix and check",
+     "note": "Projection, derived and work schema names come from one prefix; a hand-composed set or a pg_ prefix is refused so no two instances share a schema.",
+     "evidence": "crates/ptr-pg/src/config.rs:191"
+    },
+    {
+     "from": "host",
+     "to": "substrate",
+     "label": "PgSubstrate::connect_with",
+     "note": "Refuses a bad schema set, a connection string naming several servers, and any target that is not loopback or a Unix socket because no encrypted transport is linked.",
+     "evidence": "crates/ptr-pg/src/adapters/mod.rs:90"
+    },
+    {
+     "from": "substrate",
+     "to": "substrate",
+     "label": "capabilities then Capabilities::check_supported",
+     "note": "Reads server_version_num and pg_extension, then refuses a server below 16 or without pgvector 0.8.0; nothing is ever installed.",
+     "evidence": "crates/ptr-pg/src/capability.rs:69"
+    },
+    {
+     "from": "substrate",
+     "to": "substrate",
+     "label": "PgSubstrate::migrate under advisory lock",
+     "note": "A separate session holds pg_try_advisory_lock keyed by the projection schema; each migration commits only after the lock is reconfirmed, else MigrationLockLost.",
+     "evidence": "crates/ptr-pg/src/adapters/mod.rs:191"
+    },
+    {
+     "from": "substrate",
+     "to": "substrate",
+     "label": "migrate_locked per SchemaClass and Migration::checksum",
+     "note": "Creates each schema and schema_migration table, plans pending migrations, applies each in its own transaction and records its SHA-256 checksum; drift, a malformed catalog or a newer unknown version is refused. Catalogs hold 2 projection, 1 derived and 16 work migrations.",
+     "evidence": "crates/ptr-pg/src/adapters/mod.rs:288"
+    },
+    {
+     "from": "host",
+     "to": "projector",
+     "label": "PgSubstrate::apply_committed",
+     "note": "One committed record per transaction behind a FOR UPDATE watermark row; the anchor is recomputed from the stored one and a mismatch is ForeignHistory, a duplicate is checked against the stored anchor.",
+     "evidence": "crates/ptr-pg/src/adapters/projection.rs:124"
+    },
+    {
+     "from": "projector",
+     "to": "projector",
+     "label": "Write state_entry, live_generation, tombstone, semantic_revision",
+     "note": "Entries come from ptr_state::projection_entries; a new live generation or tombstone also deletes derived search documents and fast-memory journal writes and checkpoints of the superseded or revoked generation in the same transaction.",
+     "evidence": "crates/ptr-pg/src/adapters/projection.rs:197-310"
+    },
+    {
+     "from": "projector",
+     "to": "events",
+     "label": "Insert projection_event, advance watermark, pg_notify",
+     "note": "The event row, applied anchor and watermark move in the one transaction that commits; the notification fires only on commit.",
+     "evidence": "crates/ptr-pg/src/adapters/projection.rs:334-372"
+    },
+    {
+     "from": "host",
+     "to": "events",
+     "label": "events_after, consumer_offset, commit_consumer",
+     "note": "Consumers read events above their offset up to the watermark and commit offsets that only move forward and never beyond the watermark; offsets restart at zero after a rebuild.",
+     "evidence": "crates/ptr-pg/src/adapters/events.rs:96"
+    },
+    {
+     "from": "host",
+     "to": "work",
+     "label": "store_branch, record_triage, record_outcome",
+     "note": "Sealed branches, triage and outcomes go to the work schema; a merged outcome is accepted only when the projection holds the branch's merge key at exactly that commit index.",
+     "evidence": "crates/ptr-pg/src/adapters/branch.rs:552"
+    },
+    {
+     "from": "work",
+     "to": "work",
+     "label": "append_write, upsert_document, record_policy, metric",
+     "note": "Fast-memory writes and search documents are checked against the projection's live_generation row held FOR SHARE and its tombstones; lineage, policy and metrics adapters write or read only work-schema tables.",
+     "evidence": "crates/ptr-pg/src/adapters/fastmem.rs:343-360"
+    },
+    {
+     "from": "host",
+     "to": "seal",
+     "label": "with_branch_seal_key and BranchSealKey::tag",
+     "note": "With a host-held key, store_branch writes an HMAC-SHA-256 tag of the branch's seal digest and load_branch refuses a missing tag (BranchWithoutSealTag) or a mismatching one (BranchSealMismatch).",
+     "evidence": "crates/ptr-pg/src/seal.rs:35"
+    },
+    {
+     "from": "substrate",
+     "to": "host",
+     "label": "database() and PgError::code",
+     "note": "Driver errors cross the boundary only as SQLSTATE plus message (or a connection error), and every refusal has a stable PTR_PG_* code.",
+     "evidence": "crates/ptr-pg/src/adapters/mod.rs:564"
+    }
+   ]
+  },
+  {
+   "id": "s003-certified-branches-harness",
+   "title": "S003 certified-branches harness",
+   "summary": "`ptr-bench certified-branches` draws seeded cases, judges the oracle with canaries, runs adversarial probes and every arm over a real runtime beside a reference model, then prints one JSON line and exits 1 if any hard counter is above zero.",
+   "status": "built",
+   "lanes": [
+    {
+     "id": "main",
+     "label": "main.rs / s003/mod.rs",
+     "crate": "ptr-bench"
+    },
+    {
+     "id": "workload",
+     "label": "params.rs + workload.rs",
+     "crate": "ptr-bench"
+    },
+    {
+     "id": "arms",
+     "label": "arms.rs",
+     "crate": "ptr-bench"
+    },
+    {
+     "id": "world",
+     "label": "world.rs + program.rs",
+     "crate": "ptr-bench"
+    },
+    {
+     "id": "oracle",
+     "label": "oracle.rs + model.rs",
+     "crate": "ptr-bench"
+    },
+    {
+     "id": "checks",
+     "label": "canary.rs + probes.rs + verifier.rs",
+     "crate": "ptr-bench"
+    },
+    {
+     "id": "metrics",
+     "label": "metrics.rs + scratch.rs",
+     "crate": "ptr-bench"
+    }
+   ],
+   "steps": [
+    {
+     "from": "main",
+     "to": "main",
+     "label": "main dispatches certified-branches",
+     "note": "Iterations and seed are parsed strictly (a typo stops the run); defaults are 48 cases and seed 17 from params.",
+     "evidence": "bins/ptr-bench/src/main.rs:45-58"
+    },
+    {
+     "from": "main",
+     "to": "workload",
+     "label": "params::echo and Case::new",
+     "note": "The preregistered table in config.toml is compiled in and echoed canonically; each case picks a contention level from the groups ladder (4 to 256 groups) and a stream derived from seed and index.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/workload.rs:55"
+    },
+    {
+     "from": "workload",
+     "to": "workload",
+     "label": "Case::genesis, tasks, background",
+     "note": "Genesis state, 128 tasks of nine program kinds with per-attempt think and review times, and background actor events come from named streams, so all arms see the same inputs.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/workload.rs:118"
+    },
+    {
+     "from": "main",
+     "to": "checks",
+     "label": "canary::run",
+     "note": "Nine hand-written footprints each with a known verdict are judged by the oracle; a miss counts canary_misses and a hard failure.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/canary.rs:64"
+    },
+    {
+     "from": "main",
+     "to": "checks",
+     "label": "probes::run_all",
+     "note": "Ten probe groups on fresh fixture runtimes (merged twice, foreign base, relied generation, approvals, held merges, host write rules, sealing rules, grants, forged histories, hazards) count a hard counter when the runtime accepts what it must refuse.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/probes.rs:58-77"
+    },
+    {
+     "from": "main",
+     "to": "arms",
+     "label": "run_arm for serial plus four arms at 2, 4, 8, 16 agents",
+     "note": "Serial uses one agent; certified, certified-review, lww and occ each run at every agent count over the same tasks.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/mod.rs:106-117"
+    },
+    {
+     "from": "arms",
+     "to": "world",
+     "label": "World::open",
+     "note": "An agent opens a real ptr_branch Branch on the runtime snapshot, runs its program, seals it, and the same program runs on a reference view; log and footprint must match or a divergence is counted.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/world.rs:666"
+    },
+    {
+     "from": "arms",
+     "to": "arms",
+     "label": "Simulation::execute tick loop",
+     "note": "Each tick runs background actors, then due merges through one lane (oldest first, reviews before agent merges), then idle agents open work; refused tasks retry up to 8 attempts.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/arms.rs:250"
+    },
+    {
+     "from": "arms",
+     "to": "oracle",
+     "label": "World::merge calls oracle::judge",
+     "note": "Before the runtime sees a merge, the oracle predicts hazards and the exact outcome from the model alone; certified arms merge through PtrRuntime::merge_branch under triage or reviewed authority.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/world.rs:776"
+    },
+    {
+     "from": "world",
+     "to": "metrics",
+     "label": "committed, held, refused compare with the prediction",
+     "note": "Anything the runtime did that the oracle did not predict increments a hard counter (lost updates, phantoms, stale reads, provenance mismatches); the model then follows the journal and full state is compared.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/world.rs:842-920"
+    },
+    {
+     "from": "arms",
+     "to": "world",
+     "label": "settle_lww and settle_occ baselines",
+     "note": "Last-writer-wins commits the branch overlay as a host write; occ retries only when a declared read changed. Baseline hazards are counted as evidence, not failures.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/arms.rs:420-460"
+    },
+    {
+     "from": "world",
+     "to": "metrics",
+     "label": "World::round_trips",
+     "note": "Certifying arms rebuild a runtime from replay, a compacted snapshot and, in every eighth case, a durable file in a scratch directory, and compare each with the live runtime.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/world.rs:1308"
+    },
+    {
+     "from": "main",
+     "to": "metrics",
+     "label": "Rerun of case 0 and result_line",
+     "note": "Case 0 runs again from the seed and its digest must match, else nondeterminism; the JSON line lists every counter, the merge wall-time histogram, per-arm statistics and hard_failures, and the process exits 1 if hard_failures is above zero.",
+     "evidence": "bins/ptr-bench/src/experiments/s003/mod.rs:257-292"
+    }
+   ]
+  },
+  {
+   "id": "burn-a0-forward-and-checkpoint",
+   "title": "Burn A0 forward pass and checkpoint",
+   "summary": "Typed slot codes and encoded values are built from ptr-types, the model embeds them, attends with an admission mask and pools admitted slots into operator logits; the weights are saved and loaded inside a ptr-types checkpoint header.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "types",
+     "label": "ptr-types codebook, slot_encoding, validity_mask",
+     "crate": "ptr-types"
+    },
+    {
+     "id": "inputs",
+     "label": "CodeGrid and SlotValues",
+     "crate": "ptr-burn-a0"
+    },
+    {
+     "id": "model",
+     "label": "PtrA0::forward",
+     "crate": "ptr-burn-a0"
+    },
+    {
+     "id": "ckpt",
+     "label": "checkpoint.rs",
+     "crate": "ptr-burn-a0"
+    },
+    {
+     "id": "header",
+     "label": "ptr-types checkpoint",
+     "crate": "ptr-types"
+    }
+   ],
+   "steps": [
+    {
+     "from": "types",
+     "to": "inputs",
+     "label": "CodeGrid::new through Codebook",
+     "note": "Role and epistemic codes are minted only through the codebook, with the family as a type parameter, so swapping the two grids does not compile.",
+     "evidence": "model/burn-a0/src/lib.rs:156"
+    },
+    {
+     "from": "types",
+     "to": "inputs",
+     "label": "SlotValues::new from SlotVector",
+     "note": "Values come only from SlotVectors produced by a named SlotEncoding; rows must share slot count, width and encoding version.",
+     "evidence": "model/burn-a0/src/lib.rs:286"
+    },
+    {
+     "from": "types",
+     "to": "inputs",
+     "label": "admission_bias from ValidityMask",
+     "note": "ValidityMask::attention_bias gives 0.0 for admitted slots and negative infinity otherwise; admission_bias lifts it to a tensor.",
+     "evidence": "crates/ptr-types/src/validity_mask.rs:135"
+    },
+    {
+     "from": "inputs",
+     "to": "model",
+     "label": "PtrA0::forward asserts",
+     "note": "Panics if batch, slot count, codebook version, slot-encoding version or width disagree with the model.",
+     "evidence": "model/burn-a0/src/lib.rs:1039-1075"
+    },
+    {
+     "from": "model",
+     "to": "model",
+     "label": "Slot embeddings",
+     "note": "Token, slot-type, epistemic, provenance and confidence embeddings are summed with the slot values; validity is deliberately not part of the sum.",
+     "evidence": "model/burn-a0/src/lib.rs:1077-1089"
+    },
+    {
+     "from": "model",
+     "to": "model",
+     "label": "Slots attend to raw tokens",
+     "note": "Cross attention scores get a bounded metadata bias by mode (LegacyScalarV1, FactorizedV2, or computed and zeroed when Off), then softmax and context.",
+     "evidence": "model/burn-a0/src/lib.rs:1103-1137"
+    },
+    {
+     "from": "model",
+     "to": "model",
+     "label": "Raw tokens attend to slots with admission bias",
+     "note": "The admission bias is added last, so excluded slots get exactly zero weight; a row admitting nothing gets a finite bias and its context is zeroed to avoid NaN.",
+     "evidence": "model/burn-a0/src/lib.rs:1152-1181"
+    },
+    {
+     "from": "model",
+     "to": "model",
+     "label": "Latent refinement and router",
+     "note": "Slots are refined for latent_steps; the router averages over admitted slots only (legacy mean-linear or calibrated cosine) into operator logits returned in PtrA0Output.",
+     "evidence": "model/burn-a0/src/lib.rs:1182-1229"
+    },
+    {
+     "from": "ckpt",
+     "to": "header",
+     "label": "checkpoint::header and save",
+     "note": "The header records model name ptr-a0, codebook, slot-encoding version, table sizes read from the weights and an architecture digest, followed by the Burn record bytes; save_bound adds an M002-v5 contract digest.",
+     "evidence": "model/burn-a0/src/checkpoint.rs:102"
+    },
+    {
+     "from": "ckpt",
+     "to": "header",
+     "label": "checkpoint::load",
+     "note": "Reads the header, refuses another model, calls CheckpointHeader::verify for encoding, codebook bytes and the three embedded family sizes, then checks the architecture digest before decoding any weight; unbound format 2 needs an exact legacy opt-in.",
+     "evidence": "model/burn-a0/src/checkpoint.rs:254-281"
+    },
+    {
+     "from": "header",
+     "to": "ckpt",
+     "label": "CheckpointHeader::verify",
+     "note": "Refuses a moved encoding, unknown or moved codebook, a missing family table or a table not equal to the family's cardinality.",
+     "evidence": "crates/ptr-types/src/checkpoint.rs:203"
+    }
+   ]
+  },
+  {
+   "id": "observe-trace-and-flow",
+   "title": "ptr-observe trace and flow types",
+   "summary": "A caller could build a TraceEvent with the macro and hand it to a TraceSink; in the repository only ptr-observe's own tests do. Nothing emits to it and no crate depends on it.",
+   "status": "test-only",
+   "lanes": [
+    {
+     "id": "fields",
+     "label": "fields.rs",
+     "crate": "ptr-observe"
+    },
+    {
+     "id": "trace",
+     "label": "trace.rs + macros.rs",
+     "crate": "ptr-observe"
+    },
+    {
+     "id": "sink",
+     "label": "TraceSink implementations",
+     "crate": "ptr-observe"
+    },
+    {
+     "id": "tracing",
+     "label": "tracing crate",
+     "crate": null
+    }
+   ],
+   "steps": [
+    {
+     "from": "fields",
+     "to": "trace",
+     "label": "Field-name constants",
+     "note": "Strings such as ptr.request_id, ptr.revision and error.code name the fields an event may carry.",
+     "evidence": "crates/ptr-observe/src/fields.rs:1-17"
+    },
+    {
+     "from": "trace",
+     "to": "trace",
+     "label": "trace_event! or TraceEvent::request",
+     "note": "Builds an event with a level, name and an ordered map of typed values; request() fills request id and revision.",
+     "evidence": "crates/ptr-observe/src/macros.rs:13-22"
+    },
+    {
+     "from": "trace",
+     "to": "sink",
+     "label": "TraceSink::emit",
+     "note": "The trait takes an event and returns Result<(), TraceError>; the provided NoopTraceSink discards everything.",
+     "evidence": "crates/ptr-observe/src/trace.rs:97-108"
+    },
+    {
+     "from": "sink",
+     "to": "tracing",
+     "label": "TracingSink::emit",
+     "note": "With the tracing-adapter feature, picks seven known fields and forwards the event to tracing::error, warn, info, debug or trace by level.",
+     "evidence": "crates/ptr-observe/src/tracing_adapter.rs:6-16"
+    },
+    {
+     "from": "trace",
+     "to": "trace",
+     "label": "FlowSignature",
+     "note": "A record of request, operator names and state transitions; no code builds or consumes it, so it is a declared type only.",
+     "evidence": "crates/ptr-observe/src/flow.rs:4-8"
+    }
+   ]
+  }
+ ]
+}

@@ -1,7 +1,7 @@
 # ptr-protocol — Semantic Protocol & Codec Boundary
 
 > **Role:** Defines PodWire semantics and converts versioned wire messages into validated PTR domain values.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status

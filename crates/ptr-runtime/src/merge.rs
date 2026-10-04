@@ -798,7 +798,8 @@ impl PtrRuntime {
     /// 3. [`MergeAuthority::Triage`] under a grant with no merge policy
     ///    ([`RuntimeError::NoMergePolicy`]), and [`MergeAuthority::Reviewed`]
     ///    by a reviewer the grant does not list
-    ///    ([`RuntimeError::UnknownReviewer`]);
+    ///    ([`RuntimeError::UnknownReviewer`]) or by the branch's own author
+    ///    ([`RuntimeError::SelfApproval`]);
     /// 4. a branch id or author that is not an identifier of at most
     ///    [`MAX_PROVENANCE_TEXT`] bytes
     ///    ([`RuntimeError::InvalidProvenanceText`]);
@@ -872,6 +873,11 @@ impl PtrRuntime {
             } => {
                 if !grant.lists_reviewer(&reviewer) {
                     return Err(RuntimeError::UnknownReviewer {
+                        reviewer: reviewer.0,
+                    });
+                }
+                if reviewer == *sealed.author() {
+                    return Err(RuntimeError::SelfApproval {
                         reviewer: reviewer.0,
                     });
                 }
