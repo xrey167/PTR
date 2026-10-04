@@ -191,15 +191,19 @@ Negative, one per route back in:
   passes that particular field. The position itself is still verified against the
   chain, so this cannot admit a foreign history; it can only carry a misleading
   diagnostic.
-- **No real model, no real checkpoint.** The payload is opaque bytes and the test
-  backend is a deterministic hash, not an LLM. Nothing here is evidence about model
+- **No real language model.** The admission tests use opaque bytes and a
+  deterministic hash backend, not an LLM. A real Burn A0 checkpoint does exist
+  (`crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt`, bound in
+  `crates/ptr-runtime/tests/checkpoint_binding.rs`), but A0 is a small architecture
+  probe and not a language model. Nothing here is evidence about model
   quality, inference cost, or that caching neural state helps. The equivalence test
   proves that identical admitted bytes produce identical output, which is a property
   of the plumbing.
-- **Burn A0 does not use any of this yet.** Nothing in the training stack records a
-  `CodebookVersion`, a `StateBinding` or a fingerprint; that half sits outside the
-  production workspace on a different toolchain with its own CI job, and remains open
-  together with the Burn half of the codebook gate.
+- **No training loop binds a checkpoint as it saves one.** A0's checkpoint header
+  carries the codebook version and assignment (document 26), and `ptr-runtime` binds
+  a checkpoint afterwards; nothing in the training stack records a `StateBinding`
+  at save time. A0 sits outside the production workspace on a different toolchain
+  with its own CI job.
 - **No durable catalog.** `NeuralAnchor` has to be retained somewhere the artifact
   cannot reach, and this crate does not provide that store — the same deployment
   obligation the other anchors carry.

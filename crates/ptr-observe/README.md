@@ -1,7 +1,7 @@
 # ptr-observe — Observability & Flow Signatures
 
 > **Role:** Records structured runtime execution without requiring natural-language chain-of-thought logging.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status

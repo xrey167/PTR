@@ -386,11 +386,12 @@ unfenced is the failure this exists to prevent.
   `FileLedger` takes an advisory lock, which makes one writer per file on one
   machine and says nothing about a second. What raft adds is a safety argument
   among correct members — a deposed leader cannot commit, tested — and not a fence
-  against a writer that is not one. **Durable leadership fencing is a protocol
-  property and it is not implemented**, which is the last clause of #15's Gate 2
-  sentence and is carried forward in `docs/OPEN_ITEMS_PLAN_20260921.md` rather than
-  closed here. This document used to assert the opposite in its own body, fourteen
-  lines above this section; that is corrected.
+  against a writer that is not one. The fence against such a writer is the fencing
+  token described in "The fencing token" above (`PTR_RAFT_FENCED`), bounded by the
+  previous bullet: it stops a superseded writer on the storage that sees the token
+  and says nothing about any other copy. This bullet used to say that durable
+  leadership fencing "is not implemented", which contradicted that section; it is
+  corrected here.
 - **Compaction is not integrated with the ledger's retention floor.** This is
   raft's own log, distinct from the committed ledger in
   `25-erasure-and-retention.md`, and the two floors are still independent.
