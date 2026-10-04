@@ -4,7 +4,7 @@ maturity = "foundation"
 last_reviewed = "2026-10-04"
 
 implemented = [
-  "PodHeader::validate refuses a header whose placement_epoch or fencing_token is zero, as PodRoute, the runtime, the tunnel and the tier binding already do, so the one frame that carries both can no longer be the layer that lets an unfenced request through",
+  "PodHeader::validate refuses a header whose placement_epoch or fencing_token is zero, as the runtime, the tunnel and the tier binding already do, and PodRoute::validate now refuses a zero placement_epoch as well as a zero fencing_token (previously only equality with the endpoint epoch was checked), so the one frame that carries both can no longer be the layer that lets an unfenced request through",
   "CheckpointHeader carries a stored model artifact's identity: magic, an explicit format version, the model name, the codebook version, the whole assignment verbatim rather than a digest, the slot-encoding version, and the table widths the weights were built for; thirteen distinct refusals with no defaulting path",
   "The header records the slot-encoding version because nothing else could: every other identity in it eventually shows up as a tensor shape, while an encoding produces the model's input and no parameters, so a checkpoint run under another definition has tensors that are the right shape all the way down",
   "CodeFamily::from_name maps a stable family name back through an explicit table in both directions, never a position in ALL, so a reordering cannot silently follow",

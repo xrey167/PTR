@@ -244,7 +244,7 @@ impl PodRoute {
         if self.artifact_id != self.endpoint.artifact_id || !self.endpoint.artifact_active {
             return Err(ResolveError::StaleRoute);
         }
-        if self.placement_epoch != self.endpoint.endpoint_epoch {
+        if self.placement_epoch == 0 || self.placement_epoch != self.endpoint.endpoint_epoch {
             return Err(ResolveError::StaleRoute);
         }
         if self.fencing_token == 0 || self.fencing_token != self.endpoint.fencing_token {
@@ -513,6 +513,12 @@ mod tests {
         route.hop_limit = 1;
         route.visited.push(route.destination.address.clone());
         assert_eq!(route.validate(), Err(ResolveError::RouteCycle));
+
+        route.visited.clear();
+        assert_eq!(route.validate(), Ok(()));
+        route.placement_epoch = 0;
+        route.endpoint.endpoint_epoch = 0;
+        assert_eq!(route.validate(), Err(ResolveError::StaleRoute));
     }
 
     fn pod_header() -> PodHeader {
