@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 5 Rust source files · 1598 nonblank source lines · 3 integration-test files · 36 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 1602 nonblank source lines · 3 integration-test files · 36 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- UnknownGrantSet and DuplicateGrantSet map to a runtime refusal in the exhaustive mapping: a member whose grant set the host does not define is refused before a session exists, so nothing was attempted for it
 - The authenticated peer is passed to admit_peer as the AuthenticatedPeer the transport produced, never rebuilt from its text (D1 in issue #23)
 - ExecutionHost and ExecutionClient carry one execution request and its receipt over ALPN_EXEC, composing ptr-runtime's execution authority with ptr-net's transport so neither of them has to know about the other
 - A request frame has no field naming its sender, so who is asking is the authenticated connection's answer and the principal an action is audited under is the admission policy's — the shape of the format rather than a check performed on it

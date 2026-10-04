@@ -50,6 +50,30 @@ Every cross-process/network contract needs:
 - downgrade/upgrade policy;
 - idempotency key where effects may be retried.
 
+### `LedgerEvent` (the log record and the raft proposal payload)
+
+Stated here because the same codec is both the on-disk record and what members of
+a replicated group exchange (D5 in issue #23), and it had none of the above.
+
+- **Schema version:** `ptr_ledger::LEDGER_CODEC_VERSION` (now 2). A record carries
+  no version byte of its own; its tag says which version introduced it
+  (`event_codec_version`), so every record written before versioning keeps its
+  exact bytes (`a_base_record_keeps_its_bytes`). Version 2 adds `PeerAdmitted`,
+  `PeerWithdrawn` and `CodecCeilingRaised`.
+- **Unknown tag:** refused by name, `PTR_LEDGER_UNKNOWN_TAG`, with the version this
+  build reads — never skipped, because skipping would make two members' histories
+  mean different things at the same index
+  (`an_unknown_tag_is_refused_by_name_and_version_never_skipped`). The decoder and
+  the version table cannot drift apart (`every_tag_the_table_admits_decodes`).
+- **Upgrade:** a replicated group carries a version's records only after a
+  committed `CodecCeilingRaised` for it, which a leader proposes only when the
+  host reports **every** voter at that version or above; a voter that reads less
+  cannot join, and none can join while a raise is in flight
+  (`31-cluster-integrity.md`).
+- **Downgrade:** not supported across a version whose records a log holds. The
+  older build refuses such a log by name rather than misreading it; a log holding
+  none of them is unaffected, byte for byte.
+
 ## Anti-contracts
 
 The following must not cross boundaries as authoritative state:

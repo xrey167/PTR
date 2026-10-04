@@ -9,11 +9,13 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-03  
-**Code footprint:** 9 Rust source files · 6269 nonblank source lines · 14 integration-test files · 122 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-04  
+**Code footprint:** 9 Rust source files · 6829 nonblank source lines · 14 integration-test files · 135 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- LedgerEvent codec version 2 (D5 in issue #23): LEDGER_CODEC_VERSION, a tag-to-version table the decoder is held to, event_codec_version; PeerAdmitted, PeerWithdrawn and CodecCeilingRaised are the version-2 records; an unknown tag is refused by name (PTR_LEDGER_UNKNOWN_TAG) with the version this build reads, never skipped; every base record keeps its exact bytes
+- Committed codec ceiling for a replicated group: RaftNode::propose refuses a record above the ceiling (PTR_LEDGER_CODEC_CEILING) and refuses a ceiling record outright; propose_codec_ceiling is leader-only, needs a CodecReports entry at or above the version for every voter, and is refused while a membership change is pending; propose_membership refuses a joiner reported below the ceiling and any joiner while a raised ceiling is in flight; the ceiling is durable in the PTRRST03 state file (PTRRST02 still read, as the base version) and travels in a raft snapshot payload once above the base, stripped before the application or a retained anchor sees the bytes
 - check_encodable refuses a MeshTunnelLifecycle event whose endpoint binding the decoder would refuse (for example a relayed route without a relay id), so an append path cannot write a record the log cannot read back
 - EffectAttempted/EffectSettled/EffectReconciled records (tags 9-11, beside the unchanged 0-8 and the semantic tag 12) carry an execution audit: the attempt is addressed by its own commit index, and a settled response keeps its digest unconditionally and its bytes up to MAX_RETAINED_RESPONSE
 - Effect and VerificationLevel are written through explicit code tables rather than discriminant casts, so inserting an enum variant breaks a build instead of renumbering records already stored

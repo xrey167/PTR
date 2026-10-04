@@ -38,50 +38,31 @@ fn second() -> NodeId {
     NodeId::from("k51qzi5uqu5dh-second-peer")
 }
 
-/// A policy admitting two peers with the same grant, so one can be withdrawn while
-/// the other keeps working.
-fn policy_for_both(action: &ActionIr, probe: &Probe) -> AdmissionPolicy {
-    let mut policy = AdmissionPolicy::new();
-    for (peer, principal) in [(first(), "alice"), (second(), "bob")] {
-        let scope = scope(action);
-        let probe = probe.clone();
-        policy
-            .admit(peer, principal, TTL, move || {
-                vec![grant(
-                    scope.clone(),
-                    &probe,
-                    RequiredVerification::FullSemantic,
-                    ExecutorMode::Success,
-                )]
-            })
-            .unwrap();
-    }
-    policy
-}
-
-/// A policy admitting only the second peer, for replacing the first one's.
-fn policy_for_second_only(action: &ActionIr, probe: &Probe) -> AdmissionPolicy {
-    let mut policy = AdmissionPolicy::new();
+/// Grant set "writer" and two peers admitted under it, so one can be withdrawn
+/// while the other keeps working.
+fn admit_both(runtime: &mut ptr_runtime::PtrRuntime, action: &ActionIr, probe: &Probe) {
+    let mut sets = GrantSets::new();
     let scope = scope(action);
     let probe = probe.clone();
-    policy
-        .admit(second(), "bob", TTL, move || {
-            vec![grant(
-                scope.clone(),
-                &probe,
-                RequiredVerification::FullSemantic,
-                ExecutorMode::Success,
-            )]
-        })
-        .unwrap();
-    policy
+    sets.define("writer", TTL, move || {
+        vec![grant(
+            scope.clone(),
+            &probe,
+            RequiredVerification::FullSemantic,
+            ExecutorMode::Success,
+        )]
+    })
+    .unwrap();
+    runtime.install_grant_sets(sets);
+    runtime.admit_member(first(), "alice", "writer").unwrap();
+    runtime.admit_member(second(), "bob", "writer").unwrap();
 }
 
 #[test]
 fn withdrawing_one_peer_in_the_window_refuses_its_permit_and_leaves_the_other_working() {
     let (mut runtime, action) = fixture();
     let probe = Probe::default();
-    runtime.install_admission_policy(policy_for_both(&action, &probe));
+    admit_both(&mut runtime, &action, &probe);
 
     let alice = runtime.admit_peer(&authenticated(first())).unwrap();
     let bob = runtime.admit_peer(&authenticated(second())).unwrap();
@@ -107,8 +88,18 @@ fn withdrawing_one_peer_in_the_window_refuses_its_permit_and_leaves_the_other_wo
     );
     assert_eq!(probe.executions(), 0);
 
-    // And the withdrawal is about that peer, not about the runtime: bob's permit,
-    // prepared before it, still works.
+    // The withdrawal is a committed record, and every commit retires every
+    // permit prepared before it: a permit is authorized against the world as it
+    // was, and the world has moved. So bob's in-flight permit is stale too —
+    assert_eq!(
+        runtime.execute_prepared(&bob, bob_permit).err(),
+        Some(ExecutionError::StalePermit)
+    );
+    // — but the withdrawal is about alice's peer, not about bob's: his session
+    // still resolves, and a permit prepared now executes.
+    let bob_permit = runtime
+        .prepare_execution(&bob, &ProjectId::from("p"), &action, TTL)
+        .unwrap();
     assert_eq!(
         runtime.execute_prepared(&bob, bob_permit).unwrap(),
         b"executed"
@@ -117,27 +108,30 @@ fn withdrawing_one_peer_in_the_window_refuses_its_permit_and_leaves_the_other_wo
 }
 
 #[test]
-fn replacing_the_policy_in_the_window_refuses_the_permit_of_the_peer_it_dropped() {
+fn a_withdrawal_and_re_admission_in_the_window_refuses_the_permit_of_the_first_admission() {
     let (mut runtime, action) = fixture();
     let probe = Probe::default();
-    runtime.install_admission_policy(policy_for_both(&action, &probe));
+    admit_both(&mut runtime, &action, &probe);
     let alice = runtime.admit_peer(&authenticated(first())).unwrap();
     let permit = runtime
         .prepare_execution(&alice, &ProjectId::from("p"), &action, TTL)
         .unwrap();
 
-    runtime.install_admission_policy(policy_for_second_only(&action, &probe));
+    // Withdrawn and admitted again while the permit is in flight. The peer is a
+    // member at consume time, but not under the admission the session holds.
+    runtime.withdraw_peer(&first()).unwrap();
+    runtime.admit_member(first(), "alice", "writer").unwrap();
 
-    assert!(
-        runtime.execute_prepared(&alice, permit).is_err(),
-        "a permit from a session the new policy does not admit is not consumable"
+    assert_eq!(
+        runtime.execute_prepared(&alice, permit).err(),
+        Some(ExecutionError::PeerNotAdmitted { peer: first() }),
+        "a permit from a session bound to a withdrawn admission is not consumable"
     );
     assert_eq!(probe.verifications(), 0);
     assert_eq!(probe.executions(), 0);
 
-    // Re-admitting the same peer under a policy that names it again does not
-    // resurrect the old permit either — but it does give a working session.
-    runtime.install_admission_policy(policy_for_both(&action, &probe));
+    // The re-admission does not resurrect the old permit — but it does give a
+    // working session.
     let readmitted = runtime.admit_peer(&authenticated(first())).unwrap();
     let fresh = runtime
         .prepare_execution(&readmitted, &ProjectId::from("p"), &action, TTL)
@@ -258,7 +252,7 @@ fn a_host_session_and_an_admitted_peer_do_not_share_a_fate() {
     // revoking a host session must not disturb an admitted peer's.
     let (mut runtime, action) = fixture();
     let probe = Probe::default();
-    runtime.install_admission_policy(policy_for_both(&action, &probe));
+    admit_both(&mut runtime, &action, &probe);
     let host_session = session(&mut runtime, &action, &probe, "operator");
     let peer_session = runtime.admit_peer(&authenticated(first())).unwrap();
 

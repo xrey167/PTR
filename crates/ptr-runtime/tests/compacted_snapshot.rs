@@ -361,11 +361,11 @@ fn framing_length_and_trusted_identity_are_all_required() {
     let anchor = reseal(&mut lengths, trusted.floor, trusted.revision);
     assert!(code(&lengths, anchor).contains("LengthMismatch"));
 
-    // Wrong magic. PTRCS004 is this build's format and PTRCS003 the earlier one
-    // it still reads, so the unknown version has to be a later layout this
-    // build has no rules for.
+    // Wrong magic. PTRCS005 is this build's format and PTRCS004 and PTRCS003
+    // the earlier ones it still reads, so the unknown version has to be a later
+    // layout this build has no rules for.
     let mut magic = reference.clone();
-    magic[..8].copy_from_slice(b"PTRCS005");
+    magic[..8].copy_from_slice(b"PTRCS006");
     let anchor = reseal(&mut magic, trusted.floor, trusted.revision);
     assert!(code(&magic, anchor).contains("UnsupportedVersion"));
 
@@ -431,7 +431,7 @@ fn a_noncanonical_lifecycle_section_is_rejected_even_when_resealed() {
 
     // A wrong lifecycle magic is a version failure, also independent of the digest.
     let mut magic = reference.clone();
-    magic[lifecycle_start..lifecycle_start + 8].copy_from_slice(b"PTRLC003");
+    magic[lifecycle_start..lifecycle_start + 8].copy_from_slice(b"PTRLC004");
     let anchor = reseal(&mut magic, trusted.floor, trusted.revision);
     let error = PtrRuntime::restore_compacted(PtrConfig::default(), &magic, anchor, &[])
         .err()
@@ -630,9 +630,9 @@ fn a_snapshot_of_the_earlier_layout_restores_as_unattested() {
     // magics.
     let mut original = legacy_fixture();
     let snapshot = original.export_compacted_snapshot().unwrap();
-    assert_eq!(&snapshot.bytes()[..8], b"PTRCS004");
+    assert_eq!(&snapshot.bytes()[..8], b"PTRCS005");
     let start = lifecycle_start(snapshot.bytes());
-    assert_eq!(&snapshot.bytes()[start..start + 8], b"PTRLC002");
+    assert_eq!(&snapshot.bytes()[start..start + 8], b"PTRLC003");
     let (earlier, anchor) = with_magics(
         snapshot.bytes(),
         snapshot.anchor(),
@@ -751,16 +751,77 @@ fn a_lifecycle_section_whose_merge_entry_is_not_one_a_merge_projects_is_refused(
 fn mismatched_outer_and_lifecycle_versions_are_refused() {
     let original = legacy_fixture();
     let snapshot = original.export_compacted_snapshot().unwrap();
-    for (outer, lifecycle) in [(b"PTRCS004", b"PTRLC001"), (b"PTRCS003", b"PTRLC002")] {
+    for (outer, lifecycle) in [
+        (b"PTRCS005", b"PTRLC002"),
+        (b"PTRCS005", b"PTRLC001"),
+        (b"PTRCS004", b"PTRLC003"),
+        (b"PTRCS004", b"PTRLC001"),
+        (b"PTRCS003", b"PTRLC003"),
+        (b"PTRCS003", b"PTRLC002"),
+    ] {
         let (bytes, anchor) = with_magics(snapshot.bytes(), snapshot.anchor(), outer, lifecycle);
         assert_eq!(
             restore_error(&bytes, anchor),
             Some(RuntimeError::Compacted(CompactedError::UnsupportedVersion))
         );
     }
-    // The two pairs this build reads both restore.
-    for (outer, lifecycle) in [(b"PTRCS004", b"PTRLC002"), (b"PTRCS003", b"PTRLC001")] {
+    // The three pairs this build reads all restore.
+    for (outer, lifecycle) in [
+        (b"PTRCS005", b"PTRLC003"),
+        (b"PTRCS004", b"PTRLC002"),
+        (b"PTRCS003", b"PTRLC001"),
+    ] {
         let (bytes, anchor) = with_magics(snapshot.bytes(), snapshot.anchor(), outer, lifecycle);
         assert_eq!(restore_error(&bytes, anchor), None);
+    }
+}
+
+/// D5 in issue #23: membership and the codec ceiling are carried by PTRLC003 and
+/// by no earlier lifecycle section, and only in the exact form a committed
+/// record projects.
+#[test]
+fn membership_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection() {
+    let original = legacy_fixture();
+    let snapshot = original.export_compacted_snapshot().unwrap();
+    let admitted = ptr_state::member_entry("alice", "writer");
+    for (key, value) in [
+        ("peer:k-peer", admitted.as_str()),
+        ("peer:k-peer", ptr_state::WITHDRAWN_MEMBER),
+        (ptr_state::CODEC_CEILING_KEY, "2"),
+    ] {
+        // This build's layout carries it.
+        let (current, anchor) = with_materialized(snapshot.bytes(), snapshot.anchor(), key, value);
+        assert_eq!(restore_error(&current, anchor), None, "{key} = {value}");
+        // No earlier layout could have, so each refuses it by version.
+        for (outer, lifecycle) in [(b"PTRCS004", b"PTRLC002"), (b"PTRCS003", b"PTRLC001")] {
+            let (earlier, anchor) = with_magics(&current, anchor, outer, lifecycle);
+            assert_eq!(
+                restore_error(&earlier, anchor),
+                Some(RuntimeError::Compacted(CompactedError::UnsupportedVersion)),
+                "{key} in {}",
+                String::from_utf8_lossy(outer)
+            );
+        }
+    }
+    // In this build's layout, a value no committed record projects is refused.
+    let long = format!(
+        "admitted\n{}\nwriter",
+        "a".repeat(ptr_runtime::execution::MAX_MEMBER_FIELD_BYTES + 1)
+    );
+    for (key, value) in [
+        ("peer:k-peer", "admitted\nalice"),
+        ("peer:k-peer", "Withdrawn"),
+        ("peer:k-peer", long.as_str()),
+        ("peer:", ptr_state::WITHDRAWN_MEMBER),
+        (ptr_state::CODEC_CEILING_KEY, "1"),
+        (ptr_state::CODEC_CEILING_KEY, "02"),
+        (ptr_state::CODEC_CEILING_KEY, "3"),
+    ] {
+        let (bytes, anchor) = with_materialized(snapshot.bytes(), snapshot.anchor(), key, value);
+        assert_eq!(
+            restore_error(&bytes, anchor),
+            Some(RuntimeError::Compacted(CompactedError::NoncanonicalSection)),
+            "{key} = {value:?}"
+        );
     }
 }

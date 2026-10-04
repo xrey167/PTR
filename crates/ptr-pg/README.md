@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-28  
-**Code footprint:** 17 Rust source files · 6444 nonblank source lines · 2 integration-test files · 155 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-04  
+**Code footprint:** 17 Rust source files · 6456 nonblank source lines · 2 integration-test files · 155 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- PeerAdmitted, PeerWithdrawn and CodecCeilingRaised have their own topics (peer.admitted, peer.withdrawn, ledger.codec_ceiling_raised), change no lifecycle catalog entry, and partition by the membership projection's own key so a peer's admission and withdrawal stay in one stream
 - An instance is the three schemas SchemaSet::with_prefix makes of one prefix, never pg or a prefix beginning pg_, whose names PostgreSQL reserves for system schemas and would refuse to create; connect_with refuses any other set (InvalidSchemaSet) before it connects, so the names are distinct and no two instances share a schema, and a rebuild, a migration or the projector never touches another instance's
 - Identifiers are a lowercase ASCII letter followed by at most 39 lowercase ASCII letters, digits or underscores, and never a keyword PostgreSQL 16 to 18 reserves (pg_get_keywords categories R and T), so every schema and space name interpolates into DDL unquoted
 - Three schema classes per instance (projection, derived, work) with separate checksummed migration catalogs, per-schema migration tables, an advisory lock held by a session of its own that a cancelled or unwinding migration or rebuild releases when that session closes, taken with retried pg_try_advisory_lock so a migration cancelled while waiting leaves no session queued on it, kept from idle_session_timeout and confirmed held before every migration and rebuild drop commits (a lost lock rolls the change back with MigrationLockLost), drift and newer-build refusal, and LF-normalised checksums

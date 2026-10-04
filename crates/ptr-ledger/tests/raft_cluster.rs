@@ -13,7 +13,7 @@ use ptr_ledger::raft_node::{
     decode_message, encode_message, MembershipChange, RaftNode, RetainedSnapshotAnchor,
     SnapshotAnchorMismatch, MAX_MESSAGE_BYTES,
 };
-use ptr_ledger::{CommittedEvent, LedgerEvent};
+use ptr_ledger::{CodecReports, CommittedEvent, LedgerEvent, LEDGER_CODEC_VERSION};
 use ptr_types::{CapsuleId, Generation, ProjectId};
 use raft::prelude::Message;
 use raft::StateRole;
@@ -824,7 +824,7 @@ fn a_leader_removes_a_voter_and_the_new_configuration_survives_a_restart() {
     cluster.unreachable.insert(3);
     let messages = cluster
         .node(1)
-        .propose_membership(MembershipChange::RemoveVoter(3))
+        .propose_membership(MembershipChange::RemoveVoter(3), &CodecReports::new())
         .expect("a leader may propose");
     cluster.settle(messages);
 
@@ -867,7 +867,10 @@ fn a_leader_adds_a_voter_and_the_new_member_joins_the_group() {
 
     let messages = cluster
         .node(1)
-        .propose_membership(MembershipChange::AddVoter(4))
+        .propose_membership(
+            MembershipChange::AddVoter(4),
+            &CodecReports::from([(4, LEDGER_CODEC_VERSION)]),
+        )
         .expect("a leader may propose");
     cluster.settle(messages);
 
@@ -893,7 +896,7 @@ fn a_follower_cannot_propose_a_membership_change() {
 
     let error = cluster
         .node(2)
-        .propose_membership(MembershipChange::RemoveVoter(3))
+        .propose_membership(MembershipChange::RemoveVoter(3), &CodecReports::new())
         .expect_err("a follower asking peers to accept a configuration nobody agreed");
     assert!(error.contains("only a leader"), "{error}");
 }
@@ -912,7 +915,7 @@ fn a_refused_proposal_leaves_the_configuration_untouched() {
     let before = cluster.get(2).voters();
     assert!(cluster
         .node(2)
-        .propose_membership(MembershipChange::RemoveVoter(3))
+        .propose_membership(MembershipChange::RemoveVoter(3), &CodecReports::new())
         .is_err());
     assert_eq!(
         cluster.get(2).voters(),
@@ -925,7 +928,7 @@ fn a_refused_proposal_leaves_the_configuration_untouched() {
     cluster.unreachable.insert(3);
     let messages = cluster
         .node(1)
-        .propose_membership(MembershipChange::RemoveVoter(3))
+        .propose_membership(MembershipChange::RemoveVoter(3), &CodecReports::new())
         .unwrap();
     cluster.settle(messages);
     assert_ne!(
@@ -974,5 +977,230 @@ fn reopening_after_a_snapshot_continues_the_numbering_it_established() {
         recovered,
         vec![5],
         "the one record above the floor keeps the index it was committed at"
+    );
+}
+
+fn admitted(peer: &str) -> LedgerEvent {
+    LedgerEvent::PeerAdmitted {
+        peer: ptr_types::NodeId::from(peer),
+        principal: "operator".into(),
+        grant_set: "read-only".into(),
+    }
+}
+
+fn every_voter_at(version: u16) -> CodecReports {
+    VOTERS.iter().map(|id| (*id, version)).collect()
+}
+
+#[test]
+fn a_record_from_a_later_codec_version_waits_for_a_ceiling_every_voter_reported() {
+    let temp = Temp::new("codec-ceiling");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    assert_eq!(
+        cluster.get(1).codec_ceiling(),
+        1,
+        "a new group is at the base"
+    );
+
+    let refused = cluster.node(1).propose(admitted("k-peer")).unwrap_err();
+    assert!(
+        refused.contains("PTR_LEDGER_CODEC_CEILING"),
+        "a version-2 record is refused while the group is at 1: {refused}"
+    );
+
+    // A gap in the reports is refused, and so is a voter that reads less.
+    let mut partial = every_voter_at(2);
+    partial.remove(&3);
+    let gap = cluster
+        .node(1)
+        .propose_codec_ceiling(2, &partial)
+        .unwrap_err();
+    assert!(gap.contains("no codec report for voter 3"), "{gap}");
+    let mut behind = every_voter_at(2);
+    behind.insert(3, 1);
+    let old = cluster
+        .node(1)
+        .propose_codec_ceiling(2, &behind)
+        .unwrap_err();
+    assert!(old.contains("voter 3 reads codec version 1"), "{old}");
+    assert_eq!(cluster.get(3).codec_ceiling(), 1, "nothing was proposed");
+
+    // The control: every voter at 2. Every member applies the raise, and the
+    // record that was refused now commits everywhere.
+    let messages = cluster
+        .node(1)
+        .propose_codec_ceiling(2, &every_voter_at(2))
+        .unwrap();
+    cluster.settle(messages);
+    cluster.heartbeat(1);
+    for id in VOTERS {
+        assert_eq!(cluster.get(id).codec_ceiling(), 2, "member {id} applied it");
+    }
+    let messages = cluster.node(1).propose(admitted("k-peer")).unwrap();
+    cluster.settle(messages);
+    cluster.heartbeat(1);
+    for id in VOTERS {
+        assert!(
+            cluster
+                .events(id)
+                .iter()
+                .any(|committed| committed.event == admitted("k-peer")),
+            "member {id} holds the version-2 record"
+        );
+    }
+}
+
+#[test]
+fn a_ceiling_is_raised_only_by_a_leader_and_never_through_propose() {
+    let temp = Temp::new("codec-ceiling-leader");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    let follower = cluster
+        .node(2)
+        .propose_codec_ceiling(2, &every_voter_at(2))
+        .unwrap_err();
+    assert!(follower.contains("only a leader"), "{follower}");
+    let smuggled = cluster
+        .node(1)
+        .propose(LedgerEvent::CodecCeilingRaised { version: 2 })
+        .unwrap_err();
+    assert!(smuggled.contains("propose_codec_ceiling"), "{smuggled}");
+    let beyond = cluster
+        .node(1)
+        .propose_codec_ceiling(LEDGER_CODEC_VERSION + 1, &every_voter_at(u16::MAX))
+        .unwrap_err();
+    assert!(beyond.contains("PTR_LEDGER_CODEC_CEILING"), "{beyond}");
+    assert_eq!(cluster.get(1).codec_ceiling(), 1);
+}
+
+#[test]
+fn the_committed_ceiling_survives_a_restart() {
+    let temp = Temp::new("codec-ceiling-restart");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    let messages = cluster
+        .node(1)
+        .propose_codec_ceiling(2, &every_voter_at(2))
+        .unwrap();
+    cluster.settle(messages);
+    cluster.heartbeat(1);
+    drop(cluster);
+
+    let reopened = RaftNode::open(&temp.member(2), 2, &VOTERS).unwrap();
+    assert_eq!(
+        reopened.codec_ceiling(),
+        2,
+        "the ceiling is read back from the state file, not recounted from zero"
+    );
+}
+
+#[test]
+fn a_voter_that_reads_less_than_the_ceiling_cannot_join() {
+    let temp = Temp::new("codec-ceiling-join");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    let messages = cluster
+        .node(1)
+        .propose_codec_ceiling(2, &every_voter_at(2))
+        .unwrap();
+    cluster.settle(messages);
+    cluster.heartbeat(1);
+    cluster
+        .nodes
+        .push(RaftNode::open(&temp.member(4), 4, &[4]).unwrap());
+
+    let refused = cluster
+        .node(1)
+        .propose_membership(MembershipChange::AddVoter(4), &CodecReports::from([(4, 1)]))
+        .unwrap_err();
+    assert!(
+        refused.contains("voter 4 reads codec version 1"),
+        "{refused}"
+    );
+    let unreported = cluster
+        .node(1)
+        .propose_membership(MembershipChange::AddVoter(4), &CodecReports::new())
+        .unwrap_err();
+    assert!(unreported.contains("no codec report"), "{unreported}");
+    assert_eq!(cluster.get(1).voters(), VOTERS.to_vec());
+
+    // The control: the same joiner, reported at the ceiling, is added.
+    let messages = cluster
+        .node(1)
+        .propose_membership(MembershipChange::AddVoter(4), &CodecReports::from([(4, 2)]))
+        .unwrap();
+    cluster.settle(messages);
+    assert_eq!(cluster.get(1).voters(), vec![1, 2, 3, 4]);
+}
+
+#[test]
+fn a_voter_cannot_be_added_while_a_raised_ceiling_is_still_on_its_way() {
+    let temp = Temp::new("codec-ceiling-pending");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    // Proposed and not delivered: the raise is in the leader's log only.
+    let _in_flight = cluster
+        .node(1)
+        .propose_codec_ceiling(2, &every_voter_at(2))
+        .unwrap();
+    let refused = cluster
+        .node(1)
+        .propose_membership(MembershipChange::AddVoter(4), &CodecReports::from([(4, 1)]))
+        .unwrap_err();
+    assert!(refused.contains("a ceiling of 2 is pending"), "{refused}");
+}
+
+#[test]
+fn a_member_caught_up_by_snapshot_learns_the_ceiling_the_snapshot_covers() {
+    let temp = Temp::new("codec-ceiling-snapshot");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    cluster.unreachable.insert(3);
+    let messages = cluster
+        .node(1)
+        .propose_codec_ceiling(2, &every_voter_at(2))
+        .unwrap();
+    cluster.settle(messages);
+    cluster.propose(1, 1).unwrap();
+    assert_eq!(
+        cluster.get(3).codec_ceiling(),
+        1,
+        "member 3 missed the raise"
+    );
+
+    // This test's toy state machine models capsule records only; the raise is a
+    // committed record too, and what the payload says about it is not the point.
+    let capsules: Vec<CommittedEvent> = cluster
+        .events(1)
+        .into_iter()
+        .filter(|committed| matches!(committed.event, LedgerEvent::CapsuleCommitted { .. }))
+        .collect();
+    let leader_state = encode_state(&capsules);
+    let covered = cluster.get(1).raft_committed();
+    cluster
+        .node(1)
+        .record_snapshot(covered, leader_state.clone())
+        .unwrap();
+    cluster.unreachable.remove(&3);
+    cluster.heartbeat(1);
+
+    let installed = cluster
+        .node(3)
+        .take_installed_snapshot()
+        .expect("member 3 is caught up by snapshot");
+    assert_eq!(
+        installed.state, leader_state,
+        "the application's payload arrives without the ceiling prefix"
+    );
+    assert_eq!(
+        installed.digest,
+        ptr_ledger::integrity::sha256(&leader_state),
+        "and the digest a retained anchor is compared against is the application's"
+    );
+    assert_eq!(
+        cluster.get(3).codec_ceiling(),
+        2,
+        "the raise is below the snapshot, so the snapshot is how member 3 learns it"
     );
 }

@@ -281,3 +281,85 @@ fn branch_merge_keys_are_length_delimited() {
         .collect();
     assert_eq!(merged, ["branch-merge:2:b1", "branch-merge:3:b1:"]);
 }
+
+#[test]
+fn membership_projects_to_one_key_per_peer_and_a_withdrawal_overwrites_it() {
+    let peer = ptr_types::NodeId::from("k51:with:colons");
+    let mut state = MaterializedState::default();
+    let admitted = CommittedEvent {
+        index: CommitIndex(1),
+        event: LedgerEvent::PeerAdmitted {
+            peer: peer.clone(),
+            principal: "operator".into(),
+            grant_set: "read-only".into(),
+        },
+    };
+    assert_eq!(state.try_apply(&admitted), ApplyOutcome::Applied);
+    let key = ptr_state::member_key(&peer.0);
+    assert_eq!(
+        ptr_state::member_of(&key),
+        Some(peer.0.as_str()),
+        "a node id containing the separator still reads back whole"
+    );
+    let value = state.values.get(&key).unwrap();
+    assert_eq!(
+        ptr_state::parse_member_entry(value),
+        Some(Some(("operator", "read-only")))
+    );
+
+    let withdrawn = CommittedEvent {
+        index: CommitIndex(2),
+        event: LedgerEvent::PeerWithdrawn { peer: peer.clone() },
+    };
+    assert_eq!(state.try_apply(&withdrawn), ApplyOutcome::Applied);
+    assert_eq!(
+        ptr_state::parse_member_entry(state.values.get(&key).unwrap()),
+        Some(None),
+        "the same key, now saying withdrawn: a reader never has to reconcile two rows"
+    );
+}
+
+#[test]
+fn a_member_entry_has_exactly_one_reading() {
+    // The control first: what the projection writes parses.
+    let entry = ptr_state::member_entry("p", "g");
+    assert_eq!(
+        ptr_state::parse_member_entry(&entry),
+        Some(Some(("p", "g")))
+    );
+    for malformed in [
+        "",
+        "admitted",
+        "admitted\np",
+        "admitted\np\ng\nextra",
+        "admitted\n\ng",
+        "admitted\np\n",
+        "Admitted\np\ng",
+        "withdrawn\n",
+    ] {
+        assert_eq!(
+            ptr_state::parse_member_entry(malformed),
+            None,
+            "{malformed:?} is refused"
+        );
+    }
+    assert_eq!(ptr_state::member_of("peer:"), None);
+    assert_eq!(ptr_state::member_of("semdb:revision"), None);
+}
+
+#[test]
+fn a_codec_ceiling_projects_to_its_own_key() {
+    let mut state = MaterializedState::default();
+    let raised = CommittedEvent {
+        index: CommitIndex(1),
+        event: LedgerEvent::CodecCeilingRaised { version: 2 },
+    };
+    assert_eq!(state.try_apply(&raised), ApplyOutcome::Applied);
+    assert_eq!(
+        state
+            .values
+            .get(ptr_state::CODEC_CEILING_KEY)
+            .map(String::as_str),
+        Some("2")
+    );
+}

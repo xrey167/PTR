@@ -532,6 +532,15 @@ pub enum RuntimeError {
     EffectKeyInFlight {
         key: String,
     },
+    /// A membership record this runtime refuses to commit or replay: a field
+    /// that is not a bounded identifier, an admission of a peer that is already
+    /// a member, or a withdrawal of one that is not (D5 in issue #23). The same
+    /// check refuses it live and in replay, so a history cannot hold an admission
+    /// the runtime would not have written.
+    InvalidMembership {
+        peer: ptr_types::NodeId,
+        reason: &'static str,
+    },
     /// A settlement or reconciliation names an attempt that is not awaiting one.
     UnknownEffectAttempt {
         attempt: CommitIndex,
@@ -2514,6 +2523,24 @@ impl PtrRuntime {
                 }
                 Ok(())
             }
+            LedgerEvent::PeerAdmitted { peer, .. } | LedgerEvent::PeerWithdrawn { peer } => {
+                match execution::membership_refusal(self.execution.members(), event) {
+                    None => Ok(()),
+                    Some(refusal) => Err(RuntimeError::InvalidMembership {
+                        peer: peer.clone(),
+                        reason: match refusal {
+                            execution::ExecutionError::DuplicatePeerEntry { .. } => {
+                                "the peer is already a member"
+                            }
+                            execution::ExecutionError::UnknownPeer { .. } => {
+                                "the peer is not a member"
+                            }
+                            _ => "a field is not a bounded identifier",
+                        },
+                    }),
+                }
+            }
+            LedgerEvent::CodecCeilingRaised { .. } => Ok(()),
             LedgerEvent::ScopeLifecycle(event) => {
                 if event.revision != self.revision() {
                     return Err(RuntimeError::ScopeRevisionMismatch {
@@ -2900,6 +2927,14 @@ impl PtrRuntime {
             LedgerEvent::MeshTunnelLifecycle(_)
             | LedgerEvent::PodEvidenceCommitted { .. }
             | LedgerEvent::PodOutputAdmitted { .. } => {}
+            LedgerEvent::PeerAdmitted { .. } | LedgerEvent::PeerWithdrawn { .. } => {
+                self.execution
+                    .apply_membership(committed.index, &committed.event);
+            }
+            // The ceiling governs what a replicated group may propose; this
+            // runtime's own log is written by one build, which reads what it
+            // writes. It is projected, and there is nothing further to apply.
+            LedgerEvent::CodecCeilingRaised { .. } => {}
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }
             | LedgerEvent::TierReplicaLifecycle { .. } => {

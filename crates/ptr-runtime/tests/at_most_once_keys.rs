@@ -36,8 +36,8 @@ use ptr_runtime::compacted::{CompactedAnchor, CompactedError};
 use ptr_runtime::persistence::SnapshotAnchor;
 use ptr_runtime::{execution::*, PtrRuntime, RuntimeError};
 use ptr_types::{
-    CapabilityId, CapsuleId, CommitIndex, Effect, Generation, NodeId, Probability, ProjectId,
-    RequestId, Revision, TypeId, VerificationLevel,
+    CapabilityId, CapsuleId, CommitIndex, Effect, Generation, Probability, ProjectId, RequestId,
+    Revision, TypeId, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::path::PathBuf;
@@ -746,15 +746,11 @@ fn a_principal_of_any_length_spends_a_key_and_a_snapshot_carries_it() {
     let long = "a".repeat(64 * 1024);
 
     // A spent key's principal travels in every later snapshot. No build has
-    // bounded a principal, so the snapshot writes it at any length: the
-    // admission policy admits a peer under one this long, a session registered
-    // under one spends a key, and the runtime still exports, restores and
-    // answers the retry, while another principal is refused under the key.
-    let mut policy = AdmissionPolicy::new();
-    policy
-        .admit(NodeId::from("peer"), long.as_str(), TTL, Vec::new)
-        .unwrap();
-    assert!(policy.admits(&NodeId::from("peer")));
+    // bounded the principal of a host-registered session, so the snapshot writes
+    // it at any length: a session registered under one this long spends a key,
+    // and the runtime still exports, restores and answers the retry, while
+    // another principal is refused under the key. (A peer's principal is a
+    // committed membership field and is bounded, by MAX_MEMBER_FIELD_BYTES.)
 
     let session = synchronous(&mut runtime, &long, &action, &echo);
     let permit = once(&runtime, &session, &action, "invoice-7");
@@ -1302,7 +1298,7 @@ fn a_snapshot_whose_keys_bind_no_action_is_refused_by_version() {
 
     // The control: this build's own layout restores, so the refusals above are
     // about the version and nothing else.
-    assert_eq!(&snapshot.bytes()[..8], b"PTRCS004");
+    assert_eq!(&snapshot.bytes()[..8], b"PTRCS005");
     assert_eq!(&snapshot.bytes()[section..section + 8], b"PTREX002");
     assert!(PtrRuntime::restore_compacted(
         PtrConfig::default(),

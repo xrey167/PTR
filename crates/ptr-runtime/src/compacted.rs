@@ -17,25 +17,32 @@
 //! Like every other artifact here it restores committed state only: no
 //! permissions, sessions, permits, registrations, external-effect outcomes or
 //! neural/KV state. Those are not history and cannot be replayed.
-use super::execution::{ActionIdentity, SettledOutcome, UnsettledEffect};
+use super::execution::{
+    valid_member_field, ActionIdentity, Member, SettledOutcome, UnsettledEffect,
+};
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_config::PtrConfig;
 use ptr_ledger::integrity::{self, LogAnchor};
 use ptr_ledger::{CommittedEvent, InMemoryLedger, MAX_RETAINED_RESPONSE};
 use ptr_semdb::{SemanticDelta, SemanticHost};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Effect, Generation, ProjectId, Revision};
+use ptr_types::{CommitIndex, Effect, Generation, NodeId, ProjectId, Revision};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// PTRCS004 is the layout this build writes: its lifecycle section is
-/// PTRLC002, the first that may carry [`ptr_state::ATTESTED_MARKER`] and the
-/// merged-branch keys ([`ptr_state::MERGED_BRANCH_PREFIX`]).
+/// PTRCS005 is the layout this build writes: its lifecycle section is
+/// PTRLC003, the first that may carry peer membership
+/// ([`ptr_state::MEMBER_PREFIX`]) and the codec ceiling
+/// ([`ptr_state::CODEC_CEILING_KEY`]) — D5 in issue #23.
 ///
-/// The magic moved so that a build from before attributed records stops here.
-/// Reading a snapshot of a history that holds attributed records, such a
-/// build would ignore the marker, then append records that history's replay
-/// refuses, or merge a branch the history already merged.
-const MAGIC: &[u8; 8] = b"PTRCS004";
+/// The magic moved so that a build from before journaled membership stops
+/// here. Reading such a snapshot, it would restore a runtime that had forgotten
+/// every withdrawal along with every admission, and a withdrawn peer is exactly
+/// what must stay refused across a restart.
+const MAGIC: &[u8; 8] = b"PTRCS005";
+/// PTRCS004, the layout before membership: still read, never written, and only
+/// with a PTRLC002 lifecycle section, which may carry the attested marker and
+/// merged-branch keys and must carry no membership or codec-ceiling key.
+const PRE_MEMBERSHIP_MAGIC: &[u8; 8] = b"PTRCS004";
 /// PTRCS003, the layout before attributed records: still read, never written,
 /// and only with a PTRLC001 lifecycle section. Such a snapshot describes a
 /// history of tag-8 semantic records only, so the absence of the marker it
@@ -52,14 +59,18 @@ const PRE_ATTESTATION_MAGIC: &[u8; 8] = b"PTRCS003";
 /// action nor named by its attempt, and a section in that layout is refused by
 /// version.
 const EXECUTION_MAGIC: &[u8; 8] = b"PTREX002";
-const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC002";
+const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC003";
+/// The lifecycle section of a PTRCS004 snapshot, read only inside one.
+const PRE_MEMBERSHIP_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC002";
 /// The lifecycle section of a PTRCS003 snapshot, read only inside one.
 const PRE_ATTESTATION_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
 
-/// Which of the two readable layouts a snapshot is in, as its outer magic
+/// Which of the three readable layouts a snapshot is in, as its outer magic
 /// says. The lifecycle section must be the one that layout pairs with.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Layout {
+    /// PTRCS005 with PTRLC003.
+    Membership,
     /// PTRCS004 with PTRLC002.
     Attested,
     /// PTRCS003 with PTRLC001.
@@ -390,7 +401,8 @@ impl LifecycleState {
         }
         let mut reader = Reader { bytes, offset: 0 };
         let magic = match layout {
-            Layout::Attested => LIFECYCLE_MAGIC,
+            Layout::Membership => LIFECYCLE_MAGIC,
+            Layout::Attested => PRE_MEMBERSHIP_LIFECYCLE_MAGIC,
             Layout::PreAttestation => PRE_ATTESTATION_LIFECYCLE_MAGIC,
         };
         if reader.take(8)? != magic {
@@ -407,6 +419,21 @@ impl LifecycleState {
                     || key.starts_with(ptr_state::MERGED_BRANCH_PREFIX))
             {
                 return Err(invalid(CompactedError::UnsupportedVersion));
+            }
+            if layout != Layout::Membership
+                && (key.starts_with(ptr_state::MEMBER_PREFIX)
+                    || key == ptr_state::CODEC_CEILING_KEY)
+            {
+                return Err(invalid(CompactedError::UnsupportedVersion));
+            }
+            if key.starts_with(ptr_state::MEMBER_PREFIX)
+                && (ptr_state::member_of(&key).is_none_or(|peer| !valid_member_field(peer))
+                    || !canonical_member_entry(&value))
+            {
+                return Err(invalid(CompactedError::NoncanonicalSection));
+            }
+            if key == ptr_state::CODEC_CEILING_KEY && !canonical_ceiling(&value) {
+                return Err(invalid(CompactedError::NoncanonicalSection));
             }
             if key.starts_with(ptr_state::MERGED_BRANCH_PREFIX)
                 && (ptr_state::merged_branch_of(&key).is_none()
@@ -446,6 +473,58 @@ impl LifecycleState {
         }
         Ok(state)
     }
+}
+
+/// Whether a membership value is exactly one a committed record projects: a
+/// withdrawal, or an admission whose principal and grant set are fields the
+/// runtime would commit.
+fn canonical_member_entry(value: &str) -> bool {
+    match ptr_state::parse_member_entry(value) {
+        Some(None) => true,
+        Some(Some((principal, grant_set))) => {
+            valid_member_field(principal) && valid_member_field(grant_set)
+        }
+        None => false,
+    }
+}
+
+/// Whether a codec-ceiling value is exactly the decimal a committed raise
+/// projects, for a version this build defines above the base.
+fn canonical_ceiling(value: &str) -> bool {
+    value.parse::<u16>().is_ok_and(|version| {
+        version.to_string() == value
+            && version > ptr_ledger::BASE_CODEC_VERSION
+            && version <= ptr_ledger::LEDGER_CODEC_VERSION
+    })
+}
+
+/// The membership a restored projection describes: every admitted peer, and
+/// none of the withdrawn ones.
+///
+/// Each is dated at the snapshot's floor, since the record that admitted it is
+/// below that floor and gone. Only sessions are bound to that position, and no
+/// session survives a restore, so what matters is that it stays fixed until the
+/// peer is withdrawn or admitted again.
+fn members_from_projection(
+    materialized: &BTreeMap<String, String>,
+    floor: CommitIndex,
+) -> BTreeMap<NodeId, Member> {
+    materialized
+        .range(ptr_state::MEMBER_PREFIX.to_owned()..)
+        .take_while(|(key, _)| key.starts_with(ptr_state::MEMBER_PREFIX))
+        .filter_map(|(key, value)| {
+            let peer = ptr_state::member_of(key)?;
+            let (principal, grant_set) = ptr_state::parse_member_entry(value)??;
+            Some((
+                NodeId::from(peer),
+                Member {
+                    principal: principal.to_owned(),
+                    grant_set: grant_set.to_owned(),
+                    admitted_at: floor,
+                },
+            ))
+        })
+        .collect()
 }
 
 /// Require the next decoded key to be strictly greater than its predecessor.
@@ -731,6 +810,12 @@ impl PtrRuntime {
         runtime
             .execution
             .restore_obligations(execution.unsettled, execution.settled);
+        // Membership is history, and compaction is what removes the records it
+        // was committed in; the projection carries it across the floor.
+        runtime.execution.restore_members(members_from_projection(
+            &lifecycle.materialized,
+            trusted.floor.index,
+        ));
         runtime.state = MaterializedState {
             values: lifecycle.materialized,
             last_applied: trusted.floor.index.0,
@@ -782,7 +867,8 @@ fn compacted_sections(
         return Err(invalid(CompactedError::SizeLimit));
     }
     let layout = match &bytes[..8] {
-        magic if magic == MAGIC => Layout::Attested,
+        magic if magic == MAGIC => Layout::Membership,
+        magic if magic == PRE_MEMBERSHIP_MAGIC => Layout::Attested,
         magic if magic == PRE_ATTESTATION_MAGIC => Layout::PreAttestation,
         _ => return Err(invalid(CompactedError::UnsupportedVersion)),
     };

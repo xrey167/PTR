@@ -20,8 +20,8 @@ use ptr_ledger::LedgerEvent;
 use ptr_net::{EndpointAddr, IrohTransport, NodeIdentity, PeerAddress, PeerBook, ALPN_EXEC};
 use ptr_runtime::compacted::CompactedAnchor;
 use ptr_runtime::execution::{
-    ActionExecutor, ActionScope, AdmissionPolicy, DetachedExecutor, ExecutionGrant,
-    RequiredVerification, VerifiedDispatch,
+    ActionExecutor, ActionScope, DetachedExecutor, ExecutionGrant, GrantSets, RequiredVerification,
+    VerifiedDispatch,
 };
 use ptr_runtime::PtrRuntime;
 use ptr_types::{
@@ -157,44 +157,39 @@ fn scope(action: &ActionIr) -> ActionScope {
 /// appear in an audit record.
 const POLICY_PRINCIPAL: &str = "principal-from-host-policy";
 
-/// A policy that admits `peer` with one grant for `action`, whose adapter
-/// reports to `probe`.
-fn policy_admitting(
-    peer: &NodeIdentity,
-    action: &ActionIr,
-    probe: &Probe,
-    mode: Mode,
-) -> AdmissionPolicy {
-    let mut policy = AdmissionPolicy::new();
+/// The host's grant set, by the name a membership records.
+const GRANT_SET: &str = "wire-grant";
+
+/// The grant set "wire-grant": one grant for `action`, whose adapter reports to
+/// `probe`.
+fn grant_sets(action: &ActionIr, probe: &Probe, mode: Mode) -> GrantSets {
+    let mut sets = GrantSets::new();
     let scope = scope(action);
     let grant_probe = probe.clone();
-    policy
-        .admit(
-            NodeId(peer.public_key.clone()),
-            POLICY_PRINCIPAL,
-            TTL,
-            move || {
-                vec![ExecutionGrant::new(
-                    scope.clone(),
-                    RequiredVerification::Deterministic,
-                    PassingVerifier,
-                    Adapter {
-                        probe: grant_probe.clone(),
-                        mode,
-                    },
-                )]
+    sets.define(GRANT_SET, TTL, move || {
+        vec![ExecutionGrant::new(
+            scope.clone(),
+            RequiredVerification::Deterministic,
+            PassingVerifier,
+            Adapter {
+                probe: grant_probe.clone(),
+                mode,
             },
-        )
-        .unwrap();
-    policy
+        )]
+    })
+    .unwrap();
+    sets
 }
 
-/// A runtime that admits `peer` with one grant for `action`.
+/// A runtime that admits `peer` as a member under one grant for `action`.
 fn runtime_admitting(peer: &NodeIdentity, mode: Mode) -> (PtrRuntime, ActionIr, Probe) {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     let action = action(&mut runtime);
     let probe = Probe::default();
-    runtime.install_admission_policy(policy_admitting(peer, &action, &probe, mode));
+    runtime.install_grant_sets(grant_sets(&action, &probe, mode));
+    runtime
+        .admit_member(NodeId(peer.public_key.clone()), POLICY_PRINCIPAL, GRANT_SET)
+        .unwrap();
     (runtime, action, probe)
 }
 
@@ -654,30 +649,12 @@ async fn a_key_spent_by_one_peer_is_refused_to_another_rather_than_answered_with
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     let action = action(&mut runtime);
     let probe = Probe::default();
-    let mut policy = AdmissionPolicy::new();
+    runtime.install_grant_sets(grant_sets(&action, &probe, Mode::Success));
     for (peer, principal) in [(&first, "principal-one"), (&second, "principal-two")] {
-        let scope = scope(&action);
-        let grant_probe = probe.clone();
-        policy
-            .admit(
-                NodeId(peer.identity().public_key),
-                principal,
-                TTL,
-                move || {
-                    vec![ExecutionGrant::new(
-                        scope.clone(),
-                        RequiredVerification::Deterministic,
-                        PassingVerifier,
-                        Adapter {
-                            probe: grant_probe.clone(),
-                            mode: Mode::Success,
-                        },
-                    )]
-                },
-            )
+        runtime
+            .admit_member(NodeId(peer.identity().public_key), principal, GRANT_SET)
             .unwrap();
     }
-    runtime.install_admission_policy(policy);
     let host = Arc::new(ExecutionHost::bind(runtime).await.unwrap());
 
     let spent = WireRequest {
@@ -785,24 +762,25 @@ async fn a_detached_grant_is_refused_over_the_wire_and_leaves_no_fence() {
     let client = ExecutionClient::bind().await.unwrap();
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     let action = action(&mut runtime);
-    let mut policy = AdmissionPolicy::new();
+    let mut sets = GrantSets::new();
     let scope = scope(&action);
-    policy
-        .admit(
+    sets.define(GRANT_SET, TTL, move || {
+        vec![ExecutionGrant::detached(
+            scope.clone(),
+            RequiredVerification::Deterministic,
+            PassingVerifier,
+            Detached,
+        )]
+    })
+    .unwrap();
+    runtime.install_grant_sets(sets);
+    runtime
+        .admit_member(
             NodeId(client.identity().public_key),
             POLICY_PRINCIPAL,
-            TTL,
-            move || {
-                vec![ExecutionGrant::detached(
-                    scope.clone(),
-                    RequiredVerification::Deterministic,
-                    PassingVerifier,
-                    Detached,
-                )]
-            },
+            GRANT_SET,
         )
         .unwrap();
-    runtime.install_admission_policy(policy);
     let host = Arc::new(ExecutionHost::bind(runtime).await.unwrap());
     let before = committed(&host);
 
@@ -926,8 +904,9 @@ async fn an_uncertain_execwire_attempt_replays_as_a_durable_runtime_fence() {
 
 /// A host admitting `peer`, whose runtime is the ordinary one restored from its
 /// compacted snapshot with the floor moved to `floor`, so the ledger can hand out
-/// only the indices above it. Permissions and the admission policy belong to the
-/// process, not to the snapshot, so they are installed again.
+/// only the indices above it. Permissions and grant sets belong to the process,
+/// not to the snapshot, so they are installed again; the membership is history
+/// and the snapshot carries it.
 async fn host_restored_at_floor(
     peer: &NodeIdentity,
     floor: CommitIndex,
@@ -955,7 +934,9 @@ async fn host_restored_at_floor(
         .capabilities
         .insert(action.capability.clone());
     runtime.permissions_mut().allow_mutation = true;
-    runtime.install_admission_policy(policy_admitting(peer, &action, &probe, Mode::Success));
+    // The membership crossed the floor in the snapshot; the grant set is the
+    // process's and is supplied again.
+    runtime.install_grant_sets(grant_sets(&action, &probe, Mode::Success));
     let host = Arc::new(ExecutionHost::bind(runtime).await.unwrap());
     (host, action, probe)
 }

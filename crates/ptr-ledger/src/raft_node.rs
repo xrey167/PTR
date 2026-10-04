@@ -11,13 +11,17 @@
 //! partition testable without a timer: nothing here is driven by wall-clock time,
 //! so a test decides exactly which message arrives and which does not.
 use crate::raft_storage::FileRaftStorage;
-use crate::{decode_event, encode_event, integrity, CommittedEvent, LedgerEvent};
+use crate::{
+    decode_event, encode_event, event_codec_version, integrity, CommittedEvent, LedgerEvent,
+    BASE_CODEC_VERSION, LEDGER_CODEC_VERSION,
+};
 use ptr_types::CommitIndex;
 use raft::codec::Message as _;
 use raft::prelude::{
     ConfChange, ConfChangeType, Config as RaftConfig, Entry, EntryType, Message, RawNode,
 };
 use raft::StateRole;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Raft's own message type, re-exported so a transport can name it without
@@ -36,7 +40,7 @@ pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 ///
 /// The payload is opaque here on purpose: a snapshot is the *application's* state,
 /// and this layer carrying it does not entitle it to an opinion about what is
-/// inside. A PTR deployment puts a PTRCS004 compacted snapshot here rather than a
+/// inside. A PTR deployment puts a PTRCS005 compacted snapshot here rather than a
 /// second artifact invented for raft.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstalledSnapshot {
@@ -109,6 +113,23 @@ pub enum MembershipChange {
     RemoveVoter(u64),
 }
 
+/// Which codec version each member reports it reads, by raft id.
+///
+/// Supplied by the host, which asks each member (`LEDGER_CODEC_VERSION` of the
+/// build it runs). A report is the operator's word about a member, not a proof:
+/// what it buys is that raising the ceiling is a decision taken against a stated
+/// view of every voter, and refused when that view has a gap.
+pub type CodecReports = BTreeMap<u64, u16>;
+
+/// Marks a raft snapshot payload that carries the group's codec ceiling ahead of
+/// the application's own state.
+///
+/// Written only once the ceiling is above the base version, so a group that has
+/// never raised one sends exactly the application's bytes — which is what a
+/// member on an older build expects during a rolling upgrade, when no ceiling can
+/// have been raised yet.
+const SNAPSHOT_CEILING_MAGIC: &[u8; 8] = b"PTRRSC01";
+
 /// A Raft member over durable state.
 pub struct RaftNode {
     node: RawNode<FileRaftStorage>,
@@ -122,6 +143,13 @@ pub struct RaftNode {
     /// by a payload only the application can read, and continuing as though it were
     /// empty would renumber every event that follows.
     installed: Option<InstalledSnapshot>,
+    /// A ceiling this leader proposed and the raft log position it was proposed
+    /// at, until an entry at or past that position is applied.
+    ///
+    /// While it is set a voter may not be added: the joiner's report was checked
+    /// against the ceiling in force, and a raise already on its way would hand it
+    /// records it cannot read.
+    pending_ceiling: Option<(u16, u64)>,
     id: u64,
 }
 
@@ -170,6 +198,7 @@ impl RaftNode {
             // snapshot established rather than restarting it.
             applied_events: recovered_applied,
             installed: None,
+            pending_ceiling: None,
             id,
         };
         let _ = recovered_count;
@@ -225,9 +254,24 @@ impl RaftNode {
     /// Recording a snapshot is what makes [`Storage::snapshot`] answerable, which is
     /// what lets a leader catch up a member it has compacted past — a leader with no
     /// recorded snapshot has nothing to send, and says so rather than inventing one.
+    ///
+    /// Once the group's codec ceiling is above the base version, the payload raft
+    /// carries is prefixed with it ([`SNAPSHOT_CEILING_MAGIC`]): the record that
+    /// raised it is below the snapshot, so a member caught up by this snapshot
+    /// would otherwise never learn it.
     pub fn record_snapshot(&mut self, index: u64, state: Vec<u8>) -> Result<(), String> {
+        let ceiling = self.codec_ceiling();
+        let payload = if ceiling > BASE_CODEC_VERSION {
+            let mut wrapped = Vec::with_capacity(SNAPSHOT_CEILING_MAGIC.len() + 2 + state.len());
+            wrapped.extend_from_slice(SNAPSHOT_CEILING_MAGIC);
+            wrapped.extend_from_slice(&ceiling.to_le_bytes());
+            wrapped.extend_from_slice(&state);
+            wrapped
+        } else {
+            state
+        };
         let store = self.node.raft.raft_log.store.clone();
-        let outcome = store.wl().record_snapshot(index, state);
+        let outcome = store.wl().record_snapshot(index, payload);
         outcome.map_err(|error| error.to_string())
     }
 
@@ -300,9 +344,40 @@ impl RaftNode {
     /// entry like any other, and it takes hold when it commits and
     /// [`RaftNode::apply_committed`] applies it, which is what makes a
     /// membership change survive a restart.
-    pub fn propose_membership(&mut self, change: MembershipChange) -> Result<Vec<Message>, String> {
+    ///
+    /// A voter is added only if `reports` says it reads the committed codec
+    /// ceiling — otherwise it would join a group whose log it cannot apply — and
+    /// not while a ceiling this leader proposed is still on its way.
+    pub fn propose_membership(
+        &mut self,
+        change: MembershipChange,
+        reports: &CodecReports,
+    ) -> Result<Vec<Message>, String> {
         if !self.is_leader() {
             return Err("only a leader may propose a membership change".into());
+        }
+        if let MembershipChange::AddVoter(id) = change {
+            if let Some((pending, _)) = self.pending_ceiling {
+                return Err(format!(
+                    "PTR_LEDGER_CODEC_CEILING: a ceiling of {pending} is pending; add the \
+                     voter once it has been applied"
+                ));
+            }
+            let ceiling = self.codec_ceiling();
+            match reports.get(&id) {
+                Some(reported) if *reported >= ceiling => {}
+                Some(reported) => {
+                    return Err(format!(
+                        "PTR_LEDGER_CODEC_CEILING: voter {id} reads codec version {reported}, \
+                         below the committed {ceiling}"
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "PTR_LEDGER_CODEC_CEILING: no codec report for joining voter {id}"
+                    ))
+                }
+            }
         }
         let mut cc = ConfChange::default();
         match change {
@@ -357,11 +432,98 @@ impl RaftNode {
     /// A member that does not lead refuses — raft drops the proposal — rather than
     /// buffering it for a leadership it may never regain. A buffered proposal that
     /// is replayed later is a write the group never ordered.
+    ///
+    /// A record whose tag a later codec version introduced is refused until the
+    /// group has committed a ceiling at least that high
+    /// ([`RaftNode::propose_codec_ceiling`]): every member applies every record,
+    /// and a member on an older build stops at a tag it does not know.
     pub fn propose(&mut self, event: LedgerEvent) -> Result<Vec<Message>, String> {
+        if matches!(event, LedgerEvent::CodecCeilingRaised { .. }) {
+            return Err(
+                "PTR_LEDGER_CODEC_CEILING: a ceiling is raised with propose_codec_ceiling, \
+                 against every voter's report"
+                    .into(),
+            );
+        }
+        let needs = event_codec_version(&event);
+        let ceiling = self.codec_ceiling();
+        if needs > ceiling {
+            return Err(format!(
+                "PTR_LEDGER_CODEC_CEILING: this record needs codec version {needs} and the \
+                 group has committed {ceiling}"
+            ));
+        }
         crate::check_encodable(&event).map_err(|error| error.to_string())?;
         self.node
             .propose(Vec::new(), encode_event(&event))
             .map_err(|error| error.to_string())?;
+        self.drain()
+    }
+
+    /// The codec version every voter has been reported to read, as committed.
+    pub fn codec_ceiling(&self) -> u16 {
+        let store = self.node.raft.raft_log.store.clone();
+        let ceiling = store.wl().codec_ceiling();
+        ceiling
+    }
+
+    /// Propose raising the group's codec ceiling to `version`.
+    ///
+    /// Leader only, and only when `reports` names **every** current voter at
+    /// `version` or above — this member included, at its own build's version.
+    /// Refused while a membership change is pending, because the voter set the
+    /// reports were checked against is then about to change. The ceiling takes
+    /// hold when the record commits and is applied, durably, like any other.
+    pub fn propose_codec_ceiling(
+        &mut self,
+        version: u16,
+        reports: &CodecReports,
+    ) -> Result<Vec<Message>, String> {
+        if !self.is_leader() {
+            return Err("only a leader may propose a codec ceiling".into());
+        }
+        let ceiling = self.codec_ceiling();
+        if version <= ceiling || version > LEDGER_CODEC_VERSION {
+            return Err(format!(
+                "PTR_LEDGER_CODEC_CEILING: {version} is not above the committed {ceiling} \
+                 and at most this build's {LEDGER_CODEC_VERSION}"
+            ));
+        }
+        if self.node.raft.has_pending_conf() {
+            return Err(
+                "PTR_LEDGER_CODEC_CEILING: a membership change is pending; the voters the \
+                 reports describe are about to change"
+                    .into(),
+            );
+        }
+        for voter in self.voters() {
+            let reported = if voter == self.id {
+                Some(LEDGER_CODEC_VERSION)
+            } else {
+                reports.get(&voter).copied()
+            };
+            match reported {
+                Some(reported) if reported >= version => {}
+                Some(reported) => {
+                    return Err(format!(
+                        "PTR_LEDGER_CODEC_CEILING: voter {voter} reads codec version \
+                         {reported}, below {version}"
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "PTR_LEDGER_CODEC_CEILING: no codec report for voter {voter}"
+                    ))
+                }
+            }
+        }
+        let event = LedgerEvent::CodecCeilingRaised { version };
+        crate::check_encodable(&event).map_err(|error| error.to_string())?;
+        let at = self.node.raft.raft_log.last_index() + 1;
+        self.node
+            .propose(Vec::new(), encode_event(&event))
+            .map_err(|error| error.to_string())?;
+        self.pending_ceiling = Some((version, at));
         self.drain()
     }
 
@@ -397,7 +559,13 @@ impl RaftNode {
                 // this member's to report. What replaces them is the caller's to
                 // decide, which is why nothing further applies until it has.
                 self.committed.clear();
-                let state = snapshot.data.to_vec();
+                let (ceiling, state) = split_snapshot_ceiling(snapshot.data.as_ref())?;
+                if let Some(ceiling) = ceiling {
+                    store
+                        .wl()
+                        .raise_codec_ceiling(ceiling)
+                        .map_err(|error| error.to_string())?;
+                }
                 self.installed = Some(InstalledSnapshot {
                     index: metadata.index,
                     term: metadata.term,
@@ -467,6 +635,11 @@ impl RaftNode {
                     .map_err(|error| error.to_string())?;
                 continue;
             }
+            if let Some((_, at)) = self.pending_ceiling {
+                if entry.index >= at {
+                    self.pending_ceiling = None;
+                }
+            }
             if entry.data.is_empty() || entry.get_entry_type() != EntryType::EntryNormal {
                 continue;
             }
@@ -477,12 +650,41 @@ impl RaftNode {
                 );
             }
             let event = decode_event(entry.data.as_ref()).map_err(|error| error.to_string())?;
+            if let LedgerEvent::CodecCeilingRaised { version } = event {
+                let store = self.node.raft.raft_log.store.clone();
+                store
+                    .wl()
+                    .raise_codec_ceiling(version)
+                    .map_err(|error| error.to_string())?;
+            }
             self.applied_events += 1;
             let index = CommitIndex(self.applied_events);
             self.committed.push(CommittedEvent { index, event });
         }
         Ok(())
     }
+}
+
+/// Separate a raft snapshot payload into the codec ceiling it carries, if any, and
+/// the application's own bytes.
+///
+/// A ceiling above this build's version is refused: the member would be joining a
+/// group that has agreed to records it cannot read.
+fn split_snapshot_ceiling(data: &[u8]) -> Result<(Option<u16>, Vec<u8>), String> {
+    let Some(rest) = data.strip_prefix(SNAPSHOT_CEILING_MAGIC.as_slice()) else {
+        return Ok((None, data.to_vec()));
+    };
+    let (ceiling, state) = rest
+        .split_first_chunk::<2>()
+        .ok_or("raft snapshot ends inside its codec ceiling")?;
+    let ceiling = u16::from_le_bytes(*ceiling);
+    if ceiling <= BASE_CODEC_VERSION || ceiling > LEDGER_CODEC_VERSION {
+        return Err(format!(
+            "PTR_LEDGER_CODEC_CEILING: the snapshot carries codec version {ceiling}, this \
+             build reads up to {LEDGER_CODEC_VERSION}"
+        ));
+    }
+    Ok((Some(ceiling), state.to_vec()))
 }
 
 /// The heartbeat message type, for callers that build a message without naming

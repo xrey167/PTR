@@ -211,7 +211,7 @@ impl ClusterMember {
 
     /// Record this member's application state at a committed position.
     ///
-    /// The payload is the application's — for PTR, a PTRCS004 compacted snapshot.
+    /// The payload is the application's — for PTR, a PTRCS005 compacted snapshot.
     /// This layer carries it and has no opinion about what is inside.
     pub fn record_snapshot(&self, index: u64, state: Vec<u8>) -> Result<(), ClusterError> {
         self.locked()
@@ -250,16 +250,42 @@ impl ClusterMember {
     /// they can commit.
     ///
     /// A member being added has to be admitted first, or its peers have nowhere
-    /// to send to it.
+    /// to send to it, and `reports` must say it reads the group's committed codec
+    /// ceiling ([`ptr_ledger::RaftNode::propose_membership`]).
     pub async fn propose_membership(
         &self,
         change: ptr_ledger::MembershipChange,
+        reports: &ptr_ledger::CodecReports,
     ) -> Result<Unreached, ClusterError> {
         let messages = self
             .locked()
-            .propose_membership(change)
+            .propose_membership(change, reports)
             .map_err(ClusterError::Node)?;
         self.drive(messages).await
+    }
+
+    /// Propose raising the group's codec ceiling, and drive it to quiescence.
+    ///
+    /// `reports` must name every voter at `version` or above
+    /// ([`ptr_ledger::RaftNode::propose_codec_ceiling`]). They are the host's
+    /// word about each member, gathered however it asks them; this layer does not
+    /// pretend a frame could prove them, because a member on an older build
+    /// speaks the older frame and could not say anything at all.
+    pub async fn propose_codec_ceiling(
+        &self,
+        version: u16,
+        reports: &ptr_ledger::CodecReports,
+    ) -> Result<Unreached, ClusterError> {
+        let messages = self
+            .locked()
+            .propose_codec_ceiling(version, reports)
+            .map_err(ClusterError::Node)?;
+        self.drive(messages).await
+    }
+
+    /// The codec ceiling this member has applied.
+    pub fn codec_ceiling(&self) -> u16 {
+        self.locked().codec_ceiling()
     }
 
     /// The voters this member currently believes the group has, ascending.

@@ -288,7 +288,7 @@ no sound basis for raising a floor at all.
 
 ```text
 offset size field
-0      8    magic "PTRCS004"       "PTRCS003" is still read
+0      8    magic "PTRCS005"       "PTRCS004" and "PTRCS003" are still read
 8      8    revision               semantic revision at the floor
 16     8    floor_index
 24     32   floor_digest
@@ -296,7 +296,8 @@ offset size field
 64     8    lifecycle_len
 72     8    execution_len          was reserved in PTRCS001
 80     ...  semantic section       canonical SemanticDelta encoding
-       ...  lifecycle section      PTRLC002; PTRLC001 inside PTRCS003
+       ...  lifecycle section      PTRLC003; PTRLC002 inside PTRCS004,
+                                   PTRLC001 inside PTRCS003
        ...  execution section      PTREX002
        32   digest                 SHA-256 over all preceding bytes
 ```
@@ -353,6 +354,19 @@ lowercase hexadecimal>`, as a merge projects it, or the section is refused as
 noncanonical: the runtime reads a branch as merged from that key, and a spelling it
 could not read would let the branch merge a second time.
 
+`PTRCS005` differs from `PTRCS004` only in its lifecycle section, `PTRLC003`, the
+first that may carry peer membership (`peer:<id>`, `ptr_state::MEMBER_PREFIX`) and
+the codec ceiling (`ptr_state::CODEC_CEILING_KEY`) — D5 in issue #23,
+`29-peer-admission-and-pod-scope.md`. A build from before journaled membership
+stops at the new magic instead of restoring a runtime that has forgotten every
+withdrawal. A `PTRCS004` snapshot is still read, only with a `PTRLC002` section,
+and refused by version if that section holds either kind of key; so is a
+`PTRCS003` one. In a `PTRLC003` section a membership value must be exactly what a
+record projects — `withdrawn`, or `admitted`, a principal and a grant set name,
+each a bounded identifier — and a ceiling exactly the decimal of a version this
+build defines above the base, or the section is refused as noncanonical
+(`membership_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
+
 `covers()` is taken from the snapshot, not chosen by the caller: reporting a
 position the snapshot does not hold would let a cutover discard records whose
 state nothing describes.
@@ -363,7 +377,7 @@ Those are not history and cannot be replayed.
 
 ### Executed evidence
 
-`crates/ptr-runtime/tests/compacted_snapshot.rs`, 15 integration tests over a
+`crates/ptr-runtime/tests/compacted_snapshot.rs`, 16 integration tests over a
 fixture covering semantic payload bytes, dependencies, capsule commit and
 supersession, hard constraints, procedures and a revocation:
 
@@ -395,6 +409,9 @@ supersession, hard constraints, procedures and a revocation:
   (`a_lifecycle_section_whose_merge_entry_is_not_one_a_merge_projects_is_refused`) and
   any mismatched pair of outer and lifecycle versions
   (`mismatched_outer_and_lifecycle_versions_are_refused`) are refused.
+- Membership and codec-ceiling keys are refused by version in `PTRLC002` and
+  `PTRLC001`, and held to their projection in `PTRLC003`
+  (`membership_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`).
 
 ### Not yet covered
 

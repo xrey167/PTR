@@ -229,7 +229,7 @@ replay, because the entries it needs are gone. The leader sends its state instea
 The payload is **opaque to every layer that carries it**. `ptr-ledger` records
 bytes at a committed position and hands arriving bytes back; `ptr-cluster` frames
 them and checks who sent them. Neither has an opinion about what is inside, which
-is what lets a PTR deployment put a **PTRCS004 compacted snapshot** there rather
+is what lets a PTR deployment put a **PTRCS005 compacted snapshot** there rather
 than a second artifact invented for raft. The `ptr-cluster` test carries a real one:
 exported by a real runtime, recorded by the leader, delivered byte for byte to a
 restarted member, and then restored by a runtime from exactly those bytes.
@@ -250,7 +250,7 @@ it were empty would number the next event 1 and disagree with every other member
 about what that index means. The test asserts the refusal, and that the event after a
 snapshot continues the ledger's numbering.
 
-**The anchor can now be retained independently of the sender.** PTRCS004 is
+**The anchor can now be retained independently of the sender.** PTRCS005 is
 verified against a trusted anchor the host retains *outside* the artifact, for the
 reason `24-protected-anchors.md` gives: a digest read back out of the file it
 describes proves nothing. A snapshot arriving over this transport used to come with
@@ -299,6 +299,45 @@ cluster is dropped, and a member is reopened from its own disk with the *origina
 three passed to `open`. It reports the new configuration, because the recorded one
 is the authority — which is the property that makes a membership change more than
 an in-memory opinion.
+
+## A record is proposed only once every voter reads it (codec ceiling)
+
+The ledger codec is the raft proposal payload, so a record type a member's build
+does not know is one it cannot apply: it stops at `PTR_LEDGER_UNKNOWN_TAG`. Adding
+record types (D5 in issue #23 adds three, codec version 2) therefore needs a rule
+for a group whose members are not all on one build — a rolling upgrade is exactly
+that group. The rule is a **committed codec ceiling**:
+
+- `propose` refuses a record whose tag a version above the committed ceiling
+  introduced, by name (`PTR_LEDGER_CODEC_CEILING`), and refuses a ceiling record
+  outright: a ceiling is raised only by `propose_codec_ceiling`.
+- `propose_codec_ceiling(version, reports)` is leader-only, and proposes only when
+  the host's reports name **every** current voter at `version` or above — a gap or
+  a voter that reads less is refused naming it — and not while a membership change
+  is pending, because the voters the reports describe are about to change
+  (`a_record_from_a_later_codec_version_waits_for_a_ceiling_every_voter_reported`,
+  `a_ceiling_is_raised_only_by_a_leader_and_never_through_propose`).
+- A voter joins only if its report reaches the committed ceiling, and not while a
+  ceiling this leader proposed is still on its way
+  (`a_voter_that_reads_less_than_the_ceiling_cannot_join`,
+  `a_voter_cannot_be_added_while_a_raised_ceiling_is_still_on_its_way`).
+- The ceiling is durable in the state file, `PTRRST03`
+  (`the_committed_ceiling_survives_a_restart`); a `PTRRST02` file reads as the base
+  version, which is true of every build that wrote one. A member caught up by
+  snapshot learns the ceiling from the snapshot, because the record that raised it
+  is below it: once the ceiling is above the base, raft's snapshot payload is the
+  application's bytes prefixed with it, stripped again before the application or a
+  retained anchor ever sees them
+  (`a_member_caught_up_by_snapshot_learns_the_ceiling_the_snapshot_covers`). A group
+  that has never raised one sends exactly the application's bytes, which is what a
+  member on the older build expects during the upgrade.
+
+**What a report is.** The host's word about a member, gathered however it asks
+it, not a proof. A frame cannot prove it either: a member on the older build
+speaks the older frame and could not say anything at all. What the rule buys is
+that raising the ceiling is a decision taken against a stated view of every
+voter and refused when that view has a gap; a wrong report costs a member that
+stops, by name, at the first record it cannot read — never one that misreads it.
 
 ## Durable fencing, as distinct from protocol fencing
 
@@ -355,9 +394,12 @@ Two consequences, stated rather than discovered:
   control for exactly that, because a storage that refused every second writer
   would pass every other test in the file.
 
-The state file format moves to `PTRRST02`. An older file is refused by its magic
-rather than read as one whose token happens to be zero — a state file read as
-unfenced is the failure this exists to prevent.
+The state file format moved to `PTRRST02` for the token. An older file is refused
+by its magic rather than read as one whose token happens to be zero — a state file
+read as unfenced is the failure this exists to prevent. It has since moved to
+`PTRRST03` for the codec ceiling (above); a `PTRRST02` file is still read, because
+the field it lacks has a true reading there and the token it has is the one this
+section depends on.
 
 ## What this does not close
 

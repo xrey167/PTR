@@ -280,54 +280,62 @@ impl VerifiedDispatch<'_> {
     }
 }
 
-/// Which peers may be admitted, as what, and with which grants.
+/// Bound on a member's node id, principal and grant set name, in bytes.
 ///
-/// The table is host policy. A peer never names its own principal or chooses
-/// its own grants, and nothing in a request can reach this structure — which is
-/// the whole difference between admitting an identity and believing one.
+/// A membership is projected into committed state and carried by every compacted
+/// snapshot as one string, which that format bounds; holding each field well under
+/// it keeps an admission that commits from being one that later fails every export.
+pub const MAX_MEMBER_FIELD_BYTES: usize = 256;
+
+/// The host's authority: named grant sets, each with the session lifetime it
+/// grants (D5 in issue #23).
+///
+/// **Membership is history; authority is not.** Which peers are admitted, and
+/// under which principal and grant set name, is committed to the ledger by
+/// [`PtrRuntime::admit_member`] and replayed on every open. What a grant set
+/// *permits* is behaviour — a grant owns its verifier and executor — and is
+/// supplied here by the host at every start. A name the host does not supply
+/// refuses the peer at use ([`ExecutionError::UnknownGrantSet`]) rather than
+/// granting anything by default.
 ///
 /// Grants are produced by a closure rather than stored, because a grant owns its
 /// verifier and executor and each session needs its own.
 #[derive(Default)]
-pub struct AdmissionPolicy {
-    entries: BTreeMap<NodeId, PeerAdmission>,
+pub struct GrantSets {
+    sets: BTreeMap<String, GrantSet>,
 }
 
-struct PeerAdmission {
-    principal: String,
+struct GrantSet {
     ttl: Duration,
     grants: Box<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
 }
 
-impl AdmissionPolicy {
+impl GrantSets {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Bind a peer the transport authenticated to one principal and one grant
-    /// set.
+    /// Define a named grant set.
     ///
-    /// A second entry for the same peer is refused rather than replacing the
-    /// first: a silent replacement is how a later, weaker entry widens an
-    /// earlier one without anyone deciding to.
-    pub fn admit(
+    /// A second definition under the same name is refused rather than replacing
+    /// the first: a silent replacement is how a later, weaker definition widens
+    /// an earlier one without anyone deciding to.
+    pub fn define(
         &mut self,
-        peer: NodeId,
-        principal: impl Into<String>,
+        name: impl Into<String>,
         ttl: Duration,
         grants: impl Fn() -> Vec<ExecutionGrant> + Send + Sync + 'static,
     ) -> Result<(), ExecutionError> {
-        let principal = principal.into();
-        if !valid_identifier(&principal) || !valid_identifier(&peer.0) {
+        let name = name.into();
+        if !valid_member_field(&name) {
             return Err(ExecutionError::InvalidSession);
         }
-        if self.entries.contains_key(&peer) {
-            return Err(ExecutionError::DuplicatePeerEntry { peer });
+        if self.sets.contains_key(&name) {
+            return Err(ExecutionError::DuplicateGrantSet { name });
         }
-        self.entries.insert(
-            peer,
-            PeerAdmission {
-                principal,
+        self.sets.insert(
+            name,
+            GrantSet {
                 ttl,
                 grants: Box::new(grants),
             },
@@ -335,14 +343,57 @@ impl AdmissionPolicy {
         Ok(())
     }
 
-    /// Withdraw a peer. Sessions admitted under it stop working immediately,
-    /// because a session's authority is re-derived from this table at every use.
-    pub fn withdraw(&mut self, peer: &NodeId) -> bool {
-        self.entries.remove(peer).is_some()
+    /// Whether a grant set of this name is defined.
+    pub fn defines(&self, name: &str) -> bool {
+        self.sets.contains_key(name)
     }
+}
 
-    pub fn admits(&self, peer: &NodeId) -> bool {
-        self.entries.contains_key(peer)
+/// One admitted peer, as committed history describes it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Member {
+    pub(super) principal: String,
+    pub(super) grant_set: String,
+    /// The commit index of the admission record, or the floor of the compacted
+    /// snapshot it was restored from. Sessions are bound to it.
+    pub(super) admitted_at: CommitIndex,
+}
+
+/// A node id, principal or grant set name a membership may carry.
+pub(super) fn valid_member_field(value: &str) -> bool {
+    valid_identifier(value) && value.len() <= MAX_MEMBER_FIELD_BYTES
+}
+
+/// Why a membership record cannot be committed or replayed, or `None` if it can.
+///
+/// One function for both, so a record a live commit refuses is one replay
+/// refuses too, and a history cannot hold an admission the runtime would not
+/// have written.
+pub(super) fn membership_refusal(
+    members: &BTreeMap<NodeId, Member>,
+    event: &LedgerEvent,
+) -> Option<ExecutionError> {
+    match event {
+        LedgerEvent::PeerAdmitted {
+            peer,
+            principal,
+            grant_set,
+        } => {
+            if ![peer.0.as_str(), principal, grant_set]
+                .into_iter()
+                .all(valid_member_field)
+            {
+                return Some(ExecutionError::InvalidSession);
+            }
+            if members.contains_key(peer) {
+                return Some(ExecutionError::DuplicatePeerEntry { peer: peer.clone() });
+            }
+            None
+        }
+        LedgerEvent::PeerWithdrawn { peer } if !members.contains_key(peer) => {
+            Some(ExecutionError::UnknownPeer { peer: peer.clone() })
+        }
+        _ => None,
     }
 }
 
@@ -556,8 +607,20 @@ pub enum ExecutionError {
     PeerNotAdmitted {
         peer: NodeId,
     },
+    /// The peer is already a member. Re-admitting under another principal or
+    /// grant set is a withdrawal and an admission, never a silent replacement.
     DuplicatePeerEntry {
         peer: NodeId,
+    },
+    /// A membership names a grant set the host has not defined. Refused rather
+    /// than granted anything by default: membership is remembered, authority is
+    /// supplied by the host at every start.
+    UnknownGrantSet {
+        name: String,
+    },
+    /// A second grant set under a name already defined.
+    DuplicateGrantSet {
+        name: String,
     },
     /// The grant dispatches the other way: a detached grant cannot be run
     /// synchronously and a synchronous one cannot be detached. `detached` says which
@@ -617,9 +680,11 @@ struct SessionRecord {
     principal: String,
     expires_at: Instant,
     grants: Vec<Arc<ExecutionGrant>>,
-    /// Set when the session came from the admission policy. Such a session is
-    /// valid only while the policy still admits that peer.
-    peer: Option<NodeId>,
+    /// Set when the session came from a peer's membership: the peer, and the
+    /// commit index of the admission it was issued under. Such a session is valid
+    /// only while that **same** admission stands — a withdrawal ends it, and a
+    /// later re-admission is a different record and does not revive it.
+    peer: Option<(NodeId, CommitIndex)>,
 }
 
 /// Borrowed view of the obligations a compacted snapshot carries: the fence, and
@@ -648,7 +713,12 @@ pub(super) struct ExecutionState {
     /// gets.
     detached: BTreeSet<CommitIndex>,
     settled: BTreeMap<String, SettledOutcome>,
-    policy: AdmissionPolicy,
+    /// Admitted peers, rebuilt from committed history on every open and from
+    /// the projection a compacted snapshot carries.
+    members: BTreeMap<NodeId, Member>,
+    /// The host's grant sets. Not history: a runtime rebuilt from its log has
+    /// none until the host installs them, and refuses every peer until then.
+    grant_sets: GrantSets,
 }
 
 impl Default for ExecutionState {
@@ -662,7 +732,8 @@ impl Default for ExecutionState {
             unsettled: BTreeMap::new(),
             detached: BTreeSet::new(),
             settled: BTreeMap::new(),
-            policy: AdmissionPolicy::new(),
+            members: BTreeMap::new(),
+            grant_sets: GrantSets::new(),
         }
     }
 }
@@ -810,12 +881,84 @@ impl ExecutionState {
         // Re-derived, never remembered: the same rule the neural gate applies to
         // cached state. A session that was admissible when it was issued says
         // nothing about whether its peer is admissible now.
-        if let Some(peer) = &record.peer {
-            if !self.policy.admits(peer) {
+        if let Some((peer, admitted_at)) = &record.peer {
+            let Some(member) = self
+                .members
+                .get(peer)
+                .filter(|member| member.admitted_at == *admitted_at)
+            else {
                 return Err(ExecutionError::PeerNotAdmitted { peer: peer.clone() });
+            };
+            if !self.grant_sets.defines(&member.grant_set) {
+                return Err(ExecutionError::UnknownGrantSet {
+                    name: member.grant_set.clone(),
+                });
             }
         }
         Ok(record)
+    }
+
+    /// The admitted peers, for the projection check a compacted restore makes.
+    pub(super) fn members(&self) -> &BTreeMap<NodeId, Member> {
+        &self.members
+    }
+
+    /// Reinstate the membership a compacted snapshot's projection carries.
+    pub(super) fn restore_members(&mut self, members: BTreeMap<NodeId, Member>) {
+        self.members = members;
+    }
+
+    /// Apply a committed membership record. Validated before it was appended
+    /// ([`membership_refusal`]), so this only records it.
+    pub(super) fn apply_membership(&mut self, index: CommitIndex, event: &LedgerEvent) {
+        match event {
+            LedgerEvent::PeerAdmitted {
+                peer,
+                principal,
+                grant_set,
+            } => {
+                self.members.insert(
+                    peer.clone(),
+                    Member {
+                        principal: principal.clone(),
+                        grant_set: grant_set.clone(),
+                        admitted_at: index,
+                    },
+                );
+            }
+            LedgerEvent::PeerWithdrawn { peer } => {
+                self.members.remove(peer);
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-derive the grants of every live peer session from the grant sets now
+    /// in force.
+    ///
+    /// A session whose admission no longer stands, or whose grant set is not
+    /// defined, is left in place for [`ExecutionState::session`] to refuse by
+    /// name. The expiry is deliberately not refreshed: a change may narrow what a
+    /// session can do, but it must not extend how long it lasts. The principal
+    /// is not re-derived because it cannot change: it belongs to the admission
+    /// the session is bound to, and a different principal is a different one.
+    fn rederive_sessions(&mut self) {
+        for record in self.sessions.values_mut() {
+            let Some((peer, admitted_at)) = &record.peer else {
+                continue;
+            };
+            let Some(member) = self
+                .members
+                .get(peer)
+                .filter(|member| member.admitted_at == *admitted_at)
+            else {
+                continue;
+            };
+            let Some(set) = self.grant_sets.sets.get(&member.grant_set) else {
+                continue;
+            };
+            record.grants = (set.grants)().into_iter().map(Arc::new).collect();
+        }
     }
 }
 
@@ -837,7 +980,7 @@ impl PtrRuntime {
         principal: impl Into<String>,
         grants: Vec<ExecutionGrant>,
         ttl: Duration,
-        peer: Option<NodeId>,
+        peer: Option<(NodeId, CommitIndex)>,
     ) -> Result<ExecutionSession, ExecutionError> {
         if self.execution.uncertain {
             return Err(ExecutionError::RuntimeFenced);
@@ -886,39 +1029,57 @@ impl PtrRuntime {
         })
     }
 
-    /// Install the table that says which peers may be admitted and as what.
+    /// Install the host's grant sets.
     ///
-    /// Replacing it withdraws every session whose peer the new table does not
-    /// admit, for the same reason a withdrawal does: authority is re-derived.
-    pub fn install_admission_policy(&mut self, policy: AdmissionPolicy) {
-        self.execution.policy = policy;
-        // A session holds the grants admission returned, and `session()` re-derives
-        // only whether the peer is *still admitted* — not what it may do. So a
-        // replacement that kept a peer with narrower grants left the live session
-        // running under the wider set until its TTL expired, which is the opposite
-        // of this layer's own rule: authority is re-derived at use, never
-        // remembered.
-        //
-        // Re-derived here rather than by dropping the session, because dropping it
-        // would replace `PeerNotAdmitted` — which says *why* a withdrawn peer is
-        // refused — with a bare `SessionClosed`. A session whose peer the new table
-        // does not admit is therefore left in place for `session()` to refuse by
-        // name.
-        //
-        // The expiry is deliberately not refreshed: a new policy may narrow what a
-        // session can do, but it must not extend how long it lasts.
-        let entries = &self.execution.policy.entries;
-        for record in self.execution.sessions.values_mut() {
-            let Some(peer) = &record.peer else {
-                continue;
-            };
-            if let Some(entry) = entries.get(peer) {
-                record.principal = entry.principal.clone();
-                record.grants = (entry.grants)().into_iter().map(Arc::new).collect();
-            }
-        }
+    /// Replacing them re-derives every peer session's grants, for the reason
+    /// authority is re-derived at use: a replacement that narrowed a grant set
+    /// would otherwise leave a live session running under the wider one until
+    /// its TTL expired. A session whose grant set the new table does not define
+    /// is kept, so the refusal can name [`ExecutionError::UnknownGrantSet`].
+    pub fn install_grant_sets(&mut self, sets: GrantSets) {
+        self.execution.grant_sets = sets;
+        self.execution.rederive_sessions();
         // Permits already issued were scoped by the grants that have just changed.
         self.execution.invalidate_pending();
+    }
+
+    /// Admit a peer as a member: committed to the ledger, so it survives a
+    /// restart and a replayed history says who was admitted when (D5 in issue
+    /// #23).
+    ///
+    /// `grant_set` must be defined by the grant sets installed now, which catches
+    /// a name the host mistyped while the host is there to see it. That is a
+    /// check at admission and not a promise: what the name grants is resolved at
+    /// every use, and a later start that does not define it refuses the peer.
+    ///
+    /// A peer that is already a member is refused rather than re-admitted under a
+    /// new principal or grant set: changing either is a withdrawal followed by an
+    /// admission, two records a history can show, never one that silently
+    /// replaces the other.
+    pub fn admit_member(
+        &mut self,
+        peer: NodeId,
+        principal: impl Into<String>,
+        grant_set: impl Into<String>,
+    ) -> Result<CommitIndex, ExecutionError> {
+        let grant_set = grant_set.into();
+        let event = LedgerEvent::PeerAdmitted {
+            peer,
+            principal: principal.into(),
+            grant_set: grant_set.clone(),
+        };
+        if let Some(refusal) = membership_refusal(&self.execution.members, &event) {
+            return Err(refusal);
+        }
+        if !self.execution.grant_sets.defines(&grant_set) {
+            return Err(ExecutionError::UnknownGrantSet { name: grant_set });
+        }
+        self.commit(event).map_err(audit)
+    }
+
+    /// Whether committed history admits this peer now.
+    pub fn is_member(&self, peer: &NodeId) -> bool {
+        self.execution.members.contains_key(peer)
     }
 
     /// Admit a peer the host's transport authenticated.
@@ -927,7 +1088,8 @@ impl PtrRuntime {
     /// [`AuthenticatedPeer`], which only `ptr-net`'s transport can construct — from
     /// the QUIC-authenticated `Connection::remote_id` — so a value read out of a
     /// request cannot reach this call: it does not compile (D1 in issue #23). The
-    /// principal and the grants come from the policy, so there is no parameter
+    /// principal comes from committed membership and the grants from the host's
+    /// grant set of the name that membership records, so there is no parameter
     /// through which a caller could name either.
     ///
     /// ```compile_fail
@@ -941,23 +1103,29 @@ impl PtrRuntime {
         peer: &AuthenticatedPeer,
     ) -> Result<ExecutionSession, ExecutionError> {
         let peer = peer.id();
-        let Some(entry) = self.execution.policy.entries.get(peer) else {
+        let Some(member) = self.execution.members.get(peer) else {
             return Err(ExecutionError::UnknownPeer { peer: peer.clone() });
         };
-        let principal = entry.principal.clone();
-        let ttl = entry.ttl;
-        let grants = (entry.grants)();
-        self.register_session(principal, grants, ttl, Some(peer.clone()))
+        let Some(set) = self.execution.grant_sets.sets.get(&member.grant_set) else {
+            return Err(ExecutionError::UnknownGrantSet {
+                name: member.grant_set.clone(),
+            });
+        };
+        let principal = member.principal.clone();
+        let admitted_at = member.admitted_at;
+        let ttl = set.ttl;
+        let grants = (set.grants)();
+        self.register_session(principal, grants, ttl, Some((peer.clone(), admitted_at)))
     }
 
-    /// Withdraw a peer from the policy. Sessions admitted under it stop working
-    /// immediately.
-    pub fn withdraw_peer(&mut self, peer: &NodeId) -> Result<(), ExecutionError> {
-        if self.execution.policy.withdraw(peer) {
-            Ok(())
-        } else {
-            Err(ExecutionError::UnknownPeer { peer: peer.clone() })
+    /// Withdraw a peer: committed, so a peer withdrawn before a restart is still
+    /// refused after it. Sessions admitted under it stop working immediately.
+    pub fn withdraw_peer(&mut self, peer: &NodeId) -> Result<CommitIndex, ExecutionError> {
+        let event = LedgerEvent::PeerWithdrawn { peer: peer.clone() };
+        if let Some(refusal) = membership_refusal(&self.execution.members, &event) {
+            return Err(refusal);
         }
+        self.commit(event).map_err(audit)
     }
 
     /// Revocation removes all grants of this session. Re-registration issues a

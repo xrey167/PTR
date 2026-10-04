@@ -326,7 +326,8 @@ layer cannot re-derive once the floor has moved: the spent at-most-once keys wit
 their outcomes, and the unsettled attempts. It was introduced as `PTREX001` inside
 `PTRCS002`; the current layout is `PTREX002`, which also carries what each key is
 bound to (the next section). It is the execution section of `PTRCS003` and of
-`PTRCS004`, whose lifecycle section may carry the attestation marker
+`PTRCS004`, whose lifecycle section may carry the attestation marker, and of
+`PTRCS005`, whose lifecycle section may also carry peer membership
 (`24-protected-anchors.md`).
 
 Three things are worth stating exactly, because each is easy to get wrong in the

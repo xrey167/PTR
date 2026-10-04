@@ -14,7 +14,7 @@ pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};
 
 use ptr_types::{
     CapabilityId, CapsuleId, CommitIndex, Effect, FencingToken, Generation, MeshEndpointBinding,
-    MeshRouteKind, MeshTunnelEventKind, MeshTunnelLifecycleEvent, PeerId, PodId, ProjectId,
+    MeshRouteKind, MeshTunnelEventKind, MeshTunnelLifecycleEvent, NodeId, PeerId, PodId, ProjectId,
     RequestId, Revision, ScopeId, ScopeLeaseBinding, ScopeLifecycleEvent, ScopeLifecycleKind,
     SessionId, Timestamp, TraceId, TypeId, VerificationLevel,
 };
@@ -235,6 +235,82 @@ pub enum LedgerEvent {
         latency_millis: u64,
         verification: Attestation,
     },
+    /// The host admitted a peer as a member: which principal it acts as, and the
+    /// name of the host grant set its sessions draw from (D5 in issue #23).
+    ///
+    /// **Membership is history; authority is not.** The record names the grant
+    /// set and does not describe it: a grant owns a verifier and an executor,
+    /// which are behaviour, and behaviour cannot be replayed out of a log. The
+    /// host supplies the grant set under that name at every start, and a name it
+    /// does not supply refuses the peer at use rather than guessing.
+    ///
+    /// Codec version 2.
+    PeerAdmitted {
+        peer: NodeId,
+        principal: String,
+        grant_set: String,
+    },
+    /// The host withdrew a peer. Replayed in order with `PeerAdmitted`, so a peer
+    /// withdrawn before a restart is still refused after it.
+    ///
+    /// Codec version 2.
+    PeerWithdrawn {
+        peer: NodeId,
+    },
+    /// The group may now carry records up to this codec version.
+    ///
+    /// A replicated log is read by every member, including ones on an older
+    /// build, and an older build refuses a tag it does not know. So a record
+    /// introduced by version `n` is proposed only once the group has committed
+    /// this record for `n` or more, which the raft node proposes only
+    /// when every voter is reported at `n` or above.
+    ///
+    /// Codec version 2. Exempt from the ceiling it raises: it is the one record
+    /// whose admission is decided by the voters' reports rather than by the
+    /// ceiling already committed.
+    CodecCeilingRaised {
+        version: u16,
+    },
+}
+
+/// The ledger codec version this build reads and writes.
+///
+/// A record carries no version byte of its own: its tag says which version
+/// introduced it ([`event_codec_version`]), so every record written before
+/// versioning existed keeps its exact bytes. What versioning adds is a policy,
+/// stated in `docs/COMPONENT_CONTRACTS.md` and enforced here:
+///
+/// - **Unknown tag:** refused, by name (`PTR_LEDGER_UNKNOWN_TAG`), never skipped.
+///   Skipping would make two members' histories mean different things at the
+///   same index.
+/// - **Upgrade:** a replicated group carries a version's records only after a
+///   committed [`LedgerEvent::CodecCeilingRaised`] for it, which the leader
+///   proposes only when every voter reports that version or above.
+/// - **Downgrade:** not supported across a version whose records a log holds.
+///   The older build refuses the log by name rather than misreading it; a log
+///   that holds none of the newer records is unaffected, byte for byte.
+pub const LEDGER_CODEC_VERSION: u16 = 2;
+
+/// The version every record had before versioning existed.
+pub const BASE_CODEC_VERSION: u16 = 1;
+
+/// Which codec version introduced a record's tag.
+///
+/// One table, so the decoder's acceptance and the ceiling's arithmetic cannot
+/// drift apart: [`decode_event`] refuses exactly the tags this returns `None`
+/// for.
+fn tag_codec_version(tag: u8) -> Option<u16> {
+    match tag {
+        0..=26 => Some(BASE_CODEC_VERSION),
+        27..=29 => Some(2),
+        _ => None,
+    }
+}
+
+/// The codec version a record needs its reader to have.
+pub fn event_codec_version(event: &LedgerEvent) -> u16 {
+    let tag = encode_event(event)[0];
+    tag_codec_version(tag).expect("every tag the encoder writes is in the version table")
 }
 
 /// Why a semantic write was allowed. ptr-runtime writes it in the same append
@@ -770,6 +846,24 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_u64(&mut out, revision.0);
             out.extend_from_slice(event_digest);
         }
+        LedgerEvent::PeerAdmitted {
+            peer,
+            principal,
+            grant_set,
+        } => {
+            out.push(27);
+            put_string(&mut out, &peer.0);
+            put_string(&mut out, principal);
+            put_string(&mut out, grant_set);
+        }
+        LedgerEvent::PeerWithdrawn { peer } => {
+            out.push(28);
+            put_string(&mut out, &peer.0);
+        }
+        LedgerEvent::CodecCeilingRaised { version } => {
+            out.push(29);
+            out.extend_from_slice(&version.to_le_bytes());
+        }
     }
     out
 }
@@ -1008,11 +1102,40 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             revision: Revision(cursor.u64()?),
             event_digest: cursor.digest()?,
         },
+        27 => LedgerEvent::PeerAdmitted {
+            peer: NodeId(cursor.string()?),
+            principal: cursor.string()?,
+            grant_set: cursor.string()?,
+        },
+        28 => LedgerEvent::PeerWithdrawn {
+            peer: NodeId(cursor.string()?),
+        },
+        29 => {
+            let version = cursor.u16()?;
+            if version <= BASE_CODEC_VERSION || version > LEDGER_CODEC_VERSION {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "PTR_LEDGER_CODEC_CEILING: a ceiling of {version} is outside \
+                         {}..={LEDGER_CODEC_VERSION}",
+                        BASE_CODEC_VERSION + 1
+                    ),
+                ));
+            }
+            LedgerEvent::CodecCeilingRaised { version }
+        }
         other => {
+            // `tag_codec_version` is the table this match must agree with; the
+            // test `every_tag_the_table_admits_decodes` holds the two together.
+            debug_assert!(tag_codec_version(other).is_none());
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unknown ledger event tag {other}"),
-            ))
+                format!(
+                    "PTR_LEDGER_UNKNOWN_TAG: ledger event tag {other} is not defined by \
+                     codec version {LEDGER_CODEC_VERSION}; a record from a newer build is \
+                     refused, never skipped"
+                ),
+            ));
         }
     };
 
@@ -1089,6 +1212,11 @@ fn verification_from_code(code: u8) -> io::Result<VerificationLevel> {
 /// ledger, which encodes nothing.
 pub fn check_encodable(event: &LedgerEvent) -> Result<(), io::Error> {
     check_origin_bounds(event)?;
+    if let LedgerEvent::CodecCeilingRaised { version } = event {
+        if *version <= BASE_CODEC_VERSION || *version > LEDGER_CODEC_VERSION {
+            return Err(integrity::invalid("PTR_LEDGER_CODEC_CEILING"));
+        }
+    }
     let payload = encode_event(event);
     if payload.len() > integrity::MAX_RECORD_BYTES {
         return Err(integrity::invalid("PTR_LOG_PAYLOAD_LIMIT"));
@@ -1653,6 +1781,13 @@ impl<'a> Cursor<'a> {
         Ok(value)
     }
 
+    fn u16(&mut self) -> io::Result<u16> {
+        let end = self.offset.saturating_add(2);
+        let bytes = self.bytes.get(self.offset..end).ok_or_else(truncated)?;
+        self.offset = end;
+        Ok(u16::from_le_bytes(bytes.try_into().expect("two bytes")))
+    }
+
     fn u32(&mut self) -> io::Result<u32> {
         let end = self.offset.saturating_add(4);
         let bytes = self.bytes.get(self.offset..end).ok_or_else(truncated)?;
@@ -1830,8 +1965,8 @@ pub mod raft_node;
 pub mod raft_storage;
 #[cfg(feature = "raft-rs-backend")]
 pub use raft_node::{
-    decode_message, encode_message, InstalledSnapshot, MembershipChange, RaftMessage, RaftNode,
-    RetainedSnapshotAnchor, SnapshotAnchorMismatch, MAX_MESSAGE_BYTES,
+    decode_message, encode_message, CodecReports, InstalledSnapshot, MembershipChange, RaftMessage,
+    RaftNode, RetainedSnapshotAnchor, SnapshotAnchorMismatch, MAX_MESSAGE_BYTES,
 };
 #[cfg(feature = "raft-rs-backend")]
 pub use raft_storage::{FileRaftStorage, MAX_ENTRY_BYTES, MAX_SNAPSHOT_BYTES};
@@ -2845,5 +2980,103 @@ mod semantic_origin_tests {
         assert_eq!(encoded[0], 14);
         assert!(!encoded.windows(7).any(|window| window == b"secret!"));
         assert_eq!(decode_event(&encoded).unwrap(), event);
+    }
+}
+
+#[cfg(test)]
+mod codec_version_tests {
+    use super::*;
+
+    fn version_two_records() -> Vec<LedgerEvent> {
+        vec![
+            LedgerEvent::PeerAdmitted {
+                peer: NodeId::from("k-peer"),
+                principal: "operator".into(),
+                grant_set: "read-only".into(),
+            },
+            LedgerEvent::PeerWithdrawn {
+                peer: NodeId::from("k-peer"),
+            },
+            LedgerEvent::CodecCeilingRaised { version: 2 },
+        ]
+    }
+
+    #[test]
+    fn version_two_records_round_trip_and_name_their_version() {
+        for event in version_two_records() {
+            let bytes = encode_event(&event);
+            assert_eq!(decode_event(&bytes).unwrap(), event);
+            assert_eq!(event_codec_version(&event), 2, "{event:?}");
+        }
+        let base = LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("p"),
+            capsule: CapsuleId::from("c"),
+            generation: Generation(1),
+        };
+        assert_eq!(event_codec_version(&base), BASE_CODEC_VERSION);
+    }
+
+    /// The decoder and the version table are two descriptions of one set of tags;
+    /// this holds them together. A tag the table admits must not fall through to
+    /// the unknown-tag arm, and one it does not admit must not decode.
+    #[test]
+    fn every_tag_the_table_admits_decodes() {
+        for tag in 0..=u8::MAX {
+            let error = decode_event(&[tag]).unwrap_err().to_string();
+            let unknown = error.contains("PTR_LEDGER_UNKNOWN_TAG");
+            assert_eq!(
+                unknown,
+                tag_codec_version(tag).is_none(),
+                "tag {tag}: table and decoder disagree ({error})"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_tag_is_refused_by_name_and_version_never_skipped() {
+        let error = decode_event(&[200, 0, 0]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let message = error.to_string();
+        assert!(message.contains("PTR_LEDGER_UNKNOWN_TAG"), "{message}");
+        assert!(
+            message.contains(&format!("codec version {LEDGER_CODEC_VERSION}")),
+            "{message}"
+        );
+    }
+
+    /// Versioning adds no byte to a record. Everything written before it existed
+    /// keeps its exact encoding, which is what lets a log that holds no newer
+    /// record be read by the build before this one.
+    #[test]
+    fn a_base_record_keeps_its_bytes() {
+        let event = LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("p"),
+            capsule: CapsuleId::from("c"),
+            generation: Generation(7),
+        };
+        let mut expected = vec![0];
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend_from_slice(b"p");
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend_from_slice(b"c");
+        expected.extend_from_slice(&7u64.to_le_bytes());
+        assert_eq!(encode_event(&event), expected);
+    }
+
+    #[test]
+    fn a_ceiling_outside_the_versions_this_build_defines_is_refused() {
+        for version in [0, BASE_CODEC_VERSION, LEDGER_CODEC_VERSION + 1] {
+            let event = LedgerEvent::CodecCeilingRaised { version };
+            assert!(
+                check_encodable(&event).is_err(),
+                "{version} is refused on the way in"
+            );
+            let mut bytes = vec![29];
+            bytes.extend_from_slice(&version.to_le_bytes());
+            let error = decode_event(&bytes).unwrap_err().to_string();
+            assert!(error.contains("PTR_LEDGER_CODEC_CEILING"), "{error}");
+        }
+        // The control: the one ceiling this build can raise.
+        assert!(check_encodable(&LedgerEvent::CodecCeilingRaised { version: 2 }).is_ok());
     }
 }

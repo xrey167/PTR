@@ -454,6 +454,10 @@ fn refused_by_runtime(error: &ExecutionError) -> WireOutcome {
         | ExecutionError::UnknownPeer { .. }
         | ExecutionError::PeerNotAdmitted { .. }
         | ExecutionError::DuplicatePeerEntry { .. }
+        // A member whose grant set the host does not define is refused before a
+        // session exists, so nothing was attempted for it either.
+        | ExecutionError::UnknownGrantSet { .. }
+        | ExecutionError::DuplicateGrantSet { .. }
         | ExecutionError::DispatchMismatch { .. }
         | ExecutionError::NotDetached { .. }
         | ExecutionError::Audit(_)

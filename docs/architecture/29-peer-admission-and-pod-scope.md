@@ -17,47 +17,98 @@ This layer does not authenticate. It cannot: authentication happens where the
 bytes arrive, and by the time a request reaches the runtime the only honest
 question left is *what is this identity allowed to do*.
 
-So `admit_peer` takes a `NodeId` and nothing else. There is no principal
-parameter and no grant parameter, because those are exactly the two things a
-caller must not be able to choose. Both come from `AdmissionPolicy`, a table the
-trusted host installs:
+So `admit_peer` takes an `AuthenticatedPeer` and nothing else. There is no
+principal parameter and no grant parameter, because those are exactly the two
+things a caller must not be able to choose. The principal comes from the peer's
+**membership**, which is committed history, and the grants from the host's **grant
+set** of the name that membership records:
 
 ```
-admit_peer(peer)  →  policy[peer]  →  (principal, grants, ttl)  →  session
+admit_member(peer, principal, grant_set)   →  PeerAdmitted, committed
+admit_peer(authenticated)  →  members[peer]  →  (principal, grant_set name)
+                           →  grant_sets[name]  →  (grants, ttl)  →  session
 ```
 
-The boundary is stated rather than disguised: the host passes what its transport
-proved — for the iroh backend, the QUIC-authenticated `Connection::remote_id` —
-and never a value read out of a payload. Nothing here can check that the host did
-so, and a type that pretended to would be decoration.
+The identity itself is the transport's: `AuthenticatedPeer` has no public
+constructor and only `ptr-net`'s transport builds one, from the QUIC-authenticated
+`Connection::remote_id` (D1 in issue #23; `32-execution-wire.md`). A value read out
+of a payload does not compile where admission needs one.
 
-What *is* enforced is everything after that point. A peer with no entry is not a
-peer with fewer rights; it is `UnknownPeer` and gets no session at all. A peer
-cannot hold two entries: a second `admit` for the same `NodeId` is refused rather
-than replacing the first, because a silent replacement is how a later, weaker
-entry widens an earlier one without anyone deciding to.
+What is enforced after that point: a peer that is not a member is not a peer with
+fewer rights; it is `UnknownPeer` and gets no session at all. A peer cannot be
+admitted twice: a second admission is refused (`DuplicatePeerEntry`) rather than
+replacing the first, because a silent replacement is how a later, weaker entry
+widens an earlier one without anyone deciding to — changing a peer's principal or
+grant set is a withdrawal and an admission, two records a history can show. A grant
+set cannot be defined twice for the same reason (`DuplicateGrantSet`).
 
 Grants are produced by a closure rather than stored. A grant owns its verifier
 and its executor, so each session needs its own; the closure also makes it
 explicit that the host decides what a peer receives on *every* admission.
 
-## Authority is re-derived at use, never remembered
+## Membership is remembered; authority is re-derived at use (D5 in issue #23)
 
-A session admitted from the policy carries the peer it was admitted for, and
-every use re-checks that the policy still admits it.
+This heading used to read *authority is re-derived at use, never remembered*, and
+"rebuild the policy from committed history" was the opposite verb. The two are
+reconciled by splitting what the old table held into the half that is a fact and
+the half that is behaviour:
 
-Admission is not the only thing that has to be re-derived. A session also holds
-the *grants* admission returned, and re-checking only "is this peer still
-admitted" left a replacement policy that kept a peer with **narrower** grants
-running the live session under the wider set until its TTL expired. So
-`install_admission_policy` re-derives every policy-admitted session's grants and
-principal from the new table.
+- **Membership is history.** `PeerAdmitted { peer, principal, grant_set }` and
+  `PeerWithdrawn { peer }` are ledger records, committed before they take effect
+  and replayed in order on every open, so a peer withdrawn before a restart is
+  still refused after it
+  (`a_peer_withdrawn_before_a_restart_is_still_refused_after_it`, with the peer
+  that was not withdrawn executing as the control) and admit → withdraw → admit
+  replays to the last admission
+  (`admit_withdraw_admit_replays_to_the_last_admission`). One rule refuses a bad
+  record live and in replay — a field that is not a bounded identifier
+  (`MAX_MEMBER_FIELD_BYTES`), a second admission, a withdrawal of a non-member — so
+  a history cannot hold an admission the runtime would not have written
+  (`a_history_that_admits_a_peer_twice_is_refused_on_replay`).
+- **Authority is not.** What a grant set permits is a verifier and an executor,
+  which cannot be replayed out of a log. The host installs `GrantSets` at every
+  start; until it does, a member is still a member and reaches nothing
+  (`UnknownGrantSet`,
+  `after_a_restart_a_member_reaches_nothing_until_the_host_supplies_its_grant_set`).
+  `install_grant_sets` replaces the whole table and governs authority only; it
+  cannot admit or withdraw anybody, so there is no second source of truth about
+  membership and no precedence to state.
 
-Two choices inside that are worth stating. A session whose peer the new table
-does not admit is left in place rather than dropped, so `session()` can still
-refuse it by name with `PeerNotAdmitted` instead of a bare `SessionClosed`. And
-the expiry is deliberately not refreshed: a new policy may narrow what a session
-can do, but it must not extend how long it lasts.
+A session carries the peer **and the commit index of the admission** it was issued
+under, and every use re-checks that this same admission still stands and that its
+grant set is still defined. A withdrawal ends the session at once — not when a TTL
+happens to run out — and a later re-admission is a different record that does not
+revive it (`a_re_admission_issues_new_sessions_and_revives_none`).
+
+Admission is not the only thing re-derived at use. A session also holds the
+*grants* admission returned, and re-checking only "is the admission still standing"
+left a replacement that narrowed a grant set running the live session under the
+wider one until its TTL expired. So `install_grant_sets` re-derives every peer
+session's grants from the new table.
+
+Two choices inside that are worth stating. A session whose grant set the new table
+does not define is left in place rather than dropped, so `session()` can still
+refuse it by name with `UnknownGrantSet` instead of a bare `SessionClosed`. And the
+expiry is deliberately not refreshed: a new table may narrow what a session can do,
+but it must not extend how long it lasts.
+
+A membership record is a commit, and **every commit retires every permit prepared
+before it**: a permit is authorized against the world as it was. So a withdrawal of
+one peer makes another peer's in-flight permit stale too; that peer re-prepares and
+proceeds
+(`withdrawing_one_peer_in_the_window_refuses_its_permit_and_leaves_the_other_working`).
+
+Membership crosses compaction: it is projected (`peer:<id>`, one key per peer,
+`ptr_state::member_entry` or `withdrawn`) into the lifecycle section, which is
+`PTRLC003` inside a `PTRCS005` snapshot. No earlier layout could carry it, so a
+`PTRCS004` or `PTRCS003` snapshot holding such a key is refused by version
+(`membership_keys_are_refused_by_version_before_ptrlc003_and_held_to_their_projection`),
+and a restored runtime refuses a peer withdrawn before the floor
+(`membership_survives_compaction_withdrawals_included`).
+
+The records are codec version 2 (`docs/COMPONENT_CONTRACTS.md`): a replicated group
+carries them only after every voter is reported to read them
+(`31-cluster-integrity.md`).
 
 This is the same rule `27-neural-state-admission.md` applies to cached state, and
 it is here for the same reason: a session that was admissible when it was issued
@@ -163,6 +214,9 @@ Negative, one per route back in:
   runtime, and both dispatch paths take `&mut self` — so the window those tests
   drive is preparation-to-consumption, not an interleaving. A genuinely concurrent
   race needs two runtimes, which is `32-execution-wire.md`.
-- **The policy is in memory.** It is not journaled, so it does not survive a
-  restart and a replayed history does not describe who was admitted when. The
-  audit records the principal an effect ran under, which is a different question.
+- **Grant sets are in memory, by design.** Membership is journaled (D5); what a
+  grant set permits is behaviour the host supplies at every start, and a start that
+  omits a set refuses its members by name rather than granting by default. A
+  history therefore says who was admitted when and under which grant set name,
+  and not what that name permitted at the time — which is the half that cannot be
+  replayed.

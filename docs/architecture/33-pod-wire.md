@@ -232,12 +232,11 @@ and the peer the decision runs under.
 - **Pod project membership is still declared, not proven.** A Pod says which project
   it serves in its own manifest, and whoever registers it decides that.
 - **The access policy is in memory.** It is not journaled, so it does not survive a
-  restart, and nothing anywhere records who was admitted to which project when. This
-  is D5's question for `AdmissionPolicy` and it is the same question here — with one
-  difference worth stating: a `PodScope` holds only data, so unlike an
-  `ExecutionGrant` it *could* be rebuilt from history. That makes it a smaller
-  problem, not a closed one, and taking it separately would leave two policies with
-  two durability stories.
+  restart, and nothing anywhere records who was admitted to which project when.
+  Execution membership is now journaled (D5 in issue #23,
+  `29-peer-admission-and-pod-scope.md`); a `PodScope` holds only data, so unlike an
+  `ExecutionGrant` it can be journaled whole, and it follows the same design in its
+  own change rather than leaving two policies with two durability stories.
 - **No discovery.** Which address belongs to an id nobody told you is a mechanism
   choice with its own trust question, and it is the owner's.
 

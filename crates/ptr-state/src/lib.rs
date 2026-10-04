@@ -122,6 +122,56 @@ pub fn parse_merged_branch_entry(entry: &str) -> Option<(u64, [u8; 32])> {
     Some((index, plan))
 }
 
+/// The projection key prefix for peer membership (D5 in issue #23).
+///
+/// One key per peer, `peer:<node id>`, whose value is either
+/// [`member_entry`] or [`WITHDRAWN_MEMBER`]. A single key rather than one per
+/// field because a node id may itself contain `:`, and a value split on a
+/// control character — which no identifier may contain — has exactly one
+/// reading.
+pub const MEMBER_PREFIX: &str = "peer:";
+
+/// The value a withdrawn peer's key holds.
+pub const WITHDRAWN_MEMBER: &str = "withdrawn";
+
+/// The projection key the group's committed codec ceiling is recorded under.
+pub const CODEC_CEILING_KEY: &str = "ledger:codec-ceiling";
+
+/// The projection key for one peer's membership.
+pub fn member_key(peer: &str) -> String {
+    format!("{MEMBER_PREFIX}{peer}")
+}
+
+/// The peer a [`member_key`] names, or `None` for any other key.
+pub fn member_of(key: &str) -> Option<&str> {
+    key.strip_prefix(MEMBER_PREFIX)
+        .filter(|peer| !peer.is_empty())
+}
+
+/// The value an admitted peer's key holds: `admitted`, principal and grant set
+/// name, separated by line feeds.
+pub fn member_entry(principal: &str, grant_set: &str) -> String {
+    format!("admitted\n{principal}\n{grant_set}")
+}
+
+/// The principal and grant set of a [`member_entry`], `Some(None)` for
+/// [`WITHDRAWN_MEMBER`], and `None` for a value that is exactly neither.
+pub fn parse_member_entry(entry: &str) -> Option<Option<(&str, &str)>> {
+    if entry == WITHDRAWN_MEMBER {
+        return Some(None);
+    }
+    let mut fields = entry.split('\n');
+    let (Some("admitted"), Some(principal), Some(grant_set), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return None;
+    };
+    if principal.is_empty() || grant_set.is_empty() {
+        return None;
+    }
+    Some(Some((principal, grant_set)))
+}
+
 /// The key/value entries one committed event projects to.
 ///
 /// This is the single definition of what an event means as current state; the
@@ -250,6 +300,17 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             format!("execution-manifest:{}:state", hex_digest(manifest_digest)),
             "revoked".to_owned(),
         )],
+        LedgerEvent::PeerAdmitted {
+            peer,
+            principal,
+            grant_set,
+        } => vec![(member_key(&peer.0), member_entry(principal, grant_set))],
+        LedgerEvent::PeerWithdrawn { peer } => {
+            vec![(member_key(&peer.0), WITHDRAWN_MEMBER.to_owned())]
+        }
+        LedgerEvent::CodecCeilingRaised { version } => {
+            vec![(CODEC_CEILING_KEY.to_owned(), version.to_string())]
+        }
         LedgerEvent::PodEvidenceCommitted { .. }
         | LedgerEvent::PodOutputAdmitted { .. }
         | LedgerEvent::PodHypothesisCommitted { .. }

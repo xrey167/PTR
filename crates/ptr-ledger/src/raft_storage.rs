@@ -31,7 +31,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Marks the state file. A foreign file is refused rather than parsed.
-const STATE_MAGIC: &[u8; 8] = b"PTRRST02";
+///
+/// PTRRST03 adds the group's committed codec ceiling after the applied-events
+/// count. A PTRRST02 file is still read, as a ceiling of
+/// [`BASE_CODEC_VERSION`](crate::BASE_CODEC_VERSION): no build that wrote that
+/// layout could raise one, so the reading is true rather than a default.
+const STATE_MAGIC: &[u8; 8] = b"PTRRST03";
+/// The layout before the codec ceiling: read, never written.
+const STATE_MAGIC_PRE_CEILING: &[u8; 8] = b"PTRRST02";
 /// Marks each log record.
 const RECORD_MAGIC: &[u8; 8] = b"PTRRFR01";
 /// Marks the log file, once, at offset zero.
@@ -120,8 +127,14 @@ impl FileRaftStorage {
             .open(&log_path)?;
 
         let mut core = if existing {
-            let (hard_state, conf_state, snapshot_metadata, fence, applied_events) =
-                read_state(&state_path)?;
+            let PersistedState {
+                hard_state,
+                conf_state,
+                snapshot_metadata,
+                fence,
+                applied_events,
+                codec_ceiling,
+            } = read_state(&state_path)?;
             let snapshot_data = if snapshot_path.is_file() {
                 let data = fs::read(&snapshot_path)?;
                 if data.len() > MAX_SNAPSHOT_BYTES {
@@ -146,6 +159,7 @@ impl FileRaftStorage {
                 offsets,
                 fence,
                 applied_events,
+                codec_ceiling,
             }
         } else {
             write_log_header(&mut log)?;
@@ -168,6 +182,7 @@ impl FileRaftStorage {
                 offsets: Vec::new(),
                 fence: 0,
                 applied_events: 0,
+                codec_ceiling: crate::BASE_CODEC_VERSION,
             }
         };
         if !existing {
@@ -209,6 +224,12 @@ pub struct Core {
     /// that reopened counting from zero would hand the next event an index the
     /// snapshot already describes, and two different events would claim it.
     applied_events: u64,
+    /// The highest codec version the group has committed a ceiling for.
+    ///
+    /// Durable for the reason `applied_events` is: the record that raised it may
+    /// sit below a snapshot, and a member that reopened at the base version would
+    /// refuse to propose records the group has already agreed every voter reads.
+    codec_ceiling: u16,
     /// The highest term this storage has ever accepted a write under.
     ///
     /// This is the fencing token. It is kept in memory only as a cache of what is
@@ -264,6 +285,21 @@ impl Core {
     /// Record how many events the member has applied, flushed before returning.
     pub fn set_applied_events(&mut self, applied_events: u64) -> io::Result<()> {
         self.applied_events = applied_events;
+        self.persist_state()
+    }
+
+    /// The group's committed codec ceiling.
+    pub fn codec_ceiling(&self) -> u16 {
+        self.codec_ceiling
+    }
+
+    /// Record a committed codec ceiling, flushed before returning. Never lowers
+    /// it: a ceiling is a fact about what every voter reads, and that only grows.
+    pub fn raise_codec_ceiling(&mut self, version: u16) -> io::Result<()> {
+        if version <= self.codec_ceiling {
+            return Ok(());
+        }
+        self.codec_ceiling = version;
         self.persist_state()
     }
 
@@ -502,7 +538,7 @@ impl Core {
     /// is stated in `31-cluster-integrity.md` rather than hidden.
     fn fenced_to(&mut self) -> io::Result<u64> {
         let on_disk = match read_state(&self.state_path) {
-            Ok((_, _, _, fence, _)) => fence,
+            Ok(state) => state.fence,
             // No state file yet: nothing has claimed this storage, so there is
             // nothing to be fenced by. Any other error is a real failure and is
             // not treated as "unfenced".
@@ -527,6 +563,7 @@ impl Core {
             &self.snapshot_metadata,
             fence,
             self.applied_events,
+            self.codec_ceiling,
         );
         atomic_write(&self.state_path, &bytes)?;
         sync_dir(&self.dir)
@@ -722,6 +759,7 @@ fn encode_state(
     snapshot: &SnapshotMetadata,
     fence: u64,
     applied_events: u64,
+    codec_ceiling: u16,
 ) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(96);
     bytes.extend_from_slice(STATE_MAGIC);
@@ -737,6 +775,7 @@ fn encode_state(
     bytes.extend_from_slice(&snapshot.term.to_le_bytes());
     bytes.extend_from_slice(&fence.to_le_bytes());
     bytes.extend_from_slice(&applied_events.to_le_bytes());
+    bytes.extend_from_slice(&codec_ceiling.to_le_bytes());
     let digest = sha256(&bytes);
     bytes.extend_from_slice(&digest);
     bytes
@@ -750,12 +789,27 @@ fn put_ids(bytes: &mut Vec<u8>, ids: &[u64]) {
     }
 }
 
+/// Everything the state file holds.
+struct PersistedState {
+    hard_state: HardState,
+    conf_state: ConfState,
+    snapshot_metadata: SnapshotMetadata,
+    fence: u64,
+    applied_events: u64,
+    codec_ceiling: u16,
+}
+
 /// Read the state file, or refuse it.
-fn read_state(path: &Path) -> io::Result<(HardState, ConfState, SnapshotMetadata, u64, u64)> {
+fn read_state(path: &Path) -> io::Result<PersistedState> {
     let bytes = fs::read(path)?;
-    if bytes.len() < STATE_MAGIC.len() + 32 || &bytes[..STATE_MAGIC.len()] != STATE_MAGIC {
+    if bytes.len() < STATE_MAGIC.len() + 32 {
         return Err(invalid("not a PTR raft state file"));
     }
+    let has_ceiling = match &bytes[..STATE_MAGIC.len()] {
+        magic if magic == STATE_MAGIC => true,
+        magic if magic == STATE_MAGIC_PRE_CEILING => false,
+        _ => return Err(invalid("not a PTR raft state file")),
+    };
     let body = &bytes[..bytes.len() - 32];
     if sha256(body) != bytes[bytes.len() - 32..] {
         return Err(invalid("raft state file does not match its digest"));
@@ -800,10 +854,37 @@ fn read_state(path: &Path) -> io::Result<(HardState, ConfState, SnapshotMetadata
     };
     let fence = take_u64(&mut at)?;
     let applied_events = take_u64(&mut at)?;
+    let codec_ceiling = if has_ceiling {
+        let slice = body
+            .get(at..at + 2)
+            .ok_or_else(|| invalid("raft state file ends inside a field"))?;
+        at += 2;
+        let ceiling = u16::from_le_bytes(slice.try_into().expect("u16 bytes"));
+        if !(crate::BASE_CODEC_VERSION..=crate::LEDGER_CODEC_VERSION).contains(&ceiling) {
+            // A ceiling above this build's own version is a group this build
+            // cannot serve: it would propose records it believes every voter
+            // reads, including itself, and it does not.
+            return Err(invalid(format!(
+                "PTR_LEDGER_CODEC_CEILING: the group committed codec version {ceiling}, \
+                 this build reads up to {}",
+                crate::LEDGER_CODEC_VERSION
+            )));
+        }
+        ceiling
+    } else {
+        crate::BASE_CODEC_VERSION
+    };
     if at != body.len() {
         return Err(invalid("raft state file has trailing bytes"));
     }
-    Ok((hard_state, conf_state, snapshot, fence, applied_events))
+    Ok(PersistedState {
+        hard_state,
+        conf_state,
+        snapshot_metadata: snapshot,
+        fence,
+        applied_events,
+        codec_ceiling,
+    })
 }
 
 /// Read a length-prefixed list of node ids.
@@ -845,4 +926,74 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// Flush a directory entry, so a rename survives a crash.
 fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
+}
+
+#[cfg(test)]
+mod codec_ceiling_tests {
+    use super::*;
+
+    fn temp_state(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ptr-raft-state-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("state")
+    }
+
+    fn state_bytes(ceiling: u16) -> Vec<u8> {
+        encode_state(
+            &HardState {
+                term: 4,
+                vote: 1,
+                commit: 9,
+            },
+            &ConfState {
+                voters: vec![1, 2, 3],
+                ..ConfState::default()
+            },
+            &SnapshotMetadata::default(),
+            4,
+            9,
+            ceiling,
+        )
+    }
+
+    /// The layout before the ceiling, rebuilt from this one: the old magic, no
+    /// ceiling field, and a digest over what remains.
+    fn pre_ceiling_bytes() -> Vec<u8> {
+        let current = state_bytes(crate::BASE_CODEC_VERSION);
+        let body_end = current.len() - 32 - 2;
+        let mut body = current[..body_end].to_vec();
+        body[..8].copy_from_slice(STATE_MAGIC_PRE_CEILING);
+        let digest = sha256(&body);
+        body.extend_from_slice(&digest);
+        body
+    }
+
+    #[test]
+    fn a_pre_ceiling_state_file_reads_as_the_base_version() {
+        let path = temp_state("pre-ceiling");
+        fs::write(&path, pre_ceiling_bytes()).unwrap();
+        let state = read_state(&path).unwrap();
+        assert_eq!(state.codec_ceiling, crate::BASE_CODEC_VERSION);
+        assert_eq!(state.applied_events, 9, "every other field reads as before");
+        assert_eq!(state.fence, 4);
+    }
+
+    #[test]
+    fn a_ceiling_round_trips_and_one_above_this_build_is_refused() {
+        let path = temp_state("ceiling");
+        fs::write(&path, state_bytes(crate::LEDGER_CODEC_VERSION)).unwrap();
+        assert_eq!(
+            read_state(&path).unwrap().codec_ceiling,
+            crate::LEDGER_CODEC_VERSION,
+            "the control: a ceiling this build reads"
+        );
+        fs::write(&path, state_bytes(crate::LEDGER_CODEC_VERSION + 1)).unwrap();
+        let error = read_state(&path).err().expect("refused").to_string();
+        assert!(error.contains("PTR_LEDGER_CODEC_CEILING"), "{error}");
+    }
 }

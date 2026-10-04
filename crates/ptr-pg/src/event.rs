@@ -91,7 +91,10 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::SessionRevoked { .. }
         | LedgerEvent::TierBackendLifecycle { .. }
         | LedgerEvent::TierObjectCommitted { .. }
-        | LedgerEvent::TierReplicaLifecycle { .. } => LifecycleChange::None,
+        | LedgerEvent::TierReplicaLifecycle { .. }
+        | LedgerEvent::PeerAdmitted { .. }
+        | LedgerEvent::PeerWithdrawn { .. }
+        | LedgerEvent::CodecCeilingRaised { .. } => LifecycleChange::None,
     }
 }
 
@@ -124,6 +127,9 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::TierBackendLifecycle { .. } => "storage.tier_backend_lifecycle",
         LedgerEvent::TierObjectCommitted { .. } => "storage.tier_object_committed",
         LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
+        LedgerEvent::PeerAdmitted { .. } => "peer.admitted",
+        LedgerEvent::PeerWithdrawn { .. } => "peer.withdrawn",
+        LedgerEvent::CodecCeilingRaised { .. } => "ledger.codec_ceiling_raised",
     }
 }
 
@@ -196,6 +202,12 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             backend_id,
             ..
         } => format!("tier-replica:{}:{backend_id}", hex_digest(root_digest)),
+        // The membership projection's own key, so a consumer partitioning by
+        // subject keeps a peer's admission and withdrawal in one stream.
+        LedgerEvent::PeerAdmitted { peer, .. } | LedgerEvent::PeerWithdrawn { peer } => {
+            ptr_state::member_key(&peer.0)
+        }
+        LedgerEvent::CodecCeilingRaised { .. } => ptr_state::CODEC_CEILING_KEY.to_owned(),
     }
 }
 
