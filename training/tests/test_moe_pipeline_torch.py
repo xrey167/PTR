@@ -330,6 +330,61 @@ class MoeTorchPipelineTests(unittest.TestCase):
         self.assertTrue(all(layer is not None for layer in full))
         self.assertEqual(gates.expert_deltas(out, full), [None] * self.cfg.model.layers)
 
+    def test_nonfinite_parameters_detected_after_sft_and_each_rl_arm(self):
+        import dataclasses
+        from unittest import mock
+
+        import torch
+
+        from ptr_training.moe import pipeline, rl, sft
+
+        def poison(model):
+            name, p = next(iter(model.named_parameters()))
+            with torch.no_grad():
+                p.view(-1)[0] = float("nan")
+            return name
+
+        small = dataclasses.replace(
+            self.cfg,
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(
+                self.cfg.rl, algorithms=("gspo",), steps=1, mini_steps=1, num_generations=2,
+                prompts_per_step=1,
+            ),
+        )
+        real_sft, real_rl = sft.run_sft, rl.run_rl
+        names = {}
+
+        def bad_sft(model, *a, **k):
+            out = real_sft(model, *a, **k)
+            names["sft"] = poison(model)
+            return out
+
+        def bad_rl(model, *a, **k):
+            out = real_rl(model, *a, **k)
+            names["rl"] = poison(model)
+            return out
+
+        # a clean run records zero everywhere
+        with tempfile.TemporaryDirectory() as tmp:
+            clean = pipeline.execute(small, Path(tmp))
+        checks = clean["nan_check"]["nonfinite_parameters"]
+        self.assertEqual({k: v["count"] for k, v in checks.items()}, {"after_sft": 0, "after_rl_gspo": 0})
+        self.assertFalse(clean["nan_check"]["nonfinite_values_found"])
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sft, "run_sft", bad_sft):
+            data = pipeline.execute(small, Path(tmp))
+        self.assertTrue(data["nan_check"]["nonfinite_values_found"])
+        self.assertIn(names["sft"], data["nan_check"]["nonfinite_parameters"]["after_sft"]["names"])
+
+        # NaN only in the RL arm's weights (SFT state restored afterwards) is still caught
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(rl, "run_rl", bad_rl):
+            data = pipeline.execute(small, Path(tmp))
+        self.assertTrue(data["nan_check"]["nonfinite_values_found"])
+        checks = data["nan_check"]["nonfinite_parameters"]
+        self.assertEqual(checks["after_sft"]["count"], 0)
+        self.assertGreaterEqual(checks["after_rl_gspo"]["count"], 1)
+
     def test_empty_algorithms_skips_rl(self):
         import dataclasses
 

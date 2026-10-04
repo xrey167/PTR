@@ -247,6 +247,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     evals: dict = {}
 
     router_errors: dict = {}
+    param_checks: dict = {}
 
     def snap(name: str):
         try:
@@ -277,6 +278,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     torch.manual_seed(seed)
     with _Timer(timings, "sft"):
         sft = run_sft(model, tokenizer, sft_tasks, cfg.sft, seed)
+    param_checks["after_sft"] = model_mod.nonfinite_parameters(model)
     with _Timer(timings, "snapshot_after_sft"):
         snap("after_sft")
         evals["after_sft"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
@@ -291,6 +293,8 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         torch.manual_seed(seed)
         with _Timer(timings, f"rl_{algo}"):
             rl_results[algo] = run_rl(model, tokenizer, rl_tasks, algo, cfg.rl, seed)
+        # before the next arm restores the SFT state over these weights
+        param_checks[f"after_rl_{algo}"] = model_mod.nonfinite_parameters(model)
         with _Timer(timings, f"snapshot_after_rl_{algo}"):
             snap(f"after_rl_{algo}")
             evals[f"after_rl_{algo}"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
@@ -361,9 +365,11 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     result["nan_check"] = {
         "nonfinite_values_found": bool(flags)
         or bool(router_errors)
+        or any(c["count"] for c in param_checks.values())
         or sft["nan"]
         or any(r["nan"] for r in rl_results.values()),
     }
+    result["nan_check"]["nonfinite_parameters"] = param_checks
     if router_errors:
         result["nan_check"]["router_errors"] = router_errors
     return result

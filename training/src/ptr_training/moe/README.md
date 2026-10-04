@@ -143,6 +143,12 @@ router stays frozen.
   `nan_check.nonfinite_values_found = true` and leaves that stage's metrics and churn `null`.
 - `model.router_aux_loss_coef` must be finite and >= 0. Metrics record `run.seed` and `model.seed`
   (the init seed actually used; it defaults to the run seed) separately.
+- `run.seed` / `model.seed` must be in [0, 2**32). For tiny-random, `model.max_positions` must
+  cover max(`moe.sft.max_length`, `max_prompt_length + max_completion_length`) and the head
+  dim must be even. Verifiers accept one answer only (see `reward.py`; arithmetic integers
+  must be canonical decimal). `nan_check.nonfinite_parameters` records, per stage (after SFT,
+  after each RL arm, checked before the SFT state is restored), the count and first names of
+  parameters containing NaN/inf, and sets `nonfinite_values_found`.
 - Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
 - `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
   actually present (PEFT may keep LoRA weights in fp32).

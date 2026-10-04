@@ -186,6 +186,28 @@ class MoeConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "precision"):
             moe_config.parse(raw)
 
+    def test_seed_range(self):
+        for table, bad in (("run", -1), ("run", 2**32), ("model", -5), ("model", 2**40)):
+            with self.subTest(table=table, seed=bad):
+                raw = self._mutate(lambda r: r[table].update(seed=bad))
+                with self.assertRaisesRegex(ConfigError, rf"{table}\.seed"):
+                    moe_config.parse(raw)
+        for ok in (0, 2**32 - 1):
+            raw = self._mutate(lambda r: r["run"].update(seed=ok))
+            self.assertEqual(moe_config.parse(raw).seed, ok)
+
+    def test_tiny_max_positions_must_cover_longest_sequence(self):
+        raw = self._mutate(lambda r: r["model"].update(max_positions=29))  # rl 16 + 14 = 30
+        with self.assertRaisesRegex(ConfigError, "max_positions"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["model"].update(max_positions=30))
+        moe_config.parse(raw)
+
+    def test_head_dim_must_be_even(self):
+        raw = self._mutate(lambda r: r["model"].update(hidden=60, heads=4))  # head dim 15
+        with self.assertRaisesRegex(ConfigError, "head dim"):
+            moe_config.parse(raw)
+
     def test_lora_dropout_range(self):
         for bad in (-0.1, 1.0, 2.0):
             with self.subTest(dropout=bad):

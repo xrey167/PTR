@@ -78,6 +78,12 @@ def _get(table: dict, key: str, typ, where: str, default=None):
     return value
 
 
+def _seed(value: int, where: str) -> int:
+    if not 0 <= value < 2**32:  # numpy.random.seed range
+        raise ConfigError(f"{where} must satisfy 0 <= seed < 2**32, got {value}")
+    return value
+
+
 def _str_list(table: dict, key: str, where: str) -> tuple[str, ...]:
     value = table.get(key, [])
     if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
@@ -163,7 +169,7 @@ class MoeConfig:
 
 def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     run = _table(raw, "run")
-    seed = _get(run, "seed", int, "run")
+    seed = _seed(_get(run, "seed", int, "run"), "run.seed")
     name = _get(run, "name", str, "run")
     training = _table(raw, "training")
     if training.get("backend") != "trl-moe":
@@ -208,7 +214,7 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         raise ConfigError("model.revision is only valid when model.kind = 'pretrained'")
     model = ModelConfig(
         kind=kind,
-        seed=_get(m, "seed", int, "model", seed),
+        seed=_seed(_get(m, "seed", int, "model", seed), "model.seed"),
         hf_id=hf_id,
         revision=revision,
         layers=_positive(_get(m, "layers", int, "model", 2), "model.layers"),
@@ -230,6 +236,8 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             raise ConfigError(f"model.top_k ({model.top_k}) exceeds model.experts ({model.experts})")
         if model.hidden % model.heads != 0:
             raise ConfigError("model.hidden must be divisible by model.heads")
+        if (model.hidden // model.heads) % 2 != 0:
+            raise ConfigError("model.hidden / model.heads (head dim) must be even for rotary")
 
     moe = _table(raw, "moe")
     _check_keys(moe, _MOE_KEYS, "moe")
@@ -310,6 +318,15 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             f"moe.rl.max_completion_length ({rl.max_completion_length}) is below the longest "
             f"canonical answer + EOS over the task space ({longest_answer} tokens)"
         )
+    if kind == "tiny-random":
+        # positions needed: SFT sequences, and RL prompt + completion (also used by eval)
+        needed = max(sft.max_length, rl.max_prompt_length + rl.max_completion_length)
+        if needed > model.max_positions:
+            raise ConfigError(
+                f"model.max_positions ({model.max_positions}) is below the longest sequence "
+                f"the run builds ({needed}: max of moe.sft.max_length and "
+                "moe.rl.max_prompt_length + moe.rl.max_completion_length)"
+            )
     if rl.num_generations < 2:
         raise ConfigError("moe.rl.num_generations must be >= 2 (group-relative advantages)")
     if rl.beta < 0:

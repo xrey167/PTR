@@ -146,6 +146,14 @@ def param_dtypes(model) -> list[str]:
     return sorted({str(p.dtype).removeprefix("torch.") for p in model.parameters()})
 
 
+def nonfinite_parameters(model, cap: int = 20) -> dict:
+    """{"count": n, "names": first `cap` names} of parameters holding NaN/inf (no list copies)."""
+    import torch
+
+    bad = [n for n, p in model.named_parameters() if not bool(torch.isfinite(p.detach()).all())]
+    return {"count": len(bad), "names": bad[:cap]}
+
+
 def trainable_state(model) -> dict:
     """Clone of every trainable tensor (all weights for the tiny model, LoRA for PEFT)."""
     names = {n for n, p in model.named_parameters() if p.requires_grad}

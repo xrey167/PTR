@@ -18,8 +18,32 @@ class MoeRewardTests(unittest.TestCase):
         self.assertEqual((r.status, r.score, r.findings), ("Pass", 1.0, []))
         self.assertEqual(r.level, "Deterministic")
 
-    def test_arith_pass_ignores_whitespace_and_trailing_lines(self):
-        self.assertEqual(reward.reward("arith", arith_spec(-3), " -3 \njunk"), 1.0)
+    def test_arith_pass_ignores_surrounding_whitespace(self):
+        self.assertEqual(reward.reward("arith", arith_spec(-3), " -3 \n\n"), 1.0)
+
+    def test_one_answer_only_arith(self):
+        for text, status in (("-3\njunk", "Fail"), ("-3\n-3", "Fail"), ("-3\n4", "Disputed")):
+            r = reward.verify("arith", arith_spec(-3), text)
+            self.assertEqual(r.status, status, text)
+            self.assertEqual(reward.rl_reward(r), 0.0, text)
+        r = reward.verify("arith", arith_spec(-3), "-3\njunk")
+        self.assertEqual([f.code for f in r.findings], ["trailing-content"])
+
+    def test_arith_non_canonical_integer_fails(self):
+        for text in ("05", "-0", "+5"):
+            spec = arith_spec(0 if text == "-0" else 5)
+            self.assertEqual(reward.reward("arith", spec, text), 0.0, text)
+        self.assertEqual(reward.reward("arith", arith_spec(0), "0"), 1.0)
+
+    def test_one_answer_only_json(self):
+        spec = json_spec({"a": 1})
+        for text in ('{"a":1}\n{"a":0}', '{"a":1}\n{"a":1}', '{"a":1}\nthanks'):
+            r = reward.verify("json", spec, text)
+            self.assertEqual(r.status, "Fail", text)
+            self.assertEqual([f.code for f in r.findings], ["trailing-content"], text)
+            self.assertTrue(r.findings[0].hard)
+            self.assertEqual(reward.rl_reward(r), 0.0)
+        self.assertEqual(reward.reward("json", spec, '  {"a":1}  \n\n'), 1.0)
 
     def test_arith_wrong_value_has_diagnostic_score_hard_finding_zero_reward(self):
         r = reward.verify("arith", arith_spec(19), "20")

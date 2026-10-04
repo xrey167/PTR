@@ -18,6 +18,11 @@ the shape credit of a wrong-valued integer) is kept in the report for diagnostic
 never used as reward. A hard finding forces `Fail` (`VerificationReport` demotes a Pass
 that carries one, and a Pass whose score is not in (0, 1]).
 
+One answer only: the whole stripped completion must be exactly one answer line. For
+arithmetic, further non-empty lines are `Disputed` when they state a different integer and
+a hard `trailing-content` `Fail` otherwise (even an identical repeat); the integer must be
+canonical decimal. For JSON, any second non-empty line is a hard `trailing-content` `Fail`.
+
 Status production here: `Unknown` = empty completion (nothing to verify); `Disputed` =
 arithmetic completion whose lines contain contradicting integers; `Fail` = anything else
 that is not the exact answer; `Pass` = exact answer.
@@ -101,8 +106,9 @@ def rl_reward(report: VerificationReport, min_level: str = LEVEL) -> float:
     return 0.0
 
 
-def _first_line(completion: str) -> str:
-    return completion.strip().split("\n", 1)[0].strip()
+def _lines(completion: str) -> list[str]:
+    """Non-empty stripped lines of the completion."""
+    return [line.strip() for line in completion.strip().split("\n") if line.strip()]
 
 
 def _verify_arith(completion: str, spec: dict) -> VerificationReport:
@@ -110,11 +116,8 @@ def _verify_arith(completion: str, spec: dict) -> VerificationReport:
         return VerificationReport(
             UNKNOWN, LEVEL, 0.0, [Finding("empty-completion", "nothing to verify", False)]
         )
-    answers = {
-        int(line.strip())
-        for line in completion.strip().split("\n")
-        if _INT_RE.match(line.strip())
-    }
+    lines = _lines(completion)
+    answers = {int(line) for line in lines if _INT_RE.match(line)}
     if len(answers) > 1:
         return VerificationReport(
             DISPUTED,
@@ -122,9 +125,18 @@ def _verify_arith(completion: str, spec: dict) -> VerificationReport:
             SHAPE_CREDIT,
             [Finding("contradicting-answers", f"completion states {sorted(answers)}", False)],
         )
-    text = _first_line(completion)
+    text = lines[0]
+    if len(lines) > 1:  # one answer only: any further content (even a repeat) is a failure
+        return _report(
+            SHAPE_CREDIT if _INT_RE.match(text) else 0.0,
+            [Finding("trailing-content", f"expected a single answer, got {len(lines)} lines", True)],
+        )
     if not _INT_RE.match(text):
         return _report(0.0, [Finding("not-integer", f"expected integer, got {text!r}", True)])
+    if text != str(int(text)):  # canonical decimal only ("05", "-0" are not the answer)
+        return _report(
+            SHAPE_CREDIT, [Finding("non-canonical-integer", f"got {text!r}", True)]
+        )
     if int(text) == spec["value"]:
         return _report(1.0, [])
     return _report(
@@ -150,8 +162,13 @@ def _verify_json(completion: str, spec: dict) -> VerificationReport:
         return VerificationReport(
             UNKNOWN, LEVEL, 0.0, [Finding("empty-completion", "nothing to verify", False)]
         )
-    text = _first_line(completion)
+    lines = _lines(completion)
+    text = lines[0]
     expected = spec["values"]
+    if len(lines) > 1:  # one answer only: the whole completion must be a single JSON value
+        return _report(
+            0.0, [Finding("trailing-content", f"expected a single JSON value, got {len(lines)} lines", True)]
+        )
     try:
         parsed = json.loads(text, object_pairs_hook=_no_duplicate_keys)
     except _DuplicateKeys as error:
