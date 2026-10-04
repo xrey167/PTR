@@ -25,6 +25,10 @@ PUB_ITEM = re.compile(
 MOD_DECL = re.compile(r"^\s*(pub(?:\([a-z]+\))?\s+)?mod\s+([a-z_][a-z0-9_]*)\s*[;{]")
 TEST_ATTR = re.compile(r"#\[(?:tokio::)?test(?:\(|\])")
 USE_PATH = re.compile(r"\b((?:crate|super|self)(?:::[a-z_][a-z0-9_]*)+)")
+USE_STATEMENT = re.compile(r"\buse\s+([^;]+);")
+USE_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|::|[{},*]")
+RAW_STRING = re.compile(r'b?r(#*)"')
+CHAR_LITERAL = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|.)|[^\\'\n])'")
 
 
 def read(path):
@@ -34,6 +38,99 @@ def read(path):
 
 def non_blank(text):
     return sum(1 for line in text.splitlines() if line.strip())
+
+
+def code_only(text):
+    """The source with comments, string literals and char literals removed.
+
+    A path in a comment (a Rustdoc link such as ``[x](crate::certify)``) or in a string
+    names nothing the code uses, so it must not become an edge of the module map.
+    Lifetimes (``'a``) are not char literals and stay. Nested block comments and raw
+    strings are handled; everything removed is replaced by a space so tokens do not
+    merge.
+    """
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "/" and text.startswith("//", i):
+            end = text.find("\n", i)
+            i = n if end == -1 else end
+            out.append(" ")
+        elif c == "/" and text.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif text.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+            out.append(" ")
+        elif c in "rb" and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")) and RAW_STRING.match(text, i):
+            hashes = RAW_STRING.match(text, i).group(1)
+            end = text.find('"' + hashes, RAW_STRING.match(text, i).end())
+            i = n if end == -1 else end + 1 + len(hashes)
+            out.append(" ")
+        elif c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+            out.append(" ")
+        elif c == "'" and CHAR_LITERAL.match(text, i):
+            i = CHAR_LITERAL.match(text, i).end()
+            out.append(" ")
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def expand_use(spec):
+    """Expand one `use` tree into the list of full paths it names.
+
+    ``crate::{a, b::{c, d as e}, f::*}`` gives ``crate::a``, ``crate::b::c``,
+    ``crate::b::d`` and ``crate::f``. A rename keeps the original path, a glob names the
+    module it globs, and ``self`` inside a group names the group's own prefix.
+    """
+    tokens = USE_TOKEN.findall(spec)
+    position = 0
+
+    def item(prefix):
+        nonlocal position
+        segments = list(prefix)
+        while position < len(tokens) and tokens[position] not in ("{", "}", ",", "*"):
+            if tokens[position] == "::":
+                position += 1
+            elif tokens[position] == "as":
+                position += 2
+            else:
+                segments.append(tokens[position])
+                position += 1
+        found = []
+        if position < len(tokens) and tokens[position] == "{":
+            position += 1
+            found += group(tuple(segments))
+        else:
+            if position < len(tokens) and tokens[position] == "*":
+                position += 1
+            if segments and segments[-1] == "self" and len(segments) > len(prefix):
+                segments.pop()
+            found.append(tuple(segments))
+        return found
+
+    def group(prefix):
+        nonlocal position
+        found = []
+        while position < len(tokens) and tokens[position] != "}":
+            found += item(prefix)
+            if position < len(tokens) and tokens[position] == ",":
+                position += 1
+        position += 1  # the closing brace
+        return found
+
+    return ["::".join(path) for path in item(()) if path]
 
 
 def module_path_of(rel):
@@ -87,8 +184,15 @@ def analyse_source(path, text, module_paths, current):
         if match and not line.lstrip().startswith("//"):
             items.append({"kind": match.group(1), "name": match.group(2)})
     uses = set()
-    for match in USE_PATH.finditer(text):
-        target = resolve_use(match.group(1), module_paths, current)
+    code = code_only(text)
+    paths = [match.group(1) for match in USE_PATH.finditer(code)]
+    for statement in USE_STATEMENT.finditer(code):
+        # Only paths written from `crate`, `self` or `super` are recorded; a relative
+        # path such as `pub use child::Item` (a re-export of a child module) is not.
+        paths += [path for path in expand_use(statement.group(1))
+                  if path.split("::")[0] in ("crate", "self", "super")]
+    for path in paths:
+        target = resolve_use(path, module_paths, current)
         if target is not None:
             uses.add(target)
     return {

@@ -115,6 +115,16 @@ def main():
 
     try:
         commit = subprocess.check_output(["git", "-C", REPOSITORY, "rev-parse", "--short", "HEAD"], text=True).strip()
+        # The page is read from the working tree, so HEAD names its sources only when the
+        # tree matches it. The generated files themselves are not sources.
+        changed = subprocess.check_output(
+            ["git", "-C", REPOSITORY, "status", "--porcelain", "--", "crates", "bins", "model", "fuzz", "docs/atlas",
+             ":(exclude)docs/atlas/atlas.html", ":(exclude)docs/atlas/structure.json"],
+            text=True).strip()
+        if changed:
+            commit += "+uncommitted"
+            print("note: sources differ from HEAD, so the page records %s; commit them and regenerate "
+                  "to record a revision that reproduces it" % commit, file=sys.stderr)
     except Exception:
         commit = "unknown"
     data = {
