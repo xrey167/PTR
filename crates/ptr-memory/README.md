@@ -1,7 +1,7 @@
 # ptr-memory — Typed Memory & Semantic Capsules
 
 > **Role:** Stores validated semantic, episodic, procedural and epistemic memory as lifecycle-managed domain objects.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
