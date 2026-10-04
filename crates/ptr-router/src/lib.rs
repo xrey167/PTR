@@ -3,8 +3,8 @@ mod router;
 
 pub use propensity::{Propensity, PropensityError};
 pub use router::{
-    route_checked, CheckedRouter, PolicyFailure, RouteError, RouteFeatures, RouteRequest,
-    RoutedChoice, Router,
+    route_checked, CheckedRouter, DistributionError, PolicyFailure, RouteDistribution, RouteError,
+    RouteFeatures, RouteRequest, RoutedChoice, RoutedError, Router,
 };
 
 use ptr_pods::PodRegistry;

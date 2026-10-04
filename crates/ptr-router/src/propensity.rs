@@ -1,6 +1,7 @@
 use std::fmt;
 
-/// Probability with which a router would choose the action it chose, given the same inputs.
+/// Probability with which the routing policy sampled the action it took, given the same inputs.
+/// Only the trusted routing path produces it, as the normalized probability of the sampled pod.
 ///
 /// A propensity is logged next to every routing decision so a different policy can later be
 /// evaluated off-policy by inverse-propensity weighting. It is the probability of the action

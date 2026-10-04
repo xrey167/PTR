@@ -1,40 +1,52 @@
-//! The `Router` contract: pod selection that logs its own propensity.
+//! The `Router` contract: a policy returns a distribution, trusted routing samples from it.
 //!
 //! # Propensity semantics
 //!
-//! Every selection returns a [`RoutedChoice`] holding the chosen [`PodRoute`] and the
-//! [`Propensity`], the probability with which this router would choose that pod given the same
-//! inputs. Logged choices allow off-policy evaluation of other routing policies.
+//! A [`Router`] does not choose a pod and does not report a propensity. It returns a
+//! [`RouteDistribution`], the probability distribution over candidate pods that it would sample
+//! from for this request. The trusted boundary, [`route_checked`], samples the pod itself and
+//! records the normalized probability of the sampled pod as the [`Propensity`] of the
+//! [`RoutedChoice`]. A router therefore cannot log a propensity that differs from the
+//! distribution actually sampled, which keeps inverse-propensity evaluation unbiased.
 //!
-//! - A deterministic router (such as [`PodRouter`]) logs exactly `1.0`.
-//! - A stochastic learned router logs the probability with which it sampled the chosen pod.
-//! - A router must never claim propensity `0` for a chosen action; [`Propensity`] cannot
-//!   represent it, and it also rejects values so small that the inverse-propensity weight
-//!   `1 / p` would overflow to infinity.
+//! - A deterministic router (such as [`PodRouter`]) returns a point mass and logs exactly `1.0`.
+//! - A stochastic router logs the probability of the pod that was sampled.
+//! - [`RoutedChoice`] can only be constructed inside this crate.
+//!
+//! # Sampling
+//!
+//! The sample is deterministic and replayable. A uniform `u` in `[0, 1)` is derived from
+//! `request_id` and `request_digest` (64-bit FNV-1a over the little-endian id length, the id
+//! bytes and the 32 digest bytes, followed by the splitmix64 finalizer; the top 53 bits give
+//! `u`). The pod is the first, in ascending `PodId` order, whose cumulative normalized weight
+//! exceeds `u`. Replaying the same request therefore reproduces the same choice, while distinct
+//! requests sample independently enough to realize the weights over many requests. The
+//! derivation uses no external hash crate and is part of this crate's contract.
 //!
 //! # Result semantics
 //!
-//! [`Router::route`] returns `Result<Option<RoutedChoice>, RouteError>`:
+//! [`route_checked`] returns `Result<Option<RoutedChoice>, RoutedError>`:
 //!
-//! - `Ok(Some(choice))`: a pod was chosen.
-//! - `Ok(None)`: the registry offers no candidate for the request. This is not a failure, and
-//!   it is reserved for that case: [`route_checked`] rejects `Ok(None)` while eligible
-//!   candidates exist with [`RouteError::MissingChoice`].
-//! - `Err(error)`: candidates may exist but the router failed (model inference, scoring,
-//!   sampling, or an invalid propensity). Callers must not treat this as "no candidate".
+//! - `Ok(Some(choice))`: a pod was sampled from the policy's distribution.
+//! - `Ok(None)`: the registry offers no candidate and the policy returned an empty distribution.
+//!   An empty distribution while candidates exist is [`RouteError::MissingChoice`].
+//! - `Err(error)`: the policy failed, returned an invalid or ineligible distribution. The
+//!   [`RoutedError`] carries the request id and digest so the failure can be attributed.
 //!
 //! # Request state
 //!
 //! A [`RouteRequest`] carries the registry scope plus per-request state ([`RouteFeatures`] and
-//! the request identity) so a learned router can condition both its choice and its propensity on
-//! the actual request.
+//! the request identity) so a learned router can condition its distribution on the request. It
+//! has no revision or generation field and `PodRegistry` exposes none, so neither can appear in
+//! [`RoutedError`] yet.
 
 use crate::{PodRoute, PodRouter, Propensity, PropensityError};
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, Digest, PodId, Probability, ProjectId, RequestId, TypeId};
 use std::fmt;
 
-/// A selected pod together with the propensity of selecting it.
+/// A pod sampled by the trusted routing path together with the probability of sampling it.
+/// Only [`route_checked`] constructs it. `route().score` is the propensity rounded to `f32`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoutedChoice {
     route: PodRoute,
@@ -42,7 +54,7 @@ pub struct RoutedChoice {
 }
 
 impl RoutedChoice {
-    pub fn new(route: PodRoute, propensity: Propensity) -> Self {
+    pub(crate) fn new(route: PodRoute, propensity: Propensity) -> Self {
         Self { route, propensity }
     }
 
@@ -161,15 +173,19 @@ pub enum RouteError {
         kind: PolicyFailure,
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
-    /// The policy produced a propensity that [`Propensity`] rejects.
+    /// The policy produced a propensity that [`Propensity`] rejects (a sampled pod whose
+    /// normalized probability is too small for a finite inverse-propensity weight).
     InvalidPropensity(PropensityError),
+    /// The policy returned a distribution that [`RouteDistribution::new`] rejects.
+    InvalidDistribution(DistributionError),
     /// The request features were invalid.
     InvalidFeatures { message: String },
-    /// The router chose a pod that is not an eligible candidate of the request (unknown to the
-    /// registry, or lacking the capability or input type). Raised by [`route_checked`].
+    /// The policy gave positive weight to a pod that is not an eligible candidate of the request
+    /// (unknown to the registry, or lacking the capability or input type). Raised by
+    /// [`route_checked`].
     IneligibleChoice { pod: PodId },
-    /// The router returned `Ok(None)` although the registry offers eligible candidates, which
-    /// the trait defines as "no candidate". Raised by [`route_checked`].
+    /// The policy returned an empty distribution although the registry offers eligible
+    /// candidates. Raised by [`route_checked`].
     MissingChoice { candidates: usize },
 }
 
@@ -191,16 +207,17 @@ impl fmt::Display for RouteError {
         match self {
             Self::Policy { kind, source } => write!(f, "routing policy failed ({kind}): {source}"),
             Self::InvalidPropensity(error) => write!(f, "routing policy produced {error}"),
+            Self::InvalidDistribution(error) => write!(f, "routing policy produced {error}"),
             Self::InvalidFeatures { message } => write!(f, "invalid route features: {message}"),
             Self::IneligibleChoice { pod } => {
                 write!(
                     f,
-                    "router chose pod {pod:?}, which is not an eligible candidate"
+                    "router gave positive weight to pod {pod:?}, which is not an eligible candidate"
                 )
             }
             Self::MissingChoice { candidates } => write!(
                 f,
-                "router returned no choice although {candidates} eligible candidates exist"
+                "router returned an empty distribution although {candidates} eligible candidates exist"
             ),
         }
     }
@@ -211,6 +228,7 @@ impl std::error::Error for RouteError {
         match self {
             Self::Policy { source, .. } => Some(source.as_ref()),
             Self::InvalidPropensity(error) => Some(error),
+            Self::InvalidDistribution(error) => Some(error),
             Self::InvalidFeatures { .. }
             | Self::IneligibleChoice { .. }
             | Self::MissingChoice { .. } => None,
@@ -224,52 +242,289 @@ impl From<PropensityError> for RouteError {
     }
 }
 
-/// Pod selection policy that reports the propensity of its choice. Object safe.
+impl From<DistributionError> for RouteError {
+    fn from(error: DistributionError) -> Self {
+        Self::InvalidDistribution(error)
+    }
+}
+
+/// A [`RouteError`] together with the request it occurred for, attached at the mandatory
+/// routing boundary ([`route_checked`]).
+///
+/// It keeps the request id and digest so a failure can be attributed in logs and replayed.
+/// `RouteRequest` carries no revision or generation (and `PodRegistry` exposes none), so none is
+/// recorded here.
+#[derive(Debug)]
+pub struct RoutedError {
+    request_id: RequestId,
+    request_digest: Digest,
+    error: RouteError,
+}
+
+impl RoutedError {
+    fn new(request: &RouteRequest<'_>, error: RouteError) -> Self {
+        Self {
+            request_id: request.request_id.clone(),
+            request_digest: request.request_digest,
+            error,
+        }
+    }
+
+    pub fn request_id(&self) -> &RequestId {
+        &self.request_id
+    }
+
+    pub fn request_digest(&self) -> Digest {
+        self.request_digest
+    }
+
+    pub fn error(&self) -> &RouteError {
+        &self.error
+    }
+
+    pub fn into_error(self) -> RouteError {
+        self.error
+    }
+}
+
+impl fmt::Display for RoutedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "routing request {} (digest ", self.request_id)?;
+        for byte in self.request_digest {
+            write!(f, "{byte:02x}")?;
+        }
+        write!(f, ") failed: {}", self.error)
+    }
+}
+
+impl std::error::Error for RoutedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// Why [`RouteDistribution::new`] rejected its entries.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum DistributionError {
+    /// A weight is NaN or infinite.
+    NonFiniteWeight { pod: PodId },
+    /// A weight is negative.
+    NegativeWeight { pod: PodId },
+    /// The same pod is listed twice.
+    DuplicatePod { pod: PodId },
+    /// Entries exist but their weights sum to zero, so nothing can be normalized.
+    ZeroTotalWeight,
+    /// The weights sum to infinity.
+    OverflowingTotalWeight,
+}
+
+impl fmt::Display for DistributionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFiniteWeight { pod } => write!(f, "weight of pod {pod:?} is not finite"),
+            Self::NegativeWeight { pod } => write!(f, "weight of pod {pod:?} is negative"),
+            Self::DuplicatePod { pod } => write!(f, "pod {pod:?} is listed more than once"),
+            Self::ZeroTotalWeight => f.write_str("distribution weights sum to zero"),
+            Self::OverflowingTotalWeight => f.write_str("distribution weights sum to infinity"),
+        }
+    }
+}
+
+impl std::error::Error for DistributionError {}
+
+/// A validated probability distribution over pods: the output of a [`Router`].
+///
+/// Weights are finite and non-negative, pods are unique, and the total is positive; they are
+/// normalized to sum to one on construction. Entries with weight zero are dropped. The empty
+/// distribution ([`RouteDistribution::none`]) means "no choice". Entries are kept sorted by
+/// `PodId`, the order [`route_checked`] samples in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RouteDistribution {
+    entries: Vec<(PodId, f64)>,
+}
+
+impl RouteDistribution {
+    /// The empty distribution: the policy makes no choice.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// A point mass on `pod`, the distribution of a deterministic router.
+    pub fn certain(pod: PodId) -> Self {
+        Self {
+            entries: vec![(pod, 1.0)],
+        }
+    }
+
+    /// Validates and normalizes `(pod, weight)` pairs. An empty list yields the empty
+    /// distribution.
+    pub fn new(weights: Vec<(PodId, f64)>) -> Result<Self, DistributionError> {
+        let mut entries = weights;
+        for (pod, weight) in &entries {
+            if !weight.is_finite() {
+                return Err(DistributionError::NonFiniteWeight { pod: pod.clone() });
+            }
+            if *weight < 0.0 {
+                return Err(DistributionError::NegativeWeight { pod: pod.clone() });
+            }
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        if let Some(pair) = entries.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+            return Err(DistributionError::DuplicatePod {
+                pod: pair[0].0.clone(),
+            });
+        }
+        if entries.is_empty() {
+            return Ok(Self::none());
+        }
+        let total: f64 = entries.iter().map(|(_, weight)| weight).sum();
+        if total.is_infinite() {
+            return Err(DistributionError::OverflowingTotalWeight);
+        }
+        if total <= 0.0 {
+            return Err(DistributionError::ZeroTotalWeight);
+        }
+        entries.retain(|(_, weight)| *weight > 0.0);
+        for (_, weight) in &mut entries {
+            *weight /= total;
+        }
+        Ok(Self { entries })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// The normalized probability of `pod`; zero when it is not listed.
+    pub fn probability(&self, pod: &PodId) -> f64 {
+        self.entries
+            .iter()
+            .find(|(candidate, _)| candidate == pod)
+            .map_or(0.0, |(_, probability)| *probability)
+    }
+
+    /// Positive-probability pods in ascending `PodId` order with normalized probabilities.
+    pub fn iter(&self) -> impl Iterator<Item = (&PodId, f64)> {
+        self.entries
+            .iter()
+            .map(|(pod, probability)| (pod, *probability))
+    }
+
+    fn sample(&self, u: f64) -> Option<&(PodId, f64)> {
+        let mut cumulative = 0.0;
+        for entry in &self.entries {
+            cumulative += entry.1;
+            if u < cumulative {
+                return Some(entry);
+            }
+        }
+        // Rounding can leave the cumulative sum a hair below one.
+        self.entries.last()
+    }
+}
+
+/// Uniform value in `[0, 1)` derived from the request identity; see the module documentation.
+fn sampling_point(request_id: &RequestId, request_digest: &Digest) -> f64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let id = request_id.0.as_bytes();
+    let mut hash = FNV_OFFSET;
+    let mut absorb = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    };
+    absorb(&(id.len() as u64).to_le_bytes());
+    absorb(id);
+    absorb(request_digest);
+    hash ^= hash >> 30;
+    hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash ^= hash >> 27;
+    hash = hash.wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^= hash >> 31;
+    (hash >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// Pod selection policy: returns the distribution over pods it would sample from. Object safe.
 ///
 /// # Untrusted output
 ///
-/// The result of [`Router::route`] is untrusted: [`RoutedChoice::new`] accepts any
-/// [`PodRoute`], so a custom or learned router can return a pod that is unknown to the registry
-/// or does not support the request's capability and input type. Callers must obtain choices
-/// through [`route_checked`] (or a [`CheckedRouter`]) and never act on a raw `route` result.
-/// The eligibility check lives outside the policy so a policy cannot bypass it.
+/// The distribution is untrusted: it may list pods unknown to the registry or lacking the
+/// request's capability or input type. The policy neither samples nor reports a propensity;
+/// callers obtain choices only through [`route_checked`] (or a [`CheckedRouter`]), which
+/// validates eligibility, samples, and records the sampled probability as the propensity.
 pub trait Router {
-    /// Chooses a pod for the request. `Ok(None)` means exclusively that the registry offers no
-    /// candidate (returning it while candidates exist is a contract violation that
-    /// [`route_checked`] rejects); `Err` means the router itself failed. The choice is not validated here; see the trait
-    /// documentation.
-    fn route(&self, request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RouteError>;
+    /// The distribution over pods for the request. The empty distribution means "no choice" and
+    /// is accepted only when the registry offers no candidate; `Err` means the router failed.
+    fn policy(&self, request: &RouteRequest<'_>) -> Result<RouteDistribution, RouteError>;
 }
 
-/// Routes through `router` and rejects any choice whose pod is not among
-/// `request.registry.candidates(project, capability, input_type)`, and any `Ok(None)` while that
-/// set is nonempty.
+/// Routes through `router`: validates its distribution against the registry, samples a pod and
+/// records the sampled pod's probability as the propensity.
 ///
-/// This is the trusted path: the candidate set is recomputed from the registry here, not taken
-/// from the policy. A rejected choice yields [`RouteError::IneligibleChoice`]; a false
-/// no-candidate result yields [`RouteError::MissingChoice`].
+/// This is the trusted path: the candidate set is recomputed from
+/// `request.registry.candidates(project, capability, input_type)` here, not taken from the
+/// policy. A pod with positive weight outside that set yields [`RouteError::IneligibleChoice`]
+/// (weight-zero entries are dropped by [`RouteDistribution::new`] and ignored); an empty
+/// distribution while candidates exist yields [`RouteError::MissingChoice`]. Every failure is
+/// wrapped in a [`RoutedError`] with the request id and digest.
 pub fn route_checked<R: Router + ?Sized>(
     router: &R,
     request: &RouteRequest<'_>,
+) -> Result<Option<RoutedChoice>, RoutedError> {
+    route_inner(router, request).map_err(|error| RoutedError::new(request, error))
+}
+
+fn route_inner<R: Router + ?Sized>(
+    router: &R,
+    request: &RouteRequest<'_>,
 ) -> Result<Option<RoutedChoice>, RouteError> {
-    let result = router.route(request)?;
+    let distribution = router.policy(request)?;
     let candidates =
         request
             .registry
             .candidates(request.project, request.capability, request.input_type);
-    match result {
-        None if candidates.is_empty() => Ok(None),
-        None => Err(RouteError::MissingChoice {
-            candidates: candidates.len(),
-        }),
-        Some(choice) if candidates.contains(&choice.route().pod_id) => Ok(Some(choice)),
-        Some(choice) => Err(RouteError::IneligibleChoice {
-            pod: choice.into_route().pod_id,
-        }),
+    if let Some((pod, _)) = distribution
+        .iter()
+        .find(|(pod, _)| !candidates.contains(pod))
+    {
+        return Err(RouteError::IneligibleChoice { pod: pod.clone() });
     }
+    if distribution.is_empty() {
+        return if candidates.is_empty() {
+            Ok(None)
+        } else {
+            Err(RouteError::MissingChoice {
+                candidates: candidates.len(),
+            })
+        };
+    }
+    let u = sampling_point(request.request_id, &request.request_digest);
+    let Some((pod, probability)) = distribution.sample(u) else {
+        return Ok(None);
+    };
+    let propensity = Propensity::new(*probability)?;
+    let score =
+        Probability::new(propensity.get() as f32).expect("a propensity in (0, 1] is a probability");
+    Ok(Some(RoutedChoice::new(
+        PodRoute {
+            pod_id: pod.clone(),
+            score,
+        },
+        propensity,
+    )))
 }
 
-/// A [`Router`] that validates every choice of the wrapped router with [`route_checked`].
+/// Wraps a [`Router`] so it can only be used through [`route_checked`].
+///
+/// It deliberately does not implement [`Router`]: a router yields distributions, a
+/// `CheckedRouter` yields trusted, sampled choices.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CheckedRouter<R> {
     inner: R,
@@ -279,17 +534,17 @@ impl<R: Router> CheckedRouter<R> {
     pub fn new(inner: R) -> Self {
         Self { inner }
     }
-}
 
-impl<R: Router> Router for CheckedRouter<R> {
-    fn route(&self, request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RouteError> {
+    /// [`route_checked`] on the wrapped router.
+    pub fn route(&self, request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RoutedError> {
         route_checked(&self.inner, request)
     }
 }
 
 impl Router for PodRouter {
-    /// Deterministic and infallible: ignores `request.features`, never returns `Err`.
-    fn route(&self, request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RouteError> {
+    /// Deterministic and infallible: a point mass on the pod [`PodRouter::select`] chooses (the
+    /// empty distribution without candidates). Ignores `request.features`.
+    fn policy(&self, request: &RouteRequest<'_>) -> Result<RouteDistribution, RouteError> {
         Ok(self
             .select(
                 request.registry,
@@ -297,6 +552,8 @@ impl Router for PodRouter {
                 request.capability,
                 request.input_type,
             )
-            .map(|route| RoutedChoice::new(route, Propensity::CERTAIN)))
+            .map_or_else(RouteDistribution::none, |route| {
+                RouteDistribution::certain(route.pod_id)
+            }))
     }
 }
