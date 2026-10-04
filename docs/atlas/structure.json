@@ -1783,7 +1783,9 @@
        "name": "bind_action_admission"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "admission.rs",
      "name": "admission",
      "declared": []
@@ -2003,7 +2005,9 @@
        "name": "RecoveryBindingErrorOr"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "recovery.rs",
      "name": "recovery",
      "declared": []
@@ -2424,6 +2428,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "config",
       "error"
      ],
@@ -3289,6 +3294,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "anchor",
       "compaction",
       "integrity",
@@ -3461,6 +3467,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "acknowledged",
       "integrity"
      ],
@@ -3579,6 +3586,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "acknowledged",
       "anchor",
       "integrity"
@@ -3707,7 +3715,9 @@
        "name": "constant_time_eq"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "integrity.rs",
      "name": "integrity",
      "declared": [
@@ -4000,6 +4010,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "integrity",
       "raft_storage"
      ],
@@ -4918,7 +4929,9 @@
        "name": "compile_selected"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "context.rs",
      "name": "context",
      "declared": []
@@ -4978,6 +4991,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "retention"
      ],
      "path": "ingestion.rs",
@@ -5322,7 +5336,9 @@
        "name": "ScenarioBackend"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "backend.rs",
      "name": "backend",
      "declared": []
@@ -5698,7 +5714,9 @@
        "name": "is_empty"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "peers.rs",
      "name": "peers",
      "declared": []
@@ -5781,7 +5799,9 @@
        "name": "active_peer"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "tunnel.rs",
      "name": "tunnel",
      "declared": []
@@ -6038,6 +6058,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "fields",
       "macros"
      ],
@@ -6060,6 +6081,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "fields"
      ],
      "path": "tracing_adapter.rs",
@@ -6193,6 +6215,7 @@
       }
      ],
      "uses": [
+      "adapters",
       "config",
       "error"
      ],
@@ -6223,6 +6246,7 @@
       }
      ],
      "uses": [
+      "adapters",
       "error"
      ],
      "path": "adapters/events.rs",
@@ -6296,6 +6320,7 @@
       }
      ],
      "uses": [
+      "adapters",
       "error"
      ],
      "path": "adapters/fastmem.rs",
@@ -6319,6 +6344,7 @@
       }
      ],
      "uses": [
+      "adapters",
       "error"
      ],
      "path": "adapters/lineage.rs",
@@ -6336,6 +6362,7 @@
       }
      ],
      "uses": [
+      "adapters",
       "error",
       "metric"
      ],
@@ -6453,6 +6480,7 @@
       }
      ],
      "uses": [
+      "adapters",
       "config",
       "error"
      ],
@@ -6531,6 +6559,7 @@
       }
      ],
      "uses": [
+      "adapters",
       "config",
       "error",
       "event"
@@ -6582,6 +6611,7 @@
       }
      ],
      "uses": [
+      "adapters",
       "config",
       "error"
      ],
@@ -6952,7 +6982,9 @@
        "name": "descriptor"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "adapter.rs",
      "name": "adapter",
      "declared": []
@@ -6999,7 +7031,9 @@
        "name": "new"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "attention.rs",
      "name": "attention",
      "declared": []
@@ -7038,7 +7072,9 @@
        "name": "invalidate"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "cache.rs",
      "name": "cache",
      "declared": []
@@ -7106,6 +7142,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "paged_kv"
      ],
      "path": "candle.rs",
@@ -7202,7 +7239,9 @@
        "name": "decode_canonical"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "evidence.rs",
      "name": "evidence",
      "declared": []
@@ -7554,6 +7593,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "protocol"
      ],
      "path": "native.rs",
@@ -7864,7 +7904,9 @@
        "name": "digest_list"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "paged_kv.rs",
      "name": "paged_kv",
      "declared": []
@@ -8018,7 +8060,9 @@
        "name": "config"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "qwen.rs",
      "name": "qwen",
      "declared": []
@@ -8089,7 +8133,9 @@
        "name": "ReferenceExecutorFactory"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "runtime.rs",
      "name": "runtime",
      "declared": []
@@ -8132,7 +8178,9 @@
        "name": "ManifestError"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "semantic.rs",
      "name": "semantic",
      "declared": []
@@ -8200,6 +8248,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "paged_kv"
      ],
      "path": "tier_storage.rs",
@@ -8232,7 +8281,9 @@
        "name": "validate"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "transport.rs",
      "name": "transport",
      "declared": []
@@ -9267,6 +9318,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "execution"
      ],
      "path": "compacted.rs",
@@ -9551,6 +9603,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "compacted"
      ],
      "path": "execution.rs",
@@ -10108,7 +10161,9 @@
        "name": "validate_and_build"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "manifest.rs",
      "name": "manifest",
      "declared": [
@@ -10369,6 +10424,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "execution",
       "semantic"
      ],
@@ -10591,7 +10647,9 @@
        "name": "evict_denied"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "neural.rs",
      "name": "neural",
      "declared": [
@@ -10664,7 +10722,9 @@
        "name": "migrate_legacy_log"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "persistence.rs",
      "name": "persistence",
      "declared": []
@@ -11177,6 +11237,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "merge"
      ],
      "path": "semantic.rs",
@@ -11867,7 +11928,9 @@
        "name": "retain_live"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "fusion.rs",
      "name": "fusion",
      "declared": [
@@ -12085,7 +12148,9 @@
        "name": "decode"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "codec.rs",
      "name": "codec",
      "declared": []
@@ -12947,7 +13012,9 @@
        "name": "open_protected_tier_chunk"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "tier_protected.rs",
      "name": "tier_protected",
      "declared": []
@@ -13063,7 +13130,9 @@
        "name": "read"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "checkpoint.rs",
      "name": "checkpoint",
      "declared": []
@@ -13174,7 +13243,9 @@
        "name": "member_names"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "codebook.rs",
      "name": "codebook",
      "declared": [
@@ -13219,7 +13290,9 @@
        "name": "CODE"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "confidence.rs",
      "name": "confidence",
      "declared": [
@@ -13437,6 +13510,7 @@
       }
      ],
      "uses": [
+      "(root)",
       "pod_address"
      ],
      "path": "mesh.rs",
@@ -13533,7 +13607,9 @@
        "name": "ResolveError"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "pod_address.rs",
      "name": "pod_address",
      "declared": [
@@ -13602,7 +13678,9 @@
        "name": "encode"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "slot_encoding.rs",
      "name": "slot_encoding",
      "declared": [
@@ -13679,7 +13757,9 @@
        "name": "is_narrowing_of"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "validity_mask.rs",
      "name": "validity_mask",
      "declared": [
@@ -14592,6 +14672,7 @@
       }
      ],
      "uses": [
+      "experiments",
       "model",
       "program"
      ],
@@ -15274,6 +15355,7 @@
       }
      ],
      "uses": [
+      "experiments",
       "metrics",
       "model",
       "oracle",
@@ -15552,7 +15634,9 @@
        "name": "load_bound"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "checkpoint.rs",
      "name": "checkpoint",
      "declared": []
@@ -15880,7 +15964,9 @@
        "name": "verify_training"
       }
      ],
-     "uses": [],
+     "uses": [
+      "(root)"
+     ],
      "path": "m002_v5_contract.rs",
      "name": "m002_v5_contract",
      "declared": []
