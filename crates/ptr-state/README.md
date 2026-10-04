@@ -1,7 +1,7 @@
 # ptr-state — Materialized Runtime State
 
 > **Role:** Projects committed ledger events into queryable current-state views without replacing the ledger as causal authority.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status

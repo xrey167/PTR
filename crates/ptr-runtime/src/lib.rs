@@ -442,6 +442,12 @@ pub enum RuntimeError {
     UnknownReviewer {
         reviewer: String,
     },
+    /// A merge under [`MergeAuthority::Reviewed`] by the principal who authored
+    /// the branch. An approval is a second pair of eyes, so a reviewer cannot
+    /// give it for their own branch.
+    SelfApproval {
+        reviewer: String,
+    },
     /// Provenance text a record would carry (a host write's principal, a
     /// merged branch's id or author) is not an identifier of at most
     /// [`merge::MAX_PROVENANCE_TEXT`] bytes; `field` names it.

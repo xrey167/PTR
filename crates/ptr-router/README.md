@@ -1,7 +1,7 @@
 # ptr-router — Reasoning, Model, Search & Pod Router
 
 > **Role:** Chooses how a task should be solved: neural reasoning, search, statistics, simulation, symbolic methods, Pods or combinations.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
