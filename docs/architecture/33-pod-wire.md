@@ -255,6 +255,8 @@ and the peer the decision runs under.
   carry.
 - **Nothing about latency, throughput or behaviour under load.** The tests establish
   protocol and isolation properties on localhost.
-- **The other three ALPNs still carry nothing.** `ALPN_MODEL`, `ALPN_BLOB` and
-  `ALPN_EVENTS` remain declared and unspoken. This document closes one of the four
-  C3 named, and says so rather than letting "Pod access" stand in for all of them.
+- **C3 in issue #23: Pod access is closed by `ptr-podwire`; the three unspoken
+  ALPNs were removed rather than left declared.** `ALPN_MODEL`, `ALPN_BLOB` and
+  `ALPN_EVENTS` named no protocol, so this document closing one of the four C3
+  named does not stand in for the others — they no longer exist to be implied
+  (`07-network-protocol.md`).

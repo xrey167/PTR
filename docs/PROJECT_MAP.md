@@ -403,7 +403,6 @@ projection > cache > transient model state. No layer promotes itself upward.
 | `ptr-raft/1` | `ptr-cluster` | `PTRRAFTW` batches carrying raft-rs protobuf messages | Library-level three-member group on loopback; 9 wire tests |
 | `ptr-exec/1` | `ptr-execwire` | `PTREXREQ` / `PTREXRCP` | Implemented; 13 wire tests |
 | `ptr-podwire/1` | `ptr-podwire` | `PTRPWREQ` / `PTRPWANS` | Implemented; 9 wire + 10 access tests |
-| `ptr-model/1`, `ptr-blob/1`, `ptr-events/1` | — | — | Declared constants; no protocol |
 
 - **Common properties:** the sender is always the QUIC-authenticated key, never a
   payload field. Frames are hand-written, bounded and versioned. The protobuf
