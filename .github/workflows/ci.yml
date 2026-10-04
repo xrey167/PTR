@@ -123,6 +123,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features failpoints --test failpoints --locked
       - run: cargo +stable clippy -p ptr-ledger --features failpoints --all-targets --locked -- -D warnings
+      # The two features unify when a workspace build enables both, and raft-engine's
+      # fail points need its own failpoints feature, so the combination is built on its own.
+      - run: cargo +stable test -p ptr-ledger --features failpoints,raft-engine-backend --tests --locked
+      - run: cargo +stable clippy -p ptr-ledger --features failpoints,raft-engine-backend --all-targets --locked -- -D warnings
   ledger-raft-engine:
     runs-on: ubuntu-latest
     steps:

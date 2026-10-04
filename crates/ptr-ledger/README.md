@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-03  
+**Last reviewed:** 2026-10-04  
 **Code footprint:** 9 Rust source files · 6269 nonblank source lines · 14 integration-test files · 122 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
@@ -114,6 +114,7 @@
 - Stale-witness anchor rollback, interrupted publication and fenced writer after failed acknowledgment
 - The six fencing-token tests (tests/raft_fence.rs) are a declared feature test run by the ledger-raft-rs CI job
 - clippy -D warnings over the failpoints, raft-engine-backend and raft-rs-backend builds, which no CI job linted before
+- The failpoints feature also enables raft-engine's own failpoints when raft-engine-backend is on, so the two features build and test together (the lifecycle-failpoints job runs the combined build, which failed to compile before because raft-engine's fail points need its own gated imports)
 - Retention bounds, barrier blocking and snapshot-coverage capping of the proposed floor
 - Cutover interrupted on both sides of its commit point, orphan reclamation and exact retained-suffix reconstruction
 - Stale, non-advancing, above-tail and wrong-digest plans refused without mutation; destination never overwritten

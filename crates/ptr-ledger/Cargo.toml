@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-failpoints = ["dep:fail", "fail/failpoints"]
+failpoints = ["dep:fail", "fail/failpoints", "raft-engine?/failpoints"]
 raft-engine-backend = ["dep:raft-engine"]
 raft-rs-backend = ["dep:raft", "dep:slog"]
 

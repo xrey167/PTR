@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-ledger"
 maturity = "prototype"
-last_reviewed = "2026-10-03"
+last_reviewed = "2026-10-04"
 
 implemented = [
   "check_encodable refuses a MeshTunnelLifecycle event whose endpoint binding the decoder would refuse (for example a relayed route without a relay id), so an append path cannot write a record the log cannot read back",
@@ -99,6 +99,7 @@ checks = ["the mesh tunnel event round-trips with tag 15 (effect_record_tests::m
   "Stale-witness anchor rollback, interrupted publication and fenced writer after failed acknowledgment",
   "The six fencing-token tests (tests/raft_fence.rs) are a declared feature test run by the ledger-raft-rs CI job",
   "clippy -D warnings over the failpoints, raft-engine-backend and raft-rs-backend builds, which no CI job linted before",
+  "The failpoints feature also enables raft-engine's own failpoints when raft-engine-backend is on, so the two features build and test together (the lifecycle-failpoints job runs the combined build, which failed to compile before because raft-engine's fail points need its own gated imports)",
   "Retention bounds, barrier blocking and snapshot-coverage capping of the proposed floor",
   "Cutover interrupted on both sides of its commit point, orphan reclamation and exact retained-suffix reconstruction",
   "Stale, non-advancing, above-tail and wrong-digest plans refused without mutation; destination never overwritten",
