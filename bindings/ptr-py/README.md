@@ -15,6 +15,7 @@ flowchart LR
 
 ```bash
 make py-bindings   # venv + fmt + clippy + maturin develop --locked + unittest
+# PYTHON=python3.11 make py-bindings   # select the interpreter (must be >= 3.11)
 ```
 
 The crate is its own Cargo workspace (like `model/burn-a0`), excluded from the root workspace, so `cargo check --workspace` at the root does not build it. Versions: pyo3 `=0.29.3` with `abi3-py311`, maturin `1.15.0`, Python >= 3.11. The venv lives in `bindings/ptr-py/.venv` (gitignored).

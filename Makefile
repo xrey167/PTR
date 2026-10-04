@@ -37,7 +37,8 @@ MATURIN ?= 1.15.0
 PY_BINDINGS := bindings/ptr-py
 
 py-bindings:
-	python3 -m venv $(PY_BINDINGS)/.venv
+	$(PYTHON) -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "py-bindings needs Python >= 3.11 (set PYTHON=...)"; exit 1; }
+	$(PYTHON) -m venv $(PY_BINDINGS)/.venv
 	$(PY_BINDINGS)/.venv/bin/pip install -q maturin==$(MATURIN)
 	cargo fmt --manifest-path $(PY_BINDINGS)/Cargo.toml -- --check
 	cargo clippy --manifest-path $(PY_BINDINGS)/Cargo.toml --all-targets --locked -- -D warnings
