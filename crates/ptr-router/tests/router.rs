@@ -2,7 +2,8 @@ use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_router::{
     route_checked, CheckedRouter, DistributionError, PodRouter, PolicyFailure, Propensity,
-    RouteDistribution, RouteError, RouteFeatures, RouteRequest, RoutedError, Router,
+    RouteDistribution, RouteError, RouteFeatures, RouteRequest, RoutedChoice, RoutedError, Router,
+    SamplingKey,
 };
 use ptr_types::{CapabilityId, Effect, PodId, Probability, ProjectId, RequestId, TypeId};
 use std::sync::Arc;
@@ -15,6 +16,17 @@ impl DynPod for TestPod {
     fn invoke(&self, input: TypedPayload) -> Result<TypedPayload, String> {
         Ok(input)
     }
+}
+
+fn key() -> SamplingKey {
+    SamplingKey::from_bytes([0x5a; 32])
+}
+
+fn route<R: Router + ?Sized>(
+    router: &R,
+    request: &RouteRequest<'_>,
+) -> Result<Option<RoutedChoice>, RoutedError> {
+    route_checked(router, request, &key())
 }
 
 fn registry(project: &ProjectId, ids: &[&str]) -> PodRegistry {
@@ -64,7 +76,7 @@ fn router_matches_select_and_logs_certain_propensity() {
     let distribution = PodRouter.policy(&req).unwrap();
     assert_eq!(distribution.len(), 1);
     assert_eq!(distribution.probability(&PodId::from("zeta")), 1.0);
-    let choice = route_checked(&PodRouter, &req).unwrap().unwrap();
+    let choice = route(&PodRouter, &req).unwrap().unwrap();
     assert_eq!(choice.route(), &selected);
     assert_eq!(choice.route().pod_id, PodId::from("zeta"));
     assert_eq!(choice.propensity().get(), 1.0);
@@ -78,7 +90,7 @@ fn router_is_usable_as_trait_object() {
     let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
     let router: &dyn Router = &PodRouter;
     let req = request(&registry, &project, &cap, &ty, &id, &features);
-    let choice = route_checked(router, &req).unwrap().unwrap();
+    let choice = route(router, &req).unwrap().unwrap();
     assert_eq!(choice.into_route().pod_id, PodId::from("alpha"));
 }
 
@@ -91,7 +103,7 @@ fn router_without_candidates_returns_ok_none_like_select() {
     let req = request(&registry, &project, &cap, &ty, &id, &features);
     assert!(PodRouter.select(&registry, &project, &cap, &ty).is_none());
     assert!(PodRouter.policy(&req).unwrap().is_empty());
-    assert!(matches!(route_checked(&PodRouter, &req), Ok(None)));
+    assert!(matches!(route(&PodRouter, &req), Ok(None)));
 }
 
 /// Chooses by token budget: a small budget fully determines the lesser pod id (a point mass),
@@ -144,7 +156,7 @@ fn deterministic_policy_logs_certain_propensity_not_an_arbitrary_number() {
         RequestId::from("r1"),
         RouteFeatures::new().with_token_budget(10),
     );
-    let choice = route_checked(
+    let choice = route(
         &FeatureRouter,
         &request(&registry, &project, &cap, &ty, &id, &small),
     )
@@ -163,7 +175,7 @@ fn recorded_propensity_is_the_sampled_pods_probability() {
     let mut seen = std::collections::BTreeSet::new();
     for n in 0..50 {
         let id = RequestId::from(format!("req-{n}").as_str());
-        let choice = route_checked(
+        let choice = route(
             &FeatureRouter,
             &request(&registry, &project, &cap, &ty, &id, &large),
         )
@@ -189,7 +201,7 @@ fn sampling_is_deterministic_and_matches_weights_empirically() {
     let large = RouteFeatures::new().with_token_budget(10_000);
     let sample = |n: usize| {
         let id = RequestId::from(format!("request-{n}").as_str());
-        route_checked(
+        route(
             &FeatureRouter,
             &request(&registry, &project, &cap, &ty, &id, &large),
         )
@@ -225,7 +237,7 @@ fn sampling_depends_on_request_digest() {
         let mut req = request(&registry, &project, &cap, &ty, &id, &large);
         req.request_digest = [byte; 32];
         seen.insert(
-            route_checked(&FeatureRouter, &req)
+            route(&FeatureRouter, &req)
                 .unwrap()
                 .unwrap()
                 .into_route()
@@ -319,14 +331,13 @@ fn router_failure_is_distinguishable_from_no_candidate() {
     let router: &dyn Router = &FailingRouter;
 
     let with = registry(&project, &["alpha"]);
-    let err =
-        route_checked(router, &request(&with, &project, &cap, &ty, &id, &features)).unwrap_err();
+    let err = route(router, &request(&with, &project, &cap, &ty, &id, &features)).unwrap_err();
     assert!(matches!(err.error(), RouteError::Policy { .. }));
     assert!(err.to_string().contains("inference backend unavailable"));
 
     let without = registry(&project, &[]);
     assert!(matches!(
-        route_checked(
+        route(
             router,
             &request(&without, &project, &cap, &ty, &id, &features)
         ),
@@ -342,7 +353,7 @@ fn routing_failures_keep_request_context() {
     let (id, features) = (RequestId::from("req-ctx-9"), RouteFeatures::new());
     let req = request(&registry, &project, &cap, &ty, &id, &features);
 
-    let err = route_checked(&FailingRouter, &req).unwrap_err();
+    let err = route(&FailingRouter, &req).unwrap_err();
     assert_eq!(err.request_id(), &id);
     assert_eq!(err.request_digest(), [7; 32]);
     assert!(matches!(
@@ -359,7 +370,7 @@ fn routing_failures_keep_request_context() {
     assert!(source.downcast_ref::<RouteError>().is_some());
     assert!(matches!(err.into_error(), RouteError::Policy { .. }));
 
-    let err = CheckedRouter::new(FixedRouter("ghost"))
+    let err = CheckedRouter::new(FixedRouter("ghost"), key())
         .route(&req)
         .unwrap_err();
     assert_eq!(err.request_id(), &id);
@@ -479,7 +490,7 @@ fn checked_route_rejects_unknown_pod() {
     let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
     let req = request(&registry, &project, &cap, &ty, &id, &features);
 
-    let err = route_checked(&FixedRouter("ghost"), &req).unwrap_err();
+    let err = route(&FixedRouter("ghost"), &req).unwrap_err();
     assert!(
         matches!(err.error(), RouteError::IneligibleChoice { pod } if *pod == PodId::from("ghost"))
     );
@@ -496,7 +507,7 @@ fn checked_route_rejects_registered_pod_lacking_capability_or_input_type() {
     let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
     let req = request(&registry, &project, &cap, &ty, &id, &features);
     assert!(matches!(
-        route_checked(&FixedRouter("writer"), &req).map_err(RoutedError::into_error),
+        route(&FixedRouter("writer"), &req).map_err(RoutedError::into_error),
         Err(RouteError::IneligibleChoice { .. })
     ));
 
@@ -504,7 +515,7 @@ fn checked_route_rejects_registered_pod_lacking_capability_or_input_type() {
     let (cap, ty) = (CapabilityId::from("write"), TypeId::from("Text"));
     let req = request(&registry, &project, &cap, &ty, &id, &features);
     assert!(matches!(
-        route_checked(&FixedRouter("writer"), &req).map_err(RoutedError::into_error),
+        route(&FixedRouter("writer"), &req).map_err(RoutedError::into_error),
         Err(RouteError::IneligibleChoice { .. })
     ));
 }
@@ -517,20 +528,20 @@ fn checked_route_passes_valid_candidate_and_wrapper_matches() {
     let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
     let req = request(&registry, &project, &cap, &ty, &id, &features);
 
-    let choice = route_checked(&FixedRouter("alpha"), &req).unwrap().unwrap();
+    let choice = route(&FixedRouter("alpha"), &req).unwrap().unwrap();
     assert_eq!(choice.route().pod_id, PodId::from("alpha"));
 
-    let wrapped = CheckedRouter::new(FixedRouter("ghost"));
+    let wrapped = CheckedRouter::new(FixedRouter("ghost"), key());
     assert!(matches!(
         wrapped.route(&req).map_err(RoutedError::into_error),
         Err(RouteError::IneligibleChoice { .. })
     ));
     let dynamic: &dyn Router = &FixedRouter("alpha");
     assert!(matches!(
-        CheckedRouter::new(FixedRouter("alpha")).route(&req),
+        CheckedRouter::new(FixedRouter("alpha"), key()).route(&req),
         Ok(Some(_))
     ));
-    assert!(matches!(route_checked(dynamic, &req), Ok(Some(_))));
+    assert!(matches!(route(dynamic, &req), Ok(Some(_))));
 }
 
 struct NoneRouter;
@@ -570,14 +581,12 @@ fn ineligible_pod_with_positive_weight_is_rejected_zero_weight_is_ignored() {
     let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
     let req = request(&registry, &project, &cap, &ty, &id, &features);
 
-    let err = route_checked(&WithExtra("writer", 1e-9), &req).unwrap_err();
+    let err = route(&WithExtra("writer", 1e-9), &req).unwrap_err();
     assert!(matches!(err.error(), RouteError::IneligibleChoice { .. }));
-    let err = route_checked(&WithExtra("ghost", 5.0), &req).unwrap_err();
+    let err = route(&WithExtra("ghost", 5.0), &req).unwrap_err();
     assert!(matches!(err.error(), RouteError::IneligibleChoice { .. }));
 
-    let choice = route_checked(&WithExtra("ghost", 0.0), &req)
-        .unwrap()
-        .unwrap();
+    let choice = route(&WithExtra("ghost", 0.0), &req).unwrap().unwrap();
     assert_eq!(choice.route().pod_id, PodId::from("alpha"));
     assert_eq!(choice.propensity().get(), 1.0);
 }
@@ -589,7 +598,7 @@ fn invalid_distribution_surfaces_as_typed_error_with_context() {
     let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
     let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
     let req = request(&registry, &project, &cap, &ty, &id, &features);
-    let err = route_checked(&BrokenRouter, &req).unwrap_err();
+    let err = route(&BrokenRouter, &req).unwrap_err();
     assert!(matches!(
         err.error(),
         RouteError::InvalidDistribution(DistributionError::NonFiniteWeight { .. })
@@ -605,14 +614,14 @@ fn checked_route_rejects_false_no_candidate_result() {
     let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
     let req = request(&registry, &project, &cap, &ty, &id, &features);
 
-    let err = route_checked(&NoneRouter, &req).unwrap_err();
+    let err = route(&NoneRouter, &req).unwrap_err();
     assert!(matches!(
         err.error(),
         RouteError::MissingChoice { candidates: 1 }
     ));
     assert!(err.to_string().contains("1 eligible candidates"));
     assert!(matches!(
-        CheckedRouter::new(NoneRouter)
+        CheckedRouter::new(NoneRouter, key())
             .route(&req)
             .map_err(RoutedError::into_error),
         Err(RouteError::MissingChoice { candidates: 1 })
@@ -627,9 +636,9 @@ fn checked_route_passes_no_candidate_result_when_registry_is_empty() {
     let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
     let req = request(&registry, &project, &cap, &ty, &id, &features);
 
-    assert!(matches!(route_checked(&NoneRouter, &req), Ok(None)));
+    assert!(matches!(route(&NoneRouter, &req), Ok(None)));
     assert!(matches!(
-        CheckedRouter::new(NoneRouter).route(&req),
+        CheckedRouter::new(NoneRouter, key()).route(&req),
         Ok(None)
     ));
 }
@@ -643,14 +652,14 @@ fn checked_pod_router_behaves_exactly_like_unchecked() {
     let req = request(&registry, &project, &cap, &ty, &id, &features);
 
     let selected = PodRouter.select(&registry, &project, &cap, &ty).unwrap();
-    let checked = route_checked(&PodRouter, &req).unwrap().unwrap();
+    let checked = route(&PodRouter, &req).unwrap().unwrap();
     assert_eq!(checked.route(), &selected);
     assert_eq!(checked.route().pod_id, PodId::from("zeta"));
     assert_eq!(checked.propensity().get(), 1.0);
 
     let empty = self::registry(&project, &[]);
     let req = request(&empty, &project, &cap, &ty, &id, &features);
-    assert!(matches!(route_checked(&PodRouter, &req), Ok(None)));
+    assert!(matches!(route(&PodRouter, &req), Ok(None)));
 }
 
 #[test]
@@ -661,10 +670,255 @@ fn checked_route_propagates_policy_errors_unchanged() {
     let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
     let req = request(&registry, &project, &cap, &ty, &id, &features);
     assert!(matches!(
-        route_checked(&FailingRouter, &req).map_err(RoutedError::into_error),
+        route(&FailingRouter, &req).map_err(RoutedError::into_error),
         Err(RouteError::Policy {
             kind: PolicyFailure::Unavailable,
             ..
         })
     ));
+}
+
+const RESOLUTION: u64 = RouteDistribution::RESOLUTION;
+
+#[test]
+fn quantized_masses_sum_to_exactly_the_resolution() {
+    assert_eq!(RESOLUTION, 1 << 53);
+    let cases: Vec<Vec<f64>> = vec![
+        vec![1.0],
+        vec![1.0, 3.0],
+        vec![1.0, 1.0, 1.0],
+        vec![0.1, 0.2, 0.7],
+        vec![1.0; 7],
+        vec![1e-9, 1.0, 3.3e5, 0.123456789],
+        vec![1e-12, 1.0],
+        (1..=50).map(f64::from).collect(),
+    ];
+    for weights in cases {
+        let pods: Vec<PodId> = (0..weights.len())
+            .map(|n| PodId::from(format!("pod-{n:02}").as_str()))
+            .collect();
+        let d = RouteDistribution::new(pods.iter().cloned().zip(weights.clone()).collect())
+            .unwrap_or_else(|e| panic!("{weights:?}: {e}"));
+        let sum: u64 = pods.iter().map(|pod| d.width(pod)).sum();
+        assert_eq!(sum, RESOLUTION, "{weights:?}");
+        assert!(pods.iter().all(|pod| d.width(pod) >= 1));
+        for pod in &pods {
+            assert_eq!(d.probability(pod), d.width(pod) as f64 / RESOLUTION as f64);
+        }
+    }
+    let certain = RouteDistribution::certain(PodId::from("a"));
+    assert_eq!(certain.width(&PodId::from("a")), RESOLUTION);
+    assert_eq!(certain.probability(&PodId::from("a")), 1.0);
+}
+
+#[test]
+fn quantization_is_exact_for_dyadic_weights_and_ties_go_to_the_lesser_pod() {
+    let d = RouteDistribution::new(vec![(PodId::from("b"), 3.0), (PodId::from("a"), 1.0)]).unwrap();
+    assert_eq!(d.width(&PodId::from("a")), RESOLUTION / 4);
+    assert_eq!(d.width(&PodId::from("b")), RESOLUTION / 4 * 3);
+    // 2^53 = 2 (mod 3): three equal shares leave two units over, which go to the first two pods
+    // in PodId order.
+    let third = RouteDistribution::new(vec![
+        (PodId::from("c"), 1.0),
+        (PodId::from("a"), 1.0),
+        (PodId::from("b"), 1.0),
+    ])
+    .unwrap();
+    let (a, b, c) = (
+        third.width(&PodId::from("a")),
+        third.width(&PodId::from("b")),
+        third.width(&PodId::from("c")),
+    );
+    assert_eq!(a + b + c, RESOLUTION);
+    assert_eq!((a, b), (c + 1, c + 1));
+}
+
+#[test]
+fn probability_below_the_resolution_is_rejected() {
+    let err = RouteDistribution::new(vec![(PodId::from("a"), 1.0), (PodId::from("tiny"), 1e-300)])
+        .unwrap_err();
+    assert_eq!(
+        err,
+        DistributionError::ProbabilityBelowResolution {
+            pod: PodId::from("tiny")
+        }
+    );
+    assert!(err.to_string().contains("tiny"));
+    let error: RouteError = err.into();
+    assert!(matches!(error, RouteError::InvalidDistribution(_)));
+    // Just below 2^-53 is rejected, one interval (2^-53) and above is accepted.
+    let below = 2f64.powi(-54);
+    assert!(matches!(
+        RouteDistribution::new(vec![(PodId::from("a"), 1.0), (PodId::from("b"), below)]),
+        Err(DistributionError::ProbabilityBelowResolution { .. })
+    ));
+    let edge = RouteDistribution::new(vec![
+        (PodId::from("a"), 1.0),
+        (PodId::from("b"), 2f64.powi(-52)),
+    ])
+    .unwrap();
+    assert!(edge.width(&PodId::from("b")) >= 1);
+    assert_eq!(
+        edge.width(&PodId::from("a")) + edge.width(&PodId::from("b")),
+        RESOLUTION
+    );
+}
+
+#[test]
+fn router_with_a_sub_resolution_pod_fails_routing_with_context() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["alpha", "tiny"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+    let err = route(&WithExtra("tiny", 1e-300), &req).unwrap_err();
+    assert!(matches!(
+        err.error(),
+        RouteError::InvalidDistribution(DistributionError::ProbabilityBelowResolution { .. })
+    ));
+    assert_eq!(err.request_id(), &id);
+}
+
+#[test]
+fn logged_propensity_is_the_interval_width_over_the_resolution() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["zeta", "alpha"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let large = RouteFeatures::new().with_token_budget(10_000);
+    let (alpha, zeta) = (PodId::from("alpha"), PodId::from("zeta"));
+    let distribution =
+        RouteDistribution::new(vec![(alpha.clone(), 1.0), (zeta.clone(), 3.0)]).unwrap();
+    let alpha_width = distribution.width(&alpha);
+    for n in 0..300 {
+        let id = RequestId::from(format!("req-{n}").as_str());
+        let choice = route(
+            &FeatureRouter,
+            &request(&registry, &project, &cap, &ty, &id, &large),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(choice.draw() < RESOLUTION);
+        // alpha owns [0, alpha_width), zeta the rest.
+        let (expected_pod, expected_width) = if choice.draw() < alpha_width {
+            (&alpha, alpha_width)
+        } else {
+            (&zeta, distribution.width(&zeta))
+        };
+        assert_eq!(&choice.route().pod_id, expected_pod);
+        assert_eq!(
+            choice.propensity().get(),
+            expected_width as f64 / RESOLUTION as f64
+        );
+        assert!(choice.propensity().get() == 0.25 || choice.propensity().get() == 0.75);
+    }
+}
+
+#[test]
+fn draw_replays_with_the_same_key_and_differs_with_another() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["zeta", "alpha"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let large = RouteFeatures::new().with_token_budget(10_000);
+    let other = SamplingKey::from_bytes([0xa5; 32]);
+    for n in 0..20 {
+        let id = RequestId::from(format!("req-{n}").as_str());
+        let req = request(&registry, &project, &cap, &ty, &id, &large);
+        let first = route(&FeatureRouter, &req).unwrap().unwrap();
+        let again = route(&FeatureRouter, &req).unwrap().unwrap();
+        assert_eq!(first, again);
+        assert_eq!(first.draw(), again.draw());
+        let different = route_checked(&FeatureRouter, &req, &other)
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.draw(), different.draw());
+    }
+}
+
+#[test]
+fn sampling_key_debug_does_not_print_the_secret() {
+    let text = format!("{:?}", SamplingKey::from_bytes([0x5a; 32]));
+    assert_eq!(text, "SamplingKey(..)");
+    let checked = format!("{:?}", CheckedRouter::new(PodRouter, key()));
+    assert!(checked.contains("SamplingKey(..)"), "{checked}");
+}
+
+/// The attack on a public draw: reproduces the previous public hash of (request id, digest)
+/// and returns the larger weight on a pod chosen by the draw it computed.
+struct GamingRouter;
+
+/// The pre-fix public sampling point (FNV-1a + splitmix64).
+fn old_public_point(request_id: &RequestId, digest: &[u8; 32]) -> f64 {
+    let id = request_id.0.as_bytes();
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut absorb = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    absorb(&(id.len() as u64).to_le_bytes());
+    absorb(id);
+    absorb(digest);
+    hash ^= hash >> 30;
+    hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash ^= hash >> 27;
+    hash = hash.wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^= hash >> 31;
+    (hash >> 11) as f64 / (1u64 << 53) as f64
+}
+
+impl Router for GamingRouter {
+    fn policy(&self, request: &RouteRequest<'_>) -> Result<RouteDistribution, RouteError> {
+        let low = old_public_point(request.request_id, &request.request_digest) < 0.5;
+        let (alpha, zeta) = if low { (0.75, 0.25) } else { (0.25, 0.75) };
+        Ok(RouteDistribution::new(vec![
+            (PodId::from("alpha"), alpha),
+            (PodId::from("zeta"), zeta),
+        ])?)
+    }
+}
+
+#[test]
+fn router_that_recomputes_the_old_public_hash_cannot_bias_selection() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["zeta", "alpha"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let features = RouteFeatures::new();
+    let alpha = PodId::from("alpha");
+    let (mut alpha_count, mut predicted_low, mut alpha_given_low) = (0usize, 0usize, 0usize);
+    let mut propensity_sum = 0.0;
+    let total = 2000usize;
+    for n in 0..total {
+        let id = RequestId::from(format!("gaming-{n}").as_str());
+        let req = request(&registry, &project, &cap, &ty, &id, &features);
+        let low = old_public_point(&id, &req.request_digest) < 0.5;
+        let choice = route(&GamingRouter, &req).unwrap().unwrap();
+        let is_alpha = choice.route().pod_id == alpha;
+        alpha_count += usize::from(is_alpha);
+        if low {
+            predicted_low += 1;
+            alpha_given_low += usize::from(is_alpha);
+        }
+        propensity_sum += choice.propensity().get();
+    }
+    // With the draw public the router would always win with alpha (frequency 1.0).
+    let alpha_frequency = alpha_count as f64 / total as f64;
+    assert!(
+        (alpha_frequency - 0.5).abs() < 0.05,
+        "alpha frequency {alpha_frequency}"
+    );
+    // The router's prediction carries no information about the draw: conditional on it saying
+    // "alpha 0.75" alpha is chosen with exactly that logged probability.
+    let conditional = alpha_given_low as f64 / predicted_low as f64;
+    assert!(
+        (conditional - 0.75).abs() < 0.07,
+        "conditional {conditional}"
+    );
+    // Each request logs 0.75 with probability 0.75 and 0.25 with probability 0.25, so the
+    // mean logged propensity is 0.75^2 + 0.25^2 = 0.625 (a public draw would give 0.75).
+    let mean_propensity = propensity_sum / total as f64;
+    assert!(
+        (mean_propensity - 0.625).abs() < 0.03,
+        "mean propensity {mean_propensity}"
+    );
 }

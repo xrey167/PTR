@@ -5,7 +5,7 @@
 //! A [`Router`] does not choose a pod and does not report a propensity. It returns a
 //! [`RouteDistribution`], the probability distribution over candidate pods that it would sample
 //! from for this request. The trusted boundary, [`route_checked`], samples the pod itself and
-//! records the normalized probability of the sampled pod as the [`Propensity`] of the
+//! records the quantized probability of the sampled pod as the [`Propensity`] of the
 //! [`RoutedChoice`]. A router therefore cannot log a propensity that differs from the
 //! distribution actually sampled, which keeps inverse-propensity evaluation unbiased.
 //!
@@ -15,13 +15,24 @@
 //!
 //! # Sampling
 //!
-//! The sample is deterministic and replayable. A uniform `u` in `[0, 1)` is derived from
-//! `request_id` and `request_digest` (64-bit FNV-1a over the little-endian id length, the id
-//! bytes and the 32 digest bytes, followed by the splitmix64 finalizer; the top 53 bits give
-//! `u`). The pod is the first, in ascending `PodId` order, whose cumulative normalized weight
-//! exceeds `u`. Replaying the same request therefore reproduces the same choice, while distinct
-//! requests sample independently enough to realize the weights over many requests. The
-//! derivation uses no external hash crate and is part of this crate's contract.
+//! The draw is hidden from policies. A router sees the request id and digest, so a public hash
+//! of them would let it return weights correlated with the draw (for example `(a: .75, b: .25)`
+//! when the draw is below one half and the reverse otherwise), always win with the larger
+//! logged weight and still have a marginal probability of one half per pod. The trusted side
+//! therefore holds a secret [`SamplingKey`] that never reaches the policy: the draw is the top 53
+//! bits of the first eight bytes (big-endian) of
+//! `HMAC-SHA256(key, len(request_id) || request_id || request_digest)`, with the length as
+//! eight big-endian bytes. The same key and request reproduce the same draw (replay needs the
+//! key, which the runtime keeps in trusted configuration), while different keys give unrelated
+//! draws. The draw is recorded in the [`RoutedChoice`] for audit.
+//!
+//! The draw is an integer `d` in `[0, 2^53)` and the distribution is quantized to the same
+//! resolution: [`RouteDistribution::new`] turns the normalized probabilities into integer
+//! interval widths that sum to exactly `2^53` (largest-remainder method, ties broken by `PodId`
+//! order) and rejects a pod whose positive probability is below one interval
+//! ([`DistributionError::ProbabilityBelowResolution`]). The sampled pod is the one whose
+//! interval, laid out in ascending `PodId` order, contains `d`, and the recorded [`Propensity`]
+//! is exactly `width / 2^53`, the probability the sampler actually had of choosing that pod.
 //!
 //! # Result semantics
 //!
@@ -40,22 +51,34 @@
 //! has no revision or generation field and `PodRegistry` exposes none, so neither can appear in
 //! [`RoutedError`] yet.
 
-use crate::{PodRoute, PodRouter, Propensity, PropensityError};
+use crate::{PodRoute, PodRouter, Propensity, PropensityError, SamplingKey};
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, Digest, PodId, Probability, ProjectId, RequestId, TypeId};
 use std::fmt;
 
-/// A pod sampled by the trusted routing path together with the probability of sampling it.
-/// Only [`route_checked`] constructs it. `route().score` is the propensity rounded to `f32`.
+/// A pod sampled by the trusted routing path together with the probability of sampling it and
+/// the draw that selected it. Only [`route_checked`] constructs it. `route().score` is the
+/// propensity rounded to `f32`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoutedChoice {
     route: PodRoute,
     propensity: Propensity,
+    draw: u64,
 }
 
 impl RoutedChoice {
-    pub(crate) fn new(route: PodRoute, propensity: Propensity) -> Self {
-        Self { route, propensity }
+    pub(crate) fn new(route: PodRoute, propensity: Propensity, draw: u64) -> Self {
+        Self {
+            route,
+            propensity,
+            draw,
+        }
+    }
+
+    /// The keyed draw in `[0, 2^53)` that selected the pod, for audit and replay (replaying
+    /// needs the [`SamplingKey`]).
+    pub fn draw(&self) -> u64 {
+        self.draw
     }
 
     pub fn route(&self) -> &PodRoute {
@@ -173,8 +196,7 @@ pub enum RouteError {
         kind: PolicyFailure,
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
-    /// The policy produced a propensity that [`Propensity`] rejects (a sampled pod whose
-    /// normalized probability is too small for a finite inverse-propensity weight).
+    /// The sampled pod's probability is a value that [`Propensity`] rejects.
     InvalidPropensity(PropensityError),
     /// The policy returned a distribution that [`RouteDistribution::new`] rejects.
     InvalidDistribution(DistributionError),
@@ -317,6 +339,9 @@ pub enum DistributionError {
     ZeroTotalWeight,
     /// The weights sum to infinity.
     OverflowingTotalWeight,
+    /// The pod's normalized probability is positive but below one sampling interval
+    /// (`2^-53`), so the sampler could never choose it with that probability.
+    ProbabilityBelowResolution { pod: PodId },
 }
 
 impl fmt::Display for DistributionError {
@@ -327,6 +352,10 @@ impl fmt::Display for DistributionError {
             Self::DuplicatePod { pod } => write!(f, "pod {pod:?} is listed more than once"),
             Self::ZeroTotalWeight => f.write_str("distribution weights sum to zero"),
             Self::OverflowingTotalWeight => f.write_str("distribution weights sum to infinity"),
+            Self::ProbabilityBelowResolution { pod } => write!(
+                f,
+                "probability of pod {pod:?} is below the sampling resolution of 2^-53"
+            ),
         }
     }
 }
@@ -336,15 +365,23 @@ impl std::error::Error for DistributionError {}
 /// A validated probability distribution over pods: the output of a [`Router`].
 ///
 /// Weights are finite and non-negative, pods are unique, and the total is positive; they are
-/// normalized to sum to one on construction. Entries with weight zero are dropped. The empty
-/// distribution ([`RouteDistribution::none`]) means "no choice". Entries are kept sorted by
-/// `PodId`, the order [`route_checked`] samples in.
+/// normalized and then quantized to integer interval widths that sum to exactly
+/// [`RouteDistribution::RESOLUTION`] (`2^53`, the support of the sampling draw). Entries with
+/// weight zero are dropped; a positive probability below `2^-53` is rejected with
+/// [`DistributionError::ProbabilityBelowResolution`]. The empty distribution
+/// ([`RouteDistribution::none`]) means "no choice". Entries are kept sorted by `PodId`, the
+/// order [`route_checked`] lays the intervals out in. [`RouteDistribution::probability`]
+/// returns the quantized mass, the probability the sampler actually has of choosing the pod.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RouteDistribution {
-    entries: Vec<(PodId, f64)>,
+    /// `(pod, interval width)`; widths are positive and sum to `RESOLUTION`, or the list is empty.
+    entries: Vec<(PodId, u64)>,
 }
 
 impl RouteDistribution {
+    /// Number of equally likely draw values, `2^53`; the interval widths sum to this.
+    pub const RESOLUTION: u64 = 1 << 53;
+
     /// The empty distribution: the policy makes no choice.
     pub fn none() -> Self {
         Self::default()
@@ -353,11 +390,11 @@ impl RouteDistribution {
     /// A point mass on `pod`, the distribution of a deterministic router.
     pub fn certain(pod: PodId) -> Self {
         Self {
-            entries: vec![(pod, 1.0)],
+            entries: vec![(pod, Self::RESOLUTION)],
         }
     }
 
-    /// Validates and normalizes `(pod, weight)` pairs. An empty list yields the empty
+    /// Validates, normalizes and quantizes `(pod, weight)` pairs. An empty list yields the empty
     /// distribution.
     pub fn new(weights: Vec<(PodId, f64)>) -> Result<Self, DistributionError> {
         let mut entries = weights;
@@ -386,10 +423,9 @@ impl RouteDistribution {
             return Err(DistributionError::ZeroTotalWeight);
         }
         entries.retain(|(_, weight)| *weight > 0.0);
-        for (_, weight) in &mut entries {
-            *weight /= total;
-        }
-        Ok(Self { entries })
+        Ok(Self {
+            entries: quantize(entries, total)?,
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -400,55 +436,93 @@ impl RouteDistribution {
         self.entries.len()
     }
 
-    /// The normalized probability of `pod`; zero when it is not listed.
-    pub fn probability(&self, pod: &PodId) -> f64 {
+    /// The interval width of `pod` out of [`RouteDistribution::RESOLUTION`]; zero when it is not
+    /// listed.
+    pub fn width(&self, pod: &PodId) -> u64 {
         self.entries
             .iter()
             .find(|(candidate, _)| candidate == pod)
-            .map_or(0.0, |(_, probability)| *probability)
+            .map_or(0, |(_, width)| *width)
     }
 
-    /// Positive-probability pods in ascending `PodId` order with normalized probabilities.
+    /// The quantized probability of `pod` (`width / 2^53`, exact); zero when it is not listed.
+    pub fn probability(&self, pod: &PodId) -> f64 {
+        mass(self.width(pod))
+    }
+
+    /// Positive-probability pods in ascending `PodId` order with their quantized probabilities.
     pub fn iter(&self) -> impl Iterator<Item = (&PodId, f64)> {
-        self.entries
-            .iter()
-            .map(|(pod, probability)| (pod, *probability))
+        self.entries.iter().map(|(pod, width)| (pod, mass(*width)))
     }
 
-    fn sample(&self, u: f64) -> Option<&(PodId, f64)> {
-        let mut cumulative = 0.0;
-        for entry in &self.entries {
-            cumulative += entry.1;
-            if u < cumulative {
-                return Some(entry);
+    /// The entry whose interval contains `draw`, with its width.
+    fn sample(&self, draw: u64) -> Option<(&PodId, u64)> {
+        let mut upper = 0u64;
+        for (pod, width) in &self.entries {
+            upper += width;
+            if draw < upper {
+                return Some((pod, *width));
             }
         }
-        // Rounding can leave the cumulative sum a hair below one.
-        self.entries.last()
+        None
     }
 }
 
-/// Uniform value in `[0, 1)` derived from the request identity; see the module documentation.
-fn sampling_point(request_id: &RequestId, request_digest: &Digest) -> f64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let id = request_id.0.as_bytes();
-    let mut hash = FNV_OFFSET;
-    let mut absorb = |bytes: &[u8]| {
-        for byte in bytes {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
+/// `width / 2^53`; exact because both are representable in `f64`.
+fn mass(width: u64) -> f64 {
+    width as f64 / RouteDistribution::RESOLUTION as f64
+}
+
+/// Integer interval widths summing to exactly `RESOLUTION` (largest remainder, ties by position,
+/// that is `PodId` order). `entries` are sorted, unique and have positive weights.
+fn quantize(
+    entries: Vec<(PodId, f64)>,
+    total: f64,
+) -> Result<Vec<(PodId, u64)>, DistributionError> {
+    let resolution = RouteDistribution::RESOLUTION as f64;
+    let mut widths = Vec::with_capacity(entries.len());
+    let mut remainders = Vec::with_capacity(entries.len());
+    for (pod, weight) in &entries {
+        // Scaling by a power of two is exact, so the floor and remainder are exact.
+        let scaled = (weight / total) * resolution;
+        let floor = scaled.floor();
+        if floor < 1.0 {
+            return Err(DistributionError::ProbabilityBelowResolution { pod: pod.clone() });
         }
-    };
-    absorb(&(id.len() as u64).to_le_bytes());
-    absorb(id);
-    absorb(request_digest);
-    hash ^= hash >> 30;
-    hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    hash ^= hash >> 27;
-    hash = hash.wrapping_mul(0x94d0_49bb_1331_11eb);
-    hash ^= hash >> 31;
-    (hash >> 11) as f64 / (1u64 << 53) as f64
+        widths.push(floor as u64);
+        remainders.push(scaled - floor);
+    }
+    let mut order: Vec<usize> = (0..widths.len()).collect();
+    order.sort_by(|a, b| remainders[*b].total_cmp(&remainders[*a]).then(a.cmp(b)));
+    let sum: u128 = widths.iter().map(|width| u128::from(*width)).sum();
+    let target = u128::from(RouteDistribution::RESOLUTION);
+    if sum < target {
+        let mut deficit = target - sum;
+        for index in order.iter().cycle() {
+            if deficit == 0 {
+                break;
+            }
+            widths[*index] += 1;
+            deficit -= 1;
+        }
+    } else {
+        // Floating-point normalization can overshoot by a few units; take them back from the
+        // smallest remainders without emptying an interval.
+        let mut excess = sum - target;
+        while excess > 0 {
+            for index in order.iter().rev() {
+                if excess > 0 && widths[*index] > 1 {
+                    widths[*index] -= 1;
+                    excess -= 1;
+                }
+            }
+        }
+    }
+    Ok(entries
+        .into_iter()
+        .zip(widths)
+        .map(|((pod, _), width)| (pod, width))
+        .collect())
 }
 
 /// Pod selection policy: returns the distribution over pods it would sample from. Object safe.
@@ -465,8 +539,10 @@ pub trait Router {
     fn policy(&self, request: &RouteRequest<'_>) -> Result<RouteDistribution, RouteError>;
 }
 
-/// Routes through `router`: validates its distribution against the registry, samples a pod and
-/// records the sampled pod's probability as the propensity.
+/// Routes through `router`: validates its distribution against the registry, samples a pod with
+/// a draw keyed by `key` and records the sampled pod's quantized probability as the propensity.
+///
+/// `key` is held by the trusted caller and never handed to the policy; see [`SamplingKey`].
 ///
 /// This is the trusted path: the candidate set is recomputed from
 /// `request.registry.candidates(project, capability, input_type)` here, not taken from the
@@ -477,13 +553,15 @@ pub trait Router {
 pub fn route_checked<R: Router + ?Sized>(
     router: &R,
     request: &RouteRequest<'_>,
+    key: &SamplingKey,
 ) -> Result<Option<RoutedChoice>, RoutedError> {
-    route_inner(router, request).map_err(|error| RoutedError::new(request, error))
+    route_inner(router, request, key).map_err(|error| RoutedError::new(request, error))
 }
 
 fn route_inner<R: Router + ?Sized>(
     router: &R,
     request: &RouteRequest<'_>,
+    key: &SamplingKey,
 ) -> Result<Option<RoutedChoice>, RouteError> {
     let distribution = router.policy(request)?;
     let candidates =
@@ -505,11 +583,11 @@ fn route_inner<R: Router + ?Sized>(
             })
         };
     }
-    let u = sampling_point(request.request_id, &request.request_digest);
-    let Some((pod, probability)) = distribution.sample(u) else {
+    let draw = key.draw(request.request_id, &request.request_digest);
+    let Some((pod, width)) = distribution.sample(draw) else {
         return Ok(None);
     };
-    let propensity = Propensity::new(*probability)?;
+    let propensity = Propensity::new(mass(width))?;
     let score =
         Probability::new(propensity.get() as f32).expect("a propensity in (0, 1] is a probability");
     Ok(Some(RoutedChoice::new(
@@ -518,26 +596,29 @@ fn route_inner<R: Router + ?Sized>(
             score,
         },
         propensity,
+        draw,
     )))
 }
 
 /// Wraps a [`Router`] so it can only be used through [`route_checked`].
 ///
 /// It deliberately does not implement [`Router`]: a router yields distributions, a
-/// `CheckedRouter` yields trusted, sampled choices.
-#[derive(Clone, Copy, Debug, Default)]
+/// `CheckedRouter` yields trusted, sampled choices. It owns the [`SamplingKey`], which the
+/// wrapped router cannot reach.
+#[derive(Debug)]
 pub struct CheckedRouter<R> {
     inner: R,
+    key: SamplingKey,
 }
 
 impl<R: Router> CheckedRouter<R> {
-    pub fn new(inner: R) -> Self {
-        Self { inner }
+    pub fn new(inner: R, key: SamplingKey) -> Self {
+        Self { inner, key }
     }
 
-    /// [`route_checked`] on the wrapped router.
+    /// [`route_checked`] on the wrapped router with the owned key.
     pub fn route(&self, request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RoutedError> {
-        route_checked(&self.inner, request)
+        route_checked(&self.inner, request, &self.key)
     }
 }
 
