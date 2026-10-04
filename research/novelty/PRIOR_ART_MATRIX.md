@@ -31,7 +31,7 @@ Rows for the mechanisms of [36 — KV reuse](../../docs/architecture/36-kv-reuse
 
 | System / paper | Mechanism | What PTR takes | PTR difference (claim) | Experiment |
 |---|---|---|---|---|
-| Kwon et al., PagedAttention / vLLM (arXiv:2309.06180) | Paged KV blocks with copy-on-write sharing | 16-token pages | Pages are bound to principal, manifest and generation; revocation is refused at admission | R005 |
+| Kwon et al., PagedAttention / vLLM (arXiv:2309.06180) | Paged KV blocks with copy-on-write sharing | 16-token pages | Pages are bound to principal and to per-layer effective dependencies (base model, chain key, adapter only where it enters the chain, semantic inputs), not the whole execution manifest; revocation is refused at admission | R005 |
 | Zheng et al., SGLang RadixAttention (arXiv:2312.07104); vLLM automatic prefix caching (documentation: parent-chained block hash, `cache_salt`) | Token-keyed radix prefix cache; chained block hashes with an optional salt | Token-keyed radix prefix catalog | The salt comes from the currently admitted binding, and revocation invalidates the affected subtree | R005, E006 |
 | Greenewald et al., Activated LoRA (arXiv:2504.12397) | Adapter weights apply only from the invocation tokens on, so all states before them equal the base model (Prop. 1) | Base-aligned prefix sharing | Per-layer chain key and adapter generations | R009 |
 | PIE (arXiv:2407.03157); Leyline (arXiv:2606.01065) | Positional re-rotation of cached keys; FORGET with re-prefill | Re-rotation and re-prefill | Pre-RoPE storage; an Approximate tag above one layer; span eviction without hidden carry-over | R006, R007 |

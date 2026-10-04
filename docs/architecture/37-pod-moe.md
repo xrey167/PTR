@@ -57,7 +57,8 @@ the template reads it from `LoggedTriage.reward`
 (`crates/ptr-branch/src/arbiter.rs:924`). Each L2 record therefore carries an
 outcome field bound to `(request_id, chosen action)`: the verifier's
 `VerificationStatus` and the derived reward, using the four-status mapping of §5
-(`Pass` yields the report's `score`; `Fail`, `Disputed` and `Unknown` yield 0).
+(`Pass` yields the report's `score`; `Fail`, `Disputed` and `Unknown` yield 0, and
+a report below the task's minimum `VerificationLevel` also yields 0).
 It is written **after** verification, as an update of the record the routing decision
 created, never by the router at decision time. Outcomes must not be censored by the action
 taken, so a failure is an outcome and is **not** excluded: a timeout, crash,
@@ -85,8 +86,10 @@ model can read them as context. They are derived and non-authoritative
 1. The L3 policy emits an `ExpertProposal`.
 2. The proposal runs as a speculative overlay in `ptr-branch`.
 3. Sandbox training produces a candidate.
-4. The candidate must pass the `ForgettingGate`, `measure_interference` against
-   `chance_overlap`, the verifier and the public suites.
+4. The candidate must pass the `ForgettingGate`, `measure_interference` against the
+   calibrated null threshold (a preregistered margin, or a high quantile of overlaps
+   between independently trained random adapters of the same shape; not the mean
+   `chance_overlap`), the verifier and the public suites.
 5. Only then is it committed as a ledger event (`ExpertPromoted` / `ExpertRetired`).
 
 **Gate evidence must be bound to the evaluated artifact.** This is a design
@@ -95,9 +98,11 @@ plus caller-supplied matrices and scores (`crates/ptr-lineage/src/forgetting.rs:
 and `GateReport` binds the verdict to that id and to nothing else: the gate cannot
 tell which adapter the accuracy matrix and public-suite scores were measured on, so
 matching the measurements to the adapter is the caller's obligation
-(`forgetting.rs:172-176`). A promotion that rests on such a report would only be as
+(`forgetting.rs:172-176`); in particular "the report names no lineage or base model" (`forgetting.rs:175`), so a pass on one base does not transfer to another. A promotion that rests on such a report would only be as
 trustworthy as its caller. Therefore the `ExpertPromoted` event must bind **trusted
-evidence**: the artifact digest and generation of the evaluated expert, the digest of
+evidence**: the artifact digest and generation of the evaluated expert, the **exact evaluated
+base model identity, generation and digest** (or the complete evaluated
+execution-manifest digest, which folds them in), the digest of
 the evaluation-data manifest, the digest of the gate configuration (thresholds), and
 the evaluator identity. The evaluation must run in a **trusted evaluator**, not in
 the proposer's sandbox, which produced the candidate and could hand the gate
@@ -163,7 +168,12 @@ below exists yet.
   **all four** `VerificationStatus` values (`lib.rs:4-10`): `Pass` yields the
   report's `score`; `Fail`, `Disputed` and `Unknown` yield 0. A non-Pass report never
   receives a passing reward and its independent `score` is never used, so a high
-  score on a disputed or unknown report is worth nothing. A hard finding
+  score on a disputed or unknown report is worth nothing. The reward is also **gated on
+`VerificationReport.level`**: the minimum acceptable `VerificationLevel`
+(`Unverified`, `LatentAgreement`, `SampleVerified`, `FullSemantic`, `Deterministic`,
+`crates/ptr-types/src/lib.rs:425-431`; the report field is at
+`crates/ptr-verifier/src/lib.rs:21`) is preregistered per task, and a report below it
+yields reward 0 regardless of status or score. A hard finding
   (`Finding::hard`) forces `Fail` whatever the reported status or score. Arms: GRPO (clip-higher), GRPO with
   routing replay, GSPO, SAPO, REINFORCE++. Factors: mini-steps 1 versus 4 (at 1
   mini-step GRPO, GSPO and SAPO coincide, which is the null control among those
@@ -198,8 +208,9 @@ proposal. The test is **joint**, because a conservative policy can pass the gate
 more often while gaining nothing. Falsified if the full-context policy does not beat
 both the context-ablated policy and the heuristic baseline on gate pass rate by a
 pre-registered margin, **or** if its mean net quality change per accepted proposal is
-not greater than 0 and not at least that of both baselines (by a pinned margin), in
-at least 3 seeds. R011 is a different question (can the
+less than or equal to 0, **or** is not at least that of both baselines (by a pinned
+margin), in at least 3 seeds. Failure of **any one** of these conditions falsifies
+the claim. R011 is a different question (can the
 policy reach gates at all) and does not test this claim.
 
 ## 6. Rust binding
@@ -294,7 +305,7 @@ flowchart TB
   OBS -->|context only| POL
   POL -->|ExpertProposal| BR["ptr-branch speculative overlay"]
   BR --> TR["Sandbox training: candidate"]
-  TR --> GATES["ForgettingGate, interference vs chance, verifier, public suites"]
+  TR --> GATES["ForgettingGate, interference vs calibrated null threshold, verifier, public suites"]
   GATES -->|pass| LEDGER["Ledger event: ExpertPromoted / ExpertRetired (not yet implemented)"]
   GATES -.->|fail: held| BR
   LEDGER --> L1
