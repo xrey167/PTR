@@ -1483,6 +1483,151 @@ async fn a_revocation_deletes_exactly_the_revoked_writes_and_the_checkpoints_tha
     substrate.drop_all().await.unwrap();
 }
 
+/// A revocation racing a checkpoint writer must not deadlock with it, whatever
+/// order the revoked writes sit in on disk.
+///
+/// `put_checkpoint` holds its prefix `FOR SHARE` in ascending `seq`. Once a
+/// write's row has moved behind a later one (any update or reused space does
+/// that), a bare `DELETE` met the later row first: it held it, waited on the
+/// earlier one the writer held, and the writer — reaching the later row next —
+/// waited on it. PostgreSQL broke the cycle with 40P01, which is what L003's
+/// racing-checkpoint case reported in CI. The revocation now locks in `seq`
+/// order before it deletes, so it holds nothing past the row it waits for.
+///
+/// The interleaving is driven by hand: one session takes write 1 the way the
+/// writer does, the revocation starts and waits for it, and the session then
+/// takes write 2. Without the ordered lock that second step closes the cycle.
+#[tokio::test]
+async fn a_revocation_waits_for_a_checkpoint_writer_in_its_order_rather_than_deadlocking() {
+    let mut substrate = substrate().await;
+    let log = vec![capsule(1, "gone", 1), revoke(2, "gone", 1)];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    let config = memory_config();
+    substrate
+        .create_memory(&FastMemoryRecord {
+            id: "m1".into(),
+            principal: PrincipalId::from("agent-7"),
+            thread: "t1".into(),
+            config,
+            projection_digest: [3; 32],
+            codebook_seed: 11,
+        })
+        .await
+        .unwrap();
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
+    for request in [
+        write_request("gone", [1.0, 0.0, 0.0, 0.0], [0.5, 0.1, 0.0, 0.0]),
+        write_request("gone", [0.0, 2.0, 0.0, 0.0], [0.0, 0.3, 0.2, 0.0]),
+    ] {
+        let receipt = memory.write(request.clone()).unwrap();
+        substrate
+            .append_write("m1", receipt.seq, &request)
+            .await
+            .unwrap();
+    }
+
+    // Move write 1 behind write 2, on disk and in every index, as reused space
+    // would: a row version written later goes after the existing ones. The
+    // detour through another `seq` makes both updates non-HOT, so each index
+    // gets an entry for the new position rather than keeping the old one.
+    // Triggers are off for the transaction (the journal refuses rewrites), and
+    // the row ends exactly as it was.
+    let work = substrate.schemas().work.clone();
+    let raw = raw_client().await;
+    raw.batch_execute(&format!(
+        "BEGIN; SET LOCAL session_replication_role = replica; \
+         UPDATE {work}.fastmem_write SET seq = 1000 WHERE memory = 'm1' AND seq = 1; \
+         UPDATE {work}.fastmem_write SET seq = 1 WHERE memory = 'm1' AND seq = 1000; COMMIT;"
+    ))
+    .await
+    .unwrap();
+    let physical: Vec<i64> = raw
+        .query(
+            &format!("SELECT seq FROM {work}.fastmem_write WHERE memory = 'm1' ORDER BY ctid"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(
+        physical,
+        vec![2, 1],
+        "the scenario needs write 1 stored after write 2"
+    );
+
+    // The writer's side: write 1 held FOR SHARE, as put_checkpoint takes it.
+    let writer = raw_client().await;
+    writer.batch_execute("BEGIN").await.unwrap();
+    writer
+        .query(
+            &format!(
+                "SELECT seq FROM {work}.fastmem_write WHERE memory = 'm1' AND seq = 1 FOR SHARE"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+    let writer_pid: i32 = writer
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+
+    // The revocation starts and must wait for write 1.
+    let record = log[1].clone();
+    let anchor = chain[1];
+    let revocation = tokio::spawn(async move {
+        let outcome = substrate.apply_committed(&record, anchor).await;
+        (substrate, outcome)
+    });
+    let mut waiting = false;
+    for _ in 0..200 {
+        let blocked: i64 = raw
+            .query_one(
+                "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+                 WHERE NOT l.granted AND a.pid <> pg_backend_pid() \
+                 AND $1 = ANY(pg_blocking_pids(a.pid))",
+                &[&writer_pid],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if blocked > 0 {
+            waiting = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(waiting, "the revocation never reached the writer's lock");
+
+    // The writer's next step: write 2. With the revocation holding nothing
+    // past the row it waits for, this is granted at once; before, it closed a
+    // cycle and one of the two sessions was cancelled with 40P01.
+    let second = tokio::time::timeout(
+        Duration::from_secs(10),
+        writer.query(
+            &format!(
+                "SELECT seq FROM {work}.fastmem_write WHERE memory = 'm1' AND seq = 2 FOR SHARE"
+            ),
+            &[],
+        ),
+    )
+    .await
+    .expect("the writer's second lock is not held up by the revocation");
+    assert!(second.is_ok(), "{second:?}");
+    writer.batch_execute("COMMIT").await.unwrap();
+
+    // The control: the revocation then completes and removes both writes.
+    let (substrate, outcome) = revocation.await.unwrap();
+    let report = outcome.unwrap();
+    assert_eq!(report.removed_writes, 2);
+    assert!(substrate.load_journal("m1").await.unwrap().is_empty());
+    substrate.drop_all().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_write_from_an_inadmissible_source_or_out_of_sequence_is_refused() {
     let mut substrate = substrate().await;
