@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 9 Rust source files · 4029 nonblank source lines · 6 integration-test files · 109 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 4039 nonblank source lines · 6 integration-test files · 112 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -22,7 +22,7 @@
 - TIES merge of full updates for consolidation, finite for any finite updates (the sign election and the mean cannot overflow, an entry far smaller than entries that cancel exactly still decides the sign, and the mean is rounded once, below the normal range too), due when depth or overlap exceeds the policy or when an overlap cannot be compared with it or lies outside [0, 1]; a report with an overlap that is NaN or outside [0, 1] is within no limit
 - FSRS-4.5 forgetting model on the training clock, lapse tracking with label-audit withholding, and stratified Gumbel-top-k sampling without replacement; model times must be finite (probes, draws and priorities alike) and never precede a sample's last probe, a second probe at the model time of a recorded one is refused as a repeat, a priority refuses a hand-built state with a nonfinite or out-of-range difficulty, a stability that is not finite and positive or a nonfinite last probe, a minimum stability above the initial one is refused so a lapse never raises stability, a lapse limit of zero is refused, a draw reserves memory only for the samples it can return, and a probe whose update would store a nonfinite stability or difficulty is refused with the sample unchanged
 - Held-out samples cannot enter the replay pool
-- AIMER expert-pruning score (arXiv:2603.18492) s(w) = ||w||_1 / (sqrt(N) ||w||_2) of a flattened expert, computed on w / max|w| so any finite magnitude is scored (empty, nonfinite and all-zero vectors refused), and a ranking of one layer's experts by descending score (highest prunes first, ties in input order, equal weight counts required, an unscorable expert named in the error); it only ranks, and a prune decision must still pass the forgetting gate
+- AIMER expert-pruning score (arXiv:2603.18492) s(w) = ||w||_1 / (sqrt(N) ||w||_2) of a flattened expert, computed on w / max|w| so any finite magnitude is scored, with both norms accumulated over the sorted magnitudes so the score depends only on the multiset of weights and not on their layout (empty, nonfinite and all-zero vectors refused), and a ranking of one layer's experts by descending score (highest prunes first, ties in input order, equal weight counts required, an unscorable expert named in the error); it only ranks, and a prune decision must still pass the forgetting gate
 - Internal, no behaviour change: #[allow(clippy::manual_is_multiple_of)] on test helpers only (values_of_every_magnitude in src/scale.rs, forgotten_samples_are_drawn_far_more_often_than_retained_ones in tests/replay.rs), so the newer toolchain lints stay clean; no library code changed
 
 ### Missing for the target architecture
@@ -59,7 +59,7 @@
 - tests/interference_cost.rs peak heap of measuring a 2048 x 3072 rank-4 layer, pinned below a sixteenth of its product's size, with bases checked against the formed product
 - tests/consolidation.rs TIES merge and forgetting summaries, including inputs whose running sums overflow and subnormal scores
 - tests/replay.rs forgetting model and sampling, including nonfinite model times, unbounded draw counts, repeated probes, hand-built memory states and a stability floor above the initial stability
-- tests/aimer.rs AIMER score cases (uniform, one-hot, hand-computed, scale invariance at 1e300 and 1e-300, refusals) and pruning order with a deterministic tie and mismatched weight counts
+- tests/aimer.rs AIMER score cases (uniform, one-hot, hand-computed, scale invariance at 1e300 and 1e-300, permutation invariance, refusals) and pruning order with a deterministic tie, permuted-weight ties and mismatched weight counts
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

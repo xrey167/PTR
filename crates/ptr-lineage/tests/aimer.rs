@@ -137,3 +137,69 @@ fn ranking_refuses_bad_input() {
         })
     );
 }
+
+#[test]
+fn rounding_prone_vector_scores_identically_in_any_order() {
+    let tiny = 2.0_f64.powi(-53);
+    let forward = [1.0, tiny, tiny];
+    let reversed = [tiny, tiny, 1.0];
+    let middle = [tiny, 1.0, tiny];
+    let expected = aimer_score(&forward).unwrap().to_bits();
+    assert_eq!(aimer_score(&reversed).unwrap().to_bits(), expected);
+    assert_eq!(aimer_score(&middle).unwrap().to_bits(), expected);
+}
+
+fn lcg_weights(count: usize) -> Vec<f64> {
+    let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+    (0..count)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let mantissa = (state >> 11) as f64 / (1_u64 << 53) as f64;
+            let exponent = i32::try_from((state >> 3) % 40).unwrap() - 20;
+            let sign = if state & 1 == 0 { 1.0 } else { -1.0 };
+            sign * (mantissa + 0.01) * 2.0_f64.powi(exponent)
+        })
+        .collect()
+}
+
+#[test]
+fn mixed_magnitude_vector_scores_identically_under_permutations() {
+    let base = lcg_weights(64);
+    let expected = aimer_score(&base).unwrap().to_bits();
+
+    let mut reversed = base.clone();
+    reversed.reverse();
+    let mut rotated = base.clone();
+    rotated.rotate_left(17);
+    let (evens, odds): (Vec<f64>, Vec<f64>) = (
+        base.iter().copied().step_by(2).collect(),
+        base.iter().copied().skip(1).step_by(2).collect(),
+    );
+    let interleaved: Vec<f64> = odds.iter().chain(evens.iter()).copied().collect();
+    let mut sorted = base.clone();
+    sorted.sort_by(f64::total_cmp);
+
+    for permuted in [reversed, rotated, interleaved, sorted] {
+        assert_eq!(permuted.len(), base.len());
+        assert_eq!(aimer_score(&permuted).unwrap().to_bits(), expected);
+    }
+}
+
+#[test]
+fn permuted_experts_tie_and_keep_input_order() {
+    let tiny = 2.0_f64.powi(-53);
+    let forward = [1.0, tiny, tiny];
+    let reversed = [tiny, tiny, 1.0];
+    let a = ExpertWeights {
+        id: "a",
+        weights: &forward,
+    };
+    let b = ExpertWeights {
+        id: "b",
+        weights: &reversed,
+    };
+    assert_eq!(rank_experts_for_pruning(&[a, b]).unwrap(), vec!["a", "b"]);
+    assert_eq!(rank_experts_for_pruning(&[b, a]).unwrap(), vec!["b", "a"]);
+}

@@ -30,6 +30,12 @@ pub struct ExpertWeights<'a, E> {
 /// the largest that they underflow after scaling add nothing to either norm at
 /// f64 precision. The result is clamped to `[1/sqrt(N), 1]` against rounding.
 ///
+/// The score depends only on the multiset of weights, not on their order: the
+/// scaled magnitudes are sorted ascending (`f64::total_cmp`) before both norms
+/// are accumulated, so two experts holding the same weights in different
+/// flattened layouts get bit-identical scores. This costs O(N log N) time and
+/// one `Vec<f64>` of N entries per call.
+///
 /// # Errors
 /// `Empty` for no weights, `NonFinite` for NaN or infinity, `ZeroNorm` for an
 /// all-zero vector.
@@ -46,11 +52,15 @@ pub fn aimer_score(weights: &[f64]) -> Result<f64, LineageError> {
     if largest == 0.0 {
         return Err(LineageError::ZeroNorm { field: "weights" });
     }
+    let mut scaled: Vec<f64> = weights
+        .iter()
+        .map(|value| (value / largest).abs())
+        .collect();
+    scaled.sort_by(f64::total_cmp);
     let (mut l1, mut squares) = (0.0_f64, 0.0_f64);
-    for value in weights {
-        let scaled = (value / largest).abs();
-        l1 += scaled;
-        squares += scaled * scaled;
+    for value in &scaled {
+        l1 += value;
+        squares += value * value;
     }
     let root_n = (weights.len() as f64).sqrt();
     let score = l1 / (root_n * squares.sqrt());
