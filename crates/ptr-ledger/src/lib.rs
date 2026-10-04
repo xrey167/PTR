@@ -7,7 +7,7 @@ pub mod retention;
 pub use acknowledged::{AcknowledgedError, AcknowledgedLedger, Split, TailPolicy, TailRecovery};
 pub use compaction::{
     CompactionDecision, CompactionFault, CompactionOutcome, CompactionPlan, LogPaths,
-    RetentionPolicy,
+    RetentionFloor, RetentionPolicy,
 };
 pub use file::{FileLedger, LegacyLog, RecoverableLog};
 pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};

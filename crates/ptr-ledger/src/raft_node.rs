@@ -10,8 +10,8 @@
 //! that delivers them by hand is not its business. That separation is what makes a
 //! partition testable without a timer: nothing here is driven by wall-clock time,
 //! so a test decides exactly which message arrives and which does not.
-use crate::raft_storage::FileRaftStorage;
-use crate::{decode_event, encode_event, integrity, CommittedEvent, LedgerEvent};
+use crate::raft_storage::{carries_ledger_event, FileRaftStorage};
+use crate::{decode_event, encode_event, integrity, CommittedEvent, LedgerEvent, RetentionFloor};
 use ptr_types::CommitIndex;
 use raft::codec::Message as _;
 use raft::prelude::{
@@ -122,6 +122,12 @@ pub struct RaftNode {
     /// by a payload only the application can read, and continuing as though it were
     /// empty would renumber every event that follows.
     installed: Option<InstalledSnapshot>,
+    /// Committed entries a reopened member recovered while a snapshot it had
+    /// installed was still unaccounted for. Raft counts them as applied, so it
+    /// will not deliver them again; they are applied by
+    /// [`RaftNode::resume_with_applied`], once there is a count to number them
+    /// from.
+    deferred: Vec<Entry>,
     id: u64,
 }
 
@@ -163,17 +169,26 @@ impl RaftNode {
         let logger = slog::Logger::root(slog::Discard, slog::o!());
         let node = RawNode::new(&config, storage, &logger).map_err(|error| error.to_string())?;
         let recovered_count = recovered.len() as u64;
+        // A snapshot installed before the restart and never accounted for is
+        // still waiting, and the member must say so rather than number what
+        // follows from the count of the position before it.
+        let installed = storage_unaccounted(&node);
         let mut member = Self {
             node,
             committed: Vec::new(),
             // Recovered from the state file, so replay continues the numbering a
             // snapshot established rather than restarting it.
             applied_events: recovered_applied,
-            installed: None,
+            installed,
+            deferred: Vec::new(),
             id,
         };
         let _ = recovered_count;
-        member.apply_committed(recovered)?;
+        if member.installed.is_some() {
+            member.deferred = recovered;
+        } else {
+            member.apply_committed(recovered)?;
+        }
         Ok(member)
     }
 
@@ -225,9 +240,24 @@ impl RaftNode {
     /// Recording a snapshot is what makes [`Storage::snapshot`] answerable, which is
     /// what lets a leader catch up a member it has compacted past — a leader with no
     /// recorded snapshot has nothing to send, and says so rather than inventing one.
-    pub fn record_snapshot(&mut self, index: u64, state: Vec<u8>) -> Result<(), String> {
+    ///
+    /// `floor` is what the application's durable snapshot covers, in ledger
+    /// events — for PTR, `CompactedSnapshot::covers`. The log is discarded only
+    /// through the raft index whose prefix produced exactly that many events: a
+    /// floor short of `index` is refused with
+    /// `PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR`, because the entries between
+    /// would be retained nowhere, and one past it with
+    /// `PTR_RAFT_SNAPSHOT_FLOOR_MISMATCH`, because a member installing the payload
+    /// would apply those events again. [`FileRaftStorage`] makes the conversion,
+    /// since only the log knows which indexes carried no event.
+    pub fn record_snapshot(
+        &mut self,
+        index: u64,
+        state: Vec<u8>,
+        floor: RetentionFloor,
+    ) -> Result<(), String> {
         let store = self.node.raft.raft_log.store.clone();
-        let outcome = store.wl().record_snapshot(index, state);
+        let outcome = store.wl().record_snapshot(index, state, floor);
         outcome.map_err(|error| error.to_string())
     }
 
@@ -281,15 +311,17 @@ impl RaftNode {
     /// carried on as though the snapshot were empty would number the next event 1
     /// and disagree with every other member about what that index means.
     pub fn resume_with_applied(&mut self, applied_events: u64) -> Result<(), String> {
-        self.applied_events = applied_events;
-        self.installed = None;
         // Durable, because the events this count covers are described by a
         // payload rather than by records this member still holds. A restart that
         // counted from zero would hand the next event an index the snapshot
         // already covers, and two different events would claim it.
         let store = self.node.raft.raft_log.store.clone();
         let outcome = store.wl().set_applied_events(applied_events);
-        outcome.map_err(|error| error.to_string())
+        outcome.map_err(|error| error.to_string())?;
+        self.applied_events = applied_events;
+        self.installed = None;
+        let deferred = std::mem::take(&mut self.deferred);
+        self.apply_committed(deferred)
     }
 
     /// Propose a change to the group's membership.
@@ -467,7 +499,9 @@ impl RaftNode {
                     .map_err(|error| error.to_string())?;
                 continue;
             }
-            if entry.data.is_empty() || entry.get_entry_type() != EntryType::EntryNormal {
+            // The same predicate compaction counts by, so the ledger index this
+            // assigns and the one a retention floor is checked against agree.
+            if !carries_ledger_event(&entry) {
                 continue;
             }
             if self.installed.is_some() {
@@ -483,6 +517,25 @@ impl RaftNode {
         }
         Ok(())
     }
+}
+
+/// The snapshot a reopened member's storage says is still unaccounted for, as the
+/// member would have been handed it before the restart.
+fn storage_unaccounted(node: &RawNode<FileRaftStorage>) -> Option<InstalledSnapshot> {
+    let store = node.raft.raft_log.store.clone();
+    let core = store.wl();
+    if !core.events_unaccounted() {
+        return None;
+    }
+    let snapshot = core.snapshot();
+    let metadata = snapshot.get_metadata();
+    let state = snapshot.data.to_vec();
+    Some(InstalledSnapshot {
+        index: metadata.index,
+        term: metadata.term,
+        digest: integrity::sha256(&state),
+        state,
+    })
 }
 
 /// The heartbeat message type, for callers that build a message without naming

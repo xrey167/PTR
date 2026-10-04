@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-28  
-**Code footprint:** 3 Rust source files · 726 nonblank source lines · 1 integration-test files · 15 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-04  
+**Code footprint:** 3 Rust source files · 736 nonblank source lines · 2 integration-test files · 17 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -21,6 +21,7 @@
 - A refused frame is answered with an empty batch rather than leaving the peer hanging: the refusal is the receiver's business, not a diagnosis to hand out
 - A member that cannot be reached is reported rather than raised: a leader that abandoned a proposal because one follower was down could not commit while any member is down, so a transport failure toward one peer is recorded and the round continues while a forged sender or a malformed frame still aborts
 - One exchange has a deadline, because how long to wait for a member is this layer's policy and not the peer's: without one a member that stopped answering holds up every round it appears in
+- record_snapshot takes the RetentionFloor the payload covers, so a member's raft log is compacted only through the position whose entries produced exactly the events the retained snapshot covers; the end-to-end test orders a runtime's own records through raft, which is what makes the payload's floor and raft's prefix the same position
 - resume_with_applied is fallible because the applied-event count it records is persisted: a member that kept it only in memory would renumber events a snapshot covers on its next restart
 - take_installed_snapshot_matching lets a host that retains snapshot anchors out of band refuse a payload the elected leader sent but the host did not expect; take_installed_snapshot remains for deployments with no second channel and documents what it trusts
 - propose_membership adds or removes one voter from the leader and drives it to quiescence, and voters() reports the group in ascending order
@@ -61,6 +62,7 @@
 - a refused frame still receives an answer, and that answer is an empty batch
 - refusing a stranger's frame does not take a serving member off the air: after the refusal an admitted member still reaches it, so an unadmitted peer cannot silence an admitted one by connecting once
 - a member that cannot be reached is named in the report while the write is still decided by the majority that answered
+- a runtime's records ordered through raft and compacted exactly to a PTRCS004 snapshot's floor, with a second key spent above it, restart and restore from the snapshot plus raft's remainder: both keys are answered with their original outcome and neither executes again, while an unspent key does; a floor taken before the effect is refused with PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR and the settled attempt survives a restart in raft's log (tests/retention_floor.rs)
 - a real PTRCS004 snapshot, exported by a runtime whose semantic value is a host write under a test grant, travels as the payload to a restarted member the leader compacted past, arrives byte for byte, and a runtime restores the state it described from exactly those bytes
 - frame codec unit tests: round trip including an empty batch, every prefix refused, foreign bytes, trailing bytes, an unknown layout version, an invented count refused by the bound rather than by allocation, an oversize frame refused before parsing, and one distinct code per refusal
 

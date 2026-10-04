@@ -121,6 +121,37 @@ impl RetentionPolicy {
     }
 }
 
+/// The ledger position through which the state machine's committed state is
+/// durably retained in a snapshot: every record at or below it is described by
+/// that snapshot, and none above it is.
+///
+/// This is the same position a [`CompactionBarrier::snapshot_covers`] reports, and
+/// for PTR it comes from the snapshot itself — `CompactedSnapshot::covers` in
+/// `ptr-runtime` — rather than from the caller's arithmetic, so a host that holds
+/// one is holding a claim some retained artifact makes.
+///
+/// It exists as its own type because raft's log and the ledger count different
+/// things: a raft index counts entries, including a leader's empty entry and every
+/// configuration change, and a ledger index counts committed events. Discarding
+/// raft entries is only safe through the raft index whose prefix produced exactly
+/// this many events, and
+/// [`FileRaftStorage`](crate::raft_storage::FileRaftStorage) takes this floor as
+/// an input so that conversion is made where the log is, not by its caller.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RetentionFloor(CommitIndex);
+
+impl RetentionFloor {
+    /// The floor of a snapshot that covers every record through `index`.
+    pub fn covering(index: CommitIndex) -> Self {
+        Self(index)
+    }
+
+    /// The last ledger index the snapshot covers. Zero means it covers nothing.
+    pub fn index(self) -> CommitIndex {
+        self.0
+    }
+}
+
 /// A validated floor advance, produced only by
 /// [`AcknowledgedLedger::plan_compaction`](crate::AcknowledgedLedger::plan_compaction).
 ///

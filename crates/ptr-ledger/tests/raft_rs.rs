@@ -9,8 +9,10 @@
 
 use ptr_ledger::integrity::MAX_RECORD_BYTES;
 use ptr_ledger::raft_storage::FileRaftStorage;
-use ptr_ledger::{Attestation, LedgerEvent, SemanticOrigin, SingleNodeRaftConsensus};
-use ptr_types::{CapsuleId, Generation, ProjectId, Revision, VerificationLevel};
+use ptr_ledger::{
+    Attestation, LedgerEvent, RetentionFloor, SemanticOrigin, SingleNodeRaftConsensus,
+};
+use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision, VerificationLevel};
 use raft::prelude::{Entry, HardState};
 use raft::Storage;
 use std::path::PathBuf;
@@ -319,7 +321,11 @@ fn a_snapshot_compacts_the_log_and_the_entries_it_covers_leave_the_file() {
         .unwrap();
     storage
         .wl()
-        .record_snapshot(2, b"state-at-2".to_vec())
+        .record_snapshot(
+            2,
+            b"state-at-2".to_vec(),
+            RetentionFloor::covering(CommitIndex(2)),
+        )
         .unwrap();
 
     assert_eq!(storage.first_index().unwrap(), 3);
@@ -370,12 +376,307 @@ fn a_snapshot_ahead_of_the_committed_index_is_refused() {
         .unwrap();
     let error = storage
         .wl()
-        .record_snapshot(2, b"too-early".to_vec())
+        .record_snapshot(
+            2,
+            b"too-early".to_vec(),
+            RetentionFloor::covering(CommitIndex(2)),
+        )
         .expect_err("nothing is committed yet, so nothing can be snapshotted");
     assert!(
         error.to_string().contains("ahead of the committed"),
         "{error}"
     );
+}
+
+/// Three committed entries, each carrying an event, and nothing compacted yet.
+fn three_committed_events(temp: &Temp) -> FileRaftStorage {
+    let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    storage
+        .wl()
+        .append(&[
+            entry(1, 1, b"one"),
+            entry(2, 1, b"two"),
+            entry(3, 1, b"three"),
+        ])
+        .unwrap();
+    storage
+        .wl()
+        .set_hard_state(&HardState {
+            term: 1,
+            vote: 1,
+            commit: 3,
+        })
+        .unwrap();
+    storage
+}
+
+/// The storage's files, for asserting a refusal left nothing behind.
+fn files(temp: &Temp) -> (Vec<u8>, Vec<u8>, bool) {
+    let read = |name: &str| std::fs::read(temp.dir().join(name)).unwrap_or_default();
+    (
+        read("state"),
+        read("log"),
+        temp.dir().join("snapshot").exists(),
+    )
+}
+
+fn floor(events: u64) -> RetentionFloor {
+    RetentionFloor::covering(CommitIndex(events))
+}
+
+#[test]
+fn a_compaction_past_the_retention_floor_is_refused_and_moves_nothing() {
+    // The retained snapshot covers two events. Compacting to index 3 would discard
+    // the third, which nothing else retains: a follower that needs it could be
+    // neither replayed to nor sent a snapshot holding it.
+    let temp = Temp::new("past-floor");
+    let storage = three_committed_events(&temp);
+    let before = files(&temp);
+    let refused = storage
+        .wl()
+        .record_snapshot(3, b"state-at-2".to_vec(), floor(2))
+        .expect_err("index 3 is past what the retained snapshot covers");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR"),
+        "{refused}"
+    );
+    assert_eq!(
+        files(&temp),
+        before,
+        "neither file moves and no payload lands"
+    );
+    assert_eq!(storage.first_index().unwrap(), 1);
+    assert_eq!(storage.wl().applied_events(), 0);
+    drop(storage);
+
+    let reopened = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    assert_eq!(reopened.first_index().unwrap(), 1);
+    assert_eq!(
+        reopened
+            .entries(1, 4, None, raft::GetEntriesContext::empty(false))
+            .unwrap()
+            .len(),
+        3,
+        "every entry is still there to replay"
+    );
+}
+
+#[test]
+fn a_compaction_up_to_the_retention_floor_discards_exactly_what_it_covers() {
+    // The control for the refusal above: the same log, a floor that covers the
+    // prefix, and the entries below it are gone while the one above stays.
+    let temp = Temp::new("to-floor");
+    let storage = three_committed_events(&temp);
+    storage
+        .wl()
+        .record_snapshot(2, b"state-at-2".to_vec(), floor(2))
+        .expect("the retained snapshot covers both discarded events");
+    assert_eq!(storage.first_index().unwrap(), 3);
+    for gone in [1, 2] {
+        assert_eq!(
+            storage
+                .entries(gone, 4, None, raft::GetEntriesContext::empty(false))
+                .expect_err("below the floor"),
+            raft::Error::Store(raft::StorageError::Compacted)
+        );
+    }
+    assert_eq!(
+        storage
+            .entries(3, 4, None, raft::GetEntriesContext::empty(false))
+            .unwrap(),
+        vec![entry(3, 1, b"three")]
+    );
+    assert_eq!(storage.wl().applied_events(), 2);
+    drop(storage);
+
+    // The coverage is recorded with the position, so a reopened member numbers
+    // the next event from it rather than from zero.
+    let reopened = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    assert_eq!(reopened.first_index().unwrap(), 3);
+    assert_eq!(reopened.wl().applied_events(), 2);
+}
+
+#[test]
+fn a_snapshot_claiming_events_its_position_had_not_produced_is_refused() {
+    // A member that installs this payload holds it *at* index 2 and is replayed
+    // from 3. A payload that already contains the third event would have it
+    // applied twice.
+    let temp = Temp::new("claims-more");
+    let storage = three_committed_events(&temp);
+    let before = files(&temp);
+    let refused = storage
+        .wl()
+        .record_snapshot(2, b"state-at-3".to_vec(), floor(3))
+        .expect_err("the payload covers more than index 2 produced");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("PTR_RAFT_SNAPSHOT_FLOOR_MISMATCH"),
+        "{refused}"
+    );
+    assert_eq!(files(&temp), before);
+    assert_eq!(storage.first_index().unwrap(), 1);
+}
+
+#[test]
+fn the_retention_floor_is_counted_in_ledger_events_not_raft_indexes() {
+    // A leader's first entry in a term is empty and a configuration change is not
+    // an event, so raft index 4 here is ledger event 2. A host that passed the
+    // raft index as the floor would be claiming two events nobody committed.
+    let temp = Temp::new("events");
+    let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    let mut conf_change = entry(2, 1, b"not an event");
+    conf_change.set_entry_type(raft::prelude::EntryType::EntryConfChange);
+    storage
+        .wl()
+        .append(&[
+            entry(1, 1, b""),
+            conf_change,
+            entry(3, 1, b"first event"),
+            entry(4, 1, b"second event"),
+        ])
+        .unwrap();
+    storage
+        .wl()
+        .set_hard_state(&HardState {
+            term: 1,
+            vote: 1,
+            commit: 4,
+        })
+        .unwrap();
+
+    let refused = storage
+        .wl()
+        .record_snapshot(4, b"state".to_vec(), floor(4))
+        .expect_err("the raft index is not the ledger index");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("PTR_RAFT_SNAPSHOT_FLOOR_MISMATCH"),
+        "{refused}"
+    );
+    let refused = storage
+        .wl()
+        .record_snapshot(4, b"state".to_vec(), floor(1))
+        .expect_err("one event short");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR"),
+        "{refused}"
+    );
+    // Everything before the first event carried none, so a snapshot covering no
+    // events may discard it.
+    storage
+        .wl()
+        .record_snapshot(2, b"empty state".to_vec(), floor(0))
+        .expect("indexes 1 and 2 produced no event");
+    storage
+        .wl()
+        .record_snapshot(4, b"state".to_vec(), floor(2))
+        .expect("two events through index 4, counted from the earlier snapshot");
+    assert_eq!(storage.first_index().unwrap(), 5);
+    assert_eq!(storage.wl().applied_events(), 2);
+}
+
+/// A snapshot a leader sent, describing its state at index 5.
+fn sent_at_five() -> raft::prelude::Snapshot {
+    raft::prelude::Snapshot {
+        data: b"a leader's state at 5".to_vec(),
+        metadata: Some(raft::prelude::SnapshotMetadata {
+            index: 5,
+            term: 1,
+            conf_state: Some(raft::prelude::ConfState {
+                voters: vec![1],
+                ..Default::default()
+            }),
+        }),
+    }
+}
+
+#[test]
+fn an_installed_snapshot_blocks_compaction_until_the_application_accounts_for_it() {
+    // An installed payload covers a number of events only the application can
+    // read. Until it says how many, the count below the snapshot is the old
+    // position's, and any floor checked against it would be checked against the
+    // wrong base.
+    let temp = Temp::new("unaccounted");
+    let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    storage.wl().apply_snapshot(sent_at_five()).unwrap();
+    storage
+        .wl()
+        .append(&[entry(6, 1, b"six"), entry(7, 1, b"seven")])
+        .unwrap();
+    storage.wl().set_commit(7).unwrap();
+
+    let before = files(&temp);
+    let refused = storage
+        .wl()
+        .record_snapshot(7, b"state".to_vec(), floor(2))
+        .expect_err("no base to count from");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("PTR_RAFT_SNAPSHOT_UNACCOUNTED"),
+        "{refused}"
+    );
+    assert_eq!(files(&temp), before);
+
+    // The application reads the payload: it covered ten events.
+    storage.wl().set_applied_events(10).unwrap();
+    let refused = storage
+        .wl()
+        .record_snapshot(7, b"state".to_vec(), floor(11))
+        .expect_err("indexes 6 and 7 add two events to ten");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR"),
+        "{refused}"
+    );
+    storage
+        .wl()
+        .record_snapshot(7, b"state".to_vec(), floor(12))
+        .expect("counted from the accounted base");
+    assert_eq!(storage.first_index().unwrap(), 8);
+}
+
+#[test]
+fn an_unaccounted_snapshot_is_still_unaccounted_after_a_restart() {
+    // Held in memory alone, a restart between installing and accounting would come
+    // back with the previous position's count and nothing to say it was stale.
+    let temp = Temp::new("unaccounted-restart");
+    let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    storage.wl().apply_snapshot(sent_at_five()).unwrap();
+    storage.wl().append(&[entry(6, 1, b"six")]).unwrap();
+    storage.wl().set_commit(6).unwrap();
+    drop(storage);
+
+    let reopened = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    assert!(reopened.wl().events_unaccounted());
+    let refused = reopened
+        .wl()
+        .record_snapshot(6, b"state".to_vec(), floor(1))
+        .expect_err("the count of the position before the snapshot is not a base");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("PTR_RAFT_SNAPSHOT_UNACCOUNTED"),
+        "{refused}"
+    );
+
+    // Accounting clears it durably, and only then.
+    reopened.wl().set_applied_events(3).unwrap();
+    drop(reopened);
+    let accounted = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    assert!(!accounted.wl().events_unaccounted());
+    assert_eq!(accounted.wl().applied_events(), 3);
+    accounted
+        .wl()
+        .record_snapshot(6, b"state".to_vec(), floor(4))
+        .expect("three covered by the installed payload and one at index 6");
 }
 
 #[test]

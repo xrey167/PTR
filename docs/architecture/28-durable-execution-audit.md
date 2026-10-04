@@ -575,6 +575,23 @@ the code before the fix:
   obligation now travels in the snapshot (below); what remains is the ordinary
   anchor-retention obligation of `24-protected-anchors.md` — a host that loses
   the snapshot or its anchor has lost the memory, and no format prevents that.
+- **Raft's log can no longer outrun the snapshot (C7 of issue #23).** When the
+  ledger is ordered by raft, raft's log is the other place an attempt's record
+  lives, and its compaction used to be independent of the retention floor.
+  `record_snapshot` now takes the `RetentionFloor` the retained snapshot
+  reports and discards the log only through the raft index whose entries
+  produced exactly that many events: a floor that does not cover a discarded
+  `EffectAttempted` or `EffectSettled` is refused with
+  `PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR` before anything moves, and a
+  member restarted after compacting to the floor, restored from the snapshot
+  plus raft's remainder, answers a spent key with its original outcome and
+  executes nothing
+  (`an_at_most_once_key_survives_raft_compacting_to_the_retention_floor_and_a_restart`,
+  `raft_refuses_to_discard_a_settled_attempt_the_retained_snapshot_predates`).
+  What is guaranteed is that raft never discards past the floor it is handed;
+  what is not is that the floor is backed — `RetentionFloor` is the host's
+  claim, and losing the snapshot it names is the bullet above. The mechanism is
+  in `31-cluster-integrity.md`.
 - **A settlement lost to a full ledger fences for good.** When the settlement of
   an applied effect fails because the ledger has no index or record left, the
   attempt stays unsettled across a reopen, and reconciling it needs another

@@ -212,10 +212,20 @@ impl ClusterMember {
     /// Record this member's application state at a committed position.
     ///
     /// The payload is the application's — for PTR, a PTRCS004 compacted snapshot.
-    /// This layer carries it and has no opinion about what is inside.
-    pub fn record_snapshot(&self, index: u64, state: Vec<u8>) -> Result<(), ClusterError> {
+    /// This layer carries it and has no opinion about what is inside, except the
+    /// one fact raft's log has to agree with: `floor`, the ledger position the
+    /// payload covers through (`CompactedSnapshot::covers`). The log below
+    /// `index` is discarded only when its entries produced exactly that many
+    /// events; [`ptr_ledger::RaftNode::record_snapshot`] says why each direction
+    /// is refused.
+    pub fn record_snapshot(
+        &self,
+        index: u64,
+        state: Vec<u8>,
+        floor: ptr_ledger::RetentionFloor,
+    ) -> Result<(), ClusterError> {
         self.locked()
-            .record_snapshot(index, state)
+            .record_snapshot(index, state, floor)
             .map_err(ClusterError::Node)
     }
 

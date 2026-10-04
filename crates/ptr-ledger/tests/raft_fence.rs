@@ -19,7 +19,8 @@
 //! aware of the other except through what is on disk.
 #![cfg(feature = "raft-rs-backend")]
 
-use ptr_ledger::FileRaftStorage;
+use ptr_ledger::{FileRaftStorage, RetentionFloor};
+use ptr_types::CommitIndex;
 use raft::prelude::{Entry, HardState};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -206,7 +207,12 @@ fn a_fenced_writer_cannot_record_a_snapshot_either() {
     let before = files(&temp);
     let error = stale
         .wl()
-        .record_snapshot(1, b"a payload a fenced writer must not land".to_vec())
+        .record_snapshot(
+            1,
+            b"a payload a fenced writer must not land".to_vec(),
+            // The honest floor, so the only refusal left to reach is the fence.
+            RetentionFloor::covering(CommitIndex(1)),
+        )
         .expect_err("a fenced writer must not record a snapshot");
     assert!(error.to_string().contains("PTR_RAFT_FENCED"), "{error}");
     assert_eq!(

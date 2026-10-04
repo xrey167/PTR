@@ -21,6 +21,7 @@
 //! What this is not: it is not consensus, and it is not a cluster. It is the
 //! durable state a real group needs underneath it, and a single node using it is
 //! still a single node.
+use crate::compaction::RetentionFloor;
 use crate::integrity::sha256;
 use raft::prelude::{ConfState, Entry, EntryType, HardState, Snapshot, SnapshotMetadata};
 use raft::util::limit_size;
@@ -64,6 +65,18 @@ fn entry_type_from_code(code: u8) -> io::Result<EntryType> {
         2 => Ok(EntryType::EntryConfChangeV2),
         other => Err(invalid(format!("unknown raft entry type code {other}"))),
     }
+}
+
+/// Whether applying `entry` produces a ledger event.
+///
+/// One predicate, used both where entries are applied
+/// ([`RaftNode`](crate::RaftNode)) and where the log is compacted, because the
+/// retention floor is counted in ledger events and the compaction is made in raft
+/// indexes: if the two places disagreed about which entries are events, the
+/// conversion between them would be wrong by exactly the entries they disagree
+/// about. A leader's empty entry and a configuration change are not events.
+pub(crate) fn carries_ledger_event(entry: &Entry) -> bool {
+    entry.get_entry_type() == EntryType::EntryNormal && !entry.data.is_empty()
 }
 
 /// Construct a stable invalid-data refusal.
@@ -110,6 +123,7 @@ impl FileRaftStorage {
         let state_path = dir.join("state");
         let log_path = dir.join("log");
         let snapshot_path = dir.join("snapshot");
+        let unaccounted_path = dir.join("unaccounted");
 
         let existing = state_path.is_file();
         let mut log = OpenOptions::new()
@@ -137,6 +151,8 @@ impl FileRaftStorage {
                 state_path,
                 log_path,
                 snapshot_path,
+                events_unaccounted: unaccounted_path.is_file(),
+                unaccounted_path,
                 log,
                 hard_state,
                 conf_state,
@@ -159,6 +175,7 @@ impl FileRaftStorage {
                 state_path,
                 log_path,
                 snapshot_path,
+                unaccounted_path,
                 log,
                 hard_state: HardState::default(),
                 conf_state,
@@ -168,6 +185,7 @@ impl FileRaftStorage {
                 offsets: Vec::new(),
                 fence: 0,
                 applied_events: 0,
+                events_unaccounted: false,
             }
         };
         if !existing {
@@ -193,6 +211,9 @@ pub struct Core {
     state_path: PathBuf,
     log_path: PathBuf,
     snapshot_path: PathBuf,
+    /// Present exactly while an installed snapshot is unaccounted for; see
+    /// `events_unaccounted`.
+    unaccounted_path: PathBuf,
     log: File,
     hard_state: HardState,
     conf_state: ConfState,
@@ -202,13 +223,28 @@ pub struct Core {
     /// File offset of `entries[i]`, so a conflicting append can shorten the file
     /// instead of rewriting it.
     offsets: Vec<u64>,
-    /// How many ledger events this member has applied in total, snapshot
-    /// included.
+    /// How many ledger events the entries at or below the snapshot position
+    /// produced: the ledger index the snapshot covers through, and the base a
+    /// reopened member counts the entries above it from.
     ///
     /// Durable because a snapshot covers events whose records are gone: a member
     /// that reopened counting from zero would hand the next event an index the
     /// snapshot already describes, and two different events would claim it.
     applied_events: u64,
+    /// A snapshot arrived through [`Core::apply_snapshot`] and the application
+    /// has not yet said how many events it covers, so `applied_events` describes
+    /// the position *before* it.
+    ///
+    /// While this is set the conversion from raft index to ledger index has no
+    /// base, and [`Core::record_snapshot`] refuses rather than compute one from a
+    /// count that belongs to a different position.
+    ///
+    /// Durable, as a marker file written before the snapshot lands and removed
+    /// only after the accounted count is persisted. Held in memory alone, a
+    /// restart between installing and accounting would come back with the old
+    /// position's count and nothing to say it was the wrong one — and both the
+    /// numbering of the next event and the compaction check would use it.
+    events_unaccounted: bool,
     /// The highest term this storage has ever accepted a write under.
     ///
     /// This is the fencing token. It is kept in memory only as a cache of what is
@@ -256,15 +292,88 @@ impl Core {
         self.persist_state()
     }
 
-    /// How many ledger events this member has applied in total.
+    /// How many ledger events the entries at or below the snapshot position
+    /// produced, which is where a reopened member resumes its numbering.
     pub fn applied_events(&self) -> u64 {
         self.applied_events
     }
 
-    /// Record how many events the member has applied, flushed before returning.
+    /// Record how many events an installed snapshot covers, flushed before
+    /// returning. This is the application accounting for the payload, so the
+    /// snapshot stops being unaccounted.
     pub fn set_applied_events(&mut self, applied_events: u64) -> io::Result<()> {
         self.applied_events = applied_events;
-        self.persist_state()
+        self.persist_state()?;
+        // Cleared only once the count it waited for is durable: a crash before
+        // this leaves the marker, which refuses rather than miscounts.
+        if self.events_unaccounted {
+            match fs::remove_file(&self.unaccounted_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            sync_dir(&self.dir)?;
+            self.events_unaccounted = false;
+        }
+        Ok(())
+    }
+
+    /// Whether a snapshot was installed and the application has not yet said how
+    /// many events it covers. Survives a restart, so a reopened member knows it
+    /// is still waiting.
+    pub fn events_unaccounted(&self) -> bool {
+        self.events_unaccounted
+    }
+
+    /// How many ledger events the entries at or below `index` produce.
+    ///
+    /// Counted from the snapshot's own coverage upward, with the same predicate
+    /// the node applies entries by. `index` must be one the log or the snapshot
+    /// still accounts for: below the snapshot position the entries are gone and
+    /// the count cannot be taken.
+    fn events_through(&self, index: u64) -> io::Result<u64> {
+        if self.events_unaccounted {
+            return Err(invalid(format!(
+                "PTR_RAFT_SNAPSHOT_UNACCOUNTED: a snapshot installed at {} has not been \
+                 accounted for, so no ledger position can be derived from a raft index",
+                self.snapshot_metadata.index
+            )));
+        }
+        if index < self.snapshot_metadata.index || index > self.last_index() {
+            return Err(invalid(format!("index {index} is outside the log")));
+        }
+        let above = self
+            .entries
+            .iter()
+            .take_while(|entry| entry.index <= index)
+            .filter(|entry| carries_ledger_event(entry))
+            .count() as u64;
+        self.applied_events
+            .checked_add(above)
+            .ok_or_else(|| invalid("ledger event count overflows"))
+    }
+
+    /// Refuse a compaction to `index` unless `floor` says the events it discards
+    /// are retained elsewhere, and return how many events that prefix produced.
+    ///
+    /// Raft's log is where a ledger event lives until a durable snapshot of the
+    /// state machine describes it. Discarding an entry whose event no such
+    /// snapshot covers leaves it nowhere: a follower that still needs it cannot
+    /// be replayed to and cannot be sent a snapshot that includes it, and a
+    /// member restored from what *is* retained comes back without it — for an
+    /// `EffectAttempted` or `EffectSettled` record, without the memory that an
+    /// at-most-once key was spent.
+    fn compaction_within(&self, index: u64, floor: RetentionFloor) -> io::Result<u64> {
+        let events = self.events_through(index)?;
+        if events > floor.index().0 {
+            return Err(invalid(format!(
+                "PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR: compacting to raft index {index} \
+                 discards ledger events through {events}, and the retained snapshot covers \
+                 only through {}",
+                floor.index().0
+            )));
+        }
+        Ok(events)
     }
 
     /// Record a new configuration, flushed before returning.
@@ -355,6 +464,13 @@ impl Core {
         // Fenced before anything is written, because this path truncates the log
         // before it persists state: a fenced writer must not get as far as that.
         self.fenced_to()?;
+        // From here until the application accounts for the payload, the count
+        // below the snapshot position is the old position's, not this one's. The
+        // marker lands first, so no crash leaves the new position recorded
+        // without it.
+        atomic_write(&self.unaccounted_path, &[])?;
+        sync_dir(&self.dir)?;
+        self.events_unaccounted = true;
 
         // The payload lands before the state that points at it: a crash between
         // the two leaves a snapshot file nothing refers to, which is recoverable,
@@ -390,7 +506,29 @@ impl Core {
     /// This is both halves of what `MemStorage` splits between `compact` and a
     /// fabricated snapshot: a durable store cannot invent a snapshot it does not
     /// hold, so the application hands one in.
-    pub fn record_snapshot(&mut self, index: u64, data: Vec<u8>) -> io::Result<()> {
+    ///
+    /// `floor` is the ledger position the application's durable snapshot covers
+    /// through, and it must be **exactly** the number of events the entries at or
+    /// below `index` produce:
+    ///
+    /// - Short of that is refused with `PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR`:
+    ///   the log would lose events no retained snapshot describes.
+    /// - Past that is refused with `PTR_RAFT_SNAPSHOT_FLOOR_MISMATCH`: `data` is
+    ///   what a member that installs it holds *at* `index`, and raft replays from
+    ///   `index + 1`. A payload covering events the prefix had not yet produced
+    ///   would have them applied a second time on every member restored from it.
+    ///
+    /// The count is taken here, from the log, rather than by the caller, because
+    /// only the log knows which raft indexes were empty entries or configuration
+    /// changes. It is persisted with the snapshot position, so a reopened member
+    /// numbers the next event from the snapshot's coverage. Nothing is written
+    /// when either check refuses.
+    pub fn record_snapshot(
+        &mut self,
+        index: u64,
+        data: Vec<u8>,
+        floor: RetentionFloor,
+    ) -> io::Result<()> {
         if index > self.hard_state.commit {
             return Err(invalid(format!(
                 "snapshot at {index} is ahead of the committed index {}",
@@ -401,6 +539,14 @@ impl Core {
             return Err(invalid("snapshot moves the covered position backwards"));
         }
         let term = self.term_of(index)?;
+        let events = self.compaction_within(index, floor)?;
+        if events != floor.index().0 {
+            return Err(invalid(format!(
+                "PTR_RAFT_SNAPSHOT_FLOOR_MISMATCH: raft index {index} produced ledger events \
+                 through {events}, and the payload claims to cover through {}",
+                floor.index().0
+            )));
+        }
         // Fenced before the payload lands and before the log is rewritten, for the
         // same reason `apply_snapshot` fences first: `compact_to` discards the
         // prefix, so a fenced writer reaching it has already destroyed shared
@@ -415,20 +561,30 @@ impl Core {
         atomic_write(&self.snapshot_path, &data)?;
         self.snapshot_data = data;
         self.snapshot_metadata = snapshot_metadata;
-        self.compact_to(index)?;
+        // The base the count was taken from is still `applied_events` and the
+        // entries are still all held, so `compact_to` re-derives the same count;
+        // only then does the coverage move to the new position, persisted with it.
+        self.compact_to(index, floor)?;
+        self.applied_events = events;
         self.persist_state()
     }
 
     /// Discard log entries at or below `index`, rewriting the file without them.
     ///
+    /// `floor` is an input rather than something a caller checks, so no path to
+    /// this function can discard an entry whose ledger event no retained snapshot
+    /// covers: it refuses with `PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR` before
+    /// touching the file.
+    ///
     /// A prefix cannot be removed from a file in place, so the remainder is
     /// written beside the old log and renamed over it. The cost is proportional to
     /// what is kept, which is the opposite of what compaction is for — acceptable
     /// because compaction is rare, and stated rather than hidden.
-    fn compact_to(&mut self, index: u64) -> io::Result<()> {
+    fn compact_to(&mut self, index: u64, floor: RetentionFloor) -> io::Result<()> {
         if index < self.first_index() {
             return Ok(());
         }
+        self.compaction_within(index, floor)?;
         if index > self.last_index() {
             return Err(invalid(format!(
                 "compaction to {index} is past the last index {}",

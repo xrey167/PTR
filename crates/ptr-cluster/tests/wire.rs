@@ -577,15 +577,24 @@ async fn a_ptrcs004_snapshot_travels_as_the_payload_and_restores_on_the_far_side
     });
 
     one.campaign().await.unwrap();
-    for generation in 1..=3 {
-        one.propose(event(generation)).await.unwrap();
+    // The group orders the runtime's own records, so the payload is the state of
+    // exactly the history raft carries: the retention floor the snapshot reports
+    // and the events raft's prefix produced are the same position, which is what
+    // `record_snapshot` checks before it discards anything.
+    for committed in runtime.committed_events() {
+        one.propose(committed.event.clone()).await.unwrap();
     }
-    assert_eq!(one.committed_events().len(), 3);
+    assert_eq!(one.committed_events(), runtime.committed_events());
 
     // The leader records its application state at the position it has committed and
     // discards the log below it, so member 3 can no longer be caught up by replay.
     let covered = one.raft_committed();
-    one.record_snapshot(covered, payload.clone()).unwrap();
+    one.record_snapshot(
+        covered,
+        payload.clone(),
+        ptr_ledger::RetentionFloor::covering(exported.covers()),
+    )
+    .unwrap();
 
     // Member 3 comes back — a restart, so a new endpoint with a new key over the same
     // durable state, re-admitted by the leader.

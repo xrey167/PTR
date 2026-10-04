@@ -13,8 +13,8 @@ use ptr_ledger::raft_node::{
     decode_message, encode_message, MembershipChange, RaftNode, RetainedSnapshotAnchor,
     SnapshotAnchorMismatch, MAX_MESSAGE_BYTES,
 };
-use ptr_ledger::{CommittedEvent, LedgerEvent};
-use ptr_types::{CapsuleId, Generation, ProjectId};
+use ptr_ledger::{CommittedEvent, LedgerEvent, RetentionFloor};
+use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId};
 use raft::prelude::Message;
 use raft::StateRole;
 use std::collections::{HashSet, VecDeque};
@@ -448,6 +448,12 @@ fn encode_state(events: &[CommittedEvent]) -> Vec<u8> {
     bytes
 }
 
+/// What a payload built by [`encode_state`] from `events` covers: every event it
+/// was built from, through the last one's ledger index.
+fn covers(events: &[CommittedEvent]) -> RetentionFloor {
+    RetentionFloor::covering(events.last().map_or(CommitIndex(0), |last| last.index))
+}
+
 fn decode_state(bytes: &[u8]) -> Vec<u64> {
     assert_eq!(bytes.len() % 8, 0, "a state payload is whole generations");
     bytes
@@ -478,10 +484,11 @@ fn a_member_compacted_past_is_caught_up_by_a_snapshot_and_equals_a_full_replay()
     // The leader records its state and discards the log those entries are in, so
     // catching member 3 up by replay is no longer possible.
     let leader_state = encode_state(&cluster.events(1));
+    let floor = covers(&cluster.events(1));
     let covered = cluster.get(1).raft_committed();
     cluster
         .node(1)
-        .record_snapshot(covered, leader_state.clone())
+        .record_snapshot(covered, leader_state.clone(), floor)
         .unwrap();
 
     // Heal it. The leader has nothing to replay, so it sends what it does have.
@@ -555,7 +562,11 @@ fn a_member_refuses_to_apply_anything_until_a_snapshot_is_accounted_for() {
     }
     let covered = cluster.get(1).raft_committed();
     let state = encode_state(&cluster.events(1));
-    cluster.node(1).record_snapshot(covered, state).unwrap();
+    let floor = covers(&cluster.events(1));
+    cluster
+        .node(1)
+        .record_snapshot(covered, state, floor)
+        .unwrap();
     cluster.unreachable.remove(&3);
     cluster.heartbeat(1);
     assert!(
@@ -605,7 +616,7 @@ fn a_leader_with_no_recorded_snapshot_cannot_invent_one_for_a_member_it_compacte
     let ahead = cluster.get(1).raft_committed() + 5;
     let refused = cluster
         .node(1)
-        .record_snapshot(ahead, Vec::new())
+        .record_snapshot(ahead, Vec::new(), RetentionFloor::covering(CommitIndex(2)))
         .expect_err("a snapshot ahead of the committed index is refused");
     assert!(
         refused.contains("ahead of the committed"),
@@ -697,10 +708,11 @@ fn cluster_with_installed_snapshot(temp: &Temp) -> (Cluster, Vec<u8>, u64) {
         cluster.propose(1, generation).unwrap();
     }
     let leader_state = encode_state(&cluster.events(1));
+    let floor = covers(&cluster.events(1));
     let covered = cluster.get(1).raft_committed();
     cluster
         .node(1)
-        .record_snapshot(covered, leader_state.clone())
+        .record_snapshot(covered, leader_state.clone(), floor)
         .unwrap();
     cluster.unreachable.remove(&3);
     cluster.heartbeat(1);
@@ -945,7 +957,11 @@ fn reopening_after_a_snapshot_continues_the_numbering_it_established() {
     }
     let covered = cluster.get(1).raft_committed();
     let state = encode_state(&cluster.events(1));
-    cluster.node(1).record_snapshot(covered, state).unwrap();
+    let floor = covers(&cluster.events(1));
+    cluster
+        .node(1)
+        .record_snapshot(covered, state, floor)
+        .unwrap();
     // The application accounts for the four events the payload describes, so the
     // records below the floor stop being this member's to report.
     cluster.node(1).resume_with_applied(4).unwrap();
@@ -975,4 +991,113 @@ fn reopening_after_a_snapshot_continues_the_numbering_it_established() {
         vec![5],
         "the one record above the floor keeps the index it was committed at"
     );
+}
+
+#[test]
+fn a_leader_refuses_to_compact_past_its_retained_snapshot_and_a_lagging_member_is_replayed() {
+    // The application retained a snapshot of three events, and the group has since
+    // committed two more that member 3 has not seen. Compacting to the commit index
+    // would discard those two from the only log that holds them, so it is refused —
+    // and because it is, member 3 is still caught up by plain replay.
+    let temp = Temp::new("past-floor");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    for generation in 1..=3 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let retained = encode_state(&cluster.events(1));
+    let floor = covers(&cluster.events(1));
+    cluster.unreachable.insert(3);
+    for generation in 4..=5 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let covered = cluster.get(1).raft_committed();
+    assert!(
+        covered > 5,
+        "the leader's empty entry makes the raft index larger than the event count"
+    );
+
+    let refused = cluster
+        .node(1)
+        .record_snapshot(covered, retained, floor)
+        .expect_err("events 4 and 5 are covered by no retained snapshot");
+    assert!(
+        refused.starts_with("PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR"),
+        "{refused}"
+    );
+
+    cluster.unreachable.remove(&3);
+    cluster.heartbeat(1);
+    assert!(
+        cluster.node(3).take_installed_snapshot().is_none(),
+        "nothing was compacted, so nothing needs a snapshot"
+    );
+    assert_eq!(
+        cluster.events(3),
+        cluster.events(1),
+        "the lagging member is replayed every event"
+    );
+}
+
+#[test]
+fn a_member_restarted_before_accounting_for_a_snapshot_is_still_blocked() {
+    // The member was handed a snapshot and restarted before the application said
+    // what it covers. Coming back unblocked would number the next event from the
+    // count of the position before the snapshot.
+    let temp = Temp::new("restart-unaccounted");
+    let (cluster, state, covered) = cluster_with_installed_snapshot(&temp);
+    drop(cluster);
+
+    let mut reopened = RaftNode::open(&temp.member(3), 3, &VOTERS).unwrap();
+    let pending = reopened
+        .take_installed_snapshot()
+        .expect("the snapshot is still waiting to be accounted for");
+    assert_eq!(pending.index, covered);
+    assert_eq!(pending.state, state);
+    assert_eq!(pending.digest, ptr_ledger::integrity::sha256(&state));
+
+    reopened
+        .resume_with_applied(decode_state(&pending.state).len() as u64)
+        .unwrap();
+    assert!(reopened.take_installed_snapshot().is_none());
+    assert_eq!(reopened.applied_events(), 5);
+    drop(reopened);
+
+    let accounted = RaftNode::open(&temp.member(3), 3, &VOTERS).unwrap();
+    assert_eq!(
+        accounted.applied_events(),
+        5,
+        "accounting survives the next restart"
+    );
+}
+
+#[test]
+fn a_leader_s_own_snapshot_carries_its_coverage_across_a_restart() {
+    // Recording a snapshot records what it covers, so the member that recorded it
+    // needs no separate accounting step: after a restart the event above the floor
+    // keeps the index it was committed at.
+    let temp = Temp::new("own-coverage");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    for generation in 1..=4 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let covered = cluster.get(1).raft_committed();
+    let state = encode_state(&cluster.events(1));
+    let floor = covers(&cluster.events(1));
+    cluster
+        .node(1)
+        .record_snapshot(covered, state, floor)
+        .unwrap();
+    cluster.propose(1, 5).unwrap();
+    drop(cluster);
+
+    let reopened = RaftNode::open(&temp.member(1), 1, &VOTERS).unwrap();
+    let recovered: Vec<u64> = reopened
+        .committed_events()
+        .iter()
+        .map(|event| event.index.0)
+        .collect();
+    assert_eq!(recovered, vec![5], "numbered from the snapshot's coverage");
+    assert_eq!(reopened.applied_events(), 5);
 }
