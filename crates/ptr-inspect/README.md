@@ -1,7 +1,7 @@
 # ptr-inspect — Structured Runtime Introspection
 
 > **Role:** Allows generic inspection and rendering of typed Rust values without collapsing the runtime into untyped JSON.  
-> **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
+> **Maturity:** see the generated status below; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
