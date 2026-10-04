@@ -7,3 +7,9 @@ tests_dir = "tests"
 [pinned_thresholds]
 noise_control_prompts = 100
 noise_percentile = 99
+# Preregistered choices for this experiment (no code default exists).
+canary_bearing_span_cases = 1
+min_span_insertions = 1
+min_span_evictions = 1
+min_downstream_recomputations = 1
+min_canary_probes = 1

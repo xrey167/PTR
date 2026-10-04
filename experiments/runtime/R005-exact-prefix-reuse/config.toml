@@ -9,3 +9,13 @@ tests_dir = "tests"
 min_revoked_fork_attempts = 1
 max_revoked_fork_count = 0
 min_hit_rate_at_50pct_shared_prefix = 0.40
+max_approximate_run_actions_admitted = 0
+max_approximate_semdb_promotions = 0
+min_approximate_candidate_path_attempts = 1
+max_approximate_candidate_exact_admissions = 0
+# Preregistered choices for this experiment (no code default exists).
+max_trie_nodes = 4096
+max_kv_page_bytes = 67108864
+over_capacity_workload = "unique prompts whose total trie nodes and page bytes exceed both bounds"
+min_evictions = 1
+max_active_fork_page_evictions = 0

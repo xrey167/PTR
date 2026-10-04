@@ -3,3 +3,12 @@ kind = "workspace-area"
 name = "M015-rlvr-vs-distill-passk"
 path = "experiments/model/M015-rlvr-vs-distill-passk"
 tests_dir = "tests"
+
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+samples_per_problem = 256
+max_k = 256
+min_pass_at_1_gain_rlvr_points = 2.0
+max_pass_at_256_gain_rlvr_points = 2.0
+min_pass_at_256_gain_distill_points = 2.0
+min_seeds = 3

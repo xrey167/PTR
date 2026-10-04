@@ -1,16 +1,16 @@
 # R009-layer-shared-lora-kv
 
 ## Hypothesis
-with per-layer chain keys, layers below a LoRA's first adapted layer share base KV pages bit-identically, and aLoRA prefixes reuse base KV exactly, evaluated on at least one configuration with 0 < f < L (pinned f = L/2); configurations with f = 0 alone cannot pass.
+with per-layer chain keys, layers below a LoRA's first adapted layer share base KV pages bit-identically, and aLoRA prefixes reuse base KV exactly, evaluated on at least one configuration with 0 < f < L (pinned f = L/2); configurations with f = 0 alone cannot pass; the predicted sharing fraction is per adapter type: a QKV-LoRA first attached at layer f shares f/L, a Q-only or MLP-only adapter at f shares (f+1)/L, and an aLoRA shares all full pre-invocation pages plus the pre-invocation rows of the boundary page; the pinned run covers QKV-LoRA, Q-only and aLoRA, including an aLoRA whose invocation point lies inside a 16-token page (offset 7).
 
 ## Primary metrics
-shared_page_fraction, predicted_shared_fraction, bitwise_mismatch_count, base_pages_dropped_on_revoke
+shared_page_fraction, predicted_shared_fraction, bitwise_mismatch_count, base_pages_dropped_on_revoke, alora_prefix_reuse_attempts, adapter_revocations_performed, revoked_adapter_entry_hits, alora_boundary_page_cases
 
 ## Baseline
 whole-cache adapter binding (no sharing)
 
 ## Falsification
-shared pages differ from base bitwise, measured sharing deviates from the predicted f/L fraction, revoking the adapter drops any base-keyed page, or the aLoRA prefix is not bit-identical; the criteria must be evaluated on the pinned 0 < f < L configuration (f = L/2), and a run covering only f = 0 configurations fails.
+shared pages differ from base bitwise, measured sharing deviates from the fraction predicted per adapter type (QKV-LoRA f/L; Q-only or MLP-only (f+1)/L; aLoRA all full pre-invocation pages plus the pre-invocation rows of the boundary page), revoking the adapter drops any base-keyed page, any hit after revocation lands on an entry whose chain key depends on the revoked adapter generation (revoked_adapter_entry_hits > 0), or the aLoRA prefix is not bit-identical; the criteria must be evaluated on the pinned 0 < f < L configuration (f = L/2), and a run covering only f = 0 configurations fails; alora_prefix_reuse_attempts == 0 or adapter_revocations_performed == 0 is vacuous and falsified, the measured shared fraction must equal the per-adapter-type predicted fraction (tolerance 0.0), and an aLoRA case with the invocation point inside a 16-token page (alora_invocation_offset_in_page = 7) must be run (alora_boundary_page_cases >= 1), with a page containing any post-invocation row never admitted under a base-only key.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

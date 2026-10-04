@@ -21,3 +21,9 @@ min_seeds_claim_12 = 3
 min_mean_net_quality_change_per_accepted_proposal = 0.0
 net_quality_change_must_be_at_least_both_baselines = true
 gate_must_pass_and_average_forgetting_strictly_below_static = true
+# Preregistered choices for this experiment (no code default exists).
+max_recovery_steps = 5000
+min_proposals_generated_per_arm = 20
+min_proposals_accepted_per_arm = 1
+# Preregistered choice: margin by which full-context net quality change must be at least both baselines.
+net_quality_vs_baseline_margin = 0.0

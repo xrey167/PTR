@@ -3,3 +3,12 @@ kind = "workspace-area"
 name = "M011-routed-peft"
 path = "experiments/model/M011-routed-peft"
 tests_dir = "tests"
+
+[pinned_thresholds]
+
+# Preregistered choices for this experiment (no code default exists).
+min_accuracy_gain_points = 1.0
+specialisation_margin_points = 1.0
+trainable_params_relative_tolerance = 0.01
+training_steps_per_arm = 2000
+min_seeds = 3

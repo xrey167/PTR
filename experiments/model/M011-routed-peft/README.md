@@ -10,7 +10,7 @@ task_accuracy_per_domain, expert_specialisation_index, trainable_params, latency
 single LoRA at equal parameters; MixLoRA-style top-k LoRA experts
 
 ## Falsification
-over >=3 seeds at equal trainable parameters, PERFT-R is not better than the single LoRA by at least 1 point mean task accuracy, or not better than MixLoRA-style experts by at least 1 point, or prescribed specialisation beats emergent specialisation by more than 1 point.
+over >=3 seeds at equal trainable parameters, PERFT-R is not better than the single LoRA by at least 1 point mean task accuracy, or not better than MixLoRA-style experts by at least 1 point, or prescribed specialisation beats emergent specialisation by more than 1 point; all arms must train with the same pinned budget and trainable_params within the pinned tolerance of each other, otherwise the run is invalid and falsified.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

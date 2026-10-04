@@ -9,3 +9,5 @@ task_accuracy_margin_points = 1.0
 load_cv_margin = 0.05
 min_seeds = 3
 each_regression_falsifies_independently = true
+# Preregistered choices for this experiment (no code default exists).
+training_steps_per_arm = 2000

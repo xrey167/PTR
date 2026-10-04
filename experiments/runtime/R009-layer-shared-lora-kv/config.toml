@@ -10,3 +10,12 @@ test_model_layers = 4
 first_adapted_layer_configs = [0, 2]
 required_interior_first_adapted_layer = 2
 min_interior_configs = 1
+# Preregistered choices for this experiment (no code default exists).
+min_alora_prefix_reuse_attempts = 1
+min_adapter_revocations_performed = 1
+shared_fraction_tolerance = 0.0
+adapter_types_run = ["qkv_lora", "q_only_lora", "alora"]
+max_revoked_adapter_entry_hits = 0
+alora_invocation_offset_in_page = 7
+min_alora_boundary_page_cases = 1
+page_tokens = 16

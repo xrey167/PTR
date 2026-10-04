@@ -11,3 +11,7 @@ null_control_pass_at_1_tolerance_points = 2.0
 min_seeds = 3
 crash_comparison_only_if_control_crashes = true
 crash_step_censoring = "final_step"
+# Preregistered choices for this experiment (no code default exists).
+max_rl_steps = 2000
+same_step_budget_all_arms = true
+gspo_sapo_crash_while_grpo_survives_falsifies = true

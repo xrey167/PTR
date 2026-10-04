@@ -12,3 +12,8 @@ deterministic_routing = "dropless, batch-invariant"
 # Preregistered choices for this experiment (no code default exists).
 min_nondeterministic_reuse_attempts = 1
 max_nondeterministic_exact_tags = 0
+# Preregistered choices for this experiment (no code default exists).
+min_deterministic_revocation_attempts = 1
+min_pages_above_j_before_revocation = 1
+min_pages_at_or_below_j_before_revocation = 1
+min_deterministic_reuse_events = 1

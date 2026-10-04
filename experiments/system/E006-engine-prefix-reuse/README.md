@@ -1,16 +1,16 @@
 # E006-engine-prefix-reuse
 
 ## Hypothesis
-binding an engine's prefix cache to a PTR-derived salt from the currently admitted binding yields at least 1.5x TTFT gain at 50% shared prefix while never hitting stale blocks (blocks created under any revoked or replaced model, adapter or expert generation, or under a pre-revocation salt; the engine salt must include these generations); the run pins at least one generation transition (revocation or replacement) followed by requests able to hit the old prefix.
+binding an engine's prefix cache to a PTR-derived salt from the currently admitted binding yields at least 1.5x TTFT gain at 50% shared prefix while never hitting stale blocks (blocks created under any revoked or replaced model, adapter or expert generation, or under a pre-revocation salt; the engine salt must include these generations); the run pins at least one generation transition (revocation or replacement) followed by requests able to hit the old prefix; with identical binding and numerics, cache-enabled engine output is bit-identical to a cache-disabled full prefill (for engines with batch-invariant kernels); the engine salt carries the principal and the admitted generations and digests but not the semantic lineage, so every semantic or memory input revocation requires an engine-acknowledged flush or salt rotation before further requests are served.
 
 ## Primary metrics
-ttft_ms, hit_rate, stale_block_hits, generation_transitions
+ttft_ms, hit_rate, stale_block_hits, generation_transitions, bitwise_mismatch_count, semantic_revocations_performed, stale_semantic_block_hits, unacknowledged_flushes_before_serve
 
 ## Baseline
 primary comparator: same engine with prefix caching DISABLED (the denominator of the TTFT gain); secondary control: same engine with caching enabled WITHOUT salt (used only for the stale_block_hits check, where stale-block hits are expected and demonstrate that the salt matters)
 
 ## Falsification
-TTFT gain against the primary comparator (caching disabled) below 1.5x at 50% shared prefix, or stale_block_hits > 0 with the salted cache (any hit on a block created under any revoked or replaced model, adapter or expert generation, or a pre-revocation salt; the engine salt must include model, adapter and expert generations); the run is invalid and counts as falsified (vacuous) if generation_transitions < 1, or if the unsalted positive-control arm shows stale_block_hits == 0 after the transition, and the salted arm must show stale_block_hits == 0.
+TTFT gain against the primary comparator (caching disabled) below 1.5x at 50% shared prefix, or stale_block_hits > 0 with the salted cache (any hit on a block created under any revoked or replaced model, adapter or expert generation, or a pre-revocation salt; the engine salt must include model, adapter and expert generations); the run is invalid and counts as falsified (vacuous) if generation_transitions < 1, or if the unsalted positive-control arm shows stale_block_hits == 0 after the transition, and the salted arm must show stale_block_hits == 0; at least stale_probe_requests_after_transition requests (pinned in config.toml) must be issued after the transition to every arm; also falsified by any bitwise difference (bitwise_mismatch_count > 0) between cache-enabled engine output and cache-disabled full prefill under the identical binding and numerics, for engines with batch-invariant kernels; for other engines E006 reports Approximate and cannot claim Exact; also falsified if stale_semantic_block_hits > 0 after a semantic or memory input revocation, or if any request is served before the engine acknowledges the required flush or salt rotation (unacknowledged_flushes_before_serve > 0); the run is vacuous and falsified if semantic_revocations_performed < 1.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

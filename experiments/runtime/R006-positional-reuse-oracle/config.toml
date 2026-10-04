@@ -8,3 +8,11 @@ tests_dir = "tests"
 # nonzero shifts in tokens: small, non-power-of-two, page-boundary-crossing (16-token pages), long
 position_shift_tokens = [1, 7, 64, 513, 4096]
 max_bitwise_mismatch_count_per_shift = 0
+# Preregistered choices for this experiment (no code default exists).
+min_reuse_attempts_per_shift = 1
+# Preregistered choices for this experiment (no code default exists).
+min_secondary_index_lookups = 1
+nonaligned_insertion_tokens = [1, 7]
+min_nonaligned_insertion_cases_per_size = 1
+min_upstream_revocation_cases = 1
+max_revoked_upstream_page_reachable_count = 0

@@ -3,3 +3,12 @@ kind = "workspace-area"
 name = "R008-lossy-kv-tier"
 path = "experiments/runtime/R008-lossy-kv-tier"
 tests_dir = "tests"
+
+[pinned_thresholds]
+
+# Preregistered choices for this experiment (no code default exists).
+min_top1_agreement = 0.98
+min_kv_memory_reduction = 2.0
+min_lossy_reuse_events = 1
+candidate_kv_keep_fractions = [0.5, 0.25, 0.125]
+best_configuration_rule = "highest kv_bytes_ratio among configs with top1_agreement >= min_top1_agreement"
