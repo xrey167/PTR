@@ -15,16 +15,30 @@
 //!
 //! # Sampling
 //!
-//! The draw is hidden from policies. A router sees the request id and digest, so a public hash
+//! The draw is hidden from policies and fresh for every decision. A router sees the request id and digest, so a public hash
 //! of them would let it return weights correlated with the draw (for example `(a: .75, b: .25)`
 //! when the draw is below one half and the reverse otherwise), always win with the larger
 //! logged weight and still have a marginal probability of one half per pod. The trusted side
 //! therefore holds a secret [`SamplingKey`] that never reaches the policy: the draw is the top 53
 //! bits of the first eight bytes (big-endian) of
-//! `HMAC-SHA256(key, len(request_id) || request_id || request_digest)`, with the length as
-//! eight big-endian bytes. The same key and request reproduce the same draw (replay needs the
-//! key, which the runtime keeps in trusted configuration), while different keys give unrelated
-//! draws. The draw is recorded in the [`RoutedChoice`] for audit.
+//! `HMAC-SHA256(key, nonce || len(request_id) || request_id || request_digest)`, with the
+//! length as eight big-endian bytes and a 16-byte [`DecisionNonce`] in front.
+//!
+//! The nonce makes the draw per decision, not per request. A request may be routed again (a
+//! retry or a supported replay). Were the draw a function of key and request only, the earlier
+//! record (which carries [`RoutedChoice::draw`]) would reveal the draw of the next routing, and
+//! a stateful policy holding that record could put its larger weight around the known draw,
+//! force the action and still log a propensity below one. Instead every fresh decision uses a
+//! nonce that was never used before ([`CheckedRouter`] takes them from a strictly increasing
+//! [`NonceSequence`]) and the nonce is recorded in the [`RoutedChoice`]. The nonce is not in the
+//! [`RouteRequest`], so a policy cannot learn it before it picks its distribution. A draw that
+//! became known afterwards says nothing about the next one without the key.
+//!
+//! Replay is `(key, nonce, request)`: [`route_checked`] with the recorded nonce reproduces the
+//! recorded draw and choice exactly. Replay needs the key, which the runtime keeps in trusted
+//! configuration; different keys or nonces give unrelated draws. [`RoutedChoice::draw`] and
+//! [`RoutedChoice::nonce`] belong in trusted telemetry and must not be fed back to a policy
+//! for the same request, since they would let it game any replay that reuses the nonce.
 //!
 //! The draw is an integer `d` in `[0, 2^53)` and the distribution is quantized to the same
 //! resolution: [`RouteDistribution::new`] turns the normalized probabilities into integer
@@ -51,34 +65,52 @@
 //! has no revision or generation field and `PodRegistry` exposes none, so neither can appear in
 //! [`RoutedError`] yet.
 
-use crate::{PodRoute, PodRouter, Propensity, PropensityError, SamplingKey};
+use crate::{
+    DecisionNonce, NonceExhausted, NonceSequence, PodRoute, PodRouter, Propensity, PropensityError,
+    SamplingKey,
+};
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, Digest, PodId, Probability, ProjectId, RequestId, TypeId};
+use std::borrow::Cow;
 use std::fmt;
 
 /// A pod sampled by the trusted routing path together with the probability of sampling it and
-/// the draw that selected it. Only [`route_checked`] constructs it. `route().score` is the
-/// propensity rounded to `f32`.
+/// the draw and decision nonce that selected it. Only [`route_checked`] constructs it.
+/// `route().score` is the propensity rounded to `f32`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoutedChoice {
     route: PodRoute,
     propensity: Propensity,
     draw: u64,
+    nonce: DecisionNonce,
 }
 
 impl RoutedChoice {
-    pub(crate) fn new(route: PodRoute, propensity: Propensity, draw: u64) -> Self {
+    pub(crate) fn new(
+        route: PodRoute,
+        propensity: Propensity,
+        draw: u64,
+        nonce: DecisionNonce,
+    ) -> Self {
         Self {
             route,
             propensity,
             draw,
+            nonce,
         }
     }
 
-    /// The keyed draw in `[0, 2^53)` that selected the pod, for audit and replay (replaying
-    /// needs the [`SamplingKey`]).
+    /// The keyed draw in `[0, 2^53)` that selected the pod, for trusted telemetry and audit.
+    /// Do not hand it to a routing policy: with the same key, nonce and request it is
+    /// reproduced exactly, so a policy that knew it could game a replay.
     pub fn draw(&self) -> u64 {
         self.draw
+    }
+
+    /// The nonce of this decision. Together with the [`SamplingKey`] and the request it
+    /// reproduces [`RoutedChoice::draw`] when passed to [`route_checked`].
+    pub fn nonce(&self) -> DecisionNonce {
+        self.nonce
     }
 
     pub fn route(&self) -> &PodRoute {
@@ -209,6 +241,8 @@ pub enum RouteError {
     /// The policy returned an empty distribution although the registry offers eligible
     /// candidates. Raised by [`route_checked`].
     MissingChoice { candidates: usize },
+    /// The [`NonceSequence`] of a [`CheckedRouter`] cannot hand out another fresh nonce.
+    NonceExhausted(NonceExhausted),
 }
 
 impl RouteError {
@@ -241,6 +275,7 @@ impl fmt::Display for RouteError {
                 f,
                 "router returned an empty distribution although {candidates} eligible candidates exist"
             ),
+            Self::NonceExhausted(error) => write!(f, "{error}"),
         }
     }
 }
@@ -251,6 +286,7 @@ impl std::error::Error for RouteError {
             Self::Policy { source, .. } => Some(source.as_ref()),
             Self::InvalidPropensity(error) => Some(error),
             Self::InvalidDistribution(error) => Some(error),
+            Self::NonceExhausted(error) => Some(error),
             Self::InvalidFeatures { .. }
             | Self::IneligibleChoice { .. }
             | Self::MissingChoice { .. } => None,
@@ -415,7 +451,7 @@ impl RouteDistribution {
         if entries.is_empty() {
             return Ok(Self::none());
         }
-        let total: f64 = entries.iter().map(|(_, weight)| weight).sum();
+        let total = canonical_total(&entries);
         if total.is_infinite() {
             return Err(DistributionError::OverflowingTotalWeight);
         }
@@ -473,8 +509,40 @@ fn mass(width: u64) -> f64 {
     width as f64 / RouteDistribution::RESOLUTION as f64
 }
 
+/// The sum of the weights, independent of their `PodId` order: the weights are summed in
+/// ascending order of value with Neumaier compensation, so a dominant weight cannot round the
+/// small ones away depending on where its pod sorts. Returns infinity when the sum overflows.
+fn canonical_total(entries: &[(PodId, f64)]) -> f64 {
+    let mut weights: Vec<f64> = entries.iter().map(|(_, weight)| *weight).collect();
+    weights.sort_by(f64::total_cmp);
+    let (mut sum, mut compensation) = (0.0f64, 0.0f64);
+    for weight in weights {
+        let next = sum + weight;
+        if next.is_infinite() {
+            return f64::INFINITY;
+        }
+        if sum.abs() >= weight.abs() {
+            compensation += (sum - next) + weight;
+        } else {
+            compensation += (weight - next) + sum;
+        }
+        sum = next;
+    }
+    let total = sum + compensation;
+    if total.is_infinite() {
+        f64::INFINITY
+    } else {
+        total
+    }
+}
+
 /// Integer interval widths summing to exactly `RESOLUTION` (largest remainder, ties by position,
-/// that is `PodId` order). `entries` are sorted, unique and have positive weights.
+/// that is `PodId` order). `entries` are sorted, unique and have positive weights; `total` is
+/// their [`canonical_total`].
+///
+/// Sub-resolution rejection is decided on every probability `weight / total` before any width is
+/// assigned, so it depends on the multiset of weights only, never on their order. Correcting the
+/// rounding difference is `O(n log n)`: one sort by remainder and a bulk distribution.
 fn quantize(
     entries: Vec<(PodId, f64)>,
     total: f64,
@@ -483,8 +551,9 @@ fn quantize(
     let mut widths = Vec::with_capacity(entries.len());
     let mut remainders = Vec::with_capacity(entries.len());
     for (pod, weight) in &entries {
+        let probability = weight / total;
         // Scaling by a power of two is exact, so the floor and remainder are exact.
-        let scaled = (weight / total) * resolution;
+        let scaled = probability * resolution;
         let floor = scaled.floor();
         if floor < 1.0 {
             return Err(DistributionError::ProbabilityBelowResolution { pod: pod.clone() });
@@ -496,26 +565,26 @@ fn quantize(
     order.sort_by(|a, b| remainders[*b].total_cmp(&remainders[*a]).then(a.cmp(b)));
     let sum: u128 = widths.iter().map(|width| u128::from(*width)).sum();
     let target = u128::from(RouteDistribution::RESOLUTION);
+    let count = widths.len() as u128;
     if sum < target {
-        let mut deficit = target - sum;
-        for index in order.iter().cycle() {
-            if deficit == 0 {
-                break;
-            }
-            widths[*index] += 1;
-            deficit -= 1;
+        // Every pod gets an equal share of the deficit and the largest remainders one more.
+        let deficit = target - sum;
+        let (share, extra) = (deficit / count, (deficit % count) as usize);
+        for (rank, index) in order.iter().enumerate() {
+            widths[*index] += (share + u128::from(rank < extra)) as u64;
         }
     } else {
         // Floating-point normalization can overshoot by a few units; take them back from the
-        // smallest remainders without emptying an interval.
+        // smallest remainders without emptying an interval. The total capacity
+        // `sum - count >= target - count` always covers the excess.
         let mut excess = sum - target;
-        while excess > 0 {
-            for index in order.iter().rev() {
-                if excess > 0 && widths[*index] > 1 {
-                    widths[*index] -= 1;
-                    excess -= 1;
-                }
+        for index in order.iter().rev() {
+            if excess == 0 {
+                break;
             }
+            let taken = excess.min(u128::from(widths[*index] - 1));
+            widths[*index] -= taken as u64;
+            excess -= taken;
         }
     }
     Ok(entries
@@ -540,9 +609,14 @@ pub trait Router {
 }
 
 /// Routes through `router`: validates its distribution against the registry, samples a pod with
-/// a draw keyed by `key` and records the sampled pod's quantized probability as the propensity.
+/// a draw keyed by `key` and `nonce`, and records the sampled pod's quantized probability as the
+/// propensity.
 ///
 /// `key` is held by the trusted caller and never handed to the policy; see [`SamplingKey`].
+/// `nonce` identifies this decision: a fresh decision must use a nonce that was never used
+/// before (a [`NonceSequence`] provides them, and [`CheckedRouter`] uses one), because reusing a
+/// nonce for the same request reproduces the same draw. Passing the nonce recorded in a
+/// [`RoutedChoice`] replays that decision exactly. The nonce is not given to the policy.
 ///
 /// This is the trusted path: the candidate set is recomputed from
 /// `request.registry.candidates(project, capability, input_type)` here, not taken from the
@@ -554,24 +628,23 @@ pub fn route_checked<R: Router + ?Sized>(
     router: &R,
     request: &RouteRequest<'_>,
     key: &SamplingKey,
+    nonce: &DecisionNonce,
 ) -> Result<Option<RoutedChoice>, RoutedError> {
-    route_inner(router, request, key).map_err(|error| RoutedError::new(request, error))
+    route_inner(router, request, key, nonce).map_err(|error| RoutedError::new(request, error))
 }
 
 fn route_inner<R: Router + ?Sized>(
     router: &R,
     request: &RouteRequest<'_>,
     key: &SamplingKey,
+    nonce: &DecisionNonce,
 ) -> Result<Option<RoutedChoice>, RouteError> {
     let distribution = router.policy(request)?;
     let candidates =
         request
             .registry
             .candidates(request.project, request.capability, request.input_type);
-    if let Some((pod, _)) = distribution
-        .iter()
-        .find(|(pod, _)| !candidates.contains(pod))
-    {
+    if let Some(pod) = first_ineligible(&distribution, &candidates) {
         return Err(RouteError::IneligibleChoice { pod: pod.clone() });
     }
     if distribution.is_empty() {
@@ -583,7 +656,7 @@ fn route_inner<R: Router + ?Sized>(
             })
         };
     }
-    let draw = key.draw(request.request_id, &request.request_digest);
+    let draw = key.draw(nonce, request.request_id, &request.request_digest);
     let Some((pod, width)) = distribution.sample(draw) else {
         return Ok(None);
     };
@@ -597,28 +670,62 @@ fn route_inner<R: Router + ?Sized>(
         },
         propensity,
         draw,
+        *nonce,
     )))
+}
+
+/// The first pod of `distribution` that is not in `candidates`, in one linear merge scan.
+/// Distribution entries are sorted by `PodId`; `PodRegistry::candidates` returns canonical
+/// `PodId` order too, and a copy is sorted here should that ever not hold.
+fn first_ineligible<'d>(
+    distribution: &'d RouteDistribution,
+    candidates: &[PodId],
+) -> Option<&'d PodId> {
+    let candidates: Cow<'_, [PodId]> = if candidates.is_sorted() {
+        Cow::Borrowed(candidates)
+    } else {
+        let mut sorted = candidates.to_vec();
+        sorted.sort();
+        Cow::Owned(sorted)
+    };
+    let mut remaining = candidates.iter().peekable();
+    for (pod, _) in &distribution.entries {
+        while remaining.next_if(|candidate| *candidate < pod).is_some() {}
+        if remaining.peek().is_none_or(|candidate| *candidate != pod) {
+            return Some(pod);
+        }
+    }
+    None
 }
 
 /// Wraps a [`Router`] so it can only be used through [`route_checked`].
 ///
 /// It deliberately does not implement [`Router`]: a router yields distributions, a
-/// `CheckedRouter` yields trusted, sampled choices. It owns the [`SamplingKey`], which the
-/// wrapped router cannot reach.
+/// `CheckedRouter` yields trusted, sampled choices. It owns the [`SamplingKey`] and a
+/// [`NonceSequence`], neither of which the wrapped router can reach, and gives every call to
+/// [`CheckedRouter::route`] a fresh [`DecisionNonce`] (recorded in the choice), so routing the
+/// same request again draws independently.
 #[derive(Debug)]
 pub struct CheckedRouter<R> {
     inner: R,
     key: SamplingKey,
+    nonces: NonceSequence,
 }
 
 impl<R: Router> CheckedRouter<R> {
-    pub fn new(inner: R, key: SamplingKey) -> Self {
-        Self { inner, key }
+    pub fn new(inner: R, key: SamplingKey, nonces: NonceSequence) -> Self {
+        Self { inner, key, nonces }
     }
 
-    /// [`route_checked`] on the wrapped router with the owned key.
+    /// [`route_checked`] on the wrapped router with the owned key and the next fresh nonce. The
+    /// nonce is consumed even if routing fails. [`RouteError::NonceExhausted`] when the
+    /// sequence has no fresh nonce left.
     pub fn route(&self, request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RoutedError> {
-        route_checked(&self.inner, request, &self.key)
+        let nonce = self
+            .nonces
+            .next_nonce()
+            .map_err(|error| RoutedError::new(request, RouteError::NonceExhausted(error)))?;
+        route_checked(&self.inner, request, &self.key, &nonce)
     }
 }
 

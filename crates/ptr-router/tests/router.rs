@@ -1,12 +1,15 @@
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_router::{
-    route_checked, CheckedRouter, DistributionError, PodRouter, PolicyFailure, Propensity,
-    RouteDistribution, RouteError, RouteFeatures, RouteRequest, RoutedChoice, RoutedError, Router,
-    SamplingKey,
+    route_checked, CheckedRouter, DecisionNonce, DistributionError, NonceSequence, PodRouter,
+    PolicyFailure, Propensity, RouteDistribution, RouteError, RouteFeatures, RouteRequest,
+    RoutedChoice, RoutedError, Router, SamplingKey,
 };
 use ptr_types::{CapabilityId, Effect, PodId, Probability, ProjectId, RequestId, TypeId};
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 struct TestPod(PodManifest);
 impl DynPod for TestPod {
@@ -22,11 +25,19 @@ fn key() -> SamplingKey {
     SamplingKey::from_bytes([0x5a; 32])
 }
 
+fn nonce() -> DecisionNonce {
+    DecisionNonce::from_bytes([0x11; 16])
+}
+
+fn nonces() -> NonceSequence {
+    NonceSequence::starting_at([0x22; 8], 0)
+}
+
 fn route<R: Router + ?Sized>(
     router: &R,
     request: &RouteRequest<'_>,
 ) -> Result<Option<RoutedChoice>, RoutedError> {
-    route_checked(router, request, &key())
+    route_checked(router, request, &key(), &nonce())
 }
 
 fn registry(project: &ProjectId, ids: &[&str]) -> PodRegistry {
@@ -370,7 +381,7 @@ fn routing_failures_keep_request_context() {
     assert!(source.downcast_ref::<RouteError>().is_some());
     assert!(matches!(err.into_error(), RouteError::Policy { .. }));
 
-    let err = CheckedRouter::new(FixedRouter("ghost"), key())
+    let err = CheckedRouter::new(FixedRouter("ghost"), key(), nonces())
         .route(&req)
         .unwrap_err();
     assert_eq!(err.request_id(), &id);
@@ -531,14 +542,14 @@ fn checked_route_passes_valid_candidate_and_wrapper_matches() {
     let choice = route(&FixedRouter("alpha"), &req).unwrap().unwrap();
     assert_eq!(choice.route().pod_id, PodId::from("alpha"));
 
-    let wrapped = CheckedRouter::new(FixedRouter("ghost"), key());
+    let wrapped = CheckedRouter::new(FixedRouter("ghost"), key(), nonces());
     assert!(matches!(
         wrapped.route(&req).map_err(RoutedError::into_error),
         Err(RouteError::IneligibleChoice { .. })
     ));
     let dynamic: &dyn Router = &FixedRouter("alpha");
     assert!(matches!(
-        CheckedRouter::new(FixedRouter("alpha"), key()).route(&req),
+        CheckedRouter::new(FixedRouter("alpha"), key(), nonces()).route(&req),
         Ok(Some(_))
     ));
     assert!(matches!(route(dynamic, &req), Ok(Some(_))));
@@ -621,7 +632,7 @@ fn checked_route_rejects_false_no_candidate_result() {
     ));
     assert!(err.to_string().contains("1 eligible candidates"));
     assert!(matches!(
-        CheckedRouter::new(NoneRouter, key())
+        CheckedRouter::new(NoneRouter, key(), nonces())
             .route(&req)
             .map_err(RoutedError::into_error),
         Err(RouteError::MissingChoice { candidates: 1 })
@@ -638,7 +649,7 @@ fn checked_route_passes_no_candidate_result_when_registry_is_empty() {
 
     assert!(matches!(route(&NoneRouter, &req), Ok(None)));
     assert!(matches!(
-        CheckedRouter::new(NoneRouter, key()).route(&req),
+        CheckedRouter::new(NoneRouter, key(), nonces()).route(&req),
         Ok(None)
     ));
 }
@@ -827,7 +838,7 @@ fn draw_replays_with_the_same_key_and_differs_with_another() {
         let again = route(&FeatureRouter, &req).unwrap().unwrap();
         assert_eq!(first, again);
         assert_eq!(first.draw(), again.draw());
-        let different = route_checked(&FeatureRouter, &req, &other)
+        let different = route_checked(&FeatureRouter, &req, &other, &nonce())
             .unwrap()
             .unwrap();
         assert_ne!(first.draw(), different.draw());
@@ -838,7 +849,7 @@ fn draw_replays_with_the_same_key_and_differs_with_another() {
 fn sampling_key_debug_does_not_print_the_secret() {
     let text = format!("{:?}", SamplingKey::from_bytes([0x5a; 32]));
     assert_eq!(text, "SamplingKey(..)");
-    let checked = format!("{:?}", CheckedRouter::new(PodRouter, key()));
+    let checked = format!("{:?}", CheckedRouter::new(PodRouter, key(), nonces()));
     assert!(checked.contains("SamplingKey(..)"), "{checked}");
 }
 
@@ -921,4 +932,322 @@ fn router_that_recomputes_the_old_public_hash_cannot_bias_selection() {
         (mean_propensity - 0.625).abs() < 0.03,
         "mean propensity {mean_propensity}"
     );
+}
+
+/// A policy that was handed the draw of the previous routing of a request (as a stateful policy
+/// with access to the earlier record would be) and puts weight .75 on the pod whose interval
+/// contains it, hoping that the next draw repeats.
+struct ReplayGamingRouter {
+    known_draw: Rc<Cell<Option<u64>>>,
+}
+
+impl Router for ReplayGamingRouter {
+    fn policy(&self, _: &RouteRequest<'_>) -> Result<RouteDistribution, RouteError> {
+        // alpha owns [0, .75R) when heavy and [0, .25R) otherwise.
+        let alpha_heavy = self
+            .known_draw
+            .get()
+            .is_some_and(|draw| draw < RESOLUTION / 2);
+        let (alpha, zeta) = if alpha_heavy {
+            (0.75, 0.25)
+        } else {
+            (0.25, 0.75)
+        };
+        Ok(RouteDistribution::new(vec![
+            (PodId::from("alpha"), alpha),
+            (PodId::from("zeta"), zeta),
+        ])?)
+    }
+}
+
+fn gaming_frequency(
+    mut route_once: impl FnMut() -> RoutedChoice,
+    known: &Cell<Option<u64>>,
+) -> f64 {
+    let total = 2000usize;
+    let mut heavy = 0usize;
+    for _ in 0..total {
+        let before = known.get();
+        let choice = route_once();
+        let heavy_pod = if before.is_some_and(|draw| draw < RESOLUTION / 2) {
+            "alpha"
+        } else {
+            "zeta"
+        };
+        heavy += usize::from(choice.route().pod_id == PodId::from(heavy_pod));
+        known.set(Some(choice.draw()));
+    }
+    heavy as f64 / total as f64
+}
+
+#[test]
+fn replay_gaming_router_cannot_force_the_choice_with_fresh_nonces() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["zeta", "alpha"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let features = RouteFeatures::new();
+    // The SAME request id and digest every time.
+    let id = RequestId::from("same-request");
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+    let known = Rc::new(Cell::new(None));
+    let checked = CheckedRouter::new(
+        ReplayGamingRouter {
+            known_draw: Rc::clone(&known),
+        },
+        key(),
+        nonces(),
+    );
+    let frequency = gaming_frequency(|| checked.route(&req).unwrap().unwrap(), &known);
+    // The policy logs 0.75 for its heavy pod, and the heavy pod is chosen with exactly that
+    // frequency, not 1.0.
+    assert!(
+        (frequency - 0.75).abs() < 0.05,
+        "heavy action frequency {frequency}"
+    );
+}
+
+#[test]
+fn replay_gaming_router_would_force_the_choice_if_the_nonce_were_reused() {
+    // Documents why the nonce must be fresh: a reused nonce reproduces the draw.
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["zeta", "alpha"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let features = RouteFeatures::new();
+    let id = RequestId::from("same-request");
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+    let known = Rc::new(Cell::new(None));
+    let router = ReplayGamingRouter {
+        known_draw: Rc::clone(&known),
+    };
+    let frequency = gaming_frequency(
+        || {
+            route_checked(&router, &req, &key(), &nonce())
+                .unwrap()
+                .unwrap()
+        },
+        &known,
+    );
+    // After the first routing every later one is forced (the first one is the unknown case).
+    assert!(frequency > 0.99, "frequency {frequency}");
+}
+
+#[test]
+fn checked_router_uses_a_fresh_nonce_and_independent_draw_per_decision() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["zeta", "alpha"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let features = RouteFeatures::new();
+    let id = RequestId::from("same-request");
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+    let checked = CheckedRouter::new(FeatureRouter, key(), nonces());
+
+    let first = checked.route(&req).unwrap().unwrap();
+    let second = checked.route(&req).unwrap().unwrap();
+    assert_ne!(first.nonce(), second.nonce());
+    assert_eq!(&first.nonce().as_bytes()[..8], &[0x22; 8]);
+    assert_eq!(&first.nonce().as_bytes()[8..], &0u64.to_be_bytes());
+    assert_eq!(&second.nonce().as_bytes()[8..], &1u64.to_be_bytes());
+
+    let trials = 2000usize;
+    let mut draws = vec![first.draw(), second.draw()];
+    let mut nonces_seen = vec![first.nonce(), second.nonce()];
+    for _ in 2..trials {
+        let choice = checked.route(&req).unwrap().unwrap();
+        draws.push(choice.draw());
+        nonces_seen.push(choice.nonce());
+    }
+    let mut unique = nonces_seen
+        .iter()
+        .map(|n| *n.as_bytes())
+        .collect::<Vec<_>>();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), trials);
+    // Draws are uniform and a draw does not predict the next one.
+    let below_half = draws.iter().filter(|d| **d < RESOLUTION / 2).count() as f64;
+    assert!((below_half / trials as f64 - 0.5).abs() < 0.05);
+    let successive_lower = draws.windows(2).filter(|pair| pair[1] < pair[0]).count() as f64;
+    assert!((successive_lower / (trials - 1) as f64 - 0.5).abs() < 0.05);
+    let repeats = draws.windows(2).filter(|pair| pair[0] == pair[1]).count();
+    assert_eq!(repeats, 0);
+}
+
+#[test]
+fn explicit_key_nonce_and_request_reproduce_the_decision_exactly() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["zeta", "alpha"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let features = RouteFeatures::new();
+    let id = RequestId::from("replayed");
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+    let checked = CheckedRouter::new(FeatureRouter, key(), NonceSequence::starting_at([9; 8], 41));
+    for _ in 0..20 {
+        let original = checked.route(&req).unwrap().unwrap();
+        let replayed = route_checked(&FeatureRouter, &req, &key(), &original.nonce())
+            .unwrap()
+            .unwrap();
+        assert_eq!(original, replayed);
+        let other_nonce = DecisionNonce::from_bytes([0xee; 16]);
+        let other = route_checked(&FeatureRouter, &req, &key(), &other_nonce)
+            .unwrap()
+            .unwrap();
+        assert_ne!(original.draw(), other.draw());
+    }
+}
+
+#[test]
+fn exhausted_nonce_sequence_fails_routing_instead_of_reusing_a_nonce() {
+    let project = ProjectId::from("demo");
+    let registry = registry(&project, &["alpha"]);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let (id, features) = (RequestId::from("r1"), RouteFeatures::new());
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+    let checked = CheckedRouter::new(
+        PodRouter,
+        key(),
+        NonceSequence::starting_at([1; 8], u64::MAX - 1),
+    );
+    assert!(checked.route(&req).unwrap().is_some());
+    let err = checked.route(&req).unwrap_err();
+    assert!(matches!(err.error(), RouteError::NonceExhausted(_)));
+    assert_eq!(err.request_id(), &id);
+}
+
+#[test]
+fn eligibility_check_scales_to_many_candidates_and_still_rejects_an_ineligible_pod() {
+    let project = ProjectId::from("demo");
+    let ids: Vec<String> = (0..10_000).map(|n| format!("pod-{n:05}")).collect();
+    let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let registry = registry(&project, &id_refs);
+    let (cap, ty) = (CapabilityId::from("read"), TypeId::from("Text"));
+    let (id, features) = (RequestId::from("big"), RouteFeatures::new());
+    let req = request(&registry, &project, &cap, &ty, &id, &features);
+
+    struct AllPods(Vec<PodId>, Option<PodId>);
+    impl Router for AllPods {
+        fn policy(&self, _: &RouteRequest<'_>) -> Result<RouteDistribution, RouteError> {
+            let mut weights: Vec<(PodId, f64)> =
+                self.0.iter().map(|pod| (pod.clone(), 1.0)).collect();
+            weights.extend(self.1.iter().map(|pod| (pod.clone(), 1.0)));
+            Ok(RouteDistribution::new(weights)?)
+        }
+    }
+    let pods: Vec<PodId> = ids.iter().map(|id| PodId::from(id.as_str())).collect();
+    let started = Instant::now();
+    let choice = route(&AllPods(pods.clone(), None), &req).unwrap().unwrap();
+    assert!((choice.propensity().get() - 1.0 / 10_000.0).abs() < 1e-12);
+    // Ineligible pods sorting first, in the middle and last are all found.
+    for ghost in ["aaa-ghost", "pod-05000x", "zzz-ghost"] {
+        let err = route(&AllPods(pods.clone(), Some(PodId::from(ghost))), &req).unwrap_err();
+        assert!(
+            matches!(err.error(), RouteError::IneligibleChoice { pod } if *pod == PodId::from(ghost))
+        );
+    }
+    assert!(started.elapsed() < Duration::from_secs(30));
+}
+
+/// Interval widths in `PodId` order, read from the exact quantized masses in linear time.
+fn widths_of(distribution: &RouteDistribution) -> Vec<u64> {
+    distribution
+        .iter()
+        .map(|(_, mass)| (mass * RESOLUTION as f64) as u64)
+        .collect()
+}
+
+/// Distribution over pods named `p0..` with `weights[i]` assigned to the pod at `order[i]`.
+fn distribution_in_order(
+    weights: &[f64],
+    order: &[usize],
+) -> Result<RouteDistribution, DistributionError> {
+    RouteDistribution::new(
+        weights
+            .iter()
+            .zip(order)
+            .map(|(weight, slot)| (PodId::from(format!("p{slot:04}").as_str()), *weight))
+            .collect(),
+    )
+}
+
+#[test]
+fn quantization_depends_on_the_weights_not_on_the_pod_order() {
+    let weights = [0.31, 1.7, 2.9, 0.0042, 5.5, 0.77, 3.3, 0.1];
+    let n = weights.len();
+    let forward: Vec<usize> = (0..n).collect();
+    let backward: Vec<usize> = (0..n).rev().collect();
+    let shuffled = [3usize, 7, 0, 5, 1, 6, 2, 4];
+    let reference = distribution_in_order(&weights, &forward).unwrap();
+    for order in [&backward[..], &shuffled[..]] {
+        let other = distribution_in_order(&weights, order).unwrap();
+        for (index, slot) in order.iter().enumerate() {
+            let pod_other = PodId::from(format!("p{slot:04}").as_str());
+            let pod_reference = PodId::from(format!("p{index:04}").as_str());
+            assert_eq!(
+                other.width(&pod_other),
+                reference.width(&pod_reference),
+                "weight {} got a different width",
+                weights[index]
+            );
+        }
+    }
+}
+
+#[test]
+fn dominant_weight_with_sub_resolution_tails_is_rejected_in_every_order() {
+    // 1.0 plus 1000 tails of exactly 2^-53: the tails' share of the total is just under 2^-53
+    // (the total exceeds 1.0), which a left-to-right sum with the dominant weight first would
+    // round away and accept.
+    let tail = 2f64.powi(-53);
+    let mut weights = vec![1.0];
+    weights.extend(std::iter::repeat_n(tail, 1000));
+    let n = weights.len();
+    let forward: Vec<usize> = (0..n).collect();
+    let backward: Vec<usize> = (0..n).rev().collect();
+    // Dominant weight in the middle.
+    let mut middle: Vec<usize> = (0..n).collect();
+    middle.swap(0, n / 2);
+    for order in [&forward, &backward, &middle] {
+        assert!(
+            matches!(
+                distribution_in_order(&weights, order),
+                Err(DistributionError::ProbabilityBelowResolution { .. })
+            ),
+            "dominant weight with sub-resolution tails must be rejected"
+        );
+    }
+}
+
+#[test]
+fn dominant_weight_with_representable_tails_is_accepted_with_equal_widths_in_every_order() {
+    let tail = 2f64.powi(-52);
+    let mut weights = vec![1.0];
+    weights.extend(std::iter::repeat_n(tail, 1000));
+    let n = weights.len();
+    let forward: Vec<usize> = (0..n).collect();
+    let backward: Vec<usize> = (0..n).rev().collect();
+    let a = distribution_in_order(&weights, &forward).unwrap();
+    let b = distribution_in_order(&weights, &backward).unwrap();
+    for distribution in [&a, &b] {
+        let widths = widths_of(distribution);
+        assert_eq!(widths.iter().sum::<u64>(), RESOLUTION);
+        assert!(widths.iter().all(|width| *width >= 1));
+    }
+    // The dominant weight sits at p0000 in `a` and at p1000 in `b`.
+    assert_eq!(
+        a.width(&PodId::from("p0000")),
+        b.width(&PodId::from("p1000"))
+    );
+    let (mut widths_a, mut widths_b) = (widths_of(&a), widths_of(&b));
+    widths_a.sort_unstable();
+    widths_b.sort_unstable();
+    assert_eq!(widths_a, widths_b);
+}
+
+#[test]
+fn width_correction_handles_a_large_distribution_quickly() {
+    let weights: Vec<f64> = (0..50_000).map(|n| 1.0 + f64::from(n % 7) / 3.0).collect();
+    let order: Vec<usize> = (0..weights.len()).collect();
+    let started = Instant::now();
+    let distribution = distribution_in_order(&weights, &order).unwrap();
+    assert_eq!(widths_of(&distribution).iter().sum::<u64>(), RESOLUTION);
+    assert!(started.elapsed() < Duration::from_secs(60));
 }
