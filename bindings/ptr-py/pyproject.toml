@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "ptr-py"
+version = "0.1.0"
+description = "PTR governance checks (adapter lineage) callable from Python training code"
+requires-python = ">=3.11"
+license = { text = "MIT OR Apache-2.0" }
+classifiers = ["Programming Language :: Rust"]
+
+[tool.maturin]
+module-name = "ptr_py"
+features = ["pyo3/extension-module"]
