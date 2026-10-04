@@ -46,9 +46,15 @@ outcome field bound to `(request_id, chosen action)`: the verifier's
 `VerificationStatus` and the derived reward, using the four-status mapping of §5
 (`Pass` yields the report's `score`; `Fail`, `Disputed` and `Unknown` yield 0).
 It is written **after** verification, as an update of the record the routing decision
-created, never by the router at decision time. Records without an outcome (pending,
-timed out, never verified) are **excluded** from off-policy estimation, not imputed,
-and the number excluded is reported next to every estimate.
+created, never by the router at decision time. Outcomes must not be censored by the action
+taken, so a failure is an outcome and is **not** excluded: a timeout, crash,
+unreachable pod or verification failure is assigned a preregistered status
+(`Fail` or `Unknown`) with reward 0, recorded at a fixed deadline. Only records still
+pending before their deadline are not yet evaluable and are left out until it
+passes. Every estimate reports the counts per outcome type. Propensity weighting does
+**not** correct outcome censoring: it reweights by the chance of the action, not by
+the chance that the outcome was observed, so dropping failures would bias the
+estimate toward pods that fail silently.
 
 Token-level experts must be co-located, because every MoE layer finishes routing
 before the next layer starts. Request-level experts can be networked services,
@@ -164,7 +170,7 @@ below exists yet.
 | M010 `moe-rl-stability` | Which RL arm keeps routing stable, by factor |
 | M011 `routed-peft` | Does PERFT-R help OLMoE under our verifiers |
 | M012 `lora-expert-balancing` | Aux-free bias vs aux loss vs φ-balancing |
-| M013 `expert-lifecycle` | Does the gated lifecycle forget less than a static expert set at equal compute, and does reactivation beat a new expert. It also carries the **context-ablation arm** below |
+| M013 `expert-lifecycle` | Does the gated lifecycle forget less than a static expert set at equal compute, and does reactivation beat a new expert. **Claim 11:** gated lifecycle versus a static expert set at equal training compute (FLOPs) and equal active parameters; metrics: average forgetting (the `ForgettingGate` definition) and task quality on the public suite; falsified if forgetting exceeds the `ForgettingGate` bound, or quality is more than a pinned margin (for example 1 point) below the static set, in at least 3 seeds. **Claim 12:** reactivation versus training a new expert on the returning domain; metric: steps (or tokens) to reach a pinned recovery target (for example 95% of the expert's pre-retirement domain score); falsified if reactivation does not reach the target in fewer steps than a new expert in at least 3 seeds. It also carries the **context-ablation arm** below |
 | M014 `aimer-prune-recovery` | Quality against VRAM after pruning and recovery |
 | M015 `rlvr-vs-distill-passk` | RLVR vs distillation at large k |
 | R011 `self-modification-safety` | The L3 policy cannot reach gates, thresholds or verifiers |
