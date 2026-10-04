@@ -391,7 +391,7 @@ table.matrix tr:hover th { background: var(--wash); }
     <div class="card">
       <h2>Share of source by layer</h2>
       <p class="sub">Non-blank lines under <code>src/</code>, grouped by the layer each package belongs to.</p>
-      <div class="share-bar" id="share-bar" role="img" aria-label="Share of source lines by layer"></div>
+      <div class="share-bar" id="share-bar" role="group" aria-label="Share of source lines by layer"></div>
       <div class="share-key" id="share-key"></div>
     </div>
     <div class="card">
@@ -1056,7 +1056,7 @@ table.matrix tr:hover th { background: var(--wash); }
       });
     });
     var totalWidth = contentWidth + margin * 2, totalHeight = margin * 2 + (rows.length - 1) * pitch + height;
-    var svg = svgElement('svg', { class: 'diagram', width: totalWidth, height: totalHeight, viewBox: '0 0 ' + totalWidth + ' ' + totalHeight, role: 'img', 'aria-label': 'Module dependency graph of ' + entry.name });
+    var svg = svgElement('svg', { class: 'diagram', width: totalWidth, height: totalHeight, viewBox: '0 0 ' + totalWidth + ' ' + totalHeight, role: 'group', 'aria-label': 'Module dependency graph of ' + entry.name });
     svg.appendChild(svgElement('defs', null, svgElement('marker', { id: 'module-arrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' },
       svgElement('path', { d: 'M0 1 10 5 0 9z', fill: 'var(--text-muted)' }))));
     var edgeGroup = svgElement('g');
@@ -1096,7 +1096,7 @@ table.matrix tr:hover th { background: var(--wash); }
     modulesWithoutRoot.forEach(function (moduleEntry) {
       var position = positions[moduleEntry.name];
       if (!position) { return; }
-      var group = svgElement('g', { class: 'node', tabindex: 0, role: 'img', 'aria-label': moduleEntry.path + ', ' + moduleEntry.loc + ' lines', transform: 'translate(' + position.x + ',' + position.y + ')' }, [
+      var group = svgElement('g', { class: 'node', tabindex: 0, role: 'group', 'aria-label': moduleEntry.path + ', ' + moduleEntry.loc + ' lines', transform: 'translate(' + position.x + ',' + position.y + ')' }, [
         svgElement('rect', { class: 'body', width: width, height: height, rx: 5, fill: layerTint(entry.layer), stroke: layerColor(entry.layer) }),
         svgElement('text', { class: 'mono-text', x: 8, y: 17, 'font-size': 11.5, 'font-weight': 650, text: moduleEntry.name.length > 17 ? moduleEntry.name.slice(0, 16) + '…' : moduleEntry.name }),
         svgElement('text', { x: 8, y: 31, 'font-size': 10, style: 'fill:var(--text-secondary)', text: moduleEntry.loc + ' lines' })
@@ -1501,7 +1501,7 @@ table.matrix tr:hover th { background: var(--wash); }
     var grandTotal = totals.reduce(function (sum, item) { return sum + item.lines; }, 0);
     totals.forEach(function (item) {
       var percentage = item.lines / grandTotal * 100;
-      var segment = htmlElement('div', { tabindex: 0, style: 'width:' + percentage + '%;background:' + layerColor(item.layer.id) + (state.hiddenLayers[item.layer.id] ? ';opacity:0.25' : '') });
+      var segment = htmlElement('div', { tabindex: 0, role: 'group', 'aria-label': item.layer.name + ', ' + formatInteger(item.lines) + ' lines, ' + percentage.toFixed(1) + '%', style: 'width:' + percentage + '%;background:' + layerColor(item.layer.id) + (state.hiddenLayers[item.layer.id] ? ';opacity:0.25' : '') });
       attachTooltip(segment, function () {
         return [{ kind: 'title', text: item.layer.name }, { kind: 'value', text: formatInteger(item.lines) + ' lines · ' + percentage.toFixed(1) + '%' }, { kind: 'text', text: item.count + ' ' + plural(item.count, 'package') }];
       });

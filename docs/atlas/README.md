@@ -2,8 +2,10 @@
 
 An interactive map of every package, every module under `src/` and the verified flows of the
 workspace. Example targets (such as `model/burn-a0/examples/` and
-`crates/ptr-types/examples/`), benches and build scripts are not mapped, so the line and test
-totals count `src/` only.
+`crates/ptr-types/examples/`), benches and build scripts are not mapped. Line totals count
+`src/` only, except for `ptr-fuzz`, whose lines are its `fuzz_targets/*.rs` files (it has no
+`src/` lines). Test totals add the tests under `src/` to the tests in each package's `tests/`
+directory; the package panel shows both parts.
 Open `atlas.html` in a browser. It is one self-contained file.
 
 - `extract_atlas.py` reads Cargo manifests and source files into `structure.json`
