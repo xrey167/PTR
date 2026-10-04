@@ -33,10 +33,14 @@ class MissingExtraError(RuntimeError):
 
 
 def require_extra() -> None:
-    import importlib.util
-
-    missing = [m for m in ("torch", "transformers", "trl", "datasets", "peft", "accelerate")
-               if importlib.util.find_spec(m) is None]
+    # Check installed distributions, not module names: the repo's top-level `datasets/`
+    # directory is importable as a namespace package and would satisfy find_spec("datasets").
+    missing = []
+    for dist in ("torch", "transformers", "trl", "datasets", "peft", "accelerate"):
+        try:
+            metadata.version(dist)
+        except metadata.PackageNotFoundError:
+            missing.append(dist)
     if missing:
         raise MissingExtraError(
             f"backend 'trl-moe' needs the optional 'moe' extra (missing: {', '.join(missing)}); "
@@ -100,7 +104,7 @@ class _Timer:
 
 def _gate_status(report: dict) -> dict:
     """Mark the gate report 'error' if any individual binding call failed."""
-    if report.get("status") != "ok":
+    if report.get("status") not in ("ok", "partial"):
         return report
     errors = 0
 
@@ -183,10 +187,24 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     routing: dict = {}
     evals: dict = {}
 
+    router_errors: dict = {}
+
     def snap(name: str):
-        s = model_mod.routing_snapshot(model, tokenizer, probe_texts, cfg.probe_tokens)
+        try:
+            s = model_mod.routing_snapshot(model, tokenizer, probe_texts, cfg.probe_tokens)
+            routing[name] = {"per_layer": routing_metrics.snapshot_metrics(s, k), "tokens": len(s[0])}
+        except routing_metrics.NonFiniteRouterLogits as error:
+            # Recorded, not hidden: nan_check.nonfinite_values_found is forced true below.
+            router_errors[name] = str(error)
+            snapshots[name] = None
+            routing[name] = {"per_layer": None, "tokens": 0, "error": str(error)}
+            return
         snapshots[name] = s
-        routing[name] = {"per_layer": routing_metrics.snapshot_metrics(s, k), "tokens": len(s[0])}
+
+    def churn_between(a: str, b: str):
+        if snapshots[a] is None or snapshots[b] is None:
+            return None
+        return routing_metrics.snapshot_churn(snapshots[a], snapshots[b], k)
 
     with _Timer(timings, "snapshot_init"):
         snap("init")
@@ -205,7 +223,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     sft_state = model_mod.trainable_state(model)
 
     rl_results: dict = {}
-    churn = {"init_to_after_sft": routing_metrics.snapshot_churn(snapshots["init"], snapshots["after_sft"], k)}
+    churn = {"init_to_after_sft": churn_between("init", "after_sft")}
     gate_reports: dict = {}
     for algo in cfg.rl.algorithms:
         model_mod.load_trainable_state(model, sft_state)
@@ -215,9 +233,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         with _Timer(timings, f"snapshot_after_rl_{algo}"):
             snap(f"after_rl_{algo}")
             evals[f"after_rl_{algo}"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
-        churn[f"after_sft_to_after_rl_{algo}"] = routing_metrics.snapshot_churn(
-            snapshots["after_sft"], snapshots[f"after_rl_{algo}"], k
-        )
+        churn[f"after_sft_to_after_rl_{algo}"] = churn_between("after_sft", f"after_rl_{algo}")
         if track_gates:
             with _Timer(timings, f"gates_{algo}"):
                 gate_reports[f"sft_to_rl_{algo}"] = _gate_status(
@@ -266,6 +282,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         "policy_eval": evals,
         "routing": routing,
         "routing_churn": churn,
+        "router_errors": router_errors,
         "gates": gate_reports,
         "ptr_py_installed": gates.load_binding() is not None,
         **(extra or {}),
@@ -273,8 +290,13 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     flags: list = []
     result = _sanitize(result, flags)
     result["nan_check"] = {
-        "nonfinite_values_found": bool(flags) or sft["nan"] or any(r["nan"] for r in rl_results.values()),
+        "nonfinite_values_found": bool(flags)
+        or bool(router_errors)
+        or sft["nan"]
+        or any(r["nan"] for r in rl_results.values()),
     }
+    if router_errors:
+        result["nan_check"]["router_errors"] = router_errors
     return result
 
 

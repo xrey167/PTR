@@ -12,6 +12,8 @@ The binding is built by a separate package. When it is not importable every gate
 
 If a call raises (`PtrLineageError`, signature mismatch) the failure is recorded verbatim
 as `status: "error"` and the whole report becomes "error"; it is never papered over.
+The aggregate status is "ok" only when every layer ran; "partial" (with counts) when some
+layers were skipped, "skipped" (with a reason) when all were.
 """
 
 from __future__ import annotations
@@ -123,8 +125,17 @@ def run_gates(weights_before: list, weights_after: list, max_pairs_per_layer: in
         layers.append(
             {"layer": li, "aimer_score": aimer, "prune_ranking": ranking, "delta_pairs": pairs}
         )
-    return {
+    skipped = sum(1 for layer in layers if layer.get("status") == "skipped")
+    report = {
         "status": "ok",
         "binding_version": getattr(binding, "__version__", "unknown"),
         "layers": layers,
     }
+    if layers and skipped == len(layers):
+        report["status"] = "skipped"
+        report["reason"] = f"all {skipped} layers skipped (expert too large for gate input)"
+    elif skipped:
+        report["status"] = "partial"
+        report["layers_skipped"] = skipped
+        report["layers_run"] = len(layers) - skipped
+    return report

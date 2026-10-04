@@ -320,6 +320,8 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         target_modules=_str_list(lo, "target_modules", "moe.lora"),
         target_parameters=_str_list(lo, "target_parameters", "moe.lora"),
     )
+    if not 0.0 <= lora.dropout < 1.0:
+        raise ConfigError(f"moe.lora.dropout must be in [0, 1), got {lora.dropout}")
     if enabled and not (lora.target_modules or lora.target_parameters):
         raise ConfigError("moe.lora is enabled but has no target_modules or target_parameters")
 

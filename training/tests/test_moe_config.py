@@ -174,6 +174,15 @@ class MoeConfigTests(unittest.TestCase):
         self.assertGreater(moe_config.load(CONFIGS / "stage-moe-smoke.toml").rl.beta, 0)
         self.assertEqual(moe_config.load(CONFIGS / "stage-moe-olmoe.toml").rl.mini_steps, 4)
 
+    def test_lora_dropout_range(self):
+        for bad in (-0.1, 1.0, 2.0):
+            with self.subTest(dropout=bad):
+                raw = self._mutate(lambda r: r["moe"].update(lora={"enabled": False, "dropout": bad}))
+                with self.assertRaisesRegex(ConfigError, r"moe\.lora\.dropout"):
+                    moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"].update(lora={"enabled": False, "dropout": 0.5}))
+        self.assertEqual(moe_config.parse(raw).lora.dropout, 0.5)
+
     def test_nonfinite_floats_rejected(self):
         for bad in (float("nan"), float("inf"), float("-inf")):
             for table, key in (("sft", "lr"), ("rl", "lr"), ("rl", "temperature"),
@@ -274,8 +283,29 @@ class MoeDispatchTests(unittest.TestCase):
 
         from ptr_training.moe import pipeline
 
-        with mock.patch("importlib.util.find_spec", return_value=None):
+        from importlib import metadata
+
+        # find_spec would still succeed for `datasets` (repo-level namespace dir); the check
+        # must go through distribution metadata.
+        with mock.patch.object(
+            pipeline.metadata, "version", side_effect=metadata.PackageNotFoundError("x")
+        ):
             with self.assertRaisesRegex(pipeline.MissingExtraError, "moe"):
+                pipeline.require_extra()
+
+    def test_require_extra_reports_only_missing_distribution(self):
+        from importlib import metadata
+        from unittest import mock
+
+        from ptr_training.moe import pipeline
+
+        def version(dist):
+            if dist == "datasets":
+                raise metadata.PackageNotFoundError(dist)
+            return "1.0"
+
+        with mock.patch.object(pipeline.metadata, "version", side_effect=version):
+            with self.assertRaisesRegex(pipeline.MissingExtraError, r"missing: datasets\)"):
                 pipeline.require_extra()
 
 

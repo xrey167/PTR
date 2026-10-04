@@ -244,6 +244,38 @@ class MoeTorchPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_completion_length"):
             check_completion_length(self.tok, tasks, 5)
 
+    def test_nonfinite_router_logits_reflected_in_nan_check(self):
+        import dataclasses
+        from unittest import mock
+
+        from ptr_training.moe import pipeline
+
+        real = self.model_mod.routing_snapshot
+        calls = []
+
+        def faulty(model, tok, texts, max_tokens):
+            calls.append(1)
+            snap = real(model, tok, texts, max_tokens)
+            if len(calls) == 2:  # after_sft
+                snap[0][0][0] = float("nan")
+            return snap
+
+        small = dataclasses.replace(
+            self.cfg,
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(self.cfg.rl, algorithms=()),
+        )
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            self.model_mod, "routing_snapshot", faulty
+        ):
+            data = pipeline.execute(small, Path(tmp))
+        self.assertTrue(data["nan_check"]["nonfinite_values_found"])
+        self.assertIn("after_sft", data["nan_check"]["router_errors"])
+        self.assertIn("non-finite router logits in layer 0", data["routing"]["after_sft"]["error"])
+        self.assertIsNone(data["routing"]["after_sft"]["per_layer"])
+        self.assertIsNone(data["routing_churn"]["init_to_after_sft"])
+        self.assertIsNotNone(data["routing"]["init"]["per_layer"])
+
     def test_empty_algorithms_skips_rl(self):
         import dataclasses
 

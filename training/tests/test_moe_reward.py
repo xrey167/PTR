@@ -73,6 +73,16 @@ class MoeRewardTests(unittest.TestCase):
         self.assertEqual(r.status, "Unknown")
         self.assertEqual(reward.rl_reward(r), 0.0)
 
+    def test_duplicate_json_keys_fail(self):
+        for text in ('{"a":0,"a":1}', '{"a":1,"a":1}'):
+            r = reward.verify("json", json_spec({"a": 1}), text)
+            self.assertEqual(r.status, "Fail", text)
+            self.assertEqual(reward.rl_reward(r), 0.0)
+            self.assertEqual([f.code for f in r.findings], ["duplicate-keys"])
+            self.assertTrue(r.findings[0].hard)
+        ok = reward.verify("json", json_spec({"a": 1}), '{"a":1}')
+        self.assertEqual(ok.status, "Pass")
+
     def test_levels_match_rust_order(self):
         self.assertEqual(
             reward.LEVELS,

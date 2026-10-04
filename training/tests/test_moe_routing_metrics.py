@@ -99,6 +99,43 @@ class MoeRoutingMetricsTests(unittest.TestCase):
             rm.router_logits_to_lists(logits, Stub([1, 1]))
         self.assertEqual(len(rm.router_logits_to_lists(logits)[0]), 3)
 
+    def test_nonfinite_logits_raise_with_layer_index(self):
+        nan, inf = float("nan"), float("inf")
+        good = [[0.1, 0.2], [0.3, 0.4]]
+        for bad_value in (nan, inf, -inf):
+            bad = [[0.1, bad_value], [0.3, 0.4]]
+            with self.subTest(value=bad_value):
+                with self.assertRaisesRegex(rm.NonFiniteRouterLogits, "layer 1"):
+                    rm.snapshot_metrics([good, bad], 1)
+                with self.assertRaises(ValueError):
+                    rm.layer_metrics(bad, 1)
+                with self.assertRaises(ValueError):
+                    rm.expert_churn(good, bad, 1)
+                with self.assertRaises(ValueError):
+                    rm.snapshot_churn([good], [bad], 1)
+
+    def test_adapter_rejects_nonfinite(self):
+        class T:
+            def __init__(self, data):
+                self.data = data
+
+            def detach(self):
+                return self
+
+            def float(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def tolist(self):
+                return self.data
+
+        ok = T([[0.0, 1.0]])
+        bad = T([[0.0, float("nan")]])
+        with self.assertRaisesRegex(rm.NonFiniteRouterLogits, "layer 1"):
+            rm.router_logits_to_lists((ok, bad))
+
 
 if __name__ == "__main__":
     unittest.main()

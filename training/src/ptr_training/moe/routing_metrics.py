@@ -12,6 +12,19 @@ Logits = list[float]
 LayerLogits = list[Logits]  # [token][expert]
 
 
+class NonFiniteRouterLogits(ValueError):
+    """A router logit was NaN or +/-inf; metrics over it would be meaningless."""
+
+
+def check_finite(layer: LayerLogits, index: int | str = "?") -> None:
+    for t, row in enumerate(layer):
+        for x in row:
+            if not math.isfinite(x):
+                raise NonFiniteRouterLogits(
+                    f"non-finite router logits in layer {index} (token {t})"
+                )
+
+
 def top_k_set(logits: Logits, k: int) -> frozenset[int]:
     """Indices of the k largest logits; ties break toward the lower expert index."""
     if not 1 <= k <= len(logits):
@@ -26,6 +39,8 @@ def top_k_sets(layer: LayerLogits, k: int) -> list[frozenset[int]]:
 
 def expert_churn(before: LayerLogits, after: LayerLogits, k: int) -> float:
     """Fraction of tokens whose top-k expert set differs between two snapshots."""
+    check_finite(before)
+    check_finite(after)
     if len(before) != len(after):
         raise ValueError("snapshots must cover the same tokens")
     if not before:
@@ -77,7 +92,8 @@ def dead_experts(layer: LayerLogits, k: int) -> int:
     return sum(1 for x in expert_load(layer, k) if x == 0)
 
 
-def layer_metrics(layer: LayerLogits, k: int) -> dict:
+def layer_metrics(layer: LayerLogits, k: int, index: int | str = "?") -> dict:
+    check_finite(layer, index)
     return {
         "entropy": routing_entropy(layer),
         "load_cv": load_cv(layer, k),
@@ -87,7 +103,7 @@ def layer_metrics(layer: LayerLogits, k: int) -> dict:
 
 
 def snapshot_metrics(snapshot: list[LayerLogits], k: int) -> list[dict]:
-    return [layer_metrics(layer, k) for layer in snapshot]
+    return [layer_metrics(layer, k, i) for i, layer in enumerate(snapshot)]
 
 
 def snapshot_churn(before: list[LayerLogits], after: list[LayerLogits], k: int) -> list[float]:
@@ -106,8 +122,9 @@ def router_logits_to_lists(router_logits, attention_mask=None) -> list[LayerLogi
     if attention_mask is not None:
         keep = [bool(x) for x in attention_mask.reshape(-1).tolist()]
     out: list[LayerLogits] = []
-    for layer in router_logits:
+    for index, layer in enumerate(router_logits):
         rows = layer.detach().float().cpu().tolist()
+        check_finite(rows, index)
         if keep is not None:
             if len(keep) != len(rows):
                 raise ValueError("attention_mask does not match router logits token count")

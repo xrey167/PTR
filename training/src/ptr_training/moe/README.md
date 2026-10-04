@@ -128,6 +128,14 @@ router stays frozen.
   `experts`, `top_k`, `max_positions`, `router_aux_loss_coef`); `model.architecture` in the
   metrics records the loaded model's actual values, and `model.class` is the base architecture
   even under LoRA.
+- `moe.lora.dropout` must be in [0, 1). `require_extra` checks installed distributions via
+  `importlib.metadata` (the repo's top-level `datasets/` directory would satisfy a module-name
+  check). A JSON completion with duplicate keys is a `Fail` with hard finding `duplicate-keys`.
+- Gate aggregate status is `ok` only if every layer ran, `partial` (with `layers_run` /
+  `layers_skipped`) if some were skipped, `skipped` (with reason) if all were; any binding error
+  still makes it `error`. Non-finite router logits raise `NonFiniteRouterLogits`; the pipeline
+  records the stage under `router_errors` / `nan_check.router_errors`, sets
+  `nan_check.nonfinite_values_found = true` and leaves that stage's metrics and churn `null`.
 - Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
 - `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
   actually present (PEFT may keep LoRA weights in fp32).

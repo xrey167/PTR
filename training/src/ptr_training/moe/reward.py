@@ -133,6 +133,18 @@ def _verify_arith(completion: str, spec: dict) -> VerificationReport:
     )
 
 
+class _DuplicateKeys(ValueError):
+    pass
+
+
+def _no_duplicate_keys(pairs: list) -> dict:
+    keys = [k for k, _ in pairs]
+    dupes = sorted({k for k in keys if keys.count(k) > 1})
+    if dupes:
+        raise _DuplicateKeys(f"duplicate JSON keys {dupes}")
+    return dict(pairs)
+
+
 def _verify_json(completion: str, spec: dict) -> VerificationReport:
     if not completion.strip():
         return VerificationReport(
@@ -141,7 +153,9 @@ def _verify_json(completion: str, spec: dict) -> VerificationReport:
     text = _first_line(completion)
     expected = spec["values"]
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(text, object_pairs_hook=_no_duplicate_keys)
+    except _DuplicateKeys as error:
+        return _report(0.0, [Finding("duplicate-keys", str(error), True)])
     except (ValueError, TypeError):
         return _report(0.0, [Finding("invalid-json", f"not parseable JSON: {text!r}", True)])
     if not isinstance(parsed, dict):
