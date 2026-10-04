@@ -31,3 +31,13 @@ id = "lomo-custom"
 source = "external"
 status = "to-evaluate"
 evidence = []
+
+[[candidate]]
+id = "trl-peft"
+source = "external"
+status = "to-evaluate"
+evidence = []
+# TRL GRPOTrainer (GSPO/SAPO) + PEFT LoRA backend `trl-moe` (training/src/ptr_training/moe).
+# The command runs the pure-Python MoE unit tests on the base install; the torch tests and
+# the tiny-random pipeline smoke need the `moe` extra (see training/src/ptr_training/moe/README.md).
+command = "python3 -m unittest discover -s training/tests -p test_moe_*.py"

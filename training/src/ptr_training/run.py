@@ -206,6 +206,22 @@ def write_manifest(path: Path, manifest: dict) -> None:
         handle.write("\n")
 
 
+def _execute_trl_moe(manifest: dict, config_path: Path) -> int | str:
+    """Dispatch the `trl-moe` backend; heavy dependencies are imported lazily."""
+    from ptr_training.moe import pipeline
+
+    try:
+        pipeline.require_extra()
+    except pipeline.MissingExtraError as error:
+        return str(error)
+    metrics_path = pipeline.run(manifest, config_path)
+    try:
+        print(metrics_path.relative_to(ROOT))
+    except ValueError:
+        print(metrics_path)
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -240,6 +256,8 @@ def main() -> None:
             raise SystemExit(
                 "training backend is not selected; run manifest prepared but no weights were trained"
             )
+        if backend == "trl-moe":
+            raise SystemExit(_execute_trl_moe(manifest, config_path))
         raise SystemExit(f"training backend {backend!r} is not implemented yet")
 
 

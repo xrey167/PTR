@@ -17,6 +17,19 @@ cpt = [
   "transformers",
 ]
 
+# Tiny-random / LoRA MoE training backend (`trl-moe`, ptr_training.moe). Lower bounds are
+# the versions the backend was verified against (see src/ptr_training/moe/README.md);
+# transformers>=5 is required because OLMoE experts are fused 3-D parameters there.
+# On CPU-only hosts install torch from https://download.pytorch.org/whl/cpu first.
+moe = [
+  "torch>=2.14.1",
+  "transformers>=5.18.0",
+  "peft>=0.21.2",
+  "trl>=1.14.1",
+  "datasets>=5.0.1",
+  "accelerate>=1.15.0",
+]
+
 [project.scripts]
 ptr-dataset-validate = "ptr_training.validate_dataset:main"
 ptr-dataset-manifest = "ptr_training.make_manifest:main"
@@ -32,3 +45,12 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# axolotl pins older transformers/trl than the moe extra needs, so the two extras
+# cannot be installed together (and uv must resolve them in separate forks).
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cpt" },
+    { extra = "moe" },
+  ],
+]

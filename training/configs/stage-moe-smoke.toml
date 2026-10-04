@@ -1,0 +1,80 @@
+version = 1
+
+# Pipeline smoke for the `trl-moe` backend: a tiny, randomly initialised
+# OlmoeForCausalLM on CPU. Mechanism check only; it is not evidence about any
+# claim. The dataset/model fields below exist because the run manifest requires
+# them; the actual training data is generated on the fly by
+# ptr_training.moe.tasks (seeded, verifiable) and the model is defined in this file.
+[codebook]
+version = 1
+fingerprint = "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"
+
+[run]
+name = "moe-pipeline-smoke"
+seed = 17
+hardware_profile = "hardware/a0-cpu-4core.toml"
+
+[data]
+dataset = "typed_agent_behavior_v0_2"
+split = "train"
+
+[model]
+family = "olmoe-tiny-random"
+config = "training/configs/stage-moe-smoke.toml"
+kind = "tiny-random"
+layers = 2
+hidden = 64
+intermediate = 64
+heads = 4
+experts = 8
+top_k = 2
+max_positions = 64
+precision = "fp32"
+
+[training]
+backend = "trl-moe"
+precision = "fp32"
+batch_size = 8
+gradient_accumulation = 1
+learning_rate = 0.003
+max_steps = 20
+checkpoint_every = 0
+
+[evaluation]
+every = 0
+suites = []
+
+[moe.sft]
+steps = 200
+lr = 0.003
+batch = 16
+examples = 256
+max_length = 24
+
+[moe.rl]
+algorithms = ["gspo", "sapo"]
+steps = 16
+num_generations = 4
+mini_steps = 2
+# beta > 0 so the KL to the reference policy is logged (tiny model: the reference copy is cheap).
+beta = 0.04
+# Token-level clip values (grpo-style); not used by gspo (gspo_epsilon*) or sapo here.
+epsilon = 0.2
+epsilon_high = 0.28
+# GSPO paper (arXiv 2507.18071) sequence-level clip range.
+gspo_epsilon = 0.0003
+gspo_epsilon_high = 0.0004
+sapo_temperature_pos = 1.0
+sapo_temperature_neg = 1.05
+lr = 0.002
+prompts_per_step = 2
+max_prompt_length = 16
+max_completion_length = 10
+temperature = 1.0
+
+[moe.lora]
+enabled = false
+
+[moe.output]
+dir = "training/runs/moe-smoke"
+probe_tokens = 64
