@@ -143,6 +143,75 @@ fn durable_scope_events_replay_and_mark_open_work_recovery_pending() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[test]
+fn a_scope_that_ended_but_was_never_released_is_recovery_pending_after_a_restart() {
+    let path = temp_path();
+    let lease = ScopeLeaseBinding::default;
+    {
+        let mut runtime = PtrRuntime::open_durable(PtrConfig::default(), &path).unwrap();
+        // `finished` completed, and the process stopped before its cleanup ran, so
+        // its pod lease, resource lease and session were never released.
+        // `released` went through cleanup before the restart.
+        for id in ["finished", "released"] {
+            runtime.create_scope(scope(id), lease()).unwrap();
+            for next in [
+                ScopeState::Admitted,
+                ScopeState::Started,
+                ScopeState::Completed,
+            ] {
+                runtime
+                    .transition_scope(&ScopeId::from(id), next, lease(), None)
+                    .unwrap();
+            }
+        }
+        let mut cleanup = CleanupProbe::default();
+        runtime
+            .cleanup_scope(&ScopeId::from("released"), &mut cleanup, lease())
+            .unwrap();
+    }
+
+    let mut reopened = PtrRuntime::open_durable(PtrConfig::default(), &path).unwrap();
+    let finished = ScopeId::from("finished");
+    let released = ScopeId::from("released");
+    assert_eq!(
+        reopened.scopes().get(&finished).unwrap().state,
+        ScopeState::Completed
+    );
+    // Only the scope whose leases were never released is left to recover.
+    assert!(reopened.scopes().recovery_required(&finished));
+    assert!(!reopened.scopes().recovery_required(&released));
+    assert_eq!(
+        reopened.scopes().recoverable_scopes(),
+        vec![finished.clone()]
+    );
+
+    // Recovery releases what the finished scope still held, through the same
+    // cleanup path, and leaves nothing pending.
+    let mut cleanup = CleanupProbe::default();
+    reopened
+        .recover_scope(&finished, &mut cleanup, lease())
+        .unwrap();
+    assert_eq!(
+        cleanup.steps,
+        vec![
+            "stop_intake",
+            "cancel_children",
+            "drain_queues",
+            "release_pod_lease",
+            "release_resource_lease",
+            "close_session"
+        ]
+    );
+    assert_eq!(
+        reopened.scopes().get(&finished).unwrap().state,
+        ScopeState::Released
+    );
+    assert!(reopened.scopes().recoverable_scopes().is_empty());
+
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
 fn stateful_lease(state: &str, pod: &str, token: u128) -> ScopeLeaseBinding {
     ScopeLeaseBinding {
         state_id: Some(StateId::from(state)),
