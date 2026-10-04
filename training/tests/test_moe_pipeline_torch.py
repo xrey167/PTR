@@ -293,6 +293,43 @@ class MoeTorchPipelineTests(unittest.TestCase):
         self.assertEqual(data["run"]["seed"], 5)
         self.assertEqual(data["model"]["seed"], 11)
 
+    def test_no_flattening_when_binding_absent(self):
+        import dataclasses
+        import sys
+        from unittest import mock
+
+        from ptr_training.moe import gates, pipeline
+
+        small = dataclasses.replace(
+            self.cfg,
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(
+                self.cfg.rl, algorithms=("gspo",), steps=1, mini_steps=1, num_generations=2,
+                prompts_per_step=1,
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            sys.modules, {"ptr_py": None}
+        ), mock.patch.object(gates, "_flat", side_effect=AssertionError("flattened")) as spy:
+            data = pipeline.execute(small, Path(tmp))
+        spy.assert_not_called()
+        self.assertEqual(data["gates"]["init_to_sft"]["status"], "skipped")
+        self.assertEqual(data["gates"]["sft_to_rl_gspo"]["status"], "skipped")
+
+    def test_oversize_experts_skipped_before_conversion(self):
+        from unittest import mock
+
+        from ptr_training.moe import gates
+
+        model, _ = self.model_mod.build(self.cfg.model, self.cfg.lora)
+        with mock.patch.object(gates, "_flat", side_effect=AssertionError("flattened")) as spy:
+            out = gates.flatten_experts(model, max_elements=10)
+        spy.assert_not_called()
+        self.assertEqual(out, [None] * self.cfg.model.layers)
+        full = gates.flatten_experts(model)
+        self.assertTrue(all(layer is not None for layer in full))
+        self.assertEqual(gates.expert_deltas(out, full), [None] * self.cfg.model.layers)
+
     def test_empty_algorithms_skips_rl(self):
         import dataclasses
 

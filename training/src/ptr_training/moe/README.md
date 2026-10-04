@@ -128,6 +128,11 @@ router stays frozen.
   `experts`, `top_k`, `max_positions`, `router_aux_loss_coef`); `model.architecture` in the
   metrics records the loaded model's actual values, and `model.class` is the base architecture
   even under LoRA.
+- `require_extra` also enforces the `moe` extra minimums (`pipeline.MOE_MINIMUMS`, checked against
+  `pyproject.toml` by a test; `packaging` optional). Gate inputs are flattened only when the
+  binding is usable and each expert fits `MAX_FLAT_ELEMENTS` (checked on `numel()` first).
+  Task splits, prompt/completion/SFT-label length checks run before any hub call or SFT step.
+  `[training].precision`, if present, must equal `model.precision`.
 - `moe.lora.dropout` must be in [0, 1). `require_extra` checks installed distributions via
   `importlib.metadata` (the repo's top-level `datasets/` directory would satisfy a module-name
   check). A JSON completion with duplicate keys is a `Fail` with hard finding `duplicate-keys`.

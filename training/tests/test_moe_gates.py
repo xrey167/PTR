@@ -97,6 +97,14 @@ class MoeGatesTests(unittest.TestCase):
         skipped = {"status": "skipped", "reason": "r", "layers": []}
         self.assertEqual(_gate_status(skipped), skipped)
 
+    def test_skip_reason_helper(self):
+        with mock.patch.dict(sys.modules, {"ptr_py": None}):
+            self.assertEqual(gates.binding_skip_reason(), gates.SKIP_REASON)
+        with mock.patch.dict(sys.modules, {"ptr_py": types.ModuleType("ptr_py")}):
+            self.assertIn("lacks", gates.binding_skip_reason())
+        with mock.patch.dict(sys.modules, {"ptr_py": self._stub()}):
+            self.assertIsNone(gates.binding_skip_reason())
+
     def test_binding_errors_are_recorded_not_hidden(self):
         stub = types.ModuleType("ptr_py")
         stub.aimer_score = lambda w: 0.0

@@ -32,18 +32,66 @@ class MissingExtraError(RuntimeError):
     """The `moe` extra (torch, transformers, trl, ...) is not installed."""
 
 
+# Minimum versions of the `moe` extra; tests/test_moe_config.py checks this against
+# training/pyproject.toml so the two cannot drift.
+MOE_MINIMUMS = {
+    "torch": "2.14.1",
+    "transformers": "5.18.0",
+    "peft": "0.21.2",
+    "trl": "1.14.1",
+    "datasets": "5.0.1",
+    "accelerate": "1.15.0",
+}
+
+
+def _release(version: str) -> tuple[int, ...]:
+    """Release segment as ints ('2.14.1+cpu' -> (2, 14, 1)); `packaging` is not required."""
+    match = re.match(r"\s*v?(\d+(?:\.\d+)*)", version)
+    if match is None:
+        raise ValueError(f"unparseable version {version!r}")
+    parts = [int(x) for x in match.group(1).split(".")]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+def version_at_least(installed: str, required: str) -> bool:
+    try:
+        from packaging.version import InvalidVersion, Version
+
+        try:
+            return Version(installed) >= Version(required)
+        except InvalidVersion:
+            pass
+    except ImportError:
+        pass
+    return _release(installed) >= _release(required)
+
+
 def require_extra() -> None:
     # Check installed distributions, not module names: the repo's top-level `datasets/`
     # directory is importable as a namespace package and would satisfy find_spec("datasets").
-    missing = []
-    for dist in ("torch", "transformers", "trl", "datasets", "peft", "accelerate"):
+    missing, too_old = [], []
+    for dist, minimum in MOE_MINIMUMS.items():
         try:
-            metadata.version(dist)
+            installed = metadata.version(dist)
         except metadata.PackageNotFoundError:
             missing.append(dist)
-    if missing:
+            continue
+        try:
+            ok = version_at_least(installed, minimum)
+        except ValueError:
+            ok = False
+        if not ok:
+            too_old.append(f"{dist} {installed} < {minimum}")
+    if missing or too_old:
+        problems = []
+        if missing:
+            problems.append(f"missing: {', '.join(missing)}")
+        if too_old:
+            problems.append(f"too old: {', '.join(too_old)}")
         raise MissingExtraError(
-            f"backend 'trl-moe' needs the optional 'moe' extra (missing: {', '.join(missing)}); "
+            f"backend 'trl-moe' needs the optional 'moe' extra ({'; '.join(problems)}); "
             "install with: pip install -e 'training[moe]'"
         )
 
@@ -159,8 +207,13 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     import torch
 
     from ptr_training.moe import model as model_mod
-    from ptr_training.moe.rl import evaluate_policy, run_rl
-    from ptr_training.moe.sft import run_sft
+    from ptr_training.moe.rl import (
+        check_completion_length,
+        check_prompt_lengths,
+        evaluate_policy,
+        run_rl,
+    )
+    from ptr_training.moe.sft import check_examples, run_sft
 
     torch.set_num_threads(os.cpu_count() or 1)
     model_mod.seed_everything(cfg.seed)  # before any model / LoRA initialisation
@@ -168,6 +221,8 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     t_start = time.perf_counter()
     k = cfg.model.top_k if cfg.model.kind == "tiny-random" else None
 
+    # Cheap, pure-Python guards first: fail before any hub call, download or model build.
+    sft_tasks, rl_tasks, eval_tasks, task_stats = build_task_splits(cfg)
     model_source = (
         model_mod.resolve_revision(cfg.model) if cfg.model.kind == "pretrained" else None
     )
@@ -177,9 +232,13 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
             k = int(getattr(model.config, "num_experts_per_tok"))
     if cfg.model.kind == "pretrained":
         model_mod.reset_requires_grad(model)
+    # Tokenizer-dependent guards, before the first eval / SFT step spends any compute.
+    check_examples(tokenizer, sft_tasks, cfg.sft.max_length)
+    if cfg.rl.algorithms:
+        check_prompt_lengths(tokenizer, rl_tasks, cfg.rl.max_prompt_length)
+        check_completion_length(tokenizer, rl_tasks, cfg.rl.max_completion_length)
 
     seed = cfg.seed
-    sft_tasks, rl_tasks, eval_tasks, task_stats = build_task_splits(cfg)
     probe_texts = [t.prompt + t.answer for t in eval_tasks[:8]]
     eval_new = cfg.rl.max_completion_length
 
@@ -211,7 +270,9 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         evals["init"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
 
     track_gates = cfg.model.kind == "tiny-random" and not cfg.lora.enabled
-    w_init = gates.flatten_experts(model) if track_gates else None
+    gate_skip = gates.binding_skip_reason() if track_gates else None
+    run_gate_calls = track_gates and gate_skip is None  # never flatten weights nobody will read
+    w_init = gates.flatten_experts(model) if run_gate_calls else None
 
     torch.manual_seed(seed)
     with _Timer(timings, "sft"):
@@ -219,7 +280,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     with _Timer(timings, "snapshot_after_sft"):
         snap("after_sft")
         evals["after_sft"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
-    w_sft = gates.flatten_experts(model) if track_gates else None
+    w_sft = gates.flatten_experts(model) if run_gate_calls else None
     sft_state = model_mod.trainable_state(model)
 
     rl_results: dict = {}
@@ -236,12 +297,19 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         churn[f"after_sft_to_after_rl_{algo}"] = churn_between("after_sft", f"after_rl_{algo}")
         if track_gates:
             with _Timer(timings, f"gates_{algo}"):
-                gate_reports[f"sft_to_rl_{algo}"] = _gate_status(
-                    gates.run_gates(w_sft, gates.flatten_experts(model))
-                )
+                if run_gate_calls:
+                    gate_reports[f"sft_to_rl_{algo}"] = _gate_status(
+                        gates.run_gates(w_sft, gates.flatten_experts(model))
+                    )
+                else:
+                    gate_reports[f"sft_to_rl_{algo}"] = {"status": "skipped", "reason": gate_skip}
     if track_gates:
         with _Timer(timings, "gates_sft"):
-            gate_reports["init_to_sft"] = _gate_status(gates.run_gates(w_init, w_sft))
+            gate_reports["init_to_sft"] = (
+                _gate_status(gates.run_gates(w_init, w_sft))
+                if run_gate_calls
+                else {"status": "skipped", "reason": gate_skip}
+            )
     else:
         gate_reports = {"status": "skipped", "reason": "gates not run for pretrained/LoRA models"}
     timings["total"] = round(time.perf_counter() - t_start, 3)

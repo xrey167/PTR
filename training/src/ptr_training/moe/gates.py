@@ -31,6 +31,20 @@ def load_binding():
         return None
 
 
+_NEEDED = ("aimer_score", "rank_experts_for_pruning", "subspace_overlap", "chance_overlap")
+
+
+def binding_skip_reason() -> str | None:
+    """None when the binding is importable and complete, else the reason gates are skipped."""
+    binding = load_binding()
+    if binding is None:
+        return SKIP_REASON
+    missing = [n for n in _NEEDED if not hasattr(binding, n)]
+    if missing:
+        return f"binding lacks {missing}: gates skipped"
+    return None
+
+
 def _flat(tensor) -> list[float]:
     return tensor.detach().float().reshape(-1).cpu().tolist()
 
@@ -47,11 +61,20 @@ def expert_weights(model) -> list[dict]:
     return layers
 
 
-def flatten_experts(model) -> list[list[dict]]:
-    """[layer][expert] -> {"flat": gate_up+down weights, "down": down_proj rows [H][I]}."""
+def flatten_experts(model, max_elements: int | None = None) -> list:
+    """[layer][expert] -> {"flat": gate_up+down weights, "down": down_proj rows [H][I]}.
+
+    The element count is checked on the tensors first; a layer whose per-expert vector would
+    exceed `max_elements` (default `MAX_FLAT_ELEMENTS`) is returned as `None` and never
+    converted to Python lists.
+    """
+    limit = MAX_FLAT_ELEMENTS if max_elements is None else max_elements
     out = []
     for layer in expert_weights(model):
         n = layer["gate_up"].shape[0]
+        if layer["gate_up"][0].numel() + layer["down"][0].numel() > limit:
+            out.append(None)
+            continue
         out.append(
             [
                 {
@@ -71,7 +94,9 @@ def _sub(a: list[float], b: list[float]) -> list[float]:
 def expert_deltas(before: list, after: list) -> list[list[dict]]:
     """Per expert change `after - before` in the same {"flat", "down"} layout."""
     return [
-        [
+        None
+        if la is None or lb is None
+        else [
             {
                 "flat": _sub(ea["flat"], eb["flat"]),
                 "down": [_sub(ra, rb) for ra, rb in zip(ea["down"], eb["down"], strict=True)],
@@ -91,17 +116,14 @@ def _call(fn, *args):
 
 def run_gates(weights_before: list, weights_after: list, max_pairs_per_layer: int = 6) -> dict:
     """weights_*: output of `flatten_experts`. Returns a JSON-ready gate report."""
+    reason = binding_skip_reason()
+    if reason is not None:
+        return {"status": "skipped", "reason": reason}
     binding = load_binding()
-    if binding is None:
-        return {"status": "skipped", "reason": SKIP_REASON}
-    needed = ("aimer_score", "rank_experts_for_pruning", "subspace_overlap", "chance_overlap")
-    missing = [n for n in needed if not hasattr(binding, n)]
-    if missing:
-        return {"status": "skipped", "reason": f"binding lacks {missing}: gates skipped"}
     deltas = expert_deltas(weights_before, weights_after)
     layers = []
     for li, (w_layer, d_layer) in enumerate(zip(weights_after, deltas)):
-        if max(len(w["flat"]) for w in w_layer) > MAX_FLAT_ELEMENTS:
+        if w_layer is None or max(len(w["flat"]) for w in w_layer) > MAX_FLAT_ELEMENTS:
             layers.append({"layer": li, "status": "skipped", "reason": "expert too large for gate input"})
             continue
         aimer = [_call(binding.aimer_score, w["flat"]) for w in w_layer]

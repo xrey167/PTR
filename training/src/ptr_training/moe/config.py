@@ -169,6 +169,7 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     if training.get("backend") != "trl-moe":
         raise ConfigError(f"[training].backend must be 'trl-moe', got {training.get('backend')!r}")
 
+    train_precision = training.get("precision")
     m = _table(raw, "model")
     _check_keys(m, _MODEL_KEYS, "model")
     kind = _get(m, "kind", str, "model")
@@ -177,6 +178,11 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     precision = _get(m, "precision", str, "model", "fp32")
     if precision not in PRECISIONS:
         raise ConfigError(f"model.precision must be one of {PRECISIONS}, got {precision!r}")
+    if train_precision is not None and train_precision != precision:
+        raise ConfigError(
+            f"[training].precision ({train_precision!r}) differs from model.precision "
+            f"({precision!r}); the backend uses model.precision only"
+        )
     hf_id = m.get("hf_id")
     if kind == "pretrained":
         if not isinstance(hf_id, str) or not hf_id:

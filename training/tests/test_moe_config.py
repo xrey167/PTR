@@ -181,6 +181,11 @@ class MoeConfigTests(unittest.TestCase):
         raw = self._mutate(lambda r: r["model"].update(router_aux_loss_coef=0))
         self.assertEqual(moe_config.parse(raw).model.router_aux_loss_coef, 0.0)
 
+    def test_training_precision_must_match_model_precision(self):
+        raw = self._mutate(lambda r: r["training"].update(precision="bf16"))
+        with self.assertRaisesRegex(ConfigError, "precision"):
+            moe_config.parse(raw)
+
     def test_lora_dropout_range(self):
         for bad in (-0.1, 1.0, 2.0):
             with self.subTest(dropout=bad):
@@ -300,6 +305,62 @@ class MoeDispatchTests(unittest.TestCase):
             with self.assertRaisesRegex(pipeline.MissingExtraError, "moe"):
                 pipeline.require_extra()
 
+    def test_moe_minimums_match_pyproject(self):
+        import re
+        import tomllib
+
+        from ptr_training.moe import pipeline
+
+        pyproject = tomllib.loads(
+            (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        declared = {}
+        for spec in pyproject["project"]["optional-dependencies"]["moe"]:
+            name, minimum = re.fullmatch(r"([A-Za-z0-9_.-]+)>=([\w.]+)", spec).groups()
+            declared[name] = minimum
+        self.assertEqual(pipeline.MOE_MINIMUMS, declared)
+
+    def test_require_extra_rejects_too_old_and_accepts_minimum(self):
+        from unittest import mock
+
+        from ptr_training.moe import pipeline
+
+        def installed(overrides):
+            return lambda dist: overrides.get(dist, pipeline.MOE_MINIMUMS[dist])
+
+        with mock.patch.object(pipeline.metadata, "version", side_effect=installed({})):
+            pipeline.require_extra()  # exactly the minimums
+        newer = installed({"trl": "1.15.0", "torch": "2.14.1+cpu"})
+        with mock.patch.object(pipeline.metadata, "version", side_effect=newer):
+            pipeline.require_extra()
+        old = installed({"peft": "0.21.1", "trl": "0.9"})
+        with mock.patch.object(pipeline.metadata, "version", side_effect=old):
+            with self.assertRaises(pipeline.MissingExtraError) as ctx:
+                pipeline.require_extra()
+        message = str(ctx.exception)
+        self.assertIn("peft 0.21.1 < 0.21.2", message)
+        self.assertIn("trl 0.9 < 1.14.1", message)
+        self.assertNotIn("torch", message)
+
+    def test_version_comparator_without_packaging(self):
+        import builtins
+        from unittest import mock
+
+        from ptr_training.moe import pipeline
+
+        real_import = builtins.__import__
+
+        def no_packaging(name, *a, **k):
+            if name.startswith("packaging"):
+                raise ImportError(name)
+            return real_import(name, *a, **k)
+
+        with mock.patch.object(builtins, "__import__", no_packaging):
+            self.assertTrue(pipeline.version_at_least("2.14.1+cpu", "2.14.1"))
+            self.assertTrue(pipeline.version_at_least("2.14", "2.14.0"))
+            self.assertTrue(pipeline.version_at_least("10.0.0", "9.9"))
+            self.assertFalse(pipeline.version_at_least("5.17.9", "5.18.0"))
+
     def test_require_extra_reports_only_missing_distribution(self):
         from importlib import metadata
         from unittest import mock
@@ -309,7 +370,7 @@ class MoeDispatchTests(unittest.TestCase):
         def version(dist):
             if dist == "datasets":
                 raise metadata.PackageNotFoundError(dist)
-            return "1.0"
+            return pipeline.MOE_MINIMUMS[dist]
 
         with mock.patch.object(pipeline.metadata, "version", side_effect=version):
             with self.assertRaisesRegex(pipeline.MissingExtraError, r"missing: datasets\)"):

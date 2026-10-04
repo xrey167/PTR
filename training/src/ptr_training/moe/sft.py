@@ -17,6 +17,17 @@ def _encode_example(tokenizer, task: Task, max_length: int):
     return ids, labels
 
 
+def check_examples(tokenizer, tasks: list[Task], max_length: int) -> None:
+    """Raise if truncation to `max_length` leaves any task without a supervised label."""
+    for task in tasks:
+        _, labels = _encode_example(tokenizer, task, max_length)
+        if all(x == -100 for x in labels):
+            raise ValueError(
+                f"max_length={max_length} truncates away every supervised label for prompt "
+                f"{task.prompt!r}; refusing to train on an empty-label example"
+            )
+
+
 def collate(tokenizer, tasks: list[Task], max_length: int):
     import torch
 
