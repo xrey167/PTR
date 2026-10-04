@@ -5,6 +5,16 @@
 //! (birth, merge, split, freeze, reactivate, prune, retire); this module only defines the shape
 //! of such proposals and checks that a proposal is well formed.
 //!
+//! # Reactivation never resurrects a retired generation
+//!
+//! Retirement is final (`Lineage::retire`; `LifecycleGate` has no transition out of `Retired`).
+//! [`StructuralOp::Reactivate`] therefore means two different things by target state. For a
+//! `Frozen` target it unfreezes the same generation (reversible). For a `Retired` target the
+//! retired generation itself stays `Retired` forever: acceptance would create a NEW candidate
+//! generation seeded from the retired weights, which must pass the gates again like any birth.
+//! The proposal names the retired generation only as a source. Use
+//! [`ExpertProposal::creates_new_generation`] to tell the cases apart.
+//!
 //! # Proposals are inert data
 //!
 //! An [`ExpertProposal`] changes nothing. Whether it is accepted is decided elsewhere, by the
@@ -54,6 +64,13 @@ pub enum StructuralOp {
     Merge,
     Split,
     Freeze,
+    /// Takes exactly one target, in state `Frozen` or `Retired`.
+    ///
+    /// * `Frozen` target: unfreeze the same generation (reversible).
+    /// * `Retired` target: the retired generation stays `Retired` forever (retirement is
+    ///   final). Acceptance would create a NEW candidate generation seeded from the retired
+    ///   weights, which must pass the gates again like any [`StructuralOp::Birth`]. The retired
+    ///   generation is only a source here, never something that becomes live again.
     Reactivate,
     Prune,
     Retire,
@@ -306,7 +323,7 @@ impl ExpertProposal {
             }
             StructuralOp::Reactivate => {
                 check_count(op, &targets, "exactly one", |n| n == 1)?;
-                check_states(op, &targets, &[ExpertState::Retired])?;
+                check_states(op, &targets, &[ExpertState::Frozen, ExpertState::Retired])?;
             }
         }
         Ok(Self {
@@ -333,13 +350,37 @@ impl ExpertProposal {
         &self.rationale_digest
     }
 
+    /// Whether accepting this proposal would create a new generation.
+    ///
+    /// True for birth, merge, split and for reactivating a `Retired` target (the retired
+    /// generation stays retired; a new candidate is seeded from it). False for freeze, prune,
+    /// retire and for reactivating a `Frozen` target (the same generation is unfrozen).
+    pub fn creates_new_generation(&self) -> bool {
+        match self.op {
+            StructuralOp::Birth | StructuralOp::Merge | StructuralOp::Split => true,
+            StructuralOp::Reactivate => {
+                self.targets.iter().any(|t| t.state == ExpertState::Retired)
+            }
+            StructuralOp::Freeze | StructuralOp::Prune | StructuralOp::Retire => false,
+        }
+    }
+
     /// Every field of the proposal; adding a field to the proposal means changing this struct.
     pub fn parts(&self) -> ProposalParts<'_> {
+        // Compile-time guard: this destructure names every field and has no `..`. Adding any
+        // field to `ExpertProposal` breaks this line and forces a review of the new field
+        // against invariants #4 and #11 before `ProposalParts` is updated.
+        let ExpertProposal {
+            op,
+            targets,
+            birth_level,
+            rationale_digest,
+        } = self;
         ProposalParts {
-            op: self.op,
-            targets: &self.targets,
-            birth_level: self.birth_level,
-            rationale_digest: &self.rationale_digest,
+            op: *op,
+            targets,
+            birth_level: *birth_level,
+            rationale_digest,
         }
     }
 }

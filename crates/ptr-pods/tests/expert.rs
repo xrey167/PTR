@@ -46,6 +46,11 @@ fn valid_proposal_for_each_operation() {
         propose(StructuralOp::Split, vec![serving("a")], None),
         propose(StructuralOp::Freeze, vec![serving("a")], None),
         propose(StructuralOp::Reactivate, vec![retired], None),
+        propose(
+            StructuralOp::Reactivate,
+            vec![target("d", 1, token(3), ExpertState::Frozen)],
+            None,
+        ),
         propose(StructuralOp::Prune, vec![frozen.clone()], None),
         propose(StructuralOp::Retire, vec![serving("a")], None),
     ];
@@ -126,14 +131,12 @@ fn wrong_target_state_is_rejected() {
         other => panic!("expected WrongTargetState, got {other:?}"),
     };
     let in_state = |s| target("a", 1, token(3), s);
-    assert_eq!(
-        wrong(propose(
-            StructuralOp::Reactivate,
-            vec![in_state(ExpertState::Serving)],
-            None
-        )),
-        ExpertState::Serving
-    );
+    for s in [ExpertState::Serving, ExpertState::Candidate] {
+        assert_eq!(
+            wrong(propose(StructuralOp::Reactivate, vec![in_state(s)], None)),
+            s
+        );
+    }
     assert_eq!(
         wrong(propose(
             StructuralOp::Freeze,
@@ -171,6 +174,35 @@ fn wrong_target_state_is_rejected() {
         )),
         ExpertState::Candidate
     );
+}
+
+#[test]
+fn reactivate_frozen_unfreezes_and_retired_seeds_a_new_generation() {
+    let frozen = target("a", 2, token(3), ExpertState::Frozen);
+    let retired = target("a", 1, token(3), ExpertState::Retired);
+    let unfreeze = propose(StructuralOp::Reactivate, vec![frozen], None).unwrap();
+    assert!(!unfreeze.creates_new_generation());
+    let reseed = propose(StructuralOp::Reactivate, vec![retired], None).unwrap();
+    assert!(reseed.creates_new_generation());
+}
+
+#[test]
+fn creates_new_generation_for_every_op() {
+    let created = |op, targets, level| {
+        propose(op, targets, level)
+            .unwrap()
+            .creates_new_generation()
+    };
+    assert!(created(StructuralOp::Birth, vec![], Some(token(0))));
+    assert!(created(
+        StructuralOp::Merge,
+        vec![serving("a"), serving("b")],
+        None
+    ));
+    assert!(created(StructuralOp::Split, vec![serving("a")], None));
+    assert!(!created(StructuralOp::Freeze, vec![serving("a")], None));
+    assert!(!created(StructuralOp::Prune, vec![serving("a")], None));
+    assert!(!created(StructuralOp::Retire, vec![serving("a")], None));
 }
 
 #[test]
