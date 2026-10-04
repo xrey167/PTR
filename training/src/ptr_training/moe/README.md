@@ -63,11 +63,15 @@ TRL 1.14.1 `GRPOConfig` (trl/trainer/grpo_config.py, grpo_trainer.py):
   For GSPO the trainer's own warning names `loss_type="grpo"` as the paper reproduction, so
   GSPO = `importance_sampling_level="sequence"`, `loss_type="grpo"`, `epsilon=gspo_epsilon`/`epsilon_high=gspo_epsilon_high` (config keys, default 3e-4/4e-4; used only for gspo).
   The GSPO paper uses tiny clip ranges (3e-4 / 4e-4) because sequence ratios are near 1;
-  the olmoe config uses those, the smoke config uses 0.2 / 0.28 to make clipping observable.
+  both configs pass those values (`gspo_epsilon = 0.0003`, `gspo_epsilon_high = 0.0004`) to TRL as
+  `epsilon`/`epsilon_high` for GSPO. The smoke's `epsilon = 0.2` / `epsilon_high = 0.28` are
+  grpo-style token-level values that neither algorithm uses here.
 - SAPO = `loss_type="sapo"` with `sapo_temperature_pos` (default 1.0) and
   `sapo_temperature_neg` (default 1.05); its soft gate replaces clipping, so `epsilon` is unused.
 - `beta` (KL coefficient, 0 = no reference model), `num_iterations`, `steps_per_generation`,
-  `num_generations`, `max_completion_length`. `max_prompt_length` no longer exists.
+  `num_generations`, `max_completion_length`. `max_prompt_length` no longer exists in `GRPOConfig`, so `moe.rl.max_prompt_length` is enforced by
+  `rl.check_prompt_lengths`: a prompt longer than it (in tokens) is rejected with a `ValueError`,
+  never truncated.
 - `mini_steps` in our config maps to `steps_per_generation` (optimizer steps per generation
   batch). With 1 the first update is exactly on-policy so clipping/the SAPO gate cannot act;
   the smoke config uses 2.
@@ -92,6 +96,37 @@ PEFT 0.21.2: expert projections are targeted with `target_parameters`
 (`mlp.experts.gate_up_proj`, `mlp.experts.down_proj`); attention with `target_modules`.
 Verified on the tiny OLMoE: LoRA tensors attach to attention and to `mlp.experts`; the
 router stays frozen.
+
+## Config rules and run hygiene
+
+- Unknown keys are rejected (`ConfigError` naming the table) in `[model]` (manifest keys
+  `family`/`config` allowed), `[moe]`, `[moe.sft]`, `[moe.rl]`, `[moe.lora]`, `[moe.output]`.
+  Shared manifest tables (`[run]`, `[data]`, `[training]`, `[evaluation]`, `[codebook]`) are not
+  validated here.
+- `moe.rl.steps` must be >= 1 (transformers ignores `max_steps = 0` and would train the default
+  3 epochs). To skip RL set `moe.rl.algorithms = []` (SFT-only run).
+- `model.revision` (commit sha or tag; `main`/`master`/`HEAD` rejected) is required for
+  `kind = "pretrained"` and is passed to both `from_pretrained` calls. The metrics record
+  `model.source` = `{hf_id, revision, resolved_sha, reason}`; `resolved_sha` comes from the Hub
+  and is `null` (with `reason`) when offline. `stage-moe-olmoe.toml` pins
+  `allenai/OLMoE-1B-7B-0125` at `9b0c1aa8...`.
+- Reference policy with LoRA and `beta > 0`: TRL 1.14.1 (`grpo_trainer.py`) copies the live
+  `default` adapter to a frozen `ref` adapter when the trainer is built (peft >= 0.20) and scores
+  the reference under it, so with the SFT adapter loaded the reference is the SFT state, not the
+  pretrained base (adapter disabled is only the fallback for peft < 0.20 with `target_parameters`).
+  `rl._assert_peft_reference` checks `ref` exists and equals the SFT adapter before training and
+  raises otherwise; the `ref` adapter is deleted after each arm. Cost: a second copy of the LoRA
+  weights only.
+- Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
+- `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
+  actually present (PEFT may keep LoRA weights in fp32).
+- Each run writes to a fresh `<output.dir>/<run name>-<UTC timestamp>-<config sha8>/`;
+  `metrics.json` is created exclusively and never overwritten.
+- Evaluation tasks are held out first (32 distinct prompts, `tasks.generate_heldout`); SFT and RL
+  tasks are sampled with replacement from the remaining prompts, so eval is disjoint by
+  construction. `metrics.json` `tasks` records counts and `eval_overlap` (0; a nonzero value
+  aborts the run). The prompt space is 310 distinct prompts (200 arith, 110 json); asking for
+  more distinct held-out tasks than a kind has raises `ValueError`.
 
 ## Reward (mirrors `ptr_verifier::VerificationReport`)
 

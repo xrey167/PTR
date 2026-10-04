@@ -1,4 +1,5 @@
 import copy
+import re
 import tomllib
 import unittest
 from pathlib import Path
@@ -26,6 +27,7 @@ class MoeConfigTests(unittest.TestCase):
         cfg = moe_config.load(CONFIGS / "stage-moe-olmoe.toml")
         self.assertEqual(cfg.model.kind, "pretrained")
         self.assertEqual(cfg.model.hf_id, "allenai/OLMoE-1B-7B-0125")
+        self.assertRegex(cfg.model.revision, r"^[0-9a-f]{40}$")
         self.assertEqual(cfg.model.precision, "bf16")
         self.assertTrue(cfg.lora.enabled)
         self.assertEqual(cfg.lora.rank, 16)
@@ -54,6 +56,60 @@ class MoeConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "hf_id"):
             moe_config.parse(self._mutate(mutate))
 
+    def test_pretrained_requires_pinned_revision(self):
+        def mutate(r):
+            r["model"].update(kind="pretrained", hf_id="org/model")
+
+        with self.assertRaisesRegex(ConfigError, r"model\.revision is required"):
+            moe_config.parse(self._mutate(mutate))
+        for floating in ("main", "master", "HEAD"):
+            raw = self._mutate(mutate)
+            raw["model"]["revision"] = floating
+            with self.assertRaisesRegex(ConfigError, "floating"):
+                moe_config.parse(raw)
+        raw = self._mutate(mutate)
+        raw["model"]["revision"] = "v1.0"
+        self.assertEqual(moe_config.parse(raw).model.revision, "v1.0")
+
+    def test_revision_rejected_for_tiny_random(self):
+        raw = self._mutate(lambda r: r["model"].update(revision="abc"))
+        with self.assertRaisesRegex(ConfigError, "only valid"):
+            moe_config.parse(raw)
+
+    def test_rl_steps_must_be_positive(self):
+        for bad in (0, -1):
+            raw = self._mutate(lambda r: r["moe"]["rl"].update(steps=bad))
+            with self.assertRaisesRegex(ConfigError, r"moe\.rl\.steps"):
+                moe_config.parse(raw)
+
+    def test_empty_algorithms_disables_rl(self):
+        cfg = moe_config.parse(self._mutate(lambda r: r["moe"]["rl"].update(algorithms=[])))
+        self.assertEqual(cfg.rl.algorithms, ())
+
+    def test_typo_in_owned_tables_rejected(self):
+        cases = {
+            "moe.rl": lambda r: r["moe"]["rl"].update(num_generation=4),
+            "moe.sft": lambda r: r["moe"]["sft"].update(stepz=1),
+            "moe.lora": lambda r: r["moe"]["lora"].update(rnk=4),
+            "moe.output": lambda r: r["moe"]["output"].update(dirr="x"),
+            "model": lambda r: r["model"].update(layerz=2),
+            "moe": lambda r: r["moe"].update(extra={}),
+        }
+        for table, fn in cases.items():
+            with self.subTest(table=table):
+                with self.assertRaisesRegex(ConfigError, "unknown key.*" + re.escape(f"[{table}]")):
+                    moe_config.parse(self._mutate(fn))
+
+    def test_typo_message_names_key(self):
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(gspo_epsilom=0.1))
+        with self.assertRaisesRegex(ConfigError, r"gspo_epsilom.*moe\.rl"):
+            moe_config.parse(raw)
+
+    def test_shared_manifest_tables_not_rejected(self):
+        raw = self._mutate(lambda r: r["training"].update(some_manifest_key=1))
+        raw["evaluation"]["another"] = "x"
+        moe_config.parse(raw)
+
     def test_top_k_exceeding_experts(self):
         raw = self._mutate(lambda r: r["model"].update(top_k=9))
         with self.assertRaisesRegex(ConfigError, "top_k"):
@@ -65,8 +121,8 @@ class MoeConfigTests(unittest.TestCase):
             moe_config.parse(raw)
 
     def test_empty_and_duplicate_algorithms(self):
-        with self.assertRaisesRegex(ConfigError, "non-empty"):
-            moe_config.parse(self._mutate(lambda r: r["moe"]["rl"].update(algorithms=[])))
+        with self.assertRaisesRegex(ConfigError, "list of strings"):
+            moe_config.parse(self._mutate(lambda r: r["moe"]["rl"].update(algorithms="gspo")))
         with self.assertRaisesRegex(ConfigError, "duplicates"):
             moe_config.parse(
                 self._mutate(lambda r: r["moe"]["rl"].update(algorithms=["sapo", "sapo"]))

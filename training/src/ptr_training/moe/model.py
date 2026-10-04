@@ -10,6 +10,36 @@ PAD, EOS, BOS, UNK = "<pad>", "<eos>", "<bos>", "<unk>"
 _CHARS = "0123456789+-=:\n QAJ{}[]\",abcdefghijklmnopqrstuvwxyz.TFN"
 
 
+def seed_everything(seed: int) -> None:
+    """Seed python, numpy (if installed) and torch so model/LoRA init is reproducible."""
+    import random
+
+    import torch
+
+    random.seed(seed)
+    try:
+        import numpy
+
+        numpy.random.seed(seed % 2**32)
+    except ImportError:
+        pass
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def resolve_revision(cfg: ModelConfig) -> dict:
+    """Record the pinned revision and, when the hub is reachable, the commit it resolves to."""
+    info = {"hf_id": cfg.hf_id, "revision": cfg.revision, "resolved_sha": None, "reason": None}
+    try:
+        from huggingface_hub import HfApi
+
+        info["resolved_sha"] = HfApi().model_info(cfg.hf_id, revision=cfg.revision).sha
+    except Exception as error:  # offline / rate limited / no hub client: never fail the run
+        info["reason"] = f"{type(error).__name__}: {str(error)[:200]}"
+    return info
+
+
 def build_tokenizer():
     """Character-level tokenizer built locally; nothing is downloaded."""
     from tokenizers import Regex, Tokenizer, decoders, models, pre_tokenizers
@@ -33,7 +63,7 @@ def build_tiny_model(cfg: ModelConfig, tokenizer):
     import torch
     from transformers import OlmoeConfig, OlmoeForCausalLM
 
-    torch.manual_seed(cfg.seed)
+    seed_everything(cfg.seed)
     config = OlmoeConfig(
         vocab_size=len(tokenizer),
         hidden_size=cfg.hidden,
@@ -53,6 +83,8 @@ def build_tiny_model(cfg: ModelConfig, tokenizer):
         use_cache=True,
     )
     model = OlmoeForCausalLM(config)
+    if cfg.precision == "bf16":
+        model = model.to(torch.bfloat16)
     model.eval()
     return model
 
@@ -62,20 +94,26 @@ def build_pretrained(cfg: ModelConfig):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     dtype = torch.bfloat16 if cfg.precision == "bf16" else torch.float32
-    tokenizer = AutoTokenizer.from_pretrained(cfg.hf_id, padding_side="left")
+    tokenizer = AutoTokenizer.from_pretrained(
+        cfg.hf_id, revision=cfg.revision, padding_side="left"
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(cfg.hf_id, dtype=dtype)
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg.hf_id, revision=cfg.revision, dtype=dtype
+    )
     if torch.cuda.is_available():
         model = model.to("cuda")
     return model, tokenizer
 
 
-def apply_lora(model, lora: LoraConfig):
+def apply_lora(model, lora: LoraConfig, seed: int | None = None):
     """Wrap `model` with a PEFT LoRA adapter (expert projections via target_parameters)."""
     from peft import LoraConfig as PeftLoraConfig
     from peft import get_peft_model
 
+    if seed is not None:
+        seed_everything(seed)  # LoRA A-matrix init draws from the global RNG
     kwargs = {}
     if lora.target_parameters:
         kwargs["target_parameters"] = list(lora.target_parameters)
@@ -92,14 +130,20 @@ def apply_lora(model, lora: LoraConfig):
 
 def build(cfg: ModelConfig, lora: LoraConfig):
     """Return (model, tokenizer); LoRA-wrapped when enabled."""
+    seed_everything(cfg.seed)
     if cfg.kind == "tiny-random":
         tokenizer = build_tokenizer()
         model = build_tiny_model(cfg, tokenizer)
     else:
         model, tokenizer = build_pretrained(cfg)
     if lora.enabled:
-        model = apply_lora(model, lora)
+        model = apply_lora(model, lora, cfg.seed)
     return model, tokenizer
+
+
+def param_dtypes(model) -> list[str]:
+    """Sorted distinct parameter dtypes actually present (e.g. LoRA may be fp32 on a bf16 base)."""
+    return sorted({str(p.dtype).removeprefix("torch.") for p in model.parameters()})
 
 
 def trainable_state(model) -> dict:

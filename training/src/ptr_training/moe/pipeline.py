@@ -7,17 +7,20 @@ seeded) -> snapshot -> gates -> metrics JSON. `run_config` is the direct entry p
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import platform
+import re
 import time
+from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 
 from ptr_training.moe import config as moe_config
 from ptr_training.moe import gates, routing_metrics
-from ptr_training.moe.tasks import generate_tasks
+from ptr_training.moe.tasks import generate_heldout, generate_tasks
 
 EVIDENCE_CLASS = "pipeline-smoke"
 EVIDENCE_NOTE = "mechanism check only, not evidence"
@@ -118,6 +121,34 @@ def _gate_status(report: dict) -> dict:
     return report
 
 
+EVAL_TASKS = 32
+
+
+def build_task_splits(cfg: moe_config.MoeConfig):
+    """(sft, rl, eval, stats). Eval prompts are held out first; SFT/RL never sample them."""
+    eval_tasks = generate_heldout(EVAL_TASKS, seed=cfg.seed + 2)
+    held = frozenset(t.prompt for t in eval_tasks)
+    sft_tasks = generate_tasks(cfg.sft.examples, seed=cfg.seed, exclude_prompts=held)
+    rl_n = max(64, cfg.rl.steps * cfg.rl.prompts_per_step * cfg.rl.mini_steps)
+    rl_tasks = generate_tasks(rl_n, seed=cfg.seed + 1, exclude_prompts=held)
+    train = {t.prompt for t in sft_tasks} | {t.prompt for t in rl_tasks}
+    overlap = len(held & train)
+    if overlap or len(held) != len(eval_tasks):
+        raise RuntimeError(
+            f"evaluation tasks are not disjoint from training tasks (overlap={overlap})"
+        )
+    stats = {
+        "sft_tasks": len(sft_tasks),
+        "sft_unique_prompts": len({t.prompt for t in sft_tasks}),
+        "rl_tasks": len(rl_tasks),
+        "rl_unique_prompts": len({t.prompt for t in rl_tasks}),
+        "eval_tasks": len(eval_tasks),
+        "eval_unique_prompts": len(held),
+        "eval_overlap": overlap,
+    }
+    return sft_tasks, rl_tasks, eval_tasks, stats
+
+
 def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None) -> dict:
     require_extra()
     import torch
@@ -127,10 +158,14 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     from ptr_training.moe.sft import run_sft
 
     torch.set_num_threads(os.cpu_count() or 1)
+    model_mod.seed_everything(cfg.seed)  # before any model / LoRA initialisation
     timings: dict = {}
     t_start = time.perf_counter()
     k = cfg.model.top_k if cfg.model.kind == "tiny-random" else None
 
+    model_source = (
+        model_mod.resolve_revision(cfg.model) if cfg.model.kind == "pretrained" else None
+    )
     with _Timer(timings, "build_model"):
         model, tokenizer = model_mod.build(cfg.model, cfg.lora)
         if k is None:
@@ -139,10 +174,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         model_mod.reset_requires_grad(model)
 
     seed = cfg.seed
-    sft_tasks = generate_tasks(cfg.sft.examples, seed=seed)
-    rl_n = max(64, cfg.rl.steps * cfg.rl.prompts_per_step * cfg.rl.mini_steps)
-    rl_tasks = generate_tasks(rl_n, seed=seed + 1)
-    eval_tasks = generate_tasks(32, seed=seed + 2)
+    sft_tasks, rl_tasks, eval_tasks, task_stats = build_task_splits(cfg)
     probe_texts = [t.prompt + t.answer for t in eval_tasks[:8]]
     eval_new = cfg.rl.max_completion_length
 
@@ -211,7 +243,11 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
             "top_k": k,
             "layers": getattr(model.config, "num_hidden_layers", None),
             "lora": cfg.lora.enabled,
+            "precision": cfg.model.precision,
+            "param_dtypes": model_mod.param_dtypes(model),
+            "source": model_source,
         },
+        "tasks": task_stats,
         "versions": versions(),
         "hardware": hardware(),
         "wall_time_s": timings,
@@ -233,9 +269,10 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
 
 
 def write_metrics(result: dict, out_dir: Path) -> Path:
+    """Write metrics.json into `out_dir`; refuses to overwrite an existing file."""
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "metrics.json"
-    with path.open("w", encoding="utf-8") as handle:
+    with path.open("x", encoding="utf-8") as handle:
         json.dump(result, handle, indent=2, allow_nan=False)
         handle.write("\n")
     return path
@@ -246,11 +283,32 @@ def _resolve(path: str | Path) -> Path:
     return p if p.is_absolute() else ROOT / p
 
 
+def config_hash(config_path: Path) -> str:
+    return hashlib.sha256(config_path.read_bytes()).hexdigest()[:8]
+
+
+def unique_run_dir(base: Path, name: str, cfg_hash: str, now: datetime | None = None) -> Path:
+    """Create `<base>/<name>-<UTC timestamp>-<config hash>`; never reuses an existing dir."""
+    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "run"
+    path = base / f"{safe}-{stamp}-{cfg_hash}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir(exist_ok=False)  # FileExistsError rather than overwriting a previous run
+    return path
+
+
 def run_config(config_path: str | Path, out: str | Path | None = None, extra: dict | None = None) -> Path:
-    """Run the pipeline from a stage TOML. `out` is an output directory (default: config's)."""
-    cfg = moe_config.load(_resolve(config_path))
-    out_dir = _resolve(out if out is not None else cfg.output_dir)
+    """Run the pipeline from a stage TOML.
+
+    `out` is the base output directory (default: the config's `moe.output.dir`); every run
+    writes into its own fresh subdirectory under it.
+    """
+    config_path = _resolve(config_path)
+    cfg = moe_config.load(config_path)
+    base = _resolve(out if out is not None else cfg.output_dir)
+    out_dir = unique_run_dir(base, cfg.name, config_hash(config_path))
     result = execute(cfg, out_dir, extra)
+    result["run"]["output_dir"] = str(out_dir)
     return write_metrics(result, out_dir)
 
 

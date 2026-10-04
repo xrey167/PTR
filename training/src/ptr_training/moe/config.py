@@ -10,6 +10,25 @@ MODEL_KINDS = ("tiny-random", "pretrained")
 ALGORITHMS = ("gspo", "sapo")
 PRECISIONS = ("fp32", "bf16")
 
+# Keys each table may carry. [model] also holds manifest keys (`family`, `config`) that the
+# run manifest reads; shared tables ([run], [data], [training], [evaluation], [codebook])
+# are owned by the manifest and are not validated here.
+_MODEL_KEYS = {
+    "family", "config", "kind", "hf_id", "revision", "seed", "layers", "hidden", "intermediate",
+    "heads", "experts", "top_k", "max_positions", "precision", "router_aux_loss_coef",
+}
+_MOE_KEYS = {"sft", "rl", "lora", "output"}
+_SFT_KEYS = {"steps", "lr", "batch", "examples", "max_length"}
+_RL_KEYS = {
+    "algorithms", "steps", "num_generations", "mini_steps", "beta", "epsilon", "epsilon_high",
+    "gspo_epsilon", "gspo_epsilon_high", "sapo_temperature_pos", "sapo_temperature_neg", "lr",
+    "prompts_per_step", "max_prompt_length", "max_completion_length", "temperature",
+}
+_LORA_KEYS = {"enabled", "rank", "alpha", "dropout", "target_modules", "target_parameters"}
+_OUTPUT_KEYS = {"dir", "probe_tokens"}
+# Mutable refs: resolving them would make a "pinned" run drift.
+_FLOATING_REVISIONS = {"main", "master", "HEAD"}
+
 
 class ConfigError(ValueError):
     """Invalid MoE stage configuration."""
@@ -29,7 +48,7 @@ def _table(raw: dict, name: str, *, required: bool = True) -> dict:
 def _check_keys(table: dict, allowed: set[str], where: str) -> None:
     extra = sorted(set(table) - allowed)
     if extra:
-        raise ConfigError(f"unknown keys in {where}: {extra}")
+        raise ConfigError(f"unknown key(s) {extra} in [{where}]; allowed: {sorted(allowed)}")
 
 
 def _get(table: dict, key: str, typ, where: str, default=None):
@@ -57,6 +76,7 @@ class ModelConfig:
     kind: str
     seed: int
     hf_id: str | None = None
+    revision: str | None = None
     layers: int = 2
     hidden: int = 64
     intermediate: int = 64
@@ -129,6 +149,7 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         raise ConfigError(f"[training].backend must be 'trl-moe', got {training.get('backend')!r}")
 
     m = _table(raw, "model")
+    _check_keys(m, _MODEL_KEYS, "model")
     kind = _get(m, "kind", str, "model")
     if kind not in MODEL_KINDS:
         raise ConfigError(f"model.kind must be one of {MODEL_KINDS}, got {kind!r}")
@@ -139,10 +160,24 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     if kind == "pretrained":
         if not isinstance(hf_id, str) or not hf_id:
             raise ConfigError("model.hf_id is required when model.kind = 'pretrained'")
+    revision = m.get("revision")
+    if kind == "pretrained":
+        if not isinstance(revision, str) or not revision.strip():
+            raise ConfigError(
+                "model.revision is required when model.kind = 'pretrained' "
+                "(a commit sha or tag; the hub default branch is mutable)"
+            )
+        if revision in _FLOATING_REVISIONS:
+            raise ConfigError(
+                f"model.revision {revision!r} is a floating ref; pin a commit sha or tag"
+            )
+    elif revision is not None:
+        raise ConfigError("model.revision is only valid when model.kind = 'pretrained'")
     model = ModelConfig(
         kind=kind,
         seed=_get(m, "seed", int, "model", seed),
         hf_id=hf_id,
+        revision=revision,
         layers=_positive(_get(m, "layers", int, "model", 2), "model.layers"),
         hidden=_positive(_get(m, "hidden", int, "model", 64), "model.hidden"),
         intermediate=_positive(_get(m, "intermediate", int, "model", 64), "model.intermediate"),
@@ -160,8 +195,10 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             raise ConfigError("model.hidden must be divisible by model.heads")
 
     moe = _table(raw, "moe")
+    _check_keys(moe, _MOE_KEYS, "moe")
 
     s = _table(moe, "sft")
+    _check_keys(s, _SFT_KEYS, "moe.sft")
     sft = SftConfig(
         steps=_get(s, "steps", int, "moe.sft"),
         lr=_positive(_get(s, "lr", float, "moe.sft"), "moe.sft.lr"),
@@ -173,9 +210,11 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         raise ConfigError("moe.sft.steps must be >= 0")
 
     r = _table(moe, "rl")
+    _check_keys(r, _RL_KEYS, "moe.rl")
     algos = r.get("algorithms")
-    if not isinstance(algos, list) or not algos or not all(isinstance(a, str) for a in algos):
-        raise ConfigError("moe.rl.algorithms must be a non-empty list of strings")
+    # An empty list disables RL (SFT-only run); steps = 0 does not (see the steps check below).
+    if not isinstance(algos, list) or not all(isinstance(a, str) for a in algos):
+        raise ConfigError("moe.rl.algorithms must be a list of strings (empty list disables RL)")
     bad = [a for a in algos if a not in ALGORITHMS]
     if bad:
         raise ConfigError(f"moe.rl.algorithms has unknown entries {bad}; allowed {ALGORITHMS}")
@@ -210,8 +249,12 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         ),
         temperature=_positive(_get(r, "temperature", float, "moe.rl", 1.0), "moe.rl.temperature"),
     )
-    if rl.steps < 0:
-        raise ConfigError("moe.rl.steps must be >= 0")
+    if rl.steps < 1:
+        # transformers only honours a positive max_steps; 0 would silently fall back to the
+        # default epoch count. Disable RL with `algorithms = []` instead.
+        raise ConfigError(
+            f"moe.rl.steps must be >= 1, got {rl.steps} (to disable RL set moe.rl.algorithms = [])"
+        )
     if rl.num_generations < 2:
         raise ConfigError("moe.rl.num_generations must be >= 2 (group-relative advantages)")
     if rl.beta < 0:
@@ -222,6 +265,7 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         raise ConfigError("moe.rl.gspo_epsilon_high must be >= moe.rl.gspo_epsilon")
 
     lo = _table(moe, "lora", required=False)
+    _check_keys(lo, _LORA_KEYS, "moe.lora")
     enabled = _get(lo, "enabled", bool, "moe.lora", False)
     lora = LoraConfig(
         enabled=enabled,
@@ -235,6 +279,7 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         raise ConfigError("moe.lora is enabled but has no target_modules or target_parameters")
 
     out = _table(moe, "output")
+    _check_keys(out, _OUTPUT_KEYS, "moe.output")
     output_dir = _get(out, "dir", str, "moe.output")
     return MoeConfig(
         name=name,

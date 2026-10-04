@@ -11,6 +11,15 @@ Verified against trl 1.14.1 (see README.md):
   * `mini_steps` maps to `steps_per_generation`: optimizer steps taken per generation batch.
     With 1 the first update is exactly on-policy (ratio == 1) and neither clipping nor the
     SAPO gate can act, so smoke configs use >= 2.
+  * GRPOConfig has no `max_prompt_length` (removed upstream), so `check_prompt_lengths`
+    enforces `moe.rl.max_prompt_length` here: an over-long prompt is rejected, never
+    silently truncated (truncating would corrupt the task).
+  * Reference policy (beta > 0). Full fine-tune: a copy of the SFT state saved to disk.
+    PEFT: TRL (peft >= 0.20) copies the live "default" adapter into a frozen "ref" adapter
+    when the trainer is built and scores the reference under it; with the SFT adapter state
+    loaded at that point, the reference is the SFT state, not the pretrained base. TRL falls
+    back to the base (adapter disabled) when that is impossible; `_assert_peft_reference`
+    makes that case an error instead of a silent wrong KL.
 """
 
 from __future__ import annotations
@@ -68,6 +77,38 @@ def build_grpo_config(algorithm: str, cfg: RlConfig, *, seed: int, output_dir: s
     )
 
 
+def check_prompt_lengths(tokenizer, tasks: list[Task], max_prompt_length: int) -> int:
+    """Longest prompt in tokens; raises ValueError if any exceeds `max_prompt_length`."""
+    longest = 0
+    for task in tasks:
+        n = len(tokenizer(task.prompt, add_special_tokens=False)["input_ids"])
+        if n > max_prompt_length:
+            raise ValueError(
+                f"prompt of {n} tokens exceeds moe.rl.max_prompt_length={max_prompt_length}: "
+                f"{task.prompt!r}"
+            )
+        longest = max(longest, n)
+    return longest
+
+
+def _assert_peft_reference(model, cfg: RlConfig) -> None:
+    """With PEFT and beta > 0 the KL reference must be a frozen copy of the SFT adapter."""
+    if cfg.beta <= 0 or not hasattr(model, "peft_config"):
+        return
+    if "ref" not in model.peft_config:
+        raise RuntimeError(
+            "PEFT model with beta > 0 but no 'ref' adapter: TRL would compute the reference "
+            "logprobs with the adapter disabled (the pretrained base, not the SFT state). "
+            "Needs peft >= 0.20; refusing to report KL against the wrong reference."
+        )
+    own = dict(model.named_parameters())
+    for name, param in own.items():
+        if ".default." in name:
+            ref = own[name.replace(".default.", ".ref.")]
+            if not bool((param.detach() == ref.detach()).all()):
+                raise RuntimeError(f"'ref' adapter differs from the SFT adapter at {name}")
+
+
 def evaluate_policy(model, tokenizer, tasks: list[Task], max_new_tokens: int) -> dict:
     """Greedy-decode every task and score it with the verifier."""
     import torch
@@ -115,10 +156,14 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
     from datasets import Dataset
     from trl import GRPOTrainer
 
+    check_prompt_lengths(tokenizer, tasks, cfg.max_prompt_length)
     bf16 = next(model.parameters()).dtype == torch.bfloat16
+    is_peft = hasattr(model, "peft_config")
+    if is_peft and "ref" in model.peft_config:
+        model.delete_adapter("ref")  # stale copy from a previous arm; TRL re-creates it
     with tempfile.TemporaryDirectory(prefix=f"ptr-moe-{algorithm}-") as tmp:
         args = build_grpo_config(algorithm, cfg, seed=seed, output_dir=tmp, bf16=bf16)
-        if cfg.beta > 0 and not hasattr(model, "peft_config"):
+        if cfg.beta > 0 and not is_peft:
             # TRL builds the reference policy by reloading `config._name_or_path`; a randomly
             # initialised model has no hub path, so snapshot the RL starting point (the SFT
             # state) to disk and point the config at it. KL is then measured against it.
@@ -132,7 +177,12 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
             train_dataset=Dataset.from_list([t.to_row() for t in tasks]),
             processing_class=tokenizer,
         )
-        trainer.train()
+        try:
+            _assert_peft_reference(model, cfg)
+            trainer.train()
+        finally:
+            if is_peft and "ref" in model.peft_config:
+                model.delete_adapter("ref")
         history = [
             {k: _clean(v) for k, v in entry.items()} for entry in trainer.state.log_history
         ]

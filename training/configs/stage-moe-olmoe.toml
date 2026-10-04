@@ -22,6 +22,8 @@ family = "olmoe"
 config = "training/configs/stage-moe-olmoe.toml"
 kind = "pretrained"
 hf_id = "allenai/OLMoE-1B-7B-0125"
+# Pinned commit of the hub repo (resolved 2026-10-04); the default branch is mutable.
+revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
 precision = "bf16"
 
 [training]
