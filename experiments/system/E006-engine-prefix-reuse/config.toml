@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "E006-engine-prefix-reuse"
+path = "experiments/system/E006-engine-prefix-reuse"
+tests_dir = "tests"

@@ -1,0 +1,12 @@
+version = 1
+id = "M012"
+status = "planned"
+hypothesis = "auxiliary-loss-free bias balancing of the LoRA-expert router gives equal or better task quality than an auxiliary balance loss at comparable load balance."
+metrics = "task_accuracy, max_violation, load_cv, dead_experts"
+baseline = "auxiliary balance loss; phi-balancing"
+falsification = "lower task quality than auxiliary loss at comparable balance, or worse balance at equal quality."
+hardware_profile = "hardware/rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

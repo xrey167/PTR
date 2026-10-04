@@ -1,0 +1,12 @@
+version = 1
+id = "R007"
+status = "planned"
+hypothesis = "evicting a span and re-prefilling everything after it yields a state identical to a fresh prefill without the span and leaves no probeable trace of the span."
+metrics = "bitwise_mismatch_count, canary_logit_shift, recompute_tokens"
+baseline = "fresh prefill of the prompt without the span"
+falsification = "any state difference or a canary logit shift above the noise floor."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

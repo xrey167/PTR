@@ -1,0 +1,16 @@
+# R005-exact-prefix-reuse
+
+## Hypothesis
+a token-keyed, salt-bound radix prefix catalog over 16-token KV pages reuses shared prefixes bit-identically to full prefill and never forks a revoked generation.
+
+## Primary metrics
+prefill_tokens_saved, wall_time_ms, hit_rate, bitwise_mismatch_count, revoked_fork_count
+
+## Baseline
+full prefill on the CPU reference decoder
+
+## Falsification
+any bitwise mismatch vs full prefill, any successful fork of a revoked generation, or hit rate below 40% on a 50%-shared-prefix workload.
+
+## Rule
+Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R007-span-forget"
+path = "experiments/runtime/R007-span-forget"
+tests_dir = "tests"

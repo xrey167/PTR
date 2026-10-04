@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M010-moe-rl-stability"
+path = "experiments/model/M010-moe-rl-stability"
+tests_dir = "tests"

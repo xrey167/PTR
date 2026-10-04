@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R010-moe-expert-kv-revocation"
+path = "experiments/runtime/R010-moe-expert-kv-revocation"
+tests_dir = "tests"

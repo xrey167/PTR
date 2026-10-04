@@ -1,0 +1,12 @@
+version = 1
+id = "R010"
+status = "planned"
+hypothesis = "revoking expert (j,i) invalidates exactly the KV pages of layers above j and nondeterministic routing is never tagged Exact."
+metrics = "stale_pages_served, wrongly_dropped_pages, nondeterministic_exact_tags"
+baseline = "invalidate the whole cache on any expert change"
+falsification = "any page above j served after revocation, any page at or below j dropped, or any nondeterministic-routing run tagged Exact."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

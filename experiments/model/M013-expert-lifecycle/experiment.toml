@@ -1,0 +1,12 @@
+version = 1
+id = "M013"
+status = "planned"
+hypothesis = "a gated expert lifecycle (birth, merge, split, freeze, prune, reactivate) under domain shift forgets less and matches a static expert set at equal compute; reactivating a retired expert recovers a returning domain faster than a new expert."
+metrics = "average_forgetting, backward_transfer, accuracy_matrix, expert_count, steps_to_recover"
+baseline = "static expert set at equal compute; naive adapter chain"
+falsification = "forgetting above the static baseline, or reactivation not faster than birth of a new expert."
+hardware_profile = "hardware/rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

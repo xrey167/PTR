@@ -1,0 +1,12 @@
+version = 1
+id = "E006"
+status = "planned"
+hypothesis = "binding an engine's prefix cache to a PTR-derived salt from the currently admitted binding yields at least 1.5x TTFT gain at 50% shared prefix while never hitting pre-revocation blocks."
+metrics = "ttft_ms, hit_rate, post_revocation_hits"
+baseline = "same engine without prefix caching / without salt"
+falsification = "TTFT gain below 1.5x at 50% shared prefix, or any hit on a pre-revocation block."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

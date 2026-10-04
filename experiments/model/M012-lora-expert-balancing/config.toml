@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M012-lora-expert-balancing"
+path = "experiments/model/M012-lora-expert-balancing"
+tests_dir = "tests"

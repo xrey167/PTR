@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M013-expert-lifecycle"
+path = "experiments/model/M013-expert-lifecycle"
+tests_dir = "tests"

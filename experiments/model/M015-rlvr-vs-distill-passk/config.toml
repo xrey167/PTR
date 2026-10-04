@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M015-rlvr-vs-distill-passk"
+path = "experiments/model/M015-rlvr-vs-distill-passk"
+tests_dir = "tests"

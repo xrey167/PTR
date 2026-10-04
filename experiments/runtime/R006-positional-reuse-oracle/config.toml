@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R006-positional-reuse-oracle"
+path = "experiments/runtime/R006-positional-reuse-oracle"
+tests_dir = "tests"

@@ -1,0 +1,12 @@
+version = 1
+id = "M010"
+status = "planned"
+hypothesis = "on OLMoE-based pod-MoE, sequence-level (GSPO) and soft-gated (SAPO) policy optimisation are more stable than token-level GRPO without routing replay at 4 mini-steps, and all arms coincide at 1 mini-step."
+metrics = "pass_at_1, crash_step, expert_churn_per_layer, routing_entropy, load_cv, train_inference_kl, clip_fraction, grad_norm"
+baseline = "GRPO with clip-higher and no routing replay; GRPO with routing replay; REINFORCE++"
+falsification = "GSPO/SAPO show no lower churn-linked ratio variance or no later crash than GRPO at 4 mini-steps over >=3 seeds, or arms differ significantly at 1 mini-step (broken null control)."
+hardware_profile = "hardware/rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R011-self-modification-safety"
+path = "experiments/runtime/R011-self-modification-safety"
+tests_dir = "tests"

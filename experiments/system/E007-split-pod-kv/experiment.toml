@@ -1,0 +1,12 @@
+version = 1
+id = "E007"
+status = "planned"
+hypothesis = "splitting a model's layers across two pods, with KV kept on the hosting pod and only activation frames crossing PodWire, is bit-identical to a single-pod run."
+metrics = "bitwise_mismatch_count, wire_kv_handle_count, chain_mismatch_stores"
+baseline = "single-pod run"
+falsification = "any output difference, any PodWire message carrying a KV handle or page bytes, or any stage storing pages under a mismatched upstream chain."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

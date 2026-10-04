@@ -1,0 +1,12 @@
+version = 1
+id = "R008"
+status = "planned"
+hypothesis = "a ShadowKV/TailorKV-style lossy tier object reduces KV memory by at least 2x at top-1 next-token agreement of at least 98%, and is always tagged Approximate."
+metrics = "kv_bytes_ratio, top1_agreement, approximate_tag_violations"
+baseline = "exact KvSnapshot tier"
+falsification = "memory reduction below 2x at >=98% top-1 agreement, or any lossy reuse not tagged Approximate."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

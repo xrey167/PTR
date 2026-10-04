@@ -1,0 +1,12 @@
+version = 1
+id = "M014"
+status = "planned"
+hypothesis = "AIMER weights-only expert ranking with pruning at 25%/50% followed by short SFT and GSPO/SAPO recovers most quality at lower VRAM, and passes the ForgettingGate on the public suite."
+metrics = "quality_retention, vram_bytes, ranking_time_s, gate_pass"
+baseline = "unpruned model; random expert pruning; usage-frequency pruning"
+falsification = "AIMER not better than random pruning at equal ratio, or pruned model fails the ForgettingGate after recovery."
+hardware_profile = "hardware/rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

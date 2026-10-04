@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R005-exact-prefix-reuse"
+path = "experiments/runtime/R005-exact-prefix-reuse"
+tests_dir = "tests"

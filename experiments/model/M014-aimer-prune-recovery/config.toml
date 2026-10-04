@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M014-aimer-prune-recovery"
+path = "experiments/model/M014-aimer-prune-recovery"
+tests_dir = "tests"

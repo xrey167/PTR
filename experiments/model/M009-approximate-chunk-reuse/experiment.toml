@@ -1,0 +1,12 @@
+version = 1
+id = "M009"
+status = "planned"
+hypothesis = "on an N-layer decoder, position-independent chunk reuse with selective recompute (first k in {0,16,32} tokens or ~15%) keeps top-1 next-token agreement >=99% while saving >=2x prefill."
+metrics = "top1_agreement, kl_vs_full, prefill_speedup, recompute_fraction"
+baseline = "full prefill"
+falsification = "at the best k, top-1 agreement below 99% or prefill saving below 2x."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

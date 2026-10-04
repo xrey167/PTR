@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M011-routed-peft"
+path = "experiments/model/M011-routed-peft"
+tests_dir = "tests"

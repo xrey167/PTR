@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R008-lossy-kv-tier"
+path = "experiments/runtime/R008-lossy-kv-tier"
+tests_dir = "tests"

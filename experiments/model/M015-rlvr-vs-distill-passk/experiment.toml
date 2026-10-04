@@ -1,0 +1,12 @@
+version = 1
+id = "M015"
+status = "planned"
+hypothesis = "on the pod-MoE, RLVR raises pass@1 but not pass@256 relative to the base, while distillation from a stronger teacher raises large-k pass@k."
+metrics = "pass_at_1, pass_at_k_curve (k up to 256, unbiased estimator)"
+baseline = "base model; SFT-distilled control"
+falsification = "RLVR raises pass@256 above base and distillation does not, over >=3 seeds."
+hardware_profile = "hardware/rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

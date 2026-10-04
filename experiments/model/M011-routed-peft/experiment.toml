@@ -1,0 +1,12 @@
+version = 1
+id = "M011"
+status = "planned"
+hypothesis = "routed LoRA experts (PERFT-R) on OLMoE beat a single LoRA and MixLoRA-style experts at equal trainable parameters, and emergent specialisation is at least as good as prescribed code/math/tool specialisation."
+metrics = "task_accuracy_per_domain, expert_specialisation_index, trainable_params, latency_per_token"
+baseline = "single LoRA at equal parameters; MixLoRA-style top-k LoRA experts"
+falsification = "PERFT-R not better than single LoRA at equal parameters over >=3 seeds."
+hardware_profile = "hardware/rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
