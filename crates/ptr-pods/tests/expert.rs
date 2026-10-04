@@ -2,15 +2,22 @@ use ptr_pods::{
     ExpertLevel, ExpertPodSpec, ExpertProposal, ExpertProposalError, ExpertSpecError, ExpertState,
     ExpertTarget, ProposalParts, StructuralOp,
 };
-use ptr_types::{Generation, PodId};
+use ptr_types::{Digest, Generation, PodId, ProjectId};
 
 const RATIONALE: [u8; 32] = [7; 32];
+const BASE: Digest = [9; 32];
+
+fn project() -> ProjectId {
+    ProjectId::from("proj")
+}
 
 fn target(name: &str, generation: u64, level: ExpertLevel, state: ExpertState) -> ExpertTarget {
     ExpertTarget {
+        project: project(),
         pod: PodId::from(name),
         generation: Generation(generation),
         level,
+        base_model: BASE,
         state,
     }
 }
@@ -28,7 +35,7 @@ fn propose(
     targets: Vec<ExpertTarget>,
     birth_level: Option<ExpertLevel>,
 ) -> Result<ExpertProposal, ExpertProposalError> {
-    ExpertProposal::new(op, targets, birth_level, RATIONALE)
+    ExpertProposal::new(op, project(), targets, birth_level, RATIONALE)
 }
 
 #[test]
@@ -243,7 +250,13 @@ fn malformed_targets_and_rationale_are_rejected() {
         Err(ExpertProposalError::InvalidTarget { .. })
     ));
     assert_eq!(
-        ExpertProposal::new(StructuralOp::Freeze, vec![serving("a")], None, [0; 32]),
+        ExpertProposal::new(
+            StructuralOp::Freeze,
+            project(),
+            vec![serving("a")],
+            None,
+            [0; 32]
+        ),
         Err(ExpertProposalError::ZeroRationaleDigest)
     );
 }
@@ -262,14 +275,26 @@ fn errors_have_readable_display() {
 #[test]
 fn pod_spec_validates_identity() {
     let make = |id: &str, m: [u8; 32], b: [u8; 32], g: u64| {
-        ExpertPodSpec::new(PodId::from(id), m, token(2), b, Generation(g))
+        ExpertPodSpec::new(project(), PodId::from(id), m, token(2), b, Generation(g))
     };
     let spec = make("e", [1; 32], [2; 32], 1).expect("valid spec");
+    assert_eq!(spec.project(), &project());
     assert_eq!(spec.pod(), &PodId::from("e"));
     assert_eq!(spec.manifest_digest(), &[1; 32]);
     assert_eq!(spec.base_model(), &[2; 32]);
     assert_eq!(spec.level(), token(2));
     assert_eq!(spec.generation(), Generation(1));
+    assert_eq!(
+        ExpertPodSpec::new(
+            ProjectId::from(" "),
+            PodId::from("e"),
+            [1; 32],
+            token(2),
+            [2; 32],
+            Generation(1)
+        ),
+        Err(ExpertSpecError::BlankProject)
+    );
     assert_eq!(
         make("", [1; 32], [2; 32], 1),
         Err(ExpertSpecError::BlankPod)
@@ -298,13 +323,141 @@ fn proposal_has_no_override_surface() {
     let proposal = propose(StructuralOp::Merge, vec![serving("a"), serving("b")], None).unwrap();
     let ProposalParts {
         op,
+        project: parts_project,
         targets,
         birth_level,
         rationale_digest,
     } = proposal.parts();
     assert_eq!(op, StructuralOp::Merge);
+    assert_eq!(parts_project, &project());
+    assert_eq!(proposal.project(), &project());
     assert_eq!(targets.len(), 2);
     assert_eq!(birth_level, None);
     assert_eq!(rationale_digest, &RATIONALE);
     assert_eq!(targets, proposal.targets());
+}
+
+fn in_project(mut t: ExpertTarget, project: &str) -> ExpertTarget {
+    t.project = ProjectId::from(project);
+    t
+}
+
+fn with_base(mut t: ExpertTarget, base: Digest) -> ExpertTarget {
+    t.base_model = base;
+    t
+}
+
+#[test]
+fn merge_rejects_mixed_base_models() {
+    let other = with_base(serving("b"), [10; 32]);
+    assert_eq!(
+        propose(StructuralOp::Merge, vec![serving("a"), other.clone()], None),
+        Err(ExpertProposalError::MixedBaseModels)
+    );
+    // Order does not matter.
+    assert_eq!(
+        propose(StructuralOp::Merge, vec![other, serving("a")], None),
+        Err(ExpertProposalError::MixedBaseModels)
+    );
+    // Same base model is fine; single-target ops cannot mix.
+    assert!(propose(StructuralOp::Merge, vec![serving("a"), serving("b")], None).is_ok());
+    let other = with_base(serving("c"), [10; 32]);
+    assert!(propose(StructuralOp::Split, vec![other], None).is_ok());
+    let zero = with_base(serving("c"), [0; 32]);
+    assert!(matches!(
+        propose(StructuralOp::Freeze, vec![zero], None),
+        Err(ExpertProposalError::InvalidTarget { .. })
+    ));
+}
+
+#[test]
+fn targets_must_belong_to_the_proposals_project() {
+    let foreign = in_project(serving("b"), "other");
+    assert_eq!(
+        propose(
+            StructuralOp::Merge,
+            vec![serving("a"), foreign.clone()],
+            None
+        ),
+        Err(ExpertProposalError::MixedProjects {
+            expected: project(),
+            found: ProjectId::from("other")
+        })
+    );
+    for op in [
+        StructuralOp::Split,
+        StructuralOp::Freeze,
+        StructuralOp::Prune,
+        StructuralOp::Retire,
+    ] {
+        assert!(matches!(
+            propose(op, vec![foreign.clone()], None),
+            Err(ExpertProposalError::MixedProjects { .. })
+        ));
+    }
+    // A proposal for the other project accepts it.
+    let proposal = ExpertProposal::new(
+        StructuralOp::Freeze,
+        ProjectId::from("other"),
+        vec![foreign],
+        None,
+        RATIONALE,
+    )
+    .unwrap();
+    assert_eq!(proposal.project(), &ProjectId::from("other"));
+    // Birth names its project and no target is needed.
+    let birth = ExpertProposal::new(
+        StructuralOp::Birth,
+        ProjectId::from("other"),
+        vec![],
+        Some(token(0)),
+        RATIONALE,
+    )
+    .unwrap();
+    assert_eq!(birth.project(), &ProjectId::from("other"));
+    assert_eq!(
+        ExpertProposal::new(
+            StructuralOp::Birth,
+            ProjectId::from(""),
+            vec![],
+            Some(token(0)),
+            RATIONALE
+        ),
+        Err(ExpertProposalError::BlankProject)
+    );
+    let blank = in_project(serving("a"), " ");
+    assert!(matches!(
+        propose(StructuralOp::Freeze, vec![blank], None),
+        Err(ExpertProposalError::InvalidTarget { .. })
+    ));
+}
+
+#[test]
+fn same_pod_id_in_different_projects_is_a_distinct_expert() {
+    let a = serving("shared");
+    let b = in_project(serving("shared"), "other");
+    assert_ne!(a, b);
+    // Not a DuplicateTarget: the project check fires first because they are different experts.
+    assert!(matches!(
+        propose(StructuralOp::Merge, vec![a.clone(), b], None),
+        Err(ExpertProposalError::MixedProjects { .. })
+    ));
+    // Within one project the same (pod, generation) is still a duplicate.
+    assert!(matches!(
+        propose(StructuralOp::Merge, vec![a.clone(), a], None),
+        Err(ExpertProposalError::DuplicateTarget { .. })
+    ));
+    let spec = |project: &str| {
+        ExpertPodSpec::new(
+            ProjectId::from(project),
+            PodId::from("shared"),
+            [1; 32],
+            token(2),
+            BASE,
+            Generation(1),
+        )
+        .unwrap()
+    };
+    assert_ne!(spec("proj"), spec("other"));
+    assert_eq!(spec("other").project(), &ProjectId::from("other"));
 }

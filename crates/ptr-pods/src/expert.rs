@@ -24,8 +24,10 @@
 //! # No override surface (deliberate type-level guarantee)
 //!
 //! An [`ExpertProposal`] has no threshold, gate, verifier, score-override or policy-parameter
-//! field, and no field that could hold one. It carries exactly the operation, the experts it
-//! targets, the level of a newborn expert and a digest of the proposer's rationale. A proposer
+//! field, and no field that could hold one. It carries exactly the operation, the project the
+//! experts belong to, the experts it targets, the level of a newborn expert and a digest of the
+//! proposer's rationale. The project is identity (pods are registered per `(ProjectId, PodId)`),
+//! not a policy knob. A proposer
 //! therefore cannot loosen a gate or switch off a verifier by what it submits. This protects
 //! invariant #4 (uncommitted state is never authoritative: a proposal is not a change) and
 //! invariant #11 (a learned positive score cannot override a deterministic contradiction) in
@@ -33,7 +35,7 @@
 //! [`ProposalParts`], so a reviewer (and the test in `tests/expert.rs`) can see that adding a
 //! field is a visible, breaking change.
 
-use ptr_types::{Digest, Generation, PodId};
+use ptr_types::{Digest, Generation, PodId, ProjectId};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -94,6 +96,7 @@ impl fmt::Display for StructuralOp {
 /// Identity and binding of one expert pod.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExpertPodSpec {
+    project: ProjectId,
     pod: PodId,
     manifest_digest: Digest,
     level: ExpertLevel,
@@ -102,15 +105,19 @@ pub struct ExpertPodSpec {
 }
 
 impl ExpertPodSpec {
-    /// Build a spec. Rejects a blank pod id, an all-zero manifest or base-model digest and
+    /// Build a spec. Rejects a blank project or pod id, an all-zero manifest or base-model digest and
     /// generation zero (the default value, never a committed generation).
     pub fn new(
+        project: ProjectId,
         pod: PodId,
         manifest_digest: Digest,
         level: ExpertLevel,
         base_model: Digest,
         generation: Generation,
     ) -> Result<Self, ExpertSpecError> {
+        if project.0.trim().is_empty() {
+            return Err(ExpertSpecError::BlankProject);
+        }
         if pod.0.trim().is_empty() {
             return Err(ExpertSpecError::BlankPod);
         }
@@ -124,12 +131,17 @@ impl ExpertPodSpec {
             return Err(ExpertSpecError::ZeroGeneration);
         }
         Ok(Self {
+            project,
             pod,
             manifest_digest,
             level,
             base_model,
             generation,
         })
+    }
+
+    pub fn project(&self) -> &ProjectId {
+        &self.project
     }
 
     pub fn pod(&self) -> &PodId {
@@ -155,6 +167,7 @@ impl ExpertPodSpec {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExpertSpecError {
+    BlankProject,
     BlankPod,
     ZeroManifestDigest,
     ZeroBaseModel,
@@ -164,6 +177,7 @@ pub enum ExpertSpecError {
 impl fmt::Display for ExpertSpecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::BlankProject => f.write_str("expert project id is blank"),
             Self::BlankPod => f.write_str("expert pod id is blank"),
             Self::ZeroManifestDigest => f.write_str("expert manifest digest is all zero"),
             Self::ZeroBaseModel => f.write_str("expert base model digest is all zero"),
@@ -175,11 +189,16 @@ impl fmt::Display for ExpertSpecError {
 impl std::error::Error for ExpertSpecError {}
 
 /// An existing expert a proposal refers to, pinned to a generation and observed state.
+///
+/// The expert's identity is `(project, pod, generation)`, matching the registry key
+/// `(ProjectId, PodId)`; `base_model` is the digest of the base model the expert adapts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExpertTarget {
+    pub project: ProjectId,
     pub pod: PodId,
     pub generation: Generation,
     pub level: ExpertLevel,
+    pub base_model: Digest,
     pub state: ExpertState,
 }
 
@@ -190,6 +209,7 @@ pub struct ExpertTarget {
 #[derive(Clone, Copy, Debug)]
 pub struct ProposalParts<'a> {
     pub op: StructuralOp,
+    pub project: &'a ProjectId,
     pub targets: &'a [ExpertTarget],
     pub birth_level: Option<ExpertLevel>,
     pub rationale_digest: &'a Digest,
@@ -199,6 +219,7 @@ pub struct ProposalParts<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExpertProposal {
     op: StructuralOp,
+    project: ProjectId,
     targets: Vec<ExpertTarget>,
     birth_level: Option<ExpertLevel>,
     rationale_digest: Digest,
@@ -226,7 +247,16 @@ pub enum ExpertProposalError {
     DuplicateTarget { pod: PodId, generation: Generation },
     /// Merge mixes levels, or Token experts of different layers.
     MixedLevels,
-    /// A target has a blank pod id or generation zero.
+    /// Merge combines experts adapted from different base models.
+    MixedBaseModels,
+    /// A target belongs to a project other than the proposal's project.
+    MixedProjects {
+        expected: ProjectId,
+        found: ProjectId,
+    },
+    /// The proposal's project id is blank.
+    BlankProject,
+    /// A target has a blank project or pod id, generation zero or an all-zero base model.
     InvalidTarget { pod: PodId },
     /// The rationale digest is all zero.
     ZeroRationaleDigest,
@@ -257,9 +287,16 @@ impl fmt::Display for ExpertProposalError {
             Self::MixedLevels => {
                 f.write_str("merge targets must share one level (and one layer for token level)")
             }
-            Self::InvalidTarget { pod } => {
-                write!(f, "target {pod} has a blank pod id or generation zero")
-            }
+            Self::MixedBaseModels => f.write_str("merge targets must share one base model"),
+            Self::MixedProjects { expected, found } => write!(
+                f,
+                "target belongs to project {found}, but the proposal is for project {expected}"
+            ),
+            Self::BlankProject => f.write_str("proposal project id is blank"),
+            Self::InvalidTarget { pod } => write!(
+                f,
+                "target {pod} has a blank project or pod id, generation zero or a zero base model"
+            ),
             Self::ZeroRationaleDigest => f.write_str("rationale digest is all zero"),
         }
     }
@@ -271,6 +308,7 @@ impl ExpertProposal {
     /// Validate and build a proposal. See the module documentation for what a proposal is not.
     pub fn new(
         op: StructuralOp,
+        project: ProjectId,
         targets: Vec<ExpertTarget>,
         birth_level: Option<ExpertLevel>,
         rationale_digest: Digest,
@@ -278,10 +316,23 @@ impl ExpertProposal {
         if rationale_digest == ZERO_DIGEST {
             return Err(ExpertProposalError::ZeroRationaleDigest);
         }
+        if project.0.trim().is_empty() {
+            return Err(ExpertProposalError::BlankProject);
+        }
         for target in &targets {
-            if target.pod.0.trim().is_empty() || target.generation == Generation::default() {
+            if target.project.0.trim().is_empty()
+                || target.pod.0.trim().is_empty()
+                || target.generation == Generation::default()
+                || target.base_model == ZERO_DIGEST
+            {
                 return Err(ExpertProposalError::InvalidTarget {
                     pod: target.pod.clone(),
+                });
+            }
+            if target.project != project {
+                return Err(ExpertProposalError::MixedProjects {
+                    expected: project.clone(),
+                    found: target.project.clone(),
                 });
             }
         }
@@ -328,6 +379,7 @@ impl ExpertProposal {
         }
         Ok(Self {
             op,
+            project,
             targets,
             birth_level,
             rationale_digest,
@@ -336,6 +388,11 @@ impl ExpertProposal {
 
     pub fn op(&self) -> StructuralOp {
         self.op
+    }
+
+    /// The project every target (and a newborn expert) belongs to.
+    pub fn project(&self) -> &ProjectId {
+        &self.project
     }
 
     pub fn targets(&self) -> &[ExpertTarget] {
@@ -372,12 +429,14 @@ impl ExpertProposal {
         // against invariants #4 and #11 before `ProposalParts` is updated.
         let ExpertProposal {
             op,
+            project,
             targets,
             birth_level,
             rationale_digest,
         } = self;
         ProposalParts {
             op: *op,
+            project,
             targets,
             birth_level: *birth_level,
             rationale_digest,
@@ -430,6 +489,12 @@ fn check_merge(targets: &[ExpertTarget]) -> Result<(), ExpertProposalError> {
     let first = targets[0].level;
     if targets.iter().any(|t| t.level != first) {
         return Err(ExpertProposalError::MixedLevels);
+    }
+    // Merging weights adapted from different base models is meaningless. Split, Reactivate and
+    // the other single-target operations derive from one expert and cannot mix.
+    let base = &targets[0].base_model;
+    if targets.iter().any(|t| &t.base_model != base) {
+        return Err(ExpertProposalError::MixedBaseModels);
     }
     Ok(())
 }
