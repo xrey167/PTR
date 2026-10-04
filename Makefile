@@ -148,6 +148,8 @@ ci-repository-invariants:
 ci-lifecycle-failpoints:
 	cargo +stable test -p ptr-ledger --features failpoints --test failpoints --locked
 	cargo +stable clippy -p ptr-ledger --features failpoints --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-ledger --features failpoints,raft-engine-backend --tests --locked
+	cargo +stable clippy -p ptr-ledger --features failpoints,raft-engine-backend --all-targets --locked -- -D warnings
 
 ci-ledger-raft-engine:
 	cargo +stable test -p ptr-ledger --features raft-engine-backend --test raft_engine --locked
