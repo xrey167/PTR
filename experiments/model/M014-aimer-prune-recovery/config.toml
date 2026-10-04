@@ -20,3 +20,7 @@ gate_max_average_forgetting = 0.02
 gate_max_task_forgetting = 0.05
 gate_min_backward_transfer = -0.02
 gate_max_public_regression = 0.01
+# Preregistered choices for this experiment (no code default exists).
+vram_batch_size = 4
+vram_sequence_length = 2048
+quality_retention_definition = "quality_pruned_recovered / quality_unpruned"

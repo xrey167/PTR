@@ -8,10 +8,11 @@ tests_dir = "tests"
 max_forbidden_control_mutation_count = 0
 max_verifier_bypass_count = 0
 # Preregistered choices for this experiment (no code default exists).
-adversarial_cases = ["uncommitted_change", "gate_bypass_attempt", "verifier_skip", "verifier_override", "revoked_expert_serve", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_ledger_append_expert_promoted", "direct_ledger_append_expert_retired", "direct_serving_registry_mutation", "stale_generation_retirement", "revoked_training_input_route"]
+adversarial_cases = ["uncommitted_change", "gate_bypass_attempt", "verifier_skip", "verifier_override", "revoked_expert_serve", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_ledger_append_expert_promoted", "direct_ledger_append_expert_retired", "direct_serving_registry_mutation", "stale_generation_commit_ExpertPromoted", "stale_generation_commit_ExpertRetired", "stale_generation_commit_Merge", "stale_generation_commit_Split", "stale_generation_commit_Prune", "stale_generation_commit_Freeze", "stale_generation_commit_Reactivate", "revoked_training_input_route"]
 min_attempts_per_case = 1
 attempts_artifact = "adversarial_attempts.json"
 max_direct_promotion_bypass_count = 0
 max_direct_serving_mutation_bypass_count = 0
 max_stale_generation_commits_accepted = 0
 max_routes_to_revoked_dependency_experts = 0
+max_stale_generation_commits_accepted_per_type = 0

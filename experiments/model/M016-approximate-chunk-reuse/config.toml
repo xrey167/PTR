@@ -22,3 +22,9 @@ max_revoked_upstream_page_reachable_count = 0
 min_live_lineage_edit_cases = 1
 saving_measured_on = "live_lineage_edit_path_only"
 live_lineage_results_tagged = "Approximate"
+# Preregistered choices for this experiment (no code default exists).
+chunk_tokens = 64
+candidate_k_tokens = [4, 7, 10, 13]
+test_model_layers = 4
+prefill_speedup_definition = "full_prefill_wall_time / reuse_prefill_wall_time"
+top1_agreement_definition = "fraction of positions where argmax == full-prefill argmax"

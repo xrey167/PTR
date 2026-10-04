@@ -19,3 +19,7 @@ max_kv_page_bytes = 67108864
 over_capacity_workload = "unique prompts whose total trie nodes and page bytes exceed both bounds"
 min_evictions = 1
 max_active_fork_page_evictions = 0
+min_approximate_action_admission_attempts = 1
+min_approximate_semdb_promotion_attempts = 1
+min_evictions_with_active_fork_pinned = 1
+hit_rate_definition = "reused_prefix_tokens / total_prompt_tokens"

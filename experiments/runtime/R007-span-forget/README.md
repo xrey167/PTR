@@ -10,7 +10,7 @@ bitwise_mismatch_count, canary_logit_shift, recompute_tokens, span_insertions, s
 fresh prefill of the prompt without the span
 
 ## Falsification
-any state difference against a fresh prefill without the span, or a canary logit shift above the noise threshold, where the threshold is pinned before running as the 99th percentile of the canary logit shift over 100 seeded control prompts that never contained the canary; zero difference is accepted only if the pinned canary-bearing span case was exercised with span_insertions, span_evictions, downstream_recomputations and canary_probes each >= 1, otherwise the run is vacuous and falsified.
+any state difference against a fresh prefill without the span, or a canary logit shift above the noise threshold, where the threshold is pinned before running as the 99th percentile of the canary logit shift over 100 seeded control prompts that never contained the canary; zero difference is accepted only if the pinned canary-bearing span case was exercised with span_insertions, span_evictions, downstream_recomputations and canary_probes each >= 1, otherwise the run is vacuous and falsified; canary_probes must be performed after the span eviction and the downstream recomputation.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

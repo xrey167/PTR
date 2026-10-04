@@ -19,3 +19,4 @@ max_revoked_adapter_entry_hits = 0
 alora_invocation_offset_in_page = 7
 min_alora_boundary_page_cases = 1
 page_tokens = 16
+min_post_revocation_lookups_on_adapter_entries = 1

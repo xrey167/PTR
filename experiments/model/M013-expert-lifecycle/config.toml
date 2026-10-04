@@ -27,3 +27,7 @@ min_proposals_generated_per_arm = 20
 min_proposals_accepted_per_arm = 1
 # Preregistered choice: margin by which full-context net quality change must be at least both baselines.
 net_quality_vs_baseline_margin = 0.0
+# Preregistered choices for this experiment (no code default exists).
+flops_relative_tolerance = 0.01
+active_params_relative_tolerance = 0.0
+backward_transfer_definition = "ForgettingGate AccuracyMatrix definition"

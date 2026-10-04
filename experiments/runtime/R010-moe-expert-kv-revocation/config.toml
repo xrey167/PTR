@@ -17,3 +17,9 @@ min_deterministic_revocation_attempts = 1
 min_pages_above_j_before_revocation = 1
 min_pages_at_or_below_j_before_revocation = 1
 min_deterministic_reuse_events = 1
+# Preregistered choices for this experiment (no code default exists).
+min_post_revocation_reuse_probes = 1
+min_retained_pages_reused_after_revocation = 1
+min_recomputed_pages_above_j_served = 1
+test_model_layers = 4
+revoked_expert_layer_j = 1

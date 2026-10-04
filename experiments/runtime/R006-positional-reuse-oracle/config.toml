@@ -16,3 +16,6 @@ nonaligned_insertion_tokens = [1, 7]
 min_nonaligned_insertion_cases_per_size = 1
 min_upstream_revocation_cases = 1
 max_revoked_upstream_page_reachable_count = 0
+# Preregistered choices for this experiment (no code default exists).
+test_model_layers = 1
+min_fresh_prefill_after_revocation = 1

@@ -17,3 +17,11 @@ bit_identity_requires_batch_invariant_engine = true
 min_semantic_revocations_performed = 1
 max_stale_semantic_block_hits = 0
 max_unacknowledged_flushes_before_serve = 0
+# Preregistered choices for this experiment (no code default exists).
+min_cross_principal_reuse_attempts = 1
+max_cross_principal_hits = 0
+min_cross_regime_probes = 1
+max_cross_regime_block_hits = 0
+ttft_statistic = "median"
+ttft_gain_definition = "ttft_ms_cache_disabled / ttft_ms_salted_cache"
+hit_rate_definition = "reused_prefix_tokens / total_prompt_tokens"
