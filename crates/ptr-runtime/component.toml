@@ -1,8 +1,9 @@
 version = 1
 id = "ptr-runtime"
 maturity = "prototype"
-last_reviewed = "2026-10-03"
+last_reviewed = "2026-10-04"
 implemented = [
+  "admit_peer takes an AuthenticatedPeer (D1 in issue #23): this crate depends on ptr-net's transport-free base, so an identity read out of a payload does not compile where admission needs one; a compile_fail doctest on admit_peer holds it, with a compiling control taking an AuthenticatedPeer",
   "admit_pod_output binds a retry to the admission it completes: a request id already admitted for another scope or session is refused, and only a record written after the PodOutputAdmitted record counts as its follow-up, and for a state-changing output the promoted value itself must equal the admitted payload, so neither an earlier promotion nor a later one with another output (whose origin carries no output digest) is taken for it, a candidate record must write the admitted payload too (the digest in its origin is not recomputed from the delta), and a hypothesis record counts only when its session, scope and derived branch id are the admission's as well",
   "The OIDC replay set is indexed by id and by expiry, so dropping expired token ids visits only the expired ones instead of every live id on each authentication; pruning follows the latest time ever presented and a token that had already expired at that time is refused as a replay, so a clock that reads earlier later cannot free a consumed id",
   "admit_pod_output builds a hypothesis's PodOutputAdmitted and PodHypothesisCommitted events up front and checks both with the ledger's check_encodable before committing the first, so an output over the ledger limits is refused whole instead of leaving an admission whose retry reports success for a hypothesis that was never created",
@@ -105,7 +106,6 @@ missing = [
   "A truly concurrent permission or lifecycle race inside one runtime: exclusive access prevents the interleaving by construction, so the concurrent case is two runtimes deciding at once, which ptr-execwire drives over a real connection rather than this crate",
   "Durable neural-anchor catalog and streamed or memory-mapped payloads; admission checks the producer's declared input set only, so an undeclared dependency stays invisible",
   "A trainer that binds a checkpoint as it saves one: bind_checkpoint attaches committed facts after the fact, so an artifact between saving and binding carries its assignment but no position",
-  "An unforgeable peer identity: the NodeId passed to admit_peer is still taken on the caller's word here, and making it constructible only from an authenticated connection would require this crate to depend on ptr-net, which is an open decision; the execution wire itself now exists in ptr-execwire, where the forged-receipt and cross-runtime cases are tested over a real connection",
   "The admission policy is in memory: it is not journaled, so it does not survive a restart and a replayed history does not describe who was admitted when",
   "At-most-once memory is bounded by retention: a floor rising past a settled attempt discards its key, and reconciliation is a privileged host API whose caller this crate does not authenticate",
   "At-most-once keys scoped per principal or project: the memory is addressed by the key alone, so a refusal under a key tells a principal that another spent it and a principal that spends a key first makes it refused to every other; a caller has to choose keys nobody else can guess",
@@ -119,7 +119,6 @@ missing = [
   "Streaming client response lifecycle and cancellation",
 ]
 next = [
-  "Decide whether peer identity should be constructible only from an authenticated connection, which would make this crate depend on ptr-net; until then ptr-execwire is the one host that passes an authenticated key and nothing else",
   "Define the PodWire request framing, which is still undefined even though the execution wire is not",
   "Retaining a NeuralAnchor outside the artifact remains a deployment obligation; nothing here stores one",
   "Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode",

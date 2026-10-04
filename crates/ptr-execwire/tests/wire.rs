@@ -266,7 +266,7 @@ async fn an_admitted_peer_executes_over_the_wire_under_the_principal_policy_name
     assert_eq!(served.request_id, Some(1));
     assert_eq!(served.refused, None);
     assert_eq!(
-        served.peer.public_key,
+        served.peer.public_key(),
         client.identity().public_key,
         "the peer is the connection's, not the payload's"
     );

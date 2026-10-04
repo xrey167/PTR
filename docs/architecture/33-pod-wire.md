@@ -220,11 +220,11 @@ and the peer the decision runs under.
 
 ## What this does not close
 
-- **Nothing here authenticates a peer.** The key is the one `ptr-net` reports the
-  QUIC connection authenticated, and this crate takes the host's word that it passed
-  that rather than something else. The same boundary `29-peer-admission-and-pod-scope.md`
-  states, and the same open decision behind it (D1 in issue #23): a `ptr-runtime`
-  dependency on `ptr-net` would make the identity unforgeable at the type level.
+- **This crate authenticates nothing itself; it cannot be handed an unproven
+  identity either.** `answer` takes an `AuthenticatedPeer`, which only `ptr-net`'s
+  transport constructs (D1 in issue #23, decided yes; `32-execution-wire.md`). The
+  boundary that remains is the transport's own: the identity is exactly as good as
+  the QUIC handshake that verified it.
 - **An answer is not signed.** Inside one exchange the connection vouches for its
   author; once the bytes are stored or forwarded, nothing does. This crate offers no
   way to verify a stored answer rather than producing an artifact that looks like

@@ -265,7 +265,7 @@ async fn an_admitted_peer_reaches_its_project_s_pod_over_a_real_connection() {
     assert_eq!(served.request_id, Some(1));
     assert_eq!(served.refused, None);
     assert_eq!(
-        served.peer.public_key,
+        served.peer.public_key(),
         client.identity().public_key,
         "the peer is the connection's, and the frame has no field it could have been"
     );
@@ -1165,7 +1165,7 @@ async fn v2_session_marks_an_unverifiable_answer_uncertain_and_blocks_retry() {
     let session = client.connect_session(address, 1).await.unwrap();
     let manifest = pod("alpha", &Arc::new(Mutex::new(0))).manifest().clone();
     let request = request_v2(
-        session.peer().public_key.clone(),
+        session.peer().public_key().to_owned(),
         777,
         &manifest,
         Generation(7),

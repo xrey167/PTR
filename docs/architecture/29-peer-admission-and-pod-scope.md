@@ -129,14 +129,14 @@ Negative, one per route back in:
 
 ## What this does not close
 
-- **Nothing here authenticates a peer.** The `NodeId` is taken on the host's
-  word, which is still true and is the reason this document's own title says
-  *admission* rather than authentication. What has changed since it was written is
-  that a host doing it correctly now exists: `crates/ptr-execwire` passes the key a
-  QUIC connection authenticated and nothing else (`32-execution-wire.md`). Making
-  the identity unforgeable **at the type level** — so that no host could pass an
-  unproven one — would still require the runtime to depend on the transport, and
-  that decision is open.
+- **Nothing here authenticates a peer, and nothing here can be handed one that
+  was not authenticated.** This document's title still says *admission* rather
+  than authentication, because the proof is the transport's. But `admit_peer`
+  takes an `AuthenticatedPeer`, constructible only by `ptr-net`'s transport from
+  the key a QUIC connection verified, so no host can pass an unproven identity:
+  it does not compile (D1 in issue #23, decided yes; `32-execution-wire.md`). The
+  policy table itself is still keyed by `NodeId`, which is right — the host names
+  the peers it is willing to admit; what it cannot do is claim one arrived.
 - **The wire protocol is no longer missing, and it is three protocols rather than
   five.** `ALPN_EXEC` carries execution requests with a defined request format, a
   receipt bound to the bytes that arrived and a bounded replay window

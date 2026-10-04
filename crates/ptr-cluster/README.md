@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-28  
+**Last reviewed:** 2026-10-04  
 **Code footprint:** 3 Rust source files · 726 nonblank source lines · 1 integration-test files · 15 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- A frame's sender is mapped to a member from the AuthenticatedPeer the transport produced (D1 in issue #23), never from a NodeIdentity a caller could assemble
 - ClusterMember carries raft messages between authenticated endpoints on ALPN_RAFT, composing ptr-ledger's RaftNode with ptr-net's transport so neither of them has to know about the other
 - The sender of a frame is the authenticated connection and never the message's own from field: a peer whose key is admitted as one member cannot step messages attributed to another, and a message addressed to a different member is refused
 - A batch frame format with an explicit layout version, a bound on the frame and on the number of messages, and refusals for foreign bytes, an unknown layout, truncation, trailing bytes, an invented count and an undecodable message — each with its own diagnostic code

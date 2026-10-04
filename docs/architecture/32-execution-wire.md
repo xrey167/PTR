@@ -17,22 +17,36 @@ any two of them has a hole in it.
 both, and `crates/ptr-execwire` is that something so that neither of those two
 becomes it.
 
-This is the same shape as `ptr-cluster` (`31-cluster-integrity.md`) and it was chosen
-for the same reason: a composition crate adds no dependency edge to any existing
-component. The alternative — `ptr-runtime` depending on `ptr-net` — would allow a
-strictly stronger property, and it is recorded here as an open decision rather than
-taken:
+This is the same shape as `ptr-cluster` (`31-cluster-integrity.md`): the
+composition lives here, so the runtime never learns what a connection is.
 
-> A peer identity could be made **unforgeable at the type level**: a type
-> constructible only from an authenticated connection, the way `VerifiedDispatch` is
-> constructible only inside the runtime. Then no code anywhere could pass a peer
-> identity the transport had not proved, because there would be no way to build one.
-> What this crate has instead is a single place where that mistake is possible and is
-> not made, which is weaker: a second composition written elsewhere could get it
-> wrong, and nothing would stop it compiling.
+### Peer identity is unforgeable at the type level (D1 in issue #23: yes)
 
-The stronger version changes a dependency graph this repository tracks deliberately,
-so it is the owner's decision. Everything below holds either way.
+`ptr-runtime` depends on `ptr-net` — on its **base**, which has no transport and
+depends only on `ptr-types` and `ptr-protocol`, both of which the runtime already
+depended on. The edge adds nothing to the build and one property to the system:
+
+`admit_peer` takes an `AuthenticatedPeer`, and `AuthenticatedPeer` has **no public
+constructor**. The only code that builds one is `ptr-net`'s transport, from the key
+the QUIC handshake verified (`Connection::remote_id`), the way `VerifiedDispatch` is
+constructible only inside the runtime. So no code anywhere can pass a peer identity
+the transport did not prove — not this crate, not `ptr-podwire`, not a composition
+written later — because a `NodeId` read out of a payload does not compile where an
+`AuthenticatedPeer` is required. What this crate had before was one place where
+that mistake was possible and was not made; it is now unwritable.
+
+Held by two `compile_fail` doctests on `AuthenticatedPeer` (a struct literal; a
+conversion from a bare id) and one on `admit_peer` (a bare `NodeId`), the last with
+a compiling control taking an `AuthenticatedPeer`. Tests without a network use
+`AuthenticatedPeer::assume_authenticated`, which exists only with `ptr-net`'s
+`test-support` feature; `scripts/check_repo.py` refuses any manifest that enables
+that feature outside `[dev-dependencies]`
+(`test_a_normal_dependency_may_not`, with `test_a_dev_dependency_may_enable_it` as
+the control), so no production build of any package here can reach it.
+
+Authenticating a peer is still not authorizing an action: the type proves who is on
+the other end of the connection, and every table that decides what that peer may do
+is still the host's policy.
 
 ## Its own ALPN
 

@@ -4722,6 +4722,7 @@ dependencies = [
  "ptr-ledger",
  "ptr-memory",
  "ptr-model-api",
+ "ptr-net",
  "ptr-pods",
  "ptr-protocol",
  "ptr-router",

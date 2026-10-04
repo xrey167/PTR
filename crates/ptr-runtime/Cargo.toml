@@ -31,6 +31,10 @@ ptr-storage = { workspace = true }
 # branch against the runtime's own state and triages it under the grant's
 # policy, so both come from the crate that defines them.
 ptr-branch = { workspace = true }
+# D1 in issue #23: `admit_peer` takes an `AuthenticatedPeer`, which only ptr-net's
+# transport can construct. The base crate only, with no transport: it depends on
+# ptr-types and ptr-protocol, which this crate already does.
+ptr-net = { workspace = true }
 sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 serde_json = { workspace = true }
@@ -38,6 +42,9 @@ base64 = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Peers for tests that have no network. check_repo.py refuses this feature
+# anywhere but [dev-dependencies].
+ptr-net = { workspace = true, features = ["test-support"] }
 # Search hits are filtered against this runtime's lifecycle answers; the test
 # composes the two public APIs the way a caller does.
 ptr-search = { workspace = true }

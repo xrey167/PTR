@@ -127,6 +127,79 @@ def check_workspace_membership(root: Path) -> list[str]:
     return errors
 
 
+# Features that exist so a test can do what production code must not. Each one is
+# allowed in `[dev-dependencies]` and nowhere else. `ptr-net`'s `test-support`
+# adds `AuthenticatedPeer::assume_authenticated`; enabled in a normal dependency,
+# it would let any composition admit an identity no transport proved, which is
+# exactly what D1 in issue #23 made uncompilable.
+TEST_ONLY_FEATURES = {"ptr-net": {"test-support"}}
+# Dependency tables a production build reads. `dev-dependencies` is the only
+# table missing from this list, deliberately.
+PRODUCTION_TABLES = ("dependencies", "build-dependencies")
+
+
+def _production_dependency_tables(document: dict):
+    """Yield `(label, table)` for every dependency table a non-test build reads."""
+    for name in PRODUCTION_TABLES:
+        if isinstance(document.get(name), dict):
+            yield name, document[name]
+    workspace = document.get("workspace")
+    if isinstance(workspace, dict) and isinstance(workspace.get("dependencies"), dict):
+        yield "workspace.dependencies", workspace["dependencies"]
+    targets = document.get("target")
+    if isinstance(targets, dict):
+        for target, body in targets.items():
+            if not isinstance(body, dict):
+                continue
+            for name in PRODUCTION_TABLES:
+                if isinstance(body.get(name), dict):
+                    yield f"target.{target}.{name}", body[name]
+
+
+def check_test_only_features(root: Path) -> list[str]:
+    """A test-only feature is enabled by `[dev-dependencies]` and nothing else.
+
+    Checks every owned `Cargo.toml`: a production dependency table that turns the
+    feature on, and a `[features]` entry that forwards to it (`ptr-net/x`,
+    `ptr-net?/x`), are both refused, because either reaches a non-test build.
+    """
+    errors: list[str] = []
+    for manifest in sorted(owned(root, root.rglob("Cargo.toml"))):
+        relative = manifest.relative_to(root).as_posix()
+        try:
+            document = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        except Exception:  # reported in full by the TOML pass
+            continue
+        package = document.get("package", {}).get("name") if isinstance(document.get("package"), dict) else None
+        for label, table in _production_dependency_tables(document):
+            for key, spec in table.items():
+                if not isinstance(spec, dict):
+                    continue
+                crate = spec.get("package", key)
+                forbidden = TEST_ONLY_FEATURES.get(crate, set()).intersection(spec.get("features", []))
+                for feature in sorted(forbidden):
+                    errors.append(
+                        f"{relative}: [{label}] enables {crate}'s test-only feature "
+                        f"`{feature}`; it is allowed in [dev-dependencies] only"
+                    )
+        features = document.get("features")
+        if isinstance(features, dict):
+            for name, enables in features.items():
+                for entry in enables if isinstance(enables, list) else []:
+                    if not isinstance(entry, str) or "/" not in entry:
+                        continue
+                    crate, feature = entry.split("/", 1)
+                    crate = crate.rstrip("?")
+                    if package == crate:
+                        continue
+                    if feature in TEST_ONLY_FEATURES.get(crate, set()):
+                        errors.append(
+                            f"{relative}: feature `{name}` forwards to {crate}'s test-only "
+                            f"feature `{feature}`, which a non-test build could then enable"
+                        )
+    return errors
+
+
 def check(root: Path) -> tuple[list[str], str]:
     """Return repository structure and registry errors with a component-count summary."""
     errors: list[str] = []
@@ -136,6 +209,7 @@ def check(root: Path) -> tuple[list[str], str]:
             errors.append(f"missing {rel}")
 
     errors.extend(check_workspace_membership(root))
+    errors.extend(check_test_only_features(root))
 
     for p in owned(root, root.rglob("*.toml")):
         try:

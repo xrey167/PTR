@@ -6,6 +6,7 @@
 use super::{PtrRuntime, RuntimeError};
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::{effect_code, integrity, LedgerEvent, MAX_RETAINED_RESPONSE};
+pub use ptr_net::AuthenticatedPeer;
 use ptr_security::{ActionAuthorization, AuthorizationDecision, AuthorizationDenial};
 use ptr_types::{
     CapabilityId, CommitIndex, Effect, Generation, NodeId, ProjectId, Revision, TypeId,
@@ -922,12 +923,24 @@ impl PtrRuntime {
 
     /// Admit a peer the host's transport authenticated.
     ///
-    /// This layer admits an identity; it does not establish one. The host passes
-    /// what its transport proved — for the iroh backend, the QUIC-authenticated
-    /// `Connection::remote_id` — and never a value read out of a request. The
+    /// This layer admits an identity; it does not establish one. The identity is an
+    /// [`AuthenticatedPeer`], which only `ptr-net`'s transport can construct — from
+    /// the QUIC-authenticated `Connection::remote_id` — so a value read out of a
+    /// request cannot reach this call: it does not compile (D1 in issue #23). The
     /// principal and the grants come from the policy, so there is no parameter
     /// through which a caller could name either.
-    pub fn admit_peer(&mut self, peer: &NodeId) -> Result<ExecutionSession, ExecutionError> {
+    ///
+    /// ```compile_fail
+    /// # fn forge(runtime: &mut ptr_runtime::PtrRuntime) {
+    /// // A bare id is not an authenticated peer.
+    /// let _ = runtime.admit_peer(&ptr_types::NodeId::from("claimed-in-a-payload"));
+    /// # }
+    /// ```
+    pub fn admit_peer(
+        &mut self,
+        peer: &AuthenticatedPeer,
+    ) -> Result<ExecutionSession, ExecutionError> {
+        let peer = peer.id();
         let Some(entry) = self.execution.policy.entries.get(peer) else {
             return Err(ExecutionError::UnknownPeer { peer: peer.clone() });
         };

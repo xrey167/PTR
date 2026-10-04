@@ -12,6 +12,11 @@ use ptr_ledger::LedgerEvent;
 use ptr_runtime::{execution::*, PtrRuntime};
 use ptr_types::{CapabilityId, Effect, NodeId, ProjectId, TypeId};
 
+/// Tests have no network, so they assume what a transport would have proved.
+fn authenticated(id: NodeId) -> ptr_runtime::execution::AuthenticatedPeer {
+    ptr_runtime::execution::AuthenticatedPeer::assume_authenticated(id)
+}
+
 fn peer() -> NodeId {
     NodeId::from("k51qzi5uqu5dh-authenticated-peer")
 }
@@ -73,7 +78,7 @@ fn an_admitted_peer_gets_exactly_the_principal_and_grants_the_policy_names() {
     let probe = Probe::default();
     runtime.install_admission_policy(policy_for(&action, &probe));
 
-    let session = runtime.admit_peer(&peer()).unwrap();
+    let session = runtime.admit_peer(&authenticated(peer())).unwrap();
     let permit = runtime
         .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
         .unwrap();
@@ -93,7 +98,7 @@ fn an_admitted_peer_reaches_nothing_beyond_its_grant_set() {
     let (mut runtime, action) = fixture();
     let probe = Probe::default();
     runtime.install_admission_policy(policy_for(&action, &probe));
-    let session = runtime.admit_peer(&peer()).unwrap();
+    let session = runtime.admit_peer(&authenticated(peer())).unwrap();
 
     // Same capsule, a different operation: outside the one grant the policy
     // installed, so there is nothing to match.
@@ -121,7 +126,7 @@ fn a_peer_the_policy_never_bound_is_not_admitted_at_all() {
 
     let stranger = NodeId::from("k51qzi5uqu5dh-stranger");
     assert_eq!(
-        runtime.admit_peer(&stranger).err(),
+        runtime.admit_peer(&authenticated(stranger.clone())).err(),
         Some(ExecutionError::UnknownPeer {
             peer: stranger.clone()
         })
@@ -138,7 +143,7 @@ fn withdrawing_a_peer_stops_its_live_session_without_waiting_for_a_ttl() {
     let (mut runtime, action) = fixture();
     let probe = Probe::default();
     runtime.install_admission_policy(policy_for(&action, &probe));
-    let session = runtime.admit_peer(&peer()).unwrap();
+    let session = runtime.admit_peer(&authenticated(peer())).unwrap();
 
     // A permit issued while the peer was still admitted.
     let permit = runtime
@@ -157,7 +162,7 @@ fn withdrawing_a_peer_stops_its_live_session_without_waiting_for_a_ttl() {
         Err(ExecutionError::PeerNotAdmitted { .. })
     ));
     assert_eq!(
-        runtime.admit_peer(&peer()).err(),
+        runtime.admit_peer(&authenticated(peer())).err(),
         Some(ExecutionError::UnknownPeer { peer: peer() })
     );
     assert_eq!(probe.executions(), 0);
@@ -168,7 +173,7 @@ fn replacing_the_policy_withdraws_every_session_it_no_longer_admits() {
     let (mut runtime, action) = fixture();
     let probe = Probe::default();
     runtime.install_admission_policy(policy_for(&action, &probe));
-    let session = runtime.admit_peer(&peer()).unwrap();
+    let session = runtime.admit_peer(&authenticated(peer())).unwrap();
     assert!(runtime
         .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
         .is_ok());
@@ -279,7 +284,7 @@ fn replacing_the_policy_re_derives_the_grants_a_live_session_runs_under() {
     let (mut runtime, action) = fixture();
     let probe = Probe::default();
     runtime.install_admission_policy(policy_for(&action, &probe));
-    let session = runtime.admit_peer(&peer()).unwrap();
+    let session = runtime.admit_peer(&authenticated(peer())).unwrap();
 
     // Issued under the grants the first policy gave.
     let permit = runtime

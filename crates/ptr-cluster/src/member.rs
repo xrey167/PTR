@@ -3,7 +3,7 @@ use crate::frame::{decode_batch, encode_batch, FrameError};
 use ptr_ledger::{
     decode_message, encode_message, CommittedEvent, LedgerEvent, RaftMessage, RaftNode,
 };
-use ptr_net::{IrohTransport, NodeIdentity, ALPN_RAFT};
+use ptr_net::{AuthenticatedPeer, IrohTransport, NodeIdentity, ALPN_RAFT};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
@@ -340,13 +340,13 @@ impl ClusterMember {
     }
 
     /// Map an authenticated key onto an admitted member id.
-    fn authenticate(&self, peer: &NodeIdentity) -> Result<u64, ClusterError> {
+    fn authenticate(&self, peer: &AuthenticatedPeer) -> Result<u64, ClusterError> {
         self.peers
             .iter()
-            .find(|known| known.identity.public_key == peer.public_key)
+            .find(|known| known.identity.public_key == peer.public_key())
             .map(|known| known.id)
             .ok_or_else(|| ClusterError::UnknownPeer {
-                key: peer.public_key.clone(),
+                key: peer.public_key().to_owned(),
             })
     }
 

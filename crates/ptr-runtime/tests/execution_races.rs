@@ -25,6 +25,11 @@ use ptr_runtime::execution::*;
 use ptr_security::AuthorizationDenial;
 use ptr_types::{CapsuleId, Generation, NodeId, ProjectId};
 
+/// Tests have no network, so they assume what a transport would have proved.
+fn authenticated(id: NodeId) -> ptr_runtime::execution::AuthenticatedPeer {
+    ptr_runtime::execution::AuthenticatedPeer::assume_authenticated(id)
+}
+
 fn first() -> NodeId {
     NodeId::from("k51qzi5uqu5dh-first-peer")
 }
@@ -78,8 +83,8 @@ fn withdrawing_one_peer_in_the_window_refuses_its_permit_and_leaves_the_other_wo
     let probe = Probe::default();
     runtime.install_admission_policy(policy_for_both(&action, &probe));
 
-    let alice = runtime.admit_peer(&first()).unwrap();
-    let bob = runtime.admit_peer(&second()).unwrap();
+    let alice = runtime.admit_peer(&authenticated(first())).unwrap();
+    let bob = runtime.admit_peer(&authenticated(second())).unwrap();
     let alice_permit = runtime
         .prepare_execution(&alice, &ProjectId::from("p"), &action, TTL)
         .unwrap();
@@ -116,7 +121,7 @@ fn replacing_the_policy_in_the_window_refuses_the_permit_of_the_peer_it_dropped(
     let (mut runtime, action) = fixture();
     let probe = Probe::default();
     runtime.install_admission_policy(policy_for_both(&action, &probe));
-    let alice = runtime.admit_peer(&first()).unwrap();
+    let alice = runtime.admit_peer(&authenticated(first())).unwrap();
     let permit = runtime
         .prepare_execution(&alice, &ProjectId::from("p"), &action, TTL)
         .unwrap();
@@ -133,7 +138,7 @@ fn replacing_the_policy_in_the_window_refuses_the_permit_of_the_peer_it_dropped(
     // Re-admitting the same peer under a policy that names it again does not
     // resurrect the old permit either — but it does give a working session.
     runtime.install_admission_policy(policy_for_both(&action, &probe));
-    let readmitted = runtime.admit_peer(&first()).unwrap();
+    let readmitted = runtime.admit_peer(&authenticated(first())).unwrap();
     let fresh = runtime
         .prepare_execution(&readmitted, &ProjectId::from("p"), &action, TTL)
         .unwrap();
@@ -255,7 +260,7 @@ fn a_host_session_and_an_admitted_peer_do_not_share_a_fate() {
     let probe = Probe::default();
     runtime.install_admission_policy(policy_for_both(&action, &probe));
     let host_session = session(&mut runtime, &action, &probe, "operator");
-    let peer_session = runtime.admit_peer(&first()).unwrap();
+    let peer_session = runtime.admit_peer(&authenticated(first())).unwrap();
 
     runtime.withdraw_peer(&first()).unwrap();
     let permit = runtime

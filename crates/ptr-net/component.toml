@@ -1,9 +1,10 @@
 version = 1
 id = "ptr-net"
 maturity = "prototype"
-last_reviewed = "2026-10-03"
+last_reviewed = "2026-10-04"
 
 implemented = [
+  "AuthenticatedPeer (D1 in issue #23): a peer key with no public constructor, built only by the iroh transport from the key the QUIC handshake verified; IrohIncoming, IrohServerSession and IrohSession carry it instead of a NodeIdentity, so every identity an authority table is consulted with is one a connection proved. The type is in the base crate, which has no transport, so ptr-runtime can require it without depending on iroh",
   "ReferenceMeshTunnelExecutor::active_peer answers only for a lease whose profile equals the admitted one, like every lifecycle call; a lease carrying an admitted lease id with another profile gets None",
   "ALPN constants for raft, PodWire, model, blob, events and execution protocols",
   "The execution wire has its own ALPN rather than sharing the pod wire's: two protocols on one ALPN is how a request meant for one gets parsed by the other, and the parse that succeeds by accident is the dangerous one",
@@ -59,6 +60,7 @@ decisions = [
 ]
 
 checks = [
+  "AuthenticatedPeer compile_fail doctests: a struct literal and a conversion from a bare NodeId both fail to compile; assume_authenticated exists only with the test-support feature, which scripts/check_repo.py refuses outside [dev-dependencies] (TestOnlyFeatures in scripts/tests/test_check_repo.py)",
   "Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing",
   "an address is locatable only under the id it carries, re-recording returns what it replaced, a forgotten peer is refused from the next lookup, and a truthful address from the book reaches its peer as the control",
   "an address pointing the honest id at an impostor's socket fails and the impostor serves nothing, with the honest node at its true address succeeding in the same test so the failure is about the lie",

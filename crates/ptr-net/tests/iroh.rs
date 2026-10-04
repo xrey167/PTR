@@ -11,7 +11,7 @@ async fn direct_local_roundtrip_authenticates_peer_identity() {
 
     let server_task = tokio::spawn(async move {
         let incoming = server.accept_once(1024).await.unwrap();
-        assert_eq!(incoming.peer.public_key, expected_client.public_key);
+        assert_eq!(incoming.peer.public_key(), expected_client.public_key);
         assert_eq!(incoming.payload, b"ping");
         incoming.respond(b"pong").await.unwrap();
         server.close().await;

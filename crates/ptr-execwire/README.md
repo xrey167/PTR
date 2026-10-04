@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-27  
-**Code footprint:** 5 Rust source files · 1597 nonblank source lines · 3 integration-test files · 36 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-04  
+**Code footprint:** 5 Rust source files · 1598 nonblank source lines · 3 integration-test files · 36 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- The authenticated peer is passed to admit_peer as the AuthenticatedPeer the transport produced, never rebuilt from its text (D1 in issue #23)
 - ExecutionHost and ExecutionClient carry one execution request and its receipt over ALPN_EXEC, composing ptr-runtime's execution authority with ptr-net's transport so neither of them has to know about the other
 - A request frame has no field naming its sender, so who is asking is the authenticated connection's answer and the principal an action is audited under is the admission policy's — the shape of the format rather than a check performed on it
 - A request names the endpoint it is for, so a request that was legitimate at one runtime is refused when relayed to another rather than being indistinguishable from one composed for it
@@ -36,7 +37,6 @@
 ### Missing for the target architecture
 
 - Signed receipts, and therefore any third-party evidence: inside one exchange the connection vouches for a receipt's author and outside it nothing does, so this crate offers no way to verify one rather than producing an artifact that looks like evidence and is not
-- A peer identity that is unforgeable at the type level, constructible only from an authenticated connection the way VerifiedDispatch is constructible only inside the runtime; that needs a ptr-runtime dependency on ptr-net and is recorded as an open decision
 - Detached work over the wire: a detached grant is audited by an attempt that stays unsettled until the adapter reports back, and there is no channel here for that report, so it is refused before the attempt is committed
 - At-most-once keys scoped per principal or project: they are one namespace per host runtime, so a peer refused under a key it sent learns that another principal spent that key, and a principal that spends a key first makes it refused to every other; a requester has to choose keys nobody else can guess
 - Reconciliation: an uncertain outcome is reported and then belongs to the host's operator, because a remote peer must not be able to declare what happened to an effect

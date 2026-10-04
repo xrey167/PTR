@@ -11,7 +11,6 @@ default = []
 # and the access decision and nothing else, so iroh stays out of every other
 # workspace build exactly as ptr-net keeps its own backend out.
 podwire-backend = [
-  "dep:ptr-net",
   "dep:tokio",
   "ptr-net/iroh-backend",
 ]
@@ -32,12 +31,16 @@ ptr-runtime = { workspace = true }
 # The same pin ptr-ledger and ptr-execwire use. Three pins of a hash would be
 # three digests for the bytes they are all taken over.
 sha2 = { version = "=0.11.0", default-features = false }
-ptr-net = { workspace = true, optional = true }
+# The base only, for `AuthenticatedPeer` (D1 in issue #23): the access decision
+# takes an identity only a transport can construct. The transport itself is the
+# `podwire-backend` feature.
+ptr-net = { workspace = true }
 # Only for a deadline on one exchange. How long to wait for an answer is this
 # layer's policy, so the clock belongs here rather than in the transport.
 tokio = { workspace = true, optional = true, features = ["time"] }
 
 [dev-dependencies]
+ptr-net = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true }
 ptr-config = { workspace = true }
 ptr-ledger = { workspace = true }

@@ -7,6 +7,10 @@ publish = false
 
 [features]
 default = []
+# Adds `AuthenticatedPeer::assume_authenticated` for tests without a network.
+# `scripts/check_repo.py` refuses any manifest enabling it outside
+# `[dev-dependencies]`.
+test-support = []
 iroh-backend = ["dep:iroh", "dep:tokio"]
 wireguard-uapi-backend = ["dep:wireguard-uapi"]
 wintun-backend = ["dep:wintun"]

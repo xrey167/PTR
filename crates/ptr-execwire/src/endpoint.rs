@@ -8,10 +8,11 @@ use crate::frame::{
     decode_receipt, decode_request, encode_receipt, encode_request, request_digest, FrameError,
     RefusalCode, WireOutcome, WireReceipt, WireRequest, MAX_BODY_BYTES, MAX_FRAME_BYTES,
 };
-use ptr_net::{EndpointAddr, IrohTransport, NodeIdentity, PeerAddress, ALPN_EXEC};
+use ptr_net::{
+    AuthenticatedPeer, EndpointAddr, IrohTransport, NodeIdentity, PeerAddress, ALPN_EXEC,
+};
 use ptr_runtime::execution::{ExecutionError, ExecutionSession};
 use ptr_runtime::PtrRuntime;
-use ptr_types::NodeId;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -111,7 +112,7 @@ impl std::error::Error for WireError {}
 pub struct Serviced {
     /// The peer the connection authenticated. Not a value from the payload — there
     /// is no such value.
-    pub peer: NodeIdentity,
+    pub peer: AuthenticatedPeer,
     /// The request id, when the frame decoded far enough to have one.
     pub request_id: Option<u64>,
     /// What the receipt told the peer.
@@ -287,7 +288,7 @@ impl ExecutionHost {
     /// still becomes a receipt rather than a dropped connection.
     fn decide(
         &self,
-        peer: &NodeIdentity,
+        peer: &AuthenticatedPeer,
         payload: &[u8],
     ) -> (Option<u64>, WireOutcome, Option<WireError>) {
         // (2) The frame must decode.
@@ -323,7 +324,7 @@ impl ExecutionHost {
         let mut runtime = self.runtime();
 
         // (4) Admitted as a peer. The principal and the grants are the policy's.
-        let session = match runtime.admit_peer(&NodeId(peer.public_key.clone())) {
+        let session = match runtime.admit_peer(peer) {
             Ok(session) => session,
             Err(error) => {
                 return (
@@ -339,7 +340,7 @@ impl ExecutionHost {
             .window
             .lock()
             .expect("replay window lock is not poisoned")
-            .spend(&peer.public_key, request.request_id);
+            .spend(peer.public_key(), request.request_id);
         if !fresh {
             let _ = runtime.revoke_execution_session(&session);
             return (

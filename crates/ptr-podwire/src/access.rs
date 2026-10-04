@@ -13,6 +13,7 @@
 //! the project is looked up from the authenticated peer, in the same table and for
 //! the same reason that the execution wire looks up a principal.
 use crate::frame::RefusalCode;
+use ptr_net::AuthenticatedPeer;
 #[cfg(feature = "podwire-backend")]
 use ptr_pods::PodManifest;
 use ptr_pods::PodRegistry;
@@ -150,7 +151,7 @@ pub fn answer<V>(
     policy: &PodAccessPolicy,
     registry: &PodRegistry,
     verifier: &V,
-    peer: &NodeId,
+    peer: &AuthenticatedPeer,
     capability: &CapabilityId,
     expect_protocol: u32,
     payload: TypedPayload,
@@ -159,7 +160,7 @@ where
     V: Verifier<TypedPayload> + ?Sized,
 {
     // (1) Admitted, or nothing.
-    let scope = policy.scope(peer).ok_or(RefusalCode::NotAdmitted)?;
+    let scope = policy.scope(peer.id()).ok_or(RefusalCode::NotAdmitted)?;
 
     // (2) In this peer's own scope. Still no registry lookup: an out-of-scope
     // capability must not be distinguishable from one nothing serves.
@@ -208,7 +209,7 @@ pub(crate) fn answer_bound<V>(
     policy: &PodAccessPolicy,
     registry: &PodRegistry,
     verifier: &V,
-    peer: &NodeId,
+    peer: &AuthenticatedPeer,
     pod_id: &PodId,
     expected_manifest: &PodManifest,
     capability: &CapabilityId,
@@ -218,7 +219,7 @@ pub(crate) fn answer_bound<V>(
 where
     V: Verifier<TypedPayload> + ?Sized,
 {
-    let scope = policy.scope(peer).ok_or(RefusalCode::NotAdmitted)?;
+    let scope = policy.scope(peer.id()).ok_or(RefusalCode::NotAdmitted)?;
     if scope.project() != &expected_manifest.project || !scope.covers(capability, &payload.type_id)
     {
         return Err(RefusalCode::Unavailable);

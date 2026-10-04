@@ -11,14 +11,17 @@ use crate::frame::{
     PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome, PodRequest, PodRequestV2, RefusalCode,
     MAX_FRAME_BYTES,
 };
-use ptr_net::{EndpointAddr, IrohSession, IrohTransport, NodeIdentity, PeerAddress, ALPN_PODWIRE};
+use ptr_net::{
+    AuthenticatedPeer, EndpointAddr, IrohSession, IrohTransport, NodeIdentity, PeerAddress,
+    ALPN_PODWIRE,
+};
 use ptr_pods::ProtocolBinding;
 use ptr_pods::{ExecutionManifest, PodManifest, PodRegistry, RegisteredPodBinding};
 use ptr_protocol::TypedPayload;
 use ptr_runtime::RuntimeExecutionManifestResolver;
 use ptr_types::{
-    ArtifactId, Digest, Generation, MeshEndpointBinding, NodeId, PodId, ProjectId, Revision,
-    ScopeId, SessionId, StatefulRequestRecovery, UncertainRequest,
+    ArtifactId, Digest, Generation, MeshEndpointBinding, PodId, ProjectId, Revision, ScopeId,
+    SessionId, StatefulRequestRecovery, UncertainRequest,
 };
 use ptr_verifier::Verifier;
 use std::collections::{BTreeMap, BTreeSet};
@@ -298,7 +301,7 @@ impl std::error::Error for PodWireError {}
 pub struct Served {
     /// The peer the connection authenticated. Not a value from the payload — there
     /// is no such value.
-    pub peer: NodeIdentity,
+    pub peer: AuthenticatedPeer,
     /// The request id, when the frame decoded far enough to have one.
     pub request_id: Option<u64>,
     /// What the answer told the peer.
@@ -771,7 +774,7 @@ impl PodHost {
 
     fn answer_v2_bound_request(
         &self,
-        peer: &NodeIdentity,
+        peer: &AuthenticatedPeer,
         binding: &PodWireV2Binding,
         request: PodRequestV2,
         request_id: Option<u64>,
@@ -789,7 +792,7 @@ impl PodHost {
             &self.policy,
             &self.registry,
             self.verifier.as_ref(),
-            &NodeId(peer.public_key.clone()),
+            peer,
             binding.registered.pod_id(),
             binding.manifest(),
             &request.capability,
@@ -967,7 +970,7 @@ impl PodHost {
     /// here still becomes an answer rather than a dropped connection.
     fn decide(
         &self,
-        peer: &NodeIdentity,
+        peer: &AuthenticatedPeer,
         payload: &[u8],
     ) -> (Option<u64>, PodOutcome, Option<PodWireError>) {
         // (2) The frame must decode.
@@ -1005,7 +1008,7 @@ impl PodHost {
             &self.policy,
             &self.registry,
             self.verifier.as_ref(),
-            &NodeId(peer.public_key.clone()),
+            peer,
             &request.capability,
             request.expect_protocol,
             request.payload,
@@ -1060,7 +1063,7 @@ impl Drop for RequestReservation<'_> {
 }
 
 impl PodSession {
-    pub fn peer(&self) -> &NodeIdentity {
+    pub fn peer(&self) -> &AuthenticatedPeer {
         self.transport.peer()
     }
 
@@ -1117,7 +1120,7 @@ impl PodSession {
             &answered,
             request.request_id,
             digest,
-            &self.peer().public_key,
+            self.peer().public_key(),
         )
         .inspect_err(|_| {
             self.mark_uncertain_v1(request.request_id);
@@ -1171,7 +1174,7 @@ impl PodSession {
             self.mark_uncertain_v2(request.request_id);
             PodWireError::Frame(error)
         })?;
-        let answer = validate_answer_v2(&answered, request, digest, &self.peer().public_key)
+        let answer = validate_answer_v2(&answered, request, digest, self.peer().public_key())
             .inspect_err(|_| {
                 self.mark_uncertain_v2(request.request_id);
             })?;

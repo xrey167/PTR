@@ -114,7 +114,88 @@ class WorkspaceMembership(unittest.TestCase):
             self.assertEqual(mod.check_workspace_membership(root), [])
 
 
-class ThisRepository(unittest.TestCase):
+def features_tree(manifests):
+    """A root holding the given `relative path -> Cargo.toml text` manifests."""
+    directory = tempfile.TemporaryDirectory()
+    root = Path(directory.name)
+    for relative, text in manifests.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    with directory:
+        return mod.check_test_only_features(root)
+
+
+class TestOnlyFeatures(unittest.TestCase):
+    """`ptr-net/test-support` forges an authenticated peer; only tests may have it."""
+
+    def test_a_dev_dependency_may_enable_it(self):
+        # The control. Without it, a rule that refused every mention would pass the
+        # tests below.
+        self.assertEqual(
+            features_tree({
+                "crates/a/Cargo.toml": (
+                    "[package]\nname = 'a'\n[dependencies]\nptr-net = { workspace = true }\n"
+                    "[dev-dependencies]\nptr-net = { workspace = true, features = ['test-support'] }\n"
+                ),
+            }),
+            [],
+        )
+
+    def test_a_normal_dependency_may_not(self):
+        errors = features_tree({
+            "crates/a/Cargo.toml": (
+                "[package]\nname = 'a'\n[dependencies]\n"
+                "ptr-net = { workspace = true, features = ['test-support'] }\n"
+            ),
+        })
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("[dependencies]", errors[0])
+
+    def test_a_target_specific_or_renamed_dependency_may_not(self):
+        errors = features_tree({
+            "crates/a/Cargo.toml": (
+                "[package]\nname = 'a'\n"
+                "[target.'cfg(unix)'.dependencies]\n"
+                "net = { package = 'ptr-net', path = '../net', features = ['test-support'] }\n"
+            ),
+        })
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("target.cfg(unix).dependencies", errors[0])
+
+    def test_the_workspace_table_may_not(self):
+        errors = features_tree({
+            "Cargo.toml": (
+                "[workspace]\n[workspace.dependencies]\n"
+                "ptr-net = { path = 'crates/ptr-net', features = ['test-support'] }\n"
+            ),
+        })
+        self.assertEqual(len(errors), 1, errors)
+
+    def test_a_feature_may_not_forward_to_it(self):
+        errors = features_tree({
+            "crates/a/Cargo.toml": (
+                "[package]\nname = 'a'\n[features]\nhandy = ['ptr-net?/test-support']\n"
+            ),
+        })
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("handy", errors[0])
+
+    def test_the_defining_crate_may_declare_it(self):
+        self.assertEqual(
+            features_tree({
+                "crates/ptr-net/Cargo.toml": (
+                    "[package]\nname = 'ptr-net'\n[features]\ntest-support = []\n"
+                ),
+            }),
+            [],
+        )
+
+
+class ThisRepositoryFeatures(unittest.TestCase):
+    def test_the_real_tree_enables_no_test_only_feature_in_production(self):
+        self.assertEqual(mod.check_test_only_features(ROOT), [])
+
     def test_the_real_tree_accounts_for_every_package(self):
         self.assertEqual(mod.check_workspace_membership(ROOT), [])
 

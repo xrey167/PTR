@@ -476,7 +476,7 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
     let address = located(host.address());
     let server = tokio::spawn(async move { host.serve_session_v2(&binding, 5).await.unwrap() });
     let session = client.connect_session(address, 5).await.unwrap();
-    let addressed_to = session.peer().public_key.clone();
+    let addressed_to = session.peer().public_key().to_owned();
     let good = request(
         addressed_to.clone(),
         1,
@@ -551,7 +551,7 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
         .await
         .unwrap();
     let uncertain_request = request(
-        uncertain_session.peer().public_key.clone(),
+        uncertain_session.peer().public_key().to_owned(),
         777,
         &manifest(),
         &identity,
@@ -703,7 +703,7 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
     });
     let next_session = next_client.connect_session(next_address, 1).await.unwrap();
     let next_request = request(
-        next_session.peer().public_key.clone(),
+        next_session.peer().public_key().to_owned(),
         900,
         &manifest(),
         &next_identity,

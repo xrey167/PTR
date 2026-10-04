@@ -1,5 +1,8 @@
 use ptr_types::NodeId;
 
+mod authenticated;
+pub use authenticated::AuthenticatedPeer;
+
 mod mesh;
 pub use mesh::{
     MembershipState, MeshEndpoint, MeshError, MeshInvitation, MeshMembership, MeshPeerIdentity,
@@ -48,7 +51,7 @@ pub trait Transport {
 
 #[cfg(feature = "iroh-backend")]
 mod iroh_backend {
-    use super::NodeIdentity;
+    use super::{AuthenticatedPeer, NodeIdentity};
     use iroh::{
         endpoint::{Connection, SendStream},
         Endpoint, EndpointAddr,
@@ -64,7 +67,8 @@ mod iroh_backend {
     }
 
     pub struct IrohIncoming {
-        pub peer: NodeIdentity,
+        /// The key the QUIC handshake verified. Never a value from the payload.
+        pub peer: AuthenticatedPeer,
         pub payload: Vec<u8>,
         #[allow(dead_code)]
         connection: Connection,
@@ -79,12 +83,13 @@ mod iroh_backend {
     #[derive(Clone)]
     pub struct IrohSession {
         connection: Connection,
-        peer: NodeIdentity,
+        peer: AuthenticatedPeer,
         permits: Arc<Semaphore>,
     }
 
     pub struct IrohServerSession {
-        pub peer: NodeIdentity,
+        /// The key the QUIC handshake verified.
+        pub peer: AuthenticatedPeer,
         connection: Connection,
     }
 
@@ -191,13 +196,9 @@ mod iroh_backend {
                 connection.close(0u32.into(), b"ptr peer mismatch");
                 return Err("authenticated Iroh peer does not match requested endpoint id".into());
             }
-            let public_key = authenticated_peer.to_string();
             Ok(IrohSession {
                 connection,
-                peer: NodeIdentity {
-                    id: NodeId(public_key.clone()),
-                    public_key,
-                },
+                peer: AuthenticatedPeer::from_transport(NodeId(authenticated_peer.to_string())),
                 permits: Arc::new(Semaphore::new(max_in_flight)),
             })
         }
@@ -208,8 +209,8 @@ mod iroh_backend {
                     "Iroh endpoint closed before accepting a connection".to_string()
                 })?;
             let connection = incoming.await.map_err(|error| error.to_string())?;
-            let peer_id = connection.remote_id();
-            let public_key = peer_id.to_string();
+            let peer =
+                AuthenticatedPeer::from_transport(NodeId(connection.remote_id().to_string()));
 
             let (send, mut recv) = connection
                 .accept_bi()
@@ -221,10 +222,7 @@ mod iroh_backend {
                 .map_err(|error| error.to_string())?;
 
             Ok(IrohIncoming {
-                peer: NodeIdentity {
-                    id: NodeId(public_key.clone()),
-                    public_key,
-                },
+                peer,
                 payload,
                 connection,
                 send,
@@ -238,12 +236,8 @@ mod iroh_backend {
                     "Iroh endpoint closed before accepting a connection".to_owned()
                 })?;
             let connection = incoming.await.map_err(|error| error.to_string())?;
-            let public_key = connection.remote_id().to_string();
             Ok(IrohServerSession {
-                peer: NodeIdentity {
-                    id: NodeId(public_key.clone()),
-                    public_key,
-                },
+                peer: AuthenticatedPeer::from_transport(NodeId(connection.remote_id().to_string())),
                 connection,
             })
         }
@@ -268,7 +262,7 @@ mod iroh_backend {
     }
 
     impl IrohSession {
-        pub fn peer(&self) -> &NodeIdentity {
+        pub fn peer(&self) -> &AuthenticatedPeer {
             &self.peer
         }
 

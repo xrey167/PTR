@@ -1,9 +1,10 @@
 version = 1
 id = "ptr-podwire"
 maturity = "prototype"
-last_reviewed = "2026-09-22"
+last_reviewed = "2026-10-04"
 
 implemented = [
+  "answer and the bound V2 path take the AuthenticatedPeer the transport produced (D1 in issue #23): ptr-net's base is a normal dependency and its transport stays behind podwire-backend, so the access decision cannot be asked about an identity no connection proved",
   "PodHost and PodClient carry one Pod invocation and its answer over ALPN_PODWIRE, composing ptr-pods' registry with ptr-net's transport so neither has to know about the other",
   "A request frame carries no project field: the project a request resolves in comes from the host's access policy keyed by the authenticated peer, because resolution inside a project is the only thing standing between a request and a Pod's data and a requester that named its project would be choosing which project's Pods it reaches",
   "A V1 request frame has no field naming its sender and none naming a session (the V2 frame below carries an identity digest and session id as binding fields, but the sender is still the connection's authenticated peer), so who is asking is the authenticated connection's answer and a session stays a capability the host holds rather than a string a caller presents",
@@ -36,7 +37,7 @@ implemented = [
 ]
 
 missing = [
-  "Authentication: the peer key is the one ptr-net reports the connection authenticated, and this crate takes the host's word that it passed that rather than something else",
+  "Authentication itself is the transport's: the AuthenticatedPeer is exactly as good as the QUIC handshake that verified it, and nothing in this crate re-checks it",
   "Signed answers, and therefore any third-party evidence: inside one exchange the connection vouches for an answer's author and outside it nothing does",
   "A journaled access policy: the scope table is in memory, so it does not survive a restart and nothing records who was admitted to which project when",
   "Discovery: which address belongs to an id nobody told you is a mechanism choice with its own trust question, recorded as the owner's rather than invented",
