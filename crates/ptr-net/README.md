@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-04  
-**Code footprint:** 5 Rust source files · 1429 nonblank source lines · 5 integration-test files · 46 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 6 Rust source files · 1730 nonblank source lines · 5 integration-test files · 54 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- NodeSigner and verify (D2 in issue #23): IrohTransport::signer hands out a signer over the endpoint's own Ed25519 key — the key the QUIC handshake authenticates, so a signature is attributable to exactly the identity a connection to that endpoint proves, with no second key to issue or rotate (rotation is a new identity). NodeSigner has no public constructor outside the test-support feature, no accessor for the secret and no Clone, and signs only domain ‖ message under a SigningDomain: a ptr- prefixed tag ending in its only NUL byte, checked at compile time, so the tags are prefix-free and no signed message can be the TLS transcript the same key signs. verify is in the transport-free base and accepts a key only in the canonical 64-lowercase-hex form the transport renders an endpoint id in, with verify_strict
 - AuthenticatedPeer (D1 in issue #23): a peer key with no public constructor, built only by the iroh transport from the key the QUIC handshake verified; IrohIncoming, IrohServerSession and IrohSession carry it instead of a NodeIdentity, so every identity an authority table is consulted with is one a connection proved. The type is in the base crate, which has no transport, so ptr-runtime can require it without depending on iroh
 - ReferenceMeshTunnelExecutor::active_peer answers only for a lease whose profile equals the admitted one, like every lifecycle call; a lease carrying an admitted lease id with another profile gets None
 - ALPN constants for raft, PodWire, model, blob, events and execution protocols
@@ -70,6 +71,7 @@
 
 ### Current automated checks
 
+- signing unit tests: a signature verifies under its key and domain and not under another key, another domain, another message or any single flipped signature byte; only the canonical spelling of a key verifies; Debug names the public key and not the secret; a domain without its terminator, with an inner NUL, or outside the ptr- prefix is refused (compile_fail doctest with a compiling control, and should_panic tests); tests/iroh.rs the_endpoint_signer_signs_as_the_identity_the_handshake_authenticates verifies over a real connection that the key a signature verifies under is the key the handshake authenticated, and not another endpoint's
 - AuthenticatedPeer compile_fail doctests: a struct literal and a conversion from a bare NodeId both fail to compile; assume_authenticated exists only with the test-support feature, which scripts/check_repo.py refuses outside [dev-dependencies] (TestOnlyFeatures in scripts/tests/test_check_repo.py)
 - Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing
 - an address is locatable only under the id it carries, re-recording returns what it replaced, a forgotten peer is refused from the next lookup, and a truthful address from the book reaches its peer as the control

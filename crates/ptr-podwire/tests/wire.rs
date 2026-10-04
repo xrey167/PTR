@@ -14,8 +14,8 @@ use ptr_pods::{
     DynPod, ExecutionManifest, LineageBinding, PodManifest, PodRegistry, ProtocolBinding,
 };
 use ptr_podwire::{
-    decode_answer, decode_request, decode_request_v2, encode_answer, encode_answer_v2,
-    encode_request, request_digest, PodAccessPolicy, PodAddressBinding, PodAnswer, PodAnswerV2,
+    decode_request, decode_request_v2, encode_answer, encode_answer_v2, encode_request,
+    request_digest, verify_answer, PodAccessPolicy, PodAddressBinding, PodAnswer, PodAnswerV2,
     PodClient, PodHost, PodOutcome, PodRequest, PodRequestV2, PodScope, PodWireError, RefusalCode,
     MAX_BODY_BYTES,
 };
@@ -470,7 +470,7 @@ async fn v2_client_rejects_answers_with_wrong_generation_or_revision() {
             },
         };
         incoming
-            .respond(&encode_answer_v2(&answer).unwrap())
+            .respond(&encode_answer_v2(&answer, &wrong_generation.signer()).unwrap())
             .await
             .unwrap();
     };
@@ -517,7 +517,7 @@ async fn v2_client_rejects_answers_with_wrong_generation_or_revision() {
             },
         };
         incoming
-            .respond(&encode_answer_v2(&answer).unwrap())
+            .respond(&encode_answer_v2(&answer, &wrong_revision.signer()).unwrap())
             .await
             .unwrap();
     };
@@ -743,7 +743,9 @@ async fn a_damaged_frame_is_refused_before_any_pod_and_still_answered() {
     let response = response.unwrap();
     let served = served.unwrap();
 
-    let answered = decode_answer(&response).unwrap();
+    // Signed even though it refuses bytes nobody could parse, and verifiable from
+    // the stored bytes and the host's id alone.
+    let answered = verify_answer(&response, &NodeId(host.identity().public_key)).unwrap();
     assert_eq!(
         answered.outcome,
         PodOutcome::Refused {
@@ -795,7 +797,7 @@ async fn an_answer_naming_another_host_is_refused_and_an_honest_one_is_not() {
             },
         };
         incoming
-            .respond(&encode_answer(&answered).unwrap())
+            .respond(&encode_answer(&answered, &rogue.signer()).unwrap())
             .await
             .unwrap();
     };
@@ -831,7 +833,7 @@ async fn an_answer_naming_another_host_is_refused_and_an_honest_one_is_not() {
             },
         };
         incoming
-            .respond(&encode_answer(&answered).unwrap())
+            .respond(&encode_answer(&answered, &honest.signer()).unwrap())
             .await
             .unwrap();
     };
@@ -841,6 +843,111 @@ async fn an_answer_naming_another_host_is_refused_and_an_honest_one_is_not() {
         honest_key
     );
     elsewhere.close().await;
+}
+
+/// An answer to whatever arrives, from `endpoint`'s own name and signed by `signer`.
+fn signed_answer(
+    endpoint: &IrohTransport,
+    payload: &[u8],
+    signer: &ptr_net::NodeSigner,
+) -> Vec<u8> {
+    let decoded = decode_request(payload).unwrap();
+    let answered = PodAnswer {
+        responder: endpoint.identity().public_key,
+        request_id: decoded.request_id,
+        request_digest: request_digest(payload),
+        outcome: PodOutcome::Answered {
+            output: TypedPayload {
+                type_id: TypeId::from(SUMMARY),
+                bytes: b"a summary".to_vec(),
+            },
+        },
+    };
+    encode_answer(&answered, signer).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_answer_with_a_bad_signature_from_an_otherwise_honest_endpoint_is_refused() {
+    // The author is the authenticated peer, the request id and digest are the
+    // request's — only the signature is by another key. Inside the exchange the
+    // connection would vouch for it; stored, it would verify nowhere. Refused on a
+    // one-shot request and on a reused session alike, before the outcome is read.
+    let client = PodClient::bind().await.unwrap();
+    let stranger = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+
+    for (label, wrong_key) in [("a signature by another key", true), ("control", false)] {
+        let endpoint = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+        let address = endpoint.direct_addr();
+        let asked = request(endpoint.identity().public_key, 13);
+        let signer = if wrong_key {
+            stranger.signer()
+        } else {
+            endpoint.signer()
+        };
+        let serving = async {
+            let incoming = endpoint.accept_once(1 << 20).await.unwrap();
+            let frame = signed_answer(&endpoint, &incoming.payload, &signer);
+            incoming.respond(&frame).await.unwrap();
+        };
+        let (answered, ()) = tokio::join!(client.request(located(address), &asked), serving);
+        if wrong_key {
+            assert_eq!(
+                answered.expect_err(label),
+                PodWireError::BadSignature,
+                "{label}"
+            );
+        } else {
+            assert!(
+                matches!(answered.expect(label).outcome, PodOutcome::Answered { .. }),
+                "the same endpoint signing with its own key is accepted"
+            );
+        }
+        endpoint.close().await;
+    }
+
+    for (label, wrong_key) in [
+        ("a session answer by another key", true),
+        ("control", false),
+    ] {
+        let endpoint = Arc::new(IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap());
+        let address = located(endpoint.direct_addr());
+        let asked = request(endpoint.identity().public_key, 14);
+        let signer = if wrong_key {
+            stranger.signer()
+        } else {
+            endpoint.signer()
+        };
+        let serving = Arc::clone(&endpoint);
+        let server = tokio::spawn(async move {
+            let session = serving.accept_session().await.unwrap();
+            let incoming = session.accept_request(1 << 20).await.unwrap();
+            let frame = signed_answer(&serving, &incoming.payload, &signer);
+            incoming.respond(&frame).await.unwrap();
+            session.wait_closed().await;
+        });
+        let session = client.connect_session(address, 1).await.unwrap();
+        let answered = session.request(&asked).await;
+        if wrong_key {
+            assert_eq!(
+                answered.expect_err(label),
+                PodWireError::BadSignature,
+                "{label}"
+            );
+            assert_eq!(
+                session.uncertain_requests().0,
+                vec![14],
+                "an answer that does not verify leaves the request uncertain"
+            );
+        } else {
+            assert!(matches!(
+                answered.expect(label).outcome,
+                PodOutcome::Answered { .. }
+            ));
+        }
+        session.close().await;
+        server.await.unwrap();
+    }
+    stranger.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -865,7 +972,7 @@ async fn an_answer_to_another_request_and_one_bound_to_other_bytes_are_each_refu
             },
         };
         incoming
-            .respond(&encode_answer(&answered).unwrap())
+            .respond(&encode_answer(&answered, &wrong_id.signer()).unwrap())
             .await
             .unwrap();
     };
@@ -896,7 +1003,7 @@ async fn an_answer_to_another_request_and_one_bound_to_other_bytes_are_each_refu
             },
         };
         incoming
-            .respond(&encode_answer(&answered).unwrap())
+            .respond(&encode_answer(&answered, &wrong_digest.signer()).unwrap())
             .await
             .unwrap();
     };
@@ -1156,7 +1263,7 @@ async fn v2_session_marks_an_unverifiable_answer_uncertain_and_blocks_retry() {
             },
         };
         incoming
-            .respond(&encode_answer_v2(&answer).unwrap())
+            .respond(&encode_answer_v2(&answer, &raw.signer()).unwrap())
             .await
             .unwrap();
         session.wait_closed().await;
@@ -1223,7 +1330,7 @@ async fn v2_client_rejects_a_response_with_stale_state_binding() {
             },
         };
         incoming
-            .respond(&encode_answer_v2(&answer).unwrap())
+            .respond(&encode_answer_v2(&answer, &raw.signer()).unwrap())
             .await
             .unwrap();
     });

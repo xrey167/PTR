@@ -540,7 +540,7 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
             },
         };
         incoming
-            .respond(&encode_answer_v2(&answer).unwrap())
+            .respond(&encode_answer_v2(&answer, &uncertain_raw.signer()).unwrap())
             .await
             .unwrap();
         session.wait_closed().await;

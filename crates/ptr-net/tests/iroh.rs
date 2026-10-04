@@ -184,3 +184,45 @@ async fn closed_session_rejects_new_requests_and_a_new_session_recovers() {
     second.close().await;
     server_task.await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_endpoint_signer_signs_as_the_identity_the_handshake_authenticates() {
+    // D2 in issue #23: the signing key is the endpoint key, so the name a signature
+    // verifies under is exactly the name a connection to this endpoint authenticates.
+    const DOMAIN: ptr_net::SigningDomain = ptr_net::SigningDomain::new(b"ptr-net-test/v1\0");
+    let server = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let client = IrohTransport::bind(&[]).await.unwrap();
+    let signer = server.signer();
+    assert_eq!(signer.public_key(), server.identity().public_key);
+
+    // What the client's handshake authenticated is the key the signature verifies
+    // under — compared as text, the way every wire compares it.
+    let address = server.direct_addr();
+    let serving = async {
+        let incoming = server.accept_once(1024).await.unwrap();
+        let signature = signer.sign(DOMAIN, &incoming.payload);
+        incoming.respond(&signature).await.unwrap();
+    };
+    let (response, ()) = tokio::join!(
+        client.request(address.clone(), ALPN_PODWIRE, b"statement", 1024),
+        serving
+    );
+    let signature: [u8; ptr_net::SIGNATURE_BYTES] = response.unwrap().try_into().unwrap();
+    let authenticated = address.id.to_string();
+    assert!(
+        ptr_net::verify(&authenticated, DOMAIN, b"statement", &signature),
+        "the control: the authenticated key verifies the endpoint's signature"
+    );
+    assert!(
+        !ptr_net::verify(
+            &client.identity().public_key,
+            DOMAIN,
+            b"statement",
+            &signature
+        ),
+        "another endpoint's key does not"
+    );
+
+    client.close().await;
+    server.close().await;
+}
