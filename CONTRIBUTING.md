@@ -46,7 +46,11 @@ the Python 3.11 leg of `python-training`, `pip install -e training` (it sets
 It runs `python3` as it finds it (`PYTHON` in the Makefile), while CI uses 3.13 for
 `repository-invariants` and 3.11 and 3.13 for `python-training`, so a Python-version
 failure shows up only if you pass `PYTHON=` an interpreter of that version. A green
-`make ci-local` is therefore not a green CI. It reads `BASE` from `origin/main`;
+`make ci-local` is therefore not a green CI. Its `ci-state-postgres` target needs a
+PostgreSQL server with the pgvector extension on the loopback address the Makefile
+exports in `PTR_PG_TEST_DSN` and `PTR_PG_EXPERIMENT_DSN` (CI runs a
+`pgvector/pgvector:pg18` service container); start one first or point both variables
+at yours. It reads `BASE` from `origin/main`;
 without that ref, pass `BASE=<commit>`. `make a0` is burn-a0.yml's two jobs:
 `a0-stable` formats, tests and lints on your `stable`, and `a0-msrv` tests on
 1.95.0, the Rust version Burn A0 requires. CI's stable is always the current

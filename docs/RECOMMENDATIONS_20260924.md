@@ -62,6 +62,10 @@ the "Upstream / Downstream" lines from `cargo metadata`), the stale id of the
 ADR-0016, in the research documents and in a comment in `crates/ptr-net/Cargo.toml`
 (the last needs a `component.toml` change in the same commit, per the freshness rule).
 
+One item outside Step 3 was found done during the same pass: 2.5. `bins/ptrd` now
+exits on a configuration error instead of falling back to defaults, and opens the
+durable runtime with `PtrRuntime::open_durable`.
+
 The rest of this document is unchanged and still describes `e93ed99`.
 
 ## 1. The diagnosis in one paragraph
