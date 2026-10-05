@@ -165,12 +165,20 @@
 //!
 //! # Two-stage identity
 //!
-//! [`ExpertProposal::operation_id`] exists before training: it identifies the requested
+//! [`ExpertOperationRequest::operation_id`] exists before training: it identifies the requested
 //! operation (kind, operands with their observed generation, manifest digest, state and state
-//! version, proposer, project, `observed_at`, rationale digest) and excludes every result field
-//! (the [`ExpertPodSpec`] contents and so any manifest digest of a trained result). It is
-//! SHA-256 over a length-prefixed canonical encoding with domain separator
+//! version, retire reason, proposer, project, `observed_at`, rationale digest) and excludes
+//! every result field (the [`ExpertPodSpec`] contents and so any manifest digest of a trained
+//! result). It is SHA-256 over a length-prefixed canonical encoding with domain separator
 //! `ptr.pods.expert-operation.v1`.
+//!
+//! An [`ExpertOperationRequest`] (with [`RequestedOp`], a [`StructuralOp`] without result specs)
+//! is the validated pre-result form: its constructor runs every proposal rule that involves no
+//! result, so an orchestrator mints the id without fabricating a trained result.
+//! [`ExpertProposal::operation_request`] derives the request from a proposal and
+//! [`ExpertProposal::operation_id`] delegates to it, so both paths agree. Admission checks
+//! `proposal.operation_id() == request.operation_id()`; no constructor binds a request to
+//! results.
 //!
 //! [`ExpertProposal::proposal_id`] exists after training and identifies the candidate: SHA-256
 //! over a length-prefixed canonical encoding of every field including results (domain separator
@@ -993,6 +1001,207 @@ impl fmt::Display for ExpertProposalError {
 
 impl std::error::Error for ExpertProposalError {}
 
+/// A structural operation as requested, before any training: [`StructuralOp`] without result
+/// specs. Birth names no operand, so it carries nothing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RequestedOp {
+    Birth,
+    Merge {
+        sources: Vec<ExpertTarget>,
+    },
+    Split {
+        source: ExpertTarget,
+    },
+    Freeze {
+        target: ExpertTarget,
+    },
+    Reactivate {
+        target: ExpertTarget,
+    },
+    Prune {
+        targets: Vec<ExpertTarget>,
+    },
+    Retire {
+        target: ExpertTarget,
+        reason: RetiredReason,
+    },
+}
+
+impl RequestedOp {
+    pub fn kind(&self) -> OpKind {
+        match self {
+            Self::Birth => OpKind::Birth,
+            Self::Merge { .. } => OpKind::Merge,
+            Self::Split { .. } => OpKind::Split,
+            Self::Freeze { .. } => OpKind::Freeze,
+            Self::Reactivate { .. } => OpKind::Reactivate,
+            Self::Prune { .. } => OpKind::Prune,
+            Self::Retire { .. } => OpKind::Retire,
+        }
+    }
+
+    /// Existing experts the operation names.
+    pub fn sources(&self) -> Vec<&ExpertTarget> {
+        match self {
+            Self::Birth => Vec::new(),
+            Self::Merge { sources } => sources.iter().collect(),
+            Self::Split { source: target }
+            | Self::Freeze { target }
+            | Self::Reactivate { target }
+            | Self::Retire { target, .. } => vec![target],
+            Self::Prune { targets } => targets.iter().collect(),
+        }
+    }
+
+    fn from_structural(op: &StructuralOp) -> Self {
+        match op {
+            StructuralOp::Birth { .. } => Self::Birth,
+            StructuralOp::Merge { sources, .. } => Self::Merge {
+                sources: sources.clone(),
+            },
+            StructuralOp::Split { source, .. } => Self::Split {
+                source: source.clone(),
+            },
+            StructuralOp::Freeze { target } => Self::Freeze {
+                target: target.clone(),
+            },
+            StructuralOp::Reactivate { target, .. } => Self::Reactivate {
+                target: target.clone(),
+            },
+            StructuralOp::Prune { targets } => Self::Prune {
+                targets: targets.clone(),
+            },
+            StructuralOp::Retire { target, reason } => Self::Retire {
+                target: target.clone(),
+                reason: *reason,
+            },
+        }
+    }
+}
+
+/// A validated, inert request for a structural change that exists before training: everything
+/// in an [`ExpertProposal`] except the result specs. It lets an orchestrator mint the
+/// pre-training [`OperationId`] without fabricating a trained result.
+///
+/// [`ExpertOperationRequest::new`] runs every proposal rule that involves no result, in the
+/// order documented on [`ExpertProposal::new`]: rules 1, 2, the source part of 3 (Merge at
+/// least two sources, Prune at least one), the source part of 4, 5 and the source-only part of
+/// 6. Result rules (a Split's result count, a Reactivate's result presence, rules 7 and 8) are
+/// checked only when the [`ExpertProposal`] is built. There is no constructor binding a request
+/// to results: admission checks `proposal.operation_id() == request.operation_id()`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertOperationRequest {
+    project: ProjectId,
+    proposer: ProposerRef,
+    observed_at: CommitIndex,
+    op: RequestedOp,
+    rationale: RationaleDigest,
+}
+
+impl ExpertOperationRequest {
+    /// Validate and build a request. See the type documentation for the rules checked.
+    pub fn new(
+        project: ProjectId,
+        proposer: ProposerRef,
+        observed_at: CommitIndex,
+        op: RequestedOp,
+        rationale: RationaleDigest,
+    ) -> Result<Self, ExpertProposalError> {
+        check_proposal_header(&project, &proposer)?;
+        let kind = op.kind();
+        let sources = op.sources();
+        check_source_counts(kind, &sources)?;
+        check_source_projects(&sources, &project)?;
+        check_source_states(kind, &sources)?;
+        let reason = match &op {
+            RequestedOp::Retire { reason, .. } => Some(*reason),
+            _ => None,
+        };
+        check_source_structure(kind, &sources, reason)?;
+        Ok(Self {
+            project,
+            proposer,
+            observed_at,
+            op,
+            rationale,
+        })
+    }
+
+    pub fn project(&self) -> &ProjectId {
+        &self.project
+    }
+
+    pub fn proposer(&self) -> &ProposerRef {
+        &self.proposer
+    }
+
+    /// The committed ledger index the request was built against. A caller-observed claim.
+    pub fn observed_at(&self) -> CommitIndex {
+        self.observed_at
+    }
+
+    pub fn op(&self) -> &RequestedOp {
+        &self.op
+    }
+
+    pub fn rationale(&self) -> &RationaleDigest {
+        &self.rationale
+    }
+
+    /// Pre-training identity: SHA-256 over the canonical encoding of the project, proposer,
+    /// `observed_at`, rationale digest, operation kind, operands (with observed generation,
+    /// manifest digest, state and state version) and, for Retire, the reason, under domain
+    /// separator `ptr.pods.expert-operation.v1`. It contains no result field.
+    pub fn operation_id(&self) -> OperationId {
+        let mut e = Encoder::default();
+        e.str("ptr.pods.expert-operation.v1");
+        e.str(&self.project.0);
+        e.str(&self.proposer.project.0);
+        e.str(&self.proposer.pod.0);
+        e.u64(self.proposer.generation.0);
+        e.u64(self.observed_at.0);
+        e.digest(self.rationale.as_bytes());
+        e.u64(match self.op.kind() {
+            OpKind::Birth => 0,
+            OpKind::Merge => 1,
+            OpKind::Split => 2,
+            OpKind::Freeze => 3,
+            OpKind::Reactivate => 4,
+            OpKind::Prune => 5,
+            OpKind::Retire => 6,
+        });
+        let sources = self.op.sources();
+        e.u64(sources.len() as u64);
+        for source in sources {
+            e.target(source);
+        }
+        // The retirement reason is a request parameter, not a result.
+        if let RequestedOp::Retire { reason, .. } = &self.op {
+            e.reason(*reason);
+        }
+        OperationId(Sha256::digest(e.bytes).into())
+    }
+}
+
+/// Rules 1 and 2: the proposal project id is canonical and the proposer belongs to it.
+fn check_proposal_header(
+    project: &ProjectId,
+    proposer: &ProposerRef,
+) -> Result<(), ExpertProposalError> {
+    match check_project_id(project) {
+        Ok(()) => {}
+        Err(ExpertIdentityError::BlankProject) => return Err(ExpertProposalError::BlankProject),
+        Err(_) => return Err(ExpertProposalError::NonCanonicalProject),
+    }
+    if &proposer.project != project {
+        return Err(ExpertProposalError::ProposerProjectMismatch {
+            expected: project.clone(),
+            found: proposer.project.clone(),
+        });
+    }
+    Ok(())
+}
+
 impl ExpertProposal {
     /// Validate and build a proposal. See the module documentation for what a proposal is not
     /// and for the order in which rules are checked.
@@ -1003,19 +1212,7 @@ impl ExpertProposal {
         op: StructuralOp,
         rationale: RationaleDigest,
     ) -> Result<Self, ExpertProposalError> {
-        match check_project_id(&project) {
-            Ok(()) => {}
-            Err(ExpertIdentityError::BlankProject) => {
-                return Err(ExpertProposalError::BlankProject)
-            }
-            Err(_) => return Err(ExpertProposalError::NonCanonicalProject),
-        }
-        if proposer.project != project {
-            return Err(ExpertProposalError::ProposerProjectMismatch {
-                expected: project,
-                found: proposer.project,
-            });
-        }
+        check_proposal_header(&project, &proposer)?;
         validate_op(&op, &project)?;
         Ok(Self {
             project,
@@ -1076,46 +1273,25 @@ impl ExpertProposal {
         }
     }
 
-    /// Pre-training identity of the requested operation: SHA-256 over the canonical encoding of
-    /// the operation kind, its operands (with observed generation, manifest digest, state and
-    /// state version), the proposer, project, `observed_at` and rationale digest. It excludes
-    /// every result field, so it is unchanged by the result specs a training run produces. The
-    /// candidate is identified by [`ExpertProposal::proposal_id`] after training.
+    /// The pre-result request this proposal fulfils: the same project, proposer, `observed_at`,
+    /// rationale, operation kind, operands and retirement reason, without any result spec. It
+    /// always validates, because the proposal already passed every rule the request checks.
+    pub fn operation_request(&self) -> ExpertOperationRequest {
+        ExpertOperationRequest {
+            project: self.project.clone(),
+            proposer: self.proposer.clone(),
+            observed_at: self.observed_at,
+            op: RequestedOp::from_structural(&self.op),
+            rationale: self.rationale,
+        }
+    }
+
+    /// Pre-training identity of the requested operation; delegates to
+    /// [`ExpertOperationRequest::operation_id`], so a request and the proposal that fulfils it
+    /// give the same id. The candidate is identified by [`ExpertProposal::proposal_id`] after
+    /// training.
     pub fn operation_id(&self) -> OperationId {
-        let ProposalParts {
-            project,
-            proposer,
-            observed_at,
-            op,
-            rationale,
-        } = self.parts();
-        let mut e = Encoder::default();
-        e.str("ptr.pods.expert-operation.v1");
-        e.str(&project.0);
-        e.str(&proposer.project.0);
-        e.str(&proposer.pod.0);
-        e.u64(proposer.generation.0);
-        e.u64(observed_at.0);
-        e.digest(rationale.as_bytes());
-        e.u64(match op.kind() {
-            OpKind::Birth => 0,
-            OpKind::Merge => 1,
-            OpKind::Split => 2,
-            OpKind::Freeze => 3,
-            OpKind::Reactivate => 4,
-            OpKind::Prune => 5,
-            OpKind::Retire => 6,
-        });
-        let sources = op.sources();
-        e.u64(sources.len() as u64);
-        for source in sources {
-            e.target(source);
-        }
-        // The retirement reason is a request parameter, not a result.
-        if let StructuralOp::Retire { reason, .. } = op {
-            e.reason(*reason);
-        }
-        OperationId(Sha256::digest(e.bytes).into())
+        self.operation_request().operation_id()
     }
 
     /// Deterministic identity of the candidate: SHA-256 over the canonical encoding of every
@@ -1276,84 +1452,39 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
     let sources = op.sources();
     let results = op.results();
 
-    // 3. operand counts.
-    match op {
-        StructuralOp::Merge { .. } => count_sources(kind, &sources, OperandCount::AtLeast(2))?,
-        StructuralOp::Prune { .. } => count_sources(kind, &sources, OperandCount::AtLeast(1))?,
-        StructuralOp::Split { .. } => {
-            let expected = OperandCount::AtLeast(2);
-            if !expected.accepts(results.len()) {
-                return Err(ExpertProposalError::WrongResultCount {
-                    op: kind,
-                    expected,
-                    found: results.len(),
-                });
-            }
+    // 3. operand counts (a Split's result count is a result rule, checked here in order).
+    check_source_counts(kind, &sources)?;
+    if let StructuralOp::Split { .. } = op {
+        let expected = OperandCount::AtLeast(2);
+        if !expected.accepts(results.len()) {
+            return Err(ExpertProposalError::WrongResultCount {
+                op: kind,
+                expected,
+                found: results.len(),
+            });
         }
-        StructuralOp::Birth { .. }
-        | StructuralOp::Freeze { .. }
-        | StructuralOp::Reactivate { .. }
-        | StructuralOp::Retire { .. } => {}
     }
 
-    // 4. projects.
-    let source_projects = sources.iter().map(|t| &t.project);
-    let result_projects = results.iter().map(|r| &r.project);
-    if let Some(found) = source_projects
-        .chain(result_projects)
-        .find(|p| *p != project)
-    {
+    // 4. projects, sources first and then results.
+    check_source_projects(&sources, project)?;
+    if let Some(found) = results.iter().map(|r| &r.project).find(|p| *p != project) {
         return Err(ExpertProposalError::MixedProjects {
             expected: project.clone(),
             found: found.clone(),
         });
     }
 
-    // 5. source states. A retired reactivation target that cannot seed gets its own error.
-    if let StructuralOp::Reactivate { target, .. } = op {
-        if let ExpertState::Retired(reason) = target.state {
-            if reason != RetiredReason::GateFailed {
-                return Err(ExpertProposalError::SeedUnavailable {
-                    pod: target.pod.clone(),
-                    reason,
-                });
-            }
-        }
-    }
-    if let Some(target) = sources.iter().find(|t| t.state == ExpertState::Fenced) {
-        return Err(ExpertProposalError::FencedTarget {
-            op: kind,
-            pod: target.pod.clone(),
-        });
-    }
-    if let Some(target) = sources.iter().find(|t| !kind.allows_state(t.state)) {
-        return Err(ExpertProposalError::WrongTargetState {
-            op: kind,
-            pod: target.pod.clone(),
-            state: target.state,
-        });
-    }
+    // 5. source states and 6. source-only operation structure.
+    let reason = match op {
+        StructuralOp::Retire { reason, .. } => Some(*reason),
+        _ => None,
+    };
+    check_source_states(kind, &sources)?;
+    check_source_structure(kind, &sources, reason)?;
 
-    // 6. operation structure.
-    match op {
-        StructuralOp::Merge { .. } => {
-            require_token_level(kind, &sources)?;
-            check_unique(&sources)?;
-            check_same_layer(&sources)?;
-            check_same_base(&sources)?;
-            check_distinct_slots(&sources)?;
-            if sources.iter().any(|t| t.state != sources[0].state) {
-                return Err(ExpertProposalError::MixedStates);
-            }
-        }
-        StructuralOp::Prune { .. } => {
-            require_token_level(kind, &sources)?;
-            check_unique(&sources)?;
-            check_same_layer(&sources)?;
-            check_same_base(&sources)?;
-            check_distinct_slots(&sources)?;
-        }
-        StructuralOp::Reactivate { target, result } => match (target.state, result) {
+    // 6 (continued). A reactivation result is present iff the target is `Retired`.
+    if let StructuralOp::Reactivate { target, result } = op {
+        match (target.state, result) {
             (ExpertState::Retired(_), None) => {
                 return Err(ExpertProposalError::MissingResult { op: kind });
             }
@@ -1361,14 +1492,7 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
                 return Err(ExpertProposalError::UnexpectedResult { op: kind });
             }
             _ => {}
-        },
-        StructuralOp::Retire { reason, .. } => match reason {
-            RetiredReason::Superseded | RetiredReason::GateFailed => {}
-            RetiredReason::Pruned | RetiredReason::InputRevoked => {
-                return Err(ExpertProposalError::ReasonNotProposable { reason: *reason });
-            }
-        },
-        StructuralOp::Birth { .. } | StructuralOp::Split { .. } | StructuralOp::Freeze { .. } => {}
+        }
     }
 
     // 7. result relations.
@@ -1392,6 +1516,98 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
                 return Err(ExpertProposalError::DuplicateResultSlot { layer, index });
             }
         }
+    }
+    Ok(())
+}
+
+/// Rule 3, source part: Merge needs at least two sources, Prune at least one.
+fn check_source_counts(kind: OpKind, sources: &[&ExpertTarget]) -> Result<(), ExpertProposalError> {
+    match kind {
+        OpKind::Merge => count_sources(kind, sources, OperandCount::AtLeast(2)),
+        OpKind::Prune => count_sources(kind, sources, OperandCount::AtLeast(1)),
+        OpKind::Birth | OpKind::Split | OpKind::Freeze | OpKind::Reactivate | OpKind::Retire => {
+            Ok(())
+        }
+    }
+}
+
+/// Rule 4, source part.
+fn check_source_projects(
+    sources: &[&ExpertTarget],
+    project: &ProjectId,
+) -> Result<(), ExpertProposalError> {
+    match sources.iter().map(|t| &t.project).find(|p| *p != project) {
+        Some(found) => Err(ExpertProposalError::MixedProjects {
+            expected: project.clone(),
+            found: found.clone(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Rule 5: a non-`GateFailed` retired reactivation target is `SeedUnavailable`, a `Fenced`
+/// operand is `FencedTarget`, then the (operation, state) table.
+fn check_source_states(kind: OpKind, sources: &[&ExpertTarget]) -> Result<(), ExpertProposalError> {
+    if kind == OpKind::Reactivate {
+        if let Some(target) = sources.first() {
+            if let ExpertState::Retired(reason) = target.state {
+                if reason != RetiredReason::GateFailed {
+                    return Err(ExpertProposalError::SeedUnavailable {
+                        pod: target.pod.clone(),
+                        reason,
+                    });
+                }
+            }
+        }
+    }
+    if let Some(target) = sources.iter().find(|t| t.state == ExpertState::Fenced) {
+        return Err(ExpertProposalError::FencedTarget {
+            op: kind,
+            pod: target.pod.clone(),
+        });
+    }
+    if let Some(target) = sources.iter().find(|t| !kind.allows_state(t.state)) {
+        return Err(ExpertProposalError::WrongTargetState {
+            op: kind,
+            pod: target.pod.clone(),
+            state: target.state,
+        });
+    }
+    Ok(())
+}
+
+/// Rule 6, the part that involves no result: Merge and Prune source structure and the
+/// retirement reason.
+fn check_source_structure(
+    kind: OpKind,
+    sources: &[&ExpertTarget],
+    reason: Option<RetiredReason>,
+) -> Result<(), ExpertProposalError> {
+    match kind {
+        OpKind::Merge => {
+            require_token_level(kind, sources)?;
+            check_unique(sources)?;
+            check_same_layer(sources)?;
+            check_same_base(sources)?;
+            check_distinct_slots(sources)?;
+            if sources.iter().any(|t| t.state != sources[0].state) {
+                return Err(ExpertProposalError::MixedStates);
+            }
+        }
+        OpKind::Prune => {
+            require_token_level(kind, sources)?;
+            check_unique(sources)?;
+            check_same_layer(sources)?;
+            check_same_base(sources)?;
+            check_distinct_slots(sources)?;
+        }
+        OpKind::Retire => match reason {
+            Some(RetiredReason::Superseded | RetiredReason::GateFailed) | None => {}
+            Some(reason @ (RetiredReason::Pruned | RetiredReason::InputRevoked)) => {
+                return Err(ExpertProposalError::ReasonNotProposable { reason });
+            }
+        },
+        OpKind::Birth | OpKind::Split | OpKind::Freeze | OpKind::Reactivate => {}
     }
     Ok(())
 }

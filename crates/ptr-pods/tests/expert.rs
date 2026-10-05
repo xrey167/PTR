@@ -1,8 +1,9 @@
 use ptr_pods::{
     ArtifactLifecycle, BaseModelDigest, BaseModelRef, ExpertIdentityError, ExpertLevel,
-    ExpertPodSpec, ExpertProposal, ExpertProposalError, ExpertState, ExpertTarget,
-    ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId, ProposalParts,
-    ProposerRef, RationaleDigest, RetiredReason, StructuralOp, ZeroDigest,
+    ExpertOperationRequest, ExpertPodSpec, ExpertProposal, ExpertProposalError, ExpertState,
+    ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId,
+    ProposalParts, ProposerRef, RationaleDigest, RequestedOp, RetiredReason, StructuralOp,
+    ZeroDigest,
 };
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
 
@@ -1637,4 +1638,183 @@ fn operation_id_changes_with_the_project() {
         .operation_id()
     };
     assert_ne!(id(&project()), id(&other));
+}
+
+type Request = Result<ExpertOperationRequest, ExpertProposalError>;
+
+fn request(op: RequestedOp) -> Request {
+    ExpertOperationRequest::new(project(), proposer(), CommitIndex(10), op, rationale())
+}
+
+#[test]
+fn a_request_is_built_and_hashed_without_any_result_spec() {
+    let failed = in_state("c", ExpertState::Retired(RetiredReason::GateFailed));
+    let ops = [
+        RequestedOp::Birth,
+        RequestedOp::Merge {
+            sources: vec![serving("a"), serving("b")],
+        },
+        RequestedOp::Split {
+            source: serving("a"),
+        },
+        RequestedOp::Reactivate { target: failed },
+    ];
+    let mut ids = Vec::new();
+    for op in ops {
+        let req = request(op).unwrap();
+        assert_eq!(req.project(), &project());
+        assert_eq!(req.proposer(), &proposer());
+        assert_eq!(req.observed_at(), CommitIndex(10));
+        assert_eq!(req.rationale(), &rationale());
+        ids.push(req.operation_id());
+    }
+    for (i, x) in ids.iter().enumerate() {
+        for y in &ids[i + 1..] {
+            assert_ne!(x, y);
+        }
+    }
+}
+
+#[test]
+fn operation_request_id_matches_the_proposal_for_every_operation() {
+    let failed = || in_state("c", ExpertState::Retired(RetiredReason::GateFailed));
+    let ops = [
+        StructuralOp::Birth {
+            result: result("new"),
+        },
+        merge(vec![serving("a"), serving("b")]),
+        StructuralOp::Split {
+            source: serving("a"),
+            results: vec![result("x"), result("y")],
+        },
+        StructuralOp::Freeze {
+            target: serving("a"),
+        },
+        reactivate(in_state("a", ExpertState::Frozen), None),
+        reactivate(failed(), Some(spec("c", 2, slot("c")))),
+        StructuralOp::Prune {
+            targets: vec![serving("a"), serving("b")],
+        },
+        retire(serving("a"), RetiredReason::GateFailed),
+    ];
+    for op in ops {
+        let proposal = propose(op).unwrap();
+        let req = proposal.operation_request();
+        assert_eq!(req.operation_id(), proposal.operation_id());
+        assert_eq!(req.op().kind(), proposal.op().kind());
+        // The derived request is itself valid: rebuilding it through `new` succeeds and is equal.
+        let rebuilt = ExpertOperationRequest::new(
+            req.project().clone(),
+            req.proposer().clone(),
+            req.observed_at(),
+            req.op().clone(),
+            *req.rationale(),
+        );
+        assert_eq!(rebuilt, Ok(req));
+    }
+}
+
+#[test]
+fn the_request_constructor_rejects_the_same_invalid_operands_as_a_proposal() {
+    let fenced = || in_state("a", ExpertState::Fenced);
+    let other_project = {
+        let mut i = init("a", 1, slot("a"), ExpertState::Serving);
+        i.project = ProjectId::from("other");
+        ExpertTarget::new(i).unwrap()
+    };
+    let cases: Vec<(RequestedOp, StructuralOp)> = vec![
+        (
+            RequestedOp::Retire {
+                target: fenced(),
+                reason: RetiredReason::GateFailed,
+            },
+            retire(fenced(), RetiredReason::GateFailed),
+        ),
+        (
+            RequestedOp::Freeze { target: fenced() },
+            StructuralOp::Freeze { target: fenced() },
+        ),
+        (
+            RequestedOp::Freeze {
+                target: in_state("a", ExpertState::Frozen),
+            },
+            StructuralOp::Freeze {
+                target: in_state("a", ExpertState::Frozen),
+            },
+        ),
+        (
+            RequestedOp::Merge {
+                sources: vec![serving("a")],
+            },
+            merge(vec![serving("a")]),
+        ),
+        (
+            RequestedOp::Prune { targets: vec![] },
+            StructuralOp::Prune { targets: vec![] },
+        ),
+        (
+            RequestedOp::Freeze {
+                target: other_project.clone(),
+            },
+            StructuralOp::Freeze {
+                target: other_project,
+            },
+        ),
+        (
+            RequestedOp::Merge {
+                sources: vec![serving("a"), in_state("b", ExpertState::Frozen)],
+            },
+            merge(vec![serving("a"), in_state("b", ExpertState::Frozen)]),
+        ),
+        (
+            RequestedOp::Reactivate {
+                target: in_state("a", ExpertState::Retired(RetiredReason::InputRevoked)),
+            },
+            reactivate(
+                in_state("a", ExpertState::Retired(RetiredReason::InputRevoked)),
+                Some(spec("a", 2, slot("a"))),
+            ),
+        ),
+        (
+            RequestedOp::Retire {
+                target: serving("a"),
+                reason: RetiredReason::InputRevoked,
+            },
+            retire(serving("a"), RetiredReason::InputRevoked),
+        ),
+        (
+            RequestedOp::Prune {
+                targets: vec![serving("a"), serving("a")],
+            },
+            StructuralOp::Prune {
+                targets: vec![serving("a"), serving("a")],
+            },
+        ),
+    ];
+    for (requested, structural) in cases {
+        let from_request = request(requested.clone());
+        let from_proposal = propose(structural).map(|_| ());
+        assert!(from_request.is_err(), "{requested:?}");
+        assert_eq!(from_request.map(|_| ()), from_proposal, "{requested:?}");
+    }
+    assert_eq!(
+        request(RequestedOp::Merge {
+            sources: vec![serving("a"), in_state("b", ExpertState::Frozen)]
+        })
+        .map(|_| ()),
+        Err(ExpertProposalError::MixedStates)
+    );
+    // Header rules: the proposer must belong to the request project.
+    let foreign =
+        ProposerRef::new(ProjectId::from("other"), PodId::from("meta"), Generation(1)).unwrap();
+    assert!(matches!(
+        ExpertOperationRequest::new(
+            project(),
+            foreign,
+            CommitIndex(10),
+            RequestedOp::Birth,
+            rationale()
+        ),
+        Err(ExpertProposalError::ProposerProjectMismatch { .. })
+    ));
 }

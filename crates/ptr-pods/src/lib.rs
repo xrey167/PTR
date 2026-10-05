@@ -42,10 +42,10 @@ pub use evidence::{
     EvidenceVerifier, PodEvidenceBundle, ReplayedEvidence,
 };
 pub use expert::{
-    BaseModelDigest, BaseModelRef, ExpertIdentityError, ExpertLevel, ExpertPodSpec, ExpertProposal,
-    ExpertProposalError, ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind,
-    OperandCount, OperationId, ProposalId, ProposalParts, ProposerRef, RationaleDigest,
-    RetiredReason, StructuralOp, ZeroDigest,
+    BaseModelDigest, BaseModelRef, ExpertIdentityError, ExpertLevel, ExpertOperationRequest,
+    ExpertPodSpec, ExpertProposal, ExpertProposalError, ExpertState, ExpertTarget,
+    ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId, ProposalId, ProposalParts,
+    ProposerRef, RationaleDigest, RequestedOp, RetiredReason, StructuralOp, ZeroDigest,
 };
 pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
 pub use kv::{
