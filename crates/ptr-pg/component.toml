@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-pg"
 maturity = "prototype"
-last_reviewed = "2026-10-04"
+last_reviewed = "2026-09-28"
 
 implemented = [
   "PeerAdmitted, PeerWithdrawn and CodecCeilingRaised have their own topics (peer.admitted, peer.withdrawn, ledger.codec_ceiling_raised), change no lifecycle catalog entry, and partition by the membership projection's own key so a peer's admission and withdrawal stay in one stream",

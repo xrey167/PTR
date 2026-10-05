@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-04  
+**Last reviewed:** 2026-09-28  
 **Code footprint:** 17 Rust source files · 6478 nonblank source lines · 2 integration-test files · 156 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
