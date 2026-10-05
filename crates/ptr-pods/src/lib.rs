@@ -11,6 +11,7 @@ mod cache;
 #[cfg(feature = "candle-cuda")]
 mod candle;
 mod evidence;
+mod expert;
 mod hypothesis;
 mod kv;
 mod manifest;
@@ -39,6 +40,10 @@ pub use candle::{
 pub use evidence::{
     Ed25519EvidenceSigner, Ed25519EvidenceVerifier, EvidenceError, EvidenceSigner,
     EvidenceVerifier, PodEvidenceBundle, ReplayedEvidence,
+};
+pub use expert::{
+    ExpertLevel, ExpertPodSpec, ExpertProposal, ExpertProposalError, ExpertSpecError, ExpertState,
+    ExpertTarget, ProposalParts, StructuralOp,
 };
 pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
 pub use kv::{
