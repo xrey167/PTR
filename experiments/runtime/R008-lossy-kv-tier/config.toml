@@ -54,7 +54,7 @@ prompt_count = 100
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "context_length_tokens", "prompt_count", "candidate_kv_keep_fractions", "agreement_model_layers", "agreement_model_vocab_size", "agreement_model_hidden_size", "invalidation_coverage_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "declared_dependency_kinds", "production_modes", "derived_state_carriers"]
+procedure_parameters_recorded_per_cell = ["seeds", "context_length_tokens", "prompt_count", "candidate_kv_keep_fractions", "agreement_model_layers", "agreement_model_vocab_size", "agreement_model_hidden_size", "invalidation_coverage_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "declared_dependency_kinds", "production_modes", "derived_state_carriers", "lossy_algorithm"]
 # Preregistered choices for this experiment (no code default exists).
 allow_approximate_false_fallback_output_mismatches_max = 0
 # Preregistered choices for this experiment (no code default exists).
@@ -90,3 +90,7 @@ cache_namespace_partition = "KvSnapshotLossy objects only in a separate lossy ti
 production_modes = ["Exact", "Approximate"]
 # Preregistered choices for this experiment (no code default exists).
 derived_state_carriers = { tier_object = ["mode", "taint"], kv_page_transport = ["mode", "taint"] }
+# Preregistered choices for this experiment (no code default exists).
+lossy_algorithm = { retained_entry_selection = "top keep_fraction positions by key L2 norm per layer and head", reconstruction = "copy K and V of the nearest retained position", index_representation = "sorted int32 position list per layer and head" }
+lossy_algorithm_recorded_per_candidate_row = true
+min_lossy_algorithm_rows_recorded = 3

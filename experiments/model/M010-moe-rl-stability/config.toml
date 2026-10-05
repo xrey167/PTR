@@ -58,7 +58,7 @@ corpus_eval_rule = "all 1319 problems of the test split for pass_at_1, in index 
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "max_rl_steps", "mini_steps", "learning_rate", "batch_size", "collapse_smoothing_window_steps", "algorithm_specific_values", "collapse_reward_drop_fraction", "reward_range", "shared_hyperparameters", "gspo_clip_epsilon_low", "gspo_clip_epsilon_high", "sapo_tau_pos", "sapo_tau_neg", "grpo_epsilon_low", "grpo_epsilon_high", "base_model_revision", "validation_position_modulus", "validation_position_residue", "zero_reward_window_steps", "arm_matrix", "routing_replay_values", "pinned_arm_set", "required_arms", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "tuning_search_spec"]
+procedure_parameters_recorded_per_cell = ["seeds", "max_rl_steps", "mini_steps", "learning_rate", "batch_size", "collapse_smoothing_window_steps", "algorithm_specific_values", "collapse_reward_drop_fraction", "reward_range", "shared_hyperparameters", "gspo_clip_epsilon_low", "gspo_clip_epsilon_high", "sapo_tau_pos", "sapo_tau_neg", "grpo_epsilon_low", "grpo_epsilon_high", "base_model_revision", "validation_position_modulus", "validation_position_residue", "zero_reward_window_steps", "arm_matrix", "routing_replay_values", "pinned_arm_set", "required_arms", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "tuning_search_spec", "arm_comparisons"]
 # Preregistered choices for this experiment (no code default exists).
 max_rl_steps_recorded_per_arm = true
 max_rl_steps_mismatches = 0
@@ -95,3 +95,9 @@ max_model_pin_mismatches = 0
 # Preregistered choices for this experiment (no code default exists).
 tuning_search_spec = { space = { learning_rate = { type = "log_uniform", low = 1e-7, high = 1e-5 }, batch_size = { type = "choice", values = [32, 64, 128] }}, trial_budget = 8, sampler = "seeded random search", selection_seed = 20240607, objective = "mean validation pass_at_1 over all arms (shared hyperparameters learning_rate and batch_size)", tie_break = "lowest trial index" }
 tuning_search_spec_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_required = 8
+tuning_trial_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+arm_comparisons = { grpo_no_replay_ms4_same = "control for the stability criteria", grpo_replay_ms4_same = "reported baseline, no criterion", gspo_ms4_same = "compared with grpo_no_replay_ms4_same", sapo_ms4_same = "compared with grpo_no_replay_ms4_same", reinforce_pp_ms4_same = "reported baseline, excluded from the null control", grpo_no_replay_ms1_same = "null control reference", gspo_ms1_same = "compared with grpo_no_replay_ms1_same", sapo_ms1_same = "compared with grpo_no_replay_ms1_same", grpo_no_replay_ms4_separate = "reported factor (rollout engine)", grpo_replay_ms4_separate = "reported factor (rollout engine)" }
+arm_coverage_per_seed = true

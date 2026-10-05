@@ -199,7 +199,7 @@ min_immediate_replay_cases = 1
 min_late_window_replay_cases = 1
 late_window_replay_delay_range_ms = [9000, 10000]
 late_window_replay_delay_range_rule = "[0.9 * replay_window_ms, replay_window_ms), half-open"
-boundary_probe_counters = { replay_window_ms = "late_window_replay_cases", frame_deadline_ms = "expired_deadline_frame_attempts", max_frame_deadline_lifetime_ms = "expired_deadline_frame_attempts", max_clock_skew_ms = "expired_deadline_frame_attempts" }
+boundary_probe_counters = { replay_window_ms = "late_window_replay_cases", frame_deadline_ms = "expired_deadline_frame_attempts", max_frame_deadline_lifetime_ms = "expired_deadline_frame_attempts", max_clock_skew_ms = "expired_deadline_frame_attempts" , tombstone_retention_ms = "late_window_replay_cases" }
 matrix_kind_frame_fields = { upstream_stage_generation = "upstream_chain.stage_pod_identity_generation_manifest_digest", semantic_input = "input_lineage.semantic", memory_input = "input_lineage.memory", derived_input = "input_lineage.derived", upstream_chain_expert = "upstream_chain.experts_with_fence_epoch", upstream_adapter = "upstream_chain.adapters", upstream_base_model = "upstream_chain.base_model_identity_generation_digest" }
 # Preregistered choices for this experiment (no code default exists).
 upstream_chain_elements = { stage = "upstream_stage_generation", base_model = "upstream_base_model", adapters = "upstream_adapter", experts = "upstream_chain_expert" }
@@ -210,9 +210,19 @@ cache_namespace_partitioned_by_production_mode = true
 cache_namespace_partition = "downstream KV cache keyed by production mode (the activation-frame digest and input lineage fix the mode; Approximate frames are never served to Exact requests)"
 production_modes = ["Exact", "Approximate"]
 # Preregistered choices for this experiment (no code default exists).
-signed_frame_fields = ["frame_id", "chunk_digest", "frame_digest", "upstream_chain", "input_lineage", "signed_absolute_deadline", "parent_operation_id", "mode", "taint"]
+signed_frame_fields = ["frame_id", "chunk_digest", "frame_digest", "upstream_chain", "input_lineage", "signed_absolute_deadline", "parent_operation_id", "mode", "taint", "placement_epoch"]
 min_approximate_frame_downstream_exact_lookup_cases = 1
 max_approximate_frames_served_to_exact = 0
 max_untainted_outputs_from_approximate_frames = 0
 # Preregistered choices for this experiment (no code default exists).
 derived_state_carriers = { activation_frame = ["mode", "taint"], downstream_cache_key = ["mode", "taint"], kv_page_transport = ["mode", "taint"] }
+# Preregistered choices for this experiment (no code default exists).
+min_downstream_persist_rejection_cases = 1
+max_downstream_restore_attempts_admitted = 0
+min_stale_worker_frame_race_cases = 1
+max_stale_placement_frames_admitted = 0
+downstream_cache_persistence = "prohibited: no KvSnapshot or tier write, no restore; a restart drops downstream caches"
+placement_epoch = "upstream stage placement or fence (lease) epoch captured at production; part of the signed frame and the downstream dependency set"
+# Preregistered choices for this experiment (no code default exists).
+tombstone_retention_ms = 10000
+late_probe_inside_retention_window = true

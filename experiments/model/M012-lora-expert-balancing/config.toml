@@ -49,7 +49,7 @@ load_cv_and_dead_experts_eval_tokens = 8192
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons"]
 # Preregistered choices for this experiment (no code default exists).
 expert_token_fraction_definition = "expert routed assignments / total routed assignments in the layer; sums to 1 over experts"
 # Preregistered choices for this experiment (no code default exists).
@@ -75,7 +75,6 @@ model_checkpoint_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
 tokenizer_repo = "allenai/OLMoE-1B-7B-0125"
 tokenizer_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
 moe_topology = { layers = 16, num_experts = 64, top_k = 8, router_layout = "per-layer linear router, softmax then top-k, norm_topk_prob = false", router_aux_loss_coef = 0.01 }
-lora_expert_config = { num_lora_experts = 8, router_top_k = 2, lora_rank = 8, lora_alpha = 16, target_modules = ["mlp"] }
 lora_rank = 8
 lora_alpha = 16
 model_pins_recorded_in_run_json = true
@@ -83,3 +82,11 @@ max_model_pin_mismatches = 0
 # Preregistered choices for this experiment (no code default exists).
 tuning_search_spec = { space = { learning_rate = { type = "log_uniform", low = 1e-5, high = 1e-3 }, batch_size = { type = "choice", values = [16, 32, 64] }, aux_coefficient = { type = "log_uniform", low = 1e-3, high = 1e-1 }, bias_update_rate = { type = "log_uniform", low = 1e-4, high = 1e-2 }}, trial_budget = 8, sampler = "seeded random search", selection_seed = 20240607, objective = "validation task accuracy at the final step", tie_break = "lowest trial index" }
 tuning_search_spec_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+lora_expert_config = { num_lora_experts = 8, router_top_k = 2, lora_rank = 8, lora_alpha = 16, target_tensors = ["mlp.experts.gate_up_proj.delta", "mlp.experts.down_proj.delta"] }
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_required = 8
+tuning_trial_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+arm_comparisons = { aux_free_bias = "compared with aux_loss and phi_balancing (0.05 and 1 point margins)", aux_loss = "comparison baseline", phi_balancing = "comparison baseline" }
+arm_coverage_per_seed = true

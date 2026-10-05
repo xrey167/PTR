@@ -56,7 +56,7 @@ forgetting_gate_public_suite_is_same_object_as_quality_suite = false
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "recovery_sft_steps", "recovery_rl_steps", "recovery_sequences", "vram_batch_size", "vram_sequence_length", "pruning_fractions", "named_baseline_pruning_methods", "pruned_model_revision", "gate_suite_range", "quality_eval_range", "recovery_sft_corpus_revision", "recovery_sft_corpus_size", "arm_matrix", "recovery_overlap_checks", "recovery_overlap_slices", "model_checkpoint_revision", "tokenizer_revision", "moe_topology"]
+procedure_parameters_recorded_per_cell = ["seeds", "recovery_sft_steps", "recovery_rl_steps", "recovery_sequences", "vram_batch_size", "vram_sequence_length", "pruning_fractions", "named_baseline_pruning_methods", "pruned_model_revision", "gate_suite_range", "quality_eval_range", "recovery_sft_corpus_revision", "recovery_sft_corpus_size", "arm_matrix", "recovery_overlap_checks", "recovery_overlap_slices", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "recovery_protocol", "random_pruning", "usage_frequency_pruning", "arm_comparisons"]
 # Preregistered choices for this experiment (no code default exists).
 pruned_model = "allenai/OLMoE-1B-7B-0125"
 pruned_model_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
@@ -93,3 +93,12 @@ tokenizer_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
 moe_topology = { layers = 16, num_experts = 64, top_k = 8, router_layout = "per-layer linear router, softmax then top-k, norm_topk_prob = false", router_aux_loss_coef = 0.01 }
 model_pins_recorded_in_run_json = true
 max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+recovery_protocol = { optimizer = "adamw", learning_rate = 1e-5, batch_size = 64, scheduler = "cosine", warmup_steps = 100, generation_temperature = 1.0, generation_top_p = 1.0, generation_max_new_tokens = 512, samples_per_prompt = 8, gspo_clip_epsilon_low = 3e-4, gspo_clip_epsilon_high = 4e-4, sapo_tau_pos = 1.0, sapo_tau_neg = 1.05 }
+random_pruning = { seed = 20240607, sampling_rule = "uniform without replacement over the experts of each layer, drawn with the pinned seed" }
+usage_frequency_pruning = { corpus = "openai/gsm8k", split = "train", items = "index 0 to 511", max_tokens = 512, batch_size = 16, tie_break = "lowest expert index", measure = "routed token count per expert, summed over layers" }
+selections_and_input_digest_recorded_in_run_json = true
+max_recovery_protocol_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+arm_comparisons = { aimer = "non-inferiority versus random and usage_frequency within 0.01 and floors versus the unpruned control", random = "named baseline", usage_frequency = "named baseline", unpruned = "matched control per recovery sequence and seed" }
+arm_coverage_per_seed = true

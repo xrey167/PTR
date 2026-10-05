@@ -115,7 +115,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix", "arm_matrix", "enabled_backends", "backend_versions", "persistent_cache_declared_per_backend", "salt_epochs", "dependency_journal_crash_points", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "capacity_partitioning", "capacity_partitioning_options", "max_live_associations_per_principal", "association_dedup_key", "capacity_partitioning_granularity", "declared_dependency_kinds", "software_stack", "rope_regime_inputs", "production_modes", "derived_state_carriers"]
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix", "arm_matrix", "enabled_backends", "backend_versions", "persistent_cache_declared_per_backend", "salt_epochs", "dependency_journal_crash_points", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "capacity_partitioning", "capacity_partitioning_options", "max_live_associations_per_principal_project", "association_dedup_key", "capacity_partitioning_granularity", "declared_dependency_kinds", "software_stack", "rope_regime_inputs", "production_modes", "derived_state_carriers", "arm_comparisons"]
 # Preregistered choices for this experiment (no code default exists).
 inflight_restart_output_mismatches_max = 0
 inflight_restarts_equal_cancellations = true
@@ -204,15 +204,15 @@ max_conforming_crash_case_stale_hits = 0
 min_compaction_restart_revocation_cases_per_backend = 1
 compaction_snapshot_rule = "compaction snapshots keep the dependency associations and salt epochs, or rotate all salts fail-closed"
 # Preregistered choices for this experiment (no code default exists).
-capacity_partitioning = { vllm-http = "per_principal_block_quota", sglang-http = "per_principal_block_quota" }
-capacity_partitioning_options = ["per_principal_block_quota", "per_principal_engine_instance", "none"]
+capacity_partitioning = { vllm-http = "per_principal_project_block_quota", sglang-http = "per_principal_project_block_quota" }
+capacity_partitioning_options = ["per_principal_block_quota", "per_principal_project_block_quota", "per_principal_engine_instance", "per_principal_project_engine_instance", "none"]
 capacity_partitioning_recorded_in_run_json = true
 min_eviction_side_channel_cases_per_backend = 1
 eviction_attacker_auc_ci_upper_max = 0.55
 eviction_attacker_applies_when = "capacity_partitioning is claimed (not none)"
 unpartitioned_backend_claim = "no cross-principal hits only; timing isolation not-applicable"
 # Preregistered choices for this experiment (no code default exists).
-max_live_associations_per_principal = 4096
+max_live_associations_per_principal_project = 4096
 association_dedup_key = "(principal, project, salt epoch, dependency-generation set)"
 association_bound_behaviour = "fail-closed: reaching the bound rotates the principal salt epoch (retiring all its associations) before admitting the request"
 min_association_bound_cases_per_backend = 1
@@ -251,3 +251,14 @@ max_exact_outputs_across_effective_regime_transition_without_recompute = 0
 forced_transition_examples = ["admitted max_new_tokens exceeded", "runtime switches regimes"]
 # Preregistered choices for this experiment (no code default exists).
 derived_state_carriers = { engine_salt = ["mode"], engine_output_to_effect_boundary = ["taint"] }
+# Preregistered choices for this experiment (no code default exists).
+min_cross_project_rotation_probe_cases_per_backend = 1
+max_cross_project_salt_changes = 0
+salt_epoch_key = "(principal, project)"
+reverse_index_key = "(principal, project)"
+# Preregistered choices for this experiment (no code default exists).
+ttft_gain_per_backend = { vllm-http = "ttft_gain_vllm", sglang-http = "ttft_gain_sglang" }
+timing_workload_per_backend = true
+# Preregistered choices for this experiment (no code default exists).
+arm_comparisons = { cache_disabled = "primary comparator for ttft_gain and bit-identity", unsalted_control = "positive control for stale hits", salted = "system under test" }
+arm_coverage_per_seed = true

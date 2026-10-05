@@ -55,7 +55,7 @@ corpus_selection_rule = "all 7473 train problems in index order for training; al
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "samples_per_problem", "sampling_temperature", "sampling_top_p", "sampling_top_k", "max_new_tokens", "bootstrap_seed", "problem_set_size", "bootstrap_resamples", "bootstrap_confidence", "n_samples", "hyperparameter_tuning_budget_trials_per_arm", "decoding_fields", "teacher_samples_per_prompt", "teacher_temperature", "teacher_top_p", "teacher_top_k", "teacher_max_new_tokens", "teacher_seed", "distillation_filter", "distillation_selection", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "tuning_search_spec"]
+procedure_parameters_recorded_per_cell = ["seeds", "samples_per_problem", "sampling_temperature", "sampling_top_p", "sampling_top_k", "max_new_tokens", "bootstrap_seed", "problem_set_size", "bootstrap_resamples", "bootstrap_confidence", "n_samples", "hyperparameter_tuning_budget_trials_per_arm", "decoding_fields", "teacher_samples_per_prompt", "teacher_temperature", "teacher_top_p", "teacher_top_k", "teacher_max_new_tokens", "teacher_seed", "distillation_filter", "distillation_selection", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "tuning_search_spec", "arm_comparisons"]
 # Preregistered choices for this experiment (no code default exists).
 sampling_top_k = -1
 max_new_tokens = 512
@@ -100,3 +100,13 @@ max_model_pin_mismatches = 0
 # Preregistered choices for this experiment (no code default exists).
 tuning_search_spec = { space = { learning_rate = { type = "log_uniform", low = 1e-7, high = 1e-5 }, batch_size = { type = "choice", values = [32, 64, 128] }}, trial_budget = 8, sampler = "seeded random search", selection_seed = 20240607, objective = "validation pass_at_1", tie_break = "lowest trial index" }
 tuning_search_spec_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+tuned_arms = ["rlvr", "sft_distilled"]
+untrained_arms = ["base"]
+untrained_arm_tuning_trials = 0
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_required = 8
+tuning_trial_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+arm_comparisons = { base = "comparison baseline", rlvr = "compared with base", sft_distilled = "compared with base" }
+arm_coverage_per_seed = true

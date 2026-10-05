@@ -159,3 +159,6 @@ cache_namespace_partition = "approximate pages only in a separate tainted namesp
 production_modes = ["Exact", "Approximate"]
 # Preregistered choices for this experiment (no code default exists).
 derived_state_carriers = { tainted_namespace_page = ["mode", "taint"] }
+# Preregistered choices for this experiment (no code default exists).
+min_tainted_authoritative_sink_cases_per_kind = 1
+authoritative_sink_cases = ["StateDelta", "VerifiedResult", "ActionProposal", "promote_verified_pod_output_tainted_hypothesis", "promote_verified_pod_output_tainted_candidate"]

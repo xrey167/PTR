@@ -14,7 +14,7 @@ min_approximate_candidate_path_attempts = 1
 max_approximate_candidate_exact_admissions = 0
 # Preregistered choices for this experiment (no code default exists).
 max_trie_nodes = 4096
-max_kv_page_bytes = 67108864
+max_kv_page_bytes = 134217728
 max_active_fork_page_evictions = 0
 min_approximate_action_admission_attempts = 1
 min_approximate_semdb_promotion_attempts = 1
@@ -42,7 +42,7 @@ min_fresh_exact_recomputation_controls = 1
 min_candidate_taint_hops = 2
 min_approximate_pod_result_promotion_attempts = 1
 max_approximate_pod_result_promotions_accepted = 0
-max_metadata_bytes = 4194304
+max_metadata_bytes = 8388608
 approximate_producer = "pinned stub backend returning KvReuseMode::Approximate"
 n_requests = 64
 prompt_tokens = 256
@@ -130,7 +130,7 @@ max_outputs_after_supersession_memory = 0
 # Preregistered choices for this experiment (no code default exists).
 identity_set_checks = [["cancelled_fork_id_set_digest", "restarted_fork_id_set_digest"], ["capacity_refused_request_id_set_digest", "capacity_completed_request_id_set_digest"]]
 # Preregistered choices for this experiment (no code default exists).
-workload_limits = { main = { max_trie_nodes = 4096, max_kv_page_bytes = 67108864, max_metadata_bytes = 4194304 }, nodes_only = { max_trie_nodes = 4096, max_kv_page_bytes = 268435456, max_metadata_bytes = 4194304 }, bytes_only = { max_trie_nodes = 16384, max_kv_page_bytes = 67108864, max_metadata_bytes = 16777216 } }
+workload_limits = { main = { max_trie_nodes = 4096, max_kv_page_bytes = 134217728, max_metadata_bytes = 8388608 }, nodes_only = { max_trie_nodes = 4096, max_kv_page_bytes = 268435456, max_metadata_bytes = 67108864 }, bytes_only = { max_trie_nodes = 16384, max_kv_page_bytes = 67108864, max_metadata_bytes = 16777216 } }
 workload_peaks_reported = "per workload, evaluated against that workload's own limits"
 # Preregistered choices for this experiment (no code default exists).
 outputs_after_supersession_field_family = "outputs_after_supersession"
@@ -189,3 +189,9 @@ max_exact_outputs_across_effective_regime_transition_without_recompute = 0
 forced_transition_examples = ["admitted max_new_tokens exceeded", "runtime switches regimes"]
 # Preregistered choices for this experiment (no code default exists).
 derived_state_carriers = { ptr_catalog_key = ["mode"], tainted_candidate = ["mode", "taint"] }
+# Preregistered choices for this experiment (no code default exists).
+min_mismatched_position_cases = 1
+max_exact_hits_with_mismatched_positions = 0
+canonical_positions = "position ids = trie depth offset from 0; no explicit position ids or offset; otherwise Exact lookup is bypassed (miss)"
+# Preregistered choices for this experiment (no code default exists).
+binding_limit_per_workload = { main = "max_trie_nodes", nodes_only = "max_trie_nodes", bytes_only = "max_kv_page_bytes" }
