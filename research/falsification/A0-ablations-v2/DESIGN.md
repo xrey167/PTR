@@ -15,7 +15,7 @@ v1 stays as history, unchanged.
 
 - Hypotheses, arms, contrasts, composites, learnability bars, contingency rule, leak alarm and the decision rules: `criteria.toml` is v1's file with only the study name and tag replaced (a test compares the two).
 - Data: operator-routing v1, generator version 1, `splits.lock.json` (data FNV-1a-64 `0ad71688f09b0d0d`), codebook V1.
-- Model and training: one block, `d_model` 48 unless calibration says otherwise, Adam defaults, batch 128, warm-up 100 steps then cosine to 0.1x, seeds [17, 29, 43, 71, 101], calibration seed 0, sweep at runner seed 17 with the salted seeds.
+- Model and training: one block, `d_model` as the calibration rule chooses (D14), Adam defaults, batch 128, warm-up 100 steps then cosine to 0.1x, seeds [17, 29, 43, 71, 101], calibration seed 0, sweep at runner seed 17 with the salted seeds.
 - Learning-rate grid [0.002, 0.005, 0.0125], selection tolerance 0.005, swept **again** after the freeze, now on the corrected code.
 - The budget rule (limit 20 min, hard cap 45, 3 workers, the same ladder) and the calibration ladder (base, R1, R2): `model/configs/a0_ablation_study_v2.toml` is v1's file with the study name changed (a test compares the arm tables and every threshold). The budget rule bounds training compute; it is applied to the training time projection exactly as in v1. Cold builds are not part of it (below).
 - Gates G0-G6 as DESIGN.md of v1 defines them (data, competence, determinism, completeness, freeze, scorer agreement, correctness), except for the adaptations in the next section.
@@ -34,9 +34,11 @@ v1 stays as history, unchanged.
 | D8 | A failed or NaN process gets one full retry (G3) | No retry: the hardened runner refuses a second run of a seed, which keeps any run from being chosen by its outcome. A failed process makes every dependent verdict INCONCLUSIVE and a further study needs a successor | `run_experiment.py`: "a listed experiment runs each seed once, so no run of it is chosen by its outcome". |
 | D9 | Cross-check against `run_experiment.py aggregate` | The same comparison done in the aggregator on each record's printed `final` rows against the independent score.py table, to 1e-12 | The stock aggregate refuses records from more than one commit (`aggregate_experiment.py`), which hardened records always are. |
 | D10 | Per-family `results/a0_internal_metrics.json` inside M001-M004 | `research/falsification/A0-ablations-v2/metrics/<family>.json` | The runner holds a listed experiment's directory to HEAD; the aggregate must not write into it. |
-| D11 | Parallel runs (3 workers) on a warm shared target directory | Serial runs; each builds the example cold into a scratch directory outside the repository (`CARGO_TARGET_DIR`, removed afterwards) | The hardened runner holds the whole tree to HEAD, refuses git-ignored files and runs one launch at a time. Measured on this host at 20 steps: a sweep run took about 150 s, cold build included. |
+| D11 | Parallel runs (3 workers) on a warm shared target directory | Serial runs; each builds the example cold into a scratch directory outside the repository (`CARGO_TARGET_DIR`, removed afterwards) | The hardened runner holds the whole tree to HEAD, refuses git-ignored files and runs one launch at a time. Measured on this host in a rehearsal at 20 steps: a run took 135-200 s, cold build included. |
 | D12 | Preregistration identified by a commit constant in the aggregator | Identified by the tag `a0-ablations-v2-prereg`, which must exist | A commit cannot name itself in its own tree. The tag is created by hand at freeze 1. |
 | D13 | `scripts/run_a0_ablation_study.py`, `aggregate_a0_ablation.py`, `report_a0_ablation.py` | The same scripts with `--study v2`; identities and naming in `scripts/a0_study.py` | v1 behaviour and tests are unchanged. |
+
+| D14 | Calibration missed its 0.88 target at `d_model` 32 (0.8615), so rung R1 chose `d_model` 48, and the budget ladder dropped `latent-4` and the blind-query pair | The same calibration rule on the corrected code reached 0.8820 at `d_model` 32 and 1500 steps (`calibration.json`), so the study runs at `d_model` 32 (S* = 1500), no ladder rung applies (`budget.json`: projected 10.5 minutes, limit 20), and the tier-2 arms `latent-4`, `blind-query-k0` and `blind-query-k0-no-typed-attention` run | The preregistered calibration and budget rules are applied unchanged; their outcome differs because the code does. It enlarges the arm set, which brings the M002 sufficiency contrast and the M003 dose response, not run in v1, into scope. |
 
 Hardware profile: `hardware/a0-cpu-4core.toml`, the same container class as v1; every record names the measured host.
 
@@ -46,11 +48,11 @@ G0-G6 decide whether verdicts can be issued, as in v1; a verdict depending on a 
 
 ## Which v1 verdicts v2 can supersede
 
-If, and only if, v2's gates G0-G6 all pass, its verdicts supersede v1's current INCONCLUSIVE ones for the same contrast: M001-primary, M001-secondary, M002-necessity, M002-raw-blind-check, M003-depth, M003-nonlinearity and M004-negative-control. M002-sufficiency (needs `blind-query-k0`, not run under the budget rule) stays NOT RUN unless the v2 budget rule keeps the tier-2 arms; `no-verifier-head` stays NOT TESTED. If any gate fails, v2 leaves v1's status unchanged and v2's own verdicts are INCONCLUSIVE. v1 and v2 data are never pooled, and v1's historical raw scores remain descriptive only.
+If, and only if, v2's gates G0-G6 all pass, its verdicts supersede v1's current INCONCLUSIVE ones for the same contrast: M001-primary, M001-secondary, M002-necessity, M002-raw-blind-check, M003-depth, M003-nonlinearity and M004-negative-control. M002-sufficiency and the M003 dose response (v1: not run under the budget rule) have no v1 verdict to supersede; v2 can issue them first because its budget keeps the tier-2 arms (D14). `no-verifier-head` stays NOT TESTED. If any gate fails, v2 leaves v1's status unchanged and v2's own verdicts are INCONCLUSIVE. v1 and v2 data are never pooled, and v1's historical raw scores remain descriptive only.
 
 ## Budget
 
-The budget is computed by `prefreeze` from the calibration (`budget.json`, as in v1) and frozen at freeze 1. Execution is serial, so the wall time is the training projection times the number of workers v1 assumed, plus one cold build (about 2 minutes on this host) per run: the sweep is 12 runs, the evaluation 20 plus the rerun, and a contingency 5 to 10. A run that fails stops the study.
+The budget is computed by `prefreeze` from the calibration (`budget.json`, as in v1) and frozen at freeze 1. Execution is serial, so the wall time is the training projection times the number of workers v1 assumed, plus one cold build (about 2 minutes on this host) per run: the sweep is 12 runs, the evaluation 20 plus the rerun (arms per run: 3, 4, 4 and 1 for M001-M004), and a contingency 5 to 10. Calibration measured 10.3 ms per step, so training is well under a minute per arm and the cold build dominates. A run that fails stops the study.
 
 ## Procedure (`...` is `python3 scripts/run_a0_ablation_study.py`; `--commit` makes the driver commit each record alone)
 
