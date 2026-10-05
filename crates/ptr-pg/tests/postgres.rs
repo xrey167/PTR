@@ -3657,6 +3657,83 @@ async fn superseding_a_source_removes_its_fast_memory_writes() {
     substrate.drop_all().await.unwrap();
 }
 
+/// A journal row written by raw SQL with the server's triggers off, so a test
+/// can place rows in the heap in an order other than their sequence numbers.
+async fn raw_journal_row(transaction: &tokio_postgres::Transaction<'_>, work: &str, seq: i64) {
+    transaction
+        .execute(
+            &format!(
+                "INSERT INTO {work}.fastmem_write \
+                 (memory, seq, source_key, source_generation, input_digest, key_cells, \
+                  value_cells, beta, decay_kind) \
+                 VALUES ('m1', $1, 'gone', 1, decode(repeat('04', 32), 'hex'), \
+                         decode(repeat('0000803f', 4), 'hex'), decode(repeat('00', 16), 'hex'), \
+                         0.5, 'none')"
+            ),
+            &[&seq],
+        )
+        .await
+        .unwrap();
+}
+
+/// A checkpoint holds a memory's rows `FOR SHARE` in sequence order, and a
+/// revocation deletes the rows of a source key. A `DELETE` visits them in
+/// index order, whose ties follow heap position; a reused page slot puts a
+/// higher sequence number ahead of a lower one in the heap. Each session then
+/// held the row the other wanted next (SQLSTATE 40P01). The revocation locks
+/// its rows in `(memory, seq)` order before it deletes, so the checkpoint's
+/// second row is never held by it.
+#[tokio::test]
+async fn a_revocation_and_a_checkpoint_lock_journal_rows_in_one_order() {
+    let mut substrate = substrate().await;
+    let log = vec![capsule(1, "gone", 1), revoke(2, "gone", 1)];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    memory_with(&substrate, "m1", 64).await;
+    let work = substrate.schemas().work.clone();
+
+    // Heap order 3 then 2: what a reused page slot produces, forced here by
+    // inserting out of order with the triggers that enforce sequence off.
+    let mut raw = raw_client().await;
+    let transaction = raw.transaction().await.unwrap();
+    transaction
+        .batch_execute("SET LOCAL session_replication_role = replica")
+        .await
+        .unwrap();
+    raw_journal_row(&transaction, work.as_str(), 3).await;
+    raw_journal_row(&transaction, work.as_str(), 2).await;
+    transaction.commit().await.unwrap();
+
+    // The checkpoint's first row.
+    let mut checkpoint = raw_client().await;
+    let held = checkpoint.transaction().await.unwrap();
+    let lock_row =
+        format!("SELECT seq FROM {work}.fastmem_write WHERE memory = 'm1' AND seq = $1 FOR SHARE");
+    held.query_one(&lock_row, &[&2_i64]).await.unwrap();
+
+    let (record, anchor) = (log[1].clone(), chain[1]);
+    let revocation = tokio::spawn(async move {
+        let result = substrate.apply_committed(&record, anchor).await;
+        (substrate, result)
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !revocation.is_finished(),
+        "the revocation must wait for the row the checkpoint holds"
+    );
+
+    // The checkpoint's second row: it must not be held by the revocation.
+    held.query_one(&lock_row, &[&3_i64])
+        .await
+        .expect("the checkpoint is not the victim of a deadlock");
+    held.commit().await.unwrap();
+    let (substrate, result) = revocation.await.unwrap();
+    let report = result.expect("the revocation is not the victim of a deadlock");
+    assert_eq!(report.removed_writes, 2);
+    assert!(substrate.load_journal("m1").await.unwrap().is_empty());
+    substrate.drop_all().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_checkpoint_that_does_not_fold_the_stored_journal_is_refused_or_skipped() {
     let mut substrate = substrate().await;

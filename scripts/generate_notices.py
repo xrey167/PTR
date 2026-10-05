@@ -193,9 +193,9 @@ def render(rows, texts, order, digest: str) -> str:
     )
     out.append(
         "It lists every third-party package reachable from an owned Cargo workspace —\n"
-        "the production workspace, the isolated A0 model workspace, the fuzz harness and\n"
-        "the crate template — together with the licence text each package ships. Packages\n"
-        "belonging to PTR itself are not listed.\n"
+        "the production workspace, the isolated A0 model workspace, the PyO3 Python\n"
+        "bindings, the fuzz harness and the crate template — together with the licence\n"
+        "text each package ships. Packages belonging to PTR itself are not listed.\n"
     )
     out.append(
         "**This is not legal advice and not a distribution clearance.** It assembles the\n"
