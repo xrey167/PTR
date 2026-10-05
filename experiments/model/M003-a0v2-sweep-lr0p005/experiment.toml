@@ -1,0 +1,14 @@
+version = 1
+id = "M003-a0v2-sweep-lr0p005"
+status = "prepared"
+hypothesis = "Does a second tied latent refinement step help A0? (A0-ablations-v2, sweep)"
+metrics = "composite C; test_iid accuracy"
+baseline = "the full A0 arm of the same study; no external baseline"
+falsification = "Decided only by research/falsification/A0-ablations-v2/criteria.toml"
+hardware_profile = "hardware/a0-cpu-4core.toml"
+entrypoint = "cargo +1.95.0 run --release --locked --quiet --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase sweep --experiment M003 --arms <arms> --seed <seed> --steps <steps> --lr <lr> --data <data> --data-fnv64 <data_fnv64> --d-model <d_model>"
+seeds = [17]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+preregistration_sha256 = "2338a70af9c94e6559d8e2b03cfe727d8b9d6167fc7565e3c241fb02bd0d8741"
+preregistration_rules_sha256 = "7616a47c0ce99069ffe2c2e51095395f69dc0e1edc6c821ba3c8f22102849db1"

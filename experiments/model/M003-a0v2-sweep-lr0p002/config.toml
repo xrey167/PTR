@@ -1,0 +1,14 @@
+version = 1
+kind = "workspace-area"
+name = "M003-a0v2-sweep-lr0p002"
+path = "experiments/model/M003-a0v2-sweep-lr0p002"
+tests_dir = "tests"
+
+[preregistration]
+seeds = [17]
+steps = 1500
+arms = "latent-0,latent-1,latent-linear,latent-4"
+data = "datasets/generated/operator_routing_v1"
+data_fnv64 = "0ad71688f09b0d0d"
+d_model = 32
+lr = "0.002"
