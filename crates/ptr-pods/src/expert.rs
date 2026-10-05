@@ -1924,6 +1924,11 @@ fn check_result(
 /// needs a new magic, so an old reader refuses new bytes instead of misreading them.
 const RECORD_MAGIC: &[u8; 8] = b"PTREXR01";
 
+/// The largest encoded [`ExpertCommitRecord`] [`ExpertCommitRecord::decode_canonical`] reads.
+/// It equals the ledger's `MAX_EXPERT_RECORD_BYTES` (1 MiB), the most a structural event may
+/// carry, and longer input is refused before any parsing.
+pub const MAX_EXPERT_COMMIT_RECORD_BYTES: usize = 1 << 20;
+
 /// An [`ExpertProposal`] as committed to the ledger, with the digest of the trusted evidence it
 /// was admitted on and the gate-policy epoch that evidence was issued under.
 ///
@@ -2000,6 +2005,11 @@ impl ExpertCommitRecord {
     /// digest, a proposal that does not validate, and any byte string that is not exactly the
     /// canonical encoding of the record it decodes to.
     pub fn decode_canonical(bytes: &[u8]) -> Result<Self, ExpertProposalError> {
+        if bytes.len() > MAX_EXPERT_COMMIT_RECORD_BYTES {
+            return Err(ExpertProposalError::MalformedRecord(
+                "record exceeds the size limit",
+            ));
+        }
         let mut r = Reader { bytes };
         if r.take(RECORD_MAGIC.len())? != RECORD_MAGIC {
             return Err(ExpertProposalError::MalformedRecord("unknown magic"));

@@ -241,7 +241,11 @@ pub enum LedgerEvent {
     /// owned by ptr-pods; the ledger stores it opaquely and checks only its
     /// size. The ids and digests are the committing path's own claim about
     /// that record, carried so a reader can index the event without decoding
-    /// the record; this crate cannot check that they agree with it.
+    /// the record; this crate cannot check that they agree with it. The
+    /// admission path that writes this event MUST derive `proposal_id`,
+    /// `operation_id` and `evidence_digest` from the decoded record, never
+    /// take them from a caller, and replay MUST re-derive them from the
+    /// record and compare, refusing a mismatch.
     ExpertStructuralCommitted {
         project: ProjectId,
         op_kind: ExpertOpKind,

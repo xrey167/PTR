@@ -167,7 +167,11 @@ pub enum GateViolation {
 ///
 /// ```compile_fail
 /// use ptr_lineage::{AdapterId, GateReport};
-/// let forged = GateReport { adapter: AdapterId::from("a1"), violations: Vec::new() };
+/// let forged = GateReport {
+///     adapter: AdapterId::from("a1"),
+///     violations: Vec::new(),
+///     gate_config_digest: [0; 32],
+/// };
 /// ```
 ///
 /// It binds the verdict to the adapter id passed to
@@ -179,6 +183,9 @@ pub enum GateViolation {
 pub struct GateReport {
     adapter: AdapterId,
     violations: Vec<GateViolation>,
+    /// Digest of the gate configuration that produced this verdict, stored by
+    /// [`ForgettingGate::evaluate`] so a report cannot be bound to another gate.
+    gate_config_digest: [u8; 32],
 }
 
 impl GateReport {
@@ -193,6 +200,11 @@ impl GateReport {
 
     pub fn violations(&self) -> &[GateViolation] {
         &self.violations
+    }
+
+    /// Digest of the gate configuration that evaluated this report.
+    pub fn gate_config_digest(&self) -> [u8; 32] {
+        self.gate_config_digest
     }
 }
 
@@ -295,8 +307,8 @@ impl BoundGateReport {
             match v {
                 GateViolation::AverageForgetting { observed, limit } => {
                     h.update([0u8]);
-                    h.update(observed.to_bits().to_le_bytes());
-                    h.update(limit.to_bits().to_le_bytes());
+                    h.update(canonical_bits(*observed));
+                    h.update(canonical_bits(*limit));
                 }
                 GateViolation::TaskForgetting {
                     task,
@@ -305,18 +317,18 @@ impl BoundGateReport {
                 } => {
                     h.update([1u8]);
                     h.update((*task as u64).to_le_bytes());
-                    h.update(observed.to_bits().to_le_bytes());
-                    h.update(limit.to_bits().to_le_bytes());
+                    h.update(canonical_bits(*observed));
+                    h.update(canonical_bits(*limit));
                 }
                 GateViolation::BackwardTransfer { observed, limit } => {
                     h.update([2u8]);
-                    h.update(observed.to_bits().to_le_bytes());
-                    h.update(limit.to_bits().to_le_bytes());
+                    h.update(canonical_bits(*observed));
+                    h.update(canonical_bits(*limit));
                 }
                 GateViolation::PublicRegression { observed, limit } => {
                     h.update([3u8]);
-                    h.update(observed.to_bits().to_le_bytes());
-                    h.update(limit.to_bits().to_le_bytes());
+                    h.update(canonical_bits(*observed));
+                    h.update(canonical_bits(*limit));
                 }
             }
         }
@@ -325,15 +337,29 @@ impl BoundGateReport {
 }
 
 impl GateReport {
-    /// Bind this verdict to the subject it was measured on and to the gate
-    /// that produced it. Pass the same gate that evaluated the report.
-    pub fn bind(self, subject: GateSubject, gate: &ForgettingGate) -> BoundGateReport {
+    /// Bind this verdict to the subject it was measured on. The gate
+    /// configuration digest is the one [`ForgettingGate::evaluate`] stored in
+    /// the report; the caller cannot supply another.
+    pub fn bind(self, subject: GateSubject) -> BoundGateReport {
         BoundGateReport {
+            gate_config_digest: self.gate_config_digest,
             report: self,
             subject,
-            gate_config_digest: gate.config_digest(),
         }
     }
+}
+
+/// The bits a threshold or measurement is hashed by: `-0.0` hashes as `0.0` and
+/// every NaN as one pattern, so equal values never digest differently.
+fn canonical_bits(value: f64) -> [u8; 8] {
+    let value = if value == 0.0 {
+        0.0
+    } else if value.is_nan() {
+        f64::NAN
+    } else {
+        value
+    };
+    value.to_bits().to_le_bytes()
 }
 
 /// Public-suite scores of the serving model and of the candidate.
@@ -345,8 +371,14 @@ pub struct PublicSuite {
 
 impl ForgettingGate {
     /// Canonical digest of the four thresholds: a domain tag and each
-    /// threshold as the little-endian bits of its `f64`, in field order.
-    pub fn config_digest(&self) -> [u8; 32] {
+    /// threshold as the little-endian bits of its `f64` in field order, with
+    /// `-0.0` hashed as `0.0`.
+    ///
+    /// # Errors
+    /// Returns `LineageError::InvalidParameter` for a nonfinite threshold,
+    /// the same refusal as [`ForgettingGate::evaluate`].
+    pub fn config_digest(&self) -> Result<[u8; 32], LineageError> {
+        self.check()?;
         let mut h = Sha256::new();
         h.update(GATE_CONFIG_DOMAIN);
         for t in [
@@ -355,9 +387,9 @@ impl ForgettingGate {
             self.min_backward_transfer,
             self.max_public_regression,
         ] {
-            h.update(t.to_bits().to_le_bytes());
+            h.update(canonical_bits(t));
         }
-        h.finalize().into()
+        Ok(h.finalize().into())
     }
 
     fn check(&self) -> Result<(), LineageError> {
@@ -396,6 +428,7 @@ impl ForgettingGate {
         public: PublicSuite,
     ) -> Result<GateReport, LineageError> {
         self.check()?;
+        let gate_config_digest = self.config_digest()?;
         if !(public.serving.is_finite() && public.candidate.is_finite()) {
             return Err(LineageError::NonFinite {
                 field: "public suite score",
@@ -435,6 +468,7 @@ impl ForgettingGate {
         Ok(GateReport {
             adapter: adapter.clone(),
             violations,
+            gate_config_digest,
         })
     }
 }
@@ -601,7 +635,7 @@ mod tests {
     fn bound(gate: &ForgettingGate, subject: GateSubject, public: PublicSuite) -> BoundGateReport {
         gate.evaluate(&AdapterId::from("a1"), &matrix(), public)
             .unwrap()
-            .bind(subject, gate)
+            .bind(subject)
     }
 
     fn passing() -> PublicSuite {
@@ -625,11 +659,11 @@ mod tests {
             "7fee8d89e60dd392982bb95e31b17603dc978138132a9e239139c5c8a913dbb7"
         );
         assert_eq!(
-            hex(gate().config_digest()),
+            hex(gate().config_digest().unwrap()),
             "838c0828f4ab702d4bd7b0a8d2067597e5b38c68786e8cb53ded2c43743d7dcd"
         );
         assert_eq!(a.subject(), &subject());
-        assert_eq!(a.gate_config_digest(), gate().config_digest());
+        assert_eq!(a.gate_config_digest(), gate().config_digest().unwrap());
         assert_eq!(a.passed(), a.report().passed());
     }
 
@@ -687,7 +721,7 @@ mod tests {
             },
         ];
         for v in variants {
-            assert_ne!(v.config_digest(), g.config_digest());
+            assert_ne!(v.config_digest().unwrap(), g.config_digest().unwrap());
             assert_ne!(bound(&v, subject(), passing()).digest(), base.digest());
         }
     }
@@ -708,7 +742,48 @@ mod tests {
         let other = gate()
             .evaluate(&AdapterId::from("a2"), &matrix(), passing())
             .unwrap()
-            .bind(subject(), &gate());
+            .bind(subject());
         assert_ne!(pass.digest(), other.digest());
+    }
+
+    #[test]
+    fn a_report_carries_the_digest_of_the_gate_that_evaluated_it() {
+        let strict = gate();
+        let lax = ForgettingGate {
+            max_average_forgetting: 1e9,
+            max_task_forgetting: 1e9,
+            min_backward_transfer: -1e9,
+            max_public_regression: 1e9,
+        };
+        let report = lax
+            .evaluate(&AdapterId::from("a1"), &matrix(), passing())
+            .unwrap();
+        assert_eq!(report.gate_config_digest(), lax.config_digest().unwrap());
+        assert_ne!(report.gate_config_digest(), strict.config_digest().unwrap());
+        // `bind` takes no gate: the lax digest is what ends up bound.
+        let bound = report.bind(subject());
+        assert_eq!(bound.gate_config_digest(), lax.config_digest().unwrap());
+        assert_ne!(bound.gate_config_digest(), strict.config_digest().unwrap());
+    }
+
+    #[test]
+    fn nonfinite_thresholds_have_no_digest_and_negative_zero_equals_zero() {
+        let g = gate();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let broken = ForgettingGate {
+                max_task_forgetting: bad,
+                ..g
+            };
+            assert!(broken.config_digest().is_err());
+        }
+        let zero = ForgettingGate {
+            min_backward_transfer: 0.0,
+            ..g
+        };
+        let negative_zero = ForgettingGate {
+            min_backward_transfer: -0.0,
+            ..g
+        };
+        assert_eq!(zero.config_digest(), negative_zero.config_digest());
     }
 }
