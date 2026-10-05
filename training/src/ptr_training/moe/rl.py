@@ -62,7 +62,12 @@ def grpo_overrides(algorithm: str, cfg: RlConfig) -> dict:
     raise ValueError(f"unknown RL algorithm {algorithm!r}")
 
 
-def build_grpo_config(algorithm: str, cfg: RlConfig, *, seed: int, output_dir: str, bf16: bool):
+def build_grpo_config(
+    algorithm: str, cfg: RlConfig, *, seed: int, output_dir: str, bf16: bool,
+    device: str | None = None,
+):
+    """`device` is the device the model lives on ("cpu" or "cuda"); `use_cpu` follows it.
+    None keeps the old behaviour (CUDA when available)."""
     import torch
     from trl import GRPOConfig
 
@@ -90,7 +95,7 @@ def build_grpo_config(algorithm: str, cfg: RlConfig, *, seed: int, output_dir: s
         # TRL reloads the (non-PEFT) reference model with these kwargs and defaults to float32,
         # which would make a bf16 policy's KL be measured against an fp32 reference.
         model_init_kwargs={"dtype": "bfloat16" if bf16 else "float32"} if cfg.beta > 0 else None,
-        use_cpu=not torch.cuda.is_available(),
+        use_cpu=(device == "cpu") if device is not None else not torch.cuda.is_available(),
         **grpo_overrides(algorithm, cfg),
     )
 
@@ -232,7 +237,10 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
     if is_peft and "ref" in model.peft_config:
         model.delete_adapter("ref")  # stale copy from a previous arm; TRL re-creates it
     with tempfile.TemporaryDirectory(prefix=f"ptr-moe-{algorithm}-") as tmp:
-        args = build_grpo_config(algorithm, cfg, seed=seed, output_dir=tmp, bf16=bf16)
+        args = build_grpo_config(
+            algorithm, cfg, seed=seed, output_dir=tmp, bf16=bf16,
+            device=next(model.parameters()).device.type,
+        )
         if cfg.beta > 0 and not is_peft:
             # TRL builds the reference policy by reloading `config._name_or_path`; a randomly
             # initialised model has no hub path, so snapshot the RL starting point (the SFT

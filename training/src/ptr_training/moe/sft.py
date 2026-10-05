@@ -48,7 +48,8 @@ def collate(tokenizer, tasks: list[Task], max_length: int):
 
 
 def run_sft(model, tokenizer, tasks: list[Task], cfg: SftConfig, seed: int) -> dict:
-    """Train in place; returns {"losses": [...], "aux_losses": [...], "nan": bool}."""
+    """Train in place; returns {"losses": [...], "aux_losses": [...], "nan": bool, ...}. One loss per
+    optimizer step (mean over its micro-batches)."""
     import torch
 
     device = next(model.parameters()).device
@@ -59,24 +60,45 @@ def run_sft(model, tokenizer, tasks: list[Task], cfg: SftConfig, seed: int) -> d
     rng = random.Random(seed)
     losses: list[float] = []
     aux: list[float] = []
+    accum = cfg.gradient_accumulation_steps
+    if cfg.gradient_checkpointing:
+        from ptr_training.moe.model import enable_gradient_checkpointing
+
+        enable_gradient_checkpointing(model)
     model.train()
     for _ in range(cfg.steps):
-        batch_tasks = [rng.choice(tasks) for _ in range(cfg.batch)]
-        batch = {k: v.to(device) for k, v in collate(tokenizer, batch_tasks, cfg.max_length).items()}
-        out = model(**batch, output_router_logits=True, use_cache=False)
-        loss = out.loss
         opt.zero_grad(set_to_none=True)
-        loss.backward()
+        step_loss = 0.0
+        step_aux: list[float] = []
+        # One optimizer step = `accum` micro-batches of `cfg.batch`; each micro-loss is scaled
+        # by 1/accum so the summed gradient is the mean over the effective batch.
+        for _ in range(accum):
+            batch_tasks = [rng.choice(tasks) for _ in range(cfg.batch)]
+            batch = {
+                k: v.to(device) for k, v in collate(tokenizer, batch_tasks, cfg.max_length).items()
+            }
+            out = model(**batch, output_router_logits=True, use_cache=False)
+            (out.loss / accum).backward()
+            step_loss += float(out.loss.detach()) / accum
+            if getattr(out, "aux_loss", None) is not None:
+                step_aux.append(float(out.aux_loss.detach()))
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
-        losses.append(float(loss.detach()))
-        if getattr(out, "aux_loss", None) is not None:
-            aux.append(float(out.aux_loss.detach()))
+        losses.append(step_loss)
+        if step_aux:
+            aux.append(sum(step_aux) / len(step_aux))
     model.eval()
+    if cfg.gradient_checkpointing:
+        from ptr_training.moe.model import disable_gradient_checkpointing
+
+        disable_gradient_checkpointing(model)
     return {
         "losses": losses,
         "aux_losses": aux,
         "nan": any(math.isnan(x) or math.isinf(x) for x in losses + aux),
+        "gradient_checkpointing": cfg.gradient_checkpointing,
+        "gradient_accumulation_steps": accum,
+        "effective_batch": cfg.batch * accum,
     }
 
 

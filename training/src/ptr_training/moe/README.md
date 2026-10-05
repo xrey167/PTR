@@ -20,7 +20,9 @@ Importing the package pulls in nothing heavy; `pip install -e training` (no extr
 `evidence_class: "pipeline-smoke"`, note "mechanism check only, not evidence". The
 tiny-random run checks that the plumbing executes and produces finite numbers. It says
 nothing about GSPO vs SAPO, routing stability, or real OLMoE behaviour.
-`configs/stage-moe-olmoe.toml` (real model, 24 GB GPU, LoRA, bf16) has NOT been run.
+`configs/stage-moe-olmoe.toml` (real model, 24 GB GPU, LoRA, bf16) has NOT been run, nor has
+`configs/stage-moe-olmoe-sft-smoke.toml` or the GPU tiny smoke `configs/stage-moe-smoke-gpu.toml`
+(see "GPU path").
 
 ## Install and run
 
@@ -37,6 +39,39 @@ uv pip install --python .venv/bin/python -e '.[moe]'
 
 The `moe` and `cpt` extras conflict (axolotl pins older transformers/trl); `pyproject.toml`
 declares this to uv so `uv.lock` resolves both.
+
+## GPU path
+
+Written and tested on CPU only; nothing here has run on a GPU.
+
+- `[model] device = "auto" | "cpu" | "cuda"` (default `"auto"`). `config.parse` rejects any
+  other value; `config.resolve_device` maps it to `"cpu"`/`"cuda"` at run time (`auto` = CUDA
+  iff `torch.cuda.is_available()`) and raises `ConfigError` for `"cuda"` when CUDA is
+  unavailable. Resolution is at run time, not parse time, so the GPU configs still parse on
+  hosts without torch (CI). `model.build_tiny_model` and `build_pretrained` both place the model
+  on that device; SFT trains on the model's device and `rl.build_grpo_config(..., device=)` sets
+  TRL `use_cpu = (device == "cpu")`.
+- `metrics.json`: `hardware.device`, `hardware.gpu`, `hardware.torch_cuda`,
+  `hardware.peak_cuda_memory_allocated_bytes` / `_gib` (`null` on CPU; the peak counter is reset at
+  the start of `execute`), plus `model.device_requested` and `model.device` (the device the
+  parameters ended up on).
+- `[moe.sft] gradient_checkpointing` (bool, default false): at SFT start calls
+  `gradient_checkpointing_enable()` on the base model (and `enable_input_require_grads()` when LoRA
+  is on, so the adapters receive gradients) and switches it off again when SFT ends, so RL is not
+  affected. RL itself does not use checkpointing.
+- `[moe.sft] gradient_accumulation_steps` (int >= 1, default 1; ceiling 1024 unless
+  `allow_large`): one optimizer step = that many micro-batches of `batch`; each loss is scaled by
+  1/steps. `sft.steps` counts optimizer steps, the logged loss is one value per optimizer step
+  (mean of its micro-batches) and `sft.effective_batch` records `batch * steps`. The SFT task
+  sampler draws `batch * steps` tasks per optimizer step.
+- Configs: `stage-moe-smoke-gpu.toml` (tiny, fp32, `device = "cuda"`, `hardware/rtx4090.toml`) and
+  `stage-moe-olmoe-sft-smoke.toml` (OLMoE-1B-7B, bf16, LoRA, SFT only via `algorithms = []`,
+  checkpointing, batch 2 x 4, max_length 256, 50 steps, `allow_unselected_backend = true`).
+  Memory estimate for the latter, not measured: ~12.9 GB bf16 weights + LoRA/optimizer state
+  (tens of MB) + checkpointed activations. Expect it to fit in 24 GB; the real peak lands in
+  `metrics.json`. Both are launched with `make smoke-gpu` and `make olmoe-sft-smoke` (targets
+  added separately).
+- Tests: `training/tests/test_moe_device.py`.
 
 ## Verified versions (installed and read from source)
 
@@ -166,8 +201,8 @@ router stays frozen.
   `clip_ratio_per_step` (TRL 1.14.1 logs no `clip_ratio/*` and no other gate metric for
   `loss_type="sapo"`; checked in `grpo_trainer.py`), with `kl_unavailable_reason` /
   `clip_ratio_unavailable_reason`.
-- `--execute` refuses `trl-moe` unless `[training] allow_unselected_backend = true` (only the
-  smoke config sets it): the training-backend component decision is `unlocked` and `trl-peft`
+- `--execute` refuses `trl-moe` unless `[training] allow_unselected_backend = true` (the three smoke configs: CPU, GPU
+  and OLMoE SFT; `stage-moe-olmoe.toml` does not): the training-backend component decision is `unlocked` and `trl-peft`
   is `to-evaluate`, and `evaluations/DECISION_PROCESS.md` requires gate tests plus evidence
   comparing at least two candidates before selection. Manifests and metrics carry
   `backend_selection: "unselected backend, pipeline evidence only"`.

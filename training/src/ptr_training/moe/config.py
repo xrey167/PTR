@@ -14,13 +14,14 @@ from ptr_training.moe.tasks import longest_answer_chars, longest_prompt_chars
 MODEL_KINDS = ("tiny-random", "pretrained")
 ALGORITHMS = ("gspo", "sapo")
 PRECISIONS = ("fp32", "bf16")
+DEVICES = ("auto", "cpu", "cuda")
 
 # Keys each table may carry. [model] also holds manifest keys (`family`, `config`) that the
 # run manifest reads; shared tables ([run], [data], [training], [evaluation], [codebook])
 # are owned by the manifest and are not validated here.
 _MODEL_KEYS = {
     "family", "config", "kind", "hf_id", "revision", "seed", "layers", "hidden", "intermediate",
-    "heads", "experts", "top_k", "max_positions", "precision", "router_aux_loss_coef",
+    "heads", "experts", "top_k", "max_positions", "precision", "router_aux_loss_coef", "device",
 }
 _MOE_KEYS = {"sft", "rl", "lora", "output", "gates", "allow_full_finetune", "allow_large"}
 # [training] keys this backend reads; everything else there is ignored by trl-moe (the
@@ -31,7 +32,7 @@ _MAXIMA = {
     "moe.sft.steps": 100_000, "moe.sft.examples": 100_000, "moe.sft.batch": 1024,
     "moe.rl.steps": 10_000, "moe.rl.mini_steps": 64, "moe.rl.num_generations": 64, "moe.rl.prompts_per_step": 64,
     "moe.rl.max_completion_length": 512, "moe.output.probe_tokens": 4096,
-    "moe.sft.max_length": 4096, "moe.rl.max_prompt_length": 4096, "moe.lora.rank": 1024,
+    "moe.sft.gradient_accumulation_steps": 1024, "moe.sft.max_length": 4096, "moe.rl.max_prompt_length": 4096, "moe.lora.rank": 1024,
 }
 
 
@@ -60,7 +61,10 @@ MAX_TINY_PARAMETERS = 50_000_000
 MAX_GENERATION_BATCH = 4096  # mini_steps * prompts_per_step * num_generations rollouts at once
 _SHA40 = re.compile(r"[0-9a-f]{40}")
 _GATES_KEYS = {"subspace_rank"}
-_SFT_KEYS = {"steps", "lr", "batch", "examples", "max_length"}
+_SFT_KEYS = {
+    "steps", "lr", "batch", "examples", "max_length", "gradient_checkpointing",
+    "gradient_accumulation_steps",
+}
 _RL_KEYS = {
     "algorithms", "steps", "num_generations", "mini_steps", "beta", "epsilon", "epsilon_high",
     "gspo_epsilon", "gspo_epsilon_high", "sapo_temperature_pos", "sapo_temperature_neg", "lr",
@@ -96,6 +100,32 @@ def require_backend_opt_in(allow_unselected_backend) -> None:
     """The one gate every entry point (CLI, run_config, execute) calls."""
     if allow_unselected_backend is not True:
         raise BackendNotSelected(UNSELECTED_BACKEND_MESSAGE)
+
+
+def resolve_device(requested: str) -> str:
+    """Resolve a `[model] device` value to "cpu" or "cuda".
+
+    `auto` is CUDA when `torch.cuda.is_available()`, else CPU. `cuda` with no usable CUDA is a
+    `ConfigError` (never a silent CPU fallback). torch is imported lazily; without torch only
+    `cpu` (and `auto`, which then means cpu) resolve.
+    """
+    if requested not in DEVICES:
+        raise ConfigError(f"model.device must be one of {DEVICES}, got {requested!r}")
+    if requested == "cpu":
+        return "cpu"
+    try:
+        import torch
+
+        available = bool(torch.cuda.is_available())
+    except ImportError:
+        available = False
+    if requested == "cuda" and not available:
+        raise ConfigError(
+            "model.device = 'cuda' but CUDA is not available (torch.cuda.is_available() is "
+            "false or torch is not installed); use device = 'auto' or 'cpu', or install a CUDA "
+            "build of torch"
+        )
+    return "cuda" if available else "cpu"
 
 
 def _table(raw: dict, name: str, *, required: bool = True) -> dict:
@@ -165,6 +195,7 @@ class ModelConfig:
     max_positions: int = 128
     precision: str = "fp32"
     router_aux_loss_coef: float = 0.01
+    device: str = "auto"  # "auto" | "cpu" | "cuda"; resolved by `resolve_device` at run time
 
 
 @dataclass(frozen=True)
@@ -174,6 +205,8 @@ class SftConfig:
     batch: int
     examples: int
     max_length: int = 32
+    gradient_checkpointing: bool = False
+    gradient_accumulation_steps: int = 1  # micro-batches of `batch` per optimizer step
 
 
 @dataclass(frozen=True)
@@ -292,6 +325,9 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             )
     elif revision is not None:
         raise ConfigError("model.revision is only valid when model.kind = 'pretrained'")
+    device = _get(m, "device", str, "model", "auto")
+    if device not in DEVICES:
+        raise ConfigError(f"model.device must be one of {DEVICES}, got {device!r}")
     model = ModelConfig(
         kind=kind,
         seed=_seed(_get(m, "seed", int, "model", seed), "model.seed"),
@@ -306,6 +342,7 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         max_positions=_positive(_get(m, "max_positions", int, "model", 128), "model.max_positions"),
         precision=precision,
         router_aux_loss_coef=_get(m, "router_aux_loss_coef", float, "model", 0.01),
+        device=device,
     )
     if model.router_aux_loss_coef < 0:
         raise ConfigError(
@@ -330,7 +367,14 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         batch=_positive(_get(s, "batch", int, "moe.sft"), "moe.sft.batch"),
         examples=_positive(_get(s, "examples", int, "moe.sft", 256), "moe.sft.examples"),
         max_length=_positive(_get(s, "max_length", int, "moe.sft", 32), "moe.sft.max_length"),
+        gradient_checkpointing=_get(s, "gradient_checkpointing", bool, "moe.sft", False),
+        gradient_accumulation_steps=_get(s, "gradient_accumulation_steps", int, "moe.sft", 1),
     )
+    if sft.gradient_accumulation_steps < 1:
+        raise ConfigError(
+            "moe.sft.gradient_accumulation_steps must be an integer >= 1, got "
+            f"{sft.gradient_accumulation_steps}"
+        )
     if sft.steps < 0:
         raise ConfigError("moe.sft.steps must be >= 0")
     longest_prompt = longest_prompt_chars()
@@ -515,6 +559,7 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     if not allow_large:
         values = {
             "moe.sft.steps": sft.steps, "moe.sft.examples": sft.examples, "moe.sft.batch": sft.batch,
+            "moe.sft.gradient_accumulation_steps": sft.gradient_accumulation_steps,
             "moe.rl.steps": rl.steps, "moe.rl.mini_steps": rl.mini_steps,
             "moe.rl.num_generations": rl.num_generations,
             "moe.rl.prompts_per_step": rl.prompts_per_step,
