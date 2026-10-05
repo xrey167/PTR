@@ -35,3 +35,8 @@ bootstrap_confidence = 0.95
 compute_matching_basis = "training FLOPs"
 compute_relative_tolerance = 0.01
 hyperparameter_tuning_budget_trials_per_arm = 8
+# Preregistered choices for this experiment (no code default exists).
+bootstrap_method = "paired bootstrap over problems"
+bootstrap_seed = 20240607
+no_gain_confirmed_only_if_ci_upper_at_most_points = 2.0
+inconclusive_if_ci_straddles_threshold = true

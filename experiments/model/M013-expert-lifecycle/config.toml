@@ -42,3 +42,10 @@ seed_aggregation = "every_seed_must_pass"
 # Preregistered choices for this experiment (no code default exists).
 min_seeds = 5
 domain_accuracy_noninferiority_margin_points = 1.0
+# Preregistered choices for this experiment (no code default exists).
+proposal_generating_arms = ["full_context", "context_ablated", "heuristic"]
+gate_pass_margin_applies_to_each_comparison_independently = true
+# Preregistered choices for this experiment (no code default exists).
+static_arm_requires_matched_observation = true
+max_static_arm_schedule_mismatches = 0
+max_static_arm_eval_stage_mismatches = 0

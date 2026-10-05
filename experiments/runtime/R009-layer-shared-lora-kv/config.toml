@@ -35,8 +35,6 @@ max_stale_hits = 0
 min_base_pages_before_revoke = 1
 min_adapter_entries_before_revocation = 1
 max_adapter_logits_bitwise_mismatch_count = 0
-min_cross_adapter_attempts = 1
-max_cross_adapter_hits_on_mismatched_chain = 0
 qkv_lora_first_layers = [0, 2]
 q_only_lora_first_layers = [0, 2]
 mlp_only_lora_first_layers = [2]
@@ -53,3 +51,8 @@ num_heads = 4
 num_kv_heads = 2
 head_dim = 16
 vocab_size = 256
+# Preregistered choices for this experiment (no code default exists).
+min_cross_adapter_attempts = 1
+min_old_generation_as_new_attempts = 1
+max_cross_adapter_hits = 0
+max_old_generation_hits = 0

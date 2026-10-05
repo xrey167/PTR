@@ -55,7 +55,6 @@ seed_aggregation = "every_seed_must_pass"
 min_same_tokens_distinct_lineage_entries = 2
 max_cross_lineage_hits = 0
 min_active_fork_revocation_attempts = 1
-cancelled_forks_restarted_from_fresh_prefill_equals_cancelled = true
 max_outputs_escaped_after_revocation = 0
 # Preregistered choices for this experiment (no code default exists).
 min_hit_rate_at_50pct_shared_prefix = 0.40
@@ -84,3 +83,6 @@ num_heads = 4
 num_kv_heads = 2
 head_dim = 16
 vocab_size = 256
+# Preregistered choices for this experiment (no code default exists).
+min_cancelled_forks = 1
+cancelled_forks_restarted_from_fresh_prefill_at_least_cancelled_forks = true

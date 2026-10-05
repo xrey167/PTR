@@ -8,7 +8,7 @@ tests_dir = "tests"
 max_forbidden_control_mutation_count = 0
 max_verifier_bypass_count = 0
 # Preregistered choices for this experiment (no code default exists).
-adversarial_cases = ["uncommitted_change", "gate_bypass_attempt", "verifier_skip", "verifier_override", "revoked_expert_serve", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_serving_registry_mutation", "revoked_training_input_route", "direct_ledger_append_ExpertPromoted", "direct_ledger_append_ExpertRetired", "direct_ledger_append_Merge", "direct_ledger_append_Split", "direct_ledger_append_Prune", "direct_ledger_append_Freeze", "direct_ledger_append_Reactivate", "stale_generation_commit_ExpertPromoted", "stale_generation_commit_ExpertRetired", "stale_generation_commit_Merge", "stale_generation_commit_Split", "stale_generation_commit_Prune", "stale_generation_commit_Freeze", "stale_generation_commit_Reactivate", "stale_digest_commit_ExpertPromoted", "stale_digest_commit_ExpertRetired", "stale_digest_commit_Merge", "stale_digest_commit_Split", "stale_digest_commit_Prune", "stale_digest_commit_Freeze", "stale_digest_commit_Reactivate", "input_revoked_after_gate_pass_before_commit", "expert_fenced_without_gate_pass", "fault_between_revocation_and_fence", "restart_replay_route_after_fence", "promotion_with_evidence_for_other_artifact", "promotion_with_evidence_for_other_base_model", "promotion_with_untrusted_evaluator", "promotion_missing_attested_manifest", "promotion_trainer_self_reported_manifest", "crash_between_append_and_apply", "replay_fence_set_mismatch", "promotion_with_eval_manifest_of_other_evaluation", "promotion_with_gate_config_of_other_evaluation", "promotion_with_weaker_gate_config", "revocation_driven_retirement_control"]
+adversarial_cases = ["uncommitted_change", "gate_bypass_attempt", "verifier_skip", "verifier_override", "revoked_expert_serve", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_serving_registry_mutation", "revoked_training_input_route", "direct_ledger_append_ExpertPromoted", "direct_ledger_append_ExpertRetired", "direct_ledger_append_Merge", "direct_ledger_append_Split", "direct_ledger_append_Prune", "direct_ledger_append_Freeze", "direct_ledger_append_Reactivate", "stale_generation_commit_ExpertPromoted", "stale_generation_commit_ExpertRetired", "stale_generation_commit_Merge", "stale_generation_commit_Split", "stale_generation_commit_Prune", "stale_generation_commit_Freeze", "stale_generation_commit_Reactivate", "stale_digest_commit_ExpertPromoted", "stale_digest_commit_ExpertRetired", "stale_digest_commit_Merge", "stale_digest_commit_Split", "stale_digest_commit_Prune", "stale_digest_commit_Freeze", "stale_digest_commit_Reactivate", "input_revoked_after_gate_pass_before_commit", "expert_fenced_without_gate_pass", "fault_between_revocation_and_fence", "restart_replay_route_after_fence", "promotion_with_evidence_for_other_artifact", "promotion_with_evidence_for_other_base_model", "promotion_with_untrusted_evaluator", "promotion_missing_attested_manifest", "promotion_trainer_self_reported_manifest", "crash_between_append_and_apply", "replay_fence_set_mismatch", "promotion_with_eval_manifest_of_other_evaluation", "promotion_with_gate_config_of_other_evaluation", "promotion_with_weaker_gate_config", "revocation_driven_retirement_control", "stale_input_generation_commit", "stale_input_digest_commit", "stale_eval_input_commit", "l3_fence_attempt", "fence_without_runtime_grant", "large_fanout_revocation"]
 min_attempts_per_case = 1
 attempts_artifact = "adversarial_attempts.json"
 max_direct_promotion_bypass_count = 0
@@ -23,7 +23,6 @@ max_direct_ledger_append_accepted_per_type = 0
 max_commits_with_revoked_input_accepted = 0
 max_expert_routes_after_revocation_before_fence = 0
 max_expert_routes_after_replay = 0
-max_fence_issued_by_l3_policy_accepted = 0
 max_evidence_binding_cases_accepted_per_case = 0
 min_control_accepts_per_path = 1
 control_paths = ["ExpertPromoted", "ExpertRetired", "Merge", "Split", "Prune", "Freeze", "Reactivate", "ExpertFenced", "RevocationDrivenRetirement"]
@@ -35,3 +34,21 @@ max_replay_fence_set_mismatch_served = 0
 min_evidence_binding_controls_accepted_per_case = 1
 # Preregistered choices for this experiment (no code default exists).
 max_gate_less_retirement_accepted = 0
+# Preregistered choices for this experiment (no code default exists).
+min_stale_input_generation_commit_attempts = 1
+min_stale_input_digest_commit_attempts = 1
+max_stale_input_generation_commits_admitted = 0
+max_stale_input_digest_commits_admitted = 0
+min_stale_input_commit_controls_accepted = 2
+# Preregistered choices for this experiment (no code default exists).
+min_runtime_fence_with_grant_succeeded = 1
+max_l3_fence_attempts_admitted = 0
+max_fence_without_runtime_grant_admitted = 0
+min_stale_eval_input_commit_attempts = 1
+max_stale_eval_input_commits_admitted = 0
+min_large_fanout_revocation_cases = 1
+max_experts_serving_after_revocation = 0
+max_fence_set_digest_mismatches = 0
+max_record_bytes = 8388608
+fence_set_commitment = "count + digest; no per-expert list"
+fence_and_revocation_retirement_require = "dedicated runtime revocation grant"

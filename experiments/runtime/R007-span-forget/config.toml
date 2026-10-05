@@ -27,3 +27,8 @@ num_heads = 4
 num_kv_heads = 2
 head_dim = 16
 vocab_size = 256
+# Preregistered choices for this experiment (no code default exists).
+min_canary_span_tokens = 1
+min_downstream_rows_before_forget = 1
+min_prefix_reuse_tokens = 1
+min_post_forget_probes = 1

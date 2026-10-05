@@ -55,7 +55,6 @@ max_incomplete_frames_per_peer = 8
 max_chunks_in_flight = 32
 min_splice_attempts = 1
 min_non_allowlisted_type_attempts = 1
-min_activation_shaped_kv_smuggling_attempts = 1
 max_kv_pages_installed_from_wire = 0
 min_abandoned_frame_cases = 1
 min_abandoned_chunks_sent = 1
@@ -70,3 +69,10 @@ hidden_size = 64
 num_heads = 4
 num_kv_heads = 2
 head_dim = 16
+# Preregistered choices for this experiment (no code default exists).
+min_positions_length_rejection_attempts = 1
+max_positions_length_mismatches_admitted = 0
+# Preregistered choices for this experiment (no code default exists).
+min_activation_control_cases = 1
+max_activation_control_kv_installs = 0
+activation_control_excluded_from = ["typed_rejection_requirement", "wire_kv_page_bytes"]

@@ -27,7 +27,16 @@ collapse_condition = "smoothed reward <= 0.5 * smoothed running max while runnin
 shared_hyperparameters = ["learning_rate", "batch_size"]
 shared_hyperparameters_tuned_once_on = "mean validation pass_at_1 over all arms, disjoint validation split"
 same_hyperparameters_at_1_and_4_mini_steps = true
-algorithm_specific_pinned_to_paper_values = ["gspo_clip_range", "sapo_tau_pos", "sapo_tau_neg", "grpo_epsilon"]
-algorithm_specific_values_recorded_in_run_json_before_first_run = true
-sapo_tau_neg_greater_than_tau_pos = true
 hyperparameters_frozen_before_seeds = true
+# Preregistered choices for this experiment (no code default exists).
+# Sources (checked against the installed TRL 1.14.1 docs, trl/trainer/grpo_config.py): sapo_temperature_pos defaults to 1.0 and sapo_temperature_neg to 1.05 (SAPO paper 2511.20347);
+# epsilon defaults to 0.2 and epsilon_high is documented as "Paper DAPO (2503.14476) recommends 0.28"; importance_sampling_level="sequence" is the GSPO (2507.18071) option.
+# The GSPO clip range 3e-4 / 4e-4 is from the GSPO paper 2507.18071 section 5.1 (p.4: 'In GSPO, we set the left and right clipping ranges in Equation (5) to 3e-4 and 4e-4'); TRL has no default for it.
+gspo_clip_epsilon_low = 3e-4
+gspo_clip_epsilon_high = 4e-4
+sapo_tau_pos = 1.0
+sapo_tau_neg = 1.05
+grpo_epsilon_low = 0.2
+grpo_epsilon_high = 0.28
+trl_version_checked = "1.14.1"
+algorithm_specific_values_tuned = false

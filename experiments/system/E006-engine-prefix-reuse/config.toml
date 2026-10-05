@@ -77,3 +77,14 @@ principal_b_baseline_workload = "64 requests, 2048-token prompts, 1024-token sha
 min_cross_project_attempts = 1
 max_cross_project_hits = 0
 salt_identity = "H(PrincipalId, ProjectId, base-model identity, tokenizer, numerics, schema)"
+# Preregistered choices for this experiment (no code default exists).
+min_inflight_revocation_race_attempts = 1
+max_inflight_outputs_after_revocation = 0
+max_inflight_cache_inserts_after_revocation = 0
+inflight_mechanism = "cancellation or fencing of in-flight requests, completion-time lineage admission, restart from fresh prefill under the rotated salt"
+# Preregistered choices for this experiment (no code default exists).
+min_memory_revocation_probe_requests_per_arm = 1
+memory_revocation_arms = ["normal", "lag", "restart"]
+max_stale_memory_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+memory_revocation_probe_requests_reported = "per arm, keyed by memory_revocation_arms"

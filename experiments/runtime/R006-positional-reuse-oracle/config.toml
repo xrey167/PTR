@@ -33,3 +33,8 @@ num_heads = 4
 num_kv_heads = 2
 head_dim = 16
 vocab_size = 256
+# Preregistered choices for this experiment (no code default exists).
+min_old_upstream_pages_seeded_before_revocation = 1
+# Preregistered choices for this experiment (no code default exists).
+min_dead_original_upstream_shift_attempts = 1
+max_shift_hits_with_dead_original_upstream = 0
