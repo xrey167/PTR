@@ -196,6 +196,9 @@ Example requests:
   loss curve, labelled as pipeline evidence."
 - "Prepare the M011 run as its manifest describes; do not edit prepared experiment records."
 
+GitHub is currently suspended: for the GitLab remote, the `ptr-gitlab` skill and registering this
+desktop as a GitLab runner tagged `ptr-gpu`, see `docs/HOSTING.md`.
+
 ## 9. Troubleshooting
 
 - **CUDA out of memory on 24 GB.** Close other GPU users (`nvidia-smi` lists them; the

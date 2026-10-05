@@ -4,6 +4,8 @@
 # and the like). `target/` alone does not match them, and `git add -A` swept one
 # 9288-file directory into a commit once.
 /target-*/
+# make release-package output
+/dist/
 **/target-*/
 __pycache__/
 *.pyc

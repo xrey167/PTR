@@ -1,5 +1,5 @@
 .PHONY: check test fmt py-bindings a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
-	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke \
+	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke release-package \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
 	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers
@@ -45,6 +45,25 @@ py-bindings:
 	cargo clippy --manifest-path $(PY_BINDINGS)/Cargo.toml --all-targets --locked -- -D warnings
 	cd $(PY_BINDINGS) && VIRTUAL_ENV="$(CURDIR)/$(PY_BINDINGS)/.venv" PATH="$(CURDIR)/$(PY_BINDINGS)/.venv/bin:$$PATH" maturin develop --locked
 	$(PY_BINDINGS)/.venv/bin/python -m unittest discover -s $(PY_BINDINGS)/tests -v
+
+# Release package without GitHub: the same files .github/workflows/release.yml uploads
+# (binary tarball, CycloneDX SBOM, cargo metadata, SHA-256 files), written to dist/.
+# The GitLab `release` job runs this on tags. RELEASE_TOOLCHAIN defaults to stable like
+# release.yml; pass RELEASE_TOOLCHAIN=1.99.0 where the local stable is older than the MSRV.
+RELEASE_TOOLCHAIN ?= stable
+RELEASE_BINS := ptrd ptrctl ptr-worker ptr-bench
+RELEASE_TARGET_DIR ?= $(or $(CARGO_TARGET_DIR),target)
+
+release-package:
+	cargo +$(RELEASE_TOOLCHAIN) build --release --locked
+	rm -rf dist && mkdir -p dist/bin
+	cp $(addprefix $(RELEASE_TARGET_DIR)/release/,$(RELEASE_BINS)) dist/bin/
+	tar -C dist/bin -czf dist/ptr-linux-x86_64.tar.gz $(RELEASE_BINS)
+	cd dist && sha256sum ptr-linux-x86_64.tar.gz > ptr-linux-x86_64.tar.gz.sha256
+	cargo +$(RELEASE_TOOLCHAIN) metadata --locked --format-version 1 > dist/cargo-metadata.json
+	$(PYTHON) scripts/generate_sbom.py dist/cargo-metadata.json --out dist/ptr-cyclonedx.json
+	cd dist && sha256sum ptr-cyclonedx.json > ptr-cyclonedx.json.sha256
+	rm -rf dist/bin
 
 # GPU desktop (Ubuntu 24.04, one RTX 4090): docs/DESKTOP_SETUP.md. Not CI jobs, so no
 # ci-* counterpart. The two smoke targets run the training venv's python (the CUDA torch

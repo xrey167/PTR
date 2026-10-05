@@ -31,7 +31,13 @@
       "Bash(python3 -m unittest scripts/tests/test_claude_ptr_guard.py)",
       "Bash(python3 .claude/plugins/ptr-dev/skills/ptr-offline-sync/scripts/ptr_bundle.py:*)",
       "Bash(claude plugin validate:*)",
-      "Bash(claude plugin test:*)"
+      "Bash(claude plugin test:*)",
+      "Bash(glab mr view:*)",
+      "Bash(glab mr list:*)",
+      "Bash(glab ci status:*)",
+      "Bash(glab ci view:*)",
+      "Bash(glab ci list:*)",
+      "Bash(python3 scripts/publish_remote.py --dry-run:*)"
     ]
   }
 }

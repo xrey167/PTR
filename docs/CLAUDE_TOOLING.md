@@ -4,7 +4,7 @@ The repository ships two Claude Code plugins in a repo-local marketplace (`.clau
 
 | Plugin | Path | What it adds |
 |---|---|---|
-| `ptr-dev` | `.claude/plugins/ptr-dev/` | 7 skills, 3 read-only review agents, 2 guard hooks |
+| `ptr-dev` | `.claude/plugins/ptr-dev/` | 8 skills, 3 read-only review agents, 2 guard hooks |
 | `ptr-mods` | `.claude/plugins/ptr-mods/` | a `/runs` pane for GPU training runs and a status line |
 
 ## Install (once per machine)
@@ -34,6 +34,7 @@ Invoke by asking for the task, or explicitly as `/ptr-dev:<name>`.
 | `ptr-crate-change` | change or add a crate following `docs/RUST_API_STYLE.md`, `docs/TESTING.md`, docs-as-code and the backend-feature rules |
 | `ptr-new-experiment` | create an experiment with `scripts/new_experiment.py`, with hypothesis, metrics, baseline and falsification; successors instead of patches for prepared records |
 | `ptr-results` | write up a run or experiment with the right evidence class, seeds, baselines and intervals, without over-claiming |
+| `ptr-gitlab` | work with the GitLab remote (GitHub is suspended): publish with `scripts/publish_remote.py` (dry run first), draft MRs and pipeline status with `glab`, low-automation rules; background in `docs/HOSTING.md` |
 | `ptr-offline-sync` | move the repository between machines with git bundles (create, split, join, verify, apply), bash and PowerShell |
 | `ptr-status` | produce a short Done / In progress / Blocked / Next report |
 | `experiment-run` | run and monitor a GPU smoke run or experiment on the RTX 4090 desktop (`docs/DESKTOP_SETUP.md`) |
@@ -68,6 +69,10 @@ python3 .claude/plugins/ptr-dev/skills/ptr-offline-sync/scripts/ptr_bundle.py ap
 | after an edit | under `experiments/**`: remind to run the experiment validators |
 
 Malformed input or any internal error allows the edit and prints one line to stderr; the hook never blocks by accident. Tests: `python3 -m unittest scripts/tests/test_claude_ptr_guard.py` (also part of `python3 -m unittest discover -s scripts/tests`, so CI runs them).
+
+### Allowlist note
+
+`.claude/settings.json` also pre-approves read-only GitLab commands (`glab mr view`, `glab mr list`, `glab ci status`, `glab ci view`, `glab ci list`) and `python3 scripts/publish_remote.py --dry-run`. Real publishing, MR creation and merging still ask.
 
 ## ptr-mods
 
