@@ -24,7 +24,7 @@ implementiert, `[-]` geplant/offen.
 | Output Admission und Evidence | [~] | Verifier vor Candidate, Branch, SemDB oder ExecWire |
 | Branches, Hypothesen und Merge | [~] | persistente Evidence, deterministischer und autoritativer Merge |
 | Knowledge, Ingestion und Context | [~] | immutable Generationen, Provenance, Retention und Digest |
-| KV-State und Placement/Fencing | [~] | opaque Handles, Snapshot/Recompute; echter Modell-KV-Cache offen |
+| KV-State und Placement/Fencing | [~] | opaque Handles, Snapshot/Recompute; echter Modell-KV-Cache offen (siehe docs/architecture/36-kv-reuse.md) |
 | Multi-Tier Storage und Residency | [~] | CPU/NVMe/OpenDAL, Pins, Dedupe, Drain und Replay implementiert; echte GPU/S3-Abnahme offen |
 | Ledger und Protected State | [x] | durable Replay, AEAD/Anchor-Prüfung und Protected-Snapshot-Bindung |
 | ExecWire und Effect Recovery | [x] | uncertain Effects werden durable gefenced und reconciled |
@@ -114,7 +114,7 @@ Build-Umgebungsparameter und ändert keine Runtime-Semantik.
 3. Vollständiger Identity-to-Recovery-E2E über PodWire-Session, Protected KV,
    Ledger-Reopen, neue Admission und neue Fencing-Epoch.
 4. Echter modellgebundener Candle-KV-Cache: layerweise K/V-Tensoren,
-   Snapshot/Restore, Device-/Stream-Lifetime und Recompute.
+   Snapshot/Restore, Device-/Stream-Lifetime und Recompute. (siehe docs/architecture/36-kv-reuse.md)
 5. Remote Session-Reuse, RequestUncertain-Recovery und Iroh Direct/Relay.
 6. Privilegierte WireGuard-/Wintun-/Network-Extension-Adapter und echte
    MeshEndpoint-Bindung.
@@ -178,7 +178,7 @@ Komponente; Reviewer und Test-Owner sind die fachlichen Prüfrollen.
 | [x] | `PodAddress`, `PodRevisionAddress`, `PodEndpoint` | `ptr-net` | architect | logische Identität bleibt bei Rebalance stabil |
 | [~] | `PodDirectory`, `PodRoute`, Constraints und Health | `ptr-net`, `ptr-runtime` | code-reviewer | Endpoint wird nie vom Caller autorisiert vorgegeben |
 | [~] | `PodLink`, ACL, Attestation, Egress-Policy | `ptr-pods`, `ptr-execwire` | security reviewer | Capability, Hop-Limit, Cycle- und Namespace-Schutz |
-| [~] | Cache-Key aus logischer Identität und semantischer Revision | `ptr-pods`, `ptr-runtime` | test-engineer | Endpoint-Wechsel erhält Cache, Revision-Wechsel invalidiert |
+| [~] | Cache-Key aus logischer Identität und semantischer Revision | `ptr-pods`, `ptr-runtime` | test-engineer | Endpoint-Wechsel erhält Cache, Revision-Wechsel invalidiert (siehe docs/architecture/36-kv-reuse.md) |
 | [-] | Replica-/Region-/Zone-Placement | `ptr-runtime`, `ptr-net` | architect | deterministische Auswahl und stale-writer-Deny |
 
 ### D. PodWire, Sessions und native Protokolle
@@ -233,7 +233,7 @@ Komponente; Reviewer und Test-Owner sind die fachlichen Prüfrollen.
 |---|---|---|---|---|
 | [~] | opaque KV-Handles, Invalidation und Recompute | `ptr-memory` | verifier | alte Handles unbrauchbar, unabhängige States gültig |
 | [~] | Placement-/Fencing-gebundene KV-Registry | `ptr-runtime`, `ptr-memory` | security reviewer | stale Epoch/Token fail-closed |
-| [~] | echter layerweiser KV-Tensor-Cache | `ptr-pods`, `ptr-runtime` | architect | Primitive vorhanden; Modell-Continuation, Paging und Tiering offen |
+| [~] | echter layerweiser KV-Tensor-Cache | `ptr-pods`, `ptr-runtime` | architect | Primitive vorhanden; Modell-Continuation, Paging und Tiering offen (siehe docs/architecture/36-kv-reuse.md) |
 | [~] | Candle-Safetensors-Dense-Executor | `ptr-pods` | test-engineer | Admission von Weight/Bias/Dtype/Shape |
 | [-] | Candle-CUDA Transformer-/KV-Executor | `ptr-pods` | dependency-expert | tatsächlicher RTX-3090/4090-Nachweis |
 | [-] | Device-/Stream-/Tensor-Lifetime und OOM-Recovery | `ptr-pods`, `ptr-runtime` | security reviewer | RAII, sync vor Release, kein Raw Pointer nach außen |
@@ -249,7 +249,7 @@ Komponente; Reviewer und Test-Owner sind die fachlichen Prüfrollen.
 | [x] | CPU↔NVMe Residency, Pins, Dedupe und Drain | `ptr-storage`, `ptr-runtime` | test-engineer | Source bleibt bis Ziel-Commit gültig; Reopen ist replaybar |
 | [~] | OpenDAL ObjectStore | `ptr-storage` | dependency-expert | Memory/Filesystem getestet, S3 kompiliert; echte S3-Abnahme offen |
 | [x] | geschützte durable KV-Chunks | `ptr-storage`, `ptr-pods` | security reviewer | AEAD, Generation/Revision/Anchor und Chunk-Digest gebunden |
-| [~] | paged CUDA-COW und GPU Residency | `ptr-pods`, `ptr-runtime` | GPU reviewer | F32 Page-Tensors, Stream-Sync, COW, compact-GQA, Paged-Tier-V3 und RTX-4090-Roundtrip implementiert; tensor-native Qwen/fused Attention offen |
+| [~] | paged CUDA-COW und GPU Residency | `ptr-pods`, `ptr-runtime` | GPU reviewer | F32 Page-Tensors, Stream-Sync, COW, compact-GQA, Paged-Tier-V3 und RTX-4090-Roundtrip implementiert; tensor-native Qwen/fused Attention offen (siehe docs/architecture/36-kv-reuse.md) |
 | [-] | Mooncake-artiger Remote-Transfer | `ptr-runtime`, `ptr-net` | distributed reviewer | Prefill/Decode, RDMA/QUIC, fail-closed fencing |
 | [-] | unabhängige Snapshot-Anker und Compaction-Floor | `ptr-ledger` | architect | Retention verliert keine At-most-once-Schlüssel |
 
@@ -303,7 +303,7 @@ Der KV-Block baut direkt auf den gelieferten Research-Ergebnissen auf:
 | Research-Einsicht | PTR-Umsetzung | aktueller Stand |
 |---|---|---|
 | KV-streams: Kompaktion kann Modellzustand weiterführen, ohne alten Text neu zu formulieren | `KvStateRuntime`, opaque Handles, Invalidation und Recompute | Metadata-, Tensor- und Qwen2-Decoder-Continuation vorhanden; produktive Multi-Layer-/Compaction-Evaluation offen |
-| PagedAttention: KV wird block-/seitenweise statt als eine wachsende Sequenz verwaltet | page/block allocator und Prefix-Sharing im `KvTensorBackend` | F32 CPU-/Candle-Page-Bundles, sealed Pages, Refcounts, principal-/manifestgebundenes Prefix-Sharing und COW implementiert; fused paged Attention offen |
+| PagedAttention: KV wird block-/seitenweise statt als eine wachsende Sequenz verwaltet | page/block allocator und Prefix-Sharing im `KvTensorBackend` | F32 CPU-/Candle-Page-Bundles, sealed Pages, Refcounts, principal-/manifestgebundenes Prefix-Sharing und COW implementiert; fused paged Attention offen (siehe docs/architecture/36-kv-reuse.md) |
 | SGLang KV-Quantisierung/NVFP4: Dtype, Skalierung und fused Attention sind ein Vertrag | typed Dtype-/Scale-Metadaten und quantized Backend-Capabilities | aktuell nur F32; FP8/FP4/NVFP4 und fused-kernel-Gate offen |
 | HiCache: GPU-, CPU- und Storage-Tiers mit kontrolliertem Attach/Detach | generischer `TierBackend`, `TierResidencyController`, Pins, Drain und Lookahead-Policy | Candle-GPU-, CPU-, NVMe- und OpenDAL-Tiers vorhanden; Page-V3-Roundtrip und neue Fencing-Lease verifiziert, Heat-Policy offen |
 | Mooncake: disaggregiertes Prefill/Decode und verteilter KV-Pool | Placement-/Fencing-gebundene Snapshot-/Transfer-Schnittstelle | lokale Placement-Verträge vorhanden; Pool, Transfer Engine und Prefill/Decode-Trennung offen |
