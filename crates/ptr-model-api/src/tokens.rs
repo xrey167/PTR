@@ -18,7 +18,7 @@ use sha2::{Digest as _, Sha256};
 use std::fmt;
 
 const SEGMENT_DOMAIN: &[u8] = b"ptr.kv.segment.v1\0";
-const LINEAGE_DOMAIN: &[u8] = b"ptr.kv.lineage.v1\0";
+const LINEAGE_DOMAIN: &[u8] = b"ptr.kv.lineage.v2\0";
 
 /// One token id in a tokenizer's vocabulary.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -30,6 +30,11 @@ pub enum TokenContractError {
     EmptyTokenizerName,
     EmptyTokenizerVersion,
     EmptySemanticKey,
+    EmptySourceId,
+    /// `Raw` was passed to a constructor that is not `raw_from_*`.
+    RawSourceNeedsRawConstructor,
+    /// Approximate reuse reported although the policy is `ExactOnly`.
+    ApproximateNotAllowed,
     EmptySegment,
     EmptySegmentList,
     TokenizerMismatch {
@@ -48,6 +53,16 @@ impl fmt::Display for TokenContractError {
             Self::EmptyTokenizerName => write!(f, "tokenizer name is empty"),
             Self::EmptyTokenizerVersion => write!(f, "tokenizer version is empty"),
             Self::EmptySemanticKey => write!(f, "semantic segment key is empty"),
+            Self::EmptySourceId => write!(f, "memory or derived segment id is empty"),
+            Self::RawSourceNeedsRawConstructor => {
+                write!(
+                    f,
+                    "Raw segments must be built with raw_from_text or raw_from_tokens"
+                )
+            }
+            Self::ApproximateNotAllowed => {
+                write!(f, "approximate reuse reported under an ExactOnly policy")
+            }
             Self::EmptySegment => write!(f, "prompt segment has no tokens"),
             Self::EmptySegmentList => write!(f, "segmented request has no segments"),
             Self::TokenizerMismatch { expected, found } => write!(
@@ -229,6 +244,8 @@ impl SegmentSource {
             Self::Semantic { key, .. } if key.is_empty() => {
                 Err(TokenContractError::EmptySemanticKey)
             }
+            Self::Memory { id, .. } if id.0.is_empty() => Err(TokenContractError::EmptySourceId),
+            Self::Derived { id, .. } if id.0.is_empty() => Err(TokenContractError::EmptySourceId),
             _ => Ok(()),
         }
     }
@@ -296,7 +313,33 @@ pub struct PromptSegment {
 }
 
 impl PromptSegment {
-    /// Encode `text` with `tokenizer` and build a segment from it.
+    /// Encode request raw input with `tokenizer` as a `Raw` segment.
+    ///
+    /// Use this only for raw input that arrived with the request. Runtime-produced
+    /// content (model output, tool output, derived text) must never be Raw; build it
+    /// with [`PromptSegment::from_text`] and a `Derived` source. Revocable or forgettable
+    /// content must use `Semantic` or `Memory`. The type system cannot tell the two
+    /// apart, so full enforcement is the P2 catalog's job.
+    pub fn raw_from_text<T: Tokenizer + ?Sized>(
+        tokenizer: &T,
+        text: &str,
+    ) -> Result<Self, TokenContractError> {
+        Self::build(
+            tokenizer.identity().clone(),
+            SegmentSource::Raw,
+            tokenizer.encode(text),
+        )
+    }
+
+    /// Like [`PromptSegment::raw_from_text`] for ids already encoded under `tokenizer`.
+    pub fn raw_from_tokens(
+        tokenizer: TokenizerIdentity,
+        tokens: Vec<TokenId>,
+    ) -> Result<Self, TokenContractError> {
+        Self::build(tokenizer, SegmentSource::Raw, tokens)
+    }
+
+    /// Encode `text` as a `Semantic`, `Memory` or `Derived` segment. Rejects `Raw`.
     pub fn from_text<T: Tokenizer + ?Sized>(
         tokenizer: &T,
         source: SegmentSource,
@@ -305,8 +348,20 @@ impl PromptSegment {
         Self::from_tokens(tokenizer.identity().clone(), source, tokenizer.encode(text))
     }
 
-    /// Build a segment from ids already encoded under `tokenizer`.
+    /// Build a `Semantic`, `Memory` or `Derived` segment from ids already encoded under
+    /// `tokenizer`. Rejects `Raw`.
     pub fn from_tokens(
+        tokenizer: TokenizerIdentity,
+        source: SegmentSource,
+        tokens: Vec<TokenId>,
+    ) -> Result<Self, TokenContractError> {
+        if source == SegmentSource::Raw {
+            return Err(TokenContractError::RawSourceNeedsRawConstructor);
+        }
+        Self::build(tokenizer, source, tokens)
+    }
+
+    fn build(
         tokenizer: TokenizerIdentity,
         source: SegmentSource,
         tokens: Vec<TokenId>,
@@ -446,10 +501,15 @@ impl SegmentedModelRequest {
         self.segments.iter().map(|s| s.tokens().len()).sum()
     }
 
-    /// Order-dependent SHA-256 over the segments' lineage contributions.
+    /// Order-dependent SHA-256 over the semantic revision, the tokenizer identity and the
+    /// segments' lineage contributions, so identical raw tokens under different revisions
+    /// never share a digest.
     pub fn lineage_digest(&self) -> Digest {
         let mut hasher = Sha256::new();
         hasher.update(LINEAGE_DOMAIN);
+        hasher.update(self.semantic_context.revision.0.to_le_bytes());
+        put_text(&mut hasher, self.tokenizer.name());
+        put_text(&mut hasher, self.tokenizer.version());
         hasher.update((self.segments.len() as u64).to_le_bytes());
         for segment in &self.segments {
             segment.lineage_contribution().absorb(&mut hasher);
@@ -494,7 +554,11 @@ impl KvReuseReport {
         hit_tokens: usize,
         mode: KvReuseMode,
         total_tokens: usize,
+        policy: KvReusePolicy,
     ) -> Result<Self, TokenContractError> {
+        if mode == KvReuseMode::Approximate && policy == KvReusePolicy::ExactOnly {
+            return Err(TokenContractError::ApproximateNotAllowed);
+        }
         if hit_tokens > total_tokens {
             return Err(TokenContractError::HitExceedsTotal {
                 hit_tokens,
