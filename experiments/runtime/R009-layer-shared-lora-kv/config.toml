@@ -71,7 +71,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "adapter_types_run", "qkv_lora_first_layers", "alora_invocation_position_tokens", "prompt_tokens", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "required_interior_first_adapted_layer", "alora_invocation_offset_in_page", "page_tokens", "q_only_lora_first_layers", "mlp_only_lora_first_layers", "invalidation_coverage_matrix"]
+procedure_parameters_recorded_per_cell = ["seeds", "adapter_types_run", "qkv_lora_first_layers", "alora_invocation_position_tokens", "prompt_tokens", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "required_interior_first_adapted_layer", "alora_invocation_offset_in_page", "page_tokens", "q_only_lora_first_layers", "mlp_only_lora_first_layers", "invalidation_coverage_matrix", "tiny_model_config_digest", "tokenizer_pin", "moe_topology"]
 # Preregistered choices for this experiment (no code default exists).
 adapter_restart_output_mismatches_max = 0
 # Preregistered choices for this experiment (no code default exists).
@@ -84,3 +84,11 @@ invalidation_coverage_matrix = { kinds = ["base_model", "adapter_generation", "s
 min_invalidation_matrix_cases_per_cell = 1
 max_invalidation_matrix_stale_hits_per_cell = 0
 invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
+# Preregistered choices for this experiment (no code default exists).
+tiny_model_config = { layers = 4, hidden_size = 64, num_heads = 4, num_kv_heads = 2, head_dim = 16, vocab_size = 256, weight_seed = 20240607 }
+tiny_model_config_digest = "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433a"
+tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
+tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
+moe_topology = "none: dense tiny decoder"
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0

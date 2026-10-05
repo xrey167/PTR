@@ -56,7 +56,7 @@ forgetting_gate_public_suite_is_same_object_as_quality_suite = false
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "recovery_sft_steps", "recovery_rl_steps", "recovery_sequences", "vram_batch_size", "vram_sequence_length", "pruning_fractions", "named_baseline_pruning_methods", "pruned_model_revision", "gate_suite_range", "quality_eval_range", "recovery_sft_corpus_revision", "recovery_sft_corpus_size", "arm_matrix"]
+procedure_parameters_recorded_per_cell = ["seeds", "recovery_sft_steps", "recovery_rl_steps", "recovery_sequences", "vram_batch_size", "vram_sequence_length", "pruning_fractions", "named_baseline_pruning_methods", "pruned_model_revision", "gate_suite_range", "quality_eval_range", "recovery_sft_corpus_revision", "recovery_sft_corpus_size", "arm_matrix", "recovery_overlap_checks", "recovery_overlap_slices", "model_checkpoint_revision", "tokenizer_revision", "moe_topology"]
 # Preregistered choices for this experiment (no code default exists).
 pruned_model = "allenai/OLMoE-1B-7B-0125"
 pruned_model_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
@@ -75,7 +75,21 @@ recovery_sft_corpus_split = "train"
 recovery_sft_corpus_size = 7473
 recovery_rl_prompts = "same GSM8K train prompts, verifiable final-answer reward"
 recovery_corpus_digest_recorded_in_run_json = true
-max_recovery_gate_overlap_count = 0
-max_recovery_eval_overlap_count = 0
 # Preregistered choices for this experiment (no code default exists).
 arm_matrix = [{ arm = "aimer_0.25_sft_gspo", method = "aimer", fraction = 0.25, sequence = "sft_gspo" }, { arm = "aimer_0.25_sft_sapo", method = "aimer", fraction = 0.25, sequence = "sft_sapo" }, { arm = "aimer_0.5_sft_gspo", method = "aimer", fraction = 0.5, sequence = "sft_gspo" }, { arm = "aimer_0.5_sft_sapo", method = "aimer", fraction = 0.5, sequence = "sft_sapo" }, { arm = "random_0.25_sft_gspo", method = "random", fraction = 0.25, sequence = "sft_gspo" }, { arm = "random_0.25_sft_sapo", method = "random", fraction = 0.25, sequence = "sft_sapo" }, { arm = "random_0.5_sft_gspo", method = "random", fraction = 0.5, sequence = "sft_gspo" }, { arm = "random_0.5_sft_sapo", method = "random", fraction = 0.5, sequence = "sft_sapo" }, { arm = "usage_frequency_0.25_sft_gspo", method = "usage_frequency", fraction = 0.25, sequence = "sft_gspo" }, { arm = "usage_frequency_0.25_sft_sapo", method = "usage_frequency", fraction = 0.25, sequence = "sft_sapo" }, { arm = "usage_frequency_0.5_sft_gspo", method = "usage_frequency", fraction = 0.5, sequence = "sft_gspo" }, { arm = "usage_frequency_0.5_sft_sapo", method = "usage_frequency", fraction = 0.5, sequence = "sft_sapo" }, { arm = "unpruned_control_sft_gspo", method = "unpruned", fraction = 0.0, sequence = "sft_gspo" }, { arm = "unpruned_control_sft_sapo", method = "unpruned", fraction = 0.0, sequence = "sft_sapo" }]
+# Preregistered choices for this experiment (no code default exists).
+recovery_training_corpus = "openai/gsm8k main train (all 7473 items), dedicated to SFT and GSPO/SAPO recovery"
+recovery_selection_rule = "all 7473 train items in index order"
+recovery_selection_digest_recorded_in_run_json = true
+recovery_overlap_checks = ["question_id", "normalized_text_hash"]
+recovery_overlap_slices = ["mmlu_gate_0_1999", "mmlu_quality_2000_3999"]
+max_recovery_training_eval_overlap = 0
+recovery_training_eval_overlap_reported = "per slice x check"
+# Preregistered choices for this experiment (no code default exists).
+model_checkpoint_repo = "allenai/OLMoE-1B-7B-0125"
+model_checkpoint_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+tokenizer_repo = "allenai/OLMoE-1B-7B-0125"
+tokenizer_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+moe_topology = { layers = 16, num_experts = 64, top_k = 8, router_layout = "per-layer linear router, softmax then top-k, norm_topk_prob = false", router_aux_loss_coef = 0.01 }
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0

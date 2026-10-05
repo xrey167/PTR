@@ -90,7 +90,7 @@ heldout_selection_digest_recorded = true
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "warmup_runs", "timed_runs", "position_shifts", "candidate_k_tokens", "calibration_prompts", "heldout_prompts", "chunk_tokens", "prompt_tokens", "test_model_layers", "test_model_vocab_size", "reused_chunks_per_prompt", "reused_tokens", "suffix_tokens", "candidate_recompute_fractions", "nonaligned_insertion_tokens", "hardware_profile", "run_json_records_hardware", "invalidation_coverage_matrix"]
+procedure_parameters_recorded_per_cell = ["seeds", "warmup_runs", "timed_runs", "position_shifts", "candidate_k_tokens", "calibration_prompts", "heldout_prompts", "chunk_tokens", "prompt_tokens", "test_model_layers", "test_model_vocab_size", "reused_chunks_per_prompt", "reused_tokens", "suffix_tokens", "candidate_recompute_fractions", "nonaligned_insertion_tokens", "hardware_profile", "run_json_records_hardware", "invalidation_coverage_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology"]
 # Preregistered choices for this experiment (no code default exists).
 timing_counts_recorded_per_cell = true
 max_timing_procedure_mismatches = 0
@@ -125,3 +125,11 @@ restore_applicable = true
 min_raw_ancestor_omission_cases = 1
 max_reuse_after_raw_ancestor_removed = 0
 raw_ancestor_rule = "every raw ancestor (Raw, content_digest) recorded in the lineage must be present in the current request prefix, as a multiset"
+# Preregistered choices for this experiment (no code default exists).
+model_checkpoint_repo = "Qwen/Qwen2.5-0.5B"
+model_checkpoint_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+tokenizer_repo = "Qwen/Qwen2.5-0.5B"
+tokenizer_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+moe_topology = "none: dense decoder, 24 layers"
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0

@@ -39,7 +39,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "span_tokens", "canary_probes", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "canary_bearing_span_cases", "span_position", "span_start_offset_tokens", "system_prompt_tokens", "document_tokens", "question_tokens", "canary_strings_distinct"]
+procedure_parameters_recorded_per_cell = ["seeds", "span_tokens", "canary_probes", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "canary_bearing_span_cases", "span_position", "span_start_offset_tokens", "system_prompt_tokens", "document_tokens", "question_tokens", "canary_strings_distinct", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "test_model_layers"]
 # Preregistered choices for this experiment (no code default exists).
 span_tokens = 256
 span_position = "middle"
@@ -50,3 +50,12 @@ question_tokens = 64
 canary_probes = 32
 canary_strings_distinct = true
 canary_identity_set_digest_recorded_in_run_json = true
+test_model_layers = 4
+# Preregistered choices for this experiment (no code default exists).
+tiny_model_config = { layers = 4, hidden_size = 64, num_heads = 4, num_kv_heads = 2, head_dim = 16, vocab_size = 256, weight_seed = 20240607 }
+tiny_model_config_digest = "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433a"
+tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
+tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
+moe_topology = "none: dense tiny decoder"
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
