@@ -52,13 +52,30 @@ importance_sampling_level_field = "importance_sampling_level"
 corpus_train_dataset = "openai/gsm8k"
 corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
 corpus_train_split = "train"
-corpus_validation_rule = "last 500 problems of the train split by index (disjoint from the RL training problems); used only for hyperparameter tuning"
+corpus_validation_rule = "validation partition: train-split items whose index mod 10 == 9 (excluded from the RL training problems); used only for hyperparameter tuning"
 corpus_eval_split = "test"
 corpus_eval_rule = "all 1319 problems of the test split for pass_at_1, in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "max_rl_steps", "mini_steps", "learning_rate", "batch_size", "collapse_smoothing_window_steps", "algorithm_specific_values"]
+procedure_parameters_recorded_per_cell = ["seeds", "max_rl_steps", "mini_steps", "learning_rate", "batch_size", "collapse_smoothing_window_steps", "algorithm_specific_values", "collapse_reward_drop_fraction", "reward_range", "shared_hyperparameters", "gspo_clip_epsilon_low", "gspo_clip_epsilon_high", "sapo_tau_pos", "sapo_tau_neg", "grpo_epsilon_low", "grpo_epsilon_high", "base_model_revision", "validation_position_modulus", "validation_position_residue", "zero_reward_window_steps"]
 # Preregistered choices for this experiment (no code default exists).
 max_rl_steps_recorded_per_arm = true
 max_rl_steps_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+base_model = "allenai/OLMoE-1B-7B-0125"
+base_model_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+base_model_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+validation_rule = "validation partition for tuning: items whose position within the training partition has index mod 10 == 9, excluded from training; tuning selects on validation only"
+validation_corpora = ["gsm8k"]
+validation_position_modulus = 10
+validation_position_residue = 9
+validation_excluded_from_training = true
+tuning_selects_on_validation_only = true
+max_validation_overlap_count = 0
+validation_overlap_counted_per_corpus = true
+validation_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+zero_reward_window_steps = 50
+zero_reward_window_collapse = "mean verifiable reward exactly 0 over any 50 consecutive RL steps: collapsed at the first step of the window, also from step 1"

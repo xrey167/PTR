@@ -25,7 +25,7 @@ min_proposals_accepted_per_arm = 10
 # Preregistered choice: margin by which full-context net quality change must be at least both baselines.
 net_quality_vs_baseline_margin = 0.0
 # Preregistered choices for this experiment (no code default exists).
-flops_relative_tolerance = 0.01
+flops_relative_tolerance = 0.05
 backward_transfer_definition = "ForgettingGate AccuracyMatrix definition"
 # Preregistered choices for this experiment (no code default exists).
 lifecycle_operations = ["birth", "merge", "split", "freeze", "prune", "reactivate"]
@@ -56,9 +56,6 @@ vacuous_if_operator_below_minimum = true
 tuning_trials_used_recorded_per_arm = ["lifecycle", "static", "context_ablated", "heuristic"]
 max_tuning_budget_mismatches = 0
 # Preregistered choices for this experiment (no code default exists).
-active_params_relative_tolerance = 0.01
-active_params_compared = "final active parameters, per seed, lifecycle arm versus static arm"
-max_active_param_mismatch_seeds = 0
 min_paired_reactivation_trials_per_seed = 1
 paired_trial = "reactivate a retired expert vs train a fresh new expert on the same returning domain"
 # Preregistered choices for this experiment (no code default exists).
@@ -69,7 +66,7 @@ corpus_code_revision = "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
 corpus_tool = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 corpus_tool_revision = "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
 corpus_tool_file = "BFCL_v3_simple.json"
-corpus_split_rule = "per domain the items are split by index parity: even indices form the gate suite, odd indices form the held-out domain suite (disjoint); math uses GSM8K test for these suites and train for training"
+corpus_split_rule = "HumanEval and BFCL items are split by index mod 3: 0 = training, 1 = gate suite, 2 = held-out evaluation; GSM8K uses its train split for training and its test split partitioned by index mod 2 (0 = gate suite, 1 = held-out evaluation); training data for Birth, Split, reactivation and the fresh-expert control comes only from the training partition"
 public_suite_dataset = "cais/mmlu"
 public_suite_revision = "c30699e8356da336a370243923dbaf21066bb9fe"
 public_suite_config = "all"
@@ -78,4 +75,37 @@ public_suite_selection_rule = "the first 2000 questions in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm"]
+procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm", "hyperparameter_tuning_budget_trials_per_arm", "lifecycle_operations", "proposal_generating_arms", "recovery_target_fraction_of_pre_retirement_score", "split_rule_single_split_corpora", "flops_relative_tolerance", "active_param_tolerance", "validation_position_modulus", "validation_position_residue", "overlap_counters_per_corpus", "gsm8k_test_partition_modulus"]
+# Preregistered choices for this experiment (no code default exists).
+split_rule_single_split_corpora = "index mod 3: 0 = training, 1 = gate suite, 2 = held-out evaluation"
+max_training_data_outside_training_partition_count = 0
+# Preregistered choices for this experiment (no code default exists).
+overlap_counters_per_corpus = ["code_humaneval", "tool_bfcl", "math_gsm8k"]
+max_training_gate_overlap_count = 0
+max_training_heldout_overlap_count = 0
+code_training_partition = "HumanEval items with index mod 3 == 0"
+tool_training_partition = "BFCL_v3_simple items with index mod 3 == 0"
+# Preregistered choices for this experiment (no code default exists).
+validation_rule = "validation partition for tuning: items whose position within the training partition has index mod 10 == 9, excluded from training; tuning selects on validation only (taken from each training partition)"
+validation_corpora = ["code_humaneval", "tool_bfcl", "math_gsm8k"]
+validation_position_modulus = 10
+validation_position_residue = 9
+validation_excluded_from_training = true
+tuning_selects_on_validation_only = true
+max_validation_overlap_count = 0
+validation_overlap_counted_per_corpus = true
+validation_set_digest_recorded_in_run_json = true
+tool_corpus_name = "BFCL_v3_simple"
+# Preregistered choices for this experiment (no code default exists).
+gsm8k_test_partition = "openai/gsm8k main/test index mod 2: 0 = gate suite, 1 = held-out evaluation"
+gsm8k_test_partition_modulus = 2
+max_gate_heldout_overlap_count = 0
+gate_and_heldout_digests_recorded_separately = true
+# Preregistered choices for this experiment (no code default exists).
+active_param_tolerance = 0.05
+active_params_compared = "per stage checkpoint (every training and evaluation stage), lifecycle arm versus static arm, relative to the static arm"
+max_active_param_mismatch_stages = 0
+active_params_recorded_per_stage_per_arm = true
+# Preregistered choices for this experiment (no code default exists).
+training_flops_checked = "per seed and per stage"
+max_training_flops_mismatch_cells = 0

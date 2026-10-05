@@ -39,4 +39,14 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "span_tokens", "canary_probes"]
+procedure_parameters_recorded_per_cell = ["seeds", "span_tokens", "canary_probes", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "canary_bearing_span_cases", "span_position", "span_start_offset_tokens", "system_prompt_tokens", "document_tokens", "question_tokens", "canary_strings_distinct"]
+# Preregistered choices for this experiment (no code default exists).
+span_tokens = 256
+span_position = "middle"
+span_start_offset_tokens = 1024
+system_prompt_tokens = 64
+document_tokens = 4096
+question_tokens = 64
+canary_probes = 32
+canary_strings_distinct = true
+canary_identity_set_digest_recorded_in_run_json = true

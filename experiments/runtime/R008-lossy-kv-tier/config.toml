@@ -54,6 +54,23 @@ prompt_count = 100
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "context_length_tokens", "prompt_count", "candidate_kv_keep_fractions"]
+procedure_parameters_recorded_per_cell = ["seeds", "context_length_tokens", "prompt_count", "candidate_kv_keep_fractions", "agreement_model_layers", "agreement_model_vocab_size", "agreement_model_hidden_size", "invalidation_coverage_matrix"]
 # Preregistered choices for this experiment (no code default exists).
 allow_approximate_false_fallback_output_mismatches_max = 0
+# Preregistered choices for this experiment (no code default exists).
+invalidation_types = ["revocation", "supersession"]
+inflight_lossy_reuse_race_cases_reported = "per invalidation type"
+# Preregistered choices for this experiment (no code default exists).
+identity_set_checks = [["allow_approximate_false_attempt_id_set_digest", "allow_approximate_false_fallback_completed_id_set_digest"]]
+# Preregistered choices for this experiment (no code default exists).
+min_restored_superseded_lossy_objects_after_restart = 1
+supersession_arms = ["normal", "post_restart"]
+# Preregistered choices for this experiment (no code default exists).
+invalidation_coverage_matrix = { kinds = ["semantic_dependency", "memory_dependency", "base_model", "adapter_generation", "expert_generation"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["semantic_dependency_normal_revocation", "semantic_dependency_normal_supersession", "semantic_dependency_lag_revocation", "semantic_dependency_lag_supersession", "semantic_dependency_restore_revocation", "semantic_dependency_restore_supersession", "semantic_dependency_inflight_revocation", "semantic_dependency_inflight_supersession", "memory_dependency_normal_revocation", "memory_dependency_normal_supersession", "memory_dependency_lag_revocation", "memory_dependency_lag_supersession", "memory_dependency_restore_revocation", "memory_dependency_restore_supersession", "memory_dependency_inflight_revocation", "memory_dependency_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession", "adapter_generation_normal_revocation", "adapter_generation_normal_supersession", "adapter_generation_lag_revocation", "adapter_generation_lag_supersession", "adapter_generation_restore_revocation", "adapter_generation_restore_supersession", "adapter_generation_inflight_revocation", "adapter_generation_inflight_supersession", "expert_generation_normal_revocation", "expert_generation_normal_supersession", "expert_generation_lag_revocation", "expert_generation_lag_supersession", "expert_generation_restore_revocation", "expert_generation_restore_supersession", "expert_generation_inflight_revocation", "expert_generation_inflight_supersession"] }
+min_invalidation_matrix_cases_per_cell = 1
+max_invalidation_matrix_stale_hits_per_cell = 0
+invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
+# Preregistered choices for this experiment (no code default exists).
+min_lossy_hit_taint_cases = 1
+max_untainted_lossy_results = 0
+max_lossy_effects_admitted = 0

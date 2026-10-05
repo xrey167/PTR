@@ -49,4 +49,21 @@ load_cv_and_dead_experts_eval_tokens = 8192
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue"]
+# Preregistered choices for this experiment (no code default exists).
+expert_token_fraction_definition = "expert routed assignments / total routed assignments in the layer; sums to 1 over experts"
+# Preregistered choices for this experiment (no code default exists).
+validation_rule = "validation partition for tuning: items whose position within the training partition has index mod 10 == 9, excluded from training; tuning selects on validation only"
+validation_corpora = ["gsm8k_train"]
+validation_position_modulus = 10
+validation_position_residue = 9
+validation_excluded_from_training = true
+tuning_selects_on_validation_only = true
+max_validation_overlap_count = 0
+validation_overlap_counted_per_corpus = true
+validation_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+mean_load_cv_noninferiority_margin = 0.05
+mean_load_cv_direction = "lower is better"
+mean_load_cv_checked = ["per_seed", "seed_mean"]
+between_arm_orderings_claimed = "auxiliary-loss-free non-inferior to auxiliary-loss and to phi-balancing only"

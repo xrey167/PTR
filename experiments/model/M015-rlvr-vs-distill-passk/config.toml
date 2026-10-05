@@ -55,7 +55,7 @@ corpus_selection_rule = "all 7473 train problems in index order for training; al
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "samples_per_problem", "sampling_temperature", "sampling_top_p", "sampling_top_k", "max_new_tokens", "bootstrap_seed"]
+procedure_parameters_recorded_per_cell = ["seeds", "samples_per_problem", "sampling_temperature", "sampling_top_p", "sampling_top_k", "max_new_tokens", "bootstrap_seed", "problem_set_size", "bootstrap_resamples", "bootstrap_confidence", "n_samples", "hyperparameter_tuning_budget_trials_per_arm", "decoding_fields", "teacher_samples_per_prompt", "teacher_temperature", "teacher_top_p", "teacher_top_k", "teacher_max_new_tokens", "teacher_seed", "distillation_filter", "distillation_selection", "validation_position_modulus", "validation_position_residue"]
 # Preregistered choices for this experiment (no code default exists).
 sampling_top_k = -1
 max_new_tokens = 512
@@ -63,3 +63,27 @@ n_samples = 256
 decoding_parameters_recorded_per_arm = true
 max_decoding_parameter_mismatches = 0
 decoding_fields = ["temperature", "top_p", "top_k", "max_new_tokens", "n_samples"]
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_used_recorded_per_arm = true
+max_tuning_budget_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+teacher_samples_per_prompt = 4
+teacher_temperature = 0.7
+teacher_top_p = 0.95
+teacher_top_k = -1
+teacher_max_new_tokens = 512
+teacher_seed = 20240607
+distillation_filter = "verifier-passing only (exact final-answer match)"
+distillation_selection = "lowest sample index among passing samples per prompt"
+prompts_without_passing_sample = "dropped and counted as distill_prompts_dropped"
+distillation_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+validation_rule = "validation partition for tuning: items whose position within the training partition has index mod 10 == 9, excluded from training; tuning selects on validation only"
+validation_corpora = ["gsm8k_train"]
+validation_position_modulus = 10
+validation_position_residue = 9
+validation_excluded_from_training = true
+tuning_selects_on_validation_only = true
+max_validation_overlap_count = 0
+validation_overlap_counted_per_corpus = true
+validation_set_digest_recorded_in_run_json = true

@@ -35,12 +35,12 @@ corpus_code_revision = "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
 corpus_tool = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 corpus_tool_revision = "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
 corpus_tool_file = "BFCL_v3_simple.json"
-corpus_split_rule = "math: GSM8K train for training and test for evaluation; code and tool (single-split corpora): even indices train, odd indices evaluation"
+corpus_split_rule = "HumanEval and BFCL items are split by index mod 3: 0 = training, 1 = tuning validation, 2 = held-out evaluation; GSM8K uses train for training and test for evaluation; training data comes only from the training partition"
 corpus_selection_rule = "all items of each split in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "compared_arms", "flops_relative_tolerance", "split_rule_single_split_corpora", "validation_position_modulus", "validation_position_residue"]
 # Preregistered choices for this experiment (no code default exists).
 tuning_trials_used_recorded_per_arm = true
 max_tuning_budget_mismatches = 0
@@ -49,4 +49,22 @@ perft_vs_lora_margin_points = 1.0
 perft_vs_mixlora_margin_points = 1.0
 compared_arms = ["perft_r_emergent", "perft_r_prescribed", "plain_lora", "mixlora"]
 frozen_base_arm = false
-compute_matching = "equal trainable parameters (1%) and equal training steps"
+compute_matching = "equal trainable parameters (1%), equal training steps and total training FLOPs including routing (5%)"
+# Preregistered choices for this experiment (no code default exists).
+split_rule_single_split_corpora = "index mod 3: 0 = training, 1 = tuning validation, 2 = held-out evaluation"
+max_training_data_outside_training_partition_count = 0
+# Preregistered choices for this experiment (no code default exists).
+flops_relative_tolerance = 0.05
+training_flops_includes = ["routing"]
+training_flops_measured = "per arm and seed"
+max_training_flops_mismatch_seeds = 0
+# Preregistered choices for this experiment (no code default exists).
+validation_rule = "validation partition for tuning: items whose position within the training partition has index mod 10 == 9, excluded from training; tuning selects on validation only ; for HumanEval and BFCL the explicit mod 3 == 1 partition is the validation partition"
+validation_corpora = ["gsm8k_train"]
+validation_position_modulus = 10
+validation_position_residue = 9
+validation_excluded_from_training = true
+tuning_selects_on_validation_only = true
+max_validation_overlap_count = 0
+validation_overlap_counted_per_corpus = true
+validation_set_digest_recorded_in_run_json = true

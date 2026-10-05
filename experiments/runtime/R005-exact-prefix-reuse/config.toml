@@ -90,15 +90,12 @@ cancelled_forks_restarted_from_fresh_prefill_at_least_cancelled_forks = true
 min_restored_pre_revocation_entries = 1
 empty_restart_arm_role = "reported_separate_arm"
 # Preregistered choices for this experiment (no code default exists).
-min_pinned_saturation_cases = 1
-min_capacity_refusals_typed = 1
 min_raw_prefix_reuse_cases = 1
 min_raw_identical_prefix_hits = 1
 raw_segment_admission = "content-bound: (kind Raw, content digest); no identity, generation or liveness check"
 capacity_exhausted_behaviour = "typed CapacityExhausted; uncached full prefill; no insert"
 # Preregistered choices for this experiment (no code default exists).
 min_supersession_active_fork_race_cases = 1
-max_outputs_after_supersession = 0
 # Preregistered choices for this experiment (no code default exists).
 min_memory_supersession_active_fork_race_cases = 1
 min_memory_revocation_active_fork_race_cases = 1
@@ -109,9 +106,9 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "concurrency", "max_trie_nodes", "max_kv_page_bytes"]
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "concurrency", "max_trie_nodes", "max_kv_page_bytes", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "kv_page_bytes_per_node", "metadata_bytes_per_node", "nodes_only_run_max_kv_page_bytes", "bytes_only_run_max_trie_nodes", "workload_limits", "invalidation_coverage_matrix", "superseded_lookup_cells", "saturation_definition"]
 # Preregistered choices for this experiment (no code default exists).
-capacity_refused_requests_completed_equals_refusals = true
+capacity_refused_requests_completed_equals_exhausted_refusals = true
 max_capacity_fallback_output_mismatches = 0
 max_capacity_refusal_cache_inserts = 0
 min_supersession_cancelled_forks = 1
@@ -124,3 +121,38 @@ segment_kind_authority = "ingress record"
 min_approximate_output_reintroduced_as_raw_attempts = 1
 max_laundered_exact_admissions = 0
 runtime_produced_content_segment_kind = "Derived (never Raw), provenance and Approximate taint propagate until exact recomputation"
+# Preregistered choices for this experiment (no code default exists).
+invalidation_types = ["revocation", "supersession"]
+dependency_kinds = ["semantic_input", "memory_input"]
+coverage_reported_per_member = "dependency kind x invalidation type"
+max_outputs_after_supersession_semantic = 0
+max_outputs_after_supersession_memory = 0
+# Preregistered choices for this experiment (no code default exists).
+identity_set_checks = [["cancelled_fork_id_set_digest", "restarted_fork_id_set_digest"], ["capacity_refused_request_id_set_digest", "capacity_completed_request_id_set_digest"]]
+# Preregistered choices for this experiment (no code default exists).
+workload_limits = { main = { max_trie_nodes = 4096, max_kv_page_bytes = 67108864, max_metadata_bytes = 4194304 }, nodes_only = { max_trie_nodes = 4096, max_kv_page_bytes = 268435456, max_metadata_bytes = 4194304 }, bytes_only = { max_trie_nodes = 16384, max_kv_page_bytes = 67108864, max_metadata_bytes = 16777216 } }
+workload_peaks_reported = "per workload, evaluated against that workload's own limits"
+# Preregistered choices for this experiment (no code default exists).
+outputs_after_supersession_field_family = "outputs_after_supersession"
+# Preregistered choices for this experiment (no code default exists).
+min_exact_echo_cases = 1
+max_taint_cleared_by_echo = 0
+taint_clearance_rule = "only exact recomputation of the same derived value from its original untainted inputs with the same operation"
+# Preregistered choices for this experiment (no code default exists).
+min_base_model_inflight_race_cases_per_type = 1
+max_base_model_inflight_outputs_after_invalidation = 0
+max_base_model_inflight_cache_inserts = 0
+base_model_inflight_race_cases_reported = "per invalidation type"
+# Preregistered choices for this experiment (no code default exists).
+invalidation_coverage_matrix = { kinds = ["semantic_input", "memory_input", "base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_restore_revocation", "semantic_input_restore_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_restore_revocation", "memory_input_restore_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession"] }
+min_invalidation_matrix_cases_per_cell = 1
+max_invalidation_matrix_stale_hits_per_cell = 0
+invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
+# Preregistered choices for this experiment (no code default exists).
+superseded_lookup_cells = [["semantic","normal"],["semantic","lag"],["semantic","restore"],["memory","normal"],["memory","lag"],["memory","restore"]]
+min_superseded_lookup_cases_per_cell = 1
+max_superseded_stale_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_saturation_demand_cases = 1
+min_capacity_exhausted_refusals = 1
+saturation_definition = "attempted demand of concurrent forks exceeds capacity; the accepted pinned set stays within bounds; the excess insertion is refused with CapacityExhausted"

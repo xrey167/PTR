@@ -118,7 +118,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version"]
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix"]
 # Preregistered choices for this experiment (no code default exists).
 inflight_restart_output_mismatches_max = 0
 inflight_restarts_equal_cancellations = true
@@ -132,3 +132,29 @@ attacker_auc_ci_upper_max = 0.55
 unaffected_principal_dependency_kinds = ["semantic", "memory", "adapter", "expert", "base_model"]
 unaffected_principal_hit_rate_tolerance = 0.02
 reverse_index = "principal <- dependency-generation mapping, covering every dependency kind in a request lineage"
+# Preregistered choices for this experiment (no code default exists).
+invalidation_types = ["revocation", "supersession"]
+transition_types = ["revocation", "replacement"]
+coverage_reported_per_member = "dimension or kind x invalidation type"
+# Preregistered choices for this experiment (no code default exists).
+identity_set_checks = [["inflight_cancelled_request_id_set_digest", "inflight_restarted_request_id_set_digest"], ["dependent_principal_id_set_digest", "rotated_principal_id_set_digest"]]
+# Preregistered choices for this experiment (no code default exists).
+transition_members = "base_model, adapter, expert x {revocation, replacement}; tokenizer, numerics, kv_key_encoding, rope_regime x {replacement}"
+# Preregistered choices for this experiment (no code default exists).
+attacker_model = "logistic regression"
+attacker_penalty = "l2"
+attacker_C = 1.0
+attacker_solver = "lbfgs"
+attacker_max_iter = 1000
+attacker_split = "stratified 80/20 train/test"
+attacker_split_seed = 20240607
+attacker_cv = "5-fold stratified on the 80 percent portion, reporting only"
+attacker_auc_computed_on = "held-out 20 percent only"
+attacker_heldout_predictions_recorded = ["id", "label", "score"]
+attacker_heldout_predictions_digest_recorded = true
+attacker_solver_param_names = ["max_iter"]
+# Preregistered choices for this experiment (no code default exists).
+invalidation_coverage_matrix = { kinds = ["semantic_input", "memory_input", "adapter_generation", "expert_generation", "base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_restore_revocation", "semantic_input_restore_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_restore_revocation", "memory_input_restore_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "adapter_generation_normal_revocation", "adapter_generation_normal_supersession", "adapter_generation_lag_revocation", "adapter_generation_lag_supersession", "adapter_generation_restore_revocation", "adapter_generation_restore_supersession", "adapter_generation_inflight_revocation", "adapter_generation_inflight_supersession", "expert_generation_normal_revocation", "expert_generation_normal_supersession", "expert_generation_lag_revocation", "expert_generation_lag_supersession", "expert_generation_restore_revocation", "expert_generation_restore_supersession", "expert_generation_inflight_revocation", "expert_generation_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession"] }
+min_invalidation_matrix_cases_per_cell = 1
+max_invalidation_matrix_stale_hits_per_cell = 0
+invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
