@@ -1,4 +1,5 @@
 .PHONY: check test fmt py-bindings a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
+	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
 	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers
@@ -44,6 +45,26 @@ py-bindings:
 	cargo clippy --manifest-path $(PY_BINDINGS)/Cargo.toml --all-targets --locked -- -D warnings
 	cd $(PY_BINDINGS) && VIRTUAL_ENV="$(CURDIR)/$(PY_BINDINGS)/.venv" PATH="$(CURDIR)/$(PY_BINDINGS)/.venv/bin:$$PATH" maturin develop --locked
 	$(PY_BINDINGS)/.venv/bin/python -m unittest discover -s $(PY_BINDINGS)/tests -v
+
+# GPU desktop (Ubuntu 24.04, one RTX 4090): docs/DESKTOP_SETUP.md. Not CI jobs, so no
+# ci-* counterpart. The two smoke targets run the training venv's python (the CUDA torch
+# wheel and ptr_py live there); `--execute` refuses a dirty tracked worktree. Both configs
+# are pipeline evidence only, never research results.
+TRAIN_PY ?= training/.venv/bin/python
+SMOKE_GPU_CONFIG ?= training/configs/stage-moe-smoke-gpu.toml
+OLMOE_SFT_CONFIG ?= training/configs/stage-moe-olmoe-sft-smoke.toml
+
+desktop-setup:
+	scripts/setup_desktop.sh
+
+gpu-doctor:
+	python3 scripts/gpu_doctor.py
+
+smoke-gpu:
+	PYTHONPATH=training/src $(TRAIN_PY) -m ptr_training.run --config $(SMOKE_GPU_CONFIG) --execute
+
+olmoe-sft-smoke:
+	PYTHONPATH=training/src $(TRAIN_PY) -m ptr_training.run --config $(OLMOE_SFT_CONFIG) --execute
 
 a0: a0-stable a0-msrv
 
