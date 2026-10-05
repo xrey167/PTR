@@ -48,6 +48,6 @@ fn deterministic_failure_dominates_pass() {
     fabric.push(HardFail);
     let report = fabric.verify(&42);
     assert_eq!(report.status, VerificationStatus::Fail);
-    assert_eq!(report.level, VerificationLevel::Deterministic);
+    assert_eq!(report.level, VerificationLevel::SampleVerified);
     assert!(report.findings.iter().any(|finding| finding.hard));
 }

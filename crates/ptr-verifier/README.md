@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-28  
-**Code footprint:** 1 Rust source files · 106 nonblank source lines · 2 integration-test files · 2 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 1 Rust source files · 399 nonblank source lines · 2 integration-test files · 11 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -18,19 +18,19 @@
 - Finding and VerificationReport with level/score/findings
 - Generic Verifier<T> contract
 - NamedVerifier + VerifierFabric aggregate reports with Fail > Disputed > Unknown > Pass precedence
-- VerifierFabric's combined level is the strongest level any report reached (how deep the deepest verifier went), so a fabric report is no admission rule; the runtime's SemanticGrant admits only at the weakest level of all its verifiers (ADR-0020)
+- VerifierFabric implements Verifier<T>: its level is the WEAKEST level of its reports (a weaker verifier must not let the fabric satisfy a stronger requirement; the runtime's SemanticGrant applies the same rule, ADR-0020), its status is the worst one, and any hard finding forces Fail so a deterministic contradiction dominates learned scores; an empty fabric is Unknown/Unverified
+- ActionContractVerifier (named action-contract) is a deterministic Verifier<ActionIr> over an ActionContract (target, operation, capability, input type, effect, payload size, PayloadEncoding): each violation is one hard finding with a stable code (target, operation, capability, input-type, effect, payload-size, payload-utf8), Fail/Deterministic/score 0, else Pass/Deterministic/score 1
 
 ### Missing for the target architecture
 
-- Type/capability/revision/generation deterministic verifiers
+- Revision/generation deterministic verifier (the runtime's authorize_action still owns that check)
 - Source/evidence promotion verifier
 - Compiler/test/GritQL/Sentrux adapters
 - Calibration/statistical and learned semantic verifiers
 
 ### Next milestones
 
-- Implement concrete deterministic type/capability/revision/generation verifier set
-- Add report aggregation where deterministic contradiction dominates learned scores
+- Add a revision/generation verifier fed with live runtime state
 - Connect verifier output to F001 repair loop
 
 ### Linked experiments
@@ -52,6 +52,7 @@
 ### Current automated checks
 
 - verifier-fabric deterministic failure precedence test
+- unit tests: one hard finding per ActionContractVerifier code, several findings at once, fabric weakest-level rule, hard finding forcing Fail, empty fabric Unknown
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

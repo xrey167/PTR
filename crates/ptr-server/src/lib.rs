@@ -1,6 +1,6 @@
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -15,8 +15,13 @@ use ptr_runtime::{
     PtrRuntime, RuntimeError,
 };
 use ptr_types::{CapabilityId, Effect, ProjectId, RequestId, TypeId, VerificationLevel};
-use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
+use ptr_verifier::{
+    ActionContract, ActionContractVerifier, Finding, PayloadEncoding, VerificationReport,
+    VerificationStatus, Verifier,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -55,6 +60,8 @@ pub const MAX_REQUEST_TEXT_BYTES: usize = 1024 * 1024;
 /// Largest accepted request body. Named here instead of inherited from the
 /// framework's default, so a dependency upgrade cannot change it silently.
 pub const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
+/// Largest typed Pod output the default verifier accepts, in bytes.
+pub const MAX_POD_OUTPUT_BYTES: usize = 64 * 1024;
 
 pub struct DemoNoteExecutor {
     data_dir: std::path::PathBuf,
@@ -145,16 +152,16 @@ impl ActionExecutor for DemoNoteExecutor {
 
 static NOTE_WRITE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-struct AllowActionVerifier;
-
-impl Verifier<ptr_types::ActionIr> for AllowActionVerifier {
-    fn verify(&self, _: &ptr_types::ActionIr) -> VerificationReport {
-        VerificationReport {
-            status: VerificationStatus::Pass,
-            level: VerificationLevel::Deterministic,
-            score: ptr_types::Probability::new(1.0).expect("one is valid"),
-            findings: vec![],
-        }
+/// The one action the demo grant admits, built from the `DEMO_*` constants.
+fn demo_note_contract() -> ActionContract {
+    ActionContract {
+        target: DEMO_NOTE_TARGET.into(),
+        operation: DEMO_NOTE_OPERATION.into(),
+        capability: CapabilityId::from(DEMO_NOTE_CAPABILITY),
+        input_type: TypeId::from(DEMO_NOTE_INPUT_TYPE),
+        effect: Effect::Mutation,
+        max_payload_bytes: MAX_DEMO_NOTE_BYTES,
+        payload_encoding: PayloadEncoding::Utf8,
     }
 }
 
@@ -173,7 +180,7 @@ pub fn demo_effect_grants(
                 effect: Effect::Mutation,
             },
             RequiredVerification::Deterministic,
-            AllowActionVerifier,
+            ActionContractVerifier::new(demo_note_contract()),
             DemoNoteExecutor::new(data_dir.clone()),
         )]
     })
@@ -193,6 +200,7 @@ pub struct ServerState {
     pods: Arc<PodRegistry>,
     verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
     effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+    admission: Arc<RequestAdmission>,
 }
 
 impl ServerState {
@@ -202,7 +210,7 @@ impl ServerState {
             Arc::new(ReferenceEchoBackend),
             PodRouter,
             Arc::new(PodRegistry::default()),
-            Arc::new(AllowAllVerifier),
+            default_verifier(),
             Arc::new(Vec::new),
         )
     }
@@ -215,6 +223,10 @@ impl ServerState {
         verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
         effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
     ) -> Self {
+        // Read before the runtime moves into its mutex.
+        let admission = Arc::new(RequestAdmission::new(
+            runtime.config.runtime.mailbox_capacity,
+        ));
         Self {
             runtime: Arc::new(Mutex::new(runtime)),
             backend,
@@ -222,6 +234,7 @@ impl ServerState {
             pods,
             verifier,
             effect_grants,
+            admission,
         }
     }
 }
@@ -296,6 +309,10 @@ async fn request(
         )));
     }
 
+    // Bounded admission (Invariant #8): the runtime is serialised behind one
+    // mutex, so without a bound every waiting request would queue unboundedly.
+    // A request that finds the mailbox full is refused instead of waiting.
+    let _slot = state.admission.try_enter().ok_or(ApiError::Saturated)?;
     let mut runtime = state
         .runtime
         .lock()
@@ -389,18 +406,140 @@ async fn request(
     }))
 }
 
-struct AllowAllVerifier;
-pub fn default_verifier() -> Arc<dyn Verifier<TypedPayload> + Send + Sync> {
-    Arc::new(AllowAllVerifier)
+/// Sizing and encoding rules for typed Pod output.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PayloadBounds {
+    pub max_bytes: usize,
+    /// Type ids whose bytes must be UTF-8 text.
+    pub textual_types: BTreeSet<TypeId>,
 }
-impl Verifier<TypedPayload> for AllowAllVerifier {
-    fn verify(&self, _: &TypedPayload) -> VerificationReport {
-        VerificationReport {
-            status: VerificationStatus::Pass,
-            level: VerificationLevel::Deterministic,
-            score: ptr_types::Probability::new(1.0).expect("one is valid"),
-            findings: vec![],
+
+impl Default for PayloadBounds {
+    fn default() -> Self {
+        Self {
+            max_bytes: MAX_POD_OUTPUT_BYTES,
+            textual_types: BTreeSet::from([TypeId::from(DEMO_NOTE_INPUT_TYPE)]),
         }
+    }
+}
+
+/// Deterministic verifier for typed Pod output: a non-empty type id, at most
+/// `max_bytes` of payload, and UTF-8 for the type ids listed as textual. It
+/// replaces an allow-all verifier: it cannot judge meaning, but it refuses
+/// output that is malformed or oversized, with hard findings
+/// (`type-id`, `payload-size`, `payload-utf8`).
+#[derive(Clone, Debug, Default)]
+pub struct PayloadBoundsVerifier {
+    bounds: PayloadBounds,
+}
+
+impl PayloadBoundsVerifier {
+    pub fn new(bounds: PayloadBounds) -> Self {
+        Self { bounds }
+    }
+}
+
+impl Verifier<TypedPayload> for PayloadBoundsVerifier {
+    fn verify(&self, payload: &TypedPayload) -> VerificationReport {
+        let mut findings = Vec::new();
+        let mut violation = |code: &str, message: String| {
+            findings.push(Finding {
+                code: code.into(),
+                message,
+                hard: true,
+            });
+        };
+        if payload.type_id.0.trim().is_empty() {
+            violation("type-id", "type id must be non-empty".into());
+        }
+        if payload.bytes.len() > self.bounds.max_bytes {
+            violation(
+                "payload-size",
+                format!(
+                    "payload is {} bytes, limit is {}",
+                    payload.bytes.len(),
+                    self.bounds.max_bytes
+                ),
+            );
+        }
+        if self.bounds.textual_types.contains(&payload.type_id)
+            && std::str::from_utf8(&payload.bytes).is_err()
+        {
+            violation("payload-utf8", "textual payload is not UTF-8".into());
+        }
+        let passed = findings.is_empty();
+        VerificationReport {
+            status: if passed {
+                VerificationStatus::Pass
+            } else {
+                VerificationStatus::Fail
+            },
+            level: VerificationLevel::Deterministic,
+            score: ptr_types::Probability::new(if passed { 1.0 } else { 0.0 })
+                .expect("bounded score"),
+            findings,
+        }
+    }
+}
+
+pub fn default_verifier() -> Arc<dyn Verifier<TypedPayload> + Send + Sync> {
+    Arc::new(PayloadBoundsVerifier::default())
+}
+
+/// Bounds the requests the server works on or waits to work on at once.
+/// Capacity comes from `runtime.mailbox_capacity`; it is validated non-zero
+/// by `ptr-config`.
+#[derive(Debug)]
+pub struct RequestAdmission {
+    in_flight: AtomicUsize,
+    capacity: usize,
+}
+
+impl RequestAdmission {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            in_flight: AtomicUsize::new(0),
+            capacity,
+        }
+    }
+
+    /// Takes a slot, or `None` when all `capacity` slots are taken. Never waits.
+    pub fn try_enter(self: &Arc<Self>) -> Option<AdmissionGuard> {
+        let mut current = self.in_flight.load(Ordering::Acquire);
+        loop {
+            if current >= self.capacity {
+                return None;
+            }
+            match self.in_flight.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(AdmissionGuard {
+                        admission: Arc::clone(self),
+                    })
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::Acquire)
+    }
+}
+
+/// A taken admission slot, released on drop.
+#[derive(Debug)]
+pub struct AdmissionGuard {
+    admission: Arc<RequestAdmission>,
+}
+
+impl Drop for AdmissionGuard {
+    fn drop(&mut self) {
+        self.admission.in_flight.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -411,6 +550,8 @@ pub enum ApiError {
     Internal(String),
     Effect(String),
     EffectConflict(String),
+    /// The request mailbox is full.
+    Saturated,
 }
 
 impl ApiError {
@@ -468,6 +609,14 @@ fn hex_digest(bytes: &[u8; 32]) -> String {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            Self::Saturated => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(header::RETRY_AFTER, "1")],
+                    Json(serde_json::json!({ "error": "request mailbox saturated" })),
+                )
+                    .into_response();
+            }
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             Self::Runtime(RuntimeError::StaleRevision { .. })
             | Self::Runtime(RuntimeError::StaleGeneration { .. })
@@ -480,5 +629,55 @@ impl IntoResponse for ApiError {
             Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn payload(type_id: &str, bytes: &[u8]) -> TypedPayload {
+        TypedPayload {
+            type_id: TypeId::from(type_id),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn payload_bounds_accept_and_refuse_with_stable_codes() {
+        let verifier = PayloadBoundsVerifier::default();
+        assert_eq!(
+            verifier.verify(&payload("any", b"ok")).status,
+            VerificationStatus::Pass
+        );
+        let codes = |p: &TypedPayload| {
+            verifier
+                .verify(p)
+                .findings
+                .into_iter()
+                .map(|f| f.code)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(codes(&payload(" ", b"x")), ["type-id"]);
+        assert_eq!(
+            codes(&payload("any", &vec![0; MAX_POD_OUTPUT_BYTES + 1])),
+            ["payload-size"]
+        );
+        assert_eq!(
+            codes(&payload(DEMO_NOTE_INPUT_TYPE, &[0xff])),
+            ["payload-utf8"]
+        );
+        assert!(codes(&payload("binary", &[0xff])).is_empty());
+    }
+
+    #[test]
+    fn admission_is_bounded_and_released_on_drop() {
+        let admission = Arc::new(RequestAdmission::new(2));
+        let a = admission.try_enter().unwrap();
+        let _b = admission.try_enter().unwrap();
+        assert!(admission.try_enter().is_none());
+        drop(a);
+        assert_eq!(admission.in_flight(), 1);
+        assert!(admission.try_enter().is_some());
     }
 }
