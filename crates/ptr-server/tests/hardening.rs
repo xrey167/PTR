@@ -198,3 +198,74 @@ async fn a_full_mailbox_is_refused_with_503_and_recovers_when_released() {
     assert_eq!(third.status(), StatusCode::OK);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saturation_is_explicit_with_more_requests_than_workers() {
+    let mut config = PtrConfig::default();
+    config.runtime.mailbox_capacity = 4;
+    let (entered_tx, entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
+    let backend = Arc::new(GatedBackend {
+        calls: AtomicUsize::new(0),
+        entered: Mutex::new(entered_tx),
+        release: Mutex::new(release_rx),
+    });
+    let app = ptr_server::router_with_dependencies(
+        runtime(config),
+        backend.clone(),
+        Default::default(),
+        Arc::new(Default::default()),
+        ptr_server::default_verifier(),
+        Arc::new(Vec::new),
+    );
+    let plain = |id: String| {
+        Request::post("/v1/requests")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"id": id, "text": "hello"}).to_string()))
+            .unwrap()
+    };
+
+    // Six concurrent requests on two async workers and capacity four.
+    let tasks: Vec<_> = (0..6)
+        .map(|n| tokio::spawn(app.clone().oneshot(plain(format!("r{n}")))))
+        .collect();
+    entered_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("one request reaches the backend");
+
+    // The two excess requests are refused while the other four stay in flight.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while tasks.iter().filter(|t| t.is_finished()).count() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "refusals never arrived"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Saturated, yet the server still answers health checks.
+    let health = app
+        .clone()
+        .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::OK);
+
+    for _ in 0..4 {
+        release_tx.send(()).unwrap();
+    }
+    let mut ok = 0;
+    let mut refused = 0;
+    for task in tasks {
+        let response = task.await.unwrap().unwrap();
+        match response.status() {
+            StatusCode::OK => ok += 1,
+            StatusCode::SERVICE_UNAVAILABLE => {
+                assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+                refused += 1;
+            }
+            other => panic!("unexpected status {other}"),
+        }
+    }
+    assert_eq!((ok, refused), (4, 2));
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 4);
+}
