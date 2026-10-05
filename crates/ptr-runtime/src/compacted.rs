@@ -18,24 +18,37 @@
 //! permissions, sessions, permits, registrations, external-effect outcomes or
 //! neural/KV state. Those are not history and cannot be replayed.
 use super::execution::{ActionIdentity, SettledOutcome, UnsettledEffect};
+use super::expert::{ExpertEntry, ExpertRegistryProjection};
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_config::PtrConfig;
 use ptr_ledger::integrity::{self, LogAnchor};
 use ptr_ledger::{CommittedEvent, InMemoryLedger, MAX_RETAINED_RESPONSE};
+use ptr_pods::{
+    BaseModelDigest, BaseModelId, BaseModelRef, ExpertLevel, ExpertState, ManifestDigest,
+    RetiredReason,
+};
 use ptr_semdb::{SemanticDelta, SemanticHost};
 use ptr_state::MaterializedState;
 use ptr_types::{CommitIndex, Effect, Generation, ProjectId, Revision};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// PTRCS004 is the layout this build writes: its lifecycle section is
-/// PTRLC002, the first that may carry [`ptr_state::ATTESTED_MARKER`] and the
-/// merged-branch keys ([`ptr_state::MERGED_BRANCH_PREFIX`]).
+/// PTRCS005 is the layout this build writes: its lifecycle section is
+/// PTRLC003, PTRLC002 followed by the expert registry
+/// ([`crate::expert::ExpertRegistryProjection`]) as a block of its own
+/// ([`REGISTRY_MAGIC`]).
 ///
-/// The magic moved so that a build from before attributed records stops here.
-/// Reading a snapshot of a history that holds attributed records, such a
-/// build would ignore the marker, then append records that history's replay
-/// refuses, or merge a branch the history already merged.
-const MAGIC: &[u8; 8] = b"PTRCS004";
+/// The magic moved so that a build from before the registry stops here: it
+/// would restore an empty registry and admit a result over a retired expert.
+const MAGIC: &[u8; 8] = b"PTRCS005";
+/// PTRCS004, the layout before the expert registry: still read, never written.
+/// Its lifecycle section is PTRLC002. It describes a history with no expert
+/// structural record, so one whose materialized state holds an `expert:` key
+/// is refused by version rather than restored with an empty registry.
+const PRE_REGISTRY_MAGIC: &[u8; 8] = b"PTRCS004";
+/// The lifecycle section of a PTRCS004 snapshot, read only inside one.
+const PRE_REGISTRY_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC002";
+/// Opens the expert registry block at the end of a PTRLC003 section.
+const REGISTRY_MAGIC: &[u8; 8] = b"PTREG001";
 /// PTRCS003, the layout before attributed records: still read, never written,
 /// and only with a PTRLC001 lifecycle section. Such a snapshot describes a
 /// history of tag-8 semantic records only, so the absence of the marker it
@@ -52,7 +65,7 @@ const PRE_ATTESTATION_MAGIC: &[u8; 8] = b"PTRCS003";
 /// action nor named by its attempt, and a section in that layout is refused by
 /// version.
 const EXECUTION_MAGIC: &[u8; 8] = b"PTREX002";
-const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC002";
+const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC003";
 /// The lifecycle section of a PTRCS003 snapshot, read only inside one.
 const PRE_ATTESTATION_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
 
@@ -60,6 +73,8 @@ const PRE_ATTESTATION_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
 /// says. The lifecycle section must be the one that layout pairs with.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Layout {
+    /// PTRCS005 with PTRLC003.
+    Registry,
     /// PTRCS004 with PTRLC002.
     Attested,
     /// PTRCS003 with PTRLC001.
@@ -166,6 +181,7 @@ struct LifecycleState {
     live_generations: BTreeMap<String, Generation>,
     capsule_projects: BTreeMap<String, String>,
     revoked_generations: BTreeSet<(String, Generation)>,
+    experts: ExpertRegistryProjection,
 }
 
 /// An immutable compacted snapshot.
@@ -370,6 +386,27 @@ impl LifecycleState {
             out.text(subject)?;
             out.number(generation.0)?;
         }
+        out.raw(REGISTRY_MAGIC)?;
+        out.count(self.experts.len())?;
+        for (project, pod, entry) in self.experts.iter() {
+            out.text(project)?;
+            out.text(pod)?;
+            out.number(entry.generation.0)?;
+            out.number(entry.state_version)?;
+            out.raw(entry.manifest_digest.as_bytes())?;
+            out.number(state_tag(entry.state))?;
+            match entry.level {
+                ExpertLevel::Token { layer, index } => {
+                    out.number(0)?;
+                    out.number(u64::from(layer))?;
+                    out.number(u64::from(index))?;
+                }
+                ExpertLevel::Segment => out.number(1)?,
+            }
+            out.text(entry.base_model.id().as_str())?;
+            out.raw(entry.base_model.digest().as_bytes())?;
+            out.number(entry.base_model.generation())?;
+        }
         Ok(out.0)
     }
 
@@ -390,7 +427,8 @@ impl LifecycleState {
         }
         let mut reader = Reader { bytes, offset: 0 };
         let magic = match layout {
-            Layout::Attested => LIFECYCLE_MAGIC,
+            Layout::Registry => LIFECYCLE_MAGIC,
+            Layout::Attested => PRE_REGISTRY_LIFECYCLE_MAGIC,
             Layout::PreAttestation => PRE_ATTESTATION_LIFECYCLE_MAGIC,
         };
         if reader.take(8)? != magic {
@@ -441,10 +479,134 @@ impl LifecycleState {
             previous = Some(entry.clone());
             state.revoked_generations.insert(entry);
         }
+        if layout == Layout::Registry {
+            state.experts = decode_registry(&mut reader)?;
+        }
         if !reader.finished() {
             return Err(invalid(CompactedError::LengthMismatch));
         }
+        state.check_experts(layout)?;
         Ok(state)
+    }
+}
+
+/// The tag a state is written under; [`state_from_tag`] is its inverse.
+fn state_tag(state: ExpertState) -> u64 {
+    match state {
+        ExpertState::Candidate => 0,
+        ExpertState::Gated => 1,
+        ExpertState::Serving => 2,
+        ExpertState::Frozen => 3,
+        ExpertState::Fenced => 4,
+        ExpertState::Superseded => 5,
+        ExpertState::Retired(RetiredReason::Pruned) => 6,
+        ExpertState::Retired(RetiredReason::Superseded) => 7,
+        ExpertState::Retired(RetiredReason::GateFailed) => 8,
+        ExpertState::Retired(RetiredReason::InputRevoked) => 9,
+    }
+}
+
+fn state_from_tag(tag: u64) -> Result<ExpertState, RuntimeError> {
+    Ok(match tag {
+        0 => ExpertState::Candidate,
+        1 => ExpertState::Gated,
+        2 => ExpertState::Serving,
+        3 => ExpertState::Frozen,
+        4 => ExpertState::Fenced,
+        5 => ExpertState::Superseded,
+        6 => ExpertState::Retired(RetiredReason::Pruned),
+        7 => ExpertState::Retired(RetiredReason::Superseded),
+        8 => ExpertState::Retired(RetiredReason::GateFailed),
+        9 => ExpertState::Retired(RetiredReason::InputRevoked),
+        _ => return Err(invalid(CompactedError::UnknownTag)),
+    })
+}
+
+fn noncanonical<E>(_: E) -> RuntimeError {
+    invalid(CompactedError::NoncanonicalSection)
+}
+
+/// Read the registry block: strictly ascending `(project, pod)`, every identity through its
+/// constructor, so a value no admission could have written is refused.
+fn decode_registry(reader: &mut Reader<'_>) -> Result<ExpertRegistryProjection, RuntimeError> {
+    if reader.take(8)? != REGISTRY_MAGIC {
+        return Err(invalid(CompactedError::UnsupportedVersion));
+    }
+    let digest = |reader: &mut Reader<'_>| -> Result<[u8; 32], RuntimeError> {
+        Ok(reader.take(32)?.try_into().expect("fixed digest"))
+    };
+    let mut entries = Vec::new();
+    let mut previous: Option<(String, String)> = None;
+    for _ in 0..reader.count()? {
+        let project = reader.text()?;
+        let pod = reader.text()?;
+        let key = (project, pod);
+        if previous.as_ref().is_some_and(|last| *last >= key) {
+            return Err(invalid(CompactedError::NoncanonicalSection));
+        }
+        let generation = Generation(reader.number()?);
+        let state_version = reader.number()?;
+        let manifest_digest = ManifestDigest::new(digest(reader)?).map_err(noncanonical)?;
+        let state = state_from_tag(reader.number()?)?;
+        let level = match reader.number()? {
+            0 => {
+                let layer = u16::try_from(reader.number()?).map_err(noncanonical)?;
+                let index = u16::try_from(reader.number()?).map_err(noncanonical)?;
+                ExpertLevel::Token { layer, index }
+            }
+            1 => ExpertLevel::Segment,
+            _ => return Err(invalid(CompactedError::UnknownTag)),
+        };
+        let base_id = BaseModelId::new(reader.text()?).map_err(noncanonical)?;
+        let base_digest = BaseModelDigest::new(digest(reader)?).map_err(noncanonical)?;
+        let base_model =
+            BaseModelRef::new(base_id, base_digest, reader.number()?).map_err(noncanonical)?;
+        if generation.0 == 0 {
+            return Err(invalid(CompactedError::NoncanonicalSection));
+        }
+        previous = Some(key.clone());
+        entries.push((
+            key,
+            ExpertEntry {
+                state,
+                state_version,
+                generation,
+                manifest_digest,
+                level,
+                base_model,
+            },
+        ));
+    }
+    Ok(ExpertRegistryProjection::from_entries(entries))
+}
+
+impl LifecycleState {
+    /// The registry and the materialized `expert:` keys describe the same experts, entry for
+    /// entry. A PTRCS004 section carries no registry, so it must hold no such key.
+    fn check_experts(&self, layout: Layout) -> Result<(), RuntimeError> {
+        let keys = self
+            .materialized
+            .keys()
+            .filter(|key| key.starts_with(ptr_state::EXPERT_PREFIX))
+            .count();
+        if layout != Layout::Registry {
+            return if keys == 0 {
+                Ok(())
+            } else {
+                Err(invalid(CompactedError::UnsupportedVersion))
+            };
+        }
+        if keys != self.experts.len() {
+            return Err(invalid(CompactedError::StateMismatch));
+        }
+        for (project, pod, entry) in self.experts.iter() {
+            let expected =
+                ptr_state::expert_entry(entry.generation.0, entry.state, entry.state_version);
+            if self.materialized.get(&ptr_state::expert_key(project, pod)) != Some(&expected) {
+                return Err(invalid(CompactedError::StateMismatch));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -633,6 +795,7 @@ impl PtrRuntime {
             live_generations: self.live_generations.clone(),
             capsule_projects: self.capsule_projects.clone(),
             revoked_generations: self.revoked_generations.clone(),
+            experts: self.experts.clone(),
         }
     }
 
@@ -738,6 +901,7 @@ impl PtrRuntime {
         runtime.live_generations = lifecycle.live_generations;
         runtime.capsule_projects = lifecycle.capsule_projects;
         runtime.revoked_generations = lifecycle.revoked_generations;
+        runtime.experts = lifecycle.experts;
         // The retained records keep the indices they were committed at; a ledger
         // that renumbered them from 1 would contradict the snapshot's floor.
         runtime.ledger = RuntimeLedger::Memory(InMemoryLedger::resuming_above(trusted.floor.index));
@@ -782,7 +946,8 @@ fn compacted_sections(
         return Err(invalid(CompactedError::SizeLimit));
     }
     let layout = match &bytes[..8] {
-        magic if magic == MAGIC => Layout::Attested,
+        magic if magic == MAGIC => Layout::Registry,
+        magic if magic == PRE_REGISTRY_MAGIC => Layout::Attested,
         magic if magic == PRE_ATTESTATION_MAGIC => Layout::PreAttestation,
         _ => return Err(invalid(CompactedError::UnsupportedVersion)),
     };
