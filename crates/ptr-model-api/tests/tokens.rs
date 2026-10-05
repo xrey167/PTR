@@ -20,7 +20,7 @@ fn context() -> SemanticContext {
 }
 
 fn raw(text: &str) -> PromptSegment {
-    PromptSegment::from_text(&ByteTokenizer::new(), SegmentSource::Raw, text).unwrap()
+    PromptSegment::raw_from_text(&ByteTokenizer::new(), text).unwrap()
 }
 
 fn semantic(text: &str, key: &str, generation: u64) -> PromptSegment {
@@ -92,7 +92,7 @@ fn tokenizer_identity_rejects_empty_parts() {
 fn segment_rejects_empty_tokens_and_empty_semantic_key() {
     let tokenizer = ByteTokenizer::new();
     assert_eq!(
-        PromptSegment::from_text(&tokenizer, SegmentSource::Raw, ""),
+        PromptSegment::raw_from_text(&tokenizer, ""),
         Err(TokenContractError::EmptySegment)
     );
     assert_eq!(
@@ -115,8 +115,7 @@ fn content_digest_depends_on_tokens_and_tokenizer_identity() {
 
     let tokens = ByteTokenizer::new().encode("abc");
     let other = TokenizerIdentity::new("ptr.byte", "2").unwrap();
-    let other_version =
-        PromptSegment::from_tokens(other, SegmentSource::Raw, tokens.clone()).unwrap();
+    let other_version = PromptSegment::raw_from_tokens(other, tokens.clone()).unwrap();
     assert_ne!(raw("abc").content_digest(), other_version.content_digest());
     assert_eq!(other_version.tokens(), tokens.as_slice());
 }
@@ -218,7 +217,7 @@ fn lineage_digest_format_is_pinned() {
     let req = request(vec![raw("a"), semantic("b", "k", 7)]);
     assert_eq!(
         hex(&req.lineage_digest()),
-        "4b59cca9d15e00100a4af5110f0c7cdf9efd2bf0f343b6697871e1816d7fd162"
+        "cc61a596b42a3efd0282f098fc5f19eb76e96a851f628e5ec43f028f3c3e57d7"
     );
 }
 
@@ -230,8 +229,7 @@ fn segmented_request_rejects_empty_list_and_tokenizer_mismatch() {
         Err(TokenContractError::EmptySegmentList)
     );
     let foreign = TokenizerIdentity::new("hf.other", "1").unwrap();
-    let segment =
-        PromptSegment::from_tokens(foreign.clone(), SegmentSource::Raw, vec![TokenId(1)]).unwrap();
+    let segment = PromptSegment::raw_from_tokens(foreign.clone(), vec![TokenId(1)]).unwrap();
     assert_eq!(
         SegmentedModelRequest::new(
             RequestId::from("r"),
@@ -248,11 +246,16 @@ fn segmented_request_rejects_empty_list_and_tokenizer_mismatch() {
 
 #[test]
 fn kv_reuse_report_rejects_hit_beyond_total() {
-    let report = KvReuseReport::new(3, KvReuseMode::Exact, 3).unwrap();
+    let report = KvReuseReport::new(3, KvReuseMode::Exact, 3, KvReusePolicy::ExactOnly).unwrap();
     assert_eq!(report.hit_tokens(), 3);
     assert_eq!(report.mode(), KvReuseMode::Exact);
     assert_eq!(
-        KvReuseReport::new(4, KvReuseMode::Approximate, 3),
+        KvReuseReport::new(
+            4,
+            KvReuseMode::Approximate,
+            3,
+            KvReusePolicy::AllowApproximate
+        ),
         Err(TokenContractError::HitExceedsTotal {
             hit_tokens: 4,
             total_tokens: 3
@@ -279,6 +282,7 @@ impl KvReusingBackend for PrefixBackend {
                     hint.requested_prefix_tokens.min(total),
                     KvReuseMode::Exact,
                     total,
+                    hint.policy,
                 )
                 .map_err(|e| ModelError(e.to_string()))?,
             ),
@@ -309,4 +313,91 @@ fn trivial_backend_implements_kv_reusing_backend() {
     let report = warm.kv_report.unwrap();
     assert_eq!(report.hit_tokens(), 4);
     assert_eq!(report.mode(), KvReuseMode::Exact);
+}
+
+#[test]
+fn approximate_report_requires_a_policy_that_allows_it() {
+    assert_eq!(
+        KvReuseReport::new(1, KvReuseMode::Approximate, 3, KvReusePolicy::ExactOnly),
+        Err(TokenContractError::ApproximateNotAllowed)
+    );
+    let ok = KvReuseReport::new(
+        1,
+        KvReuseMode::Approximate,
+        3,
+        KvReusePolicy::AllowApproximate,
+    )
+    .unwrap();
+    assert_eq!(ok.mode(), KvReuseMode::Approximate);
+    assert!(KvReuseReport::new(1, KvReuseMode::Exact, 3, KvReusePolicy::AllowApproximate).is_ok());
+}
+
+#[test]
+fn raw_source_is_rejected_by_the_general_constructors() {
+    let tokenizer = ByteTokenizer::new();
+    assert_eq!(
+        PromptSegment::from_text(&tokenizer, SegmentSource::Raw, "x"),
+        Err(TokenContractError::RawSourceNeedsRawConstructor)
+    );
+    assert_eq!(
+        PromptSegment::from_tokens(
+            tokenizer.identity().clone(),
+            SegmentSource::Raw,
+            vec![TokenId(1)]
+        ),
+        Err(TokenContractError::RawSourceNeedsRawConstructor)
+    );
+}
+
+#[test]
+fn empty_memory_and_derived_ids_are_rejected() {
+    let tokenizer = ByteTokenizer::new();
+    assert_eq!(
+        PromptSegment::from_text(
+            &tokenizer,
+            SegmentSource::Memory {
+                id: KnowledgeObjectId::from(""),
+                generation: Generation(1)
+            },
+            "x"
+        ),
+        Err(TokenContractError::EmptySourceId)
+    );
+    assert_eq!(
+        PromptSegment::from_text(
+            &tokenizer,
+            SegmentSource::Derived {
+                id: EvidenceId::from(""),
+                generation: Generation(1)
+            },
+            "x"
+        ),
+        Err(TokenContractError::EmptySourceId)
+    );
+}
+
+#[test]
+fn revision_and_tokenizer_change_the_lineage_digest() {
+    let identity = ByteTokenizer::new().identity().clone();
+    let at = |revision: u64| {
+        SegmentedModelRequest::new(
+            RequestId::from("r"),
+            SemanticContext {
+                revision: Revision(revision),
+                entries: vec![],
+            },
+            identity.clone(),
+            vec![raw("abc")],
+        )
+        .unwrap()
+        .lineage_digest()
+    };
+    assert_eq!(at(1), at(1));
+    assert_ne!(at(1), at(2));
+
+    let v2 = TokenizerIdentity::new("ptr.byte", "2").unwrap();
+    let seg =
+        PromptSegment::raw_from_tokens(v2.clone(), ByteTokenizer::new().encode("abc")).unwrap();
+    let other = SegmentedModelRequest::new(RequestId::from("r"), context(), v2, vec![seg]).unwrap();
+    assert_ne!(other.lineage_digest(), at(1));
 }
