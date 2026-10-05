@@ -1,4 +1,4 @@
-.PHONY: check test fmt a0 a0-stable a0-msrv a0-bridge repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
+.PHONY: check test fmt py-bindings a0 a0-stable a0-msrv a0-bridge repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
 	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers
@@ -32,6 +32,21 @@ fmt:
 	cargo fmt --all -- --check
 	cargo fmt --manifest-path model/burn-a0/Cargo.toml -- --check
 	cargo fmt --manifest-path model/burn-a0/Cargo.toml -p ptr-a0-bridge -- --check
+
+# `bindings/ptr-py` is a PyO3 extension in its own excluded workspace, built with
+# maturin into a venv kept inside it (gitignored). Not a CI job: nothing in
+# ci.yml builds it, so no ci-* counterpart exists.
+MATURIN ?= 1.15.0
+PY_BINDINGS := bindings/ptr-py
+
+py-bindings:
+	$(PYTHON) -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "py-bindings needs Python >= 3.11 (set PYTHON=...)"; exit 1; }
+	$(PYTHON) -m venv $(PY_BINDINGS)/.venv
+	$(PY_BINDINGS)/.venv/bin/pip install -q maturin==$(MATURIN)
+	cargo fmt --manifest-path $(PY_BINDINGS)/Cargo.toml -- --check
+	cargo clippy --manifest-path $(PY_BINDINGS)/Cargo.toml --all-targets --locked -- -D warnings
+	cd $(PY_BINDINGS) && VIRTUAL_ENV="$(CURDIR)/$(PY_BINDINGS)/.venv" PATH="$(CURDIR)/$(PY_BINDINGS)/.venv/bin:$$PATH" maturin develop --locked
+	$(PY_BINDINGS)/.venv/bin/python -m unittest discover -s $(PY_BINDINGS)/tests -v
 
 a0: a0-stable a0-msrv a0-bridge
 

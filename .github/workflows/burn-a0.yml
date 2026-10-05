@@ -1,6 +1,7 @@
 name: burn-a0
 on:
   push:
+    branches: [main]
     paths:
       - "model/burn-a0/**"
       # A0 depends on the type kernel by path and its checkpoint tests read the
