@@ -292,6 +292,7 @@ def check_model_context(cfg, model, tokenizer, sft_tasks, rl_tasks, eval_tasks) 
 
 
 def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None) -> dict:
+    moe_config.require_backend_opt_in(cfg.allow_unselected_backend)
     require_extra()
     import torch
 
@@ -549,6 +550,7 @@ def run_config(config_path: str | Path, out: str | Path | None = None, extra: di
     """
     config_path = _resolve(config_path)
     cfg = moe_config.load(config_path)
+    moe_config.require_backend_opt_in(cfg.allow_unselected_backend)  # before any directory
     base = _resolve(out if out is not None else cfg.output_dir)
     out_dir = unique_run_dir(base, cfg.name, config_hash(config_path))
     result = execute(cfg, out_dir, extra)

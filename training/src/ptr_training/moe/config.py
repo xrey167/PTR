@@ -31,7 +31,32 @@ _MAXIMA = {
     "moe.sft.steps": 100_000, "moe.sft.examples": 100_000, "moe.sft.batch": 1024,
     "moe.rl.steps": 10_000, "moe.rl.mini_steps": 64, "moe.rl.num_generations": 64, "moe.rl.prompts_per_step": 64,
     "moe.rl.max_completion_length": 512, "moe.output.probe_tokens": 4096,
+    "moe.sft.max_length": 4096, "moe.rl.max_prompt_length": 4096, "moe.lora.rank": 1024,
 }
+
+
+def tiny_parameter_count(layers: int, hidden: int, intermediate: int, experts: int) -> int:
+    """Parameters of the untied tiny OLMoE (embedding + head, per-layer attention, fused
+    experts, router and norms), computed from the config alone before any model is built."""
+    per_layer = (
+        4 * hidden * hidden + 2 * hidden  # q/k/v/o + q/k norms
+        + 3 * hidden * intermediate * experts  # gate_up (2I x H) + down (H x I) per expert
+        + experts * hidden  # router
+        + 2 * hidden  # layer norms
+    )
+    return 2 * TINY_VOCAB_SIZE * hidden + layers * per_layer + hidden
+
+
+
+# Tiny-random architecture ceilings (well above the smoke config: 2 layers, 64 hidden, 64
+# intermediate, 4 heads, 8 experts, top-2, 64 positions); `[moe] allow_large = true` lifts them.
+# vocab and kv heads are not configurable (character tokenizer; kv heads == heads).
+TINY_VOCAB_SIZE = 59  # len(tokenizer): 55 characters + pad/eos/bos/unk
+_TINY_MAXIMA = {
+    "model.layers": 24, "model.hidden": 1024, "model.intermediate": 4096, "model.heads": 32,
+    "model.experts": 64, "model.top_k": 16, "model.max_positions": 2048,
+}
+MAX_TINY_PARAMETERS = 50_000_000
 MAX_GENERATION_BATCH = 4096  # mini_steps * prompts_per_step * num_generations rollouts at once
 _SHA40 = re.compile(r"[0-9a-f]{40}")
 _GATES_KEYS = {"subspace_rank"}
@@ -54,6 +79,23 @@ _TINY_ONLY_KEYS = (
 
 class ConfigError(ValueError):
     """Invalid MoE stage configuration."""
+
+
+UNSELECTED_BACKEND_MESSAGE = (
+    "training backend 'trl-moe' is not selected (component training-backend is unlocked, "
+    "candidate trl-peft is to-evaluate); set [training] allow_unselected_backend = true to "
+    "run it as pipeline-smoke evidence only"
+)
+
+
+class BackendNotSelected(ConfigError):
+    """The backend is unselected and the config did not opt in to running it anyway."""
+
+
+def require_backend_opt_in(allow_unselected_backend) -> None:
+    """The one gate every entry point (CLI, run_config, execute) calls."""
+    if allow_unselected_backend is not True:
+        raise BackendNotSelected(UNSELECTED_BACKEND_MESSAGE)
 
 
 def _table(raw: dict, name: str, *, required: bool = True) -> dict:
@@ -228,6 +270,8 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     if kind == "pretrained":
         if not isinstance(hf_id, str) or not hf_id:
             raise ConfigError("model.hf_id is required when model.kind = 'pretrained'")
+    elif hf_id is not None:
+        raise ConfigError("model.hf_id is only valid when model.kind = 'pretrained'")
     revision = m.get("revision")
     if kind == "pretrained":
         tiny_only = [k for k in _TINY_ONLY_KEYS if k in m]
@@ -411,9 +455,21 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         raise ConfigError(f"moe.lora.dropout must be in [0, 1), got {lora.dropout}")
     if enabled and not (lora.target_modules or lora.target_parameters):
         raise ConfigError("moe.lora is enabled but has no target_modules or target_parameters")
+    if not enabled:
+        ignored_lora = sorted(set(lo) - {"enabled"})
+        if ignored_lora:
+            raise ConfigError(
+                f"moe.lora keys {ignored_lora} are ignored while moe.lora.enabled = false; "
+                "remove them or enable LoRA"
+            )
 
     g = _table(moe, "gates", required=False)
     _check_keys(g, _GATES_KEYS, "moe.gates")
+    if g and (kind == "pretrained" or lora.enabled):
+        raise ConfigError(
+            "[moe.gates] is ignored for pretrained or LoRA runs (gates run only on the tiny "
+            "full-fine-tune model); remove the table"
+        )
     gates_cfg = GatesConfig(
         subspace_rank=_positive(_get(g, "subspace_rank", int, "moe.gates", 4), "moe.gates.subspace_rank")
     )
@@ -431,6 +487,25 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
 
     allow_full_finetune = _get(moe, "allow_full_finetune", bool, "moe", False)
     allow_large = _get(moe, "allow_large", bool, "moe", False)
+    if kind == "tiny-random" and not allow_large:
+        dims = {
+            "model.layers": model.layers, "model.hidden": model.hidden,
+            "model.intermediate": model.intermediate, "model.heads": model.heads,
+            "model.experts": model.experts, "model.top_k": model.top_k,
+            "model.max_positions": model.max_positions,
+        }
+        for key, value in dims.items():
+            if value > _TINY_MAXIMA[key]:
+                raise ConfigError(
+                    f"{key} = {value} exceeds the tiny-model sanity limit {_TINY_MAXIMA[key]}; "
+                    "set [moe] allow_large = true to override"
+                )
+        params = tiny_parameter_count(model.layers, model.hidden, model.intermediate, model.experts)
+        if params > MAX_TINY_PARAMETERS:
+            raise ConfigError(
+                f"the tiny model would have {params} parameters (> {MAX_TINY_PARAMETERS}); "
+                "set [moe] allow_large = true to override"
+            )
     if kind == "pretrained" and not lora.enabled and not allow_full_finetune:
         raise ConfigError(
             "a pretrained model with moe.lora.enabled = false is a full fine-tune of every "
@@ -446,9 +521,21 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             "moe.rl.max_completion_length": rl.max_completion_length,
             "moe.output.probe_tokens": probe_tokens,
         }
+        values.update({
+            "moe.sft.max_length": sft.max_length,
+            "moe.rl.max_prompt_length": rl.max_prompt_length,
+            "moe.lora.rank": lora.rank,
+        })
+        # Settings genuinely unused in this mode are exempt. `max_completion_length` is not RL-only:
+        # both policy evaluations generate that many tokens even when no RL arm runs.
+        unused = set()
+        if not algos:
+            unused |= {k for k in values if k.startswith("moe.rl.")} - {"moe.rl.max_completion_length"}
+        if not lora.enabled:
+            unused.add("moe.lora.rank")
         for key, value in values.items():
-            if key.startswith("moe.rl.") and not algos:
-                continue  # RL never runs
+            if key in unused:
+                continue
             if value > _MAXIMA[key]:
                 raise ConfigError(
                     f"{key} = {value} exceeds the sanity limit {_MAXIMA[key]}; "

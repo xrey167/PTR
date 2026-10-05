@@ -72,6 +72,49 @@ class MoeTaskSplitTests(unittest.TestCase):
         self.assertEqual(pipeline.build_task_splits(cfg), pipeline.build_task_splits(cfg))
 
 
+class MoeEntryPointGateTests(unittest.TestCase):
+    def _unselected_config(self, tmp: Path) -> Path:
+        text = (CONFIGS / "stage-moe-smoke.toml").read_text(encoding="utf-8")
+        text = text.replace("allow_unselected_backend = true\n", "")
+        path = tmp / "stage.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_run_config_refuses_unselected_backend_before_creating_anything(self):
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._unselected_config(Path(tmp))
+            out = Path(tmp) / "runs"
+            with mock.patch.object(
+                pipeline, "execute", side_effect=AssertionError("executed")
+            ) as execute:
+                with self.assertRaises(moe_config.BackendNotSelected) as ctx:
+                    pipeline.run_config(config, out)
+            execute.assert_not_called()
+            self.assertEqual(str(ctx.exception), moe_config.UNSELECTED_BACKEND_MESSAGE)
+            self.assertFalse(out.exists())  # no run directory was created
+
+    def test_execute_enforces_the_same_gate_first(self):
+        import dataclasses
+        from unittest import mock
+
+        cfg = dataclasses.replace(
+            moe_config.load(CONFIGS / "stage-moe-smoke.toml"), allow_unselected_backend=False
+        )
+        with mock.patch.object(pipeline, "require_extra", side_effect=AssertionError("order")):
+            with self.assertRaises(moe_config.BackendNotSelected):
+                pipeline.execute(cfg, Path("unused"))
+
+    def test_cli_and_run_config_share_the_message(self):
+        from ptr_training import run
+
+        self.assertTrue(hasattr(run, "main"))
+        text = Path(run.__file__).read_text(encoding="utf-8")
+        self.assertIn("require_backend_opt_in", text)
+        self.assertNotIn("is not selected (component", text)  # message lives in one place
+
+
 class MoeRunDirTests(unittest.TestCase):
     def test_immediate_calls_give_distinct_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:

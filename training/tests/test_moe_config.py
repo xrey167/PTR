@@ -62,6 +62,7 @@ class MoeConfigTests(unittest.TestCase):
             r["model"].update(kind="pretrained", hf_id="org/model")
             for key in ("layers", "hidden", "intermediate", "heads", "experts", "top_k", "max_positions"):
                 r["model"].pop(key)
+            r["moe"].pop("gates", None)  # gates are tiny-model-only
 
         with self.assertRaisesRegex(ConfigError, r"model\.revision is required"):
             moe_config.parse(self._mutate(mutate))
@@ -215,6 +216,101 @@ class MoeConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "num_generations"):
             moe_config.parse(raw)
 
+    def test_completion_length_cap_applies_even_without_rl(self):
+        def mutate(r):
+            r["moe"]["rl"].update(algorithms=[], max_completion_length=513)
+            r["model"]["max_positions"] = 2000
+
+        with self.assertRaisesRegex(ConfigError, r"moe\.rl\.max_completion_length.*allow_large"):
+            moe_config.parse(self._mutate(mutate))
+        raw = self._mutate(mutate)
+        raw["moe"]["allow_large"] = True
+        moe_config.parse(raw)
+        # RL-only keys remain exempt when RL is off
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(algorithms=[], steps=99_999,
+                                                          prompts_per_step=1000))
+        moe_config.parse(raw)
+
+    def test_hf_id_rejected_for_tiny_random(self):
+        raw = self._mutate(lambda r: r["model"].update(hf_id="org/model"))
+        with self.assertRaisesRegex(ConfigError, r"model\.hf_id is only valid"):
+            moe_config.parse(raw)
+
+    def test_tiny_architecture_ceilings(self):
+        cases = {"layers": 25, "hidden": 1028, "intermediate": 4097, "heads": 33,
+                 "experts": 65, "top_k": 17, "max_positions": 2049}
+        for key, value in cases.items():
+            with self.subTest(key=key):
+                def mutate(r):
+                    r["model"][key] = value
+                    r["model"]["experts"] = max(r["model"]["experts"], 17)
+                    if key == "hidden":
+                        r["model"]["hidden"] = 1028 // 4 * 4  # divisible by heads, even head dim
+                        r["model"]["hidden"] = 1032
+                    if key == "heads":
+                        r["model"]["hidden"] = 33 * 2
+                    if key == "max_positions":
+                        r["model"]["max_positions"] = 2049
+
+                with self.assertRaisesRegex(ConfigError, rf"model\.{key} = .*allow_large"):
+                    moe_config.parse(self._mutate(mutate))
+
+    def test_tiny_parameter_cap_and_allow_large(self):
+        from ptr_training.moe.config import MAX_TINY_PARAMETERS, tiny_parameter_count
+
+        # each dimension within its own ceiling, but together far over the cap
+        def mutate(r):
+            r["model"].update(layers=24, hidden=1024, intermediate=4096, experts=64, heads=16,
+                              top_k=2, max_positions=128)
+
+        self.assertGreater(tiny_parameter_count(24, 1024, 4096, 64), MAX_TINY_PARAMETERS)
+        with self.assertRaisesRegex(ConfigError, "parameters.*allow_large"):
+            moe_config.parse(self._mutate(mutate))
+        raw = self._mutate(mutate)
+        raw["moe"]["allow_large"] = True
+        moe_config.parse(raw)
+        smoke = moe_config.load(CONFIGS / "stage-moe-smoke.toml").model
+        self.assertLess(
+            tiny_parameter_count(smoke.layers, smoke.hidden, smoke.intermediate, smoke.experts),
+            MAX_TINY_PARAMETERS // 10,
+        )
+
+    def test_sft_length_and_lora_rank_ceilings(self):
+        raw = self._mutate(lambda r: (r["moe"]["sft"].update(max_length=4097),
+                                      r["model"].update(max_positions=2048)))
+        with self.assertRaisesRegex(ConfigError, r"(max_length|max_positions)"):
+            moe_config.parse(raw)
+        lora = {"enabled": True, "rank": 1025, "target_modules": ["q_proj"]}
+        def mutate(r):
+            r["moe"].pop("gates")
+            r["moe"].update(lora=lora)
+
+        with self.assertRaisesRegex(ConfigError, r"moe\.lora\.rank.*allow_large"):
+            moe_config.parse(self._mutate(mutate))
+
+    def test_ignored_lora_keys_and_gates_table_rejected(self):
+        raw = self._mutate(lambda r: r["moe"].update(lora={"enabled": False, "rank": 8}))
+        with self.assertRaisesRegex(ConfigError, r"moe\.lora keys \['rank'\] are ignored"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"].update(
+            lora={"enabled": True, "target_modules": ["q_proj"]}))  # smoke still has [moe.gates]
+        with self.assertRaisesRegex(ConfigError, r"\[moe\.gates\] is ignored"):
+            moe_config.parse(raw)
+        moe_config.parse(self._mutate(lambda r: None))  # smoke: gates + disabled LoRA is fine
+
+    def test_unselected_backend_gate_is_shared(self):
+        from ptr_training.moe.config import (
+            UNSELECTED_BACKEND_MESSAGE,
+            BackendNotSelected,
+            require_backend_opt_in,
+        )
+
+        for bad in (None, False, "true", 1):
+            with self.assertRaises(BackendNotSelected) as ctx:
+                require_backend_opt_in(bad)
+            self.assertEqual(str(ctx.exception), UNSELECTED_BACKEND_MESSAGE)
+        require_backend_opt_in(True)
+
     def test_generation_batch_ceiling(self):
         # 64 * 64 * 2 = 8192 rollouts at once (each key under its own ceiling)
         def mutate(r):
@@ -234,7 +330,7 @@ class MoeConfigTests(unittest.TestCase):
         for table, key, value in cases:
             with self.subTest(key=f"{table}.{key}"):
                 raw = self._mutate(lambda r: r["moe"][table].update({key: value}))
-                raw["model"]["max_positions"] = 4096  # keep the position bound out of the way
+                raw["model"]["max_positions"] = 2000  # keep the position bound out of the way
                 with self.assertRaisesRegex(ConfigError, rf"moe\.{table}\.{key}.*allow_large"):
                     moe_config.parse(raw)
                 raw["moe"]["allow_large"] = True
@@ -373,12 +469,19 @@ class MoeConfigTests(unittest.TestCase):
             moe_config.parse(raw)
 
     def test_lora_dropout_range(self):
+        def lora(dropout):
+            return {"enabled": True, "dropout": dropout, "target_modules": ["q_proj"]}
+
+        def with_lora(r, dropout):
+            r["moe"].pop("gates")  # gates are ignored (rejected) once LoRA is enabled
+            r["moe"].update(lora=lora(dropout))
+
         for bad in (-0.1, 1.0, 2.0):
             with self.subTest(dropout=bad):
-                raw = self._mutate(lambda r: r["moe"].update(lora={"enabled": False, "dropout": bad}))
+                raw = self._mutate(lambda r: with_lora(r, bad))
                 with self.assertRaisesRegex(ConfigError, r"moe\.lora\.dropout"):
                     moe_config.parse(raw)
-        raw = self._mutate(lambda r: r["moe"].update(lora={"enabled": False, "dropout": 0.5}))
+        raw = self._mutate(lambda r: with_lora(r, 0.5))
         self.assertEqual(moe_config.parse(raw).lora.dropout, 0.5)
 
     def test_nonfinite_floats_rejected(self):
@@ -392,7 +495,7 @@ class MoeConfigTests(unittest.TestCase):
         raw = self._mutate(lambda r: r["model"].update(router_aux_loss_coef=float("nan")))
         with self.assertRaisesRegex(ConfigError, "router_aux_loss_coef"):
             moe_config.parse(raw)
-        raw = self._mutate(lambda r: r["moe"].update(lora={"enabled": False, "dropout": float("inf")}))
+        raw = self._mutate(lambda r: r["moe"].update(lora={"enabled": True, "dropout": float("inf"), "target_modules": ["q"]}))
         with self.assertRaisesRegex(ConfigError, "dropout"):
             moe_config.parse(raw)
 

@@ -267,13 +267,14 @@ def main() -> None:
                 "training backend is not selected; run manifest prepared but no weights were trained"
             )
         if backend == "trl-moe":
-            if manifest["config"]["training"].get("allow_unselected_backend") is not True:
-                raise SystemExit(
-                    "training backend 'trl-moe' is not selected (component training-backend is "
-                    "unlocked, candidate trl-peft is to-evaluate); set "
-                    "[training] allow_unselected_backend = true to run it as pipeline-smoke "
-                    "evidence only"
+            from ptr_training.moe import config as moe_config
+
+            try:  # the same gate run_config / execute apply
+                moe_config.require_backend_opt_in(
+                    manifest["config"]["training"].get("allow_unselected_backend")
                 )
+            except moe_config.BackendNotSelected as error:
+                raise SystemExit(str(error)) from error
             raise SystemExit(_execute_trl_moe(manifest, config_path))
         raise SystemExit(f"training backend {backend!r} is not implemented yet")
 

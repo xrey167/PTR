@@ -506,6 +506,16 @@ class MoeTorchPipelineTests(unittest.TestCase):
         # arm 2 starts from the SFT state (== arm 1's start), not from arm 1's trained weights
         self.assertTrue(all(torch.equal(starts[0][n], starts[1][n]) for n in starts[0]))
 
+    def test_tiny_vocab_constant_and_parameter_formula_match_the_real_model(self):
+        from ptr_training.moe import config as moe_config
+
+        self.assertEqual(len(self.tok), moe_config.TINY_VOCAB_SIZE)
+        m = self.cfg.model
+        actual = sum(p.numel() for p in self.model.parameters())
+        self.assertEqual(
+            actual, moe_config.tiny_parameter_count(m.layers, m.hidden, m.intermediate, m.experts)
+        )
+
     def test_model_context_window_check(self):
         import types
 

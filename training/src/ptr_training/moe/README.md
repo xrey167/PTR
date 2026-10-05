@@ -235,6 +235,22 @@ router stays frozen.
   `mini_steps`, generation batch) are skipped. Every RL arm sets `GRPOConfig.disable_dropout`
   (trl 1.14.1 `grpo_config.py` ~452, applied at `grpo_trainer.py` ~988). The SFT state is
   snapshotted only for 2+ arms and restored only before arms 2..n.
+- Config sweep (every field is consumed or rejected; every size has a ceiling): `model.hf_id` is
+  rejected for tiny-random (like `revision`); `[moe.lora]` keys other than `enabled` are rejected
+  while LoRA is off and `[moe.gates]` is rejected for pretrained/LoRA runs (gates never run
+  there). RL-only keys stay accepted (and unused) with `algorithms = []`, and are exempt from
+  the RL ceilings, but `moe.rl.max_completion_length` (used by both policy evaluations) is
+  capped regardless. Ceilings lifted by `[moe] allow_large = true`: the earlier resource keys
+  plus `moe.sft.max_length` 4096, `moe.rl.max_prompt_length` 4096 (RL only), `moe.lora.rank` 1024
+  (LoRA only), and for tiny-random layers 24, hidden 1024, intermediate 4096, heads 32, experts
+  64, top_k 16, max_positions 2048, plus a derived parameter cap of 50M
+  (`config.tiny_parameter_count`, tested equal to the real model's count; vocab is fixed at 59,
+  kv heads == heads).
+- Entry points: the CLI (`ptr_training.run --execute`), `pipeline.run_config` and
+  `pipeline.execute` all call `config.require_backend_opt_in` (one message,
+  `BackendNotSelected`); `run_config` does so before creating any directory, `execute` before
+  `require_extra`, and `execute` also performs the tokenizer-measured context check.
+  `run_sft` / `run_rl` are internal building blocks (they re-check prompt/completion lengths).
 - Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
 - `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
   actually present (PEFT may keep LoRA weights in fp32).
