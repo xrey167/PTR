@@ -177,6 +177,12 @@ pub enum KvBackendError {
     InvalidPageState,
     PrefixMismatch,
     StaleLease,
+    /// The backend does not implement the named operation (a default trait method).
+    Unsupported(&'static str),
+    /// No published prefix is registered under the key: never published, or retired.
+    PrefixNotFound,
+    /// A fork admission witness was refused; see [`crate::KvWitnessRejection`].
+    ForkWitnessRejected(crate::KvWitnessRejection),
 }
 
 pub trait KvTensorBackend: Send + Sync {
