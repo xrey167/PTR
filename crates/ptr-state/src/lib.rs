@@ -1,4 +1,5 @@
 use ptr_ledger::{CommittedEvent, LedgerEvent};
+use ptr_pods::{ExpertCommitRecord, ExpertState, RetiredReason};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -250,12 +251,12 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             format!("execution-manifest:{}:state", hex_digest(manifest_digest)),
             "revoked".to_owned(),
         )],
+        LedgerEvent::ExpertStructuralCommitted {
+            project, record, ..
+        } => expert_entries(project, record),
         LedgerEvent::PodEvidenceCommitted { .. }
         | LedgerEvent::PodOutputAdmitted { .. }
         | LedgerEvent::PodHypothesisCommitted { .. }
-        // Expert structure is not projected into queryable keys yet; the record stays in the
-        // ledger, which is authoritative.
-        | LedgerEvent::ExpertStructuralCommitted { .. }
         | LedgerEvent::PolicyBundleActivated { .. }
         | LedgerEvent::PolicyBundleRevoked { .. }
         | LedgerEvent::SessionRevoked { .. }
@@ -263,6 +264,57 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         | LedgerEvent::TierObjectCommitted { .. }
         | LedgerEvent::TierReplicaLifecycle { .. } => Vec::new(),
     }
+}
+
+/// The materialized key of one expert: `expert:<project>/<pod>`. Project and pod ids are
+/// restricted to `[A-Za-z0-9._:-]`, so no id contains the `/` and no two experts share a key.
+pub fn expert_key(project: &str, pod: &str) -> String {
+    format!("expert:{project}/{pod}")
+}
+
+/// The value of an expert key: `<generation>:<state>:<state_version>` with a decimal generation
+/// and state version and a state name from [`expert_state_name`].
+pub fn expert_entry(generation: u64, state: ExpertState, state_version: u64) -> String {
+    format!("{generation}:{}:{state_version}", expert_state_name(state))
+}
+
+/// Stable lowercase name of an expert state in a materialized value. Retirement reasons are
+/// joined with `-` so the value stays three `:`-separated fields.
+pub fn expert_state_name(state: ExpertState) -> &'static str {
+    match state {
+        ExpertState::Candidate => "candidate",
+        ExpertState::Gated => "gated",
+        ExpertState::Serving => "serving",
+        ExpertState::Frozen => "frozen",
+        ExpertState::Fenced => "fenced",
+        ExpertState::Superseded => "superseded",
+        ExpertState::Retired(RetiredReason::Pruned) => "retired-pruned",
+        ExpertState::Retired(RetiredReason::Superseded) => "retired-superseded",
+        ExpertState::Retired(RetiredReason::GateFailed) => "retired-gate-failed",
+        ExpertState::Retired(RetiredReason::InputRevoked) => "retired-input-revoked",
+    }
+}
+
+/// The entries an expert structural record projects: one per expert the operation leaves in a
+/// new state, derived from the record by [`ptr_pods::StructuralOp::outcomes`] so the projection
+/// and the runtime registry cannot disagree. A record that does not decode projects nothing: the
+/// runtime refuses it before it is committed, and this function has no way to report an error.
+fn expert_entries(project: &ptr_types::ProjectId, record: &[u8]) -> Vec<(String, String)> {
+    let Ok(record) = ExpertCommitRecord::decode_canonical(record) else {
+        return Vec::new();
+    };
+    record
+        .proposal()
+        .op()
+        .outcomes()
+        .into_iter()
+        .map(|outcome| {
+            (
+                expert_key(&project.0, &outcome.pod.0),
+                expert_entry(outcome.generation.0, outcome.state, outcome.state_version),
+            )
+        })
+        .collect()
 }
 
 fn hex_digest(digest: &[u8; 32]) -> String {
@@ -389,6 +441,33 @@ impl TursoMaterializedState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expert_entries_use_a_stable_three_field_encoding() {
+        use ptr_pods::{ExpertState, RetiredReason};
+        assert_eq!(expert_key("p", "a"), "expert:p/a");
+        assert_eq!(expert_entry(2, ExpertState::Serving, 1), "2:serving:1");
+        assert_eq!(
+            expert_entry(1, ExpertState::Retired(RetiredReason::GateFailed), 9),
+            "1:retired-gate-failed:9"
+        );
+        let names = [
+            ExpertState::Candidate,
+            ExpertState::Gated,
+            ExpertState::Serving,
+            ExpertState::Frozen,
+            ExpertState::Fenced,
+            ExpertState::Superseded,
+            ExpertState::Retired(RetiredReason::Pruned),
+            ExpertState::Retired(RetiredReason::Superseded),
+            ExpertState::Retired(RetiredReason::GateFailed),
+            ExpertState::Retired(RetiredReason::InputRevoked),
+        ]
+        .map(expert_state_name);
+        let distinct: std::collections::BTreeSet<_> = names.iter().collect();
+        assert_eq!(distinct.len(), names.len());
+        assert!(names.iter().all(|name| !name.contains(':')));
+    }
+
     use super::*;
 
     #[test]

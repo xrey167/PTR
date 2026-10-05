@@ -533,6 +533,94 @@ impl StructuralOp {
     }
 }
 
+/// Whether an [`ExpertOutcome`] is an existing operand or a newly created result.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum OutcomeKind {
+    /// An existing expert the operation names, now in its post-operation state.
+    Operand,
+    /// A new expert generation the operation creates.
+    Result,
+}
+
+/// The authoritative state one expert is left in by an admitted [`StructuralOp`].
+///
+/// This is the single definition of the post-operation state mapping, shared by every consumer
+/// of an admitted record (the runtime registry and the state projection), so none re-implements
+/// it. It is pure data derived from the operation: it proves nothing about admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertOutcome {
+    pub kind: OutcomeKind,
+    pub pod: PodId,
+    pub generation: Generation,
+    pub level: ExpertLevel,
+    pub base_model: BaseModelRef,
+    pub manifest_digest: ManifestDigest,
+    pub state: ExpertState,
+    /// An operand's observed `state_version` plus one; `1` for a result.
+    pub state_version: u64,
+}
+
+impl StructuralOp {
+    /// The state every expert the operation touches is left in once it is admitted, operands
+    /// first (in operand order) and then results (in result order).
+    ///
+    /// | operation | operand after | result |
+    /// |---|---|---|
+    /// | `Birth` | | `Serving` |
+    /// | `Merge`, `Split` | `Superseded` | `Serving` |
+    /// | `Freeze` | `Frozen` | |
+    /// | `Reactivate` of `Frozen` | `Serving` (same generation) | |
+    /// | `Reactivate` of `Retired(GateFailed)` | (kept `Retired`; replaced by the result, same pod) | `Serving`, generation + 1 |
+    /// | `Prune` | `Retired(Pruned)` | |
+    /// | `Retire` | `Retired(reason)` | |
+    ///
+    /// A result is `Serving` with `state_version` 1 because admission requires a passing
+    /// artifact-bound gate verdict for it, which is the `Candidate` to `Gated` to `Serving`
+    /// path collapsed into the one committed event. A retired reactivation source yields no
+    /// operand outcome: its pod now names the new generation.
+    pub fn outcomes(&self) -> Vec<ExpertOutcome> {
+        let operand_state = match self {
+            Self::Birth { .. } => None,
+            Self::Merge { .. } | Self::Split { .. } => Some(ExpertState::Superseded),
+            Self::Freeze { .. } => Some(ExpertState::Frozen),
+            Self::Reactivate { target, .. } => match target.state() {
+                ExpertState::Retired(_) => None,
+                _ => Some(ExpertState::Serving),
+            },
+            Self::Prune { .. } => Some(ExpertState::Retired(RetiredReason::Pruned)),
+            Self::Retire { reason, .. } => Some(ExpertState::Retired(*reason)),
+        };
+        let mut out = Vec::new();
+        if let Some(state) = operand_state {
+            for source in self.sources() {
+                out.push(ExpertOutcome {
+                    kind: OutcomeKind::Operand,
+                    pod: source.pod().clone(),
+                    generation: source.generation(),
+                    level: source.level(),
+                    base_model: source.base_model().clone(),
+                    manifest_digest: *source.manifest_digest(),
+                    state,
+                    state_version: source.state_version().saturating_add(1),
+                });
+            }
+        }
+        for result in self.results() {
+            out.push(ExpertOutcome {
+                kind: OutcomeKind::Result,
+                pod: result.pod().clone(),
+                generation: result.generation(),
+                level: result.level(),
+                base_model: result.base_model().clone(),
+                manifest_digest: *result.manifest_digest(),
+                state: ExpertState::Serving,
+                state_version: 1,
+            });
+        }
+        out
+    }
+}
+
 const MAX_ID_BYTES: usize = 128;
 
 /// Project and pod ids: 1 to 128 bytes of ASCII `[A-Za-z0-9._:-]`. Whitespace-only is blank.

@@ -2,8 +2,9 @@ use ptr_pods::{
     ArtifactLifecycle, BaseModelDigest, BaseModelId, BaseModelRef, ExpertCommitRecord,
     ExpertIdentityError, ExpertLevel, ExpertOperationRequest, ExpertPodSpec, ExpertProposal,
     ExpertProposalError, ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind,
-    OperandCount, OperationId, ProposalParts, ProposerRef, RationaleDigest, RequestedOp,
-    ResultIntent, RetiredReason, StructuralOp, ZeroDigest, MAX_EXPERT_COMMIT_RECORD_BYTES,
+    OperandCount, OperationId, OutcomeKind, ProposalParts, ProposerRef, RationaleDigest,
+    RequestedOp, ResultIntent, RetiredReason, StructuralOp, ZeroDigest,
+    MAX_EXPERT_COMMIT_RECORD_BYTES,
 };
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
 
@@ -2356,4 +2357,79 @@ fn oversize_commit_record_input_is_refused_before_parsing() {
         ExpertCommitRecord::decode_canonical(&at_limit),
         Err(ExpertProposalError::MalformedRecord("unknown magic"))
     );
+}
+
+#[test]
+fn outcomes_follow_the_post_operation_state_table() {
+    use ExpertState::{Frozen, Retired, Serving, Superseded};
+    let outcome = |op: StructuralOp| -> Vec<(OutcomeKind, String, u64, ExpertState, u64)> {
+        op.outcomes()
+            .into_iter()
+            .map(|o| (o.kind, o.pod.0, o.generation.0, o.state, o.state_version))
+            .collect()
+    };
+    let pruned = Retired(RetiredReason::Pruned);
+    type Expected<'a> = Vec<(OutcomeKind, &'a str, u64, ExpertState, u64)>;
+    let cases: Vec<(StructuralOp, Expected<'_>)> = vec![
+        (
+            StructuralOp::Birth {
+                result: result("n"),
+            },
+            vec![(OutcomeKind::Result, "n", 1, Serving, 1)],
+        ),
+        (
+            merge(vec![serving("a"), serving("b")]),
+            vec![
+                (OutcomeKind::Operand, "a", 1, Superseded, 2),
+                (OutcomeKind::Operand, "b", 1, Superseded, 2),
+                (OutcomeKind::Result, "merged", 1, Serving, 1),
+            ],
+        ),
+        (
+            StructuralOp::Freeze {
+                target: serving("a"),
+            },
+            vec![(OutcomeKind::Operand, "a", 1, Frozen, 2)],
+        ),
+        (
+            reactivate(in_state("a", Frozen), None),
+            vec![(OutcomeKind::Operand, "a", 1, Serving, 2)],
+        ),
+        (
+            reactivate(
+                in_state("a", Retired(RetiredReason::GateFailed)),
+                Some(spec("a", 2, slot("a"))),
+            ),
+            vec![(OutcomeKind::Result, "a", 2, Serving, 1)],
+        ),
+        (
+            StructuralOp::Prune {
+                targets: vec![serving("a"), serving("b")],
+            },
+            vec![
+                (OutcomeKind::Operand, "a", 1, pruned, 2),
+                (OutcomeKind::Operand, "b", 1, pruned, 2),
+            ],
+        ),
+        (
+            StructuralOp::Retire {
+                target: serving("a"),
+                reason: RetiredReason::Superseded,
+            },
+            vec![(
+                OutcomeKind::Operand,
+                "a",
+                1,
+                Retired(RetiredReason::Superseded),
+                2,
+            )],
+        ),
+    ];
+    for (op, expected) in cases {
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(k, p, g, s, v)| (k, p.to_owned(), g, s, v))
+            .collect();
+        assert_eq!(outcome(op), expected);
+    }
 }

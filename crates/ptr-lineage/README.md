@@ -28,7 +28,7 @@
 
 ### Missing for the target architecture
 
-- Adapter promotion and revocation as committed ledger events (the ledger now has an expert structural event and the gate verdict can be bound to its subject, but no adapter promotion event is written or admitted, and nothing checks that a BoundGateReport subject matches a committed artifact)
+- Adapter promotion and revocation as committed ledger events in general (ptr-runtime admit_expert_proposal now admits expert structural records on a passing BoundGateReport bound to the proposal and operation under the required gate configuration, but no other adapter promotion or revocation event is written or admitted, and nothing checks that a BoundGateReport subject's artifact digest matches a committed artifact)
 - Serving admission through checkpoint binding
 - A lineage adapter in ptr-pg over the rest of the work schema (ptr-pg stores interference reports only)
 - A training-run record per adapter run once an adapter is actually trained: training chain, adapter produced, run-manifest input fingerprint and adapter data fingerprint (different digests), trigger event, replay and new sample counts, wall-clock and model times, gate result
