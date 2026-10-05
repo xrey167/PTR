@@ -1,6 +1,7 @@
 name: sdk
 on:
   push:
+    branches: [main]
     paths:
       - "sdk/**"
       - ".github/workflows/sdk.yml"

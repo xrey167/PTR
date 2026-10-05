@@ -1,0 +1,4 @@
+version = 1
+kind = "python-binding"
+component = "ptr-py"
+tests_dir = "tests"
