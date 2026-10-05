@@ -177,6 +177,15 @@ impl ExpertRegistryProjection {
         self.entries.get(&(project.0.clone(), pod.0.clone()))
     }
 
+    /// A registry holding exactly `entries`, as a compacted snapshot carries it. The snapshot
+    /// reader has already checked order and identities and cross-checks the result against the
+    /// materialized `expert:` keys.
+    pub(crate) fn from_entries(entries: Vec<((String, String), ExpertEntry)>) -> Self {
+        Self {
+            entries: entries.into_iter().collect(),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

@@ -266,10 +266,13 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
     }
 }
 
+/// The prefix of every expert key ([`expert_key`]).
+pub const EXPERT_PREFIX: &str = "expert:";
+
 /// The materialized key of one expert: `expert:<project>/<pod>`. Project and pod ids are
 /// restricted to `[A-Za-z0-9._:-]`, so no id contains the `/` and no two experts share a key.
 pub fn expert_key(project: &str, pod: &str) -> String {
-    format!("expert:{project}/{pod}")
+    format!("{EXPERT_PREFIX}{project}/{pod}")
 }
 
 /// The value of an expert key: `<generation>:<state>:<state_version>` with a decimal generation
