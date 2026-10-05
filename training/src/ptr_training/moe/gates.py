@@ -175,8 +175,21 @@ def _transpose(a: list[list[float]]) -> list[list[float]]:
     return [list(col) for col in zip(*a)]
 
 
+_EPS = 2.0 ** -52  # float64 machine epsilon
+
+
 def _orthonormalise(cols: list[list[float]]) -> list[list[float]]:
-    """Modified Gram-Schmidt over a list of column vectors; drops (numerically) null columns."""
+    """Modified Gram-Schmidt over a list of column vectors.
+
+    A column is dropped as dependent when its residual norm is below the numpy `matrix_rank`
+    style tolerance `max(m, n) * eps * (largest input column norm)` (m = vector length, n = number
+    of columns): scale-relative, so a small-but-valid input is kept and only directions that are
+    numerically inside the span of earlier ones (or all-zero input) are dropped.
+    """
+    if not cols:
+        return []
+    scale = max(math.sqrt(sum(x * x for x in v)) for v in cols)
+    tol = max(len(cols[0]), len(cols)) * _EPS * scale
     out: list[list[float]] = []
     for v in cols:
         w = list(v)
@@ -184,7 +197,7 @@ def _orthonormalise(cols: list[list[float]]) -> list[list[float]]:
             dot = sum(x * y for x, y in zip(w, q))
             w = [x - dot * y for x, y in zip(w, q)]
         norm = math.sqrt(sum(x * x for x in w))
-        if norm > 1e-12:
+        if norm > tol and norm > 0.0:
             out.append([x / norm for x in w])
     return out
 
@@ -197,6 +210,13 @@ def top_left_subspace(matrix: list[list[float]], rank: int) -> list[list[float]]
     empty basis (the caller records that as not informative).
     """
     dim, cols = len(matrix), len(matrix[0])
+    peak = max(abs(x) for row in matrix for x in row)
+    if peak == 0.0:
+        return []
+    # Singular vectors are scale-invariant: normalise by the largest entry so the iteration
+    # (which squares singular values via A A^T) neither underflows for tiny deltas nor loses
+    # them to any absolute cutoff.
+    matrix = [[x / peak for x in row] for row in matrix]
     r = min(rank, dim, cols)
     rng = random.Random(0)
     q = _orthonormalise([[rng.gauss(0.0, 1.0) for _ in range(dim)] for _ in range(r)])

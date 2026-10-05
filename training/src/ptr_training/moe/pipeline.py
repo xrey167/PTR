@@ -93,6 +93,23 @@ def version_at_least(installed: str, required: str) -> bool:
     return _release(installed) >= _release(required)
 
 
+def missing_distributions(names) -> list[str]:
+    """Names without an installed distribution (importlib.metadata, never find_spec: the
+    repo's top-level `datasets/` directory is an importable namespace package)."""
+    missing = []
+    for name in names:
+        try:
+            metadata.version(name)
+        except metadata.PackageNotFoundError:
+            missing.append(name)
+    return missing
+
+
+def stack_available(names=("torch", "transformers", "peft", "trl", "datasets")) -> bool:
+    """True when every named distribution is installed (used to gate torch-dependent tests)."""
+    return not missing_distributions(names)
+
+
 def require_extra() -> None:
     # Check installed distributions, not module names: the repo's top-level `datasets/`
     # directory is importable as a namespace package and would satisfy find_spec("datasets").

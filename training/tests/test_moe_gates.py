@@ -189,6 +189,40 @@ class MoeGatesTests(unittest.TestCase):
         self.assertFalse(pair["informative"])
         self.assertEqual(pair["subspace_overlap"]["status"], "skipped")
 
+    def test_small_scale_delta_keeps_its_effective_rank(self):
+        import random
+
+        rng = random.Random(3)
+        base = [[rng.gauss(0, 1) for _ in range(6)] for _ in range(8)]  # full column rank 6
+        for rank in (2, 3, 6):
+            ref = gates.top_left_subspace(base, rank)
+            for scale in (1e-9, 1e-15, 1e6):
+                scaled = [[x * scale for x in row] for row in base]
+                got = gates.top_left_subspace(scaled, rank)
+                self.assertEqual(len(got[0]), len(ref[0]), (rank, scale))
+                self.assertEqual(len(got[0]), rank)
+        # same subspace regardless of scale (|Qa^T Qb|_F^2 == r)
+        a, b = gates.top_left_subspace(base, 3), gates.top_left_subspace(
+            [[x * 1e-9 for x in row] for row in base], 3
+        )
+        overlap = sum(sum(a[i][p] * b[i][q] for i in range(8)) ** 2 for p in range(3) for q in range(3))
+        self.assertAlmostEqual(overlap, 3.0, places=6)
+
+    def test_rank_deficient_input_still_drops_dependent_direction(self):
+        col = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        dep = [[c * m for m in (1.0, 2.0, -1.0)] for c in col]  # rank 1
+        for scale in (1.0, 1e-9, 1e9):
+            scaled = [[x * scale for x in row] for row in dep]
+            self.assertEqual(len(gates.top_left_subspace(scaled, 3)[0]), 1, scale)
+        two = [[c * m1 + (7 - c) * m2 for m1, m2 in ((1, 0), (0, 1), (1, 1))] for c in col]  # rank 2
+        self.assertEqual(len(gates.top_left_subspace(two, 3)[0]), 2)
+        self.assertEqual(len(gates._orthonormalise([[1.0, 0.0], [2.0, 0.0], [0.0, 3.0]])), 2)
+
+    def test_zero_matrix_has_rank_zero(self):
+        self.assertEqual(gates.top_left_subspace([[0.0] * 3 for _ in range(4)], 2), [])
+        self.assertEqual(gates._orthonormalise([[0.0, 0.0], [0.0, 0.0]]), [])
+        self.assertEqual(gates._orthonormalise([]), [])
+
     def test_effective_rank_recorded_for_rank_deficient_delta(self):
         # expert 0: rank-1 delta (outer product); expert 1: full-rank random 8x8
         col = [[float(i + 1)] for i in range(8)]
@@ -212,9 +246,11 @@ class MoeGatesTests(unittest.TestCase):
         self.assertEqual(len(basis[0]), 1)  # numerical rank 1, not the requested 3
 
     def test_snapshot_elements_and_problem_from_shapes_only(self):
-        torch = __import__("torch") if __import__("importlib").util.find_spec("torch") else None
-        if torch is None:
+        from ptr_training.moe.pipeline import stack_available
+
+        if not stack_available(("torch",)):
             self.skipTest("torch not installed")
+        import torch
         import types
 
         def expert_model(layers, experts, h=4, i=3):
@@ -238,9 +274,11 @@ class MoeGatesTests(unittest.TestCase):
         self.assertIn(f"snapshot too large ({3 * 5 * per_expert} elements > 100)", problem["reason"])
 
     def test_oversize_total_never_converts_to_lists(self):
-        torch = __import__("torch") if __import__("importlib").util.find_spec("torch") else None
-        if torch is None:
+        from ptr_training.moe.pipeline import stack_available
+
+        if not stack_available(("torch",)):
             self.skipTest("torch not installed")
+        import torch
         import types
 
         mk = lambda: types.SimpleNamespace(

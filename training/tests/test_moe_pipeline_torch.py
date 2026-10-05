@@ -1,13 +1,14 @@
-import importlib.util
 import json
 import math
 import tempfile
 import unittest
 from pathlib import Path
 
-HAVE_STACK = all(
-    importlib.util.find_spec(m) for m in ("torch", "trl", "transformers", "datasets", "peft")
-)
+from ptr_training.moe.pipeline import stack_available
+
+# Distribution metadata, not find_spec: the repo's top-level `datasets/` namespace directory
+# would make find_spec("datasets") succeed without the library installed.
+HAVE_STACK = stack_available(("torch", "trl", "transformers", "datasets", "peft"))
 SMOKE = Path(__file__).resolve().parents[1] / "configs" / "stage-moe-smoke.toml"
 
 

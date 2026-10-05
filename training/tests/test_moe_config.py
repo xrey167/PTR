@@ -1,4 +1,5 @@
 import copy
+import importlib.util
 import re
 import tomllib
 import unittest
@@ -523,6 +524,33 @@ class MoeDispatchTests(unittest.TestCase):
             self.assertTrue(pipeline.version_at_least("2.14", "2.14.0"))
             self.assertTrue(pipeline.version_at_least("10.0.0", "9.9"))
             self.assertFalse(pipeline.version_at_least("5.17.9", "5.18.0"))
+
+    def test_stack_gate_ignores_namespace_directory_named_datasets(self):
+        import importlib
+        import sys
+        import tempfile
+        from importlib import metadata
+        from unittest import mock
+
+        from ptr_training.moe import pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "datasets").mkdir()  # implicit namespace package, no distribution
+            err = metadata.PackageNotFoundError("datasets")
+            with mock.patch.object(sys, "path", [tmp, *sys.path]), mock.patch.dict(
+                sys.modules
+            ), mock.patch.object(pipeline.metadata, "version", side_effect=err):
+                sys.modules.pop("datasets", None)
+                importlib.invalidate_caches()
+                # the module-name check is fooled by the directory ...
+                self.assertIsNotNone(importlib.util.find_spec("datasets"))
+                # ... the distribution check is not
+                self.assertEqual(pipeline.missing_distributions(("datasets",)), ["datasets"])
+                self.assertFalse(pipeline.stack_available(("datasets",)))
+            importlib.invalidate_caches()
+        self.assertEqual(
+            pipeline.missing_distributions(()), []
+        )  # nothing left patched: real metadata is back
 
     def test_require_extra_reports_only_missing_distribution(self):
         from importlib import metadata
