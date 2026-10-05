@@ -8,20 +8,25 @@ use ptr_model_api::{
     ByteTokenizer, PromptSegment, SegmentSource, SegmentedModelRequest, TokenId, Tokenizer,
 };
 use ptr_pods::{
+    BaseModelDigest, BaseModelId, BaseModelRef, ExpertCommitRecord, ExpertLevel, ExpertPodSpec,
+    ExpertProposal, ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, ProposerRef,
+    RationaleDigest, RetiredReason, StructuralOp,
+};
+use ptr_pods::{
     CausalAttentionInput, CausalAttentionWeights, InMemoryPagedKvBackend, InMemoryPagedKvCache,
     KvBackendError, KvContinuationExecutor, KvPageBinding, KvPageSize, KvTensorDType,
     KvTensorSchema, KvWitnessRejection, PagedKvTensorBackend, ReferenceCausalAttentionExecutor,
 };
 use ptr_runtime::execution::RequiredVerification;
 use ptr_runtime::{
-    chunk_keys, CatalogLimits, KvCapacityResource, KvCatalogError, KvChainId, KvDependency,
-    KvForkError, KvInsert, KvLivenessOracle, KvLookup, KvPrefixCatalog, KvRequestPositions, KvSalt,
-    PtrRuntime, KV_CHUNK_TOKENS,
+    chunk_keys, expert_operand_identities, CatalogLimits, KvCapacityResource, KvCatalogError,
+    KvChainId, KvDependency, KvForkError, KvInsert, KvLivenessOracle, KvLookup, KvPrefixCatalog,
+    KvRequestPositions, KvSalt, PtrRuntime, KV_CHUNK_TOKENS,
 };
 use ptr_semdb::SemanticDelta;
 use ptr_types::{
-    AdapterVersion, CapsuleId, DeviceId, Generation, KnowledgeObjectId, ModelVersion, PrincipalId,
-    ProjectId, RequestId, Revision, SemanticContext, VerificationLevel,
+    AdapterVersion, CapsuleId, CommitIndex, DeviceId, Generation, KnowledgeObjectId, ModelVersion,
+    PodId, PrincipalId, ProjectId, RequestId, Revision, SemanticContext, VerificationLevel,
 };
 use ptr_verifier::VerificationStatus;
 
@@ -206,6 +211,7 @@ impl Harness {
                 request,
                 prefix: prefix.clone(),
                 page_bytes,
+                extra_dependencies: Vec::new(),
             },
             live,
         )?;
@@ -270,8 +276,8 @@ fn raw_identical_prefix_hits_and_the_tail_does_not_matter() {
             &live,
         )
         .expect("same raw prefix, different tail");
-    assert_eq!(hit.matched_tokens, 2 * KV_CHUNK_TOKENS);
-    h.catalog.release(&hit.pin);
+    assert_eq!(hit.matched_tokens(), 2 * KV_CHUNK_TOKENS);
+    h.catalog.release(hit.pin());
 }
 
 #[test]
@@ -307,10 +313,10 @@ fn identical_tokens_with_different_lineage_hold_separate_entries() {
     let first = h.lookup(&s, &gen1, &live).unwrap();
     let second = h.lookup(&s, &gen2, &live).unwrap();
     // Identical tokens publish identical pages, so both entries name one backend prefix.
-    assert_eq!(first.prefix.key, second.prefix.key);
-    assert_eq!(first.matched_tokens, 2 * KV_CHUNK_TOKENS);
-    h.catalog.release(&first.pin);
-    h.catalog.release(&second.pin);
+    assert_eq!(first.prefix().key, second.prefix().key);
+    assert_eq!(first.matched_tokens(), 2 * KV_CHUNK_TOKENS);
+    h.catalog.release(first.pin());
+    h.catalog.release(second.pin());
     // Retiring one lineage must not retire the backend prefix the other still uses.
     let retire = h
         .catalog
@@ -342,7 +348,7 @@ fn a_revoked_generation_stops_hitting_and_its_prefix_is_retired() {
     ]);
     let prefix = h.insert(&s, &req, &live).unwrap();
     let hit = h.lookup(&s, &req, &live).unwrap();
-    h.catalog.release(&hit.pin);
+    h.catalog.release(hit.pin());
 
     // An unrelated generation of the same identity leaves the entry alone.
     let unrelated = BTreeSet::from([("price:sku".to_owned(), Generation(9))]);
@@ -427,15 +433,16 @@ fn forged_stale_and_cancelled_witnesses_cannot_fork() {
 
     // Stale: a genuine witness held across a dependency invalidation.
     let hit = h.lookup(&s, &req, &live).unwrap();
-    let pin = hit.pin.clone();
+    let pin = hit.pin().clone();
     assert!(h.catalog.pin_is_live(&pin));
     h.catalog
         .invalidate_inputs(&BTreeSet::from([("price:sku".to_owned(), Generation(1))]));
     assert!(!h.catalog.pin_is_live(&pin), "the pinned fork is cancelled");
     let mut target = fresh(&h.backend);
+    let (witness, hit_prefix, _) = hit.into_parts();
     assert_eq!(
         h.backend
-            .fork_prefix_admitted(&mut target, &hit.prefix, hit.witness),
+            .fork_prefix_admitted(&mut target, &hit_prefix, witness),
         Err(KvBackendError::ForkWitnessRejected(
             KvWitnessRejection::Revoked
         ))
@@ -458,6 +465,7 @@ fn forged_stale_and_cancelled_witnesses_cannot_fork() {
                 request: &req,
                 prefix: other_prefix,
                 page_bytes: bytes,
+                extra_dependencies: Vec::new(),
             },
             &live,
         )
@@ -479,9 +487,10 @@ fn forged_stale_and_cancelled_witnesses_cannot_fork() {
         again.key, prefix.key,
         "same tokens publish the same backend key"
     );
+    let (foreign_witness, _, _) = foreign.into_parts();
     assert_eq!(
         h.backend
-            .fork_prefix_admitted(&mut target, &prefix, foreign.witness),
+            .fork_prefix_admitted(&mut target, &prefix, foreign_witness),
         Err(KvBackendError::ForkWitnessRejected(
             KvWitnessRejection::ForeignBackend
         ))
@@ -534,10 +543,10 @@ fn pinned_entries_are_never_evicted_and_saturation_fails_closed() {
     assert_eq!(stats.evictions, 0);
     assert_eq!(stats.capacity_refusals, 1);
     assert_eq!(stats.nodes, 2);
-    assert!(h.catalog.pin_is_live(&pinned.pin));
+    assert!(h.catalog.pin_is_live(pinned.pin()));
 
     // Once the fork ends the entry is evictable and the insert fits.
-    h.catalog.release(&pinned.pin);
+    h.catalog.release(pinned.pin());
     h.insert(&s, &second, &live).unwrap();
     assert_eq!(h.catalog.stats().evictions, 1);
     assert!(h.lookup(&s, &first, &live).is_none());
@@ -643,6 +652,7 @@ fn only_canonical_positions_hit_or_insert() {
                 request: &req,
                 prefix: shifted,
                 page_bytes: 1,
+                extra_dependencies: Vec::new(),
             },
             &live,
         )
@@ -679,7 +689,7 @@ fn catalog_fork_then_decode_is_bitwise_identical_to_full_prefill() {
     h.insert(&s, &req, &live).unwrap();
 
     let hit = h.lookup(&s, &req, &live).unwrap();
-    assert_eq!(hit.matched_tokens, 32);
+    assert_eq!(hit.matched_tokens(), 32);
     let mut forked = fresh(&h.backend);
     let pin = h.catalog.fork(&h.backend, &mut forked, hit, &live).unwrap();
     let tokens = req.tokens();
@@ -740,6 +750,7 @@ fn runtime_insert(
             request: req,
             prefix: prefix.clone(),
             page_bytes,
+            extra_dependencies: Vec::new(),
         })
         .unwrap()
         .unwrap();
@@ -775,7 +786,7 @@ fn committed_revocation_and_supersession_invalidate_and_retire_on_the_backend() 
     let req = request(vec![raw(&block('a')), memory("capsule:a", 1, &block('m'))]);
     let prefix = runtime_insert(&mut runtime, &backend, &s, &req);
     let hit = runtime_lookup(&mut runtime, &s, &req).expect("live generation hits");
-    assert!(runtime.kv_prefix_release(&hit.pin));
+    assert!(runtime.kv_prefix_release(hit.pin()));
 
     runtime
         .commit(LedgerEvent::Revoked {
@@ -848,7 +859,7 @@ fn only_a_committed_semantic_delta_invalidates_a_refused_one_does_not() {
     let req = request(vec![raw(&block('a')), semantic("price", 1, &block('p'))]);
     let prefix = runtime_insert(&mut runtime, &backend, &s, &req);
     let hit = runtime_lookup(&mut runtime, &s, &req).expect("key is in the committed snapshot");
-    runtime.kv_prefix_release(&hit.pin);
+    runtime.kv_prefix_release(hit.pin());
 
     // A write the verifier refuses is prepared but never committed: nothing is invalidated.
     let mut refused = report(VerificationStatus::Pass, VerificationLevel::Deterministic);
@@ -856,7 +867,7 @@ fn only_a_committed_semantic_delta_invalidates_a_refused_one_does_not() {
     verifier.set(refused);
     assert!(host_write_now(&mut runtime, write("11")).is_err());
     let hit = runtime_lookup(&mut runtime, &s, &req).expect("discarded overlay changed nothing");
-    runtime.kv_prefix_release(&hit.pin);
+    runtime.kv_prefix_release(hit.pin());
     assert_eq!(runtime.kv_prefix_catalog().unwrap().stats().entries, 1);
 
     verifier.set(pass(VerificationLevel::Deterministic));
@@ -887,4 +898,231 @@ fn runtime_without_a_catalog_reports_it_and_the_hook_is_inert() {
             generation: Generation(1),
         })
         .unwrap();
+}
+
+#[test]
+fn a_tombstoned_pinned_slot_is_refused_not_overwritten_and_accounting_stays_symmetric() {
+    let mut h = harness(CatalogLimits::default());
+    let s = salt("alice", "p1");
+    let live = Dead::default();
+    let req = request(vec![
+        raw(&block('a')),
+        semantic("price:sku", 1, &block('s')),
+    ]);
+    h.insert(&s, &req, &live).unwrap();
+    let one = h.catalog.stats();
+    let hit = h.lookup(&s, &req, &live).unwrap();
+    let pin = hit.pin().clone();
+
+    // Repeat the cycle: the re-insert of the same slot is refused while pinned.
+    for _ in 0..3 {
+        h.catalog
+            .invalidate_identities(&BTreeSet::from(["price:sku".to_owned()]));
+        assert!(!h.catalog.pin_is_live(&pin));
+        assert_eq!(
+            h.insert(&s, &req, &live).unwrap_err(),
+            KvCatalogError::SlotDraining
+        );
+        let during = h.catalog.stats();
+        assert_eq!(during.page_bytes, one.page_bytes);
+        assert_eq!(during.metadata_bytes, one.metadata_bytes);
+        assert_eq!(during.tombstoned_pinned_entries, 1);
+    }
+    assert!(h.catalog.release(&pin), "the original pin still releases");
+    let drained = h.catalog.stats();
+    assert_eq!(
+        (drained.page_bytes, drained.metadata_bytes, drained.nodes),
+        (0, 0, 0)
+    );
+
+    h.insert(&s, &req, &live).unwrap();
+    let again = h.catalog.stats();
+    assert_eq!(again.page_bytes, one.page_bytes);
+    assert_eq!(again.metadata_bytes, one.metadata_bytes);
+    assert!(h.lookup(&s, &req, &live).is_some());
+}
+
+fn expert_target(pod: &str, state: ExpertState) -> ExpertTarget {
+    ExpertTarget::new(ExpertTargetInit {
+        project: ProjectId::from("proj"),
+        pod: PodId::from(pod),
+        generation: Generation(1),
+        level: ExpertLevel::Token {
+            layer: 3,
+            index: u16::from(pod.as_bytes()[0]),
+        },
+        base_model: base_model(),
+        manifest_digest: ManifestDigest::new([1; 32]).unwrap(),
+        state,
+        state_version: 1,
+    })
+    .unwrap()
+}
+
+fn base_model() -> BaseModelRef {
+    BaseModelRef::new(
+        BaseModelId::new("base-a").unwrap(),
+        BaseModelDigest::new([9; 32]).unwrap(),
+        1,
+    )
+    .unwrap()
+}
+
+fn record(op: StructuralOp) -> Vec<u8> {
+    let proposal = ExpertProposal::new(
+        ProjectId::from("proj"),
+        ProposerRef::new(ProjectId::from("proj"), PodId::from("meta"), Generation(1)).unwrap(),
+        CommitIndex(10),
+        op,
+        RationaleDigest::new([7; 32]).unwrap(),
+    )
+    .unwrap();
+    ExpertCommitRecord::new(proposal, [5; 32], 1)
+        .unwrap()
+        .encode_canonical()
+}
+
+fn merged_result() -> ExpertPodSpec {
+    ExpertPodSpec::new(
+        ProjectId::from("proj"),
+        PodId::from("merged"),
+        ManifestDigest::new([2; 32]).unwrap(),
+        ExpertLevel::Token { layer: 3, index: 1 },
+        base_model(),
+        Generation(1),
+    )
+    .unwrap()
+}
+
+#[test]
+fn operand_identities_come_from_the_decoded_record_of_each_operation() {
+    let x = expert_target("x", ExpertState::Serving);
+    let y = expert_target("y", ExpertState::Serving);
+    let retire = record(StructuralOp::Retire {
+        target: expert_target("x", ExpertState::Serving),
+        reason: RetiredReason::Superseded,
+    });
+    assert_eq!(
+        expert_operand_identities(&retire),
+        Some(vec!["expert:proj/x".to_owned()])
+    );
+    let prune = record(StructuralOp::Prune {
+        targets: vec![
+            expert_target("x", ExpertState::Serving),
+            expert_target("y", ExpertState::Serving),
+        ],
+    });
+    assert_eq!(
+        expert_operand_identities(&prune),
+        Some(vec!["expert:proj/x".to_owned(), "expert:proj/y".to_owned()])
+    );
+    let merge = record(StructuralOp::Merge {
+        sources: vec![x, y],
+        result: merged_result(),
+    });
+    assert_eq!(
+        expert_operand_identities(&merge),
+        Some(vec![
+            "expert:proj/merged".to_owned(),
+            "expert:proj/x".to_owned(),
+            "expert:proj/y".to_owned()
+        ])
+    );
+    assert_eq!(expert_operand_identities(b"PTREXR01-opaque"), None);
+}
+
+#[test]
+fn an_expert_dependency_stops_hitting_when_its_operand_identity_is_invalidated() {
+    let mut h = harness(CatalogLimits::default());
+    let s = salt("alice", "p1");
+    let live = Dead::default();
+    let req = request(vec![raw(&format!("{}{}", block('a'), block('b')))]);
+    let (prefix, page_bytes) = prefill_and_publish(&h.backend, &req.tokens());
+    let expert = |pod: &str| {
+        KvDependency::expert(
+            &ProjectId::from("proj"),
+            &PodId::from(pod),
+            Generation(1),
+            [0; 32],
+        )
+    };
+    h.catalog
+        .insert(
+            KvInsert {
+                salt: &s,
+                chain: &CHAIN,
+                request: &req,
+                prefix,
+                page_bytes,
+                extra_dependencies: vec![expert("x"), expert("z")],
+            },
+            &live,
+        )
+        .unwrap();
+    assert!(h.lookup(&s, &req, &live).is_some());
+
+    // What the hook does for a committed Retire of x: invalidate its decoded operands.
+    let retire = record(StructuralOp::Retire {
+        target: expert_target("x", ExpertState::Serving),
+        reason: RetiredReason::Superseded,
+    });
+    let identities = expert_operand_identities(&retire).unwrap();
+    let retired = h
+        .catalog
+        .invalidate_identities(&identities.into_iter().collect());
+    assert_eq!(retired.len(), 1);
+    assert!(h.lookup(&s, &req, &live).is_none());
+}
+
+#[test]
+fn an_undecodable_record_flushes_every_expert_dependency() {
+    let mut h = harness(CatalogLimits::default());
+    let s = salt("alice", "p1");
+    let live = Dead::default();
+    let req = request(vec![raw(&format!("{}{}", block('a'), block('b')))]);
+    let (prefix, page_bytes) = prefill_and_publish(&h.backend, &req.tokens());
+    h.catalog
+        .insert(
+            KvInsert {
+                salt: &s,
+                chain: &CHAIN,
+                request: &req,
+                prefix,
+                page_bytes,
+                extra_dependencies: vec![KvDependency::expert(
+                    &ProjectId::from("proj"),
+                    &PodId::from("q"),
+                    Generation(1),
+                    [0; 32],
+                )],
+            },
+            &live,
+        )
+        .unwrap();
+    assert_eq!(h.catalog.invalidate_all_experts().len(), 1);
+    assert!(h.lookup(&s, &req, &live).is_none());
+}
+
+#[test]
+fn the_runtime_oracle_treats_an_expert_with_no_serving_record_as_not_live() {
+    let (mut runtime, backend) = lifecycle_runtime();
+    let s = salt("alice", "p1");
+    let req = request(vec![raw(&format!("{}{}", block('a'), block('b')))]);
+    let (prefix, page_bytes) = prefill_and_publish(&backend, &req.tokens());
+    let refused = runtime
+        .kv_prefix_insert(KvInsert {
+            salt: &s,
+            chain: &CHAIN,
+            request: &req,
+            prefix,
+            page_bytes,
+            extra_dependencies: vec![KvDependency::expert(
+                &ProjectId::from("proj"),
+                &PodId::from("x"),
+                Generation(1),
+                [0; 32],
+            )],
+        })
+        .unwrap();
+    assert_eq!(refused, Err(KvCatalogError::DependencyNotLive));
 }

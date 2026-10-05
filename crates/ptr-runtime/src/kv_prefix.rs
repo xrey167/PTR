@@ -41,11 +41,11 @@ use ptr_model_api::{
     LineageContribution, SegmentKind, SegmentedModelRequest, TokenId, TokenizerIdentity,
 };
 use ptr_pods::{
-    KvBackendError, KvForkAuthority, KvForkWitness, KvPrefixKey, KvSharedPrefix, KvWitnessRevoker,
-    PagedKvTensorBackend,
+    ExpertCommitRecord, KvBackendError, KvForkAuthority, KvForkWitness, KvPrefixKey,
+    KvSharedPrefix, KvWitnessRevoker, PagedKvTensorBackend,
 };
 use ptr_semdb::PreparedDelta;
-use ptr_types::{Digest, Generation, ModelVersion, PrincipalId, ProjectId, Validity};
+use ptr_types::{Digest, Generation, ModelVersion, PodId, PrincipalId, ProjectId, Validity};
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -208,6 +208,10 @@ pub enum KvCatalogError {
     DependencyNotLive,
     /// Another live entry with a different backend prefix already holds this slot.
     DuplicateEntry,
+    /// A tombstoned entry is still pinned by an active fork and occupies this slot. It is
+    /// reclaimed when its last pin is released; until then the slot is refused rather than
+    /// overwritten, so accounting and pins stay symmetric.
+    SlotDraining,
 }
 
 impl fmt::Display for KvCatalogError {
@@ -221,21 +225,53 @@ impl fmt::Display for KvCatalogError {
             Self::PrefixShape => write!(f, "prefix is not a non-empty run of whole chunks"),
             Self::DependencyNotLive => write!(f, "a prefix dependency is no longer live"),
             Self::DuplicateEntry => write!(f, "a different prefix already holds this entry"),
+            Self::SlotDraining => write!(f, "the slot is held by a cancelled, still pinned entry"),
         }
     }
 }
 
 impl std::error::Error for KvCatalogError {}
 
+/// What kind of generation-bearing input a [`KvDependency`] is.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum KvDependencyKind {
+    /// A prompt segment of the given kind (never `Raw`).
+    Segment(SegmentKind),
+    /// A pod-MoE expert whose weights shaped the cached K/V (doc 36 section D, P2c).
+    Expert,
+}
+
 /// A generation-bearing input an entry's K/V was computed from.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct KvDependency {
-    pub kind: SegmentKind,
+    pub kind: KvDependencyKind,
     /// The lifecycle target string: a semantic key, memory object id or derived evidence
     /// id, which is also what committed lifecycle events name.
     pub identity: String,
     pub generation: Generation,
     pub content_digest: Digest,
+}
+
+impl KvDependency {
+    /// An expert dependency, identified as `expert:{project}/{pod}`, the key under which
+    /// the materialized state records the expert.
+    pub fn expert(
+        project: &ProjectId,
+        pod: &PodId,
+        generation: Generation,
+        content_digest: Digest,
+    ) -> Self {
+        Self {
+            kind: KvDependencyKind::Expert,
+            identity: expert_identity(project, pod),
+            generation,
+            content_digest,
+        }
+    }
+}
+
+fn expert_identity(project: &ProjectId, pod: &PodId) -> String {
+    format!("expert:{project}/{pod}")
 }
 
 /// Answers whether a dependency is live now, as the committed ledger state sees it.
@@ -272,6 +308,10 @@ pub struct KvInsert<'a> {
     pub prefix: KvSharedPrefix,
     /// Resident bytes of the published pages, charged against `max_kv_page_bytes`.
     pub page_bytes: u64,
+    /// Dependencies beyond the request's segments, such as the experts (see
+    /// [`KvDependency::expert`]) whose weights shaped the pages. They are checked for
+    /// liveness at insert and at every use, and can be invalidated by identity.
+    pub extra_dependencies: Vec<KvDependency>,
 }
 
 type EntryKey = (KvChainId, Digest);
@@ -288,10 +328,31 @@ pub struct KvPin {
 /// tokens it covers, and the pin that keeps the entry from eviction until released.
 #[derive(Debug)]
 pub struct KvCatalogHit {
-    pub witness: KvForkWitness,
-    pub prefix: KvSharedPrefix,
-    pub matched_tokens: usize,
-    pub pin: KvPin,
+    witness: KvForkWitness,
+    prefix: KvSharedPrefix,
+    matched_tokens: usize,
+    pin: KvPin,
+}
+
+impl KvCatalogHit {
+    pub fn prefix(&self) -> &KvSharedPrefix {
+        &self.prefix
+    }
+
+    /// Tokens the prefix covers.
+    pub fn matched_tokens(&self) -> usize {
+        self.matched_tokens
+    }
+
+    pub fn pin(&self) -> &KvPin {
+        &self.pin
+    }
+
+    /// Split into the witness, the prefix and the pin, for a caller that forks through the
+    /// backend directly. The pin must still be released.
+    pub fn into_parts(self) -> (KvForkWitness, KvSharedPrefix, KvPin) {
+        (self.witness, self.prefix, self.pin)
+    }
 }
 
 #[derive(Debug)]
@@ -600,6 +661,7 @@ impl KvPrefixCatalog {
             request,
             prefix,
             page_bytes,
+            extra_dependencies,
         } = insert;
         if prefix.position_offset != 0 {
             return Err(KvCatalogError::NonCanonicalPosition);
@@ -609,7 +671,12 @@ impl KvPrefixCatalog {
         if covered == 0 || covered % KV_CHUNK_TOKENS != 0 || covered > tokens.len() {
             return Err(KvCatalogError::PrefixShape);
         }
-        let (lineage, dependencies) = prefix_lineage(request, &tokens, covered);
+        let (lineage, mut dependencies) = prefix_lineage(request, &tokens, covered);
+        for dependency in extra_dependencies {
+            if !dependencies.contains(&dependency) {
+                dependencies.push(dependency);
+            }
+        }
         if !dependencies.iter().all(|dep| liveness.is_live(dep)) {
             return Err(KvCatalogError::DependencyNotLive);
         }
@@ -619,10 +686,10 @@ impl KvPrefixCatalog {
             .collect();
         let leaf = *path.last().ok_or(KvCatalogError::PrefixShape)?;
         let entry_key = (*chain, lineage);
-        if let Some(existing) = self
-            .entry(&leaf, &entry_key)
-            .filter(|entry| !entry.tombstoned)
-        {
+        if let Some(existing) = self.entry(&leaf, &entry_key) {
+            if existing.tombstoned {
+                return Err(KvCatalogError::SlotDraining);
+            }
             return if existing.prefix.key == prefix.key {
                 Ok(())
             } else {
@@ -748,6 +815,20 @@ impl KvPrefixCatalog {
     pub fn invalidate_identities(&mut self, identities: &BTreeSet<String>) -> Vec<KvPrefixKey> {
         let wanted: BTreeSet<&str> = identities.iter().map(String::as_str).collect();
         self.tombstone_matching(&wanted, |_| true);
+        self.take_retirements()
+    }
+
+    /// Tombstone every entry with an expert dependency. Used when an expert structural
+    /// record cannot be decoded and its operands are therefore unknown (fail closed).
+    pub fn invalidate_all_experts(&mut self) -> Vec<KvPrefixKey> {
+        let identities: Vec<String> = self
+            .by_identity
+            .range("expert:".to_owned()..)
+            .map(|(identity, _)| identity.clone())
+            .take_while(|identity| identity.starts_with("expert:"))
+            .collect();
+        let wanted: BTreeSet<&str> = identities.iter().map(String::as_str).collect();
+        self.tombstone_matching(&wanted, |dep| dep.kind == KvDependencyKind::Expert);
         self.take_retirements()
     }
 
@@ -933,7 +1014,7 @@ fn prefix_lineage(
                 hasher.update(content_digest);
                 hasher.update((used as u64).to_le_bytes());
                 let dependency = KvDependency {
-                    kind,
+                    kind: KvDependencyKind::Segment(kind),
                     identity,
                     generation,
                     content_digest,
@@ -967,11 +1048,14 @@ impl KvLivenessOracle for PtrRuntime {
     /// of a segment is not re-verified here: it is part of the entry's lineage and of the
     /// request's, so a different content never matches the entry.
     fn is_live(&self, dependency: &KvDependency) -> bool {
+        if dependency.kind == KvDependencyKind::Expert {
+            return self.expert_is_serving(&dependency.identity, dependency.generation);
+        }
         match self.generation_validity(&dependency.identity, dependency.generation) {
             Some(Validity::Live) => true,
             Some(_) => false,
             None => {
-                dependency.kind == SegmentKind::Semantic
+                dependency.kind == KvDependencyKind::Segment(SegmentKind::Semantic)
                     && !self.revoked_generations().any(|(id, generation)| {
                         id == dependency.identity && generation == dependency.generation
                     })
@@ -979,6 +1063,48 @@ impl KvLivenessOracle for PtrRuntime {
             }
         }
     }
+}
+
+impl PtrRuntime {
+    /// Whether the materialized `expert:{project}/{pod}` value, written as
+    /// `{generation}:{state}:{state_version}`, names `generation` in a serving or frozen
+    /// state. An absent, malformed or other-state value is not live (fail closed).
+    fn expert_is_serving(&self, identity: &str, generation: Generation) -> bool {
+        self.materialized_state()
+            .values
+            .get(identity)
+            .is_some_and(|value| expert_value_is_serving(value, generation))
+    }
+}
+
+fn expert_value_is_serving(value: &str, generation: Generation) -> bool {
+    let mut parts = value.splitn(3, ':');
+    let (Some(live), Some(state)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    live.parse::<u64>().is_ok_and(|live| live == generation.0)
+        && (state.eq_ignore_ascii_case("serving") || state.eq_ignore_ascii_case("frozen"))
+}
+
+/// The `expert:{project}/{pod}` identity of every pod an encoded expert commit record
+/// names, as an existing source or an intended result. `None` when the bytes do not decode
+/// as a canonical [`ExpertCommitRecord`].
+pub fn expert_operand_identities(record: &[u8]) -> Option<Vec<String>> {
+    let record = ExpertCommitRecord::decode_canonical(record).ok()?;
+    let op = record.proposal().op();
+    let mut identities: Vec<String> = op
+        .sources()
+        .into_iter()
+        .map(|target| expert_identity(target.project(), target.pod()))
+        .chain(
+            op.results()
+                .into_iter()
+                .map(|result| expert_identity(result.project(), result.pod())),
+        )
+        .collect();
+    identities.sort();
+    identities.dedup();
+    Some(identities)
 }
 
 /// The reason a catalog could not be enabled.
@@ -1027,6 +1153,7 @@ impl PtrRuntime {
             .take()
             .ok_or(KvCatalogWiringError::NotEnabled)?;
         let hit = catalog.lookup(lookup, &*self);
+        retire_queued(&mut catalog);
         self.kv_catalog = Some(catalog);
         Ok(hit)
     }
@@ -1043,6 +1170,7 @@ impl PtrRuntime {
             .take()
             .ok_or(KvCatalogWiringError::NotEnabled)?;
         let forked = catalog.fork(backend, cache, hit, &*self);
+        retire_queued(&mut catalog);
         self.kv_catalog = Some(catalog);
         Ok(forked)
     }
@@ -1109,6 +1237,18 @@ impl PtrRuntime {
                 )])),
             LedgerEvent::ProcedurePromoted { id, generation } => catalog
                 .invalidate_superseded(&BTreeMap::from([(format!("procedure:{id}"), *generation)])),
+            // Committed expert structure: every operand identity is invalidated for every
+            // generation. Today `commit` refuses this record before it is applied, so the arm
+            // is the future admission path's hook; an undecodable record flushes every expert
+            // dependency rather than guessing its operands.
+            LedgerEvent::ExpertStructuralCommitted { record, .. } => {
+                match expert_operand_identities(record) {
+                    Some(identities) => {
+                        catalog.invalidate_identities(&identities.into_iter().collect())
+                    }
+                    None => catalog.invalidate_all_experts(),
+                }
+            }
             _ => return,
         };
         retire_keys(catalog, retire);
@@ -1132,6 +1272,31 @@ fn retire_keys(catalog: &mut KvPrefixCatalog, keys: Vec<KvPrefixKey>) {
         match retirer.retire(&key) {
             Ok(()) | Err(KvBackendError::PrefixNotFound) => {}
             Err(_) => catalog.stats.retire_failures += 1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expert_value_is_live_only_for_the_same_generation_in_a_serving_state() {
+        let g = Generation(2);
+        assert!(expert_value_is_serving("2:serving:5", g));
+        assert!(expert_value_is_serving("2:Frozen:5", g));
+        for dead in [
+            "1:serving:5",
+            "3:serving:5",
+            "2:retired:5",
+            "2:fenced:5",
+            "2:superseded:5",
+            "2:candidate:5",
+            "2",
+            "x:serving:1",
+            "",
+        ] {
+            assert!(!expert_value_is_serving(dead, g), "{dead}");
         }
     }
 }
