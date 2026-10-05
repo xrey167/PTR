@@ -224,9 +224,10 @@ impl ServerState {
         effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
     ) -> Self {
         // Read before the runtime moves into its mutex.
-        let admission = Arc::new(RequestAdmission::new(
-            runtime.config.runtime.mailbox_capacity,
-        ));
+        let admission = Arc::new(
+            RequestAdmission::new(runtime.config.runtime.mailbox_capacity)
+                .expect("runtime.mailbox_capacity is validated non-zero by ptr-config"),
+        );
         Self {
             runtime: Arc::new(Mutex::new(runtime)),
             backend,
@@ -311,8 +312,20 @@ async fn request(
 
     // Bounded admission (Invariant #8): the runtime is serialised behind one
     // mutex, so without a bound every waiting request would queue unboundedly.
-    // A request that finds the mailbox full is refused instead of waiting.
-    let _slot = state.admission.try_enter().ok_or(ApiError::Saturated)?;
+    // A request that finds the mailbox full is refused instead of waiting. The
+    // slot is taken before any blocking work and moves into the blocking task,
+    // so it stays held until that work ends even if this future is cancelled,
+    // and async workers stay free to refuse excess requests and serve /health.
+    let slot = state.admission.try_enter().ok_or(ApiError::Saturated)?;
+    tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        process_request(&state, input)
+    })
+    .await
+    .map_err(|error| ApiError::Internal(format!("request task failed: {error}")))?
+}
+
+fn process_request(state: &ServerState, input: ApiRequest) -> Result<Json<ApiResponse>, ApiError> {
     let mut runtime = state
         .runtime
         .lock()
@@ -449,8 +462,12 @@ impl Verifier<TypedPayload> for PayloadBoundsVerifier {
                 hard: true,
             });
         };
-        if payload.type_id.0.trim().is_empty() {
-            violation("type-id", "type id must be non-empty".into());
+        let type_id = payload.type_id.0.as_str();
+        if type_id.is_empty() || type_id.trim() != type_id {
+            violation(
+                "type-id",
+                "type id must be non-empty without edge whitespace".into(),
+            );
         }
         if payload.bytes.len() > self.bounds.max_bytes {
             violation(
@@ -482,8 +499,16 @@ impl Verifier<TypedPayload> for PayloadBoundsVerifier {
     }
 }
 
+/// The default verifier: [`PayloadBounds::default`] (64 KiB, demo-note UTF-8).
 pub fn default_verifier() -> Arc<dyn Verifier<TypedPayload> + Send + Sync> {
-    Arc::new(PayloadBoundsVerifier::default())
+    default_verifier_with(PayloadBounds::default())
+}
+
+/// [`PayloadBoundsVerifier`] with caller-chosen bounds.
+pub fn default_verifier_with(
+    bounds: PayloadBounds,
+) -> Arc<dyn Verifier<TypedPayload> + Send + Sync> {
+    Arc::new(PayloadBoundsVerifier::new(bounds))
 }
 
 /// Bounds the requests the server works on or waits to work on at once.
@@ -496,11 +521,16 @@ pub struct RequestAdmission {
 }
 
 impl RequestAdmission {
-    pub fn new(capacity: usize) -> Self {
-        Self {
+    /// Fails with [`AdmissionError::ZeroCapacity`] for a capacity of zero,
+    /// which would refuse every request.
+    pub fn new(capacity: usize) -> Result<Self, AdmissionError> {
+        if capacity == 0 {
+            return Err(AdmissionError::ZeroCapacity);
+        }
+        Ok(Self {
             in_flight: AtomicUsize::new(0),
             capacity,
-        }
+        })
     }
 
     /// Takes a slot, or `None` when all `capacity` slots are taken. Never waits.
@@ -529,6 +559,13 @@ impl RequestAdmission {
     pub fn in_flight(&self) -> usize {
         self.in_flight.load(Ordering::Acquire)
     }
+}
+
+/// Why a [`RequestAdmission`] could not be built.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdmissionError {
+    /// Capacity must be at least one.
+    ZeroCapacity,
 }
 
 /// A taken admission slot, released on drop.
@@ -672,12 +709,46 @@ mod tests {
 
     #[test]
     fn admission_is_bounded_and_released_on_drop() {
-        let admission = Arc::new(RequestAdmission::new(2));
+        let admission = Arc::new(RequestAdmission::new(2).unwrap());
         let a = admission.try_enter().unwrap();
         let _b = admission.try_enter().unwrap();
         assert!(admission.try_enter().is_none());
         drop(a);
         assert_eq!(admission.in_flight(), 1);
         assert!(admission.try_enter().is_some());
+    }
+
+    #[test]
+    fn zero_capacity_admission_is_rejected() {
+        assert_eq!(
+            RequestAdmission::new(0).unwrap_err(),
+            AdmissionError::ZeroCapacity
+        );
+    }
+
+    #[test]
+    fn padded_type_ids_are_refused() {
+        let verifier = PayloadBoundsVerifier::default();
+        for id in [" x", "x ", "\tx"] {
+            let report = verifier.verify(&payload(id, b"ok"));
+            assert_eq!(report.status, VerificationStatus::Fail, "{id:?}");
+            assert_eq!(report.findings[0].code, "type-id");
+        }
+    }
+
+    #[test]
+    fn default_verifier_with_applies_custom_bounds() {
+        let verifier = default_verifier_with(PayloadBounds {
+            max_bytes: 2,
+            textual_types: BTreeSet::new(),
+        });
+        assert_eq!(
+            verifier.verify(&payload("t", b"ab")).status,
+            VerificationStatus::Pass
+        );
+        assert_eq!(
+            verifier.verify(&payload("t", b"abc")).status,
+            VerificationStatus::Fail
+        );
     }
 }
