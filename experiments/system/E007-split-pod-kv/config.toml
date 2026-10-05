@@ -181,3 +181,4 @@ min_expired_deadline_frame_attempts = 1
 max_expired_frames_admitted = 0
 min_post_abandonment_replay_cases = 1
 max_abandoned_frame_replays_admitted = 0
+replay_window_terms = ["abandonment_time", "replay_window", "max_frame_deadline_lifetime"]

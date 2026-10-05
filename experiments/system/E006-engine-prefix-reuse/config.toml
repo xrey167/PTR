@@ -182,3 +182,4 @@ min_runtime_only_restart_arms_per_backend = 1
 max_reused_salt_epochs = 0
 salt_epochs = "monotone, durable, derived from the ledger commit index; never reused"
 reverse_index_rebuilt_from_ledger_before_serving = true
+inflight_race_applicable = true
