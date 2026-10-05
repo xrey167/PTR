@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 4 Rust source files · 126 nonblank source lines · 2 integration-test files · 3 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 602 nonblank source lines · 3 integration-test files · 16 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -23,9 +23,12 @@
 - ModelEvent::ActionReady carries a full ptr_types::ActionIr (operation, target, capability, effect, input type, generation, revision, payload) instead of an operation string
 - ReferenceEchoBackend also implements ResumableInferenceBackend (resume yields Finished)
 - ScenarioBackend: a deterministic demonstrator backend named scenario that echoes the raw text as a Token and emits one Mutation ActionIr (create demo-note, capability demo.local-note.create, type ptr.demo-note.v1) at the request's revision; resume yields Finished. Its own doc comment calls it plumbing evidence for the local HTTP/effect path, not a model-quality baseline
+- KV-reuse P1 token contract (doc 36, contract only, no backend implements it): TokenId, Tokenizer trait with TokenizerIdentity, ByteTokenizer (ptr.byte v1, one token per UTF-8 byte), SegmentSource (Raw, Semantic, Memory, Derived), PromptSegment with SHA-256 content_digest and lineage_contribution (Raw carries kind and content digest only), SegmentedModelRequest with tokens() and order-dependent lineage_digest(), KvReuseMode, KvReusePolicy, KvReuseHint, KvReuseReport (hit_tokens bounded by total), ModelRun and the KvReusingBackend trait; ModelRequest is unchanged. Approximate reuse must never reach an effect path is documented on the types and not enforced yet
 
 ### Missing for the target architecture
 
+- Real HF tokenizer (planned new crate ptr-tokenizers)
+- KV-reuse P2 catalog and admission; enforcement that Approximate reuse never reaches an effect path; no backend implements KvReusingBackend
 - Async streaming backend contract
 - Backend capability negotiation
 - SGLang, vLLM and Burn-native adapters
@@ -59,6 +62,7 @@
 - typed PodRequested event contract covered by runtime loop tests
 - typed ReasoningOperator model event contract test
 - observation/resume contract covered by runtime multi-step tests
+- KV-reuse token contract tests: ByteTokenizer round trip, digest/lineage sensitivity, pinned lineage digest, request validation, report bound, trivial KvReusingBackend
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
