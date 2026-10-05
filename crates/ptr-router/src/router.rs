@@ -727,6 +727,12 @@ impl<R: Router> CheckedRouter<R> {
             .map_err(|error| RoutedError::new(request, RouteError::NonceExhausted(error)))?;
         route_checked(&self.inner, request, &self.key, &nonce)
     }
+
+    /// The non-secret identifier of the owned key ([`SamplingKey::key_id`]), to record next to
+    /// every decision.
+    pub fn key_id(&self) -> [u8; 8] {
+        self.key.key_id()
+    }
 }
 
 impl Router for PodRouter {

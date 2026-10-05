@@ -15,6 +15,15 @@ pub enum RuntimeEvent {
     RequestStarted(RequestId),
     SnapshotOpened(Revision),
     CandidateGenerated(CandidateId),
+    /// A Pod chosen by the trusted checked routing path, emitted before [`RuntimeEvent::PodInvoked`].
+    /// Replaying the decision needs the key named by `key_id`, the `nonce` and the request.
+    PodRouted {
+        pod: String,
+        propensity: f64,
+        nonce: [u8; 16],
+        draw: u64,
+        key_id: [u8; 8],
+    },
     PodInvoked(String),
     VerifierResult {
         verifier: String,

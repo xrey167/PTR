@@ -9,10 +9,12 @@ use ptr_ledger::{integrity, LedgerEvent};
 use ptr_model_api::{ModelEvent, ReferenceEchoBackend, ResumableInferenceBackend};
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
-use ptr_router::PodRouter;
+use ptr_router::{
+    CheckedRouter, NonceSequence, PodRouter, RouteRequest, RoutedChoice, RoutedError, SamplingKey,
+};
 use ptr_runtime::{
     execution::{ActionExecutor, ActionScope, ExecutionGrant, RequiredVerification},
-    PtrRuntime, RuntimeError,
+    PodSampler, PtrRuntime, RuntimeError,
 };
 use ptr_types::{CapabilityId, Effect, ProjectId, RequestId, TypeId, VerificationLevel};
 use ptr_verifier::{
@@ -196,7 +198,7 @@ pub struct HealthResponse {
 pub struct ServerState {
     runtime: Arc<Mutex<PtrRuntime>>,
     backend: Arc<dyn ResumableInferenceBackend>,
-    router: PodRouter,
+    router: Arc<dyn PodSampler>,
     pods: Arc<PodRegistry>,
     verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
     effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
@@ -208,7 +210,7 @@ impl ServerState {
         Self::with_dependencies(
             runtime,
             Arc::new(ReferenceEchoBackend),
-            PodRouter,
+            Arc::new(NoPods),
             Arc::new(PodRegistry::default()),
             default_verifier(),
             Arc::new(Vec::new),
@@ -218,7 +220,7 @@ impl ServerState {
     pub fn with_dependencies(
         runtime: PtrRuntime,
         backend: Arc<dyn ResumableInferenceBackend>,
-        router: PodRouter,
+        router: Arc<dyn PodSampler>,
         pods: Arc<PodRegistry>,
         verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
         effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
@@ -240,6 +242,32 @@ impl ServerState {
     }
 }
 
+/// The production Pod router: `PodRouter` as the policy, sampled through `route_checked` with
+/// `key` and a nonce sequence of `instance` starting at counter 0. `instance` must be fresh for
+/// every process incarnation sharing `key` (nonce persistence across restarts is not done;
+/// a fresh instance id per process keeps nonces unique).
+pub fn checked_pod_router(key: SamplingKey, instance: [u8; 8]) -> Arc<dyn PodSampler> {
+    Arc::new(CheckedRouter::new(
+        PodRouter,
+        key,
+        NonceSequence::starting_at(instance, 0),
+    ))
+}
+
+/// The sampler of `ServerState::new`, whose registry is empty: it routes nothing, so there is
+/// no key and no draw.
+struct NoPods;
+
+impl PodSampler for NoPods {
+    fn route(&self, _: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RoutedError> {
+        Ok(None)
+    }
+
+    fn key_id(&self) -> [u8; 8] {
+        [0; 8]
+    }
+}
+
 pub fn router(runtime: PtrRuntime) -> Router {
     router_with_state(ServerState::new(runtime))
 }
@@ -247,7 +275,7 @@ pub fn router(runtime: PtrRuntime) -> Router {
 pub fn router_with_dependencies(
     runtime: PtrRuntime,
     backend: Arc<dyn ResumableInferenceBackend>,
-    router: PodRouter,
+    router: Arc<dyn PodSampler>,
     pods: Arc<PodRegistry>,
     verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
     effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
@@ -278,7 +306,7 @@ pub async fn serve_with_dependencies(
     listener: tokio::net::TcpListener,
     runtime: PtrRuntime,
     backend: Arc<dyn ResumableInferenceBackend>,
-    router: PodRouter,
+    router: Arc<dyn PodSampler>,
     pods: Arc<PodRegistry>,
     verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
     effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
@@ -350,7 +378,7 @@ fn process_request(state: &ServerState, input: ApiRequest) -> Result<Json<ApiRes
             input.text,
             state.backend.as_ref(),
             state.pods.as_ref(),
-            &state.router,
+            state.router.as_ref(),
             state.verifier.as_ref(),
             4,
         )
@@ -678,6 +706,13 @@ mod tests {
             type_id: TypeId::from(type_id),
             bytes: bytes.to_vec(),
         }
+    }
+
+    #[test]
+    fn checked_pod_router_reports_the_key_identity_and_routes_nothing_without_pods() {
+        let router = checked_pod_router(SamplingKey::from_bytes([7; 32]), [9; 8]);
+        assert_eq!(router.key_id(), SamplingKey::from_bytes([7; 32]).key_id());
+        assert_ne!(router.key_id(), NoPods.key_id());
     }
 
     #[test]
