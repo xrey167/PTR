@@ -19,7 +19,7 @@ hyperparameters_frozen_before_seeds = true
 max_dead_experts = 0
 max_violation_role = "reported_only"
 load_cv_aggregation = "per layer (population std / mean), mean over layers, at the final step"
-search_space = ["learning_rate", "batch_size", "aux_coefficient", "bias_update_rate", "lora_rank", "lora_alpha"]
+search_space = ["learning_rate", "batch_size", "aux_coefficient", "bias_update_rate"]
 # Preregistered choices for this experiment (no code default exists).
 seed_aggregation = "every_seed_must_pass"
 # Preregistered choices for this experiment (no code default exists).
@@ -49,7 +49,7 @@ load_cv_and_dead_experts_eval_tokens = 8192
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec"]
 # Preregistered choices for this experiment (no code default exists).
 expert_token_fraction_definition = "expert routed assignments / total routed assignments in the layer; sums to 1 over experts"
 # Preregistered choices for this experiment (no code default exists).
@@ -80,3 +80,6 @@ lora_rank = 8
 lora_alpha = 16
 model_pins_recorded_in_run_json = true
 max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+tuning_search_spec = { space = { learning_rate = { type = "log_uniform", low = 1e-5, high = 1e-3 }, batch_size = { type = "choice", values = [16, 32, 64] }, aux_coefficient = { type = "log_uniform", low = 1e-3, high = 1e-1 }, bias_update_rate = { type = "log_uniform", low = 1e-4, high = 1e-2 }}, trial_budget = 8, sampler = "seeded random search", selection_seed = 20240607, objective = "validation task accuracy at the final step", tie_break = "lowest trial index" }
+tuning_search_spec_recorded_in_run_json = true

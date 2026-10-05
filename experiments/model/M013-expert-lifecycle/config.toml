@@ -75,7 +75,7 @@ public_suite_selection_rule = "the first 2000 questions in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm", "hyperparameter_tuning_budget_trials_per_arm", "lifecycle_operations", "proposal_generating_arms", "recovery_target_fraction_of_pre_retirement_score", "split_rule_single_split_corpora", "flops_relative_tolerance", "active_param_tolerance", "validation_position_modulus", "validation_position_residue", "overlap_counters_per_corpus", "gsm8k_test_partition_modulus", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config"]
+procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm", "hyperparameter_tuning_budget_trials_per_arm", "lifecycle_operations", "proposal_generating_arms", "recovery_target_fraction_of_pre_retirement_score", "split_rule_single_split_corpora", "flops_relative_tolerance", "active_param_tolerance", "validation_position_modulus", "validation_position_residue", "overlap_counters_per_corpus", "gsm8k_test_partition_modulus", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec"]
 # Preregistered choices for this experiment (no code default exists).
 split_rule_single_split_corpora = "index mod 3: 0 = training, 1 = gate suite, 2 = held-out evaluation"
 max_training_data_outside_training_partition_count = 0
@@ -120,3 +120,6 @@ moe_topology = { layers = 16, num_experts = 64, top_k = 8, router_layout = "per-
 lora_expert_config = { initial_expert_count = 8, router_top_k = 2, lora_rank = 8, lora_alpha = 16, target_modules = ["mlp"] }
 model_pins_recorded_in_run_json = true
 max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+tuning_search_spec = { space = { learning_rate = { type = "log_uniform", low = 1e-5, high = 1e-3 }, batch_size = { type = "choice", values = [16, 32, 64] }}, trial_budget = 8, sampler = "seeded random search", selection_seed = 20240607, objective = "mean validation accuracy over the domain sequence", tie_break = "lowest trial index" }
+tuning_search_spec_recorded_in_run_json = true

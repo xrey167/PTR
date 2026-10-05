@@ -71,7 +71,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "adapter_types_run", "qkv_lora_first_layers", "alora_invocation_position_tokens", "prompt_tokens", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "required_interior_first_adapted_layer", "alora_invocation_offset_in_page", "page_tokens", "q_only_lora_first_layers", "mlp_only_lora_first_layers", "invalidation_coverage_matrix", "tiny_model_config_digest", "tokenizer_pin", "moe_topology"]
+procedure_parameters_recorded_per_cell = ["seeds", "adapter_types_run", "qkv_lora_first_layers", "alora_invocation_position_tokens", "prompt_tokens", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "required_interior_first_adapted_layer", "alora_invocation_offset_in_page", "page_tokens", "q_only_lora_first_layers", "mlp_only_lora_first_layers", "invalidation_coverage_matrix", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds"]
 # Preregistered choices for this experiment (no code default exists).
 adapter_restart_output_mismatches_max = 0
 # Preregistered choices for this experiment (no code default exists).
@@ -92,3 +92,6 @@ tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
 moe_topology = "none: dense tiny decoder"
 model_pins_recorded_in_run_json = true
 max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "adapter"]
+dependency_list_narrowing_reason = "narrowed: the dense LoRA workload has no experts"

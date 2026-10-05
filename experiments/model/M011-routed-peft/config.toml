@@ -40,7 +40,7 @@ corpus_selection_rule = "all items of each split in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "compared_arms", "flops_relative_tolerance", "split_rule_single_split_corpora", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "compared_arms", "flops_relative_tolerance", "split_rule_single_split_corpora", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_lora"]
 # Preregistered choices for this experiment (no code default exists).
 tuning_trials_used_recorded_per_arm = true
 max_tuning_budget_mismatches = 0
@@ -60,7 +60,7 @@ training_flops_measured = "per arm and seed"
 max_training_flops_mismatch_seeds = 0
 # Preregistered choices for this experiment (no code default exists).
 validation_rule = "validation partition for tuning: items whose position within the training partition has index mod 10 == 9, excluded from training; tuning selects on validation only ; for HumanEval and BFCL the explicit mod 3 == 1 partition is the validation partition"
-validation_corpora = ["gsm8k_train"]
+validation_corpora = ["gsm8k_train", "humaneval", "bfcl_simple"]
 validation_position_modulus = 10
 validation_position_residue = 9
 validation_excluded_from_training = true
@@ -79,3 +79,13 @@ moe_topology = { layers = 16, num_experts = 64, top_k = 8, router_layout = "per-
 lora_expert_config = { num_lora_experts = 8, router_top_k = 2, lora_rank = 8, lora_alpha = 16, target_modules = ["mlp"] }
 model_pins_recorded_in_run_json = true
 max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+tuning_search_spec = { space = { learning_rate = { type = "log_uniform", low = 1e-5, high = 1e-3 }, batch_size = { type = "choice", values = [16, 32, 64] }}, trial_budget = 8, sampler = "seeded random search", selection_seed = 20240607, objective = "macro-average validation task accuracy over code, math and tool", tie_break = "lowest trial index" }
+tuning_search_spec_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+arm_lora = { perft_r_emergent = { num_experts = 8, router_top_k = 2, rank = 8, alpha = 16, trainable_params = 4456448 }, perft_r_prescribed = { num_experts = 8, router_top_k = 2, rank = 8, alpha = 16, trainable_params = 4456448 }, mixlora = { num_experts = 8, router_top_k = 2, rank = 8, alpha = 16, trainable_params = 4456448 }, plain_lora = { num_experts = 1, router_top_k = 1, rank = 17, alpha = 34, trainable_params = 4456448 } }
+arm_lora_computation = "OLMoE hidden 2048, 16 layers. Routed arms (PERFT-R, MixLoRA): per layer 8 experts x rank 8 x (2048 + 2048) = 262144 plus router 2048 x 8 = 16384 gives 278528; x 16 layers = 4456448. Plain LoRA on q, k, v, o (each 2048 x 2048): per layer 4 modules x rank r x (2048 + 2048) = 16384 r; x 16 layers = 262144 r; r = 17 gives 4456448 exactly"
+arm_lora_trainable_params_tolerance = 0.01
+# Preregistered choices for this experiment (no code default exists).
+validation_digest_per_corpus = ["gsm8k_train", "humaneval", "bfcl_simple"]
+validation_overlap_counters_per_corpus = ["gsm8k_train", "humaneval", "bfcl_simple"]

@@ -90,7 +90,7 @@ heldout_selection_digest_recorded = true
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "warmup_runs", "timed_runs", "position_shifts", "candidate_k_tokens", "calibration_prompts", "heldout_prompts", "chunk_tokens", "prompt_tokens", "test_model_layers", "test_model_vocab_size", "reused_chunks_per_prompt", "reused_tokens", "suffix_tokens", "candidate_recompute_fractions", "nonaligned_insertion_tokens", "hardware_profile", "run_json_records_hardware", "invalidation_coverage_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology"]
+procedure_parameters_recorded_per_cell = ["seeds", "warmup_runs", "timed_runs", "position_shifts", "candidate_k_tokens", "calibration_prompts", "heldout_prompts", "chunk_tokens", "prompt_tokens", "test_model_layers", "test_model_vocab_size", "reused_chunks_per_prompt", "reused_tokens", "suffix_tokens", "candidate_recompute_fractions", "nonaligned_insertion_tokens", "hardware_profile", "run_json_records_hardware", "invalidation_coverage_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "shift_insert_ordinary_hit_sequences", "declared_dependency_kinds", "pod_output_kinds", "authoritative_sink_kinds", "software_stack", "production_modes"]
 # Preregistered choices for this experiment (no code default exists).
 timing_counts_recorded_per_cell = true
 max_timing_procedure_mismatches = 0
@@ -106,7 +106,7 @@ hardware_profile = "hardware/rtx5090.toml"
 run_json_records_hardware = ["gpu_model", "driver_version", "cuda_runtime_version", "torch_version", "vllm_version"]
 max_hardware_profile_mismatches = 0
 # Preregistered choices for this experiment (no code default exists).
-invalidation_coverage_matrix = { kinds = ["semantic_lineage_segment", "memory_lineage_segment", "derived_lineage_segment", "base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["semantic_lineage_segment_normal_revocation", "semantic_lineage_segment_normal_supersession", "semantic_lineage_segment_lag_revocation", "semantic_lineage_segment_lag_supersession", "semantic_lineage_segment_restore_revocation", "semantic_lineage_segment_restore_supersession", "semantic_lineage_segment_inflight_revocation", "semantic_lineage_segment_inflight_supersession", "memory_lineage_segment_normal_revocation", "memory_lineage_segment_normal_supersession", "memory_lineage_segment_lag_revocation", "memory_lineage_segment_lag_supersession", "memory_lineage_segment_restore_revocation", "memory_lineage_segment_restore_supersession", "memory_lineage_segment_inflight_revocation", "memory_lineage_segment_inflight_supersession", "derived_lineage_segment_normal_revocation", "derived_lineage_segment_normal_supersession", "derived_lineage_segment_lag_revocation", "derived_lineage_segment_lag_supersession", "derived_lineage_segment_restore_revocation", "derived_lineage_segment_restore_supersession", "derived_lineage_segment_inflight_revocation", "derived_lineage_segment_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession"] }
+invalidation_coverage_matrix = { kinds = ["semantic_lineage_segment", "memory_lineage_segment", "derived_lineage_segment", "base_model", "adapter_generation", "expert_generation"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], extra_types = { expert_generation = ["fence"] }, cells = ["semantic_lineage_segment_normal_revocation", "semantic_lineage_segment_normal_supersession", "semantic_lineage_segment_lag_revocation", "semantic_lineage_segment_lag_supersession", "semantic_lineage_segment_restore_revocation", "semantic_lineage_segment_restore_supersession", "semantic_lineage_segment_inflight_revocation", "semantic_lineage_segment_inflight_supersession", "memory_lineage_segment_normal_revocation", "memory_lineage_segment_normal_supersession", "memory_lineage_segment_lag_revocation", "memory_lineage_segment_lag_supersession", "memory_lineage_segment_restore_revocation", "memory_lineage_segment_restore_supersession", "memory_lineage_segment_inflight_revocation", "memory_lineage_segment_inflight_supersession", "derived_lineage_segment_normal_revocation", "derived_lineage_segment_normal_supersession", "derived_lineage_segment_lag_revocation", "derived_lineage_segment_lag_supersession", "derived_lineage_segment_restore_revocation", "derived_lineage_segment_restore_supersession", "derived_lineage_segment_inflight_revocation", "derived_lineage_segment_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession", "adapter_generation_normal_revocation", "adapter_generation_normal_supersession", "adapter_generation_lag_revocation", "adapter_generation_lag_supersession", "adapter_generation_restore_revocation", "adapter_generation_restore_supersession", "adapter_generation_inflight_revocation", "adapter_generation_inflight_supersession", "expert_generation_normal_revocation", "expert_generation_normal_supersession", "expert_generation_normal_fence", "expert_generation_lag_revocation", "expert_generation_lag_supersession", "expert_generation_lag_fence", "expert_generation_restore_revocation", "expert_generation_restore_supersession", "expert_generation_restore_fence", "expert_generation_inflight_revocation", "expert_generation_inflight_supersession", "expert_generation_inflight_fence"] }
 min_invalidation_matrix_cases_per_cell = 1
 max_invalidation_matrix_stale_hits_per_cell = 0
 invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
@@ -133,3 +133,27 @@ tokenizer_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
 moe_topology = "none: dense decoder, 24 layers"
 model_pins_recorded_in_run_json = true
 max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+min_shift_insert_ordinary_hit_cases_per_sequence = 1
+shift_insert_ordinary_hit_sequences = ["shift_insert_then_ordinary_then_effect", "same_sequence_across_restart"]
+max_tainted_pages_served_as_exact = 0
+max_effects_admitted_from_tainted_results = 0
+tainted_namespace_rule = "approximate pages live only in a separate tainted namespace; never in the Exact catalog"
+# Preregistered choices for this experiment (no code default exists).
+declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "adapter", "expert"]
+# Preregistered choices for this experiment (no code default exists).
+pod_output_kinds = ["Observation", "Candidate", "Hypothesis", "ToolResult", "EnvironmentObservation", "StateDelta", "ActionProposal", "VerifiedResult"]
+authoritative_sink_kinds = ["StateDelta", "VerifiedResult", "ActionProposal", "promote_verified_pod_output"]
+stored_tainted_kinds = ["Observation", "Candidate", "Hypothesis", "ToolResult", "EnvironmentObservation"]
+min_tainted_pod_output_sink_cases_per_kind = 1
+max_tainted_outputs_admitted_at_authoritative_sinks = 0
+max_tainted_hypotheses_promoted_without_recompute = 0
+# Preregistered choices for this experiment (no code default exists).
+software_stack = { driver_version = "580.65.06", cuda_runtime_version = "13.0", torch_version = "2.13.0", vllm_version = "0.30.0", python = ">=3.10,<3.15" }
+software_stack_recorded_in_run_json = true
+max_software_stack_mismatches = 0
+software_stack_basis = "vLLM 0.30.0 requires torch==2.13.0 and its Docker default CUDA 13.0.3 (SGLang 0.5.21 also requires torch==2.13.0); driver 580.65.06 is the minimum Linux driver of CUDA 13.0"
+# Preregistered choices for this experiment (no code default exists).
+cache_namespace_partitioned_by_production_mode = true
+cache_namespace_partition = "approximate pages only in a separate tainted namespace, never in the Exact catalog"
+production_modes = ["Exact", "Approximate"]

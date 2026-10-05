@@ -99,8 +99,8 @@ per_arm_seeded_entries_reported = "per arm, keyed by memory_revocation_arms and 
 generation_dimensions = ["model", "adapter", "expert"]
 engine_cache_salt_field = "cache_salt"
 # Preregistered choices for this experiment (no code default exists).
-salt_identity = "H(PrincipalId, ProjectId, semantic_salt_epoch, base-model generation and artifact digest, adapter key + generation + digest, expert generations and per-expert fence epochs (MoE), tokenizer, numerics including RoPE regime, schema)"
-salt_dimensions = ["principal_id", "project_id", "semantic_salt_epoch", "base_model_generation_and_artifact_digest", "adapter_key_generation_digest", "expert_generations_and_fence_epochs", "tokenizer", "numerics_including_rope_regime", "schema"]
+salt_identity = "H(PrincipalId, ProjectId, semantic_salt_epoch, base-model generation and artifact digest, adapter key + generation + digest, expert generations and per-expert fence epochs (MoE), KvReuseMode, tokenizer, numerics including RoPE regime, schema)"
+salt_dimensions = ["principal_id", "project_id", "semantic_salt_epoch", "base_model_generation_and_artifact_digest", "adapter_key_generation_digest", "expert_generations_and_fence_epochs", "kv_reuse_mode", "tokenizer", "numerics_including_rope_regime", "schema"]
 block_key_dimensions = ["parent_block_hash", "block_tokens", "engine_extras_lora_id"]
 adapter_and_expert_in_salt = true
 probe_dimensions_all_salt_borne = ["model", "adapter", "expert", "tokenizer", "numerics", "kv_key_encoding", "rope_regime"]
@@ -115,7 +115,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix", "arm_matrix", "enabled_backends", "backend_versions", "persistent_cache_declared_per_backend", "salt_epochs", "dependency_journal_crash_points", "model_checkpoint_revision", "tokenizer_revision", "moe_topology"]
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix", "arm_matrix", "enabled_backends", "backend_versions", "persistent_cache_declared_per_backend", "salt_epochs", "dependency_journal_crash_points", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "capacity_partitioning", "capacity_partitioning_options", "max_live_associations_per_principal", "association_dedup_key", "capacity_partitioning_granularity", "declared_dependency_kinds", "software_stack", "rope_regime_inputs", "production_modes"]
 # Preregistered choices for this experiment (no code default exists).
 inflight_restart_output_mismatches_max = 0
 inflight_restarts_equal_cancellations = true
@@ -203,3 +203,45 @@ max_conforming_crash_case_stale_hits = 0
 # Preregistered choices for this experiment (no code default exists).
 min_compaction_restart_revocation_cases_per_backend = 1
 compaction_snapshot_rule = "compaction snapshots keep the dependency associations and salt epochs, or rotate all salts fail-closed"
+# Preregistered choices for this experiment (no code default exists).
+capacity_partitioning = { vllm-http = "per_principal_block_quota", sglang-http = "per_principal_block_quota" }
+capacity_partitioning_options = ["per_principal_block_quota", "per_principal_engine_instance", "none"]
+capacity_partitioning_recorded_in_run_json = true
+min_eviction_side_channel_cases_per_backend = 1
+eviction_attacker_auc_ci_upper_max = 0.55
+eviction_attacker_applies_when = "capacity_partitioning is claimed (not none)"
+unpartitioned_backend_claim = "no cross-principal hits only; timing isolation not-applicable"
+# Preregistered choices for this experiment (no code default exists).
+max_live_associations_per_principal = 4096
+association_dedup_key = "(principal, project, salt epoch, dependency-generation set)"
+association_bound_behaviour = "fail-closed: reaching the bound rotates the principal salt epoch (retiring all its associations) before admitting the request"
+min_association_bound_cases_per_backend = 1
+compaction_snapshots_hold = "live associations only"
+# Preregistered choices for this experiment (no code default exists).
+capacity_partitioning_granularity = { vllm-http = "principal_project_pair", sglang-http = "principal_project_pair" }
+capacity_partitioning_granularity_options = ["principal", "principal_project_pair", "none"]
+eviction_side_channel_boundaries = ["cross_principal", "cross_project"]
+timing_claim_by_granularity = "principal_project_pair: cross-principal and cross-project timing isolation; principal: cross-principal timing isolation and no cross-project hits only; none: no cross-principal/cross-project hits only"
+# Preregistered choices for this experiment (no code default exists).
+min_decode_regime_crossing_cases = 1
+max_exact_outputs_across_regime_crossing_without_recompute = 0
+rope_regime_fixed_at_admission_from = "prompt + max_new_tokens"
+# Preregistered choices for this experiment (no code default exists).
+rope_regime_inputs = ["prompt_tokens", "max_new_tokens"]
+# Preregistered choices for this experiment (no code default exists).
+declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "adapter", "expert"]
+# Preregistered choices for this experiment (no code default exists).
+software_stack = { driver_version = "580.65.06", cuda_runtime_version = "13.0", torch_version = "2.13.0", vllm_version = "0.30.0", python = ">=3.10,<3.15" }
+software_stack_recorded_in_run_json = true
+max_software_stack_mismatches = 0
+software_stack_basis = "vLLM 0.30.0 requires torch==2.13.0 and its Docker default CUDA 13.0.3 (SGLang 0.5.21 also requires torch==2.13.0); driver 580.65.06 is the minimum Linux driver of CUDA 13.0"
+# Preregistered choices for this experiment (no code default exists).
+sglang_torch_version = "2.13.0"
+# Preregistered choices for this experiment (no code default exists).
+min_approximate_populate_exact_hit_cases_per_backend = 1
+max_approximate_blocks_served_to_exact = 0
+kv_reuse_mode_in_salt = true
+# Preregistered choices for this experiment (no code default exists).
+cache_namespace_partitioned_by_production_mode = true
+cache_namespace_partition = "KvReuseMode is part of the engine salt"
+production_modes = ["Exact", "Approximate"]

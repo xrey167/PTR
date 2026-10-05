@@ -65,7 +65,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "test_model_layers", "revoked_expert_layer_j", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "tiny_model_config_digest", "tokenizer_pin", "moe_topology"]
+procedure_parameters_recorded_per_cell = ["seeds", "test_model_layers", "revoked_expert_layer_j", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds"]
 # Preregistered choices for this experiment (no code default exists).
 invalidation_types = ["revocation", "supersession"]
 probed_page_set_digest_must_equal = "cached_page_set_digest_above_j"
@@ -90,3 +90,6 @@ tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
 moe_topology = { num_experts = 4, top_k = 2, router_layout = "linear softmax top-k, dropless, batch-invariant" }
 model_pins_recorded_in_run_json = true
 max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "expert"]
+dependency_list_narrowing_reason = "narrowed: the MoE expert-revocation workload has no adapters"
