@@ -25,6 +25,13 @@ from ptr_training.moe.tasks import generate_heldout, generate_tasks
 
 EVIDENCE_CLASS = "pipeline-smoke"
 EVIDENCE_NOTE = "mechanism check only, not evidence"
+# Quantities the M010/M012 experiments name that this backend does not compute (yet).
+NOT_PRODUCED = [
+    "policy_ratio_variance_per_token",
+    "crash_step",
+    "train_inference_kl",
+    "rollout_vs_training_expert_churn",
+]
 BACKEND_SELECTION = {
     "status": "unselected",
     "component": "training-backend",
@@ -47,6 +54,18 @@ MOE_MINIMUMS = {
     "trl": "1.14.1",
     "datasets": "5.0.1",
     "accelerate": "1.15.0",
+}
+
+
+# Exclusive upper bounds (pyproject.toml `moe` extra; checked by a test): the backend reads
+# trl / peft internals, so a newer minor is unverified.
+MOE_UPPER_BOUNDS = {
+    "torch": "3",
+    "transformers": "6",
+    "peft": "0.22",
+    "trl": "1.15",
+    "datasets": "6",
+    "accelerate": "2",
 }
 
 
@@ -77,7 +96,7 @@ def version_at_least(installed: str, required: str) -> bool:
 def require_extra() -> None:
     # Check installed distributions, not module names: the repo's top-level `datasets/`
     # directory is importable as a namespace package and would satisfy find_spec("datasets").
-    missing, too_old = [], []
+    missing, too_old, too_new = [], [], []
     for dist, minimum in MOE_MINIMUMS.items():
         try:
             installed = metadata.version(dist)
@@ -90,12 +109,16 @@ def require_extra() -> None:
             ok = False
         if not ok:
             too_old.append(f"{dist} {installed} < {minimum}")
-    if missing or too_old:
+        elif version_at_least(installed, MOE_UPPER_BOUNDS[dist]):
+            too_new.append(f"{dist} {installed} >= {MOE_UPPER_BOUNDS[dist]}")
+    if missing or too_old or too_new:
         problems = []
         if missing:
             problems.append(f"missing: {', '.join(missing)}")
         if too_old:
             problems.append(f"too old: {', '.join(too_old)}")
+        if too_new:
+            problems.append(f"too new (unverified): {', '.join(too_new)}")
         raise MissingExtraError(
             f"backend 'trl-moe' needs the optional 'moe' extra ({'; '.join(problems)}); "
             "install with: pip install -e 'training[moe]'"
@@ -188,7 +211,9 @@ def build_task_splits(cfg: moe_config.MoeConfig):
     eval_tasks = generate_heldout(EVAL_TASKS, seed=cfg.seed + 2)
     held = frozenset(t.prompt for t in eval_tasks)
     sft_tasks = generate_tasks(cfg.sft.examples, seed=cfg.seed, exclude_prompts=held)
-    rl_n = max(64, cfg.rl.steps * cfg.rl.prompts_per_step * cfg.rl.mini_steps)
+    # One generation batch (prompts_per_step prompts) feeds `mini_steps` optimizer steps, so a
+    # run consumes ceil(steps / mini_steps) * prompts_per_step prompts; keep a floor of 64.
+    rl_n = max(64, -(-cfg.rl.steps // cfg.rl.mini_steps) * cfg.rl.prompts_per_step)
     rl_tasks = generate_tasks(rl_n, seed=cfg.seed + 1, exclude_prompts=held)
     train = {t.prompt for t in sft_tasks} | {t.prompt for t in rl_tasks}
     overlap = len(held & train)
@@ -257,8 +282,18 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
 
     def snap(name: str):
         try:
-            s = model_mod.routing_snapshot(model, tokenizer, probe_texts, cfg.probe_tokens)
-            routing[name] = {"per_layer": routing_metrics.snapshot_metrics(s, k), "tokens": len(s[0])}
+            by_text = model_mod.routing_snapshot_by_text(
+                model, tokenizer, probe_texts, cfg.probe_tokens
+            )
+            s = [[row for text in by_text for row in text[layer]] for layer in range(len(by_text[0]))]
+            routing[name] = {
+                "per_layer": routing_metrics.snapshot_metrics(s, k),
+                "per_text": routing_metrics.per_text_metrics(by_text, k),
+                "tokens": len(s[0]),
+                "tokens_per_text": [len(text[0]) for text in by_text],
+                "max_tokens_per_text": cfg.probe_tokens,
+                "topk_tie_break": routing_metrics.TOP_K_TIE_BREAK,
+            }
         except routing_metrics.NonFiniteRouterLogits as error:
             # Recorded, not hidden: nan_check.nonfinite_values_found is forced true below.
             router_errors[name] = str(error)
@@ -326,7 +361,19 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
                 else dict(gate_problem)
             )
     else:
-        gate_reports = {"status": "skipped", "reason": "gates not run for pretrained/LoRA models"}
+        gate_reports = {"status": "skipped", "reason": "gates not run for pretrained/LoRA models (no gate is exercised by this config)"}
+    gates_evaluated = any(
+        isinstance(r, dict) and r.get("status") in ("ok", "partial")
+        for r in (gate_reports.values() if "status" not in gate_reports else [gate_reports])
+    )
+    if gates_evaluated:
+        gates_not_evaluated_reason = None
+    elif "status" in gate_reports and gate_reports["status"] == "skipped" and not track_gates:
+        gates_not_evaluated_reason = gate_reports["reason"]
+    elif gate_problem is not None:
+        gates_not_evaluated_reason = gate_problem.get("reason") or gate_problem.get("error")
+    else:
+        gates_not_evaluated_reason = "no gate report completed"
     timings["total"] = round(time.perf_counter() - t_start, 3)
 
     result = {
@@ -358,6 +405,15 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
             "source": model_source,
         },
         "tasks": task_stats,
+        "data_source": "synthetic-tasks",
+        "data_note": (
+            "trl-moe trains and evaluates on seeded synthetic verifiable tasks "
+            "(ptr_training.moe.tasks); the run manifest's [data] dataset/fingerprint is not "
+            "used by this backend"
+        ),
+        "not_produced": NOT_PRODUCED,
+        "gates_evaluated": gates_evaluated,
+        "gates_not_evaluated_reason": gates_not_evaluated_reason,
         "versions": versions(),
         "hardware": hardware(),
         "wall_time_s": timings,

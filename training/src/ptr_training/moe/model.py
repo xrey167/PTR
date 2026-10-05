@@ -29,14 +29,32 @@ def seed_everything(seed: int) -> None:
 
 
 def resolve_revision(cfg: ModelConfig) -> dict:
-    """Record the pinned revision and, when the hub is reachable, the commit it resolves to."""
-    info = {"hf_id": cfg.hf_id, "revision": cfg.revision, "resolved_sha": None, "reason": None}
+    """Verify the pinned commit against the hub.
+
+    Online: `revision_verified` is true only if the hub resolves the revision to exactly that
+    sha; a different sha raises (the pin does not name the commit it claims to). Offline or
+    any lookup failure: `revision_verified` false with the reason; the run is not failed.
+    """
+    info = {
+        "hf_id": cfg.hf_id,
+        "revision": cfg.revision,
+        "resolved_sha": None,
+        "revision_verified": False,
+        "reason": None,
+    }
     try:
         from huggingface_hub import HfApi
 
         info["resolved_sha"] = HfApi().model_info(cfg.hf_id, revision=cfg.revision).sha
     except Exception as error:  # offline / rate limited / no hub client: never fail the run
         info["reason"] = f"{type(error).__name__}: {str(error)[:200]}"
+        return info
+    if info["resolved_sha"] != cfg.revision:
+        raise ValueError(
+            f"model.revision {cfg.revision} resolves to {info['resolved_sha']} on the hub for "
+            f"{cfg.hf_id}; the pin does not identify that commit"
+        )
+    info["revision_verified"] = True
     return info
 
 
@@ -176,11 +194,16 @@ def reset_requires_grad(model) -> None:
             p.requires_grad_(True)
 
 
-def routing_snapshot(model, tokenizer, texts: list[str], max_tokens: int):
-    """Router logits per layer for fixed probe texts: list[layer][token][expert]."""
+def routing_snapshot_by_text(model, tokenizer, texts: list[str], max_tokens: int):
+    """Router logits for each probe text separately: list[text][layer][token][expert].
+
+    Every text keeps its own first `max_tokens` real (non-pad) tokens, so a long early text
+    cannot crowd later ones out. Logits are upcast to fp32 (OLMoE takes its top-k over an fp32
+    softmax of the router logits).
+    """
     import torch
 
-    from ptr_training.moe.routing_metrics import router_logits_to_lists
+    from ptr_training.moe.routing_metrics import NonFiniteRouterLogits, router_logits_to_lists
 
     was_training = model.training
     model.eval()
@@ -189,6 +212,26 @@ def routing_snapshot(model, tokenizer, texts: list[str], max_tokens: int):
     enc = {k: v.to(device) for k, v in enc.items()}
     with torch.no_grad():
         out = model(**enc, output_router_logits=True, use_cache=False)
-    layers = router_logits_to_lists(out.router_logits, enc["attention_mask"])
+    mask = enc["attention_mask"]
+    batch, seq = mask.shape
+    by_text = [[] for _ in range(batch)]
+    for index, layer in enumerate(out.router_logits):
+        per_text = layer.detach().float().reshape(batch, seq, -1)
+        for b in range(batch):
+            try:
+                rows = router_logits_to_lists((per_text[b],), mask[b : b + 1])[0]
+            except NonFiniteRouterLogits as error:
+                raise NonFiniteRouterLogits(
+                    f"non-finite router logits in layer {index} (probe text {b})"
+                ) from error
+            by_text[b].append(rows[:max_tokens])
     model.train(was_training)
-    return [layer[:max_tokens] for layer in layers]
+    return by_text
+
+
+def routing_snapshot(model, tokenizer, texts: list[str], max_tokens: int):
+    """Flattened router logits per layer: list[layer][token][expert] (each text capped at
+    `max_tokens` tokens, all texts present)."""
+    by_text = routing_snapshot_by_text(model, tokenizer, texts, max_tokens)
+    layers = len(by_text[0])
+    return [[row for text in by_text for row in text[layer]] for layer in range(layers)]

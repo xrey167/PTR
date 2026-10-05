@@ -12,32 +12,29 @@ from ptr_training.moe.tasks import Task, sft_text
 def _encode_example(tokenizer, task: Task, max_length: int):
     prompt_ids = tokenizer(task.prompt, add_special_tokens=False)["input_ids"]
     answer_ids = tokenizer(task.answer, add_special_tokens=False)["input_ids"]
-    ids = (prompt_ids + answer_ids + [tokenizer.eos_token_id])[:max_length]
-    labels = ([-100] * len(prompt_ids) + answer_ids + [tokenizer.eos_token_id])[:max_length]
+    ids = prompt_ids + answer_ids + [tokenizer.eos_token_id]
+    if len(ids) > max_length:
+        raise ValueError(
+            f"max_length={max_length} would truncate the example for prompt {task.prompt!r} "
+            f"(needs {len(ids)} tokens including EOS); the EOS label or the answer would be "
+            "lost (empty-label / unterminated training example)"
+        )
+    labels = [-100] * len(prompt_ids) + answer_ids + [tokenizer.eos_token_id]
     return ids, labels
 
 
 def check_examples(tokenizer, tasks: list[Task], max_length: int) -> None:
-    """Raise if truncation to `max_length` leaves any task without a supervised label."""
+    """Raise if `max_length` would truncate any example (dropping answer tokens or EOS)."""
     for task in tasks:
         _, labels = _encode_example(tokenizer, task, max_length)
-        if all(x == -100 for x in labels):
-            raise ValueError(
-                f"max_length={max_length} truncates away every supervised label for prompt "
-                f"{task.prompt!r}; refusing to train on an empty-label example"
-            )
+        if labels[-1] != tokenizer.eos_token_id:  # defensive: EOS label must survive
+            raise ValueError(f"EOS label missing for prompt {task.prompt!r}")
 
 
 def collate(tokenizer, tasks: list[Task], max_length: int):
     import torch
 
     rows = [_encode_example(tokenizer, t, max_length) for t in tasks]
-    for task, (_, labels) in zip(tasks, rows, strict=True):
-        if all(x == -100 for x in labels):
-            raise ValueError(
-                f"max_length={max_length} truncates away every supervised label for prompt "
-                f"{task.prompt!r}; refusing to train on an empty-label example"
-            )
     width = max(len(ids) for ids, _ in rows)
     pad = tokenizer.pad_token_id
     input_ids = [ids + [pad] * (width - len(ids)) for ids, _ in rows]

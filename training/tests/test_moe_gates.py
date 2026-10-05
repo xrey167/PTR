@@ -202,6 +202,49 @@ class MoeGatesTests(unittest.TestCase):
             report = gates.run_gates(_weights(), _after())
         self.assertEqual(report["binding_version"], "0.1.0")
 
+    def test_pair_selection_is_strided_and_deterministic(self):
+        pairs = [(a, b) for a in range(8) for b in range(a + 1, 8)]  # 28
+        self.assertEqual(gates.select_pairs(pairs, 100), pairs)
+        chosen = gates.select_pairs(pairs, 6)
+        self.assertEqual(len(chosen), 6)
+        self.assertEqual(chosen, gates.select_pairs(pairs, 6))
+        self.assertEqual(len(set(chosen)), 6)
+        firsts = {a for a, _ in chosen}
+        self.assertGreater(len(firsts), 2)  # spread over experts, not just expert 0
+
+    def test_report_records_pairs_evaluated_and_total(self):
+        w = [[_e([1.0, 2.0], [[float(i)], [1.0]]) for i in range(5)]]
+        after = [[_e([2.0, 2.0], [[float(i) + 1], [2.0]]) for i in range(5)]]
+        with mock.patch.dict(sys.modules, {"ptr_py": self._stub()}):
+            report = gates.run_gates(w, after, max_pairs_per_layer=4)
+        layer = report["layers"][0]
+        self.assertEqual((layer["pairs_total"], layer["pairs_evaluated"]), (10, 4))
+        self.assertEqual(len(layer["delta_pairs"]), 4)
+
+    def test_run_gates_upgrades_to_error_when_a_call_failed(self):
+        stub = self._stub()
+
+        def boom(*args):
+            raise TypeError("bad signature")
+
+        stub.aimer_score = boom
+        with mock.patch.dict(sys.modules, {"ptr_py": stub}):
+            report = gates.run_gates(_weights(), _after())  # called directly, not via pipeline
+        self.assertEqual(report["status"], "error")
+        self.assertGreaterEqual(report["failed_calls"], 1)
+
+    def test_error_outranks_partial(self):
+        stub = self._stub()
+        stub.aimer_score = lambda w: (_ for _ in ()).throw(ValueError("nope"))
+        w = _weights() + [[_e([1.0] * 5, [[1.0]]), _e([1.0] * 5, [[1.0]])]]
+        a = _after() + [[_e([2.0] * 5, [[2.0]]), _e([2.0] * 5, [[2.0]])]]
+        with mock.patch.dict(sys.modules, {"ptr_py": stub}), mock.patch.object(
+            gates, "MAX_FLAT_ELEMENTS", 4
+        ):
+            report = gates.run_gates(w, a)
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(report["layers_skipped"], 1)
+
     def test_binding_errors_are_recorded_not_hidden(self):
         stub = types.ModuleType("ptr_py")
         stub.aimer_score = lambda w: 0.0

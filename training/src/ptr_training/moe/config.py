@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,7 +22,17 @@ _MODEL_KEYS = {
     "family", "config", "kind", "hf_id", "revision", "seed", "layers", "hidden", "intermediate",
     "heads", "experts", "top_k", "max_positions", "precision", "router_aux_loss_coef",
 }
-_MOE_KEYS = {"sft", "rl", "lora", "output", "gates"}
+_MOE_KEYS = {"sft", "rl", "lora", "output", "gates", "allow_full_finetune", "allow_large"}
+# [training] keys this backend reads; everything else there is ignored by trl-moe (the
+# hyperparameters live in [moe.*]) and is rejected instead of silently doing nothing.
+_TRAINING_KEYS = {"backend", "precision", "allow_unselected_backend"}
+# Resource-key ceilings; `[moe] allow_large = true` lifts them.
+_MAXIMA = {
+    "moe.sft.steps": 100_000, "moe.sft.examples": 100_000, "moe.sft.batch": 1024,
+    "moe.rl.steps": 10_000, "moe.rl.num_generations": 64, "moe.rl.prompts_per_step": 64,
+    "moe.rl.max_completion_length": 512, "moe.output.probe_tokens": 4096,
+}
+_SHA40 = re.compile(r"[0-9a-f]{40}")
 _GATES_KEYS = {"subspace_rank"}
 _SFT_KEYS = {"steps", "lr", "batch", "examples", "max_length"}
 _RL_KEYS = {
@@ -38,8 +49,6 @@ _TINY_ONLY_KEYS = (
     "layers", "hidden", "intermediate", "heads", "experts", "top_k", "max_positions",
     "router_aux_loss_coef",
 )
-# Mutable refs: resolving them would make a "pinned" run drift.
-_FLOATING_REVISIONS = {"main", "master", "HEAD"}
 
 
 class ConfigError(ValueError):
@@ -174,6 +183,8 @@ class MoeConfig:
     probe_tokens: int = 64
     gates: GatesConfig = field(default_factory=GatesConfig)
     allow_unselected_backend: bool = False
+    allow_full_finetune: bool = False
+    allow_large: bool = False
     source_path: str | None = field(default=None, compare=False)
 
 
@@ -185,6 +196,18 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     if training.get("backend") != "trl-moe":
         raise ConfigError(f"[training].backend must be 'trl-moe', got {training.get('backend')!r}")
 
+    ignored = sorted(set(training) - _TRAINING_KEYS)
+    if ignored:
+        raise ConfigError(
+            f"[training] keys {ignored} are ignored by backend 'trl-moe' (hyperparameters are "
+            f"read from [moe.sft] / [moe.rl]); remove them. Allowed: {sorted(_TRAINING_KEYS)}"
+        )
+    evaluation = raw.get("evaluation") or {}
+    if evaluation.get("every", 0) not in (0,) or evaluation.get("suites", []) != []:
+        raise ConfigError(
+            "[evaluation] every/suites are ignored by backend 'trl-moe' (evaluation is built "
+            "in); set every = 0 and suites = [] or remove the table"
+        )
     allow_unselected = _get(training, "allow_unselected_backend", bool, "training", False)
     train_precision = training.get("precision")
     m = _table(raw, "model")
@@ -217,9 +240,10 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
                 "model.revision is required when model.kind = 'pretrained' "
                 "(a commit sha or tag; the hub default branch is mutable)"
             )
-        if revision in _FLOATING_REVISIONS:
+        if not _SHA40.fullmatch(revision):
             raise ConfigError(
-                f"model.revision {revision!r} is a floating ref; pin a commit sha or tag"
+                f"model.revision must be a full 40-hex commit sha (tags and branches are "
+                f"mutable), got {revision!r}"
             )
     elif revision is not None:
         raise ConfigError("model.revision is only valid when model.kind = 'pretrained'")
@@ -265,10 +289,12 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     if sft.steps < 0:
         raise ConfigError("moe.sft.steps must be >= 0")
     longest_prompt = longest_prompt_chars()
-    if sft.max_length <= longest_prompt + 1:
+    need_sft = longest_prompt + longest_answer_chars() + 1  # prompt + answer + EOS, in tokens
+    if sft.max_length < need_sft:
         raise ConfigError(
-            f"moe.sft.max_length ({sft.max_length}) must exceed the longest task prompt "
-            f"({longest_prompt} chars) + 1, or truncation can leave no supervised label"
+            f"moe.sft.max_length ({sft.max_length}) must be >= longest prompt ({longest_prompt}) "
+            f"+ longest answer ({need_sft - longest_prompt - 1}) + EOS = {need_sft}, or "
+            "truncation drops the EOS label or the answer"
         )
 
     r = _table(moe, "rl")
@@ -351,6 +377,11 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         raise ConfigError("moe.rl.beta must be >= 0")
     if rl.epsilon_high < rl.epsilon and "epsilon_high" in r:
         raise ConfigError("moe.rl.epsilon_high must be >= moe.rl.epsilon")
+    if rl.sapo_temperature_neg <= rl.sapo_temperature_pos:
+        raise ConfigError(
+            "moe.rl.sapo_temperature_neg must be > moe.rl.sapo_temperature_pos "
+            f"(got {rl.sapo_temperature_neg} <= {rl.sapo_temperature_pos})"
+        )
     if rl.gspo_epsilon_high < rl.gspo_epsilon:
         raise ConfigError("moe.rl.gspo_epsilon_high must be >= moe.rl.gspo_epsilon")
 
@@ -385,6 +416,30 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     out = _table(moe, "output")
     _check_keys(out, _OUTPUT_KEYS, "moe.output")
     output_dir = _get(out, "dir", str, "moe.output")
+    probe_tokens = _positive(_get(out, "probe_tokens", int, "moe.output", 64), "moe.output.probe_tokens")
+
+    allow_full_finetune = _get(moe, "allow_full_finetune", bool, "moe", False)
+    allow_large = _get(moe, "allow_large", bool, "moe", False)
+    if kind == "pretrained" and not lora.enabled and not allow_full_finetune:
+        raise ConfigError(
+            "a pretrained model with moe.lora.enabled = false is a full fine-tune of every "
+            "weight (memory and compute of the whole model); set [moe] allow_full_finetune = "
+            "true to confirm"
+        )
+    if not allow_large:
+        values = {
+            "moe.sft.steps": sft.steps, "moe.sft.examples": sft.examples, "moe.sft.batch": sft.batch,
+            "moe.rl.steps": rl.steps, "moe.rl.num_generations": rl.num_generations,
+            "moe.rl.prompts_per_step": rl.prompts_per_step,
+            "moe.rl.max_completion_length": rl.max_completion_length,
+            "moe.output.probe_tokens": probe_tokens,
+        }
+        for key, value in values.items():
+            if value > _MAXIMA[key]:
+                raise ConfigError(
+                    f"{key} = {value} exceeds the sanity limit {_MAXIMA[key]}; "
+                    "set [moe] allow_large = true to override"
+                )
     return MoeConfig(
         name=name,
         seed=seed,
@@ -393,8 +448,10 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         rl=rl,
         lora=lora,
         output_dir=output_dir,
-        probe_tokens=_positive(_get(out, "probe_tokens", int, "moe.output", 64), "moe.output.probe_tokens"),
+        probe_tokens=probe_tokens,
         gates=gates_cfg,
+        allow_full_finetune=allow_full_finetune,
+        allow_large=allow_large,
         allow_unselected_backend=allow_unselected,
         source_path=source_path,
     )

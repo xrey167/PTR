@@ -23,6 +23,9 @@ arithmetic, further non-empty lines are `Disputed` when they state a different i
 a hard `trailing-content` `Fail` otherwise (even an identical repeat); the integer must be
 canonical decimal. For JSON, any second non-empty line is a hard `trailing-content` `Fail`.
 
+A completion that fills `max_completion_length` without an EOS token is a hard `truncated`
+`Fail` (the model never ended its answer); TRL's `completion_ids` provide this.
+
 Status production here: `Unknown` = empty completion (nothing to verify); `Disputed` =
 arithmetic completion whose lines contain contradicting integers; `Fail` = anything else
 that is not the exact answer; `Pass` = exact answer.
@@ -50,7 +53,8 @@ LEVEL = "Deterministic"
 SHAPE_CREDIT = 0.2
 JSON_PARSE_CREDIT = 0.2
 JSON_KEYS_CREDIT = 0.3
-_INT_RE = re.compile(r"^-?\d+$")
+_INT_RE = re.compile(r"-?[0-9]+")  # ASCII digits only (str.isdigit/\d accept other scripts)
+MAX_INT_CHARS = 64  # longer lines are rejected before int() (huge-int parsing cost)
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,10 @@ class VerificationReport:
         return asdict(self)
 
 
+def _is_int(text: str) -> bool:
+    return _INT_RE.fullmatch(text) is not None
+
+
 def _report(score: float, findings: list[Finding]) -> VerificationReport:
     score = min(1.0, max(0.0, score))
     status = PASS if score == 1.0 and not any(f.hard for f in findings) else FAIL
@@ -96,7 +104,11 @@ def level_at_least(level: str, minimum: str) -> bool:
 
 
 def rl_reward(report: VerificationReport, min_level: str = LEVEL) -> float:
-    """RL reward: the score iff status is Pass and level >= `min_level`, else 0.0."""
+    """RL reward: the score iff status is Pass and level >= `min_level`, else 0.0.
+
+    `min_level` is the weakest verification level that may earn reward (default: the level this
+    module's deterministic verifiers produce); weaker evidence is worth nothing to RL.
+    """
     if not level_at_least(report.level, min_level):
         return 0.0
     if report.status == PASS and 0.0 < report.score <= 1.0 and not any(
@@ -117,7 +129,9 @@ def _verify_arith(completion: str, spec: dict) -> VerificationReport:
             UNKNOWN, LEVEL, 0.0, [Finding("empty-completion", "nothing to verify", False)]
         )
     lines = _lines(completion)
-    answers = {int(line) for line in lines if _INT_RE.match(line)}
+    if any(len(line) > MAX_INT_CHARS for line in lines):
+        return _report(0.0, [Finding("too-long", f"line exceeds {MAX_INT_CHARS} chars", True)])
+    answers = {int(line) for line in lines if _is_int(line)}
     if len(answers) > 1:
         return VerificationReport(
             DISPUTED,
@@ -128,10 +142,10 @@ def _verify_arith(completion: str, spec: dict) -> VerificationReport:
     text = lines[0]
     if len(lines) > 1:  # one answer only: any further content (even a repeat) is a failure
         return _report(
-            SHAPE_CREDIT if _INT_RE.match(text) else 0.0,
+            SHAPE_CREDIT if _is_int(text) else 0.0,
             [Finding("trailing-content", f"expected a single answer, got {len(lines)} lines", True)],
         )
-    if not _INT_RE.match(text):
+    if not _is_int(text):
         return _report(0.0, [Finding("not-integer", f"expected integer, got {text!r}", True)])
     if text != str(int(text)):  # canonical decimal only ("05", "-0" are not the answer)
         return _report(
@@ -173,7 +187,7 @@ def _verify_json(completion: str, spec: dict) -> VerificationReport:
         parsed = json.loads(text, object_pairs_hook=_no_duplicate_keys)
     except _DuplicateKeys as error:
         return _report(0.0, [Finding("duplicate-keys", str(error), True)])
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError, OverflowError):
         return _report(0.0, [Finding("invalid-json", f"not parseable JSON: {text!r}", True)])
     if not isinstance(parsed, dict):
         return _report(
@@ -202,29 +216,58 @@ def verify(kind: str, spec: str | dict, completion: str) -> VerificationReport:
     raise ValueError(f"unknown task kind: {kind!r}")
 
 
-def reward(kind: str, spec: str | dict, completion: str, min_level: str = LEVEL) -> float:
-    return rl_reward(verify(kind, spec, completion), min_level)
+def truncated_report() -> VerificationReport:
+    """A completion that hit max_completion_length without EOS never counts as an answer."""
+    return VerificationReport(
+        FAIL, LEVEL, 0.0, [Finding("truncated", "no EOS within max_completion_length", True)]
+    )
+
+
+def reward(
+    kind: str, spec: str | dict, completion: str, min_level: str = LEVEL, truncated: bool = False
+) -> float:
+    report = truncated_report() if truncated else verify(kind, spec, completion)
+    return rl_reward(report, min_level)
+
+
+def is_truncated(ids, eos_token_id, max_completion_length) -> bool:
+    """True when `ids` filled the completion budget without containing EOS."""
+    if ids is None or eos_token_id is None or max_completion_length is None:
+        return False
+    ids = list(ids)
+    return len(ids) >= max_completion_length and eos_token_id not in ids
 
 
 def reward_batch(
-    completions: list, kind: list[str], spec: list[str], *, min_level: str = LEVEL, **_ignored
+    completions: list,
+    kind: list[str],
+    spec: list[str],
+    *,
+    min_level: str = LEVEL,
+    truncated: list[bool] | None = None,
+    **_ignored,
 ) -> list[float]:
     """TRL-compatible reward function (extra dataset columns arrive as keyword lists)."""
     out = []
-    for completion, k, s in zip(completions, kind, spec, strict=True):
+    flags = truncated if truncated is not None else [False] * len(completions)
+    for completion, k, s, cut in zip(completions, kind, spec, flags, strict=True):
         if not isinstance(completion, str):  # conversational format: [{"role","content"}]
             completion = completion[-1]["content"]
-        out.append(reward(k, s, completion, min_level))
+        out.append(reward(k, s, completion, min_level, cut))
     return out
 
 
-def make_reward_fn(min_level: str):
+def make_reward_fn(
+    min_level: str, *, eos_token_id: int | None = None, max_completion_length: int | None = None
+):
     """TRL reward function with the verification-level gate bound (TRL needs `__name__`)."""
     if min_level not in LEVELS:
         raise ValueError(f"min_level must be one of {LEVELS}, got {min_level!r}")
 
-    def reward_batch_gated(completions, kind, spec, **ignored):
-        return reward_batch(completions, kind, spec, min_level=min_level)
+    def reward_batch_gated(completions, kind, spec, completion_ids=None, **ignored):
+        ids = completion_ids if completion_ids is not None else [None] * len(completions)
+        cut = [is_truncated(i, eos_token_id, max_completion_length) for i in ids]
+        return reward_batch(completions, kind, spec, min_level=min_level, truncated=cut)
 
     reward_batch_gated.__name__ = "reward_batch"
     return reward_batch_gated

@@ -14,6 +14,8 @@ name = "moe-pipeline-smoke"
 seed = 17
 hardware_profile = "hardware/a0-cpu-4core.toml"
 
+# trl-moe does NOT read this table (metrics.json: data_source = "synthetic-tasks"); it exists
+# because the run manifest requires it.
 [data]
 dataset = "typed_agent_behavior_v0_2"
 split = "train"
@@ -38,11 +40,6 @@ backend = "trl-moe"
 # unselected backend. Outputs are labelled "unselected backend, pipeline evidence only".
 allow_unselected_backend = true
 precision = "fp32"
-batch_size = 8
-gradient_accumulation = 1
-learning_rate = 0.003
-max_steps = 20
-checkpoint_every = 0
 
 [evaluation]
 every = 0

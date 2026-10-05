@@ -233,6 +233,38 @@ def _call(fn, *args):
         return {"status": "error", "error": f"{type(error).__name__}: {error}"}
 
 
+def select_pairs(all_pairs: list, cap: int) -> list:
+    """All pairs if they fit under `cap`, else a deterministic stride over all of them (so the
+    sample spreads across the expert range instead of covering only the first expert)."""
+    total = len(all_pairs)
+    if total <= cap:
+        return list(all_pairs)
+    return [all_pairs[i * total // cap] for i in range(cap)]
+
+
+def _upgrade_for_errors(report: dict) -> dict:
+    """Any embedded binding-call error makes the whole report `error` (precedence over
+    ok / partial / skipped)."""
+    errors = 0
+
+    def walk(x):
+        nonlocal errors
+        if isinstance(x, dict):
+            if x.get("status") == "error":
+                errors += 1
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+
+    walk(report.get("layers", []))
+    if errors:
+        report["status"] = "error"
+        report["failed_calls"] = errors
+    return report
+
+
 def run_gates(
     weights_before: list,
     weights_after: list,
@@ -240,6 +272,10 @@ def run_gates(
     subspace_rank: int | None = None,
 ) -> dict:
     """weights_*: output of `flatten_experts`. Returns a JSON-ready gate report.
+
+    Status precedence: `error` (any embedded call failed, or a broken binding) > `skipped`
+    (nothing ran) > `partial` (some layers skipped) > `ok`. Gates are reporting-only: no value
+    here is compared with a threshold and nothing in the pipeline reacts to them.
 
     `subspace_rank` (config `moe.gates.subspace_rank`) truncates each expert delta to its
     top-r left singular subspace before the overlap calls; None compares the full column
@@ -259,20 +295,24 @@ def run_gates(
         ranking = _call(
             binding.rank_experts_for_pruning, [(str(e), w["flat"]) for e, w in enumerate(w_layer)]
         )
-        pairs = []
         n = len(d_layer)
-        for a in range(n):
-            for b in range(a + 1, n):
-                if len(pairs) >= max_pairs_per_layer:
-                    break
-                da, db = d_layer[a]["down"], d_layer[b]["down"]
-                pairs.append({"experts": [a, b], **_overlap_pair(binding, da, db, subspace_rank)})
+        all_pairs = [(a, b) for a in range(n) for b in range(a + 1, n)]
+        chosen = select_pairs(all_pairs, max_pairs_per_layer)
+        pairs = [
+            {
+                "experts": [a, b],
+                **_overlap_pair(binding, d_layer[a]["down"], d_layer[b]["down"], subspace_rank),
+            }
+            for a, b in chosen
+        ]
         layers.append(
             {
                 "layer": li,
                 "aimer_score": aimer,
                 "prune_ranking": ranking,
                 "delta_pairs": pairs,
+                "pairs_total": len(all_pairs),
+                "pairs_evaluated": len(pairs),
                 "interference_informative": bool(pairs) and all(p["informative"] for p in pairs),
             }
         )
@@ -294,4 +334,4 @@ def run_gates(
         report["status"] = "partial"
         report["layers_skipped"] = skipped
         report["layers_run"] = len(layers) - skipped
-    return report
+    return _upgrade_for_errors(report)

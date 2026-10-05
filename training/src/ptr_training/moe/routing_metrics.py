@@ -106,6 +106,14 @@ def snapshot_metrics(snapshot: list[LayerLogits], k: int) -> list[dict]:
     return [layer_metrics(layer, k, i) for i, layer in enumerate(snapshot)]
 
 
+def per_text_metrics(by_text: list[list[LayerLogits]], k: int) -> list[list[dict]]:
+    """[text][layer] -> layer metrics, computed on each probe text alone."""
+    return [snapshot_metrics(text, k) for text in by_text]
+
+
+TOP_K_TIE_BREAK = "lowest expert index (torch.topk tie order is unspecified)"
+
+
 def snapshot_churn(before: list[LayerLogits], after: list[LayerLogits], k: int) -> list[float]:
     if len(before) != len(after):
         raise ValueError("snapshots must have the same number of layers")

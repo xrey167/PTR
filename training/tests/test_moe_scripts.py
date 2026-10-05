@@ -29,6 +29,20 @@ class _Result:
 class RunMoeTestsScriptTests(unittest.TestCase):
     def setUp(self):
         self.runner = _load_runner()
+        # Hermetic: never spawn a real interpreter (a present training/.venv would re-exec the
+        # whole suite recursively), and never leak the re-exec guard between tests.
+        env = mock.patch.dict(self.runner.os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        self.runner.os.environ.pop("PTR_MOE_TESTS_REEXEC", None)
+        venv = mock.patch.object(self.runner, "VENV_PYTHON", Path("/nonexistent/python"))
+        venv.start()
+        self.addCleanup(venv.stop)
+        spawn = mock.patch.object(
+            self.runner.subprocess, "run", side_effect=AssertionError("unexpected spawn")
+        )
+        spawn.start()
+        self.addCleanup(spawn.stop)
 
     def _run(self, argv, result):
         with mock.patch.object(
@@ -52,6 +66,32 @@ class RunMoeTestsScriptTests(unittest.TestCase):
 
         err = pipeline.MissingExtraError("needs the moe extra")
         with mock.patch.object(pipeline, "require_extra", side_effect=err):
+            self.assertEqual(self._run(["--require-backend"], _Result()), 2)
+
+    def test_reexecs_with_training_venv_when_extra_missing(self):
+        from ptr_training.moe import pipeline
+
+        err = pipeline.MissingExtraError("needs the moe extra")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            pipeline, "require_extra", side_effect=err
+        ):
+            fake = Path(tmp) / "python"
+            fake.write_text("")
+            with mock.patch.object(self.runner, "VENV_PYTHON", fake), mock.patch.object(
+                self.runner.subprocess, "run", return_value=mock.Mock(returncode=7)
+            ) as run:
+                self.assertEqual(self._run(["--require-backend"], _Result()), 7)
+                argv = run.call_args.args[0]
+                self.assertEqual(argv[0], str(fake))
+                self.assertEqual(argv[-1], "--require-backend")
+                self.assertEqual(run.call_args.kwargs["env"]["PTR_MOE_TESTS_REEXEC"], "1")
+                # already re-executed once: no loop, plain failure
+                run.reset_mock()
+                self.runner.os.environ["PTR_MOE_TESTS_REEXEC"] = "1"
+                self.assertEqual(self._run(["--require-backend"], _Result()), 2)
+                run.assert_not_called()
+            # no venv interpreter: fail clearly with the environment-missing code
+            self.runner.os.environ.pop("PTR_MOE_TESTS_REEXEC", None)
             self.assertEqual(self._run(["--require-backend"], _Result()), 2)
 
     def test_candidate_command_uses_flag(self):

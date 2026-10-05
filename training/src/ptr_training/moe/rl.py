@@ -14,6 +14,10 @@ Verified against trl 1.14.1 (see README.md):
   * GRPOConfig has no `max_prompt_length` (removed upstream), so `check_prompt_lengths`
     enforces `moe.rl.max_prompt_length` here: an over-long prompt is rejected, never
     silently truncated (truncating would corrupt the task).
+  * Reference policy dtype: TRL reloads the full-fine-tune reference via
+    `create_model_from_path(**model_init_kwargs)` whose `dtype` defaults to float32, so the
+    policy dtype is passed through `GRPOConfig.model_init_kwargs` (TRL warns it is "ignored"
+    for the instantiated policy but still uses it for the reference; verified by a test).
   * Reference policy (beta > 0). Full fine-tune: a copy of the SFT state saved to disk.
     PEFT: TRL (peft >= 0.20) copies the live "default" adapter into a frozen "ref" adapter
     when the trainer is built and scores the reference under it; with the SFT adapter state
@@ -28,7 +32,14 @@ import math
 import tempfile
 
 from ptr_training.moe.config import RlConfig
-from ptr_training.moe.reward import LEVEL, make_reward_fn, rl_reward, verify
+from ptr_training.moe.reward import (
+    LEVEL,
+    is_truncated,
+    make_reward_fn,
+    rl_reward,
+    truncated_report,
+    verify,
+)
 from ptr_training.moe.tasks import Task
 
 
@@ -72,6 +83,9 @@ def build_grpo_config(algorithm: str, cfg: RlConfig, *, seed: int, output_dir: s
         disable_tqdm=True,
         seed=seed,
         bf16=bf16,
+        # TRL reloads the (non-PEFT) reference model with these kwargs and defaults to float32,
+        # which would make a bf16 policy's KL be measured against an fp32 reference.
+        model_init_kwargs={"dtype": "bfloat16" if bf16 else "float32"} if cfg.beta > 0 else None,
         use_cpu=not torch.cuda.is_available(),
         **grpo_overrides(algorithm, cfg),
     )
@@ -146,7 +160,9 @@ def evaluate_policy(
                 eos_token_id=tokenizer.eos_token_id,
             )
         text = tokenizer.decode(out[0, enc["input_ids"].shape[1] :], skip_special_tokens=True)
-        report = verify(task.kind, task.spec, text)
+        generated = out[0, enc["input_ids"].shape[1] :].tolist()
+        cut = is_truncated(generated, tokenizer.eos_token_id, max_new_tokens)
+        report = truncated_report() if cut else verify(task.kind, task.spec, text)
         rewards.append(rl_reward(report, min_level))
         scores.append(report.score)
         statuses[report.status] = statuses.get(report.status, 0) + 1
@@ -171,11 +187,31 @@ def _clean(value):
     return value if isinstance(value, (int, float, str, bool)) or value is None else str(value)
 
 
-def _series(out: dict, steps: list, field: str, key: str, reason: str) -> None:
-    values = [h[key] for h in steps if key in h]
-    out[field] = values or None
-    if not values:
-        out[f"{field.removesuffix('_per_step')}_unavailable_reason"] = reason
+def merge_log_history(history: list[dict]) -> dict[int, dict]:
+    """Group TRL log entries by optimizer `step`, merging all keys.
+
+    TRL does not log every metric in every entry (with `steps_per_generation` > 1 the reward
+    is logged only on generation steps while kl/clip_ratio are logged on every step), so a
+    per-step series must never be read from a pre-filtered list of entries. Entries without a
+    `step` (the end-of-training summary) are not per-step data.
+    """
+    merged: dict[int, dict] = {}
+    for entry in history:
+        step = entry.get("step")
+        if isinstance(step, bool) or not isinstance(step, (int, float)):
+            continue
+        merged.setdefault(int(step), {}).update(entry)
+    return dict(sorted(merged.items()))
+
+
+def _series(out: dict, merged: dict[int, dict], name: str, key: str, reason: str) -> None:
+    """`<name>_per_step` = values of `key` at the steps that logged it (null + reason if none);
+    the matching step indices are recorded in `out["series_steps"][name]`."""
+    points = [(step, h[key]) for step, h in merged.items() if key in h]
+    out[f"{name}_per_step"] = [v for _, v in points] or None
+    out.setdefault("series_steps", {})[name] = [s for s, _ in points]
+    if not points:
+        out[f"{name}_unavailable_reason"] = reason
 
 
 def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, seed: int) -> dict:
@@ -188,6 +224,7 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
     check_completion_length(tokenizer, tasks, cfg.max_completion_length)
     bf16 = next(model.parameters()).dtype == torch.bfloat16
     is_peft = hasattr(model, "peft_config")
+    original_name_or_path = model.config._name_or_path
     if is_peft and "ref" in model.peft_config:
         model.delete_adapter("ref")  # stale copy from a previous arm; TRL re-creates it
     with tempfile.TemporaryDirectory(prefix=f"ptr-moe-{algorithm}-") as tmp:
@@ -201,7 +238,11 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
             model.config._name_or_path = ref_dir
         trainer = GRPOTrainer(
             model=model,
-            reward_funcs=make_reward_fn(cfg.min_verification_level),
+            reward_funcs=make_reward_fn(
+                cfg.min_verification_level,
+                eos_token_id=tokenizer.eos_token_id,
+                max_completion_length=cfg.max_completion_length,
+            ),
             args=args,
             train_dataset=Dataset.from_list([t.to_row() for t in tasks]),
             processing_class=tokenizer,
@@ -210,27 +251,33 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
             _assert_peft_reference(model, cfg)
             trainer.train()
         finally:
+            model.config._name_or_path = original_name_or_path  # undo the reference-dir redirect
             if is_peft and "ref" in model.peft_config:
                 model.delete_adapter("ref")
         history = [
             {k: _clean(v) for k, v in entry.items()} for entry in trainer.state.log_history
         ]
     model.eval()
-    steps = [h for h in history if "reward" in h]
+    merged = merge_log_history(history)
     numeric = [v for h in history for v in h.values() if isinstance(v, float)]
-    keys = sorted({k for h in steps for k in h if isinstance(h[k], (int, float))})
+    keys = sorted({k for h in merged.values() for k in h if isinstance(h[k], (int, float))})
     out = {
         "algorithm": algorithm,
         "grpo_overrides": grpo_overrides(algorithm, cfg),
         "log_history": history,
-        "reward_per_step": [h["reward"] for h in steps],
         "logged_metric_keys": keys,
         "nan": any(math.isnan(v) or math.isinf(v) for v in numeric),
     }
-    # A metric TRL did not log is `null` plus a reason, never a silent empty list.
-    _series(out, steps, "kl_per_step", "kl",
+    # Every series is built from the step-merged history. A metric TRL did not log is `null`
+    # plus a reason, never a silent empty list.
+    _series(out, merged, "reward", "reward", "trl logged no reward")
+    out["reward_per_step"] = out["reward_per_step"] or []  # reward always exists when training ran
+    _series(out, merged, "kl", "kl",
             "beta = 0: TRL logs no kl" if cfg.beta == 0 else "trl logged no kl")
-    _series(out, steps, "clip_ratio_per_step", "clip_ratio/region_mean",
+    _series(out, merged, "clip_ratio", "clip_ratio/region_mean",
             "trl 1.14.1 logs no clip_ratio for loss_type=sapo" if algorithm == "sapo"
             else "trl logged no clip_ratio/region_mean")
+    _series(out, merged, "entropy", "entropy", "trl logged no entropy")
+    _series(out, merged, "grad_norm", "grad_norm", "trl logged no grad_norm")
+    _series(out, merged, "loss", "loss", "trl logged no loss")
     return out

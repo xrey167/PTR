@@ -256,14 +256,14 @@ class MoeTorchPipelineTests(unittest.TestCase):
 
         from ptr_training.moe import pipeline
 
-        real = self.model_mod.routing_snapshot
+        real = self.model_mod.routing_snapshot_by_text
         calls = []
 
         def faulty(model, tok, texts, max_tokens):
             calls.append(1)
             snap = real(model, tok, texts, max_tokens)
             if len(calls) == 2:  # after_sft
-                snap[0][0][0] = float("nan")
+                snap[0][0][0][0] = float("nan")  # [text][layer][token][expert]
             return snap
 
         small = dataclasses.replace(
@@ -272,7 +272,7 @@ class MoeTorchPipelineTests(unittest.TestCase):
             rl=dataclasses.replace(self.cfg.rl, algorithms=()),
         )
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
-            self.model_mod, "routing_snapshot", faulty
+            self.model_mod, "routing_snapshot_by_text", faulty
         ):
             data = pipeline.execute(small, Path(tmp))
         self.assertTrue(data["nan_check"]["nonfinite_values_found"])
@@ -281,6 +281,154 @@ class MoeTorchPipelineTests(unittest.TestCase):
         self.assertIsNone(data["routing"]["after_sft"]["per_layer"])
         self.assertIsNone(data["routing_churn"]["init_to_after_sft"])
         self.assertIsNotNone(data["routing"]["init"]["per_layer"])
+
+    def test_routing_metrics_are_per_probe_text(self):
+        texts = ["Q:1+2=\nA:3", "J:a=4,b=2\nA:{\"a\":4,\"b\":2}", "Q:9-9=\nA:0"]
+        by_text = self.model_mod.routing_snapshot_by_text(self.model, self.tok, texts, 5)
+        self.assertEqual(len(by_text), 3)
+        for text in by_text:
+            self.assertEqual(len(text), self.cfg.model.layers)
+            self.assertTrue(all(0 < len(layer) <= 5 for layer in text))
+        # the longest text is capped at 5 but the others are NOT crowded out by it
+        lengths = [len(t[0]) for t in by_text]
+        self.assertEqual(lengths[1], 5)
+        self.assertEqual(lengths[0], min(5, len(texts[0])))
+        flat = self.model_mod.routing_snapshot(self.model, self.tok, texts, 5)
+        self.assertEqual(len(flat[0]), sum(lengths))
+
+    def test_pipeline_records_per_text_routing_and_provenance_fields(self):
+        import dataclasses
+
+        from ptr_training.moe import pipeline
+
+        small = dataclasses.replace(
+            self.cfg,
+            probe_tokens=6,
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(self.cfg.rl, algorithms=()),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            data = pipeline.execute(small, Path(tmp))
+        init = data["routing"]["init"]
+        self.assertEqual(len(init["per_text"]), 8)
+        self.assertEqual(len(init["per_text"][0]), self.cfg.model.layers)
+        self.assertTrue(all(0 < n <= 6 for n in init["tokens_per_text"]))
+        self.assertIn("lowest expert index", init["topk_tie_break"])
+        self.assertEqual(data["data_source"], "synthetic-tasks")
+        self.assertIn("not used", data["data_note"])
+        self.assertIn("policy_ratio_variance_per_token", data["not_produced"])
+        self.assertIsInstance(data["gates_evaluated"], bool)
+        if data["gates_evaluated"]:
+            self.assertIsNone(data["gates_not_evaluated_reason"])
+        else:
+            self.assertTrue(data["gates_not_evaluated_reason"])
+
+    def test_gates_not_evaluated_is_prominent_without_binding(self):
+        import dataclasses
+        import sys
+        from unittest import mock
+
+        from ptr_training.moe import pipeline
+
+        small = dataclasses.replace(
+            self.cfg,
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(self.cfg.rl, algorithms=()),
+        )
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(sys.modules, {"ptr_py": None}):
+            data = pipeline.execute(small, Path(tmp))
+        self.assertFalse(data["gates_evaluated"])
+        self.assertIn("binding not installed", data["gates_not_evaluated_reason"])
+
+    def test_sft_check_examples_rejects_eos_truncation(self):
+        from ptr_training.moe.sft import check_examples
+        from ptr_training.moe import tasks
+
+        every = [t for kind in tasks.KINDS for t in tasks._enumerate(kind, 9)]
+        check_examples(self.tok, every, 26)  # exactly longest prompt + answer + EOS
+        with self.assertRaisesRegex(ValueError, "truncate"):
+            check_examples(self.tok, every, 25)
+
+    def test_resolve_revision_verification(self):
+        import dataclasses
+        import sys
+        import types
+        from unittest import mock
+
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        cfg = dataclasses.replace(self.cfg.model, kind="pretrained", hf_id="org/m", revision=sha)
+
+        def fake_hub(returned=None, error=None):
+            module = types.ModuleType("huggingface_hub")
+
+            class Api:
+                def model_info(self, repo, revision=None):
+                    if error:
+                        raise error
+                    return types.SimpleNamespace(sha=returned)
+
+            module.HfApi = Api
+            return mock.patch.dict(sys.modules, {"huggingface_hub": module})
+
+        with fake_hub(returned=sha):
+            info = self.model_mod.resolve_revision(cfg)
+        self.assertTrue(info["revision_verified"])
+        self.assertEqual(info["resolved_sha"], sha)
+        with fake_hub(returned="f" * 40):
+            with self.assertRaisesRegex(ValueError, "does not identify"):
+                self.model_mod.resolve_revision(cfg)
+        with fake_hub(error=OSError("offline")):
+            info = self.model_mod.resolve_revision(cfg)
+        self.assertFalse(info["revision_verified"])
+        self.assertIsNone(info["resolved_sha"])
+        self.assertIn("offline", info["reason"])
+
+    def test_trl_grpo_config_exposes_the_fields_we_pass(self):
+        import dataclasses
+
+        from trl import GRPOConfig
+
+        names = {f.name for f in dataclasses.fields(GRPOConfig)}
+        for field in ("importance_sampling_level", "loss_type", "sapo_temperature_neg",
+                      "sapo_temperature_pos", "steps_per_generation", "num_generations",
+                      "model_init_kwargs", "max_completion_length", "beta", "epsilon_high"):
+            self.assertIn(field, names, field)
+        self.assertNotIn("max_prompt_length", names)  # why rl.check_prompt_lengths exists
+
+    def test_gspo_and_sapo_first_step_gradients_match_when_on_policy(self):
+        """mini_steps = 1 => ratio == 1 at every update. Per TRL 1.14.1 `_compute_loss`:
+        SAPO's gate has slope 1 at ratio 1 (4/tau * sigmoid'(0) * tau) and GSPO's sequence ratio
+        has the same per-token gradient, with identical per-sequence token-mean aggregation, so
+        the first-step gradient is the same; the *logged loss value* differs by construction
+        (SAPO's gate value at ratio 1 is 2/tau, with tau differing for A > 0 and A < 0)."""
+        import dataclasses
+        from unittest import mock
+
+        import torch
+
+        from ptr_training.moe import rl
+        from ptr_training.moe.tasks import generate_tasks
+
+        def reward_fn(min_level, **kw):
+            def reward_batch(completions, **ignored):
+                return [float(sum(map(ord, c)) % 3) for c in completions]  # non-degenerate groups
+
+            return reward_batch
+
+        cfg = dataclasses.replace(
+            self.cfg.rl, steps=1, mini_steps=1, num_generations=4, prompts_per_step=2, beta=0.04
+        )
+        out = {}
+        with mock.patch.object(rl, "make_reward_fn", reward_fn):
+            for algo in ("gspo", "sapo"):
+                model, tok = self.model_mod.build(self.cfg.model, self.cfg.lora)
+                torch.manual_seed(5)
+                out[algo] = rl.run_rl(model, tok, generate_tasks(16, seed=3), algo, cfg, seed=5)
+        g, s = out["gspo"], out["sapo"]
+        self.assertEqual(g["reward_per_step"], s["reward_per_step"])  # same rollouts
+        self.assertGreater(g["grad_norm_per_step"][0], 0.1)  # real signal, not a null batch
+        self.assertAlmostEqual(g["grad_norm_per_step"][0], s["grad_norm_per_step"][0], delta=1e-4)
+        self.assertNotAlmostEqual(g["loss_per_step"][0], s["loss_per_step"][0], places=3)
 
     def test_metrics_record_model_and_run_seed_separately(self):
         import dataclasses
@@ -298,6 +446,34 @@ class MoeTorchPipelineTests(unittest.TestCase):
             data = pipeline.execute(small, Path(tmp))
         self.assertEqual(data["run"]["seed"], 5)
         self.assertEqual(data["model"]["seed"], 11)
+
+    def test_bf16_full_finetune_reference_model_is_bf16(self):
+        import dataclasses
+        from unittest import mock
+
+        import torch
+        from trl import GRPOTrainer
+
+        from ptr_training.moe.rl import run_rl
+        from ptr_training.moe.tasks import generate_tasks
+
+        cfg = dataclasses.replace(
+            self.cfg.rl, steps=1, mini_steps=1, num_generations=2, prompts_per_step=1, beta=0.04,
+        )
+        mcfg = dataclasses.replace(self.cfg.model, precision="bf16")
+        model, tok = self.model_mod.build(mcfg, self.cfg.lora)
+        seen = {}
+        real_train = GRPOTrainer.train
+
+        def spy(trainer, *a, **k):
+            seen["policy"] = next(trainer.model.parameters()).dtype
+            seen["ref"] = {p.dtype for p in trainer.ref_model.parameters()}
+            return real_train(trainer, *a, **k)
+
+        with mock.patch.object(GRPOTrainer, "train", spy):
+            run_rl(model, tok, generate_tasks(8, seed=2), "gspo", cfg, seed=2)
+        self.assertEqual(seen["policy"], torch.bfloat16)
+        self.assertEqual(seen["ref"], {torch.bfloat16})
 
     def test_missing_kl_is_null_with_reason(self):
         import dataclasses

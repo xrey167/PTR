@@ -24,6 +24,16 @@ class MoeTaskSplitTests(unittest.TestCase):
                 self.assertEqual(stats["sft_tasks"], cfg.sft.examples)
                 self.assertEqual(len(ev), pipeline.EVAL_TASKS)
 
+    def test_rl_task_count_matches_prompts_consumed(self):
+        import dataclasses
+
+        cfg = moe_config.load(CONFIGS / "stage-moe-smoke.toml")
+        big = dataclasses.replace(
+            cfg, rl=dataclasses.replace(cfg.rl, steps=400, mini_steps=4, prompts_per_step=2)
+        )
+        _, rl_tasks, _, _ = pipeline.build_task_splits(big)
+        self.assertEqual(len(rl_tasks), 100 * 2)  # ceil(400/4) generation batches x 2 prompts
+
     def test_deterministic(self):
         cfg = moe_config.load(CONFIGS / "stage-moe-smoke.toml")
         self.assertEqual(pipeline.build_task_splits(cfg), pipeline.build_task_splits(cfg))

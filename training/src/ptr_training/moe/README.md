@@ -157,6 +157,11 @@ router stays frozen.
   `measure_interference` takes LoRA `(layer, B, A)` factors per adapter, not dense expert
   deltas, so the two-argument overlap functions are the right entry point here.
   `binding_version` comes from distribution metadata (`ptr_py` / `ptr-py`).
+- Per-step series (`reward`, `kl`, `clip_ratio`, `entropy`, `grad_norm`, `loss`; `*_per_step`) are
+  built from TRL's log history grouped by `step` (`rl.merge_log_history`): with
+  `steps_per_generation` > 1 the reward is logged only on generation steps while kl/clip_ratio
+  are logged every step, so reading series from reward-bearing entries dropped data. The step
+  indices of each series are in `series_steps[name]`.
 - Metrics TRL does not log are `null` with a reason, not `[]`: `kl_per_step` (beta = 0) and
   `clip_ratio_per_step` (TRL 1.14.1 logs no `clip_ratio/*` and no other gate metric for
   `loss_type="sapo"`; checked in `grpo_trainer.py`), with `kl_unavailable_reason` /
@@ -166,6 +171,52 @@ router stays frozen.
   is `to-evaluate`, and `evaluations/DECISION_PROCESS.md` requires gate tests plus evidence
   comparing at least two candidates before selection. Manifests and metrics carry
   `backend_selection: "unselected backend, pipeline evidence only"`.
+- Gates are reporting-only: no value is compared with a threshold, there is no
+  `forgetting_gate_evaluate` call, and nothing reacts to a gate. `metrics.json` carries
+  `gates_evaluated` and `gates_not_evaluated_reason` at the top level; the OLMoE config
+  (pretrained + LoRA) exercises no gate at all (`gates_evaluated = false`). Pair selection is all
+  pairs up to the cap, else a deterministic stride over all of them (`pairs_evaluated` /
+  `pairs_total` per layer); `run_gates` itself upgrades the status to `error` when any embedded
+  call failed (precedence error > skipped > partial > ok).
+- GSPO vs SAPO at `mini_steps = 1` (ratio == 1): by TRL 1.14.1's loss (`_compute_loss`), the
+  first-step gradients coincide (SAPO's gate has slope 1 at ratio 1; same per-sequence token-mean
+  aggregation), a test checks `grad_norm` agrees at step 1, but the logged loss differs by
+  construction (gate value 2/tau, tau differs for A > 0 and A < 0) and later steps are not
+  bit-identical (Adam amplifies fp noise). It is an approximate control, not a "GSPO == SAPO"
+  identity.
+- Routing metrics are computed per probe text (`routing.<stage>.per_text`, plus the pooled
+  `per_layer`); `moe.output.probe_tokens` caps tokens *per text*, so a long text cannot crowd
+  out later ones. Router logits are upcast to fp32 (OLMoE takes its top-k over an fp32 softmax of
+  them); our top-k breaks ties toward the lowest expert index whereas `torch.topk` tie order is
+  unspecified (`topk_tie_break` in the metrics).
+- Not produced by this backend yet (listed in `metrics.json` `not_produced`):
+  `policy_ratio_variance_per_token`, `crash_step`, `train_inference_kl`, and rollout-vs-training
+  expert churn (M010/M012 quantities).
+- `[training]` may only contain `backend`, `precision` (must equal `model.precision`) and
+  `allow_unselected_backend`; `learning_rate`, `max_steps`, `batch_size`,
+  `gradient_accumulation`, `checkpoint_every` are ignored by this backend (hyperparameters live
+  in `[moe.*]`) and rejected. `[evaluation]` must be inert (`every = 0`, `suites = []`). The
+  manifest's `[data]` dataset is not used: `metrics.json` records
+  `data_source = "synthetic-tasks"`.
+- `model.revision` must be a full 40-hex commit sha. Online, `resolve_revision` raises if the hub
+  resolves it to a different sha and records `revision_verified = true` otherwise; offline it
+  records `revision_verified = false` with the reason. A pretrained model with LoRA disabled
+  is a full fine-tune and needs `[moe] allow_full_finetune = true`. Resource keys have sanity
+  ceilings (sft.steps/examples 100000, sft.batch 1024, rl.steps 10000, num_generations and
+  prompts_per_step 64, max_completion_length 512, probe_tokens 4096) lifted by
+  `[moe] allow_large = true`. `sapo_temperature_neg` must exceed `sapo_temperature_pos`.
+- The `moe` extra is bounded above (`trl<1.15`, `peft<0.22`, `torch<3`, `transformers<6`,
+  `datasets<6`, `accelerate<2`; `pipeline.MOE_UPPER_BOUNDS`, tested against `pyproject.toml`);
+  `require_extra` reports too-new packages. A test asserts the `GRPOConfig` fields we pass exist.
+- Verifiers: integers are ASCII `-?[0-9]+` (<= 64 chars, else `too-long`); pathological JSON
+  nesting is `invalid-json`; a completion that fills `max_completion_length` without EOS is a
+  hard `truncated` Fail (via TRL's `completion_ids`; also in the policy evaluation). SFT requires
+  `max_length >=` longest prompt + longest answer + EOS (26), so the EOS label always survives.
+- `run_moe_tests.py --require-backend` exit codes: 0 ok, 1 test failure, 2 environment missing
+  (moe extra absent and no `training/.venv` to re-exec into; not a code defect), 3 tests skipped.
+  The RL prompt pool is `ceil(steps / mini_steps) * prompts_per_step` (floor 64) prompts, the
+  amount a run actually consumes; the full-fine-tune reference model is reloaded in the policy
+  dtype (`model_init_kwargs`), and `config._name_or_path` is restored after each RL arm.
 - Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
 - `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
   actually present (PEFT may keep LoRA weights in fp32).

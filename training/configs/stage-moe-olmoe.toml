@@ -13,6 +13,8 @@ name = "moe-olmoe-1b-7b-lora"
 seed = 17
 hardware_profile = "hardware/rtx3090.toml"
 
+# trl-moe does NOT read this table: it trains/evaluates on seeded synthetic verifiable tasks
+# (metrics.json: data_source = "synthetic-tasks"). It exists because the run manifest requires it.
 [data]
 dataset = "typed_agent_behavior_v0_2"
 split = "train"
@@ -29,11 +31,6 @@ precision = "bf16"
 [training]
 backend = "trl-moe"
 precision = "bf16"
-batch_size = 1
-gradient_accumulation = 4
-learning_rate = 0.00002
-max_steps = 100
-checkpoint_every = 0
 
 [evaluation]
 every = 0
@@ -50,8 +47,11 @@ max_length = 48
 algorithms = ["gspo", "sapo"]
 steps = 50
 num_generations = 8
-# 4 optimizer steps per generation batch so clipping / the SAPO gate can act; mini_steps = 1
-# is exactly on-policy (GSPO == SAPO), which is M010's null-control arm, not the default.
+# 4 optimizer steps per generation batch so clipping / the SAPO gate can act. mini_steps = 1 is
+# on-policy (ratio == 1): the GSPO and SAPO first-step gradients coincide (tested against TRL
+# 1.14.1 on the tiny model), but the logged loss values differ by construction and later steps
+# are not bit-identical (Adam amplifies fp noise), so it is an approximate control, not an
+# exact "GSPO == SAPO" identity.
 mini_steps = 4
 # 0.0: no reference model copy of the 7B (memory), so KL is NOT logged for this config.
 beta = 0.0
@@ -81,6 +81,9 @@ dropout = 0.0
 target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
 target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
 
+# This config exercises NO governance gate: gates run only for the tiny full-fine-tune model, so
+# metrics.json reports gates_evaluated = false here. Gates are reporting-only everywhere (no
+# forgetting_gate_evaluate, no pass/fail effect).
 [moe.output]
 dir = "training/runs/moe-olmoe"
 probe_tokens = 256

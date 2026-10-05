@@ -64,14 +64,22 @@ class MoeConfigTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ConfigError, r"model\.revision is required"):
             moe_config.parse(self._mutate(mutate))
-        for floating in ("main", "master", "HEAD"):
+        for bad in ("main", "master", "HEAD", "v1.0", "abc123", "A" * 40, "0123456789abcdef" * 3):
             raw = self._mutate(mutate)
-            raw["model"]["revision"] = floating
-            with self.assertRaisesRegex(ConfigError, "floating"):
+            raw["model"]["revision"] = bad
+            with self.assertRaisesRegex(ConfigError, "40-hex"):
                 moe_config.parse(raw)
         raw = self._mutate(mutate)
-        raw["model"]["revision"] = "v1.0"
-        self.assertEqual(moe_config.parse(raw).model.revision, "v1.0")
+        raw["model"]["revision"] = "0123456789abcdef0123456789abcdef01234567"
+        with self.assertRaisesRegex(ConfigError, "allow_full_finetune"):
+            moe_config.parse(raw)  # pretrained without LoRA = full fine-tune
+        raw["moe"]["allow_full_finetune"] = True
+        self.assertEqual(moe_config.parse(raw).model.revision, "0123456789abcdef0123456789abcdef01234567")
+
+    def test_pretrained_lora_does_not_need_full_finetune_flag(self):
+        cfg = moe_config.load(CONFIGS / "stage-moe-olmoe.toml")
+        self.assertTrue(cfg.lora.enabled)
+        self.assertFalse(cfg.allow_full_finetune)
 
     def test_revision_rejected_for_tiny_random(self):
         raw = self._mutate(lambda r: r["model"].update(revision="abc"))
@@ -108,9 +116,51 @@ class MoeConfigTests(unittest.TestCase):
             moe_config.parse(raw)
 
     def test_shared_manifest_tables_not_rejected(self):
-        raw = self._mutate(lambda r: r["training"].update(some_manifest_key=1))
+        raw = self._mutate(lambda r: r["data"].update(extra_data_key=1))
+        raw["codebook"]["extra"] = "x"
         raw["evaluation"]["another"] = "x"
         moe_config.parse(raw)
+
+    def test_ignored_training_keys_rejected(self):
+        for key in ("learning_rate", "max_steps", "batch_size", "gradient_accumulation",
+                    "checkpoint_every", "anything"):
+            raw = self._mutate(lambda r: r["training"].update({key: 1}))
+            with self.assertRaisesRegex(ConfigError, rf"\[training\] keys .*{key}"):
+                moe_config.parse(raw)
+
+    def test_evaluation_every_and_suites_must_be_inert(self):
+        raw = self._mutate(lambda r: r["evaluation"].update(every=10))
+        with self.assertRaisesRegex(ConfigError, "evaluation"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["evaluation"].update(suites=["x"]))
+        with self.assertRaisesRegex(ConfigError, "evaluation"):
+            moe_config.parse(raw)
+
+    def test_sapo_temperature_neg_must_exceed_pos(self):
+        for pos, neg in ((1.0, 1.0), (1.2, 1.0)):
+            raw = self._mutate(
+                lambda r: r["moe"]["rl"].update(sapo_temperature_pos=pos, sapo_temperature_neg=neg)
+            )
+            with self.assertRaisesRegex(ConfigError, "sapo_temperature_neg"):
+                moe_config.parse(raw)
+        raw = self._mutate(
+            lambda r: r["moe"]["rl"].update(sapo_temperature_pos=1.0, sapo_temperature_neg=1.01)
+        )
+        moe_config.parse(raw)
+
+    def test_resource_maxima_and_allow_large(self):
+        cases = (("sft", "steps", 100_001), ("sft", "examples", 100_001), ("sft", "batch", 1025),
+                 ("rl", "steps", 10_001), ("rl", "num_generations", 65),
+                 ("rl", "prompts_per_step", 65), ("rl", "max_completion_length", 513),
+                 ("output", "probe_tokens", 4097))
+        for table, key, value in cases:
+            with self.subTest(key=f"{table}.{key}"):
+                raw = self._mutate(lambda r: r["moe"][table].update({key: value}))
+                raw["model"]["max_positions"] = 4096  # keep the position bound out of the way
+                with self.assertRaisesRegex(ConfigError, rf"moe\.{table}\.{key}.*allow_large"):
+                    moe_config.parse(raw)
+                raw["moe"]["allow_large"] = True
+                self.assertTrue(moe_config.parse(raw).allow_large)
 
     def test_top_k_exceeding_experts(self):
         raw = self._mutate(lambda r: r["model"].update(top_k=9))
@@ -207,7 +257,7 @@ class MoeConfigTests(unittest.TestCase):
     def test_max_positions_review_example_rejected_even_without_rl(self):
         def mutate(r):
             r["model"]["max_positions"] = 15
-            r["moe"]["sft"]["max_length"] = 14
+            r["moe"]["sft"]["max_length"] = 26
             r["moe"]["rl"].update(max_prompt_length=1, max_completion_length=14, algorithms=[])
 
         with self.assertRaisesRegex(ConfigError, "max_positions"):
@@ -281,11 +331,14 @@ class MoeConfigTests(unittest.TestCase):
     def test_sft_max_length_must_leave_a_label(self):
         from ptr_training.moe.tasks import longest_prompt_chars
 
-        longest = longest_prompt_chars()
-        raw = self._mutate(lambda r: r["moe"]["sft"].update(max_length=longest + 1))
+        from ptr_training.moe.tasks import longest_answer_chars
+
+        need = longest_prompt_chars() + longest_answer_chars() + 1  # prompt + answer + EOS
+        self.assertEqual(need, 26)
+        raw = self._mutate(lambda r: r["moe"]["sft"].update(max_length=need - 1))
         with self.assertRaisesRegex(ConfigError, r"moe\.sft\.max_length"):
             moe_config.parse(raw)
-        raw = self._mutate(lambda r: r["moe"]["sft"].update(max_length=longest + 2))
+        raw = self._mutate(lambda r: r["moe"]["sft"].update(max_length=need))
         moe_config.parse(raw)
 
     def test_max_completion_length_must_fit_longest_answer(self):
@@ -374,9 +427,14 @@ class MoeDispatchTests(unittest.TestCase):
         )
         declared = {}
         for spec in pyproject["project"]["optional-dependencies"]["moe"]:
-            name, minimum = re.fullmatch(r"([A-Za-z0-9_.-]+)>=([\w.]+)", spec).groups()
-            declared[name] = minimum
-        self.assertEqual(pipeline.MOE_MINIMUMS, declared)
+            name, minimum, upper = re.fullmatch(
+                r"([A-Za-z0-9_.-]+)>=([\w.]+),<([\w.]+)", spec
+            ).groups()
+            declared[name] = (minimum, upper)
+        self.assertEqual(
+            {k: (v, pipeline.MOE_UPPER_BOUNDS[k]) for k, v in pipeline.MOE_MINIMUMS.items()},
+            declared,
+        )
 
     def test_require_extra_rejects_too_old_and_accepts_minimum(self):
         from unittest import mock
@@ -388,7 +446,7 @@ class MoeDispatchTests(unittest.TestCase):
 
         with mock.patch.object(pipeline.metadata, "version", side_effect=installed({})):
             pipeline.require_extra()  # exactly the minimums
-        newer = installed({"trl": "1.15.0", "torch": "2.14.1+cpu"})
+        newer = installed({"trl": "1.14.9", "torch": "2.14.1+cpu"})
         with mock.patch.object(pipeline.metadata, "version", side_effect=newer):
             pipeline.require_extra()
         old = installed({"peft": "0.21.1", "trl": "0.9"})
@@ -399,6 +457,10 @@ class MoeDispatchTests(unittest.TestCase):
         self.assertIn("peft 0.21.1 < 0.21.2", message)
         self.assertIn("trl 0.9 < 1.14.1", message)
         self.assertNotIn("torch", message)
+        new = installed({"trl": "1.15.0", "torch": "3.0.0"})
+        with mock.patch.object(pipeline.metadata, "version", side_effect=new):
+            with self.assertRaisesRegex(pipeline.MissingExtraError, "too new.*trl 1.15.0 >= 1.15"):
+                pipeline.require_extra()
 
     def test_version_comparator_without_packaging(self):
         import builtins

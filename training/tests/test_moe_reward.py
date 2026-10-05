@@ -107,6 +107,50 @@ class MoeRewardTests(unittest.TestCase):
         ok = reward.verify("json", json_spec({"a": 1}), '{"a":1}')
         self.assertEqual(ok.status, "Pass")
 
+    def test_ascii_integers_only_and_length_guard(self):
+        for text in ("\u0663", "\uff13", "3\u0663", "\u0661\u0662"):  # Arabic-Indic / fullwidth
+            r = reward.verify("arith", arith_spec(3), text)
+            self.assertEqual(r.status, "Fail", repr(text))
+            self.assertEqual(reward.rl_reward(r), 0.0)
+        r = reward.verify("arith", arith_spec(3), "9" * 5000)
+        self.assertEqual(r.status, "Fail")
+        self.assertEqual([f.code for f in r.findings], ["too-long"])
+        long_line_among_short = reward.verify("arith", arith_spec(3), "3\n" + "1" * 100)
+        self.assertEqual(long_line_among_short.status, "Fail")
+        self.assertEqual(reward.reward("arith", arith_spec(3), "3"), 1.0)
+
+    def test_json_pathological_nesting_is_invalid_json_not_a_crash(self):
+        import time
+
+        spec = json_spec({"a": 1})
+        t0 = time.perf_counter()
+        for text in ("[" * 100_000, '{"a":' * 100_000, "[" * 100_000 + "]" * 100_000):
+            r = reward.verify("json", spec, text)
+            self.assertEqual(r.status, "Fail")
+            self.assertEqual(reward.rl_reward(r), 0.0)
+            self.assertEqual([f.code for f in r.findings], ["invalid-json"])
+        self.assertLess(time.perf_counter() - t0, 10.0)
+
+    def test_json_huge_number_does_not_crash(self):
+        r = reward.verify("json", json_spec({"a": 1}), '{"a":' + "9" * 5000 + "}")
+        self.assertEqual(r.status, "Fail")
+        self.assertEqual(reward.rl_reward(r), 0.0)
+
+    def test_truncated_completion_is_hard_fail(self):
+        eos, budget = 1, 4
+        fn = reward.make_reward_fn("Deterministic", eos_token_id=eos, max_completion_length=budget)
+        spec = [arith_spec(12)]
+        # right text but the model never emitted EOS within the budget -> truncated
+        self.assertEqual(fn(["12"], kind=["arith"], spec=spec, completion_ids=[[7, 8, 9, 5]]), [0.0])
+        # EOS present at the full budget length -> fine
+        self.assertEqual(fn(["12"], kind=["arith"], spec=spec, completion_ids=[[7, 8, 9, eos]]), [1.0])
+        # shorter than the budget without EOS is not truncation (e.g. padded batch)
+        self.assertEqual(fn(["12"], kind=["arith"], spec=spec, completion_ids=[[7, 8]]), [1.0])
+        # no ids available (older callers): behaves as before
+        self.assertEqual(fn(["12"], kind=["arith"], spec=spec), [1.0])
+        r = reward.truncated_report()
+        self.assertEqual((r.status, [f.code for f in r.findings]), ("Fail", ["truncated"]))
+
     def test_levels_match_rust_order(self):
         self.assertEqual(
             reward.LEVELS,
