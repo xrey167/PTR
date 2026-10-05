@@ -650,6 +650,17 @@ enum Removal {
 /// includes the checkpoint committed meanwhile, so it is removed too. Folded
 /// into one statement, the checkpoint delete would use the snapshot taken
 /// before the wait and miss it.
+///
+/// Lock order: the rows are locked `FOR UPDATE` in `(memory, seq)` order by a
+/// statement of their own, before the delete. A plain `DELETE` locks rows in
+/// the order its plan visits them (the `(source_key, source_generation)` index,
+/// whose ties follow heap position, which a reused page slot decouples from
+/// `seq`), while a checkpoint writer holds a memory's rows `FOR SHARE` in `seq`
+/// order and waits for the next one. Two such sessions each held a row the
+/// other wanted next: a deadlock (SQLSTATE 40P01). Every journal-row locker
+/// now takes one memory's rows in ascending `seq`, and a revocation takes
+/// memories in ascending id; revocations of one key take the same rows in the
+/// same order. A locker of a single memory cannot close a cycle against that.
 async fn remove_fastmem_writes(
     transaction: &Transaction<'_>,
     work: &str,
@@ -661,17 +672,6 @@ async fn remove_fastmem_writes(
         Removal::Exactly => "=",
         Removal::Older => "<",
     };
-    // Lock the rows first, in the order a checkpoint writer takes them.
-    //
-    // `put_checkpoint` holds its memory's journal prefix `FOR SHARE`, taken in
-    // ascending `seq`. A bare `DELETE` locks whatever it matches in scan order,
-    // and once revocations have freed heap space a later write can sit at an
-    // earlier position, so the delete could hold a later row while waiting for
-    // an earlier one the writer already shares — and the writer, holding that
-    // one, waits for the later: PostgreSQL breaks the cycle with 40P01 and one
-    // side fails. Taking the locks in `(memory, seq)` order here means both
-    // sides acquire every row they share in the same order, so whichever
-    // reaches a row first holds it and the other waits; no cycle can form.
     transaction
         .execute(
             &format!(
