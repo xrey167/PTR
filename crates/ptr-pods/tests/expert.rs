@@ -3,7 +3,7 @@ use ptr_pods::{
     ExpertIdentityError, ExpertLevel, ExpertOperationRequest, ExpertPodSpec, ExpertProposal,
     ExpertProposalError, ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind,
     OperandCount, OperationId, ProposalParts, ProposerRef, RationaleDigest, RequestedOp,
-    ResultIntent, RetiredReason, StructuralOp, ZeroDigest,
+    ResultIntent, RetiredReason, StructuralOp, ZeroDigest, MAX_EXPERT_COMMIT_RECORD_BYTES,
 };
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
 
@@ -2337,4 +2337,23 @@ fn invalid_identities_and_zero_digests_are_rejected_on_decode() {
         1
     )
     .is_err());
+}
+
+#[test]
+fn oversize_commit_record_input_is_refused_before_parsing() {
+    assert_eq!(MAX_EXPERT_COMMIT_RECORD_BYTES, 1 << 20);
+    // Not even the magic is valid: only the length check can produce this error.
+    let oversize = vec![0xFF; MAX_EXPERT_COMMIT_RECORD_BYTES + 1];
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&oversize),
+        Err(ExpertProposalError::MalformedRecord(
+            "record exceeds the size limit"
+        ))
+    );
+    // At the limit the parser runs and reports the magic instead.
+    let at_limit = vec![0xFF; MAX_EXPERT_COMMIT_RECORD_BYTES];
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&at_limit),
+        Err(ExpertProposalError::MalformedRecord("unknown magic"))
+    );
 }

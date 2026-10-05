@@ -46,7 +46,7 @@ pub use expert::{
     ExpertLevel, ExpertOperationRequest, ExpertPodSpec, ExpertProposal, ExpertProposalError,
     ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId,
     ProposalId, ProposalParts, ProposerRef, RationaleDigest, RequestedOp, ResultIntent,
-    RetiredReason, StructuralOp, ZeroDigest,
+    RetiredReason, StructuralOp, ZeroDigest, MAX_EXPERT_COMMIT_RECORD_BYTES,
 };
 pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
 pub use kv::{

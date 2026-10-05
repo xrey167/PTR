@@ -495,6 +495,8 @@ pub enum RuntimeError {
     /// runtime's expert admission path, which checks the proposer, the evidence and the
     /// compare-and-set before appending; that path does not exist yet, so every route fails
     /// closed. The admission package replaces the replay refusal with a re-check of the record.
+    /// That path MUST derive the event's `proposal_id`, `operation_id` and `evidence_digest`
+    /// from the decoded record, and replay MUST re-derive them and compare, refusing a mismatch.
     StructuralRecordOutsideAdmissionPath,
     /// A semantic record written before origins existed, replayed after a
     /// record with an attributed origin (rule R1).

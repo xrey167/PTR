@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-05  
-**Code footprint:** 9 Rust source files · 6460 nonblank source lines · 14 integration-test files · 126 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 6464 nonblank source lines · 14 integration-test files · 126 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -62,7 +62,7 @@
 - propose_membership proposes a single-voter ConfChange from a leader only, and apply_committed applies a committed one through apply_conf_change and persists the resulting ConfState, so a membership change takes effect and becomes durable at the same moment
 - An installed snapshot carries a digest computed from the bytes that arrived, and take_installed_snapshot_matching accepts it only against a RetainedSnapshotAnchor the host got from somewhere the sender does not control; a mismatch refuses by index or by digest and leaves the snapshot installed so the member stays blocked
 - Raft log records carry an explicit entry-type code and a per-record digest, and indexes must be consecutive from the snapshot position, so a changed record and a removed or duplicated one are separate refusals; a snapshot older than raft asks for is refused rather than fabricated at the requested index
-- ExpertStructuralCommitted at tag 27 (project, ExpertOpKind with pinned codes Birth 0 to Retire 6, proposal id, operation id, evidence digest and an opaque ptr-pods record of 1 byte to MAX_EXPERT_RECORD_BYTES = 1 MiB); the ledger stores and size-checks the record and cannot check that the ids agree with it, and no writer exists yet
+- ExpertStructuralCommitted at tag 27 (project, ExpertOpKind with pinned codes Birth 0 to Retire 6, proposal id, operation id, evidence digest and an opaque ptr-pods record of 1 byte to MAX_EXPERT_RECORD_BYTES = 1 MiB); the ledger stores and size-checks the record and cannot check that the ids agree with it (the admission path must derive them from the decoded record and replay must re-derive and compare), and no writer exists yet
 
 ### Missing for the target architecture
 
