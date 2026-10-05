@@ -116,6 +116,7 @@ A PTR system keeps **raw language and typed semantics in parallel**, reasons ove
 - `sdk/` — client contracts; TypeScript SDK is CI-tested on Node 22/24
 - `docs-site/` — dependency-free static documentation landing page
 - `hardware/` — benchmark hardware profiles
+- `bindings/` — PyO3 Python bindings for PTR governance checks (`bindings/ptr-py`), kept outside the root workspace
 - `fuzz/` — protocol fuzz targets kept outside the production workspace
 - `release/` — release/SBOM/provenance configuration
 - `tooling/` — optional editor/developer tooling; never runtime authority
@@ -137,6 +138,7 @@ The Rust workspace is a compiling contract/scaffold baseline. Documentation inte
 
 - Rust is pinned by `rust-toolchain.toml` and `Cargo.lock`; CI tests the workspace at its Rust 1.99 MSRV on Linux and at current stable on Linux and Windows. `model/burn-a0` is a separate workspace that requires Rust 1.95 and has its own workflow.
 - Python training utilities are locked through `training/uv.lock`.
+- `make py-bindings` builds and tests `bindings/ptr-py` with maturin in a venv; CI does not run it.
 - Component and experiment registries are validated in CI.
 - L001 currently has a scoped five-seed reference crash-tail run under `experiments/lifecycle/L001-revocation-crash/results/`; it remains `running`, not completed.
 - Release builds generate CycloneDX SBOMs and GitHub/Sigstore attestations.

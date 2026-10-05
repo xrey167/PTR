@@ -24,12 +24,19 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - `ptrctl doctor` repository/configuration diagnostics
 - CI-tested dependency-free TypeScript SDK contract and static documentation landing page
 - release packaging with SHA-256 checksums, CycloneDX SBOM generation and GitHub/Sigstore provenance/SBOM attestations
+- Pod-MoE / KV-reuse contracts, all prototype-level:
+  - `ptr-lineage` AIMER expert scoring (`crates/ptr-lineage/src/aimer.rs`: `aimer_score`, `rank_experts_for_pruning`)
+  - `ptr-pods` expert-proposal contracts and lifecycle guards (`crates/ptr-pods/src/expert.rs`): `ExpertProposal`, `StructuralOp`, `ExpertOperationRequest`, `ExpertPodSpec`, `ExpertTarget`, `ExpertState` and `ExpertLevel`; a proposal is inert data and its acceptance path (gates, verifier, ledger commit) is not implemented yet
+  - the `ptr-router` `Router` trait (`crates/ptr-router/src/router.rs`), whose distribution over pods is validated against the registry and recorded with the sampled pod's quantized probability as propensity
+  - the PyO3 binding `bindings/ptr-py`, built and tested by `make py-bindings`; CI does not build it
+  - the Python `trl-moe` backend in `training/src/ptr_training/moe/`, with configs `training/configs/stage-moe-smoke.toml` and `training/configs/stage-moe-olmoe.toml`
 
 ## Executed evidence so far
 
 - **L001 is running, not completed.** The reference in-process crash-tail slice executed 500 cases across five seeds with 0 stale-generation false accepts, 0 recovery-consistency failures and 0 tail-trim failures. A second real child-process abort slice executed 250 cases across five seeds with 0 stale-generation false accepts, 0 recovery failures, 0 tail-trim failures and 0 unexpected child exits. Feature-gated fail-rs fault injection also runs in CI. Production raft-engine, leader-change and network-partition coverage is still missing.
 - Internal component smoke evidence exists for the custom SemDB and PTR isolate/mailbox path; both candidates remain `evaluating`, not selected.
 - A runnable BM25 + caller-supplied dense-vector RRF reference baseline exists, but no claim against strong RAG is valid until a pinned embedding/reranking baseline is executed.
+- **WP8 CPU smoke run of the `trl-moe` backend is pipeline evidence, not research evidence.** SFT, then GSPO and SAPO arms, routing metrics and `ptr_py` gates ran end to end on a 0.24M-parameter random-init OLMoE, one seed, 32 eval tasks, no baseline and no ablation. The backend stays unselected (`backend_selection.status = "unselected"`); see the WP8 section of [training/README.md](training/README.md). Real OLMoE-1B-7B runs need GPU hardware (`hardware/rtx3090.toml`, `hardware/rtx5090.toml`) and have not been run.
 
 ### M001/M002 paired evidence freeze
 

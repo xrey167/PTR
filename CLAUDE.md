@@ -23,6 +23,7 @@ make docs                        # regenerate component docs (python3 scripts/up
 make docs-check                  # fail if generated docs are stale
 PYTHONPATH=training/src make python-test   # training/ and scripts/ unittests (the target does not set PYTHONPATH itself)
 make a0                          # model/burn-a0 (separate workspace, needs stable and 1.95.0)
+make py-bindings                 # bindings/ptr-py: maturin develop into a venv, then its Python tests (not run in CI)
 ```
 
 `make ci-local` covers the command steps of `.github/workflows/ci.yml` on Linux; each CI job is a target named `ci-<job>` (for example `ci-quality`, `ci-repository-invariants`, `ci-ledger-raft-rs`). It does not reproduce the editable training install (`pip install -e training`; `PYTHONPATH` is set instead), `security.yml` (needs cargo-audit and cargo-deny), `sdk.yml`, `burn-a0.yml` (use `make a0`), the Windows leg of `rust-stable` or the Python 3.11 leg of `python-training`. `scripts/tests/test_ci_local.py` fails if a CI step lacks a Makefile counterpart, so add both together. `ci-quality` runs fmt, `clippy -D warnings` and `RUSTDOCFLAGS="-D warnings"` docs on `stable`. `ci-repository-invariants` needs `origin/main` or `BASE=<commit>`. `ci-state-postgres` needs a local PostgreSQL 16+/pgvector and reads two variables: `PTR_PG_TEST_DSN` for the `ptr-pg` tests and `PTR_PG_EXPERIMENT_DSN` for the `ptr-bench` experiment steps.
@@ -33,7 +34,7 @@ Experiments and evaluations: `python3 scripts/run_experiment.py validate`, `pyth
 
 ## Architecture
 
-The workspace members are `crates/ptr-*`, `bins/ptr-*`, `bins/ptrctl` and `bins/ptrd`. `fuzz`, `model/burn-a0` and `vendor/*` are excluded and are their own workspaces or vendored sources. `bins/` holds composition, bootstrap and binary-specific benchmark/experiment harnesses (for example the S003 `certified-branches` harness in `ptr-bench`); reusable domain behavior belongs in `crates/`.
+The workspace members are `crates/ptr-*`, `bins/ptr-*`, `bins/ptrctl` and `bins/ptrd`. `bindings/ptr-py`, `fuzz`, `model/burn-a0` and `vendor/*` are excluded and are their own workspaces or vendored sources. `bins/` holds composition, bootstrap and binary-specific benchmark/experiment harnesses (for example the S003 `certified-branches` harness in `ptr-bench`); reusable domain behavior belongs in `crates/`.
 
 The request flow spans many crates, so read these together:
 
