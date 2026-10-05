@@ -104,7 +104,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "hidden_size", "vocab_size", "large_frame_chunks", "reorder_window", "frame_deadline_ms", "max_incomplete_frames_per_peer", "max_chunks_in_flight", "test_model_layers", "weight_seed", "num_heads", "num_kv_heads", "head_dim", "corpus_generator_seed", "split_layer", "large_frame_tokens", "large_frame_width", "large_frame_bytes", "clock_skew_bound_ms", "tombstone_overcapacity_abandoned_frames", "chunk_header_fields", "invalidation_types", "tombstone_bound", "reassembly_identity", "chunk_digest_covers", "adversarial_attempt_kinds", "valid_frame_cases", "completion_tombstone_key", "completion_tombstone_retention", "invalidation_coverage_matrix", "smuggling_probe_kinds", "activation_frame_input_lineage", "replay_window_ms", "max_frame_deadline_lifetime_ms", "max_clock_skew_ms", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "boundary_probe_counters", "matrix_kind_frame_fields", "late_window_replay_delay_range_ms", "upstream_chain_elements", "input_lineage_elements", "production_modes"]
+procedure_parameters_recorded_per_cell = ["seeds", "hidden_size", "vocab_size", "large_frame_chunks", "reorder_window", "frame_deadline_ms", "max_incomplete_frames_per_peer", "max_chunks_in_flight", "test_model_layers", "weight_seed", "num_heads", "num_kv_heads", "head_dim", "corpus_generator_seed", "split_layer", "large_frame_tokens", "large_frame_width", "large_frame_bytes", "clock_skew_bound_ms", "tombstone_overcapacity_abandoned_frames", "chunk_header_fields", "invalidation_types", "tombstone_bound", "reassembly_identity", "chunk_digest_covers", "adversarial_attempt_kinds", "valid_frame_cases", "completion_tombstone_key", "completion_tombstone_retention", "invalidation_coverage_matrix", "smuggling_probe_kinds", "activation_frame_input_lineage", "replay_window_ms", "max_frame_deadline_lifetime_ms", "max_clock_skew_ms", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "boundary_probe_counters", "matrix_kind_frame_fields", "late_window_replay_delay_range_ms", "upstream_chain_elements", "input_lineage_elements", "production_modes", "signed_frame_fields", "derived_state_carriers"]
 # Preregistered choices for this experiment (no code default exists).
 tombstone_overcapacity_abandoned_frames = 65
 min_frames_accepted_after_tombstone_expiry = 1
@@ -209,3 +209,10 @@ matrix_frame_bijection = "every element of upstream_chain (stage, base model, ad
 cache_namespace_partitioned_by_production_mode = true
 cache_namespace_partition = "downstream KV cache keyed by production mode (the activation-frame digest and input lineage fix the mode; Approximate frames are never served to Exact requests)"
 production_modes = ["Exact", "Approximate"]
+# Preregistered choices for this experiment (no code default exists).
+signed_frame_fields = ["frame_id", "chunk_digest", "frame_digest", "upstream_chain", "input_lineage", "signed_absolute_deadline", "parent_operation_id", "mode", "taint"]
+min_approximate_frame_downstream_exact_lookup_cases = 1
+max_approximate_frames_served_to_exact = 0
+max_untainted_outputs_from_approximate_frames = 0
+# Preregistered choices for this experiment (no code default exists).
+derived_state_carriers = { activation_frame = ["mode", "taint"], downstream_cache_key = ["mode", "taint"], kv_page_transport = ["mode", "taint"] }

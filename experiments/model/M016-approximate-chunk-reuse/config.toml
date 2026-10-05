@@ -90,7 +90,7 @@ heldout_selection_digest_recorded = true
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "warmup_runs", "timed_runs", "position_shifts", "candidate_k_tokens", "calibration_prompts", "heldout_prompts", "chunk_tokens", "prompt_tokens", "test_model_layers", "test_model_vocab_size", "reused_chunks_per_prompt", "reused_tokens", "suffix_tokens", "candidate_recompute_fractions", "nonaligned_insertion_tokens", "hardware_profile", "run_json_records_hardware", "invalidation_coverage_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "shift_insert_ordinary_hit_sequences", "declared_dependency_kinds", "pod_output_kinds", "authoritative_sink_kinds", "software_stack", "production_modes"]
+procedure_parameters_recorded_per_cell = ["seeds", "warmup_runs", "timed_runs", "position_shifts", "candidate_k_tokens", "calibration_prompts", "heldout_prompts", "chunk_tokens", "prompt_tokens", "test_model_layers", "test_model_vocab_size", "reused_chunks_per_prompt", "reused_tokens", "suffix_tokens", "candidate_recompute_fractions", "nonaligned_insertion_tokens", "hardware_profile", "run_json_records_hardware", "invalidation_coverage_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "shift_insert_ordinary_hit_sequences", "declared_dependency_kinds", "pod_output_kinds", "authoritative_sink_kinds", "software_stack", "production_modes", "derived_state_carriers"]
 # Preregistered choices for this experiment (no code default exists).
 timing_counts_recorded_per_cell = true
 max_timing_procedure_mismatches = 0
@@ -157,3 +157,5 @@ software_stack_basis = "vLLM 0.30.0 requires torch==2.13.0 and its Docker defaul
 cache_namespace_partitioned_by_production_mode = true
 cache_namespace_partition = "approximate pages only in a separate tainted namespace, never in the Exact catalog"
 production_modes = ["Exact", "Approximate"]
+# Preregistered choices for this experiment (no code default exists).
+derived_state_carriers = { tainted_namespace_page = ["mode", "taint"] }

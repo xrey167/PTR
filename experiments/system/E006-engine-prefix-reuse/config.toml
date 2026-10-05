@@ -115,7 +115,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix", "arm_matrix", "enabled_backends", "backend_versions", "persistent_cache_declared_per_backend", "salt_epochs", "dependency_journal_crash_points", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "capacity_partitioning", "capacity_partitioning_options", "max_live_associations_per_principal", "association_dedup_key", "capacity_partitioning_granularity", "declared_dependency_kinds", "software_stack", "rope_regime_inputs", "production_modes"]
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix", "arm_matrix", "enabled_backends", "backend_versions", "persistent_cache_declared_per_backend", "salt_epochs", "dependency_journal_crash_points", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "capacity_partitioning", "capacity_partitioning_options", "max_live_associations_per_principal", "association_dedup_key", "capacity_partitioning_granularity", "declared_dependency_kinds", "software_stack", "rope_regime_inputs", "production_modes", "derived_state_carriers"]
 # Preregistered choices for this experiment (no code default exists).
 inflight_restart_output_mismatches_max = 0
 inflight_restarts_equal_cancellations = true
@@ -223,8 +223,6 @@ capacity_partitioning_granularity_options = ["principal", "principal_project_pai
 eviction_side_channel_boundaries = ["cross_principal", "cross_project"]
 timing_claim_by_granularity = "principal_project_pair: cross-principal and cross-project timing isolation; principal: cross-principal timing isolation and no cross-project hits only; none: no cross-principal/cross-project hits only"
 # Preregistered choices for this experiment (no code default exists).
-min_decode_regime_crossing_cases = 1
-max_exact_outputs_across_regime_crossing_without_recompute = 0
 rope_regime_fixed_at_admission_from = "prompt + max_new_tokens"
 # Preregistered choices for this experiment (no code default exists).
 rope_regime_inputs = ["prompt_tokens", "max_new_tokens"]
@@ -245,3 +243,11 @@ kv_reuse_mode_in_salt = true
 cache_namespace_partitioned_by_production_mode = true
 cache_namespace_partition = "KvReuseMode is part of the engine salt"
 production_modes = ["Exact", "Approximate"]
+# Preregistered choices for this experiment (no code default exists).
+min_fixed_regime_decode_crossing_cases = 1
+max_fixed_regime_crossing_parity_failures = 0
+min_effective_regime_transition_cases = 1
+max_exact_outputs_across_effective_regime_transition_without_recompute = 0
+forced_transition_examples = ["admitted max_new_tokens exceeded", "runtime switches regimes"]
+# Preregistered choices for this experiment (no code default exists).
+derived_state_carriers = { engine_salt = ["mode"], engine_output_to_effect_boundary = ["taint"] }

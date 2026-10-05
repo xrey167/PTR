@@ -106,7 +106,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "concurrency", "max_trie_nodes", "max_kv_page_bytes", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "kv_page_bytes_per_node", "metadata_bytes_per_node", "nodes_only_run_max_kv_page_bytes", "bytes_only_run_max_trie_nodes", "workload_limits", "invalidation_coverage_matrix", "superseded_lookup_cells", "saturation_definition", "chain_layer_covers", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds", "production_modes"]
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "concurrency", "max_trie_nodes", "max_kv_page_bytes", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "kv_page_bytes_per_node", "metadata_bytes_per_node", "nodes_only_run_max_kv_page_bytes", "bytes_only_run_max_trie_nodes", "workload_limits", "invalidation_coverage_matrix", "superseded_lookup_cells", "saturation_definition", "chain_layer_covers", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds", "production_modes", "derived_state_carriers"]
 # Preregistered choices for this experiment (no code default exists).
 capacity_refused_requests_completed_equals_exhausted_refusals = true
 max_capacity_fallback_output_mismatches = 0
@@ -172,8 +172,6 @@ moe_topology = "none: dense tiny decoder"
 model_pins_recorded_in_run_json = true
 max_model_pin_mismatches = 0
 # Preregistered choices for this experiment (no code default exists).
-min_decode_regime_crossing_cases = 1
-max_exact_outputs_across_regime_crossing_without_recompute = 0
 rope_regime_fixed_at_admission_from = "prompt + max_new_tokens"
 # Preregistered choices for this experiment (no code default exists).
 rope_regime_inputs = ["prompt_tokens", "max_new_tokens"]
@@ -183,3 +181,11 @@ declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "ada
 cache_namespace_partitioned_by_production_mode = true
 cache_namespace_partition = "Exact catalog separate from the tainted candidate namespace"
 production_modes = ["Exact", "Approximate"]
+# Preregistered choices for this experiment (no code default exists).
+min_fixed_regime_decode_crossing_cases = 1
+max_fixed_regime_crossing_parity_failures = 0
+min_effective_regime_transition_cases = 1
+max_exact_outputs_across_effective_regime_transition_without_recompute = 0
+forced_transition_examples = ["admitted max_new_tokens exceeded", "runtime switches regimes"]
+# Preregistered choices for this experiment (no code default exists).
+derived_state_carriers = { ptr_catalog_key = ["mode"], tainted_candidate = ["mode", "taint"] }

@@ -53,7 +53,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "position_shift_tokens", "nonaligned_insertion_tokens", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds", "production_modes"]
+procedure_parameters_recorded_per_cell = ["seeds", "position_shift_tokens", "nonaligned_insertion_tokens", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds", "production_modes", "derived_state_carriers"]
 # Preregistered choices for this experiment (no code default exists).
 min_source_generation_mismatch_cases = 1
 min_source_digest_mismatch_cases = 1
@@ -100,3 +100,5 @@ declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "ada
 cache_namespace_partitioned_by_production_mode = true
 cache_namespace_partition = "Exact secondary-index entries only; shifted results are Exact in the one-layer oracle and tagged separately from any approximate pages"
 production_modes = ["Exact", "Approximate"]
+# Preregistered choices for this experiment (no code default exists).
+derived_state_carriers = { secondary_index_entry = ["mode"] }
