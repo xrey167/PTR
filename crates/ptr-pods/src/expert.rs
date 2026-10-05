@@ -26,9 +26,9 @@
 //! | `Merge` | at least two sources, Token level, all `Serving` or all `Frozen` | one new candidate |
 //! | `Split` | one source (`Serving` or `Frozen`) | at least two new candidates |
 //! | `Freeze` | one `Serving` target | none |
-//! | `Reactivate` | one `Frozen` or `Retired` target | `Frozen`: none; `Retired`: one new generation |
+//! | `Reactivate` | one `Frozen` or `Retired(GateFailed)` target | `Frozen`: none; `Retired`: one new generation |
 //! | `Prune` | at least one `Serving` target, one Token layer | none |
-//! | `Retire` | one target and a [`RetiredReason`] | none |
+//! | `Retire` | one target and a proposable [`RetiredReason`] (`Superseded`, `GateFailed`) | none |
 //!
 //! # Expert states and the lineage mapping
 //!
@@ -42,13 +42,16 @@
 //! | `Candidate` | `Candidate` | `Candidate`, `Trained`, `Evaluated` |
 //! | `Gated` | `Gated` | `Approved` |
 //! | `Serving` | `Serving` | `Active` |
-//! | `Frozen` | `Gated` (passed its gate, not serving) | `Approved` |
+//! | `Frozen` | `Serving` (serving with router and gate updates stopped) | `Active` |
 //! | `Fenced` | `Serving` (lineage is unchanged; the fencing token is external authority) | `Active` |
 //! | `Superseded` | `Retired` (withdrawn, kept for audit) | `Superseded` |
 //! | `Retired(reason)` | `Retired` | `Retired`; `Revoked` for `RetiredReason::InputRevoked` |
 //!
-//! `ptr-lineage` has no `Frozen` or `Fenced`; those are expert-layer overlays, hence the nearest
-//! status above. `ptr-pods` does not depend on `ptr-lineage`, so the adapter status is exposed
+//! `ptr-lineage` has no `Frozen` or `Fenced`; those are expert-layer overlays on a serving
+//! expert, hence `Serving`/`Active`. That is also why `Retire` can name them:
+//! `LifecycleGate::transition` allows `Retired` only from `Active`. Reactivating a `Frozen`
+//! expert re-enters it as `Gated`, a revalidation recorded by the ledger rather than a
+//! `LifecycleGate` edge. `ptr-pods` does not depend on `ptr-lineage`, so the adapter status is exposed
 //! by name.
 //!
 //! # Allowed (operation, source state) pairs
@@ -58,44 +61,73 @@
 //!
 //! | state | Merge | Split | Freeze | Reactivate | Prune | Retire |
 //! |---|---|---|---|---|---|---|
-//! | `Candidate` | no | no | no | no | no | yes |
-//! | `Gated` | no | no | no | no | no | yes |
+//! | `Candidate` | no | no | no | no | no | no |
+//! | `Gated` | no | no | no | no | no | no |
 //! | `Serving` | yes | yes | yes | no | yes | yes |
 //! | `Frozen` | yes | yes | no | yes | no | yes |
 //! | `Fenced` | no | no | no | no | no | yes |
-//! | `Superseded` | no | no | no | no | no | yes |
-//! | `Retired(_)` | no | no | no | yes | no | no |
+//! | `Superseded` | no | no | no | no | no | no |
+//! | `Retired(GateFailed)` | no | no | no | yes | no | no |
+//! | `Retired(Pruned \| Superseded \| InputRevoked)` | no | no | no | no | no | no |
 //!
-//! `Birth` has no source. `Fenced` and `Superseded` experts are valid only for `Retire`. A
-//! `Merge` additionally needs all its sources in the *same* state. `Reactivate` of
-//! `Retired(InputRevoked)` is always refused ([`ExpertProposalError::SeedFromRevoked`]).
+//! `Birth` has no source. `Retire` is allowed exactly from `Serving`, `Frozen` and `Fenced`, the
+//! states that map to `Active`, mirroring `LifecycleGate::transition`. A `Candidate` or `Gated`
+//! expert is not retired by a proposal (a failed candidate is dropped by its gate), and a
+//! `Superseded` expert is already withdrawn. `Fenced` is valid only for `Retire`. A
+//! `Merge` additionally needs all its sources in the *same* state. A `Reactivate` of a `Retired`
+//! target with any reason other than `GateFailed` is reported as
+//! [`ExpertProposalError::SeedUnavailable`] (not as a generic state error): `Pruned` weights are
+//! physically removed, `Superseded` already has a successor, and `InputRevoked` must never seed.
 //!
 //! # Reactivation
 //!
 //! Retirement is final (`Lineage::retire`; `LifecycleGate` has no transition out of `Retired`).
 //! `Reactivate` of a `Frozen` target unfreezes the same generation, but the expert re-enters as
-//! `Gated`: it must be revalidated before it is `Serving` again. `Reactivate` of a `Retired`
-//! target leaves that generation `Retired` forever; the proposal carries a result spec for a NEW
-//! candidate generation of the same logical expert (same project and pod, strictly higher
-//! generation), seeded from the retired weights, which must pass the gates again like any birth.
-//! A target retired because its inputs were revoked ([`RetiredReason::InputRevoked`]) is never a
-//! valid seed.
+//! `Gated`: it must be revalidated before it is `Serving` again. `Reactivate` of a
+//! `Retired(GateFailed)` target leaves that generation `Retired` forever; the proposal carries a
+//! result spec for a NEW candidate generation of the same logical expert (same project and pod,
+//! exactly the source generation plus one, same level including the Token index), seeded from the
+//! retained weights, which must pass the gates again like any birth. Other retired targets are
+//! not seeds: `Pruned` weights are gone, `Superseded` has a successor, `InputRevoked` is barred.
+//!
+//! # Retirement reasons
+//!
+//! `Retire` accepts only `Superseded` and `GateFailed`. `Pruned` has its own operation
+//! ([`StructuralOp::Prune`]) and `InputRevoked` is a runtime-grant ledger event, never a proposal
+//! (rejected with [`ExpertProposalError::ReasonNotProposable`]).
+//!
+//! # Results
+//!
+//! A fresh expert (`Birth`, `Merge`, `Split` result) must be generation 1 and a new pod. A split
+//! result may reuse a source's Token `(layer, index)` slot, since sources are replaced, but two
+//! results of one operation may not share a slot ([`ExpertProposalError::DuplicateResultSlot`]).
+//! For `Merge`/`Split` the result level need only share the sources' kind and Token layer.
+//!
+//! # Identifiers
+//!
+//! Project and pod ids are 1 to 128 bytes of ASCII `[A-Za-z0-9._:-]`. Whitespace-only ids are
+//! blank; anything else outside the set (interior spaces, control characters, zero-width
+//! characters, non-ASCII, over-long) is non-canonical.
 //!
 //! # Validation order
 //!
 //! [`ExpertProposal::new`] reports the first failing rule in this order, so errors are
 //! deterministic:
 //!
-//! 1. the proposal project id is canonical (not blank, no leading or trailing whitespace);
+//! 1. the proposal project id is canonical;
 //! 2. the proposer belongs to the proposal project;
-//! 3. operand counts;
+//! 3. operand counts (Merge and Prune sources, Split results);
 //! 4. every source and result belongs to the proposal project;
-//! 5. source states against the table above;
-//! 6. operation structure: Token level (Merge, Prune), duplicates and multiple generations of
-//!    one logical expert, one layer, one base model, one shared state (Merge), reactivation
-//!    reason and result presence;
-//! 7. result relations: result pod versus source pods, generation, base model, level;
-//! 8. distinct result pods (Split).
+//! 5. source states against the table above (a non-`GateFailed` retired Reactivate target is
+//!    `SeedUnavailable` here);
+//! 6. operation structure, per operation:
+//!    * Merge: Token level, duplicates and multiple generations, one layer, one base model, one
+//!      shared state (`MixedStates`);
+//!    * Prune: Token level, duplicates and multiple generations, one layer, one base model;
+//!    * Reactivate: result present iff the target is `Retired`;
+//!    * Retire: the reason is proposable;
+//! 7. result relations, per result: pod, generation, base model, level;
+//! 8. result distinctness: pods (`DuplicateResult`), then Token slots (`DuplicateResultSlot`).
 //!
 //! Ids are validated when [`ExpertPodSpec`], [`ExpertTarget`] and [`ProposerRef`] are built.
 //!
@@ -178,16 +210,41 @@ digest_newtype!(
     /// Digest of the proposer's rationale (non-zero).
     RationaleDigest
 );
-digest_newtype!(
-    /// Deterministic identity of a proposal, see [`ExpertProposal::proposal_id`].
-    ProposalId
-);
+/// Deterministic identity of a proposal, minted only by [`ExpertProposal::proposal_id`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ProposalId(Digest);
+
+impl ProposalId {
+    pub fn as_bytes(&self) -> &Digest {
+        &self.0
+    }
+}
 
 /// The base model an expert adapts: its digest and the base model's own generation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct BaseModelRef {
-    pub digest: BaseModelDigest,
-    pub generation: u64,
+    digest: BaseModelDigest,
+    generation: u64,
+}
+
+impl BaseModelRef {
+    /// Bind a base model digest to the base model's generation. Rejects generation zero (never
+    /// a committed generation). The digest is non-zero by type.
+    pub fn new(digest: BaseModelDigest, generation: u64) -> Result<Self, ExpertIdentityError> {
+        if generation == 0 {
+            Err(ExpertIdentityError::ZeroBaseModelGeneration)
+        } else {
+            Ok(Self { digest, generation })
+        }
+    }
+
+    pub fn digest(&self) -> &BaseModelDigest {
+        &self.digest
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 /// Where an expert lives.
@@ -240,8 +297,8 @@ impl ExpertState {
     pub fn adapter_status_name(self) -> &'static str {
         match self {
             Self::Candidate => "candidate",
-            Self::Gated | Self::Frozen => "gated",
-            Self::Serving | Self::Fenced => "serving",
+            Self::Gated => "gated",
+            Self::Serving | Self::Frozen | Self::Fenced => "serving",
             Self::Superseded | Self::Retired(_) => "retired",
         }
     }
@@ -254,8 +311,8 @@ impl ExpertState {
                 ArtifactLifecycle::Trained,
                 ArtifactLifecycle::Evaluated,
             ],
-            Self::Gated | Self::Frozen => &[ArtifactLifecycle::Approved],
-            Self::Serving | Self::Fenced => &[ArtifactLifecycle::Active],
+            Self::Gated => &[ArtifactLifecycle::Approved],
+            Self::Serving | Self::Frozen | Self::Fenced => &[ArtifactLifecycle::Active],
             Self::Superseded => &[ArtifactLifecycle::Superseded],
             Self::Retired(RetiredReason::InputRevoked) => &[ArtifactLifecycle::Revoked],
             Self::Retired(
@@ -287,17 +344,14 @@ impl OpKind {
                 matches!(state, ExpertState::Serving | ExpertState::Frozen)
             }
             Self::Freeze | Self::Prune => matches!(state, ExpertState::Serving),
-            Self::Reactivate => {
-                matches!(state, ExpertState::Frozen | ExpertState::Retired(_))
-            }
+            Self::Reactivate => matches!(
+                state,
+                ExpertState::Frozen | ExpertState::Retired(RetiredReason::GateFailed)
+            ),
+            // Mirrors `LifecycleGate::transition`: retirement only from `Active`.
             Self::Retire => matches!(
                 state,
-                ExpertState::Candidate
-                    | ExpertState::Gated
-                    | ExpertState::Serving
-                    | ExpertState::Frozen
-                    | ExpertState::Fenced
-                    | ExpertState::Superseded
+                ExpertState::Serving | ExpertState::Frozen | ExpertState::Fenced
             ),
         }
     }
@@ -386,6 +440,9 @@ impl StructuralOp {
     }
 }
 
+const MAX_ID_BYTES: usize = 128;
+
+/// Project and pod ids: 1 to 128 bytes of ASCII `[A-Za-z0-9._:-]`. Whitespace-only is blank.
 fn check_id(
     value: &str,
     blank: ExpertIdentityError,
@@ -393,7 +450,11 @@ fn check_id(
 ) -> Result<(), ExpertIdentityError> {
     if value.trim().is_empty() {
         Err(blank)
-    } else if value != value.trim() {
+    } else if value.len() > MAX_ID_BYTES
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+    {
         Err(non_canonical)
     } else {
         Ok(())
@@ -425,16 +486,18 @@ pub enum ExpertIdentityError {
     BlankPod,
     NonCanonicalPod,
     ZeroGeneration,
+    ZeroBaseModelGeneration,
 }
 
 impl fmt::Display for ExpertIdentityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::BlankProject => "project id is blank",
-            Self::NonCanonicalProject => "project id has leading or trailing whitespace",
+            Self::NonCanonicalProject => "project id is not 1-128 bytes of ASCII [A-Za-z0-9._:-]",
             Self::BlankPod => "pod id is blank",
-            Self::NonCanonicalPod => "pod id has leading or trailing whitespace",
+            Self::NonCanonicalPod => "pod id is not 1-128 bytes of ASCII [A-Za-z0-9._:-]",
             Self::ZeroGeneration => "generation is zero",
+            Self::ZeroBaseModelGeneration => "base model generation is zero",
         })
     }
 }
@@ -692,7 +755,7 @@ pub struct ExpertProposal {
 pub enum ExpertProposalError {
     /// The proposal project id is blank.
     BlankProject,
-    /// The proposal project id has leading or trailing whitespace.
+    /// The proposal project id is not 1-128 bytes of ASCII [A-Za-z0-9._:-].
     NonCanonicalProject,
     /// The proposer belongs to another project.
     ProposerProjectMismatch {
@@ -734,12 +797,15 @@ pub enum ExpertProposalError {
     NotTokenLevel { op: OpKind },
     /// Sources mix levels, or Token experts of different layers.
     MixedLevels,
-    /// Merge combines experts adapted from different base models.
+    /// Merge or Prune combines experts adapted from different base models.
     MixedBaseModels,
     /// Merge combines sources in different states.
     MixedStates,
-    /// Reactivate of a `Retired(InputRevoked)` target: revoked inputs never seed a new expert.
-    SeedFromRevoked { pod: PodId },
+    /// Reactivate of a `Retired` target that cannot seed (any reason but `GateFailed`).
+    SeedUnavailable { pod: PodId, reason: RetiredReason },
+    /// Retire with a reason that is not a proposal: `Pruned` (use Prune) or `InputRevoked`
+    /// (a runtime-grant ledger event).
+    ReasonNotProposable { reason: RetiredReason },
     /// Reactivate of a `Retired` target needs a result spec.
     MissingResult { op: OpKind },
     /// Reactivate of a `Frozen` target must not carry a result spec.
@@ -748,18 +814,23 @@ pub enum ExpertProposalError {
     ResultPodIsSource { pod: PodId },
     /// A reactivation result must be a new generation of the retired expert itself.
     ResultNotSameExpert { expected: PodId, found: PodId },
-    /// A result's generation is not strictly above the source generation of the same expert.
-    ResultGenerationNotNewer {
+    /// A fresh expert (Birth, Merge, Split result) must be generation 1.
+    FreshResultGeneration { pod: PodId, found: Generation },
+    /// A reactivation result must be exactly the source generation plus one; `expected` is
+    /// `None` when that would overflow.
+    ResultGenerationNotNext {
         pod: PodId,
         result: Generation,
-        source: Generation,
+        expected: Option<Generation>,
     },
     /// A result's base model differs from its sources'.
     ResultBaseModelMismatch { pod: PodId },
     /// A result's level is incompatible with its sources' level.
     ResultLevelMismatch { pod: PodId },
-    /// Split lists the same result pod twice.
+    /// A result pod is listed twice.
     DuplicateResult { pod: PodId },
+    /// Two results claim the same Token `(layer, index)` slot.
+    DuplicateResultSlot { layer: u16, index: u16 },
 }
 
 impl fmt::Display for ExpertProposalError {
@@ -767,7 +838,7 @@ impl fmt::Display for ExpertProposalError {
         match self {
             Self::BlankProject => f.write_str("proposal project id is blank"),
             Self::NonCanonicalProject => {
-                f.write_str("proposal project id has leading or trailing whitespace")
+                f.write_str("proposal project id is not 1-128 bytes of ASCII [A-Za-z0-9._:-]")
             }
             Self::ProposerProjectMismatch { expected, found } => write!(
                 f,
@@ -807,13 +878,18 @@ impl fmt::Display for ExpertProposalError {
             Self::MixedLevels => {
                 f.write_str("sources must share one level (and one layer for token level)")
             }
-            Self::MixedBaseModels => f.write_str("merge sources must share one base model"),
+            Self::MixedBaseModels => {
+                f.write_str("sources must share one base model (digest and generation)")
+            }
             Self::MixedStates => f.write_str("merge sources must all be in the same state"),
-            Self::SeedFromRevoked { pod } => {
+            Self::SeedUnavailable { pod, reason } => {
                 write!(
                     f,
-                    "expert {pod} was retired for revoked inputs and cannot seed"
+                    "expert {pod} retired as {reason:?} cannot seed a reactivation"
                 )
+            }
+            Self::ReasonNotProposable { reason } => {
+                write!(f, "retirement reason {reason:?} cannot be proposed")
             }
             Self::MissingResult { op } => write!(f, "{op} of a retired expert needs a result"),
             Self::UnexpectedResult { op } => {
@@ -826,15 +902,25 @@ impl fmt::Display for ExpertProposalError {
                 f,
                 "reactivation result must be expert {expected}, found {found}"
             ),
-            Self::ResultGenerationNotNewer {
+            Self::FreshResultGeneration { pod, found } => {
+                write!(
+                    f,
+                    "fresh expert {pod} must be generation 1, found {}",
+                    found.0
+                )
+            }
+            Self::ResultGenerationNotNext {
                 pod,
                 result,
-                source,
-            } => write!(
-                f,
-                "result generation {} of {pod} is not above source generation {}",
-                result.0, source.0
-            ),
+                expected,
+            } => match expected {
+                Some(expected) => write!(
+                    f,
+                    "result generation {} of {pod} must be {}",
+                    result.0, expected.0
+                ),
+                None => write!(f, "result generation of {pod} would overflow"),
+            },
             Self::ResultBaseModelMismatch { pod } => {
                 write!(
                     f,
@@ -845,6 +931,12 @@ impl fmt::Display for ExpertProposalError {
                 write!(f, "result {pod} has a level incompatible with its sources")
             }
             Self::DuplicateResult { pod } => write!(f, "result {pod} is listed twice"),
+            Self::DuplicateResultSlot { layer, index } => {
+                write!(
+                    f,
+                    "two results claim token slot layer {layer} index {index}"
+                )
+            }
         }
     }
 }
@@ -1123,7 +1215,17 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
         });
     }
 
-    // 5. source states.
+    // 5. source states. A retired reactivation target that cannot seed gets its own error.
+    if let StructuralOp::Reactivate { target, .. } = op {
+        if let ExpertState::Retired(reason) = target.state {
+            if reason != RetiredReason::GateFailed {
+                return Err(ExpertProposalError::SeedUnavailable {
+                    pod: target.pod.clone(),
+                    reason,
+                });
+            }
+        }
+    }
     if let Some(target) = sources.iter().find(|t| !kind.allows_state(t.state)) {
         return Err(ExpertProposalError::WrongTargetState {
             op: kind,
@@ -1147,13 +1249,9 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
             require_token_level(kind, &sources)?;
             check_unique(&sources)?;
             check_same_layer(&sources)?;
+            check_same_base(&sources)?;
         }
         StructuralOp::Reactivate { target, result } => match (target.state, result) {
-            (ExpertState::Retired(RetiredReason::InputRevoked), _) => {
-                return Err(ExpertProposalError::SeedFromRevoked {
-                    pod: target.pod.clone(),
-                });
-            }
             (ExpertState::Retired(_), None) => {
                 return Err(ExpertProposalError::MissingResult { op: kind });
             }
@@ -1162,10 +1260,13 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
             }
             _ => {}
         },
-        StructuralOp::Birth { .. }
-        | StructuralOp::Split { .. }
-        | StructuralOp::Freeze { .. }
-        | StructuralOp::Retire { .. } => {}
+        StructuralOp::Retire { reason, .. } => match reason {
+            RetiredReason::Superseded | RetiredReason::GateFailed => {}
+            RetiredReason::Pruned | RetiredReason::InputRevoked => {
+                return Err(ExpertProposalError::ReasonNotProposable { reason: *reason });
+            }
+        },
+        StructuralOp::Birth { .. } | StructuralOp::Split { .. } | StructuralOp::Freeze { .. } => {}
     }
 
     // 7. result relations.
@@ -1173,13 +1274,21 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
         check_result(kind, &sources, result)?;
     }
 
-    // 8. distinct result pods.
-    let mut seen = BTreeMap::new();
+    // 8. distinct result pods, then distinct Token slots (a source's slot may be reused).
+    let mut pods = BTreeMap::new();
     for result in &results {
-        if seen.insert(&result.pod, ()).is_some() {
+        if pods.insert(&result.pod, ()).is_some() {
             return Err(ExpertProposalError::DuplicateResult {
                 pod: result.pod.clone(),
             });
+        }
+    }
+    let mut slots = BTreeMap::new();
+    for result in &results {
+        if let ExpertLevel::Token { layer, index } = result.level {
+            if slots.insert((layer, index), ()).is_some() {
+                return Err(ExpertProposalError::DuplicateResultSlot { layer, index });
+            }
         }
     }
     Ok(())
@@ -1260,12 +1369,20 @@ fn check_result(
 ) -> Result<(), ExpertProposalError> {
     match kind {
         OpKind::Reactivate => {
-            // A new generation of the retired expert itself.
+            // A new generation of the retired expert itself, exactly one above the source.
             let source = sources[0];
             if result.pod != source.pod {
                 return Err(ExpertProposalError::ResultNotSameExpert {
                     expected: source.pod.clone(),
                     found: result.pod.clone(),
+                });
+            }
+            let expected = source.generation.0.checked_add(1).map(Generation);
+            if expected != Some(result.generation) {
+                return Err(ExpertProposalError::ResultGenerationNotNext {
+                    pod: result.pod.clone(),
+                    result: result.generation,
+                    expected,
                 });
             }
         }
@@ -1278,15 +1395,12 @@ fn check_result(
         }
         OpKind::Birth | OpKind::Freeze | OpKind::Prune | OpKind::Retire => {}
     }
-    // Strictly newer than every source generation of the same logical expert.
-    if let Some(source) = sources
-        .iter()
-        .find(|t| t.pod == result.pod && t.generation >= result.generation)
+    if matches!(kind, OpKind::Birth | OpKind::Merge | OpKind::Split)
+        && result.generation != Generation(1)
     {
-        return Err(ExpertProposalError::ResultGenerationNotNewer {
+        return Err(ExpertProposalError::FreshResultGeneration {
             pod: result.pod.clone(),
-            result: result.generation,
-            source: source.generation,
+            found: result.generation,
         });
     }
     if let Some(first) = sources.first() {
@@ -1295,7 +1409,12 @@ fn check_result(
                 pod: result.pod.clone(),
             });
         }
-        if !result.level.compatible_with(first.level) {
+        // Reactivation restores the exact slot; Merge and Split need only the same layer.
+        let level_ok = match kind {
+            OpKind::Reactivate => result.level == first.level,
+            _ => result.level.compatible_with(first.level),
+        };
+        if !level_ok {
             return Err(ExpertProposalError::ResultLevelMismatch {
                 pod: result.pod.clone(),
             });

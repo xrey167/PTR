@@ -13,17 +13,11 @@ fn project() -> ProjectId {
 }
 
 fn base() -> BaseModelRef {
-    BaseModelRef {
-        digest: BaseModelDigest::new([9; 32]).unwrap(),
-        generation: 1,
-    }
+    BaseModelRef::new(BaseModelDigest::new([9; 32]).unwrap(), 1).unwrap()
 }
 
 fn other_base() -> BaseModelRef {
-    BaseModelRef {
-        digest: BaseModelDigest::new([10; 32]).unwrap(),
-        generation: 1,
-    }
+    BaseModelRef::new(BaseModelDigest::new([10; 32]).unwrap(), 1).unwrap()
 }
 
 fn rationale() -> RationaleDigest {
@@ -71,8 +65,11 @@ fn spec(pod: &str, generation: u64, level: ExpertLevel) -> ExpertPodSpec {
     .unwrap()
 }
 
+/// A fresh generation-1 result in layer 3; the slot index follows the pod name so that results
+/// of one operation get distinct slots.
 fn result(pod: &str) -> ExpertPodSpec {
-    spec(pod, 1, token(3))
+    let index = u16::from(pod.as_bytes()[0]);
+    spec(pod, 1, ExpertLevel::Token { layer: 3, index })
 }
 
 fn proposer() -> ProposerRef {
@@ -145,7 +142,7 @@ fn valid_proposal_for_each_operation() {
             targets: vec![serving("a"), serving("b")],
         },
         StructuralOp::Retire {
-            target: in_state("a", ExpertState::Candidate),
+            target: in_state("a", ExpertState::Frozen),
             reason: RetiredReason::GateFailed,
         },
     ];
@@ -158,31 +155,54 @@ fn valid_proposal_for_each_operation() {
     }
 }
 
-/// The documented (operation, state) table, written out independently of the implementation.
+/// The documented (operation, state) table as a literal matrix, written independently of the
+/// implementation. Columns: Birth, Merge, Split, Freeze, Reactivate, Prune, Retire.
 #[test]
 fn allowed_operation_state_pairs_match_the_documented_table() {
     use ExpertState::*;
-    let retired = |s: ExpertState| matches!(s, Retired(_));
+    const OPS: [OpKind; 7] = [
+        OpKind::Birth,
+        OpKind::Merge,
+        OpKind::Split,
+        OpKind::Freeze,
+        OpKind::Reactivate,
+        OpKind::Prune,
+        OpKind::Retire,
+    ];
+    let matrix: [(ExpertState, [bool; 7]); 10] = [
+        //                              Birth  Merge  Split  Freeze React  Prune  Retire
+        (Candidate, [false, false, false, false, false, false, false]),
+        (Gated, [false, false, false, false, false, false, false]),
+        (Serving, [false, true, true, true, false, true, true]),
+        (Frozen, [false, true, true, false, true, false, true]),
+        (Fenced, [false, false, false, false, false, false, true]),
+        (
+            Superseded,
+            [false, false, false, false, false, false, false],
+        ),
+        (
+            Retired(RetiredReason::Pruned),
+            [false, false, false, false, false, false, false],
+        ),
+        (
+            Retired(RetiredReason::Superseded),
+            [false, false, false, false, false, false, false],
+        ),
+        (
+            Retired(RetiredReason::GateFailed),
+            [false, false, false, false, true, false, false],
+        ),
+        (
+            Retired(RetiredReason::InputRevoked),
+            [false, false, false, false, false, false, false],
+        ),
+    ];
+    assert_eq!(matrix.len(), all_states().len());
     for state in all_states() {
-        let expected = [
-            (OpKind::Merge, matches!(state, Serving | Frozen)),
-            (OpKind::Split, matches!(state, Serving | Frozen)),
-            (OpKind::Freeze, matches!(state, Serving)),
-            (
-                OpKind::Reactivate,
-                matches!(state, Frozen) || retired(state),
-            ),
-            (OpKind::Prune, matches!(state, Serving)),
-            (
-                OpKind::Retire,
-                matches!(
-                    state,
-                    Candidate | Gated | Serving | Frozen | Fenced | Superseded
-                ),
-            ),
-            (OpKind::Birth, false),
-        ];
-        for (kind, allowed) in expected {
+        assert!(matrix.iter().any(|(s, _)| *s == state), "{state:?} missing");
+    }
+    for (state, row) in matrix {
+        for (kind, allowed) in OPS.into_iter().zip(row) {
             assert_eq!(kind.allows_state(state), allowed, "{kind} / {state:?}");
         }
     }
@@ -220,7 +240,7 @@ fn validation_enforces_the_table_for_every_state() {
         assert_eq!(
             ok(StructuralOp::Retire {
                 target: t(),
-                reason: RetiredReason::Pruned
+                reason: RetiredReason::Superseded
             }),
             OpKind::Retire.allows_state(state)
         );
@@ -259,7 +279,7 @@ fn states_map_onto_lineage_status_and_lifecycle() {
         ),
         (Gated, "gated", vec![L::Approved]),
         (Serving, "serving", vec![L::Active]),
-        (Frozen, "gated", vec![L::Approved]),
+        (Frozen, "serving", vec![L::Active]),
         (Fenced, "serving", vec![L::Active]),
         (Superseded, "retired", vec![L::Superseded]),
         (Retired(RetiredReason::Pruned), "retired", vec![L::Retired]),
@@ -357,7 +377,7 @@ fn everything_must_belong_to_the_proposal_project() {
         },
         StructuralOp::Retire {
             target: foreign("a"),
-            reason: RetiredReason::Pruned,
+            reason: RetiredReason::GateFailed,
         },
     ] {
         assert_eq!(propose(op), mixed);
@@ -460,10 +480,7 @@ fn merge_rules() {
         Err(ExpertProposalError::MixedBaseModels)
     );
     let mut i = init("b", 1, token(3), ExpertState::Serving);
-    i.base_model = BaseModelRef {
-        generation: 2,
-        ..base()
-    };
+    i.base_model = BaseModelRef::new(*base().digest(), 2).unwrap();
     assert_eq!(
         propose(merge(vec![serving("a"), ExpertTarget::new(i).unwrap()])),
         Err(ExpertProposalError::MixedBaseModels)
@@ -559,54 +576,61 @@ fn split_and_prune_reject_candidate_and_retired() {
 }
 
 #[test]
-fn reactivate_frozen_unfreezes_and_retired_seeds_a_new_generation() {
+fn reactivate_frozen_unfreezes_and_failed_gate_seeds_a_new_generation() {
     let frozen = in_state("a", ExpertState::Frozen);
-    let retired = |reason| in_state("a", ExpertState::Retired(reason));
+    let failed = || in_state("a", ExpertState::Retired(RetiredReason::GateFailed));
     let new_gen = || Some(spec("a", 2, token(3)));
 
     let unfreeze = propose(reactivate(frozen.clone(), None)).unwrap();
     assert!(!unfreeze.creates_new_generation());
-    let reseed = propose(reactivate(retired(RetiredReason::GateFailed), new_gen())).unwrap();
+    let reseed = propose(reactivate(failed(), new_gen())).unwrap();
     assert!(reseed.creates_new_generation());
 
     assert_eq!(
-        propose(reactivate(frozen, Some(spec("a", 2, token(3))))),
+        propose(reactivate(frozen, new_gen())),
         Err(ExpertProposalError::UnexpectedResult {
             op: OpKind::Reactivate
         })
     );
     assert_eq!(
-        propose(reactivate(retired(RetiredReason::Pruned), None)),
+        propose(reactivate(failed(), None)),
         Err(ExpertProposalError::MissingResult {
             op: OpKind::Reactivate
         })
     );
-    // Revoked inputs never seed, with or without a result.
-    for result in [None, new_gen()] {
+    // Only GateFailed seeds, with or without a result.
+    for reason in [
+        RetiredReason::Pruned,
+        RetiredReason::Superseded,
+        RetiredReason::InputRevoked,
+    ] {
+        for result in [None, new_gen()] {
+            assert_eq!(
+                propose(reactivate(
+                    in_state("a", ExpertState::Retired(reason)),
+                    result
+                )),
+                Err(ExpertProposalError::SeedUnavailable {
+                    pod: PodId::from("a"),
+                    reason
+                }),
+                "{reason:?}"
+            );
+        }
+    }
+    // The result is the same expert at exactly source generation + 1.
+    for wrong in [1, 3] {
         assert_eq!(
-            propose(reactivate(retired(RetiredReason::InputRevoked), result)),
-            Err(ExpertProposalError::SeedFromRevoked {
-                pod: PodId::from("a")
+            propose(reactivate(failed(), Some(spec("a", wrong, token(3))))),
+            Err(ExpertProposalError::ResultGenerationNotNext {
+                pod: PodId::from("a"),
+                result: Generation(wrong),
+                expected: Some(Generation(2))
             })
         );
     }
-    // The result is a strictly newer generation of the same logical expert.
     assert_eq!(
-        propose(reactivate(
-            retired(RetiredReason::Pruned),
-            Some(spec("a", 1, token(3)))
-        )),
-        Err(ExpertProposalError::ResultGenerationNotNewer {
-            pod: PodId::from("a"),
-            result: Generation(1),
-            source: Generation(1)
-        })
-    );
-    assert_eq!(
-        propose(reactivate(
-            retired(RetiredReason::Pruned),
-            Some(spec("elsewhere", 2, token(3)))
-        )),
+        propose(reactivate(failed(), Some(spec("elsewhere", 2, token(3))))),
         Err(ExpertProposalError::ResultNotSameExpert {
             expected: PodId::from("a"),
             found: PodId::from("elsewhere")
@@ -619,6 +643,156 @@ fn reactivate_frozen_unfreezes_and_retired_seeds_a_new_generation() {
             Err(ExpertProposalError::WrongTargetState { .. })
         ));
     }
+}
+
+#[test]
+fn reactivation_generation_overflow_is_an_error_not_a_panic() {
+    let max = target(
+        "a",
+        u64::MAX,
+        token(3),
+        ExpertState::Retired(RetiredReason::GateFailed),
+    );
+    for generation in [u64::MAX, 1] {
+        assert_eq!(
+            propose(reactivate(
+                max.clone(),
+                Some(spec("a", generation, token(3)))
+            )),
+            Err(ExpertProposalError::ResultGenerationNotNext {
+                pod: PodId::from("a"),
+                result: Generation(generation),
+                expected: None
+            })
+        );
+    }
+    let almost = target(
+        "a",
+        u64::MAX - 1,
+        token(3),
+        ExpertState::Retired(RetiredReason::GateFailed),
+    );
+    assert!(propose(reactivate(almost, Some(spec("a", u64::MAX, token(3))))).is_ok());
+}
+
+#[test]
+fn reactivation_restores_the_exact_token_slot() {
+    let slot = |index| ExpertLevel::Token { layer: 2, index };
+    let failed = target(
+        "a",
+        1,
+        slot(3),
+        ExpertState::Retired(RetiredReason::GateFailed),
+    );
+    assert_eq!(
+        propose(reactivate(failed.clone(), Some(spec("a", 2, slot(7))))),
+        Err(ExpertProposalError::ResultLevelMismatch {
+            pod: PodId::from("a")
+        })
+    );
+    assert!(propose(reactivate(failed.clone(), Some(spec("a", 2, slot(3))))).is_ok());
+    assert_eq!(
+        propose(reactivate(failed, Some(spec("a", 2, token(4))))),
+        Err(ExpertProposalError::ResultLevelMismatch {
+            pod: PodId::from("a")
+        })
+    );
+    // Merge and Split keep layer-only compatibility.
+    let in_layer = |pod: &str, index| {
+        target(
+            pod,
+            1,
+            ExpertLevel::Token { layer: 2, index },
+            ExpertState::Serving,
+        )
+    };
+    assert!(propose(StructuralOp::Merge {
+        sources: vec![in_layer("a", 1), in_layer("b", 2)],
+        result: spec("m", 1, slot(9)),
+    })
+    .is_ok());
+    assert!(propose(StructuralOp::Split {
+        source: in_layer("a", 1),
+        results: vec![spec("x", 1, slot(5)), spec("y", 1, slot(6))],
+    })
+    .is_ok());
+}
+
+#[test]
+fn retire_accepts_only_proposable_reasons() {
+    let retire = |reason| {
+        propose(StructuralOp::Retire {
+            target: serving("a"),
+            reason,
+        })
+    };
+    assert!(retire(RetiredReason::Superseded).is_ok());
+    assert!(retire(RetiredReason::GateFailed).is_ok());
+    for reason in [RetiredReason::Pruned, RetiredReason::InputRevoked] {
+        assert_eq!(
+            retire(reason),
+            Err(ExpertProposalError::ReasonNotProposable { reason })
+        );
+    }
+    // The state table is checked first, then the reason.
+    assert!(matches!(
+        propose(StructuralOp::Retire {
+            target: in_state("a", ExpertState::Retired(RetiredReason::GateFailed)),
+            reason: RetiredReason::Pruned
+        }),
+        Err(ExpertProposalError::WrongTargetState { .. })
+    ));
+}
+
+#[test]
+fn result_slots_are_unique_but_a_sources_slot_may_be_reused() {
+    let at = |pod: &str, index| spec(pod, 1, ExpertLevel::Token { layer: 3, index });
+    assert_eq!(
+        propose(StructuralOp::Split {
+            source: serving("a"),
+            results: vec![at("x", 4), at("y", 4)]
+        }),
+        Err(ExpertProposalError::DuplicateResultSlot { layer: 3, index: 4 })
+    );
+    // `serving("a")` occupies layer 3 index 0; a result may take that slot.
+    assert!(propose(StructuralOp::Split {
+        source: serving("a"),
+        results: vec![at("x", 0), at("y", 1)]
+    })
+    .is_ok());
+    // Segment results have no slot.
+    assert!(propose(StructuralOp::Birth {
+        result: spec("s", 1, ExpertLevel::Segment)
+    })
+    .is_ok());
+}
+
+#[test]
+fn fresh_results_must_be_generation_one() {
+    let fresh = Err(ExpertProposalError::FreshResultGeneration {
+        pod: PodId::from("x"),
+        found: Generation(2),
+    });
+    assert_eq!(
+        propose(StructuralOp::Birth {
+            result: spec("x", 2, token(3))
+        }),
+        fresh
+    );
+    assert_eq!(
+        propose(StructuralOp::Merge {
+            sources: vec![serving("a"), serving("b")],
+            result: spec("x", 2, token(3))
+        }),
+        fresh
+    );
+    assert_eq!(
+        propose(StructuralOp::Split {
+            source: serving("a"),
+            results: vec![spec("x", 2, token(3)), spec("y", 1, token(3))]
+        }),
+        fresh
+    );
 }
 
 #[test]
@@ -740,6 +914,49 @@ fn ids_must_be_canonical() {
     assert_eq!(
         make_spec("proj", "pod", 0),
         Err(ExpertIdentityError::ZeroGeneration)
+    );
+    // Allowed punctuation.
+    assert!(make_spec("proj-1.a_b:c", "Pod.0:x-y_z", 1).is_ok());
+    // Interior space, NUL, zero-width space, non-ASCII, slash.
+    for bad in [
+        "a b",
+        "a\0b",
+        "\0",
+        "a\u{200b}b",
+        "\u{200b}",
+        "caf\u{e9}",
+        "a/b",
+    ] {
+        assert_eq!(
+            make_spec(bad, "pod", 1),
+            Err(ExpertIdentityError::NonCanonicalProject),
+            "{bad:?}"
+        );
+        assert_eq!(
+            make_spec("proj", bad, 1),
+            Err(ExpertIdentityError::NonCanonicalPod),
+            "{bad:?}"
+        );
+    }
+    // 128 bytes pass, 129 do not.
+    let max = "a".repeat(128);
+    assert!(make_spec(&max, &max, 1).is_ok());
+    let long = "a".repeat(129);
+    assert_eq!(
+        make_spec(&long, "pod", 1),
+        Err(ExpertIdentityError::NonCanonicalProject)
+    );
+    assert_eq!(
+        make_spec("proj", &long, 1),
+        Err(ExpertIdentityError::NonCanonicalPod)
+    );
+    assert_eq!(
+        ExpertTarget::new(init(&long, 1, token(1), ExpertState::Serving)),
+        Err(ExpertIdentityError::NonCanonicalPod)
+    );
+    assert_eq!(
+        ProposerRef::new(project(), PodId::from("a b"), Generation(1)),
+        Err(ExpertIdentityError::NonCanonicalPod)
     );
 
     let mut i = init("pod", 1, token(1), ExpertState::Serving);
@@ -940,7 +1157,7 @@ fn proposal_id_is_deterministic_and_covers_every_field() {
     assert_ne!(
         id(propose(StructuralOp::Retire {
             target: serving("a"),
-            reason: RetiredReason::Pruned
+            reason: RetiredReason::Superseded
         })),
         id(propose(StructuralOp::Retire {
             target: serving("a"),
@@ -961,7 +1178,7 @@ fn errors_have_readable_display() {
     assert!(err.to_string().contains("generations 1 and 2"));
     assert_eq!(
         ExpertIdentityError::NonCanonicalPod.to_string(),
-        "pod id has leading or trailing whitespace"
+        "pod id is not 1-128 bytes of ASCII [A-Za-z0-9._:-]"
     );
     assert_eq!(OpKind::Reactivate.to_string(), "reactivate");
 }
@@ -1000,4 +1217,101 @@ fn proposal_has_no_override_surface() {
         | StructuralOp::Retire { .. } => panic!("expected merge"),
     }
     assert_eq!(proposal.proposer(), &proposer());
+}
+
+#[test]
+fn retire_is_allowed_exactly_where_the_lifecycle_gate_permits_retirement() {
+    use ptr_pods::LifecycleGate;
+    let gate_allows_retired = |state: ExpertState| {
+        state.artifact_lifecycles().iter().any(|from| {
+            LifecycleGate::transition(*from, ArtifactLifecycle::Retired, true, true, true, true)
+                .is_ok()
+        })
+    };
+    for state in all_states() {
+        assert_eq!(
+            OpKind::Retire.allows_state(state),
+            gate_allows_retired(state),
+            "{state:?}"
+        );
+    }
+    // Candidates and gated experts are dropped by their gate, not retired by a proposal.
+    for state in [
+        ExpertState::Candidate,
+        ExpertState::Gated,
+        ExpertState::Superseded,
+    ] {
+        assert_eq!(
+            propose(StructuralOp::Retire {
+                target: in_state("a", state),
+                reason: RetiredReason::GateFailed
+            }),
+            Err(ExpertProposalError::WrongTargetState {
+                op: OpKind::Retire,
+                pod: PodId::from("a"),
+                state
+            })
+        );
+    }
+    for state in [
+        ExpertState::Serving,
+        ExpertState::Frozen,
+        ExpertState::Fenced,
+    ] {
+        assert_eq!(state.artifact_lifecycles(), &[ArtifactLifecycle::Active]);
+        assert!(propose(StructuralOp::Retire {
+            target: in_state("a", state),
+            reason: RetiredReason::Superseded
+        })
+        .is_ok());
+    }
+}
+
+#[test]
+fn prune_requires_one_base_model() {
+    let with_base = |pod: &str, base: BaseModelRef| {
+        let mut i = init(pod, 1, token(3), ExpertState::Serving);
+        i.base_model = base;
+        ExpertTarget::new(i).unwrap()
+    };
+    let prune = |targets| propose(StructuralOp::Prune { targets });
+    assert!(prune(vec![with_base("a", base()), with_base("b", base())]).is_ok());
+    assert_eq!(
+        prune(vec![with_base("a", base()), with_base("b", other_base())]),
+        Err(ExpertProposalError::MixedBaseModels)
+    );
+    // Same digest, different base generation.
+    let newer = BaseModelRef::new(*base().digest(), 2).unwrap();
+    assert_eq!(
+        prune(vec![with_base("a", base()), with_base("b", newer)]),
+        Err(ExpertProposalError::MixedBaseModels)
+    );
+}
+
+#[test]
+fn base_model_ref_validates_generation() {
+    let digest = BaseModelDigest::new([9; 32]).unwrap();
+    assert_eq!(
+        BaseModelRef::new(digest, 0),
+        Err(ExpertIdentityError::ZeroBaseModelGeneration)
+    );
+    let r = BaseModelRef::new(digest, 3).unwrap();
+    assert_eq!(r.digest(), &digest);
+    assert_eq!(r.generation(), 3);
+    assert_eq!(
+        ExpertIdentityError::ZeroBaseModelGeneration.to_string(),
+        "base model generation is zero"
+    );
+    // The base generation is part of the proposal id.
+    let id = |g| {
+        let mut i = init("a", 1, token(3), ExpertState::Serving);
+        i.base_model = BaseModelRef::new(digest, g).unwrap();
+        propose(StructuralOp::Freeze {
+            target: ExpertTarget::new(i).unwrap(),
+        })
+        .unwrap()
+        .proposal_id()
+    };
+    assert_eq!(id(1), id(1));
+    assert_ne!(id(1), id(2));
 }
