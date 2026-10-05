@@ -1151,15 +1151,7 @@ refuses it
 A checkpoint is bound to `binding_digest_of` the writes it claims to fold — their
 sequence numbers, source keys, generations and input digests; the digest binds which
 writes were folded, not their key and value bits. `put_checkpoint` recomputes it from
-the stored journal prefix, holding those rows `FOR SHARE` in ascending `seq`, and refuses
-a mismatch. A revocation locks the writes it removes in the same order, `(memory, seq)`,
-before it deletes them: a bare `DELETE` took them in scan order, which reused space or
-an update can invert, and a revocation holding a later write while waiting for an
-earlier one the writer shared deadlocked with it (40P01, seen in L003's racing-checkpoint
-case). With one order the later arrival waits and nothing cycles
-(`a_revocation_waits_for_a_checkpoint_writer_in_its_order_rather_than_deadlocking`,
-which drives the interleaving by hand over a journal stored out of order and fails with
-40P01 without the ordered lock);
+the stored journal prefix, holding those rows `FOR SHARE`, and refuses a mismatch;
 `latest_checkpoint` recomputes it again and skips any checkpoint whose binding no longer
 matches the stored prefix, so a checkpoint whose binding names a revoked write is never
 handed out (`a_checkpoint_that_does_not_fold_the_stored_journal_is_refused_or_skipped`).

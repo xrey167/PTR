@@ -1,0 +1,89 @@
+version = 1
+
+# NOT RUN in the development environment (no GPU there). Targets the real
+# allenai/OLMoE-1B-7B-0125 (OlmoeForCausalLM, 64 experts, top-8, 16 layers) on one
+# 24 GB GPU with LoRA in bf16. The tiny-random smoke (stage-moe-smoke.toml)
+# validates the mechanism; whether this configuration fits and trains is untested.
+[codebook]
+version = 1
+fingerprint = "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"
+
+[run]
+name = "moe-olmoe-1b-7b-lora"
+seed = 17
+hardware_profile = "hardware/rtx3090.toml"
+
+# trl-moe does NOT read this table: it trains/evaluates on seeded synthetic verifiable tasks
+# (metrics.json: data_source = "synthetic-tasks"). It exists because the run manifest requires it.
+[data]
+dataset = "typed_agent_behavior_v0_2"
+split = "train"
+
+[model]
+family = "olmoe"
+config = "training/configs/stage-moe-olmoe.toml"
+kind = "pretrained"
+hf_id = "allenai/OLMoE-1B-7B-0125"
+# Pinned commit of the hub repo (resolved 2026-10-04); the default branch is mutable.
+revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+precision = "bf16"
+
+[training]
+backend = "trl-moe"
+precision = "bf16"
+
+[evaluation]
+every = 0
+suites = []
+
+[moe.sft]
+steps = 100
+lr = 0.00002
+batch = 4
+examples = 1024
+max_length = 48
+
+[moe.rl]
+algorithms = ["gspo", "sapo"]
+steps = 50
+num_generations = 8
+# 4 optimizer steps per generation batch so clipping / the SAPO gate can act. mini_steps = 1 is
+# on-policy (ratio == 1): the GSPO and SAPO first-step gradients coincide (tested against TRL
+# 1.14.1 on the tiny model), but the logged loss values differ by construction and later steps
+# are not bit-identical (Adam amplifies fp noise), so it is an approximate control, not an
+# exact "GSPO == SAPO" identity.
+mini_steps = 4
+# 0.0: no reference model copy of the 7B (memory), so KL is NOT logged for this config.
+beta = 0.0
+epsilon = 0.2
+epsilon_high = 0.28
+# GSPO paper (arXiv 2507.18071) sequence-level clip range.
+gspo_epsilon = 0.0003
+gspo_epsilon_high = 0.0004
+sapo_temperature_pos = 1.0
+sapo_temperature_neg = 1.05
+lr = 0.000005
+prompts_per_step = 2
+max_prompt_length = 32
+max_completion_length = 24
+temperature = 1.0
+
+# transformers 5.x stores OLMoE experts as fused 3-D parameters
+# (mlp.experts.gate_up_proj [E, 2I, H], mlp.experts.down_proj [E, H, I]), not
+# nn.Linear, so expert projections are targeted via PEFT target_parameters;
+# attention projections are ordinary nn.Linear modules. The router (mlp.gate) is
+# deliberately left frozen so routing changes come only from the hidden states.
+[moe.lora]
+enabled = true
+rank = 16
+alpha = 32
+dropout = 0.0
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
+
+# This config exercises NO governance gate: gates run only for the tiny full-fine-tune model, so
+# metrics.json reports gates_evaluated = false here. Gates are reporting-only everywhere (no
+# forgetting_gate_evaluate, no pass/fail effect).
+[moe.output]
+dir = "training/runs/moe-olmoe"
+probe_tokens = 256
