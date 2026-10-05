@@ -1,11 +1,19 @@
 name: security
 on:
+  # Branch pushes are covered by the pull_request run, so only main is scanned on push.
   push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "17 5 * * 1"
 permissions:
   contents: read
+# A newer push to the same PR supersedes the run still in flight. main and the
+# weekly schedule are never cancelled: each main run gets a group of its own
+# (its run id) so GitHub does not replace a pending main run with a newer one.
+concurrency:
+  group: security-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.run_id) || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   audit:
     runs-on: ubuntu-latest
