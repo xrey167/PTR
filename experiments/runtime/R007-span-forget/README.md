@@ -1,0 +1,16 @@
+# R007-span-forget
+
+## Hypothesis
+evicting a span and re-prefilling everything after it yields a state bit-identical to a fresh prefill without the span and leaves no probeable trace of the span (canary_logit_shift is exactly 0); the experiment is bitwise only and uses seeded random weights with a pinned seed and shape; the prompt is a system part of 64 tokens, a document of 4096 tokens and a question of 64 tokens, the span has 256 tokens and starts at token offset 1024 of the document (middle position), and 32 distinct canary strings are probed (their identity-set digest is recorded); the canary identity set is pinned by its expected digest 65f9b8cd60e57cb38a8588c23d5bb494c7817fc10511353980f8be1c690efe19 (sha256 over the 32 canary strings joined by newlines, each canary being the first 16 hex characters of sha256 over the seed 20240607, a colon and its index), and a recorded digest that differs rejects the run.
+
+## Primary metrics
+bitwise_mismatch_count, canary_logit_shift, recompute_tokens, span_insertions, span_evictions, downstream_recomputations, canary_probes, stale_downstream_rows_reused, tokens_after_span, canary_span_tokens, downstream_rows_before_forget, prefix_reuse_tokens, post_forget_probes, selection_digest_mismatches, procedure_mismatches, canary_identity_set_digest, model_pin_mismatches
+
+## Baseline
+fresh prefill of the prompt without the span
+
+## Falsification
+The run is invalid (vacuous) and counts as falsified if any coverage prerequisite is unmet: span_insertions < 1, span_evictions < 1, downstream_recomputations < 1 or canary_probes < 1 on the pinned canary-bearing span case, or canary_span_tokens < 1, downstream_rows_before_forget < 1, prefix_reuse_tokens < 1 or post_forget_probes < 1 (canary_probes must be made after the span eviction and the downstream recomputation); selection_digest_mismatches > 0 (the corpus selection digest recorded in run.json differs from the pinned digest) or procedure_mismatches > 0 (a pinned run-procedure parameter recorded per arm or cell in run.json differs from the pinned value; equality across arms is also compared against the pinned value); canary_identity_set_digest is not recorded in run.json or the canary set is not the 32 distinct pinned canaries (canary_probes < 32); model_pin_mismatches > 0 (the base checkpoint (repo and revision), the tokenizer (repo and revision) or the initial MoE topology recorded in run.json differs from the pin in config.toml, or the tiny-model config digest differs); canary_identity_set_digest differs from the pinned expected digest (the recorded set is not the pinned canary set). Falsified if any of: bitwise_mismatch_count > 0 (any state difference against a fresh prefill without the span); canary_logit_shift != 0 (the absolute difference of the canary token's logit versus the fresh prefill, max over probes; there is no noise threshold); stale_downstream_rows_reused > 0 or recompute_tokens != tokens_after_span (every token after the span must be recomputed); any one of the 5 listed seeds misses any criterion above (every seed must pass).
+
+## Rule
+Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

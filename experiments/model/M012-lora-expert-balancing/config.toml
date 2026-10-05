@@ -1,0 +1,107 @@
+version = 1
+kind = "workspace-area"
+name = "M012-lora-expert-balancing"
+path = "experiments/model/M012-lora-expert-balancing"
+tests_dir = "tests"
+
+[pinned_thresholds]
+task_accuracy_margin_points = 1.0
+load_cv_margin = 0.05
+each_regression_falsifies_independently = true
+# Preregistered choices for this experiment (no code default exists).
+training_steps_per_arm = 2000
+load_cv_definition = "population_std(per_expert_token_load) / mean(per_expert_token_load), per layer"
+comparison_arms = ["auxiliary_balance_loss", "phi_balancing"]
+margins_apply_to_each_comparison_arm = true
+# Preregistered choices for this experiment (no code default exists).
+hyperparameter_tuning_budget_trials_per_arm = 8
+hyperparameters_frozen_before_seeds = true
+max_dead_experts = 0
+max_violation_role = "reported_only"
+load_cv_aggregation = "per layer (population std / mean), mean over layers, at the final step"
+search_space = ["learning_rate", "batch_size", "aux_coefficient", "bias_update_rate"]
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+min_seeds = 5
+dead_expert_eval_set = "pinned held-out evaluation split of the task suite, 8192 tokens"
+load_cv_computed_on_eval_set = true
+# Preregistered choices for this experiment (no code default exists).
+max_final_load_cv_per_layer = 0.5
+max_expert_token_fraction_times_experts = 2.0
+max_dead_experts_per_arm = 0
+# Preregistered choices for this experiment (no code default exists).
+absolute_balance_criteria_reported_for_each_arm = true
+baseline_arm_balance_failure_role = "reported_result"
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_used_recorded_per_arm = true
+max_tuning_budget_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+load_cv_per_layer_hard_bound = 0.5
+mean_load_cv_role = "between-arm ranking comparison only (0.05 margin)"
+# Preregistered choices for this experiment (no code default exists).
+corpus_task_dataset = "openai/gsm8k"
+corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
+corpus_train_split = "train"
+corpus_eval_split = "test"
+corpus_eval_token_selection = "first 8192 tokens of the test split, problems in index order, tokenized with the pinned tokenizer; the token-selection digest is recorded in run.json"
+load_cv_and_dead_experts_eval_tokens = 8192
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons", "update_rules", "phi_eta", "tuning_seed", "tuning_steps", "selected_hyperparameters"]
+# Preregistered choices for this experiment (no code default exists).
+expert_token_fraction_definition = "expert routed assignments / total routed assignments in the layer; sums to 1 over experts"
+# Preregistered choices for this experiment (no code default exists).
+validation_rule = "validation partition for tuning: items whose position within the training partition has index mod 10 == 9, excluded from training; tuning selects on validation only"
+validation_corpora = ["gsm8k_train"]
+validation_position_modulus = 10
+validation_position_residue = 9
+validation_excluded_from_training = true
+tuning_selects_on_validation_only = true
+max_validation_overlap_count = 0
+validation_overlap_counted_per_corpus = true
+validation_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+mean_load_cv_noninferiority_margin = 0.05
+mean_load_cv_direction = "lower is better"
+mean_load_cv_checked = ["per_seed", "seed_mean"]
+between_arm_orderings_claimed = "auxiliary-loss-free non-inferior to auxiliary-loss and to phi-balancing only"
+# Preregistered choices for this experiment (no code default exists).
+arm_matrix = [{ arm = "aux_free_bias", balancing = "auxiliary_loss_free_bias" }, { arm = "aux_loss", balancing = "auxiliary_balance_loss" }, { arm = "phi_balancing", balancing = "phi" }]
+# Preregistered choices for this experiment (no code default exists).
+model_checkpoint_repo = "allenai/OLMoE-1B-7B-0125"
+model_checkpoint_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+tokenizer_repo = "allenai/OLMoE-1B-7B-0125"
+tokenizer_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+moe_topology = { layers = 16, num_experts = 64, top_k = 8, router_layout = "per-layer linear router, softmax then top-k, norm_topk_prob = false", router_aux_loss_coef = 0.01 }
+lora_rank = 8
+lora_alpha = 16
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+tuning_search_spec = { space = { learning_rate = { type = "log_uniform", low = 1e-5, high = 1e-3 }, batch_size = { type = "choice", values = [16, 32, 64] }, aux_coefficient = { type = "log_uniform", low = 1e-3, high = 1e-1 }, bias_update_rate = { type = "log_uniform", low = 1e-4, high = 1e-2 }}, trial_budget = 8, sampler = "seeded random search", selection_seed = 20240607, objective = "validation task accuracy at the final step", tie_break = "lowest trial index" }
+tuning_search_spec_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+lora_expert_config = { num_lora_experts = 8, router_top_k = 2, lora_rank = 8, lora_alpha = 16, target_tensors = ["mlp.experts.gate_up_proj.delta", "mlp.experts.down_proj.delta"] }
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_required = 8
+tuning_trial_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+arm_comparisons = { aux_free_bias = "compared with aux_loss and phi_balancing (0.05 and 1 point margins)", aux_loss = "comparison baseline", phi_balancing = "comparison baseline" }
+arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+update_rules = { aux_free_bias = "b_i added to router scores for top-k selection only; gating weights from unbiased scores; after every optimizer step b_i <- b_i + u * sign(mean_load - load_i); u = bias_update_rate (tuned); b init 0", aux_loss = "L_aux = alpha * N * sum_i f_i * P_i per layer per step; f_i token fraction routed to i, P_i mean router probability; alpha = aux_coefficient (tuned)", phi_balancing = "m <- (1 - eta) m + eta * p_t; q = log(m) + 1 with stop-gradient; L_phi = coefficient * <p_t, q>; coefficient = aux_coefficient (same tuning range); m init uniform; eta = 0.65" }
+phi_eta = 0.65
+phi_coefficient = "aux_coefficient"
+bias_init = 0
+# Preregistered choices for this experiment (no code default exists).
+update_rule_symbols = ["L_aux", "L_phi", "P_i", "b_i", "f_i", "load_i", "mean_load", "p_t", "sum_i"]
+# Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
+tuning_seed = 17
+tuning_steps_fraction = 0.25
+tuning_steps_budget_key = "training_steps_per_arm"
+tuning_steps = 500
+tuning_steps_arithmetic = "tuning_steps = max(1, floor(0.25 * training_steps_per_arm)) = max(1, floor(0.25 * 2000)) = 500"
+selected_hyperparameters = "one value per axis of tuning_search_spec.space, from the best trial on tuning_seed at tuning_steps"
+selected_hyperparameters_frozen_for_all_seeds = true

@@ -1,0 +1,95 @@
+version = 1
+kind = "workspace-area"
+name = "R010-moe-expert-kv-revocation"
+path = "experiments/runtime/R010-moe-expert-kv-revocation"
+tests_dir = "tests"
+
+[pinned_thresholds]
+max_stale_pages_served = 0
+max_wrongly_dropped_pages = 0
+max_bitwise_mismatch_count = 0
+deterministic_routing = "dropless, batch-invariant"
+# Preregistered choices for this experiment (no code default exists).
+min_nondeterministic_reuse_attempts = 1
+max_nondeterministic_exact_tags = 0
+# Preregistered choices for this experiment (no code default exists).
+min_deterministic_revocation_attempts = 1
+min_pages_above_j_before_revocation = 1
+min_pages_at_or_below_j_before_revocation = 1
+min_deterministic_reuse_events = 1
+# Preregistered choices for this experiment (no code default exists).
+min_post_revocation_reuse_probes = 1
+min_retained_pages_reused_after_revocation = 1
+min_recomputed_pages_above_j_served = 1
+test_model_layers = 4
+revoked_expert_layer_j = 1
+# Preregistered choices for this experiment (no code default exists).
+min_invalidation_suppressed_arms = 1
+min_restore_arms = 1
+min_post_event_lookups = 1
+max_stale_hits = 0
+min_input_revocations_performed = 1
+min_post_revocation_lookups_matching_tokens = 1
+max_revoked_lineage_entry_hits = 0
+min_same_tokens_different_generation_cases = 1
+max_mismatching_runs_tagged_exact = 0
+min_nondeterministic_divergence_observed = 1
+claim_scope = "kv_memory_only"
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+weights = "seeded random (pinned seed and shape)"
+weight_seed = 20240607
+hidden_size = 64
+num_heads = 4
+num_kv_heads = 2
+head_dim = 16
+vocab_size = 256
+# Preregistered choices for this experiment (no code default exists).
+min_expert_generation_revocations_performed = 1
+min_pages_above_layer_cached_before_revocation = 1
+min_matching_post_revocation_lookups = 1
+max_stale_expert_generation_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_restored_pre_revocation_entries = 1
+empty_restart_arm_role = "reported_separate_arm"
+# Preregistered choices for this experiment (no code default exists).
+min_inflight_expert_revocation_race_cases = 1
+max_outputs_after_expert_revocation = 0
+min_inflight_input_race_cases = 1
+max_outputs_after_input_invalidation = 0
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "test_model_layers", "revoked_expert_layer_j", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds"]
+# Preregistered choices for this experiment (no code default exists).
+invalidation_types = ["revocation", "supersession"]
+probed_page_set_digest_must_equal = "cached_page_set_digest_above_j"
+# Preregistered choices for this experiment (no code default exists).
+inflight_race_cells = [["revocation", "expert"], ["revocation", "semantic_input"], ["supersession", "expert"], ["supersession", "semantic_input"]]
+min_inflight_race_cases_per_cell = 1
+max_inflight_outputs_after_invalidation_per_cell = 0
+# Preregistered choices for this experiment (no code default exists).
+invalidation_coverage_matrix = { kinds = ["base_model", "expert_generation", "semantic_input", "memory_input", "derived_input"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], extra_types = { expert_generation = ["fence"] }, cells = ["base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession", "expert_generation_normal_revocation", "expert_generation_normal_supersession", "expert_generation_normal_fence", "expert_generation_lag_revocation", "expert_generation_lag_supersession", "expert_generation_lag_fence", "expert_generation_restore_revocation", "expert_generation_restore_supersession", "expert_generation_restore_fence", "expert_generation_inflight_revocation", "expert_generation_inflight_supersession", "expert_generation_inflight_fence", "semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_restore_revocation", "semantic_input_restore_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_restore_revocation", "memory_input_restore_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "derived_input_normal_revocation", "derived_input_normal_supersession", "derived_input_lag_revocation", "derived_input_lag_supersession", "derived_input_restore_revocation", "derived_input_restore_supersession", "derived_input_inflight_revocation", "derived_input_inflight_supersession"] }
+min_invalidation_matrix_cases_per_cell = 1
+max_invalidation_matrix_stale_hits_per_cell = 0
+invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
+# Preregistered choices for this experiment (no code default exists).
+min_expert_quarantine_kv_cases = 1
+max_kv_reuse_after_expert_fence = 0
+expert_fence_invalidation = "any-cause fence of a chain expert invalidates entries at the fence commit index; entries record the per-expert fence epoch"
+# Preregistered choices for this experiment (no code default exists).
+tiny_model_config = { layers = 4, hidden_size = 64, num_heads = 4, num_kv_heads = 2, head_dim = 16, vocab_size = 256, weight_seed = 20240607, num_experts = 4, top_k = 2 }
+tiny_model_config_digest = "sha256:fccf7bd315c89853010d486c2f1e11344f5d1e29fa0c8791eef69b5e246f84f0"
+tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
+tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
+moe_topology = { num_experts = 4, top_k = 2, router_layout = "linear softmax top-k, dropless, batch-invariant" }
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "expert"]
+dependency_list_narrowing_reason = "narrowed: the MoE expert-revocation workload has no adapters"

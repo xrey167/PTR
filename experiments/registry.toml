@@ -199,3 +199,83 @@ status = "planned"
 id = "E005"
 path = "system/E005-agent-memory-benchmark"
 status = "planned"
+
+[[experiment]]
+id = "R005"
+path = "runtime/R005-exact-prefix-reuse"
+status = "planned"
+
+[[experiment]]
+id = "R006"
+path = "runtime/R006-positional-reuse-oracle"
+status = "planned"
+
+[[experiment]]
+id = "R007"
+path = "runtime/R007-span-forget"
+status = "planned"
+
+[[experiment]]
+id = "R008"
+path = "runtime/R008-lossy-kv-tier"
+status = "planned"
+
+[[experiment]]
+id = "R009"
+path = "runtime/R009-layer-shared-lora-kv"
+status = "planned"
+
+[[experiment]]
+id = "R010"
+path = "runtime/R010-moe-expert-kv-revocation"
+status = "planned"
+
+[[experiment]]
+id = "R011"
+path = "runtime/R011-self-modification-safety"
+status = "planned"
+
+[[experiment]]
+id = "M016"
+path = "model/M016-approximate-chunk-reuse"
+status = "planned"
+
+[[experiment]]
+id = "M010"
+path = "model/M010-moe-rl-stability"
+status = "planned"
+
+[[experiment]]
+id = "M011"
+path = "model/M011-routed-peft"
+status = "planned"
+
+[[experiment]]
+id = "M012"
+path = "model/M012-lora-expert-balancing"
+status = "planned"
+
+[[experiment]]
+id = "M013"
+path = "model/M013-expert-lifecycle"
+status = "planned"
+
+[[experiment]]
+id = "M014"
+path = "model/M014-aimer-prune-recovery"
+status = "planned"
+
+[[experiment]]
+id = "M015"
+path = "model/M015-rlvr-vs-distill-passk"
+status = "planned"
+
+[[experiment]]
+id = "E006"
+path = "system/E006-engine-prefix-reuse"
+status = "planned"
+
+[[experiment]]
+id = "E007"
+path = "system/E007-split-pod-kv"
+status = "planned"

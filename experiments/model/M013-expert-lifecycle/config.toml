@@ -1,0 +1,147 @@
+version = 1
+kind = "workspace-area"
+name = "M013-expert-lifecycle"
+path = "experiments/model/M013-expert-lifecycle"
+tests_dir = "tests"
+
+[pinned_thresholds]
+min_gate_pass_rate_margin_absolute = 0.05
+# Preregistered choices for this experiment (ForgettingGate has no default; all four thresholds are caller-supplied).
+# Names follow crates/ptr-lineage/src/forgetting.rs ForgettingGate; values are accuracy fractions.
+gate_max_average_forgetting = 0.02
+gate_max_task_forgetting = 0.05
+gate_min_backward_transfer = -0.02
+gate_max_public_regression = 0.01
+public_suite_margin_points = 1.0
+recovery_target_fraction_of_pre_retirement_score = 0.95
+equal_compute_basis = "training FLOPs and active parameters"
+min_mean_net_quality_change_per_accepted_proposal = 0.0
+net_quality_change_must_be_at_least_both_baselines = true
+gate_must_pass_and_average_forgetting_strictly_below_static = true
+# Preregistered choices for this experiment (no code default exists).
+max_recovery_steps = 5000
+min_proposals_generated_per_arm = 20
+min_proposals_accepted_per_arm = 10
+# Preregistered choice: margin by which full-context net quality change must be at least both baselines.
+net_quality_vs_baseline_margin = 0.0
+# Preregistered choices for this experiment (no code default exists).
+flops_relative_tolerance = 0.05
+backward_transfer_definition = "ForgettingGate AccuracyMatrix definition"
+# Preregistered choices for this experiment (no code default exists).
+lifecycle_operations = ["birth", "merge", "split", "freeze", "prune", "reactivate"]
+min_operation_count_per_type = 1
+# Preregistered choices for this experiment (no code default exists).
+net_quality_metric = "held-out domain-suite accuracy delta, disjoint from the gate suite"
+domain_sequence = ["code", "math", "tool", "code"]
+training_flops_includes = ["discarded_candidates", "l3_policy", "gate_evaluation"]
+hyperparameter_tuning_budget_trials_per_arm = 8
+hyperparameters_frozen_before_seeds = true
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+min_seeds = 5
+domain_accuracy_noninferiority_margin_points = 1.0
+# Preregistered choices for this experiment (no code default exists).
+proposal_generating_arms = ["full_context", "context_ablated", "heuristic"]
+gate_pass_margin_applies_to_each_comparison_independently = true
+# Preregistered choices for this experiment (no code default exists).
+static_arm_requires_matched_observation = true
+max_static_arm_schedule_mismatches = 0
+max_static_arm_eval_stage_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+lifecycle_operators_claim_11 = ["Birth", "Merge", "Split", "Freeze", "Prune"]
+min_accepted_gate_processed_proposals_per_operator = 2
+vacuous_if_operator_below_minimum = true
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_used_recorded_per_arm = ["lifecycle", "static", "context_ablated", "heuristic"]
+max_tuning_budget_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+min_paired_reactivation_trials_per_seed = 1
+paired_trial = "reactivate a retired expert vs train a fresh new expert on the same returning domain"
+# Preregistered choices for this experiment (no code default exists).
+corpus_math = "openai/gsm8k"
+corpus_math_revision = "740312add88f781978c0658806c59bc2815b9866"
+corpus_code = "openai/openai_humaneval"
+corpus_code_revision = "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
+corpus_tool = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
+corpus_tool_revision = "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
+corpus_tool_file = "BFCL_v3_simple.json"
+corpus_split_rule = "HumanEval and BFCL items are split by index mod 3: 0 = training, 1 = gate suite, 2 = held-out evaluation; GSM8K uses its train items with position mod 10 != 9 for training (mod 10 == 9 is the tuning validation) and its test split partitioned by index mod 2 (0 = gate suite, 1 = held-out evaluation); training data for Birth, Split, reactivation and the fresh-expert control comes only from the training partition"
+public_suite_dataset = "cais/mmlu"
+public_suite_revision = "c30699e8356da336a370243923dbaf21066bb9fe"
+public_suite_config = "all"
+public_suite_split = "test"
+public_suite_selection_rule = "the first 2000 questions in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm", "hyperparameter_tuning_budget_trials_per_arm", "lifecycle_operations", "proposal_generating_arms", "recovery_target_fraction_of_pre_retirement_score", "split_rule_single_split_corpora", "flops_relative_tolerance", "active_param_tolerance", "validation_position_modulus", "validation_position_residue", "overlap_counters_per_corpus", "gsm8k_test_partition_modulus", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons", "opportunities_per_seed", "cumulative_net_quality_per_opportunity_margin", "tuning_seed", "tuning_steps", "selected_hyperparameters"]
+# Preregistered choices for this experiment (no code default exists).
+split_rule_single_split_corpora = "index mod 3: 0 = training, 1 = gate suite, 2 = held-out evaluation"
+max_training_data_outside_training_partition_count = 0
+# Preregistered choices for this experiment (no code default exists).
+overlap_counters_per_corpus = ["code_humaneval", "tool_bfcl", "math_gsm8k"]
+max_training_gate_overlap_count = 0
+max_training_heldout_overlap_count = 0
+code_training_partition = "HumanEval items with index mod 3 == 0"
+tool_training_partition = "BFCL_v3_simple items with index mod 3 == 0"
+# Preregistered choices for this experiment (no code default exists).
+validation_rule = "validation partition for tuning: items whose position within the training partition has index mod 10 == 9, excluded from training; tuning selects on validation only (taken from each training partition)"
+validation_corpora = ["code_humaneval", "tool_bfcl", "math_gsm8k"]
+validation_position_modulus = 10
+validation_position_residue = 9
+validation_excluded_from_training = true
+tuning_selects_on_validation_only = true
+max_validation_overlap_count = 0
+validation_overlap_counted_per_corpus = true
+validation_set_digest_recorded_in_run_json = true
+tool_corpus_name = "BFCL_v3_simple"
+# Preregistered choices for this experiment (no code default exists).
+gsm8k_test_partition = "openai/gsm8k main/test index mod 2: 0 = gate suite, 1 = held-out evaluation"
+gsm8k_test_partition_modulus = 2
+max_gate_heldout_overlap_count = 0
+gate_and_heldout_digests_recorded_separately = true
+# Preregistered choices for this experiment (no code default exists).
+active_param_tolerance = 0.05
+active_params_compared = "per stage checkpoint (every training and evaluation stage), lifecycle arm versus static arm, relative to the static arm"
+max_active_param_mismatch_stages = 0
+active_params_recorded_per_stage_per_arm = true
+# Preregistered choices for this experiment (no code default exists).
+training_flops_checked = "per seed and per stage"
+max_training_flops_mismatch_cells = 0
+# Preregistered choices for this experiment (no code default exists).
+arm_matrix = [{ arm = "lifecycle_full_context", lifecycle = true, l3_context = "full" }, { arm = "lifecycle_context_ablated", lifecycle = true, l3_context = "removed" }, { arm = "lifecycle_heuristic", lifecycle = true, l3_context = "threshold_rules" }, { arm = "static_expert_set", lifecycle = false, l3_context = "none" }, { arm = "naive_adapter_chain", lifecycle = false, l3_context = "none" }]
+# Preregistered choices for this experiment (no code default exists).
+model_checkpoint_repo = "allenai/OLMoE-1B-7B-0125"
+model_checkpoint_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+tokenizer_repo = "allenai/OLMoE-1B-7B-0125"
+tokenizer_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+moe_topology = { layers = 16, num_experts = 64, top_k = 8, router_layout = "per-layer linear router, softmax then top-k, norm_topk_prob = false", router_aux_loss_coef = 0.01 }
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+tuning_search_spec = { space = { learning_rate = { type = "log_uniform", low = 1e-5, high = 1e-3 }, batch_size = { type = "choice", values = [16, 32, 64] }}, trial_budget = 8, sampler = "seeded random search", selection_seed = 20240607, objective = "mean validation accuracy over the domain sequence", tie_break = "lowest trial index" }
+tuning_search_spec_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+lora_expert_config = { initial_expert_count = 8, router_top_k = 2, lora_rank = 8, lora_alpha = 16, target_tensors = ["mlp.experts.gate_up_proj.delta", "mlp.experts.down_proj.delta"] }
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_required = 8
+tuning_trial_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+arm_comparisons = { lifecycle_full_context = "claim 13 compared with context_ablated and heuristic", lifecycle_context_ablated = "comparison arm", lifecycle_heuristic = "comparison arm", static_expert_set = "claim 11 comparison baseline", naive_adapter_chain = "claim 11 comparison baseline (strictly below)" }
+arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+opportunities_per_seed = 200
+opportunity_set_digest_recorded_in_run_json = true
+opportunity_set_rule = "common set of proposal opportunities: same ids, same order, shared by the three proposal-generating arms"
+abstentions_and_gate_rejections_counted_per_arm = true
+cumulative_net_quality_per_opportunity_margin = 0.0
+abstention_net_quality = 0
+# Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
+tuning_seed = 17
+tuning_steps_fraction = 0.25
+tuning_steps_budget_key = "max_recovery_steps"
+tuning_steps = 1250
+tuning_steps_arithmetic = "tuning_steps = max(1, floor(0.25 * max_recovery_steps)) = max(1, floor(0.25 * 5000)) = 1250"
+selected_hyperparameters = "one value per axis of tuning_search_spec.space, from the best trial on tuning_seed at tuning_steps"
+selected_hyperparameters_frozen_for_all_seeds = true

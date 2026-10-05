@@ -1,0 +1,65 @@
+version = 1
+kind = "workspace-area"
+name = "R007-span-forget"
+path = "experiments/runtime/R007-span-forget"
+tests_dir = "tests"
+
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+canary_bearing_span_cases = 1
+min_span_insertions = 1
+min_span_evictions = 1
+min_downstream_recomputations = 1
+min_canary_probes = 1
+# Preregistered choices for this experiment (no code default exists).
+max_stale_downstream_rows_reused = 0
+recompute_tokens_equals_tokens_after_span = true
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+max_canary_logit_shift = 0
+noise_threshold = "none (bitwise only)"
+# Preregistered choices for this experiment (no code default exists).
+weights = "seeded random (pinned seed and shape)"
+weight_seed = 20240607
+hidden_size = 64
+num_heads = 4
+num_kv_heads = 2
+head_dim = 16
+vocab_size = 256
+# Preregistered choices for this experiment (no code default exists).
+min_canary_span_tokens = 1
+min_downstream_rows_before_forget = 1
+min_prefix_reuse_tokens = 1
+min_post_forget_probes = 1
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "span_tokens", "canary_probes", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "canary_bearing_span_cases", "span_position", "span_start_offset_tokens", "system_prompt_tokens", "document_tokens", "question_tokens", "canary_strings_distinct", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "test_model_layers", "canary_generator_seed", "canary_expected_digest"]
+# Preregistered choices for this experiment (no code default exists).
+span_tokens = 256
+span_position = "middle"
+span_start_offset_tokens = 1024
+system_prompt_tokens = 64
+document_tokens = 4096
+question_tokens = 64
+canary_probes = 32
+canary_strings_distinct = true
+canary_identity_set_digest_recorded_in_run_json = true
+test_model_layers = 4
+# Preregistered choices for this experiment (no code default exists).
+tiny_model_config = { layers = 4, hidden_size = 64, num_heads = 4, num_kv_heads = 2, head_dim = 16, vocab_size = 256, weight_seed = 20240607 }
+tiny_model_config_digest = "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433a"
+tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
+tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
+moe_topology = "none: dense tiny decoder"
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+canary_generator_rule = "canary_i = first 16 hex chars of sha256(seed + colon + i) for i in 0 to 31; digest = sha256 of the canaries joined by newlines"
+canary_generator_seed = 20240607
+canary_expected_digest = "65f9b8cd60e57cb38a8588c23d5bb494c7817fc10511353980f8be1c690efe19"

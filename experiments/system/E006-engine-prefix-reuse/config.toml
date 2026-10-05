@@ -1,0 +1,270 @@
+version = 1
+kind = "workspace-area"
+name = "E006-engine-prefix-reuse"
+path = "experiments/system/E006-engine-prefix-reuse"
+tests_dir = "tests"
+
+[pinned_thresholds]
+min_ttft_gain = 1.5
+shared_prefix_fraction = 0.5
+max_stale_block_hits_salted = 0
+# Preregistered choices for this experiment (no code default exists).
+min_generation_transitions_per_dimension = 1
+max_stale_block_hits_per_dimension_salted = 0
+min_unsalted_control_stale_hit_cases_per_dimension = 1
+stale_probe_requests_after_transition = 8
+stale_probe_requests_applies_per_dimension = true
+max_bitwise_mismatch_count = 0
+bit_identity_requires_batch_invariant_engine = true
+min_semantic_revocations_performed = 1
+max_stale_semantic_block_hits = 0
+max_unacknowledged_flushes_before_serve = 0
+# Preregistered choices for this experiment (no code default exists).
+min_cross_principal_reuse_attempts = 1
+max_cross_principal_hits = 0
+min_cross_regime_probes = 1
+max_cross_regime_block_hits = 0
+ttft_statistic = "median"
+ttft_gain_definition = "ttft_ms_cache_disabled / ttft_ms_salted_cache"
+hit_rate_definition = "reused_prefix_tokens / total_prompt_tokens"
+# Preregistered choices for this experiment (no code default exists).
+min_transitions_per_salt_input = 1
+min_stale_semantic_probe_requests = 8
+min_requests_attempted_during_flush_window = 1
+max_flush_window_requests_served = 0
+max_canary_output_divergence_vs_full_prefill = 0
+engine = "vllm"
+vllm_batch_invariant_env = "VLLM_BATCH_INVARIANT=1"
+missing_batch_invariance_outcome = "inconclusive"
+caching_disabled_outcome = "not-applicable"
+salt_epoch_rotation = "per_principal_project"
+global_flush_used = false
+n_requests = 64
+prompt_tokens = 2048
+shared_prefix_tokens = 1024
+warmup_requests = 4
+first_request_in_ttft_median = false
+first_request_in_hit_rate = true
+concurrency = 1
+min_invalidation_suppressed_arms = 1
+min_post_event_lookups = 1
+max_stale_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+min_dependent_principal_rotation_attempts = 1
+dependent_principals_rotated_equals_total = true
+max_stale_semantic_hits_dependent_principals = 0
+# Preregistered choices for this experiment (no code default exists).
+vllm_version = "0.30.0"
+engine_model = "allenai/OLMoE-1B-7B-0125"
+engine_model_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+test_lora_rank = 8
+test_lora_targets = ["q_proj", "k_proj", "v_proj", "o_proj"]
+test_lora_seed = 20240607
+expert_generations = [0, 1]
+gpu_compute_capability = "8.6"
+batch_invariance_min_compute_capability = "8.0"
+timing_equivalence_test = "TOST on median TTFT"
+tost_equivalence_bound_fraction = 0.05
+tost_alpha = 0.05
+n_timing_samples_per_arm = 1000
+principal_b_hit_rate_tolerance = 0.02
+principal_b_baseline_workload = "64 requests, 2048-token prompts, 1024-token shared prefix, the same prompt set before and after principal A revocation"
+min_cross_project_attempts = 1
+max_cross_project_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_inflight_revocation_race_attempts = 1
+max_inflight_outputs_after_revocation = 0
+max_inflight_cache_inserts_after_revocation = 0
+inflight_mechanism = "cancellation or fencing of in-flight requests, completion-time lineage admission, restart from fresh prefill under the rotated salt"
+# Preregistered choices for this experiment (no code default exists).
+min_memory_revocation_probe_requests_per_arm = 1
+memory_revocation_arms = ["normal", "lag", "restart"]
+max_stale_memory_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+memory_revocation_probe_requests_reported = "per arm, keyed by memory_revocation_arms"
+# Preregistered choices for this experiment (no code default exists).
+# Preregistered choices for this experiment (no code default exists).
+min_supersession_probe_requests_per_arm = 1
+supersession_arms = ["normal", "lag", "restart"]
+supersession_probe_requests_reported = "per arm, keyed by supersession_arms"
+max_stale_superseded_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_memory_dependent_entries_cached_before_revocation = 1
+min_targeted_post_revocation_lookups = 1
+min_superseded_dependent_entries_cached_before_event = 1
+per_arm_seeded_entries_reported = "per arm, keyed by memory_revocation_arms and supersession_arms"
+# Preregistered choices for this experiment (no code default exists).
+generation_dimensions = ["model", "adapter", "expert"]
+engine_cache_salt_field = "cache_salt"
+# Preregistered choices for this experiment (no code default exists).
+salt_identity = "H(PrincipalId, ProjectId, semantic_salt_epoch, base-model generation and artifact digest, adapter key + generation + digest, expert generations and per-expert fence epochs (MoE), KvReuseMode, tokenizer, numerics including RoPE regime, schema)"
+salt_dimensions = ["principal_id", "project_id", "semantic_salt_epoch", "base_model_generation_and_artifact_digest", "adapter_key_generation_digest", "expert_generations_and_fence_epochs", "kv_reuse_mode", "tokenizer", "numerics_including_rope_regime", "schema"]
+block_key_dimensions = ["parent_block_hash", "block_tokens", "engine_extras_lora_id"]
+adapter_and_expert_in_salt = true
+probe_dimensions_all_salt_borne = ["model", "adapter", "expert", "tokenizer", "numerics", "kv_key_encoding", "rope_regime"]
+# Preregistered choices for this experiment (no code default exists).
+inflight_race_kinds = ["semantic_input", "memory_input", "adapter_generation", "expert_generation", "base_model_generation"]
+min_inflight_race_attempts_per_kind = 1
+inflight_race_triggers = ["revocation", "committed_supersession"]
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix", "arm_matrix", "enabled_backends", "backend_versions", "persistent_cache_declared_per_backend", "salt_epochs", "dependency_journal_crash_points", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "capacity_partitioning", "capacity_partitioning_options", "max_live_associations_per_principal_project", "association_dedup_key", "capacity_partitioning_granularity", "declared_dependency_kinds", "software_stack", "rope_regime_inputs", "production_modes", "derived_state_carriers", "arm_comparisons", "salt_epoch_rotation", "salt_epoch_key", "numerics_binding_environment_fields"]
+# Preregistered choices for this experiment (no code default exists).
+inflight_restart_output_mismatches_max = 0
+inflight_restarts_equal_cancellations = true
+# Preregistered choices for this experiment (no code default exists).
+attacker_classifier = "logistic regression"
+attacker_features = ["single_request_ttft", "eight_request_repeated_bundle_ttft"]
+attacker_samples_per_class = 1000
+attacker_bootstrap_resamples = 10000
+attacker_bootstrap_seed = 20240607
+attacker_auc_ci_upper_max = 0.55
+unaffected_principal_dependency_kinds = ["semantic", "memory", "derived", "adapter", "expert", "base_model"]
+unaffected_principal_hit_rate_tolerance = 0.02
+reverse_index = "principal <- dependency-generation mapping, covering every dependency kind in a request lineage"
+# Preregistered choices for this experiment (no code default exists).
+invalidation_types = ["revocation", "supersession"]
+transition_types = ["revocation", "replacement"]
+coverage_reported_per_member = "dimension or kind x invalidation type"
+# Preregistered choices for this experiment (no code default exists).
+identity_set_checks = [["inflight_cancelled_request_id_set_digest", "inflight_restarted_request_id_set_digest"], ["dependent_principal_id_set_digest", "rotated_principal_id_set_digest"]]
+# Preregistered choices for this experiment (no code default exists).
+transition_members = "base_model, adapter, expert x {revocation, replacement}; tokenizer, numerics, kv_key_encoding, rope_regime x {replacement}"
+# Preregistered choices for this experiment (no code default exists).
+attacker_model = "logistic regression"
+attacker_penalty = "l2"
+attacker_C = 1.0
+attacker_solver = "lbfgs"
+attacker_max_iter = 1000
+attacker_split = "stratified 80/20 train/test"
+attacker_split_seed = 20240607
+attacker_cv = "5-fold stratified on the 80 percent portion, reporting only"
+attacker_auc_computed_on = "held-out 20 percent only"
+attacker_heldout_predictions_recorded = ["id", "label", "score"]
+attacker_heldout_predictions_digest_recorded = true
+attacker_solver_param_names = ["max_iter"]
+# Preregistered choices for this experiment (no code default exists).
+invalidation_coverage_matrix = { kinds = ["semantic_input", "memory_input", "derived_input", "adapter_generation", "expert_generation", "base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "engine_restart", "inflight"], extra_types = { expert_generation = ["fence"] }, cells = ["semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_engine_restart_revocation", "semantic_input_engine_restart_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_engine_restart_revocation", "memory_input_engine_restart_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "derived_input_normal_revocation", "derived_input_normal_supersession", "derived_input_lag_revocation", "derived_input_lag_supersession", "derived_input_engine_restart_revocation", "derived_input_engine_restart_supersession", "derived_input_inflight_revocation", "derived_input_inflight_supersession", "adapter_generation_normal_revocation", "adapter_generation_normal_supersession", "adapter_generation_lag_revocation", "adapter_generation_lag_supersession", "adapter_generation_engine_restart_revocation", "adapter_generation_engine_restart_supersession", "adapter_generation_inflight_revocation", "adapter_generation_inflight_supersession", "expert_generation_normal_revocation", "expert_generation_normal_supersession", "expert_generation_normal_fence", "expert_generation_lag_revocation", "expert_generation_lag_supersession", "expert_generation_lag_fence", "expert_generation_engine_restart_revocation", "expert_generation_engine_restart_supersession", "expert_generation_engine_restart_fence", "expert_generation_inflight_revocation", "expert_generation_inflight_supersession", "expert_generation_inflight_fence", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_engine_restart_revocation", "base_model_engine_restart_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession"] }
+min_invalidation_matrix_cases_per_cell = 1
+max_invalidation_matrix_stale_hits_per_cell = 0
+invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; engine_restart = restart of the engine or runtime with replay of requests that could hit pre-revocation blocks (and persistent cache reload where declared); inflight = in-flight race"
+# Preregistered choices for this experiment (no code default exists).
+arm_matrix = [{ arm = "cache_disabled", prefix_cache = "off", salt = "none" }, { arm = "unsalted_control", prefix_cache = "on", salt = "none" }, { arm = "salted", prefix_cache = "on", salt = "PTR-derived" }]
+# Preregistered choices for this experiment (no code default exists).
+enabled_backends = ["vllm-http", "sglang-http"]
+backend_versions = { vllm-http = "0.30.0", sglang-http = "0.5.21" }
+sglang_version = "0.5.21"
+safety_counters_reported = "per backend"
+performance_thresholds_per_backend = { vllm-http = { min_ttft_gain = 1.5 }, sglang-http = { min_ttft_gain = 1.5 } }
+performance_not_precondition_for_safety_verdict = true
+# Preregistered choices for this experiment (no code default exists).
+min_expert_fence_salt_transition_cases_per_backend = 1
+max_stale_blocks_served_after_fence = 0
+expert_fence_epoch_in_salt = true
+# Preregistered choices for this experiment (no code default exists).
+restore_applicable = false
+restore_not_applicable_reason = "engine-owned cache, no PTR catalog/tier restore"
+min_engine_restart_salt_reuse_arms_per_backend = 1
+persistent_cache_declared_per_backend = { vllm-http = false, sglang-http = false }
+persistent_cache_reload_required_if_declared = true
+stale_hits_in_restart_or_reload_arms_falsify = true
+invalidation_matrix_not_applicable = "restore: engine-owned cache, no PTR catalog/tier restore (replaced by the engine_restart path)"
+persistence_arms = ["engine_restart_salt_reuse", "persistent_cache_reload", "runtime_only_restart", "compaction_restart_revocation"]
+# Preregistered choices for this experiment (no code default exists).
+min_runtime_only_restart_arms_per_backend = 1
+max_reused_salt_epochs = 0
+salt_epochs = "monotone, durable, derived from the ledger commit index; never reused"
+reverse_index_rebuilt_from_ledger_before_serving = true
+inflight_race_applicable = true
+# Preregistered choices for this experiment (no code default exists).
+min_dependency_journal_crash_cases_per_backend = 1
+max_unjournaled_cache_populations = 0
+dependency_journal_crash_points = ["after_journal_commit_before_engine_send", "after_engine_send_or_store_before_completion"]
+dependency_journal = "ledger record (principal, project, dependency generations) committed before the cache-populating request is sent; reverse index rebuild reads it"
+# Preregistered choices for this experiment (no code default exists).
+model_checkpoint_repo = "allenai/OLMoE-1B-7B-0125"
+model_checkpoint_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+tokenizer_repo = "allenai/OLMoE-1B-7B-0125"
+tokenizer_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+moe_topology = { layers = 16, num_experts = 64, top_k = 8, router_layout = "per-layer linear router, softmax then top-k, norm_topk_prob = false", router_aux_loss_coef = 0.01 }
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+min_unsafe_order_control_stale_hits = 1
+unsafe_order_control = "deliberately broken variant: engine store before journal commit; must show a stale hit, else the control is invalid"
+max_conforming_crash_case_stale_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_compaction_restart_revocation_cases_per_backend = 1
+compaction_snapshot_rule = "compaction snapshots keep the dependency associations and salt epochs, or rotate all salts fail-closed"
+# Preregistered choices for this experiment (no code default exists).
+capacity_partitioning = { vllm-http = "per_principal_project_block_quota", sglang-http = "per_principal_project_block_quota" }
+capacity_partitioning_options = ["per_principal_block_quota", "per_principal_project_block_quota", "per_principal_engine_instance", "per_principal_project_engine_instance", "none"]
+capacity_partitioning_recorded_in_run_json = true
+min_eviction_side_channel_cases_per_backend = 1
+eviction_attacker_auc_ci_upper_max = 0.55
+eviction_attacker_applies_when = "capacity_partitioning is claimed (not none)"
+unpartitioned_backend_claim = "no cross-principal hits only; timing isolation not-applicable"
+# Preregistered choices for this experiment (no code default exists).
+max_live_associations_per_principal_project = 4096
+association_dedup_key = "(principal, project, salt epoch, dependency-generation set)"
+association_bound_behaviour = "fail-closed: reaching the bound rotates the principal salt epoch (retiring all its associations) before admitting the request"
+min_association_bound_cases_per_backend = 1
+compaction_snapshots_hold = "live associations only"
+# Preregistered choices for this experiment (no code default exists).
+capacity_partitioning_granularity = { vllm-http = "principal_project_pair", sglang-http = "principal_project_pair" }
+capacity_partitioning_granularity_options = ["principal", "principal_project_pair", "none"]
+eviction_side_channel_boundaries = ["cross_principal", "cross_project"]
+timing_claim_by_granularity = "principal_project_pair: cross-principal and cross-project timing isolation; principal: cross-principal timing isolation and no cross-project hits only; none: no cross-principal/cross-project hits only"
+# Preregistered choices for this experiment (no code default exists).
+rope_regime_fixed_at_admission_from = "prompt + max_new_tokens"
+# Preregistered choices for this experiment (no code default exists).
+rope_regime_inputs = ["prompt_tokens", "max_new_tokens"]
+# Preregistered choices for this experiment (no code default exists).
+declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "adapter", "expert"]
+# Preregistered choices for this experiment (no code default exists).
+software_stack = { driver_version = "580.65.06", cuda_runtime_version = "13.0", torch_version = "2.13.0", vllm_version = "0.30.0", python = ">=3.10,<3.15" }
+software_stack_recorded_in_run_json = true
+max_software_stack_mismatches = 0
+software_stack_basis = "vLLM 0.30.0 requires torch==2.13.0 and its Docker default CUDA 13.0.3 (SGLang 0.5.21 also requires torch==2.13.0); driver 580.65.06 is the minimum Linux driver of CUDA 13.0"
+# Preregistered choices for this experiment (no code default exists).
+sglang_torch_version = "2.13.0"
+# Preregistered choices for this experiment (no code default exists).
+min_approximate_populate_exact_hit_cases_per_backend = 1
+max_approximate_blocks_served_to_exact = 0
+kv_reuse_mode_in_salt = true
+# Preregistered choices for this experiment (no code default exists).
+cache_namespace_partitioned_by_production_mode = true
+cache_namespace_partition = "KvReuseMode is part of the engine salt"
+production_modes = ["Exact", "Approximate"]
+# Preregistered choices for this experiment (no code default exists).
+min_fixed_regime_decode_crossing_cases = 1
+max_fixed_regime_crossing_parity_failures = 0
+min_effective_regime_transition_cases = 1
+max_exact_outputs_across_effective_regime_transition_without_recompute = 0
+forced_transition_examples = ["admitted max_new_tokens exceeded", "runtime switches regimes"]
+# Preregistered choices for this experiment (no code default exists).
+derived_state_carriers = { engine_salt = ["mode"], engine_output_to_effect_boundary = ["taint"] }
+# Preregistered choices for this experiment (no code default exists).
+min_cross_project_rotation_probe_cases_per_backend = 1
+max_cross_project_salt_changes = 0
+salt_epoch_key = "(principal, project)"
+reverse_index_key = "(principal, project)"
+# Preregistered choices for this experiment (no code default exists).
+ttft_gain_per_backend = { vllm-http = "ttft_gain_vllm", sglang-http = "ttft_gain_sglang" }
+timing_workload_per_backend = true
+# Preregistered choices for this experiment (no code default exists).
+arm_comparisons = { cache_disabled = "primary comparator for ttft_gain and bit-identity", unsalted_control = "positive control for stale hits", salted = "system under test" }
+arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+numerics_binding_environment_fields = ["gpu_or_cpu_architecture", "driver_version", "cuda_runtime_version", "attention_gemm_kernel_library", "backend_build_identity"]
+producer_environment_recorded_in_run_json = true
+min_cross_environment_restore_cases = 1
+max_exact_hits_across_environment = 0
+cross_environment_simulation = "a changed build-identity field"
