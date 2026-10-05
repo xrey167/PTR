@@ -55,7 +55,7 @@ corpus_selection_rule = "training and distillation prompts: GSM8K train items wi
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "samples_per_problem", "sampling_temperature", "sampling_top_p", "sampling_top_k", "max_new_tokens", "bootstrap_seed", "problem_set_size", "bootstrap_resamples", "bootstrap_confidence", "n_samples", "hyperparameter_tuning_budget_trials_per_arm", "decoding_fields", "teacher_samples_per_prompt", "teacher_temperature", "teacher_top_p", "teacher_top_k", "teacher_max_new_tokens", "teacher_seed", "distillation_filter", "distillation_selection", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "tuning_search_spec", "arm_comparisons"]
+procedure_parameters_recorded_per_cell = ["seeds", "samples_per_problem", "sampling_temperature", "sampling_top_p", "sampling_top_k", "max_new_tokens", "bootstrap_seed", "problem_set_size", "bootstrap_resamples", "bootstrap_confidence", "n_samples", "hyperparameter_tuning_budget_trials_per_arm", "decoding_fields", "teacher_samples_per_prompt", "teacher_temperature", "teacher_top_p", "teacher_top_k", "teacher_max_new_tokens", "teacher_seed", "distillation_filter", "distillation_selection", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "tuning_search_spec", "arm_comparisons", "training_steps_per_arm", "tuning_seed", "tuning_steps", "selected_hyperparameters"]
 # Preregistered choices for this experiment (no code default exists).
 sampling_top_k = -1
 max_new_tokens = 512
@@ -113,3 +113,13 @@ arm_coverage_per_seed = true
 # Preregistered choices for this experiment (no code default exists).
 training_prompt_set = { dataset = "openai/gsm8k", split = "train", rule = "position mod 10 != 9", size = 6726 }
 tuning_validation_set = { rule = "position mod 10 == 9", size = 747 }
+# Preregistered choice: the RLVR arm trains for this many optimizer steps; the distilled arm trains until training FLOPs match within compute_relative_tolerance.
+training_steps_per_arm = 1000
+# Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
+tuning_seed = 17
+tuning_steps_fraction = 0.25
+tuning_steps_budget_key = "training_steps_per_arm"
+tuning_steps = 250
+tuning_steps_arithmetic = "tuning_steps = max(1, floor(0.25 * training_steps_per_arm)) = max(1, floor(0.25 * 1000)) = 250"
+selected_hyperparameters = "one value per axis of tuning_search_spec.space, from the best trial on tuning_seed at tuning_steps"
+selected_hyperparameters_frozen_for_all_seeds = true

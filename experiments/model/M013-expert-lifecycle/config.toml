@@ -75,7 +75,7 @@ public_suite_selection_rule = "the first 2000 questions in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm", "hyperparameter_tuning_budget_trials_per_arm", "lifecycle_operations", "proposal_generating_arms", "recovery_target_fraction_of_pre_retirement_score", "split_rule_single_split_corpora", "flops_relative_tolerance", "active_param_tolerance", "validation_position_modulus", "validation_position_residue", "overlap_counters_per_corpus", "gsm8k_test_partition_modulus", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons", "opportunities_per_seed", "cumulative_net_quality_per_opportunity_margin"]
+procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm", "hyperparameter_tuning_budget_trials_per_arm", "lifecycle_operations", "proposal_generating_arms", "recovery_target_fraction_of_pre_retirement_score", "split_rule_single_split_corpora", "flops_relative_tolerance", "active_param_tolerance", "validation_position_modulus", "validation_position_residue", "overlap_counters_per_corpus", "gsm8k_test_partition_modulus", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons", "opportunities_per_seed", "cumulative_net_quality_per_opportunity_margin", "tuning_seed", "tuning_steps", "selected_hyperparameters"]
 # Preregistered choices for this experiment (no code default exists).
 split_rule_single_split_corpora = "index mod 3: 0 = training, 1 = gate suite, 2 = held-out evaluation"
 max_training_data_outside_training_partition_count = 0
@@ -137,3 +137,11 @@ opportunity_set_rule = "common set of proposal opportunities: same ids, same ord
 abstentions_and_gate_rejections_counted_per_arm = true
 cumulative_net_quality_per_opportunity_margin = 0.0
 abstention_net_quality = 0
+# Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
+tuning_seed = 17
+tuning_steps_fraction = 0.25
+tuning_steps_budget_key = "max_recovery_steps"
+tuning_steps = 1250
+tuning_steps_arithmetic = "tuning_steps = max(1, floor(0.25 * max_recovery_steps)) = max(1, floor(0.25 * 5000)) = 1250"
+selected_hyperparameters = "one value per axis of tuning_search_spec.space, from the best trial on tuning_seed at tuning_steps"
+selected_hyperparameters_frozen_for_all_seeds = true

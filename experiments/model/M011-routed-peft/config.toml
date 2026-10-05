@@ -40,7 +40,7 @@ corpus_selection_rule = "all items of each split in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "compared_arms", "flops_relative_tolerance", "split_rule_single_split_corpora", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "arm_lora", "tuning_search_spec", "arm_lora", "arm_comparisons", "prescribed_expert_domain_assignment"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "compared_arms", "flops_relative_tolerance", "split_rule_single_split_corpora", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "arm_lora", "tuning_search_spec", "arm_lora", "arm_comparisons", "prescribed_expert_domain_assignment", "tuning_seed", "tuning_steps", "selected_hyperparameters"]
 # Preregistered choices for this experiment (no code default exists).
 tuning_trials_used_recorded_per_arm = true
 max_tuning_budget_mismatches = 0
@@ -104,3 +104,11 @@ prescribed_routing = "masked by the task domain label in training and evaluation
 emergent_routing = "unmasked"
 expert_domain_assignment_expected_digest = "sha256:b9028e88fa67731865af758a396194920d13520504ef746198837cbab31035b4"
 expert_domain_assignment_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of prescribed_expert_domain_assignment"
+# Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
+tuning_seed = 17
+tuning_steps_fraction = 0.25
+tuning_steps_budget_key = "training_steps_per_arm"
+tuning_steps = 500
+tuning_steps_arithmetic = "tuning_steps = max(1, floor(0.25 * training_steps_per_arm)) = max(1, floor(0.25 * 2000)) = 500"
+selected_hyperparameters = "one value per axis of tuning_search_spec.space, from the best trial on tuning_seed at tuning_steps"
+selected_hyperparameters_frozen_for_all_seeds = true

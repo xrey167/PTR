@@ -58,7 +58,7 @@ corpus_eval_rule = "all 1319 problems of the test split for pass_at_1, in index 
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "max_rl_steps", "mini_steps", "learning_rate", "batch_size", "collapse_smoothing_window_steps", "algorithm_specific_values", "collapse_reward_drop_fraction", "reward_range", "shared_hyperparameters", "gspo_clip_epsilon_low", "gspo_clip_epsilon_high", "sapo_tau_pos", "sapo_tau_neg", "grpo_epsilon_low", "grpo_epsilon_high", "base_model_revision", "validation_position_modulus", "validation_position_residue", "zero_reward_window_steps", "arm_matrix", "routing_replay_values", "pinned_arm_set", "required_arms", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "tuning_search_spec", "arm_comparisons", "rollout_protocol"]
+procedure_parameters_recorded_per_cell = ["seeds", "max_rl_steps", "mini_steps", "learning_rate", "batch_size", "collapse_smoothing_window_steps", "algorithm_specific_values", "collapse_reward_drop_fraction", "reward_range", "shared_hyperparameters", "gspo_clip_epsilon_low", "gspo_clip_epsilon_high", "sapo_tau_pos", "sapo_tau_neg", "grpo_epsilon_low", "grpo_epsilon_high", "base_model_revision", "validation_position_modulus", "validation_position_residue", "zero_reward_window_steps", "arm_matrix", "routing_replay_values", "pinned_arm_set", "required_arms", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "tuning_search_spec", "arm_comparisons", "rollout_protocol", "tuning_seed", "tuning_steps", "selected_hyperparameters"]
 # Preregistered choices for this experiment (no code default exists).
 max_rl_steps_recorded_per_arm = true
 max_rl_steps_mismatches = 0
@@ -105,3 +105,11 @@ arm_coverage_per_seed = true
 rollout_protocol = { num_generations = 8, prompts_per_step = "batch_size / num_generations", temperature = 1.0, top_p = 1.0, max_completion_length = 512, kl_beta = 0.0 }
 rollout_protocol_same_for_every_arm = true
 rollout_protocol_recorded_per_arm = true
+# Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
+tuning_seed = 17
+tuning_steps_fraction = 0.25
+tuning_steps_budget_key = "max_rl_steps"
+tuning_steps = 500
+tuning_steps_arithmetic = "tuning_steps = max(1, floor(0.25 * max_rl_steps)) = max(1, floor(0.25 * 2000)) = 500"
+selected_hyperparameters = "one value per axis of tuning_search_spec.space, from the best trial on tuning_seed at tuning_steps"
+selected_hyperparameters_frozen_for_all_seeds = true

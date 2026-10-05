@@ -49,7 +49,7 @@ load_cv_and_dead_experts_eval_tokens = 8192
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons", "update_rules", "phi_eta"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons", "update_rules", "phi_eta", "tuning_seed", "tuning_steps", "selected_hyperparameters"]
 # Preregistered choices for this experiment (no code default exists).
 expert_token_fraction_definition = "expert routed assignments / total routed assignments in the layer; sums to 1 over experts"
 # Preregistered choices for this experiment (no code default exists).
@@ -97,3 +97,11 @@ phi_coefficient = "aux_coefficient"
 bias_init = 0
 # Preregistered choices for this experiment (no code default exists).
 update_rule_symbols = ["L_aux", "L_phi", "P_i", "b_i", "f_i", "load_i", "mean_load", "p_t", "sum_i"]
+# Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
+tuning_seed = 17
+tuning_steps_fraction = 0.25
+tuning_steps_budget_key = "training_steps_per_arm"
+tuning_steps = 500
+tuning_steps_arithmetic = "tuning_steps = max(1, floor(0.25 * training_steps_per_arm)) = max(1, floor(0.25 * 2000)) = 500"
+selected_hyperparameters = "one value per axis of tuning_search_spec.space, from the best trial on tuning_seed at tuning_steps"
+selected_hyperparameters_frozen_for_all_seeds = true
