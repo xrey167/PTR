@@ -176,7 +176,18 @@ claude                                             # first start: /login with yo
 The repo carries project config: `.claude/settings.json` pre-approves safe commands
 (`make gpu-doctor`, `make smoke-gpu`, `make olmoe-sft-smoke`, `nvidia-smi`, `cargo check`
 and test, `git status/diff/log`, the experiment validators) and everything else still asks.
-`.claude/skills/experiment-run/SKILL.md` teaches Claude how to run and monitor experiments.
+The repo also ships Claude Code plugins (details in `docs/CLAUDE_TOOLING.md`). Install them
+once from the repository root:
+
+```bash
+claude plugin marketplace add ./
+claude plugin install ptr-dev@ptr
+claude plugin install ptr-mods@ptr
+```
+
+`ptr-dev` brings the `experiment-run` skill (how to run and monitor experiments), plus
+`ptr-verify`, `ptr-results`, `ptr-offline-sync` and others, three read-only review agents and
+guard hooks. `ptr-mods` adds `/runs`, a pane with the newest run log, its PID and the GPU line.
 Example requests:
 
 - "Run `make gpu-doctor`, then `make smoke-gpu` in the background with the experiment-run

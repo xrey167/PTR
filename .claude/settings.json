@@ -18,7 +18,20 @@
       "Bash(git status)",
       "Bash(git status --short)",
       "Bash(git diff:*)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git merge-base:*)",
+      "Bash(make test)",
+      "Bash(make fmt)",
+      "Bash(make python-test)",
+      "Bash(PYTHONPATH=training/src make python-test)",
+      "Bash(python3 scripts/check_repo.py)",
+      "Bash(python3 scripts/check_component_metadata.py:*)",
+      "Bash(python3 scripts/update_component_docs.py --check)",
+      "Bash(python3 -m unittest scripts/tests/test_claude_ptr_guard.py)",
+      "Bash(python3 .claude/plugins/ptr-dev/skills/ptr-offline-sync/scripts/ptr_bundle.py:*)",
+      "Bash(claude plugin validate:*)",
+      "Bash(claude plugin test:*)"
     ]
   }
 }
