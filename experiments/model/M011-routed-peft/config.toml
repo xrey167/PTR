@@ -27,3 +27,20 @@ lora_rank_per_arm_matches_trainable_params_within = 0.01
 lora_rank_tuned = false
 search_space = ["learning_rate", "batch_size"]
 hyperparameter_tuning_budget_trials_per_arm = 8
+# Preregistered choices for this experiment (no code default exists).
+corpus_math = "openai/gsm8k"
+corpus_math_revision = "740312add88f781978c0658806c59bc2815b9866"
+corpus_code = "openai/openai_humaneval"
+corpus_code_revision = "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
+corpus_tool = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
+corpus_tool_revision = "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
+corpus_tool_file = "BFCL_v3_simple.json"
+corpus_split_rule = "math: GSM8K train for training and test for evaluation; code and tool (single-split corpora): even indices train, odd indices evaluation"
+corpus_selection_rule = "all items of each split in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains"]
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_used_recorded_per_arm = true
+max_tuning_budget_mismatches = 0

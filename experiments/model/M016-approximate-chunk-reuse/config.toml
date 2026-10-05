@@ -74,3 +74,26 @@ empty_restart_arm_role = "reported_separate_arm"
 min_omitted_upstream_segment_cases = 1
 max_omitted_upstream_admissions = 0
 omitted_upstream_rule = "every original-prefix segment (identity, generation, digest) present in the requesting prefix as a multiset"
+# Preregistered choices for this experiment (no code default exists).
+min_upstream_supersession_cases = 1
+max_superseded_upstream_page_reachable_count = 0
+inflight_race_applicable = false
+inflight_race_not_applicable_reason = "single-shot oracle; no in-flight requests"
+# Preregistered choices for this experiment (no code default exists).
+corpus_dataset = "openai/gsm8k"
+corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
+calibration_split = "train"
+heldout_split = "test"
+corpus_selection_rule = "problems in index order concatenated and cut into consecutive 512-token prompts; the first 100 prompts of each split"
+calibration_and_heldout_disjoint = true
+calibration_selection_digest_recorded = true
+heldout_selection_digest_recorded = true
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "warmup_runs", "timed_runs", "position_shifts", "candidate_k_tokens", "calibration_prompts", "heldout_prompts"]
+# Preregistered choices for this experiment (no code default exists).
+timing_counts_recorded_per_cell = true
+max_timing_procedure_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+fresh_prefill_output_mismatches_max = 0

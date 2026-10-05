@@ -36,3 +36,17 @@ baseline_arm_balance_failure_role = "reported_result"
 # Preregistered choices for this experiment (no code default exists).
 tuning_trials_used_recorded_per_arm = true
 max_tuning_budget_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+load_cv_per_layer_hard_bound = 0.5
+mean_load_cv_role = "between-arm ranking comparison only (0.05 margin)"
+# Preregistered choices for this experiment (no code default exists).
+corpus_task_dataset = "openai/gsm8k"
+corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
+corpus_train_split = "train"
+corpus_eval_split = "test"
+corpus_eval_token_selection = "first 8192 tokens of the test split, problems in index order, tokenized with the pinned tokenizer; the token-selection digest is recorded in run.json"
+load_cv_and_dead_experts_eval_tokens = 8192
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha"]

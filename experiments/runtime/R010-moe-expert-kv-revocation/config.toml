@@ -53,3 +53,16 @@ max_stale_expert_generation_hits = 0
 # Preregistered choices for this experiment (no code default exists).
 min_restored_pre_revocation_entries = 1
 empty_restart_arm_role = "reported_separate_arm"
+# Preregistered choices for this experiment (no code default exists).
+min_inflight_expert_revocation_race_cases = 1
+max_outputs_after_expert_revocation = 0
+min_inflight_input_race_cases = 1
+max_outputs_after_input_invalidation = 0
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "test_model_layers", "revoked_expert_layer_j"]

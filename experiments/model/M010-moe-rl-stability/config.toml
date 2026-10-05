@@ -48,3 +48,17 @@ importance_sampling_level_sapo = "token"
 importance_sampling_level_recorded_in_run_json = true
 max_importance_sampling_level_mismatches = 0
 importance_sampling_level_field = "importance_sampling_level"
+# Preregistered choices for this experiment (no code default exists).
+corpus_train_dataset = "openai/gsm8k"
+corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
+corpus_train_split = "train"
+corpus_validation_rule = "last 500 problems of the train split by index (disjoint from the RL training problems); used only for hyperparameter tuning"
+corpus_eval_split = "test"
+corpus_eval_rule = "all 1319 problems of the test split for pass_at_1, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "max_rl_steps", "mini_steps", "learning_rate", "batch_size", "collapse_smoothing_window_steps", "algorithm_specific_values"]
+# Preregistered choices for this experiment (no code default exists).
+max_rl_steps_recorded_per_arm = true
+max_rl_steps_mismatches = 0

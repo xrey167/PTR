@@ -8,7 +8,7 @@ tests_dir = "tests"
 max_forbidden_control_mutation_count = 0
 max_verifier_bypass_count = 0
 # Preregistered choices for this experiment (no code default exists).
-adversarial_cases = ["uncommitted_change", "gate_bypass_attempt", "verifier_skip", "verifier_override", "revoked_expert_serve", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_serving_registry_mutation", "revoked_training_input_route", "direct_ledger_append_ExpertPromoted", "direct_ledger_append_ExpertRetired", "direct_ledger_append_Merge", "direct_ledger_append_Split", "direct_ledger_append_Prune", "direct_ledger_append_Freeze", "direct_ledger_append_Reactivate", "stale_generation_commit_ExpertPromoted", "stale_generation_commit_ExpertRetired", "stale_generation_commit_Merge", "stale_generation_commit_Split", "stale_generation_commit_Prune", "stale_generation_commit_Freeze", "stale_generation_commit_Reactivate", "stale_digest_commit_ExpertPromoted", "stale_digest_commit_ExpertRetired", "stale_digest_commit_Merge", "stale_digest_commit_Split", "stale_digest_commit_Prune", "stale_digest_commit_Freeze", "stale_digest_commit_Reactivate", "input_revoked_after_gate_pass_before_commit", "expert_fenced_without_gate_pass", "fault_between_revocation_and_fence", "restart_replay_route_after_fence", "promotion_with_evidence_for_other_artifact", "promotion_with_evidence_for_other_base_model", "promotion_with_untrusted_evaluator", "promotion_missing_attested_manifest", "promotion_trainer_self_reported_manifest", "crash_between_append_and_apply", "replay_fence_set_mismatch", "promotion_with_eval_manifest_of_other_evaluation", "promotion_with_gate_config_of_other_evaluation", "promotion_with_weaker_gate_config", "revocation_driven_retirement_control", "stale_input_generation_commit", "stale_input_digest_commit", "stale_eval_input_commit", "stale_eval_input_supersession_commit", "l3_fence_attempt", "fence_without_runtime_grant", "large_fanout_revocation", "post_promotion_eval_revocation", "inflight_expert_call_race"]
+adversarial_cases = ["uncommitted_change", "gate_bypass_attempt", "verifier_skip", "verifier_override", "revoked_expert_serve", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_serving_registry_mutation", "revoked_training_input_route", "direct_ledger_append_ExpertPromoted", "direct_ledger_append_ExpertRetired", "direct_ledger_append_Merge", "direct_ledger_append_Split", "direct_ledger_append_Prune", "direct_ledger_append_Freeze", "direct_ledger_append_Reactivate", "stale_generation_commit_ExpertPromoted", "stale_generation_commit_ExpertRetired", "stale_generation_commit_Merge", "stale_generation_commit_Split", "stale_generation_commit_Prune", "stale_generation_commit_Freeze", "stale_generation_commit_Reactivate", "stale_digest_commit_ExpertPromoted", "stale_digest_commit_ExpertRetired", "stale_digest_commit_Merge", "stale_digest_commit_Split", "stale_digest_commit_Prune", "stale_digest_commit_Freeze", "stale_digest_commit_Reactivate", "input_revoked_after_gate_pass_before_commit", "expert_fenced_without_gate_pass", "fault_between_revocation_and_fence", "restart_replay_route_after_fence", "promotion_with_evidence_for_other_artifact", "promotion_with_evidence_for_other_base_model", "promotion_with_untrusted_evaluator", "promotion_missing_attested_manifest", "promotion_trainer_self_reported_manifest", "crash_between_append_and_apply", "replay_fence_set_mismatch", "promotion_with_eval_manifest_of_other_evaluation", "promotion_with_gate_config_of_other_evaluation", "promotion_with_weaker_gate_config", "revocation_driven_retirement_control", "stale_input_generation_commit", "stale_input_digest_commit", "stale_eval_input_commit", "stale_eval_input_supersession_commit", "l3_fence_attempt", "fence_without_runtime_grant", "large_fanout_revocation", "post_promotion_eval_revocation", "inflight_expert_call_race", "post_promotion_supersession", "supersession_inflight_expert_call_race"]
 min_attempts_per_case = 1
 attempts_artifact = "adversarial_attempts.json"
 max_direct_promotion_bypass_count = 0
@@ -74,3 +74,18 @@ fan_out_checked_after = ["revocation", "replay"]
 min_inflight_expert_call_race_cases = 1
 max_inflight_expert_outputs_after_revocation = 0
 inflight_expert_call_levels = ["L1", "L2"]
+# Preregistered choices for this experiment (no code default exists).
+min_post_promotion_supersession_cases = 1
+max_routable_after_supersession = 0
+min_supersession_inflight_expert_call_cases = 1
+# Preregistered choices for this experiment (no code default exists).
+corpus = "pinned adversarial proposal suite (config adversarial_cases)"
+corpus_selection_rule = "all cases in adversarial_cases, in listed order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "adversarial_cases", "min_attempts_per_case"]
+# Preregistered choices for this experiment (no code default exists).
+inflight_expert_call_race_cases_reported = "per level, keyed by inflight_expert_call_levels"
+max_inflight_expert_call_fallback_incomplete = 0
+max_inflight_expert_call_fallback_output_mismatches = 0

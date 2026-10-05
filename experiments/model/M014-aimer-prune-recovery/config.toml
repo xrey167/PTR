@@ -6,8 +6,6 @@ tests_dir = "tests"
 
 [pinned_thresholds]
 pruning_fractions = [0.25, 0.5]
-min_quality_retention_at_25pct = 0.90
-min_quality_retention_at_50pct = 0.80
 
 # Preregistered choices for this experiment (no code default exists).
 recovery_sft_steps = 2000
@@ -26,7 +24,7 @@ quality_retention_definition = "quality_pruned_recovered / quality_unpruned_iden
 # Preregistered choices for this experiment (no code default exists).
 pruned_experts_physically_removed = true
 quality_metric = "macro average task accuracy"
-quality_suite = "public suite"
+quality_suite = "cais/mmlu @ c30699e8356da336a370243923dbaf21066bb9fe, all, test, first 2000 questions (the ForgettingGate public suite)"
 # Preregistered choices for this experiment (no code default exists).
 seed_aggregation = "every_seed_must_pass"
 # Preregistered choices for this experiment (no code default exists).
@@ -38,3 +36,24 @@ full_matrix_required = "method x fraction x optimizer x seed"
 unpruned_control_per_sequence_and_seed = true
 control_matching = "each pruned row compared only with the unpruned control of the same recovery sequence and seed"
 max_unpruned_controls_missing = 0
+# Preregistered choices for this experiment (no code default exists).
+min_quality_retention_at_25pct = 0.95
+min_quality_retention_at_50pct = 0.90
+min_peak_vram_reduction_over_pruned_expert_parameter_fraction = 0.5
+aimer_noninferiority_margin = 0.01
+named_baseline_pruning_methods = ["random_expert_pruning", "usage_frequency_pruning"]
+thresholds_apply_per = "recovery sequence, pruning fraction, matched unpruned control"
+# Preregistered choices for this experiment (no code default exists).
+aimer_minus_best_baseline_retention_role = "reported_per_cell_information"
+comparative_falsifier = "non-inferiority only (aimer_noninferiority_margin = 0.01 versus every named baseline)"
+# Preregistered choices for this experiment (no code default exists).
+quality_suite_dataset = "cais/mmlu"
+quality_suite_revision = "c30699e8356da336a370243923dbaf21066bb9fe"
+quality_suite_config = "all"
+quality_suite_split = "test"
+quality_suite_selection_rule = "the first 2000 questions in index order, macro average over subjects"
+forgetting_gate_public_suite_is_same_object_as_quality_suite = true
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "recovery_sft_steps", "recovery_rl_steps", "recovery_sequences", "vram_batch_size", "vram_sequence_length"]

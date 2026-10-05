@@ -107,3 +107,18 @@ salt_dimensions = ["principal_id", "project_id", "semantic_salt_epoch", "base_mo
 block_key_dimensions = ["parent_block_hash", "block_tokens", "engine_extras_lora_id"]
 adapter_and_expert_in_salt = true
 probe_dimensions_all_salt_borne = ["model", "adapter", "expert", "tokenizer", "numerics", "kv_key_encoding", "rope_regime"]
+# Preregistered choices for this experiment (no code default exists).
+inflight_race_kinds = ["semantic_input", "memory_input", "adapter_generation", "expert_generation", "base_model_generation"]
+min_inflight_race_attempts_per_kind = 1
+inflight_race_triggers = ["revocation", "committed_supersession"]
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version"]
+# Preregistered choices for this experiment (no code default exists).
+inflight_restart_output_mismatches_max = 0
+inflight_restarts_equal_cancellations = true

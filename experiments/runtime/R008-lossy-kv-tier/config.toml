@@ -37,3 +37,23 @@ valid_objects_surviving_restart_role = "reported_only"
 # Preregistered choices for this experiment (no code default exists).
 min_revoked_lossy_objects_present_before_revocation = 1
 min_revoked_lossy_objects_present_before_restart = 1
+# Preregistered choices for this experiment (no code default exists).
+min_restored_revoked_lossy_objects_after_restart = 1
+min_post_restart_lookups = 1
+min_lossy_supersession_attempts = 1
+max_lossy_hits_after_supersession = 0
+min_inflight_lossy_reuse_race_cases = 1
+max_inflight_lossy_outputs_after_invalidation = 0
+# Preregistered choices for this experiment (no code default exists).
+corpus = "openai/gsm8k test, concatenated problems cut into 512-token prompts"
+corpus_dataset = "openai/gsm8k"
+corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
+corpus_split = "test"
+corpus_selection_rule = "problems in index order concatenated and cut into consecutive 512-token prompts; the first 100 prompts"
+prompt_count = 100
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "context_length_tokens", "prompt_count", "candidate_kv_keep_fractions"]
+# Preregistered choices for this experiment (no code default exists).
+allow_approximate_false_fallback_output_mismatches_max = 0

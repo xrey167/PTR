@@ -42,3 +42,22 @@ max_shift_hits_with_dead_original_upstream = 0
 min_omitted_upstream_segment_cases = 1
 max_omitted_upstream_admissions = 0
 omitted_upstream_rule = "every original-prefix segment (identity, generation, digest) present in the requesting prefix as a multiset"
+# Preregistered choices for this experiment (no code default exists).
+min_upstream_supersession_cases = 1
+max_superseded_upstream_page_reachable_count = 0
+inflight_race_applicable = false
+inflight_race_not_applicable_reason = "single-shot oracle; no in-flight requests"
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "position_shift_tokens", "nonaligned_insertion_tokens"]
+# Preregistered choices for this experiment (no code default exists).
+min_source_generation_mismatch_cases = 1
+min_source_digest_mismatch_cases = 1
+max_source_lineage_mismatch_admissions = 0
+# Preregistered choices for this experiment (no code default exists).
+fresh_prefill_output_mismatches_max = 0

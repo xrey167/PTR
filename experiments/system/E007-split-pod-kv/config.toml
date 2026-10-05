@@ -90,3 +90,22 @@ clock_skew_bound_ms = 1000
 max_frame_tombstones_per_session = 64
 min_late_chunks_after_abandon_attempts = 1
 max_late_chunks_after_abandon_admitted = 0
+# Preregistered choices for this experiment (no code default exists).
+min_inflight_split_request_race_cases = 1
+max_outputs_after_upstream_invalidation = 0
+min_tombstone_saturation_cases = 1
+min_new_frames_refused_typed = 1
+max_tombstone_evictions_before_retention = 0
+tombstone_table_full_refusal = "typed FrameTableFull, rate-limited, until a tombstone expires"
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "hidden_size", "vocab_size", "large_frame_chunks", "reorder_window", "frame_deadline_ms", "max_incomplete_frames_per_peer", "max_chunks_in_flight"]
+# Preregistered choices for this experiment (no code default exists).
+tombstone_overcapacity_abandoned_frames = 65
+min_frames_accepted_after_tombstone_expiry = 1
+saturation_behaviour = "fail closed with typed FrameTableFull"

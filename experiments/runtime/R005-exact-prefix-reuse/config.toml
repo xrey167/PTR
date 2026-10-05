@@ -99,3 +99,24 @@ capacity_exhausted_behaviour = "typed CapacityExhausted; uncached full prefill; 
 # Preregistered choices for this experiment (no code default exists).
 min_supersession_active_fork_race_cases = 1
 max_outputs_after_supersession = 0
+# Preregistered choices for this experiment (no code default exists).
+min_memory_supersession_active_fork_race_cases = 1
+min_memory_revocation_active_fork_race_cases = 1
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "concurrency", "max_trie_nodes", "max_kv_page_bytes"]
+# Preregistered choices for this experiment (no code default exists).
+capacity_refused_requests_completed_equals_refusals = true
+max_capacity_fallback_output_mismatches = 0
+max_capacity_refusal_cache_inserts = 0
+min_supersession_cancelled_forks = 1
+supersession_forks_restarted_from_fresh_prefill_equals_cancelled = true
+max_cache_inserts_after_supersession = 0
+min_misclassified_revocable_as_raw_attempts = 1
+max_misclassified_raw_admissions = 0
+segment_kind_authority = "ingress record"

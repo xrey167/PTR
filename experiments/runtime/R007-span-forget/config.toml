@@ -32,3 +32,11 @@ min_canary_span_tokens = 1
 min_downstream_rows_before_forget = 1
 min_prefix_reuse_tokens = 1
 min_post_forget_probes = 1
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "span_tokens", "canary_probes"]

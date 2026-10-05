@@ -47,3 +47,19 @@ student_base_model_recorded_in_run_json = true
 training_data_disjoint_from_test_split = true
 max_training_test_overlap_count = 0
 training_set_digest_recorded_per_arm = true
+# Preregistered choices for this experiment (no code default exists).
+corpus_train = "openai/gsm8k train for RLVR prompts and distillation prompts"
+corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
+corpus_train_split = "train"
+corpus_selection_rule = "all 7473 train problems in index order for training; all 1319 test problems in index order for evaluation"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "samples_per_problem", "sampling_temperature", "sampling_top_p", "sampling_top_k", "max_new_tokens", "bootstrap_seed"]
+# Preregistered choices for this experiment (no code default exists).
+sampling_top_k = -1
+max_new_tokens = 512
+n_samples = 256
+decoding_parameters_recorded_per_arm = true
+max_decoding_parameter_mismatches = 0
+decoding_fields = ["temperature", "top_p", "top_k", "max_new_tokens", "n_samples"]
