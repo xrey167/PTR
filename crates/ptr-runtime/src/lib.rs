@@ -32,10 +32,10 @@ pub use identity::{
 };
 pub use kv::{KvUseError, KvUseRequest, KvUseTicket, RuntimeKvAuthority};
 pub use kv_prefix::{
-    chunk_keys, CatalogLimits, KvCapacityResource, KvCatalogError, KvCatalogHit, KvCatalogStats,
-    KvCatalogWiringError, KvChainId, KvChunkKey, KvDependency, KvForkError, KvInsert,
-    KvLivenessOracle, KvLookup, KvPin, KvPrefixCatalog, KvPrefixRetirer, KvRequestPositions,
-    KvSalt, KV_CHUNK_TOKENS,
+    chunk_keys, expert_operand_identities, CatalogLimits, KvCapacityResource, KvCatalogError,
+    KvCatalogHit, KvCatalogStats, KvCatalogWiringError, KvChainId, KvChunkKey, KvDependency,
+    KvDependencyKind, KvForkError, KvInsert, KvLivenessOracle, KvLookup, KvPin, KvPrefixCatalog,
+    KvPrefixRetirer, KvRequestPositions, KvSalt, KV_CHUNK_TOKENS,
 };
 pub use manifest::{
     validate_and_build, validate_authority, ExecutionManifestRegistry, ManifestAuthorityRegistry,
