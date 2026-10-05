@@ -244,8 +244,11 @@ digest_newtype!(
     RationaleDigest
 );
 /// Deterministic identity of a requested operation before any training, minted only by
-/// [`ExpertProposal::operation_id`]. It covers no result field, so it is stable across the
-/// training that produces the result. [`ProposalId`] identifies the candidate after training.
+/// [`ExpertProposal::operation_id`] and [`ExpertOperationRequest::operation_id`]. It includes
+/// each result's [`ResultIntent`] (project, pod, level with Token layer and slot, base model
+/// ref, generation); the only thing excluded is each result's training-produced manifest
+/// digest, so it is stable across the training that produces the result. [`ProposalId`]
+/// identifies the candidate after training.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct OperationId(Digest);
 
@@ -1285,8 +1288,10 @@ impl ExpertOperationRequest {
 
     /// Pre-training identity: SHA-256 over the canonical encoding of the project, proposer,
     /// `observed_at`, rationale digest, operation kind, operands (with observed generation,
-    /// manifest digest, state and state version) and, for Retire, the reason, under domain
-    /// separator `ptr.pods.expert-operation.v2`. It contains no result field.
+    /// manifest digest, state and state version), for Retire the reason, and each intended
+    /// result's [`ResultIntent`] in order (project, pod, level with Token layer and slot, base
+    /// model ref, generation), under domain separator `ptr.pods.expert-operation.v2`. The only
+    /// thing excluded is each result's training-produced manifest digest.
     pub fn operation_id(&self) -> OperationId {
         let mut e = Encoder::default();
         e.str("ptr.pods.expert-operation.v2");
@@ -1415,8 +1420,8 @@ impl ExpertProposal {
     }
 
     /// The pre-result request this proposal fulfils: the same project, proposer, `observed_at`,
-    /// rationale, operation kind, operands and retirement reason, without any result spec. It
-    /// always validates, because the proposal already passed every rule the request checks.
+    /// rationale, operation kind, operands, retirement reason and the [`ResultIntent`] of each
+    /// result (its spec without the training-produced manifest digest). It always validates, because the proposal already passed every rule the request checks.
     pub fn operation_request(&self) -> ExpertOperationRequest {
         ExpertOperationRequest {
             project: self.project.clone(),
@@ -1429,8 +1434,10 @@ impl ExpertProposal {
 
     /// Pre-training identity of the requested operation; delegates to
     /// [`ExpertOperationRequest::operation_id`], so a request and the proposal that fulfils it
-    /// give the same id. The candidate is identified by [`ExpertProposal::proposal_id`] after
-    /// training.
+    /// give the same id. It includes each result's [`ResultIntent`] (project, pod, level with
+    /// Token layer and slot, base model ref, generation) and excludes only each result's
+    /// training-produced manifest digest. The candidate is identified by
+    /// [`ExpertProposal::proposal_id`] after training.
     pub fn operation_id(&self) -> OperationId {
         self.operation_request().operation_id()
     }

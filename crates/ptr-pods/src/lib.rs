@@ -164,7 +164,26 @@ pub struct RegisteredPodBinding {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum PodRegistrationError {
-    AlreadyRegistered { project: ProjectId, pod: PodId },
+    AlreadyRegistered {
+        project: ProjectId,
+        pod: PodId,
+    },
+    /// A compare-and-replace found no entry for the key.
+    NotRegistered {
+        project: ProjectId,
+        pod: PodId,
+    },
+    /// A compare-and-replace found an entry other than the expected one.
+    NotCurrent {
+        project: ProjectId,
+        pod: PodId,
+    },
+    /// A compare-and-replace named a new pod whose `(project, id)` differs from the expected
+    /// pod's.
+    IdentityMismatch {
+        expected: (ProjectId, PodId),
+        found: (ProjectId, PodId),
+    },
 }
 
 impl std::fmt::Display for PodRegistrationError {
@@ -173,6 +192,18 @@ impl std::fmt::Display for PodRegistrationError {
             Self::AlreadyRegistered { project, pod } => {
                 write!(f, "pod {pod} is already registered in project {project}")
             }
+            Self::NotRegistered { project, pod } => {
+                write!(f, "pod {pod} is not registered in project {project}")
+            }
+            Self::NotCurrent { project, pod } => write!(
+                f,
+                "registered pod {pod} in project {project} is not the expected entry"
+            ),
+            Self::IdentityMismatch { expected, found } => write!(
+                f,
+                "replacement is pod {} in project {}, expected pod {} in project {}",
+                found.1, found.0, expected.1, expected.0
+            ),
         }
     }
 }
@@ -222,8 +253,10 @@ impl PodRegistry {
 
     /// Insert a pod without replacing: fails with
     /// [`PodRegistrationError::AlreadyRegistered`] if its `(project, id)` is taken, leaving the
-    /// existing entry unchanged. Structural-admission paths must use this, not
-    /// [`PodRegistry::register`]. The registry tracks no token-expert `(layer, slot)`, so slot
+    /// existing entry unchanged. Structural admission of a fresh id (birth, merge or split
+    /// result) must use this, not [`PodRegistry::register`]; a takeover of an operand of the
+    /// same operation (a retired-target reactivation puts generation g+1 on the same pod id)
+    /// uses [`PodRegistry::replace_if_current`]. The registry tracks no token-expert `(layer, slot)`, so slot
     /// ownership is not checked here.
     pub fn register_new(&mut self, pod: Arc<dyn DynPod>) -> Result<(), PodRegistrationError> {
         let manifest = pod.manifest();
@@ -237,6 +270,40 @@ impl PodRegistry {
                 entry.insert(pod);
                 Ok(())
             }
+        }
+    }
+
+    /// Compare-and-replace: swap in `new` only if the entry for its `(project, id)` is exactly
+    /// `expected` (compared with [`Arc::ptr_eq`]), returning the old entry. This is the atomic
+    /// takeover for structural admission of an operand of the same operation; `register` is not
+    /// for structural admission.
+    ///
+    /// Fails, leaving the registry unchanged, with
+    /// [`PodRegistrationError::IdentityMismatch`] if `new` and `expected` differ in project or
+    /// id, [`PodRegistrationError::NotRegistered`] if the key is absent, or
+    /// [`PodRegistrationError::NotCurrent`] if another entry replaced `expected` meanwhile.
+    pub fn replace_if_current(
+        &mut self,
+        expected: &Arc<dyn DynPod>,
+        new: Arc<dyn DynPod>,
+    ) -> Result<Arc<dyn DynPod>, PodRegistrationError> {
+        let key_of = |pod: &Arc<dyn DynPod>| {
+            let manifest = pod.manifest();
+            (manifest.project.clone(), manifest.id.clone())
+        };
+        let expected_key = key_of(expected);
+        let new_key = key_of(&new);
+        if expected_key != new_key {
+            return Err(PodRegistrationError::IdentityMismatch {
+                expected: expected_key,
+                found: new_key,
+            });
+        }
+        let (project, pod) = expected_key;
+        match self.pods.get_mut(&(project.clone(), pod.clone())) {
+            None => Err(PodRegistrationError::NotRegistered { project, pod }),
+            Some(current) if Arc::ptr_eq(current, expected) => Ok(std::mem::replace(current, new)),
+            Some(_) => Err(PodRegistrationError::NotCurrent { project, pod }),
         }
     }
 

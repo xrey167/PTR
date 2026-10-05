@@ -154,3 +154,102 @@ fn register_still_replaces_after_register_new() {
         .unwrap();
     assert!(Arc::ptr_eq(&now, &second));
 }
+
+fn dynpod(pod: &Arc<EchoPod>) -> Arc<dyn DynPod> {
+    pod.clone()
+}
+
+fn current(registry: &PodRegistry, project: &str, id: &str) -> Arc<dyn DynPod> {
+    registry
+        .get(&ProjectId::from(project), &PodId::from(id))
+        .expect("registered")
+}
+
+#[test]
+fn replace_if_current_swaps_when_the_expected_entry_is_current() {
+    let mut registry = PodRegistry::default();
+    let first = echo("p", "echo");
+    registry.register_new(first.clone()).unwrap();
+    let second = echo("p", "echo");
+    let old = registry
+        .replace_if_current(&dynpod(&first), second.clone())
+        .unwrap();
+    assert!(Arc::ptr_eq(&old, &dynpod(&first)));
+    assert!(Arc::ptr_eq(
+        &current(&registry, "p", "echo"),
+        &dynpod(&second)
+    ));
+    assert_eq!(registry.len(), 1);
+}
+
+#[test]
+fn replace_if_current_rejects_a_stale_expectation_and_changes_nothing() {
+    let mut registry = PodRegistry::default();
+    let first = echo("p", "echo");
+    registry.register_new(first.clone()).unwrap();
+    let interloper = echo("p", "echo");
+    registry.register(interloper.clone());
+
+    let err = registry
+        .replace_if_current(&dynpod(&first), echo("p", "echo"))
+        .err()
+        .expect("rejected");
+    assert_eq!(
+        err,
+        PodRegistrationError::NotCurrent {
+            project: ProjectId::from("p"),
+            pod: PodId::from("echo"),
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "registered pod echo in project p is not the expected entry"
+    );
+    assert!(Arc::ptr_eq(
+        &current(&registry, "p", "echo"),
+        &dynpod(&interloper)
+    ));
+    assert_eq!(registry.len(), 1);
+}
+
+#[test]
+fn replace_if_current_rejects_an_absent_key() {
+    let mut registry = PodRegistry::default();
+    let ghost = echo("p", "echo");
+    assert_eq!(
+        registry
+            .replace_if_current(&dynpod(&ghost), echo("p", "echo"))
+            .err()
+            .expect("rejected"),
+        PodRegistrationError::NotRegistered {
+            project: ProjectId::from("p"),
+            pod: PodId::from("echo"),
+        }
+    );
+    assert_eq!(registry.len(), 0);
+}
+
+#[test]
+fn replace_if_current_rejects_a_project_or_id_mismatch() {
+    let mut registry = PodRegistry::default();
+    let first = echo("p", "echo");
+    registry.register_new(first.clone()).unwrap();
+    for new in [echo("p", "other"), echo("q", "echo")] {
+        let found = (new.manifest.project.clone(), new.manifest.id.clone());
+        assert_eq!(
+            registry
+                .replace_if_current(&dynpod(&first), new)
+                .err()
+                .expect("rejected"),
+            PodRegistrationError::IdentityMismatch {
+                expected: (ProjectId::from("p"), PodId::from("echo")),
+                found,
+            }
+        );
+    }
+    assert!(Arc::ptr_eq(
+        &current(&registry, "p", "echo"),
+        &dynpod(&first)
+    ));
+    assert_eq!(registry.len(), 1);
+}
