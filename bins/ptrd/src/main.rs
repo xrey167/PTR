@@ -377,7 +377,9 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
             let err = load_or_create_sampling_key(&dir.0).err().unwrap();
             assert!(err.contains("chmod 600"), "{err}");
-            assert!(!err.contains("09"), "{err}");
+            // The key bytes must not appear in any rendering (Debug list or hex); the
+            // temp path may contain arbitrary digits, so match key-shaped text only.
+            assert!(!err.contains("[9, 9") && !err.contains("0909"), "{err}");
         }
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
         assert!(load_or_create_sampling_key(&dir.0).is_ok());
