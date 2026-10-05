@@ -41,7 +41,7 @@ use ptr_model_api::{
     LineageContribution, SegmentKind, SegmentedModelRequest, TokenId, TokenizerIdentity,
 };
 use ptr_pods::{
-    ExpertCommitRecord, KvBackendError, KvForkAuthority, KvForkWitness, KvPrefixKey,
+    ExpertCommitRecord, ExpertState, KvBackendError, KvForkAuthority, KvForkWitness, KvPrefixKey,
     KvSharedPrefix, KvWitnessRevoker, PagedKvTensorBackend,
 };
 use ptr_semdb::PreparedDelta;
@@ -271,7 +271,7 @@ impl KvDependency {
 }
 
 fn expert_identity(project: &ProjectId, pod: &PodId) -> String {
-    format!("expert:{project}/{pod}")
+    ptr_state::expert_key(&project.0, &pod.0)
 }
 
 /// Answers whether a dependency is live now, as the committed ledger state sees it.
@@ -1082,8 +1082,10 @@ fn expert_value_is_serving(value: &str, generation: Generation) -> bool {
     let (Some(live), Some(state)) = (parts.next(), parts.next()) else {
         return false;
     };
+    // The names come from the one mapping the materialized projection writes with.
     live.parse::<u64>().is_ok_and(|live| live == generation.0)
-        && (state.eq_ignore_ascii_case("serving") || state.eq_ignore_ascii_case("frozen"))
+        && (state == ptr_state::expert_state_name(ExpertState::Serving)
+            || state == ptr_state::expert_state_name(ExpertState::Frozen))
 }
 
 /// The `expert:{project}/{pod}` identity of every pod an encoded expert commit record
@@ -1284,7 +1286,10 @@ mod tests {
     fn expert_value_is_live_only_for_the_same_generation_in_a_serving_state() {
         let g = Generation(2);
         assert!(expert_value_is_serving("2:serving:5", g));
-        assert!(expert_value_is_serving("2:Frozen:5", g));
+        assert!(expert_value_is_serving(
+            &ptr_state::expert_entry(2, ExpertState::Frozen, 5),
+            g
+        ));
         for dead in [
             "1:serving:5",
             "3:serving:5",
