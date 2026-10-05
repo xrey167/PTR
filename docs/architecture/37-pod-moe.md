@@ -157,7 +157,7 @@ either an explicit revocation **or a committed supersession** (a generation repl
 or an edit) of **any generation-bearing dependency**: a semantic input, a memory input,
 a training input, an evaluation input, an adapter generation, an expert generation or
 the base-model generation (the KV side of the same rule is in
-[36](36-kv-reuse.md), section D). Every protective mechanism below triggers on **any
+[36](36-kv-reuse.md), section D, where a **fence** of an expert for any cause also invalidates the KV entries whose chain includes it). Every protective mechanism below triggers on **any
 dependency invalidation**, never only on revocation and never for only one dependency
 kind: expert fencing through the compound event, fencing of in-flight expert calls,
 completion-time dependency admission, and use-time admission. Each experiment
