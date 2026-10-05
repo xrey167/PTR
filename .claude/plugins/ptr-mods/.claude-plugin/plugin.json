@@ -1,0 +1,9 @@
+{
+  "name": "ptr-mods",
+  "version": "0.1.0",
+  "description": "PTR mods: a /runs pane for training runs (log tail, PID, GPU) and a git/docs status line entry.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "PTR maintainers"
+  }
+}
