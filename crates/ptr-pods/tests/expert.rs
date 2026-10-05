@@ -45,12 +45,20 @@ fn target(pod: &str, generation: u64, level: ExpertLevel, state: ExpertState) ->
     ExpertTarget::new(init(pod, generation, level, state)).unwrap()
 }
 
+/// Layer 3 with a slot index that follows the pod name, so distinct sources never share a slot.
+fn slot(pod: &str) -> ExpertLevel {
+    ExpertLevel::Token {
+        layer: 3,
+        index: u16::from(pod.as_bytes()[0]),
+    }
+}
+
 fn serving(pod: &str) -> ExpertTarget {
-    target(pod, 1, token(3), ExpertState::Serving)
+    target(pod, 1, slot(pod), ExpertState::Serving)
 }
 
 fn in_state(pod: &str, state: ExpertState) -> ExpertTarget {
-    target(pod, 1, token(3), state)
+    target(pod, 1, slot(pod), state)
 }
 
 fn spec(pod: &str, generation: u64, level: ExpertLevel) -> ExpertPodSpec {
@@ -579,7 +587,7 @@ fn split_and_prune_reject_candidate_and_retired() {
 fn reactivate_frozen_unfreezes_and_failed_gate_seeds_a_new_generation() {
     let frozen = in_state("a", ExpertState::Frozen);
     let failed = || in_state("a", ExpertState::Retired(RetiredReason::GateFailed));
-    let new_gen = || Some(spec("a", 2, token(3)));
+    let new_gen = || Some(spec("a", 2, slot("a")));
 
     let unfreeze = propose(reactivate(frozen.clone(), None)).unwrap();
     assert!(!unfreeze.creates_new_generation());
@@ -621,7 +629,7 @@ fn reactivate_frozen_unfreezes_and_failed_gate_seeds_a_new_generation() {
     // The result is the same expert at exactly source generation + 1.
     for wrong in [1, 3] {
         assert_eq!(
-            propose(reactivate(failed(), Some(spec("a", wrong, token(3))))),
+            propose(reactivate(failed(), Some(spec("a", wrong, slot("a"))))),
             Err(ExpertProposalError::ResultGenerationNotNext {
                 pod: PodId::from("a"),
                 result: Generation(wrong),
@@ -630,7 +638,7 @@ fn reactivate_frozen_unfreezes_and_failed_gate_seeds_a_new_generation() {
         );
     }
     assert_eq!(
-        propose(reactivate(failed(), Some(spec("elsewhere", 2, token(3))))),
+        propose(reactivate(failed(), Some(spec("elsewhere", 2, slot("a"))))),
         Err(ExpertProposalError::ResultNotSameExpert {
             expected: PodId::from("a"),
             found: PodId::from("elsewhere")
@@ -754,10 +762,10 @@ fn result_slots_are_unique_but_a_sources_slot_may_be_reused() {
         }),
         Err(ExpertProposalError::DuplicateResultSlot { layer: 3, index: 4 })
     );
-    // `serving("a")` occupies layer 3 index 0; a result may take that slot.
+    // `serving("a")` occupies layer 3 index 97; a result may take that slot.
     assert!(propose(StructuralOp::Split {
         source: serving("a"),
-        results: vec![at("x", 0), at("y", 1)]
+        results: vec![at("x", 97), at("y", 1)]
     })
     .is_ok());
     // Segment results have no slot.
@@ -1270,7 +1278,7 @@ fn retire_is_allowed_exactly_where_the_lifecycle_gate_permits_retirement() {
 #[test]
 fn prune_requires_one_base_model() {
     let with_base = |pod: &str, base: BaseModelRef| {
-        let mut i = init(pod, 1, token(3), ExpertState::Serving);
+        let mut i = init(pod, 1, slot(pod), ExpertState::Serving);
         i.base_model = base;
         ExpertTarget::new(i).unwrap()
     };
@@ -1314,4 +1322,80 @@ fn base_model_ref_validates_generation() {
     };
     assert_eq!(id(1), id(1));
     assert_ne!(id(1), id(2));
+}
+
+#[test]
+fn merge_and_prune_reject_two_sources_in_one_token_slot() {
+    let at = |pod: &str, index: u16| {
+        target(
+            pod,
+            1,
+            ExpertLevel::Token { layer: 3, index },
+            ExpertState::Serving,
+        )
+    };
+    let dup = Err(ExpertProposalError::DuplicateSourceSlot { layer: 3, index: 4 });
+    assert_eq!(propose(merge(vec![at("a", 4), at("b", 4)])), dup);
+    assert_eq!(
+        propose(StructuralOp::Prune {
+            targets: vec![at("a", 4), at("b", 5), at("c", 4)]
+        }),
+        dup
+    );
+    // Different slots, or the same index in another layer (checked as MixedLevels), are fine.
+    assert!(propose(merge(vec![at("a", 4), at("b", 5)])).is_ok());
+    // The same pod twice stays a DuplicateTarget (checked first).
+    assert!(matches!(
+        propose(merge(vec![at("a", 4), at("a", 4)])),
+        Err(ExpertProposalError::DuplicateTarget { .. })
+    ));
+    // Base model mismatch is reported before the slot clash.
+    let mut i = init(
+        "b",
+        1,
+        ExpertLevel::Token { layer: 3, index: 4 },
+        ExpertState::Serving,
+    );
+    i.base_model = other_base();
+    assert_eq!(
+        propose(merge(vec![at("a", 4), ExpertTarget::new(i).unwrap()])),
+        Err(ExpertProposalError::MixedBaseModels)
+    );
+    assert_eq!(
+        ExpertProposalError::DuplicateSourceSlot { layer: 3, index: 4 }.to_string(),
+        "two sources occupy token slot layer 3 index 4"
+    );
+}
+
+#[test]
+fn unfreezing_is_an_in_place_overlay_without_lineage_transition() {
+    let frozen = in_state("a", ExpertState::Frozen);
+    // Frozen reactivation carries no result, so it creates no generation...
+    let unfreeze = propose(reactivate(frozen.clone(), None)).unwrap();
+    assert!(!unfreeze.creates_new_generation());
+    assert!(unfreeze.op().results().is_empty());
+    // ...and a result is rejected.
+    assert_eq!(
+        propose(reactivate(frozen, Some(spec("a", 2, slot("a"))))),
+        Err(ExpertProposalError::UnexpectedResult {
+            op: OpKind::Reactivate
+        })
+    );
+    // The frozen expert stays Serving/Active in lineage, so there is nothing to transition.
+    assert_eq!(ExpertState::Frozen.adapter_status_name(), "serving");
+    assert_eq!(
+        ExpertState::Frozen.artifact_lifecycles(),
+        ExpertState::Serving.artifact_lifecycles()
+    );
+    // A retired GateFailed expert needs a result: a new candidate generation.
+    let failed = in_state("a", ExpertState::Retired(RetiredReason::GateFailed));
+    assert_eq!(
+        propose(reactivate(failed.clone(), None)),
+        Err(ExpertProposalError::MissingResult {
+            op: OpKind::Reactivate
+        })
+    );
+    let reseed = propose(reactivate(failed, Some(spec("a", 2, slot("a"))))).unwrap();
+    assert!(reseed.creates_new_generation());
+    assert_eq!(reseed.op().results().len(), 1);
 }

@@ -49,10 +49,11 @@
 //!
 //! `ptr-lineage` has no `Frozen` or `Fenced`; those are expert-layer overlays on a serving
 //! expert, hence `Serving`/`Active`. That is also why `Retire` can name them:
-//! `LifecycleGate::transition` allows `Retired` only from `Active`. Reactivating a `Frozen`
-//! expert re-enters it as `Gated`, a revalidation recorded by the ledger rather than a
-//! `LifecycleGate` edge. `ptr-pods` does not depend on `ptr-lineage`, so the adapter status is exposed
-//! by name.
+//! `LifecycleGate::transition` allows `Retired` only from `Active`. `Lineage` itself only gates
+//! `Candidate` to `Gated` and serves `Gated` to `Serving`, so no expert-layer overlay has a
+//! lineage transition: unfreezing a `Frozen` expert leaves lineage at `Serving` / `Active`
+//! (see Reactivation). `ptr-pods` does not depend on `ptr-lineage`, so the adapter status is
+//! exposed by name.
 //!
 //! # Allowed (operation, source state) pairs
 //!
@@ -82,12 +83,15 @@
 //! # Reactivation
 //!
 //! Retirement is final (`Lineage::retire`; `LifecycleGate` has no transition out of `Retired`).
-//! `Reactivate` of a `Frozen` target unfreezes the same generation, but the expert re-enters as
-//! `Gated`: it must be revalidated before it is `Serving` again. `Reactivate` of a
-//! `Retired(GateFailed)` target leaves that generation `Retired` forever; the proposal carries a
-//! result spec for a NEW candidate generation of the same logical expert (same project and pod,
-//! exactly the source generation plus one, same level including the Token index), seeded from the
-//! retained weights, which must pass the gates again like any birth. Other retired targets are
+//! `Reactivate` of a `Frozen` target is an UNFREEZE overlay on the same generation: it carries no
+//! result (`UnexpectedResult` if one is given), lineage stays `Serving` / `Active` and no lineage
+//! transition happens. The check that gates the unfreeze is recorded by the commit path, not as a
+//! lineage transition. `Reactivate` of a `Retired(GateFailed)` target leaves that generation
+//! `Retired` forever and requires a result (`MissingResult` otherwise): a spec for a NEW
+//! candidate generation of the same logical expert (same project and pod, exactly the source
+//! generation plus one, same level including the Token index), seeded from the retained weights.
+//! It enters lineage as `Candidate` and goes `Candidate`, `Gated`, `Serving` through the normal
+//! gate like any birth. Other retired targets are
 //! not seeds: `Pruned` weights are gone, `Superseded` has a successor, `InputRevoked` is barred.
 //!
 //! # Retirement reasons
@@ -121,9 +125,10 @@
 //! 5. source states against the table above (a non-`GateFailed` retired Reactivate target is
 //!    `SeedUnavailable` here);
 //! 6. operation structure, per operation:
-//!    * Merge: Token level, duplicates and multiple generations, one layer, one base model, one
-//!      shared state (`MixedStates`);
-//!    * Prune: Token level, duplicates and multiple generations, one layer, one base model;
+//!    * Merge: Token level, duplicates and multiple generations, one layer, one base model,
+//!      distinct Token slots (`DuplicateSourceSlot`), one shared state (`MixedStates`);
+//!    * Prune: Token level, duplicates and multiple generations, one layer, one base model,
+//!      distinct Token slots (`DuplicateSourceSlot`);
 //!    * Reactivate: result present iff the target is `Retired`;
 //!    * Retire: the reason is proposable;
 //! 7. result relations, per result: pod, generation, base model, level;
@@ -831,6 +836,8 @@ pub enum ExpertProposalError {
     DuplicateResult { pod: PodId },
     /// Two results claim the same Token `(layer, index)` slot.
     DuplicateResultSlot { layer: u16, index: u16 },
+    /// Two different source experts occupy the same Token `(layer, index)` slot.
+    DuplicateSourceSlot { layer: u16, index: u16 },
 }
 
 impl fmt::Display for ExpertProposalError {
@@ -931,6 +938,12 @@ impl fmt::Display for ExpertProposalError {
                 write!(f, "result {pod} has a level incompatible with its sources")
             }
             Self::DuplicateResult { pod } => write!(f, "result {pod} is listed twice"),
+            Self::DuplicateSourceSlot { layer, index } => {
+                write!(
+                    f,
+                    "two sources occupy token slot layer {layer} index {index}"
+                )
+            }
             Self::DuplicateResultSlot { layer, index } => {
                 write!(
                     f,
@@ -999,8 +1012,8 @@ impl ExpertProposal {
 
     /// Whether accepting this proposal would create a new expert generation: true for birth,
     /// merge, split and the reactivation of a `Retired` target; false for freeze, prune, retire
-    /// and the reactivation of a `Frozen` target (the same generation is unfrozen and re-enters
-    /// as `Gated`).
+    /// and the reactivation of a `Frozen` target (the same generation is unfrozen in place, with
+    /// no lineage transition).
     pub fn creates_new_generation(&self) -> bool {
         !self.op.results().is_empty()
     }
@@ -1241,6 +1254,7 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
             check_unique(&sources)?;
             check_same_layer(&sources)?;
             check_same_base(&sources)?;
+            check_distinct_slots(&sources)?;
             if sources.iter().any(|t| t.state != sources[0].state) {
                 return Err(ExpertProposalError::MixedStates);
             }
@@ -1250,6 +1264,7 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
             check_unique(&sources)?;
             check_same_layer(&sources)?;
             check_same_base(&sources)?;
+            check_distinct_slots(&sources)?;
         }
         StructuralOp::Reactivate { target, result } => match (target.state, result) {
             (ExpertState::Retired(_), None) => {
@@ -1339,6 +1354,19 @@ fn check_unique(sources: &[&ExpertTarget]) -> Result<(), ExpertProposalError> {
                     second: target.generation,
                 }
             });
+        }
+    }
+    Ok(())
+}
+
+/// Two different sources cannot occupy one Token slot (the same pod twice is `check_unique`'s).
+fn check_distinct_slots(sources: &[&ExpertTarget]) -> Result<(), ExpertProposalError> {
+    let mut seen = BTreeMap::new();
+    for target in sources {
+        if let ExpertLevel::Token { layer, index } = target.level {
+            if seen.insert((layer, index), &target.pod).is_some() {
+                return Err(ExpertProposalError::DuplicateSourceSlot { layer, index });
+            }
         }
     }
     Ok(())
