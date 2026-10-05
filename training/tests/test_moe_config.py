@@ -148,6 +148,34 @@ class MoeConfigTests(unittest.TestCase):
         )
         moe_config.parse(raw)
 
+    def test_mini_steps_bounds(self):
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(steps=1, mini_steps=1_000_000))
+        with self.assertRaisesRegex(ConfigError, r"moe\.rl\.mini_steps.*moe\.rl\.steps"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(steps=4, mini_steps=5))
+        with self.assertRaisesRegex(ConfigError, "mini_steps"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(steps=4, mini_steps=4))
+        moe_config.parse(raw)
+        # ceiling 64 unless allow_large
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(steps=100, mini_steps=65, num_generations=2,
+                                                          prompts_per_step=1))
+        with self.assertRaisesRegex(ConfigError, r"moe\.rl\.mini_steps.*allow_large"):
+            moe_config.parse(raw)
+        raw["moe"]["allow_large"] = True
+        moe_config.parse(raw)
+
+    def test_generation_batch_ceiling(self):
+        # 64 * 64 * 2 = 8192 rollouts at once (each key under its own ceiling)
+        def mutate(r):
+            r["moe"]["rl"].update(steps=64, mini_steps=64, prompts_per_step=64, num_generations=2)
+
+        with self.assertRaisesRegex(ConfigError, r"generation batch.*allow_large"):
+            moe_config.parse(self._mutate(mutate))
+        raw = self._mutate(mutate)
+        raw["moe"]["allow_large"] = True
+        moe_config.parse(raw)
+
     def test_resource_maxima_and_allow_large(self):
         cases = (("sft", "steps", 100_001), ("sft", "examples", 100_001), ("sft", "batch", 1025),
                  ("rl", "steps", 10_001), ("rl", "num_generations", 65),

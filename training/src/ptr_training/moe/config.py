@@ -29,9 +29,10 @@ _TRAINING_KEYS = {"backend", "precision", "allow_unselected_backend"}
 # Resource-key ceilings; `[moe] allow_large = true` lifts them.
 _MAXIMA = {
     "moe.sft.steps": 100_000, "moe.sft.examples": 100_000, "moe.sft.batch": 1024,
-    "moe.rl.steps": 10_000, "moe.rl.num_generations": 64, "moe.rl.prompts_per_step": 64,
+    "moe.rl.steps": 10_000, "moe.rl.mini_steps": 64, "moe.rl.num_generations": 64, "moe.rl.prompts_per_step": 64,
     "moe.rl.max_completion_length": 512, "moe.output.probe_tokens": 4096,
 }
+MAX_GENERATION_BATCH = 4096  # mini_steps * prompts_per_step * num_generations rollouts at once
 _SHA40 = re.compile(r"[0-9a-f]{40}")
 _GATES_KEYS = {"subspace_rank"}
 _SFT_KEYS = {"steps", "lr", "batch", "examples", "max_length"}
@@ -377,6 +378,11 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         raise ConfigError("moe.rl.beta must be >= 0")
     if rl.epsilon_high < rl.epsilon and "epsilon_high" in r:
         raise ConfigError("moe.rl.epsilon_high must be >= moe.rl.epsilon")
+    if rl.mini_steps > rl.steps:
+        raise ConfigError(
+            f"moe.rl.mini_steps ({rl.mini_steps}) must not exceed moe.rl.steps ({rl.steps}): "
+            "TRL would build a generation batch larger than the whole run"
+        )
     if rl.sapo_temperature_neg <= rl.sapo_temperature_pos:
         raise ConfigError(
             "moe.rl.sapo_temperature_neg must be > moe.rl.sapo_temperature_pos "
@@ -429,7 +435,8 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
     if not allow_large:
         values = {
             "moe.sft.steps": sft.steps, "moe.sft.examples": sft.examples, "moe.sft.batch": sft.batch,
-            "moe.rl.steps": rl.steps, "moe.rl.num_generations": rl.num_generations,
+            "moe.rl.steps": rl.steps, "moe.rl.mini_steps": rl.mini_steps,
+            "moe.rl.num_generations": rl.num_generations,
             "moe.rl.prompts_per_step": rl.prompts_per_step,
             "moe.rl.max_completion_length": rl.max_completion_length,
             "moe.output.probe_tokens": probe_tokens,
@@ -440,6 +447,13 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
                     f"{key} = {value} exceeds the sanity limit {_MAXIMA[key]}; "
                     "set [moe] allow_large = true to override"
                 )
+        generation_batch = rl.mini_steps * rl.prompts_per_step * rl.num_generations
+        if generation_batch > MAX_GENERATION_BATCH:
+            raise ConfigError(
+                f"generation batch mini_steps * prompts_per_step * num_generations = "
+                f"{generation_batch} exceeds {MAX_GENERATION_BATCH} rollouts; "
+                "set [moe] allow_large = true to override"
+            )
     return MoeConfig(
         name=name,
         seed=seed,

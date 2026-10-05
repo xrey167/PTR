@@ -430,6 +430,45 @@ class MoeTorchPipelineTests(unittest.TestCase):
         self.assertAlmostEqual(g["grad_norm_per_step"][0], s["grad_norm_per_step"][0], delta=1e-4)
         self.assertNotAlmostEqual(g["loss_per_step"][0], s["loss_per_step"][0], places=3)
 
+    def test_model_context_window_check(self):
+        import types
+
+        from ptr_training.moe import config as moe_config
+        from ptr_training.moe import pipeline
+        from ptr_training.moe.tasks import generate_tasks
+
+        sft, ev = generate_tasks(16, seed=1), generate_tasks(8, seed=2)
+        ok = types.SimpleNamespace(config=types.SimpleNamespace(max_position_embeddings=64))
+        info = pipeline.check_model_context(self.cfg, ok, self.tok, sft, [], ev)
+        self.assertLessEqual(info["needed_positions"], 64)
+        self.assertEqual(info["model_max_position_embeddings"], 64)
+        self.assertLessEqual(info["sft_longest_tokens"], 26)
+        short = types.SimpleNamespace(config=types.SimpleNamespace(max_position_embeddings=20))
+        with self.assertRaisesRegex(moe_config.ConfigError, r"needs \d+ positions.*is 20"):
+            pipeline.check_model_context(self.cfg, short, self.tok, sft, [], ev)
+        unknown = types.SimpleNamespace(config=types.SimpleNamespace())
+        self.assertIsNone(
+            pipeline.check_model_context(self.cfg, unknown, self.tok, sft, [], ev)[
+                "model_max_position_embeddings"
+            ]
+        )
+
+    def test_pipeline_records_context_check_and_no_pool_for_sft_only(self):
+        import dataclasses
+
+        from ptr_training.moe import pipeline
+
+        small = dataclasses.replace(
+            self.cfg,
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(self.cfg.rl, algorithms=()),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            data = pipeline.execute(small, Path(tmp))
+        self.assertEqual(data["context_check"]["model_max_position_embeddings"], 64)
+        self.assertEqual(data["tasks"]["rl_pool_size"], 0)
+        self.assertFalse(data["tasks"]["rl_pool_built"])
+
     def test_metrics_record_model_and_run_seed_separately(self):
         import dataclasses
 

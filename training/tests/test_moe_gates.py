@@ -166,7 +166,9 @@ class MoeGatesTests(unittest.TestCase):
             cut = gates.run_gates(w1, w0, max_pairs_per_layer=1, subspace_rank=2)
             pair = cut["layers"][0]["delta_pairs"][0]
             self.assertTrue(pair["informative"])
-            self.assertEqual((pair["subspace_rank"], pair["ambient_dim"]), (2, 8))
+            self.assertEqual((pair["requested_rank"], pair["ambient_dim"]), (2, 8))
+            self.assertEqual((pair["effective_rank_a"], pair["effective_rank_b"]), (2, 2))
+            self.assertFalse(pair["rank_truncated"])
             self.assertTrue(cut["interference_informative"])
             # r >= ambient dim is never informative, whatever the binding says
             wide = gates.run_gates(w1, w0, max_pairs_per_layer=1, subspace_rank=8)
@@ -186,6 +188,28 @@ class MoeGatesTests(unittest.TestCase):
         pair = report["layers"][0]["delta_pairs"][0]
         self.assertFalse(pair["informative"])
         self.assertEqual(pair["subspace_overlap"]["status"], "skipped")
+
+    def test_effective_rank_recorded_for_rank_deficient_delta(self):
+        # expert 0: rank-1 delta (outer product); expert 1: full-rank random 8x8
+        col = [[float(i + 1)] for i in range(8)]
+        rank1 = [[c[0] * r for r in (1.0, 2.0, 3.0, 4.0)] for c in col]  # 8x4, rank 1
+        full = self._delta_weights(8, 8, 7)[0]["down"]
+        w1 = [[_e([0.0], [[0.0] * 4 for _ in range(8)]), _e([0.0], [[0.0] * 8 for _ in range(8)])]]
+        w0 = [[_e([0.0], rank1), _e([0.0], full)]]
+        recorded = []
+        stub = self._stub()
+        stub.subspace_overlap = lambda a, b: recorded.append((len(a[0]), len(b[0]))) or 0.5
+        stub.chance_overlap = lambda a, b: max(len(a[0]), len(b[0])) / len(a)
+        with mock.patch.dict(sys.modules, {"ptr_py": stub}):
+            report = gates.run_gates(w1, w0, max_pairs_per_layer=1, subspace_rank=3)
+        pair = report["layers"][0]["delta_pairs"][0]
+        self.assertEqual(pair["requested_rank"], 3)
+        self.assertEqual((pair["effective_rank_a"], pair["effective_rank_b"]), (1, 3))
+        self.assertFalse(pair["rank_truncated"])  # binding takes unequal ranks: nothing truncated
+        self.assertEqual(recorded, [(1, 3)])  # the bases actually passed
+        self.assertTrue(pair["informative"])  # chance = 3/8
+        basis = gates.top_left_subspace(rank1, 3)
+        self.assertEqual(len(basis[0]), 1)  # numerical rank 1, not the requested 3
 
     def test_binding_version_from_distribution_metadata(self):
         stub = types.ModuleType("ptr_py")

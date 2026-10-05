@@ -219,6 +219,15 @@ router stays frozen.
   `mini_steps` optimizer steps (each step consumes `prompts_per_step` fresh prompts), including
   the final partial batch; the full-fine-tune reference model is reloaded in the policy
   dtype (`model_init_kwargs`), and `config._name_or_path` is restored after each RL arm.
+- `moe.rl.mini_steps` must not exceed `moe.rl.steps`, is capped at 64, and the generation batch
+  `mini_steps * prompts_per_step * num_generations` at 4096 rollouts (both lifted by
+  `[moe] allow_large = true`). With `algorithms = []` no RL prompt pool is built
+  (`tasks.rl_pool_size = 0`). After loading, `context_check` compares the tokenizer-measured
+  longest SFT example and longest prompt + `max_completion_length` with the model's
+  `max_position_embeddings` and raises `ConfigError` if it does not fit.
+- Gate pairs record `requested_rank`, `effective_rank_a/b` (basis columns actually passed; a
+  low-rank delta yields fewer than requested) and `rank_truncated` (always false: the binding's
+  `subspace_overlap` / `chance_overlap` accept unequal ranks).
 - Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
 - `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
   actually present (PEFT may keep LoRA weights in fp32).

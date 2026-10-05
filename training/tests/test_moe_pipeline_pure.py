@@ -55,6 +55,18 @@ class MoeTaskSplitTests(unittest.TestCase):
         self.assertGreaterEqual(rows, olmoe.steps * olmoe.prompts_per_step)  # >= 100
         self.assertEqual(rows, max(64, 13 * 4 * 2))  # ceil(50/4)=13 batches of 4 steps x 2
 
+    def test_no_rl_pool_when_no_algorithms(self):
+        import dataclasses
+
+        cfg = moe_config.load(CONFIGS / "stage-moe-smoke.toml")
+        cfg = dataclasses.replace(cfg, rl=dataclasses.replace(cfg.rl, algorithms=()))
+        sft, rl_tasks, ev, stats = pipeline.build_task_splits(cfg)
+        self.assertEqual(rl_tasks, [])
+        self.assertEqual((stats["rl_pool_size"], stats["rl_pool_built"]), (0, False))
+        self.assertEqual(stats["eval_overlap"], 0)
+        full = pipeline.build_task_splits(moe_config.load(CONFIGS / "stage-moe-smoke.toml"))[3]
+        self.assertTrue(full["rl_pool_built"])
+
     def test_deterministic(self):
         cfg = moe_config.load(CONFIGS / "stage-moe-smoke.toml")
         self.assertEqual(pipeline.build_task_splits(cfg), pipeline.build_task_splits(cfg))

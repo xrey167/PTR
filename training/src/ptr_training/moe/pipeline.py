@@ -211,14 +211,17 @@ def build_task_splits(cfg: moe_config.MoeConfig):
     eval_tasks = generate_heldout(EVAL_TASKS, seed=cfg.seed + 2)
     held = frozenset(t.prompt for t in eval_tasks)
     sft_tasks = generate_tasks(cfg.sft.examples, seed=cfg.seed, exclude_prompts=held)
-    # TRL (steps_per_generation = mini_steps) draws one generation batch of
-    # mini_steps * prompts_per_step NEW prompts (RepeatSampler batch_size =
-    # generation_batch_size // num_generations) and slices it across `mini_steps` optimizer
-    # steps, so each optimizer step consumes prompts_per_step fresh prompts. A run needs
-    # ceil(steps / mini_steps) whole generation batches (the last may be partial); floor of 64.
-    generation_batches = -(-cfg.rl.steps // cfg.rl.mini_steps)
-    rl_n = max(64, generation_batches * cfg.rl.mini_steps * cfg.rl.prompts_per_step)
-    rl_tasks = generate_tasks(rl_n, seed=cfg.seed + 1, exclude_prompts=held)
+    if cfg.rl.algorithms:
+        # TRL (steps_per_generation = mini_steps) draws one generation batch of
+        # mini_steps * prompts_per_step NEW prompts (RepeatSampler batch_size =
+        # generation_batch_size // num_generations) and slices it across `mini_steps` optimizer
+        # steps, so each optimizer step consumes prompts_per_step fresh prompts. A run needs
+        # ceil(steps / mini_steps) whole generation batches (the last may be partial); floor 64.
+        generation_batches = -(-cfg.rl.steps // cfg.rl.mini_steps)
+        rl_n = max(64, generation_batches * cfg.rl.mini_steps * cfg.rl.prompts_per_step)
+        rl_tasks = generate_tasks(rl_n, seed=cfg.seed + 1, exclude_prompts=held)
+    else:
+        rl_tasks = []  # no RL arm will run: do not build a pool
     train = {t.prompt for t in sft_tasks} | {t.prompt for t in rl_tasks}
     overlap = len(held & train)
     if overlap or len(held) != len(eval_tasks):
@@ -229,12 +232,46 @@ def build_task_splits(cfg: moe_config.MoeConfig):
         "sft_tasks": len(sft_tasks),
         "sft_unique_prompts": len({t.prompt for t in sft_tasks}),
         "rl_tasks": len(rl_tasks),
+        "rl_pool_size": len(rl_tasks),
+        "rl_pool_built": bool(rl_tasks),
         "rl_unique_prompts": len({t.prompt for t in rl_tasks}),
         "eval_tasks": len(eval_tasks),
         "eval_unique_prompts": len(held),
         "eval_overlap": overlap,
     }
     return sft_tasks, rl_tasks, eval_tasks, stats
+
+
+def check_model_context(cfg, model, tokenizer, sft_tasks, rl_tasks, eval_tasks) -> dict:
+    """Tokenizer-measured sequence lengths vs the loaded model's context window.
+
+    Longest SFT example (prompt + answer + EOS) and longest task prompt + max_completion_length
+    (RL rollouts and the policy evaluation both generate that many tokens).
+    """
+    sft_longest = max(
+        len(tokenizer(t.prompt, add_special_tokens=False)["input_ids"])
+        + len(tokenizer(t.answer, add_special_tokens=False)["input_ids"])
+        + 1
+        for t in sft_tasks
+    ) if sft_tasks else 0
+    prompts = [t.prompt for t in [*eval_tasks, *rl_tasks]]
+    prompt_longest = max(len(tokenizer(p, add_special_tokens=False)["input_ids"]) for p in prompts)
+    needed = max(sft_longest, prompt_longest + cfg.rl.max_completion_length)
+    window = getattr(model.config, "max_position_embeddings", None)
+    info = {
+        "sft_longest_tokens": sft_longest,
+        "prompt_longest_tokens": prompt_longest,
+        "needed_positions": needed,
+        "model_max_position_embeddings": window,
+    }
+    if window is not None and needed > window:
+        raise moe_config.ConfigError(
+            f"the run needs {needed} positions (longest SFT example {sft_longest} tokens incl. "
+            f"EOS; longest prompt {prompt_longest} + moe.rl.max_completion_length "
+            f"{cfg.rl.max_completion_length}) but the loaded model's max_position_embeddings "
+            f"is {window}"
+        )
+    return info
 
 
 def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None) -> dict:
@@ -268,6 +305,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     if cfg.model.kind == "pretrained":
         model_mod.reset_requires_grad(model)
     # Tokenizer-dependent guards, before the first eval / SFT step spends any compute.
+    context_check = check_model_context(cfg, model, tokenizer, sft_tasks, rl_tasks, eval_tasks)
     check_examples(tokenizer, sft_tasks, cfg.sft.max_length)
     if cfg.rl.algorithms:
         check_prompt_lengths(tokenizer, rl_tasks, cfg.rl.max_prompt_length)
@@ -409,6 +447,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
             "source": model_source,
         },
         "tasks": task_stats,
+        "context_check": context_check,
         "data_source": "synthetic-tasks",
         "data_note": (
             "trl-moe trains and evaluates on seeded synthetic verifiable tasks "

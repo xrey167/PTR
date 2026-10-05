@@ -185,31 +185,42 @@ def _overlap_pair(binding, da, db, subspace_rank: int | None) -> dict:
 
     With `subspace_rank` the deltas are first reduced to their top-r left singular subspaces;
     comparing full-rank subspaces of the ambient space is always ~1.0 (and chance is 1.0), which
-    says nothing. `informative` is false when r >= ambient dim or chance_overlap >= 0.99.
+    says nothing. A delta of lower numerical rank than requested yields fewer basis columns;
+    the columns actually passed are recorded (`effective_rank_a/b`). The binding supports
+    unequal ranks (`subspace_overlap` divides by min(rank_a, rank_b), `chance_overlap` is
+    max(rank_a, rank_b) / dim; bindings/ptr-py/src/governance.rs), so nothing is truncated
+    (`rank_truncated` is always false). `informative` is false when the larger effective rank
+    reaches the ambient dim, chance_overlap >= 0.99, or a call failed.
     """
     ambient = len(da)
     if subspace_rank is not None:
         ua, ub = top_left_subspace(da, subspace_rank), top_left_subspace(db, subspace_rank)
-        rank = min(subspace_rank, ambient)
         if not ua or not ub:
             return {
-                "subspace_rank": subspace_rank, "ambient_dim": ambient, "informative": False,
+                "requested_rank": subspace_rank, "effective_rank_a": len(ua[0]) if ua else 0,
+                "effective_rank_b": len(ub[0]) if ub else 0, "rank_truncated": False,
+                "ambient_dim": ambient, "informative": False,
                 "subspace_overlap": {"status": "skipped", "reason": "zero expert delta"},
                 "chance_overlap": {"status": "skipped", "reason": "zero expert delta"},
             }
+        rank_a, rank_b = len(ua[0]), len(ub[0])
     else:
-        ua, ub, rank = da, db, None
+        ua, ub = da, db
+        rank_a, rank_b = len(da[0]), len(db[0])  # columns passed (the binding finds the rank)
     overlap = _call(binding.subspace_overlap, ua, ub)
     chance = _call(binding.chance_overlap, ua, ub)
     chance_value = _value(chance)
     informative = (
         chance_value is not None
         and chance_value < INFORMATIVE_CHANCE_LIMIT
-        and (subspace_rank is None or subspace_rank < ambient)
+        and max(rank_a, rank_b) < ambient
         and _value(overlap) is not None
     )
     return {
-        "subspace_rank": rank,
+        "requested_rank": subspace_rank,
+        "effective_rank_a": rank_a,
+        "effective_rank_b": rank_b,
+        "rank_truncated": False,
         "ambient_dim": ambient,
         "informative": informative,
         "subspace_overlap": overlap,
