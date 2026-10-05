@@ -75,7 +75,7 @@ async fn scenario_backend_executes_demo_note_once_and_replays_receipt() {
     let app = ptr_server::router_with_dependencies(
         runtime,
         Arc::new(ScenarioBackend),
-        Default::default(),
+        ptr_server::checked_pod_router(ptr_router::SamplingKey::from_bytes([7; 32]), [9; 8]),
         Arc::new(Default::default()),
         ptr_server::default_verifier(),
         ptr_server::demo_effect_grants(&data_dir),
@@ -195,7 +195,7 @@ async fn durable_restart_fences_open_effect_until_explicit_reconciliation() {
     let app = ptr_server::router_with_dependencies(
         reopened,
         Arc::new(ScenarioBackend),
-        Default::default(),
+        ptr_server::checked_pod_router(ptr_router::SamplingKey::from_bytes([7; 32]), [9; 8]),
         Arc::new(Default::default()),
         ptr_server::default_verifier(),
         ptr_server::demo_effect_grants(&root),
@@ -233,7 +233,7 @@ async fn durable_restart_fences_open_effect_until_explicit_reconciliation() {
     let app = ptr_server::router_with_dependencies(
         reconciled,
         Arc::new(ScenarioBackend),
-        Default::default(),
+        ptr_server::checked_pod_router(ptr_router::SamplingKey::from_bytes([7; 32]), [9; 8]),
         Arc::new(Default::default()),
         ptr_server::default_verifier(),
         ptr_server::demo_effect_grants(&root),
@@ -312,7 +312,7 @@ async fn distinct_idempotency_keys_each_execute_and_malformed_keys_are_rejected_
     let app = ptr_server::router_with_dependencies(
         runtime,
         Arc::new(ScenarioBackend),
-        Default::default(),
+        ptr_server::checked_pod_router(ptr_router::SamplingKey::from_bytes([7; 32]), [9; 8]),
         Arc::new(Default::default()),
         ptr_server::default_verifier(),
         ptr_server::demo_effect_grants(&data_dir),

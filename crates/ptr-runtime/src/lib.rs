@@ -13,6 +13,7 @@ pub mod persistence;
 pub mod placement;
 pub mod policy;
 pub mod protected_state;
+pub mod routing;
 pub mod sandbox;
 pub mod scopes;
 pub mod semantic;
@@ -50,6 +51,7 @@ pub use policy::{
     SignedPolicyBundle,
 };
 pub use protected_state::ProtectedStateCoordinator;
+pub use routing::PodSampler;
 pub use sandbox::{
     ExternalSandboxExecutor, NativeSandboxExecutor, NetworkMode, SandboxBackend, SandboxError,
     SandboxExecutor, SandboxLease, SandboxProfile, SandboxRequest, SandboxResponse,
@@ -405,6 +407,11 @@ pub enum RuntimeError {
     PodUnavailable {
         capability: String,
         input_type: String,
+    },
+    /// The routing boundary failed while candidates may exist. The reason is a fixed string that
+    /// never names a Pod.
+    RouteFailed {
+        reason: &'static str,
     },
     PodEffectRequiresActionBoundary {
         pod: String,
@@ -1388,6 +1395,9 @@ impl PtrRuntime {
         Ok(outputs)
     }
 
+    /// Convenience wrapper that selects Pods with the plain, unsampled [`PodRouter::select`].
+    /// It records no draw, propensity, nonce or key identity; the production path is
+    /// [`PtrRuntime::run_resumable_with_pods_using_router`] with a [`PodSampler`].
     pub fn run_resumable_with_pods<B, V>(
         &mut self,
         request_id: RequestId,
@@ -1402,11 +1412,23 @@ impl PtrRuntime {
         B: ResumableInferenceBackend + ?Sized,
         V: Verifier<TypedPayload> + ?Sized,
     {
-        self.run_resumable_with_pods_using_router(
-            request_id, project, raw_text, backend, pods, &PodRouter, verifier, max_rounds,
+        self.run_resumable_inner(
+            request_id,
+            project,
+            raw_text,
+            backend,
+            pods,
+            routing::PodSelection::Plain,
+            verifier,
+            max_rounds,
         )
     }
 
+    /// Like [`PtrRuntime::run_resumable_with_pods`], but every Pod is chosen through the
+    /// trusted checked routing path of `router`. Each selection emits
+    /// [`RuntimeEvent::PodRouted`] (Pod, propensity, nonce, draw and key identity) before
+    /// [`RuntimeEvent::PodInvoked`]; `Ok(None)` is the usual `PodUnavailable` and a routing
+    /// error is `RouteFailed` with a Pod-free reason.
     #[allow(clippy::too_many_arguments)]
     pub fn run_resumable_with_pods_using_router<B, V>(
         &mut self,
@@ -1415,7 +1437,35 @@ impl PtrRuntime {
         raw_text: impl Into<String>,
         backend: &B,
         pods: &PodRegistry,
-        router: &PodRouter,
+        router: &dyn PodSampler,
+        verifier: &V,
+        max_rounds: usize,
+    ) -> Result<ResumableRun, RuntimeError>
+    where
+        B: ResumableInferenceBackend + ?Sized,
+        V: Verifier<TypedPayload> + ?Sized,
+    {
+        self.run_resumable_inner(
+            request_id,
+            project,
+            raw_text,
+            backend,
+            pods,
+            routing::PodSelection::Sampled(router),
+            verifier,
+            max_rounds,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_resumable_inner<B, V>(
+        &mut self,
+        request_id: RequestId,
+        project: &ProjectId,
+        raw_text: impl Into<String>,
+        backend: &B,
+        pods: &PodRegistry,
+        selection: routing::PodSelection<'_>,
         verifier: &V,
         max_rounds: usize,
     ) -> Result<ResumableRun, RuntimeError>
@@ -1492,13 +1542,15 @@ impl PtrRuntime {
             // A Pod in another project is unavailable in exactly the same
             // words as a Pod that does not exist. Saying which it was would
             // answer, across the boundary, whether that Pod exists.
-            let pod = router
-                .select(pods, project, &capability, &input_type)
-                .and_then(|route| pods.get(project, &route.pod_id))
-                .ok_or_else(|| RuntimeError::PodUnavailable {
-                    capability: capability.to_string(),
-                    input_type: input_type.to_string(),
-                })?;
+            let pod = self.select_pod(
+                &selection,
+                pods,
+                project,
+                &request_id,
+                &capability,
+                &input_type,
+                &payload,
+            )?;
 
             if pod
                 .manifest()

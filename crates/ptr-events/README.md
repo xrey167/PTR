@@ -10,12 +10,13 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 2 Rust source files · 249 nonblank source lines · 2 integration-test files · 8 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 2 Rust source files · 258 nonblank source lines · 2 integration-test files · 8 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
 - RuntimeEvent taxonomy for request/snapshot/candidate/Pod/verifier/commit lifecycle
 - EventEnvelope with sequence number
+- RuntimeEvent::PodRouted { pod, propensity: f64, nonce: [u8; 16], draw: u64, key_id: [u8; 8] } records a Pod chosen by the trusted checked routing path (ptr-router route_checked) with its propensity, decision nonce, keyed draw and the non-secret sampling key id; the runtime emits it before PodInvoked, and the key itself is never an event field
 - EventProducer/EventConsumer contract with at-least-once delivery, monotone commits bounded by the end, and event classes separating projections from telemetry
 - RuntimeEvent::ScopeLifecycle { scope, kind } carries a scope's ptr_types::ScopeId and ScopeLifecycleKind in the runtime event taxonomy; this crate only defines the variant (no producer inside ptr-events)
 - InMemoryBus reference implementation: bounded, refusing a publish rather than dropping a record some registered consumer has not committed, and refusing a registration beyond the end, which would let the next publish trim records the consumer never polled
@@ -49,6 +50,7 @@
 
 ### Current automated checks
 
+- ptr-runtime tests/routed_pods.rs emits and asserts RuntimeEvent::PodRouted (key id, incrementing nonce, replayed draw)
 - workspace fmt/check/test/clippy
 - tests/bus.rs redelivery until commit, backpressure instead of loss, monotone bounded commits
 

@@ -115,6 +115,21 @@ impl SamplingKey {
         Self(bytes)
     }
 
+    /// A non-secret identifier of this key: the first 8 bytes of
+    /// `SHA-256("ptr-router/sampling-key-id/v1" || key)`. The runtime records it next to every
+    /// draw and propensity so an audit can tell which key a replay needs, without the key
+    /// itself ever leaving this crate. It is a one-way hash of a 256-bit secret, so it does not
+    /// help to recover the key or predict a draw.
+    pub fn key_id(&self) -> [u8; 8] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"ptr-router/sampling-key-id/v1");
+        hasher.update(self.0);
+        let digest = hasher.finalize();
+        let mut id = [0u8; 8];
+        id.copy_from_slice(&digest[..8]);
+        id
+    }
+
     /// The uniform draw in `[0, 2^53)` for a decision: the top 53 bits of the first eight bytes
     /// (big-endian) of the keyed hash.
     pub(crate) fn draw(
@@ -196,6 +211,15 @@ mod tests {
             )),
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
         );
+    }
+
+    #[test]
+    fn key_id_is_stable_distinct_and_not_a_key_prefix() {
+        let a = SamplingKey::from_bytes([7; 32]);
+        let b = SamplingKey::from_bytes([8; 32]);
+        assert_eq!(a.key_id(), SamplingKey::from_bytes([7; 32]).key_id());
+        assert_ne!(a.key_id(), b.key_id());
+        assert_ne!(a.key_id(), [7u8; 8]);
     }
 
     #[test]

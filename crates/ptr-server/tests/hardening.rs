@@ -91,7 +91,7 @@ async fn grant_verifier_refuses_an_action_the_handler_precheck_admits() {
     let app = ptr_server::router_with_dependencies(
         runtime(PtrConfig::default()),
         Arc::new(ScenarioBackend),
-        Default::default(),
+        ptr_server::checked_pod_router(ptr_router::SamplingKey::from_bytes([7; 32]), [9; 8]),
         Arc::new(Default::default()),
         ptr_server::default_verifier(),
         strict_grants(dir.clone(), 4),
@@ -160,7 +160,7 @@ async fn a_full_mailbox_is_refused_with_503_and_recovers_when_released() {
     let app = ptr_server::router_with_dependencies(
         runtime(config),
         backend.clone(),
-        Default::default(),
+        ptr_server::checked_pod_router(ptr_router::SamplingKey::from_bytes([7; 32]), [9; 8]),
         Arc::new(Default::default()),
         ptr_server::default_verifier(),
         Arc::new(Vec::new),
@@ -213,7 +213,7 @@ async fn saturation_is_explicit_with_more_requests_than_workers() {
     let app = ptr_server::router_with_dependencies(
         runtime(config),
         backend.clone(),
-        Default::default(),
+        ptr_server::checked_pod_router(ptr_router::SamplingKey::from_bytes([7; 32]), [9; 8]),
         Arc::new(Default::default()),
         ptr_server::default_verifier(),
         Arc::new(Vec::new),
