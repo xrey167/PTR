@@ -309,3 +309,86 @@ dead experts, load), churn between stages (fraction of probe tokens whose top-k 
 gate results or the skip reason, `nan_check`, `evidence_class`.
 Both RL arms start from the same restored SFT state with the same seed, so their first
 generation batch is identical by construction.
+
+## M011 routed PEFT
+
+CPU-testable implementation of the three adapter topologies, domain-masked routing, corpus
+loaders and the entrypoint for experiment M011 (routed PEFT on OLMoE). The experiment stays
+`planned`; its manifest (`experiments/model/M011-routed-peft`) lives in a separate PR and the
+pins below mirror it (`tests/test_m011_*` cross-check them when `PTR_M011_CONFIG` points at
+that `config.toml`).
+
+| module | role |
+|---|---|
+| `routed_peft.py` | arm topologies (torch only): `PerftRBlock`, `MixLoraBlock`, PEFT plain LoRA, `RoutingContext` (domain mask), `route_topk`, `install_arm`, `count_trainable_parameters` |
+| `corpora.py` | GSM8K / HumanEval / BFCL-simple at the pinned HF revisions, partition rules, domain labels, selection digests, offline fixtures |
+| `scorers.py` | GSM8K exact numeric match, HumanEval pass@1 (subprocess sandbox), BFCL single-call AST check |
+| `m011.py` | entrypoint: build model, install arm, SFT, evaluate, `--tune`, writes `run.json` / `metrics.json` / `tuning.json` |
+
+Arms (`--arm`), parameter counts for real OLMoE shapes (H 2048, I 1024, 16 layers):
+
+| arm | topology | trainable |
+|---|---|---|
+| `perft_r_emergent` | 8 parallel bottleneck experts (r 8, alpha 16) beside each MoE block, top-2 router [H, 8], unmasked | 4,456,448 |
+| `perft_r_prescribed` | same, router masked to the domain's experts (code 0-2, math 3-5, tool 6-7) before top-2 | 4,456,448 |
+| `mixlora` | 9 LoRA experts (r 4, alpha 8) as deltas on fused `gate_up_proj` / `down_proj`, one delta set shared by all 64 base experts, top-2 router [H, 9] | 4,423,680 |
+| `plain_lora` | PEFT `LoraConfig` r 17, alpha 34 on q/k/v/o | 4,456,448 |
+
+Everything else is frozen (checked at install: no non-adapter parameter may require grad). The
+count test builds a meta-device model with the real shapes, so no weights are downloaded.
+Installation replaces each `OlmoeSparseMoeBlock` (transformers 5.18: `gate` =
+`OlmoeTopKRouter`, `experts` = `OlmoeExperts`) by a wrapper holding it as `.base`. Adapter
+parameters are fp32; the base may be bf16. The domain label is set per forward pass through the
+shared `RoutingContext`; a masked arm without labels raises instead of routing unmasked.
+
+Commands (from the repo root, with the training venv):
+
+```bash
+# tiny smoke: random 2-layer OLMoE, in-memory fixture corpora, CPU, nothing downloaded
+PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.moe.m011 \
+  --arm perft_r_prescribed --seed 1 --out /tmp/m011-smoke --model tiny --max-steps 2 --eval-limit 3
+# tests (about 35 s on CPU)
+PYTHONPATH=training/src training/.venv/bin/python -m unittest discover -s training/tests -p 'test_m011*'
+
+# real run on the RTX 4090 (downloads OLMoE and the three corpora at the pinned revisions):
+# 1. tune once per arm (8 trials, seeded random search, selects on validation only)
+python -m ptr_training.moe.m011 --arm mixlora --seed 1 --out runs/m011/mixlora/tune --model olmoe --tune
+# 2. one run per seed with the frozen hyperparameters (>= 5 seeds)
+python -m ptr_training.moe.m011 --arm mixlora --seed 1 --out runs/m011/mixlora/seed1 \
+  --model olmoe --hparams runs/m011/mixlora/tune/tuning.json
+```
+
+`--max-steps` overrides the pinned 2000 steps (recorded as `smoke_override`), `--eval-limit`
+caps items per domain, `--device auto|cpu|cuda`, `--micro-batch-size` sets gradient accumulation
+(default 4 on OLMoE), `--gradient-checkpointing/--no-gradient-checkpointing` (default on for
+OLMoE). `--tune --tune-budget 2` exercises tuning cheaply.
+
+Outputs: `run.json` (arm, seed, pins, corpus selection digests per split, validation-overlap
+counters, expert-domain assignment digest vs the pinned one, trainable parameters,
+hyperparameters and their source, tuning trials used and trial-set digest, versions, device,
+sandbox mode, git commit, the list of unpinned choices), `metrics.json` (per-domain accuracy,
+`mean_task_accuracy` = macro average, `load_cv`, `routing_entropy` and their source, per-domain
+adapter-router stats, base-router stats, trainable params, training loss and first-step FLOPs),
+`tuning.json` (`--tune`: trials, `tuning_trials_used`, trial-set digest, selected trial).
+
+Implemented and tested on CPU: all four arm topologies and their counts, domain-masked routing
+(training and evaluation), corpus partitions and digests, GSM8K / HumanEval / BFCL-simple
+scorers, SFT, tuning, the metrics. Not run: nothing here has touched the real OLMoE weights, the
+real corpora, a GPU, or a 2000-step budget; the accuracies of the tiny smoke are meaningless.
+Known gaps and unpinned choices:
+
+- BFCL scoring is a simplified single-call AST check for the `simple` category, not the official
+  BFCL evaluator (the exec check does not apply to `simple`).
+- HumanEval runs candidate code in a subprocess (10 s timeout, scrubbed environment, rlimits,
+  network blocked by `unshare --net` when usable, else only a Python-level socket block).
+- Training FLOPs are measured on the first optimizer step only (`FlopCounterMode`) and
+  extrapolated; the 5% compute-matching check across arms is not computed here.
+- Not pinned by the config and chosen here: optimizer (AdamW, constant lr, clip 1.0),
+  domain-balanced batch sampling, PERFT activation (SiLU, `W_up` zero-init), gate weights
+  (softmax over the selected logits), no balancing loss on the adapter routers, max length,
+  generation lengths, the BFCL possible-answer file path, default untuned hyperparameters, steps
+  per tuning trial (default: the full budget). The full list is `UNPINNED_CHOICES` in `m011.py`.
+- Dataset field names were checked against the dataset cards / files at the pinned revisions
+  (GSM8K `question`/`answer`, HumanEval `task_id`/`prompt`/`canonical_solution`/`test`/
+  `entry_point`, BFCL `id`/`question`/`function` plus `possible_answer/` `ground_truth`);
+  `datasets.load_dataset` itself has not been exercised against the hub here.
