@@ -31,3 +31,19 @@ id = "lomo-custom"
 source = "external"
 status = "to-evaluate"
 evidence = []
+
+[[candidate]]
+id = "trl-peft"
+source = "external"
+status = "to-evaluate"
+evidence = []
+# TRL GRPOTrainer (GSPO/SAPO) + PEFT LoRA backend `trl-moe` (training/src/ptr_training/moe).
+# The command runs the pure-Python MoE unit tests on the base install; the torch tests and
+# the tiny-random pipeline smoke need the `moe` extra (see training/src/ptr_training/moe/README.md).
+# Exit codes of --require-backend: 0 = all backend tests ran and passed; 1 = test failure;
+# 2 = ENVIRONMENT MISSING (moe extra not installed in the interpreter, no training/.venv to
+# re-exec into: not a code defect); 3 = tests skipped.
+# --require-backend fails (instead of reporting a green run) when the moe extra is missing or
+# any backend test is skipped, so run it with the interpreter that has `training[moe]` installed
+# (e.g. PYTHONPATH unset, `training/.venv/bin/python scripts/run_component_eval.py ...`).
+command = "python3 training/scripts/run_moe_tests.py --require-backend"
