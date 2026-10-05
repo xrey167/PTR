@@ -38,3 +38,7 @@ min_old_upstream_pages_seeded_before_revocation = 1
 # Preregistered choices for this experiment (no code default exists).
 min_dead_original_upstream_shift_attempts = 1
 max_shift_hits_with_dead_original_upstream = 0
+# Preregistered choices for this experiment (no code default exists).
+min_omitted_upstream_segment_cases = 1
+max_omitted_upstream_admissions = 0
+omitted_upstream_rule = "every original-prefix segment (identity, generation, digest) present in the requesting prefix as a multiset"

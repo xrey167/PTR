@@ -26,7 +26,6 @@ min_proposals_accepted_per_arm = 10
 net_quality_vs_baseline_margin = 0.0
 # Preregistered choices for this experiment (no code default exists).
 flops_relative_tolerance = 0.01
-active_params_relative_tolerance = 0.0
 backward_transfer_definition = "ForgettingGate AccuracyMatrix definition"
 # Preregistered choices for this experiment (no code default exists).
 lifecycle_operations = ["birth", "merge", "split", "freeze", "prune", "reactivate"]
@@ -49,3 +48,16 @@ gate_pass_margin_applies_to_each_comparison_independently = true
 static_arm_requires_matched_observation = true
 max_static_arm_schedule_mismatches = 0
 max_static_arm_eval_stage_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+lifecycle_operators_claim_11 = ["Birth", "Merge", "Split", "Freeze", "Prune"]
+min_accepted_gate_processed_proposals_per_operator = 2
+vacuous_if_operator_below_minimum = true
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_used_recorded_per_arm = ["lifecycle", "static", "context_ablated", "heuristic"]
+max_tuning_budget_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+active_params_relative_tolerance = 0.01
+active_params_compared = "final active parameters, per seed, lifecycle arm versus static arm"
+max_active_param_mismatch_seeds = 0
+min_paired_reactivation_trials_per_seed = 1
+paired_trial = "reactivate a retired expert vs train a fresh new expert on the same returning domain"

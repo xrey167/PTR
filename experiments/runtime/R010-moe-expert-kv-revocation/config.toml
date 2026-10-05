@@ -50,3 +50,6 @@ min_expert_generation_revocations_performed = 1
 min_pages_above_layer_cached_before_revocation = 1
 min_matching_post_revocation_lookups = 1
 max_stale_expert_generation_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_restored_pre_revocation_entries = 1
+empty_restart_arm_role = "reported_separate_arm"

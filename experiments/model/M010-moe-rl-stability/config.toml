@@ -40,3 +40,11 @@ grpo_epsilon_low = 0.2
 grpo_epsilon_high = 0.28
 trl_version_checked = "1.14.1"
 algorithm_specific_values_tuned = false
+# Preregistered choices for this experiment (no code default exists).
+# TRL 1.14.1 (grpo_trainer.py): importance_sampling_level defaults to token; loss_type sapo applies a per-token soft gate on the token-level ratio (soft_coef_1 = sigmoid(tau * (coef_1 - 1)) * 4 / tau) and does not force sequence level; GSPO is importance_sampling_level sequence.
+importance_sampling_level_gspo = "sequence"
+importance_sampling_level_grpo = "token"
+importance_sampling_level_sapo = "token"
+importance_sampling_level_recorded_in_run_json = true
+max_importance_sampling_level_mismatches = 0
+importance_sampling_level_field = "importance_sampling_level"

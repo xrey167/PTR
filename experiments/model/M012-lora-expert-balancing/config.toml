@@ -33,3 +33,6 @@ max_dead_experts_per_arm = 0
 # Preregistered choices for this experiment (no code default exists).
 absolute_balance_criteria_reported_for_each_arm = true
 baseline_arm_balance_failure_role = "reported_result"
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_used_recorded_per_arm = true
+max_tuning_budget_mismatches = 0

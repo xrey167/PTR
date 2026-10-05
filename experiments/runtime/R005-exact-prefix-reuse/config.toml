@@ -86,3 +86,16 @@ vocab_size = 256
 # Preregistered choices for this experiment (no code default exists).
 min_cancelled_forks = 1
 cancelled_forks_restarted_from_fresh_prefill_at_least_cancelled_forks = true
+# Preregistered choices for this experiment (no code default exists).
+min_restored_pre_revocation_entries = 1
+empty_restart_arm_role = "reported_separate_arm"
+# Preregistered choices for this experiment (no code default exists).
+min_pinned_saturation_cases = 1
+min_capacity_refusals_typed = 1
+min_raw_prefix_reuse_cases = 1
+min_raw_identical_prefix_hits = 1
+raw_segment_admission = "content-bound: (kind Raw, content digest); no identity, generation or liveness check"
+capacity_exhausted_behaviour = "typed CapacityExhausted; uncached full prefill; no insert"
+# Preregistered choices for this experiment (no code default exists).
+min_supersession_active_fork_race_cases = 1
+max_outputs_after_supersession = 0

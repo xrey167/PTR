@@ -9,7 +9,6 @@ min_ttft_gain = 1.5
 shared_prefix_fraction = 0.5
 max_stale_block_hits_salted = 0
 # Preregistered choices for this experiment (no code default exists).
-generation_dimensions = ["model", "adapter", "expert"]
 min_generation_transitions_per_dimension = 1
 max_stale_block_hits_per_dimension_salted = 0
 min_unsalted_control_stale_block_hits_per_dimension = 1
@@ -29,7 +28,6 @@ ttft_statistic = "median"
 ttft_gain_definition = "ttft_ms_cache_disabled / ttft_ms_salted_cache"
 hit_rate_definition = "reused_prefix_tokens / total_prompt_tokens"
 # Preregistered choices for this experiment (no code default exists).
-salt_input_dimensions = ["model", "adapter", "expert", "tokenizer", "numerics", "kv_key_encoding", "rope_regime"]
 min_transitions_per_salt_input = 1
 min_stale_semantic_probe_requests = 8
 min_requests_attempted_during_flush_window = 1
@@ -76,7 +74,6 @@ principal_b_hit_rate_tolerance = 0.02
 principal_b_baseline_workload = "64 requests, 2048-token prompts, 1024-token shared prefix, the same prompt set before and after principal A revocation"
 min_cross_project_attempts = 1
 max_cross_project_hits = 0
-salt_identity = "H(PrincipalId, ProjectId, base-model identity, tokenizer, numerics, schema)"
 # Preregistered choices for this experiment (no code default exists).
 min_inflight_revocation_race_attempts = 1
 max_inflight_outputs_after_revocation = 0
@@ -88,3 +85,25 @@ memory_revocation_arms = ["normal", "lag", "restart"]
 max_stale_memory_hits = 0
 # Preregistered choices for this experiment (no code default exists).
 memory_revocation_probe_requests_reported = "per arm, keyed by memory_revocation_arms"
+# Preregistered choices for this experiment (no code default exists).
+min_restored_pre_revocation_entries = 1
+empty_restart_arm_role = "reported_separate_arm"
+# Preregistered choices for this experiment (no code default exists).
+min_supersession_probe_requests_per_arm = 1
+supersession_arms = ["normal", "lag", "restart"]
+supersession_probe_requests_reported = "per arm, keyed by supersession_arms"
+max_stale_superseded_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_memory_dependent_entries_cached_before_revocation = 1
+min_targeted_post_revocation_lookups = 1
+min_superseded_dependent_entries_cached_before_event = 1
+per_arm_seeded_entries_reported = "per arm, keyed by memory_revocation_arms and supersession_arms"
+# Preregistered choices for this experiment (no code default exists).
+generation_dimensions = ["model", "adapter", "expert"]
+engine_cache_salt_field = "cache_salt"
+# Preregistered choices for this experiment (no code default exists).
+salt_identity = "H(PrincipalId, ProjectId, semantic_salt_epoch, base-model generation and artifact digest, adapter key + generation + digest, expert generations (MoE), tokenizer, numerics including RoPE regime, schema)"
+salt_dimensions = ["principal_id", "project_id", "semantic_salt_epoch", "base_model_generation_and_artifact_digest", "adapter_key_generation_digest", "expert_generations", "tokenizer", "numerics_including_rope_regime", "schema"]
+block_key_dimensions = ["parent_block_hash", "block_tokens", "engine_extras_lora_id"]
+adapter_and_expert_in_salt = true
+probe_dimensions_all_salt_borne = ["model", "adapter", "expert", "tokenizer", "numerics", "kv_key_encoding", "rope_regime"]

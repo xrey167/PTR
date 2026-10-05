@@ -23,11 +23,8 @@ large_frame_width = 2048
 large_frame_dtype = "f32"
 large_frame_bytes = 16777216
 max_body_bytes = 4194304
-max_large_frame_bitwise_mismatch_count = 0
-shape_limit_alternative_requires_typed_refusal = true
 # Preregistered choices for this experiment (no code default exists).
 boundary_dtype = "F32"
-model_width = 2048
 vocab_size = 256
 min_chain_mismatch_attempts = 1
 min_duplicate_chunk_attempts = 1
@@ -76,3 +73,20 @@ max_positions_length_mismatches_admitted = 0
 min_activation_control_cases = 1
 max_activation_control_kv_installs = 0
 activation_control_excluded_from = ["typed_rejection_requirement", "wire_kv_page_bytes"]
+# Preregistered choices for this experiment (no code default exists).
+min_mislabelled_frame_digest_attempts = 1
+max_mislabelled_frame_digests_admitted = 0
+model_computation_case = "seeded 64-wide split model (hidden_size = 64) versus single-pod execution, bitwise"
+large_frame_case = "transport-only: reassembled bytes equal sent bytes; frame digest over the complete payload"
+max_large_frame_reassembled_bytes_mismatch_count = 0
+max_large_frame_digest_mismatches = 0
+frame_digest_field = "frame_digest"
+# Preregistered choices for this experiment (no code default exists).
+chunking_mandatory = true
+shape_limit_alternative = "removed"
+chunk_header_fields = ["frame_id", "chunk_index", "chunk_total", "chunk_digest", "frame_digest", "upstream_chain", "signed_absolute_deadline", "parent_operation_id"]
+tombstone_retention = "at least the maximum frame deadline plus the clock skew bound"
+clock_skew_bound_ms = 1000
+max_frame_tombstones_per_session = 64
+min_late_chunks_after_abandon_attempts = 1
+max_late_chunks_after_abandon_admitted = 0

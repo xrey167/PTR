@@ -34,3 +34,7 @@ min_seeds = 5
 recovery_sequences = [["sft", "gspo"], ["sft", "sapo"]]
 unpruned_control_with_identical_recovery = true
 full_matrix_required = "method x fraction x optimizer x seed"
+# Preregistered choices for this experiment (no code default exists).
+unpruned_control_per_sequence_and_seed = true
+control_matching = "each pruned row compared only with the unpruned control of the same recovery sequence and seed"
+max_unpruned_controls_missing = 0

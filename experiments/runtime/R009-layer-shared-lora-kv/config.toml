@@ -56,3 +56,6 @@ min_cross_adapter_attempts = 1
 min_old_generation_as_new_attempts = 1
 max_cross_adapter_hits = 0
 max_old_generation_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_restored_pre_revocation_entries = 1
+empty_restart_arm_role = "reported_separate_arm"

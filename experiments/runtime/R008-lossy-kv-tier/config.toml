@@ -27,7 +27,6 @@ min_lossy_revocation_attempts = 1
 min_lossy_restart_attempts = 1
 max_lossy_hits_after_revocation = 0
 max_lossy_hits_after_restart = 0
-min_revoked_lossy_objects_present_before_event = 1
 agreement_model = "Qwen/Qwen2.5-0.5B"
 agreement_model_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
 agreement_model_layers = 24
@@ -35,3 +34,6 @@ agreement_model_vocab_size = 151936
 agreement_model_hidden_size = 896
 # Preregistered choices for this experiment (no code default exists).
 valid_objects_surviving_restart_role = "reported_only"
+# Preregistered choices for this experiment (no code default exists).
+min_revoked_lossy_objects_present_before_revocation = 1
+min_revoked_lossy_objects_present_before_restart = 1

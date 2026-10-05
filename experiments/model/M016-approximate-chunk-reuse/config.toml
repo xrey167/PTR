@@ -67,3 +67,10 @@ analytic_speedup_k7 = 3.95
 analytic_speedup_k10 = 3.42
 analytic_speedup_k13 = 3.01
 candidates_dropped_as_infeasible = []
+# Preregistered choices for this experiment (no code default exists).
+min_restored_pre_revocation_entries = 1
+empty_restart_arm_role = "reported_separate_arm"
+# Preregistered choices for this experiment (no code default exists).
+min_omitted_upstream_segment_cases = 1
+max_omitted_upstream_admissions = 0
+omitted_upstream_rule = "every original-prefix segment (identity, generation, digest) present in the requesting prefix as a multiset"
