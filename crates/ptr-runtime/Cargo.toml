@@ -22,6 +22,7 @@ ptr-pods = { workspace = true }
 ptr-router = { workspace = true }
 ptr-verifier = { workspace = true }
 ptr-ledger = { workspace = true }
+ptr-lineage = { workspace = true }
 ptr-state = { workspace = true }
 ptr-events = { workspace = true }
 ptr-security = { workspace = true }

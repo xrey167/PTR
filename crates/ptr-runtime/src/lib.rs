@@ -2,6 +2,7 @@ pub mod admission;
 pub mod compacted;
 pub mod directory;
 pub mod execution;
+pub mod expert;
 pub mod identity;
 pub mod kv;
 pub mod manifest;
@@ -376,6 +377,7 @@ pub enum RuntimeError {
     Snapshot(persistence::SnapshotError),
     Compacted(compacted::CompactedError),
     Neural(neural::NeuralError),
+    Expert(expert::ExpertAdmissionError),
     Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),
@@ -491,12 +493,10 @@ pub enum RuntimeError {
     /// semantic write paths, which build and check them.
     SemanticRecordOutsideSemanticPath,
     /// An expert structural record ([`LedgerEvent::ExpertStructuralCommitted`]) was handed to
-    /// `commit`, or found in a log being replayed. Such a record may only be written by the
-    /// runtime's expert admission path, which checks the proposer, the evidence and the
-    /// compare-and-set before appending; that path does not exist yet, so every route fails
-    /// closed. The admission package replaces the replay refusal with a re-check of the record.
-    /// That path MUST derive the event's `proposal_id`, `operation_id` and `evidence_digest`
-    /// from the decoded record, and replay MUST re-derive them and compare, refusing a mismatch.
+    /// the public `commit`. Such a record may only be written by
+    /// [`PtrRuntime::admit_expert_proposal`], which checks the proposer, the gate evidence and the
+    /// compare-and-set and derives the event's ids from the record. Replay does not use this
+    /// error: it re-checks the record and reports [`RuntimeError::Expert`].
     StructuralRecordOutsideAdmissionPath,
     /// A semantic record written before origins existed, replayed after a
     /// record with an attributed origin (rule R1).
@@ -624,6 +624,7 @@ pub struct PtrRuntime {
     revoked_sessions: BTreeSet<ptr_types::SessionId>,
     hypotheses: BTreeMap<String, PodHypothesis>,
     tier_journal: TierJournalProjection,
+    experts: expert::ExpertRegistryProjection,
 }
 
 impl PtrRuntime {
@@ -673,6 +674,7 @@ impl PtrRuntime {
             revoked_sessions: BTreeSet::new(),
             hypotheses: BTreeMap::new(),
             tier_journal: TierJournalProjection::default(),
+            experts: expert::ExpertRegistryProjection::default(),
         })
     }
 
@@ -2803,12 +2805,9 @@ impl PtrRuntime {
                     RuntimeError::InvalidConfig(format!("invalid tier journal event: {error:?}"))
                 })
             }
-            // Fail closed: an expert structural record is authority over which experts serve,
-            // and nothing yet re-checks one on replay (proposer, evidence, compare-and-set). A
-            // log holding one does not open until the admission path replaces this arm.
-            LedgerEvent::ExpertStructuralCommitted { .. } => {
-                Err(RuntimeError::StructuralRecordOutsideAdmissionPath)
-            }
+            // Replay re-derives the ids from the record and repeats the compare-and-set against
+            // the registry as of this point of the history (see the `expert` module).
+            LedgerEvent::ExpertStructuralCommitted { .. } => self.validate_expert_event(event),
             // Revocation tombstones are monotone and may precede activation.
             // Verifier/snapshot records do not confer permissions or load state.
             LedgerEvent::SemanticDeltaCommitted { .. }
@@ -2920,10 +2919,8 @@ impl PtrRuntime {
             LedgerEvent::MeshTunnelLifecycle(_)
             | LedgerEvent::PodEvidenceCommitted { .. }
             | LedgerEvent::PodOutputAdmitted { .. } => {}
-            // Unreachable through the paths above, which refuse the record first; kept as its
-            // own arm so applying one can never silently succeed.
             LedgerEvent::ExpertStructuralCommitted { .. } => {
-                return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
+                self.apply_expert_event(&committed.event)?;
             }
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }

@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-05  
-**Code footprint:** 21 Rust source files · 9541 nonblank source lines · 13 integration-test files · 142 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 21 Rust source files · 9627 nonblank source lines · 13 integration-test files · 143 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- StructuralOp::outcomes is the single post-operation state table for an admitted structural operation (ExpertOutcome, OutcomeKind): operands first, then results; results enter Serving at state_version 1, Merge and Split sources become Superseded, Freeze gives Frozen, unfreeze Serving, Prune and Retire Retired with their reason, and each operand's state_version advances by one; a reactivated Retired(GateFailed) source yields no operand outcome because its pod now names the new generation. The runtime registry and the ptr-state projection both apply it
 - Decoding an evidence output no longer sizes an allocation from the dependency or provenance count stored in the record: the vectors grow with what is read, so a forged count ends at the first missing byte as an error instead of a capacity-overflow panic
 - PodRegistry::register replaces an existing (project, id) entry and returns the old one (kept for current callers); PodRegistry::register_new is the non-replacing insert that structural-admission paths must use: it returns PodRegistrationError::AlreadyRegistered and leaves the original entry unchanged; PodRegistry::replace_if_current(expected, new) is the compare-and-replace for the atomic takeover of an operand of the same operation (a retired-target reactivation puts generation g+1 on the same pod id): it swaps only when the entry for new's (project, id) is exactly expected (Arc::ptr_eq), returns the old entry, and otherwise leaves the registry unchanged with NotRegistered, NotCurrent or IdentityMismatch; the registry tracks no token-expert (layer, slot), so slot ownership is not checked there
 - PodRegistry is keyed by project and id, so two projects may register the same Pod id without shadowing and no lookup path exists that takes an id alone
@@ -58,7 +59,7 @@
 - Process-isolated, remote-Iroh and GPU/DLPack adapters
 - Capability/effect validation against runtime policy
 - Borrowed/busy/backpressured lease states and cancellation
-- Admission of an ExpertCommitRecord: nothing checks the proposer, the evidence digest, the gate epoch or the compare-and-set; the record is only a validated byte format
+- Admission of an ExpertCommitRecord lives in ptr-runtime (admit_expert_proposal); this crate only defines the validated byte format and the state table: nothing here checks the evidence, the gate epoch or the compare-and-set
 
 ### Next milestones
 

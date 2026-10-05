@@ -4723,6 +4723,7 @@ dependencies = [
  "ptr-events",
  "ptr-exec",
  "ptr-ledger",
+ "ptr-lineage",
  "ptr-memory",
  "ptr-model-api",
  "ptr-pods",
@@ -4788,6 +4789,7 @@ name = "ptr-state"
 version = "0.1.0"
 dependencies = [
  "ptr-ledger",
+ "ptr-pods",
  "ptr-types",
  "tokio",
  "turso",

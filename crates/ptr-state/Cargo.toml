@@ -12,6 +12,7 @@ turso-backend = ["dep:turso", "dep:tokio"]
 [dependencies]
 ptr-types = { workspace = true }
 ptr-ledger = { workspace = true }
+ptr-pods = { workspace = true }
 turso = { version = "=0.8.0", default-features = false, optional = true }
 tokio = { workspace = true, optional = true }
 
