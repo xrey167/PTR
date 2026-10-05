@@ -87,7 +87,7 @@ shape_limit_alternative = "removed"
 chunk_header_fields = ["frame_id", "chunk_index", "chunk_total", "chunk_digest", "frame_digest", "upstream_chain", "signed_absolute_deadline", "parent_operation_id"]
 tombstone_retention = "at least the maximum frame deadline plus the clock skew bound"
 clock_skew_bound_ms = 1000
-max_frame_tombstones_per_session = 64
+max_frame_tombstones_per_principal = 64
 min_late_chunks_after_abandon_attempts = 1
 max_late_chunks_after_abandon_admitted = 0
 # Preregistered choices for this experiment (no code default exists).
@@ -104,7 +104,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "hidden_size", "vocab_size", "large_frame_chunks", "reorder_window", "frame_deadline_ms", "max_incomplete_frames_per_peer", "max_chunks_in_flight", "test_model_layers", "weight_seed", "num_heads", "num_kv_heads", "head_dim", "corpus_generator_seed", "split_layer", "large_frame_tokens", "large_frame_width", "large_frame_bytes", "clock_skew_bound_ms", "tombstone_overcapacity_abandoned_frames", "chunk_header_fields", "invalidation_types", "tombstone_bound", "reassembly_identity", "chunk_digest_covers", "adversarial_attempt_kinds", "valid_frame_cases", "completion_tombstone_key", "completion_tombstone_retention", "invalidation_coverage_matrix"]
+procedure_parameters_recorded_per_cell = ["seeds", "hidden_size", "vocab_size", "large_frame_chunks", "reorder_window", "frame_deadline_ms", "max_incomplete_frames_per_peer", "max_chunks_in_flight", "test_model_layers", "weight_seed", "num_heads", "num_kv_heads", "head_dim", "corpus_generator_seed", "split_layer", "large_frame_tokens", "large_frame_width", "large_frame_bytes", "clock_skew_bound_ms", "tombstone_overcapacity_abandoned_frames", "chunk_header_fields", "invalidation_types", "tombstone_bound", "reassembly_identity", "chunk_digest_covers", "adversarial_attempt_kinds", "valid_frame_cases", "completion_tombstone_key", "completion_tombstone_retention", "invalidation_coverage_matrix", "smuggling_probe_kinds", "activation_frame_input_lineage", "replay_window_ms", "max_frame_deadline_lifetime_ms", "max_clock_skew_ms"]
 # Preregistered choices for this experiment (no code default exists).
 tombstone_overcapacity_abandoned_frames = 65
 min_frames_accepted_after_tombstone_expiry = 1
@@ -120,7 +120,7 @@ min_concurrent_abandonment_cases = 1
 max_tombstone_bound_violations = 0
 min_cross_operation_splice_attempts = 1
 max_cross_operation_splices_admitted = 0
-tombstone_bound = "admitted_incomplete_frames + retained_tombstones (abandoned and completed) <= max_frame_tombstones_per_session"
+tombstone_bound = "admitted_incomplete_frames + retained_tombstones (abandoned and completed) <= max_frame_tombstones_per_principal"
 reassembly_identity = "(session, parent_operation_id, frame_id)"
 chunk_digest_covers = ["frame_digest", "parent_operation_id", "signed_absolute_deadline"]
 tombstone_bound_terms = ["admitted_incomplete_frames", "retained_tombstones"]
@@ -132,11 +132,11 @@ min_full_frame_replay_attempts = 1
 full_frame_replay_includes_fresh_request_ids = true
 max_replayed_frames_admitted = 0
 max_valid_frame_bitwise_mismatches = 0
-completion_tombstone_key = "(session, parent_operation_id, frame_id)"
+completion_tombstone_key = "(principal, parent_operation_id, frame_id)"
 completion_tombstone_retention = "signed_absolute_deadline + clock skew bound"
 replay_rejection = "typed FrameReplayed"
 # Preregistered choices for this experiment (no code default exists).
-invalidation_coverage_matrix = { kinds = ["upstream_stage_generation"], types = ["revocation", "supersession"], paths = ["normal", "lag", "inflight"], cells = ["upstream_stage_generation_normal_revocation", "upstream_stage_generation_normal_supersession", "upstream_stage_generation_lag_revocation", "upstream_stage_generation_lag_supersession", "upstream_stage_generation_inflight_revocation", "upstream_stage_generation_inflight_supersession"] }
+invalidation_coverage_matrix = { kinds = ["upstream_stage_generation", "semantic_input", "memory_input", "derived_input", "upstream_chain_expert"], types = ["revocation", "supersession"], paths = ["normal", "lag", "inflight"], extra_types = { upstream_chain_expert = ["fence"] }, cells = ["upstream_stage_generation_normal_revocation", "upstream_stage_generation_normal_supersession", "upstream_stage_generation_lag_revocation", "upstream_stage_generation_lag_supersession", "upstream_stage_generation_inflight_revocation", "upstream_stage_generation_inflight_supersession", "semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "derived_input_normal_revocation", "derived_input_normal_supersession", "derived_input_lag_revocation", "derived_input_lag_supersession", "derived_input_inflight_revocation", "derived_input_inflight_supersession", "upstream_chain_expert_normal_revocation", "upstream_chain_expert_normal_supersession", "upstream_chain_expert_normal_fence", "upstream_chain_expert_lag_revocation", "upstream_chain_expert_lag_supersession", "upstream_chain_expert_lag_fence", "upstream_chain_expert_inflight_revocation", "upstream_chain_expert_inflight_supersession", "upstream_chain_expert_inflight_fence"] }
 min_invalidation_matrix_cases_per_cell = 1
 max_invalidation_matrix_stale_hits_per_cell = 0
 invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
@@ -145,3 +145,39 @@ invalidation_matrix_not_applicable = "restore: no KV is restored on a Pod"
 min_digest_inconsistency_attempts = 1
 digest_inconsistency_members_of_adversarial_attempt_kinds = ["mixed_version_frame", "splice", "cross_operation_splice"]
 digest_equality_scope = "valid frames only"
+# Preregistered choices for this experiment (no code default exists).
+min_cross_session_replay_attempts = 1
+max_cross_session_replays_admitted = 0
+tombstone_scope = "authenticated principal; key (principal, parent_operation_id, frame_id); survives reconnects until signed_absolute_deadline + clock skew bound"
+# Preregistered choices for this experiment (no code default exists).
+smuggling_probe_kinds = ["mislabelled_kv_payload", "non_allowlisted_type", "kv_sized_allowlisted_smuggling"]
+min_smuggling_probe_attempts_per_kind = 1
+max_smuggling_probes_admitted = 0
+wire_kv_page_bytes_scope = "admitted legitimate PodWire traffic only; probe bytes excluded"
+# Preregistered choices for this experiment (no code default exists).
+min_concurrent_cross_session_assembly_cases = 1
+max_duplicate_activation_deliveries = 0
+assembly_reservation = "first accepted chunk reserves (principal, parent_operation_id, frame_id) in the principal-scoped tombstone table; reservations count against max_frame_tombstones_per_principal"
+restore_applicable = false
+restore_not_applicable_reason = "no KV is restored on a Pod"
+inflight_race_applicable = true
+activation_frame_input_lineage = "every activation frame carries identity, generation and digest of every semantic and memory input that contributed, signed by the upstream runtime with the frame; downstream use-time admission revalidates it"
+# Preregistered choices for this experiment (no code default exists).
+min_raw_ancestor_omission_cases = 1
+max_reuse_after_raw_ancestor_removed = 0
+input_lineage_raw_ancestry = "ordered (Raw, content_digest) ancestry of every Raw segment that influenced the activation"
+downstream_cache_key_includes = ["activation_frame_digest", "ordered_raw_ancestry"]
+activation_frame_lineage_field = "input_lineage"
+# Preregistered choices for this experiment (no code default exists).
+min_upstream_expert_fence_cases = 1
+max_downstream_kv_reuse_after_upstream_fence = 0
+upstream_chain_carries = ["chain_expert_generation", "per_expert_fence_epoch"]
+# Preregistered choices for this experiment (no code default exists).
+replay_window_ms = 10000
+max_frame_deadline_lifetime_ms = 5000
+max_clock_skew_ms = 1000
+replay_window_rule = "replay_window >= max_frame_deadline_lifetime + 2 * max_clock_skew_ms (10000 >= 5000 + 2 * 1000 = 7000)"
+min_expired_deadline_frame_attempts = 1
+max_expired_frames_admitted = 0
+min_post_abandonment_replay_cases = 1
+max_abandoned_frame_replays_admitted = 0

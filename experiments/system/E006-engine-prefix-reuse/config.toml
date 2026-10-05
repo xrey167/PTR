@@ -11,7 +11,7 @@ max_stale_block_hits_salted = 0
 # Preregistered choices for this experiment (no code default exists).
 min_generation_transitions_per_dimension = 1
 max_stale_block_hits_per_dimension_salted = 0
-min_unsalted_control_stale_block_hits_per_dimension = 1
+min_unsalted_control_stale_hit_cases_per_dimension = 1
 stale_probe_requests_after_transition = 8
 stale_probe_requests_applies_per_dimension = true
 max_bitwise_mismatch_count = 0
@@ -47,7 +47,6 @@ first_request_in_ttft_median = false
 first_request_in_hit_rate = true
 concurrency = 1
 min_invalidation_suppressed_arms = 1
-min_restore_arms = 1
 min_post_event_lookups = 1
 max_stale_hits = 0
 # Preregistered choices for this experiment (no code default exists).
@@ -86,8 +85,6 @@ max_stale_memory_hits = 0
 # Preregistered choices for this experiment (no code default exists).
 memory_revocation_probe_requests_reported = "per arm, keyed by memory_revocation_arms"
 # Preregistered choices for this experiment (no code default exists).
-min_restored_pre_revocation_entries = 1
-empty_restart_arm_role = "reported_separate_arm"
 # Preregistered choices for this experiment (no code default exists).
 min_supersession_probe_requests_per_arm = 1
 supersession_arms = ["normal", "lag", "restart"]
@@ -102,8 +99,8 @@ per_arm_seeded_entries_reported = "per arm, keyed by memory_revocation_arms and 
 generation_dimensions = ["model", "adapter", "expert"]
 engine_cache_salt_field = "cache_salt"
 # Preregistered choices for this experiment (no code default exists).
-salt_identity = "H(PrincipalId, ProjectId, semantic_salt_epoch, base-model generation and artifact digest, adapter key + generation + digest, expert generations (MoE), tokenizer, numerics including RoPE regime, schema)"
-salt_dimensions = ["principal_id", "project_id", "semantic_salt_epoch", "base_model_generation_and_artifact_digest", "adapter_key_generation_digest", "expert_generations", "tokenizer", "numerics_including_rope_regime", "schema"]
+salt_identity = "H(PrincipalId, ProjectId, semantic_salt_epoch, base-model generation and artifact digest, adapter key + generation + digest, expert generations and per-expert fence epochs (MoE), tokenizer, numerics including RoPE regime, schema)"
+salt_dimensions = ["principal_id", "project_id", "semantic_salt_epoch", "base_model_generation_and_artifact_digest", "adapter_key_generation_digest", "expert_generations_and_fence_epochs", "tokenizer", "numerics_including_rope_regime", "schema"]
 block_key_dimensions = ["parent_block_hash", "block_tokens", "engine_extras_lora_id"]
 adapter_and_expert_in_salt = true
 probe_dimensions_all_salt_borne = ["model", "adapter", "expert", "tokenizer", "numerics", "kv_key_encoding", "rope_regime"]
@@ -118,7 +115,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix"]
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix", "arm_matrix", "enabled_backends", "backend_versions", "persistent_cache_declared_per_backend", "salt_epochs"]
 # Preregistered choices for this experiment (no code default exists).
 inflight_restart_output_mismatches_max = 0
 inflight_restarts_equal_cancellations = true
@@ -154,7 +151,34 @@ attacker_heldout_predictions_recorded = ["id", "label", "score"]
 attacker_heldout_predictions_digest_recorded = true
 attacker_solver_param_names = ["max_iter"]
 # Preregistered choices for this experiment (no code default exists).
-invalidation_coverage_matrix = { kinds = ["semantic_input", "memory_input", "adapter_generation", "expert_generation", "base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_restore_revocation", "semantic_input_restore_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_restore_revocation", "memory_input_restore_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "adapter_generation_normal_revocation", "adapter_generation_normal_supersession", "adapter_generation_lag_revocation", "adapter_generation_lag_supersession", "adapter_generation_restore_revocation", "adapter_generation_restore_supersession", "adapter_generation_inflight_revocation", "adapter_generation_inflight_supersession", "expert_generation_normal_revocation", "expert_generation_normal_supersession", "expert_generation_lag_revocation", "expert_generation_lag_supersession", "expert_generation_restore_revocation", "expert_generation_restore_supersession", "expert_generation_inflight_revocation", "expert_generation_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession"] }
+invalidation_coverage_matrix = { kinds = ["semantic_input", "memory_input", "derived_input", "adapter_generation", "expert_generation", "base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "engine_restart", "inflight"], extra_types = { expert_generation = ["fence"] }, cells = ["semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_engine_restart_revocation", "semantic_input_engine_restart_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_engine_restart_revocation", "memory_input_engine_restart_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "derived_input_normal_revocation", "derived_input_normal_supersession", "derived_input_lag_revocation", "derived_input_lag_supersession", "derived_input_engine_restart_revocation", "derived_input_engine_restart_supersession", "derived_input_inflight_revocation", "derived_input_inflight_supersession", "adapter_generation_normal_revocation", "adapter_generation_normal_supersession", "adapter_generation_lag_revocation", "adapter_generation_lag_supersession", "adapter_generation_engine_restart_revocation", "adapter_generation_engine_restart_supersession", "adapter_generation_inflight_revocation", "adapter_generation_inflight_supersession", "expert_generation_normal_revocation", "expert_generation_normal_supersession", "expert_generation_normal_fence", "expert_generation_lag_revocation", "expert_generation_lag_supersession", "expert_generation_lag_fence", "expert_generation_engine_restart_revocation", "expert_generation_engine_restart_supersession", "expert_generation_engine_restart_fence", "expert_generation_inflight_revocation", "expert_generation_inflight_supersession", "expert_generation_inflight_fence", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_engine_restart_revocation", "base_model_engine_restart_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession"] }
 min_invalidation_matrix_cases_per_cell = 1
 max_invalidation_matrix_stale_hits_per_cell = 0
-invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
+invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; engine_restart = restart of the engine or runtime with replay of requests that could hit pre-revocation blocks (and persistent cache reload where declared); inflight = in-flight race"
+# Preregistered choices for this experiment (no code default exists).
+arm_matrix = [{ arm = "cache_disabled", prefix_cache = "off", salt = "none" }, { arm = "unsalted_control", prefix_cache = "on", salt = "none" }, { arm = "salted", prefix_cache = "on", salt = "PTR-derived" }]
+# Preregistered choices for this experiment (no code default exists).
+enabled_backends = ["vllm-http", "sglang-http"]
+backend_versions = { vllm-http = "0.30.0", sglang-http = "0.5.21" }
+sglang_version = "0.5.21"
+safety_counters_reported = "per backend"
+performance_thresholds_per_backend = { vllm-http = { min_ttft_gain = 1.5 }, sglang-http = { min_ttft_gain = 1.5 } }
+performance_not_precondition_for_safety_verdict = true
+# Preregistered choices for this experiment (no code default exists).
+min_expert_fence_salt_transition_cases_per_backend = 1
+max_stale_blocks_served_after_fence = 0
+expert_fence_epoch_in_salt = true
+# Preregistered choices for this experiment (no code default exists).
+restore_applicable = false
+restore_not_applicable_reason = "engine-owned cache, no PTR catalog/tier restore"
+min_engine_restart_salt_reuse_arms_per_backend = 1
+persistent_cache_declared_per_backend = { vllm-http = false, sglang-http = false }
+persistent_cache_reload_required_if_declared = true
+stale_hits_in_restart_or_reload_arms_falsify = true
+invalidation_matrix_not_applicable = "restore: engine-owned cache, no PTR catalog/tier restore (replaced by the engine_restart path)"
+persistence_arms = ["engine_restart_salt_reuse", "persistent_cache_reload", "runtime_only_restart"]
+# Preregistered choices for this experiment (no code default exists).
+min_runtime_only_restart_arms_per_backend = 1
+max_reused_salt_epochs = 0
+salt_epochs = "monotone, durable, derived from the ledger commit index; never reused"
+reverse_index_rebuilt_from_ledger_before_serving = true

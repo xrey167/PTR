@@ -77,8 +77,7 @@ omitted_upstream_rule = "every original-prefix segment (identity, generation, di
 # Preregistered choices for this experiment (no code default exists).
 min_upstream_supersession_cases = 1
 max_superseded_upstream_page_reachable_count = 0
-inflight_race_applicable = false
-inflight_race_not_applicable_reason = "single-shot oracle; no in-flight requests"
+inflight_race_applicable = true
 # Preregistered choices for this experiment (no code default exists).
 corpus_dataset = "openai/gsm8k"
 corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
@@ -107,7 +106,7 @@ hardware_profile = "hardware/rtx5090.toml"
 run_json_records_hardware = ["gpu_model", "driver_version", "cuda_runtime_version", "torch_version", "vllm_version"]
 max_hardware_profile_mismatches = 0
 # Preregistered choices for this experiment (no code default exists).
-invalidation_coverage_matrix = { kinds = ["semantic_lineage_segment", "memory_lineage_segment", "base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["semantic_lineage_segment_normal_revocation", "semantic_lineage_segment_normal_supersession", "semantic_lineage_segment_lag_revocation", "semantic_lineage_segment_lag_supersession", "semantic_lineage_segment_restore_revocation", "semantic_lineage_segment_restore_supersession", "semantic_lineage_segment_inflight_revocation", "semantic_lineage_segment_inflight_supersession", "memory_lineage_segment_normal_revocation", "memory_lineage_segment_normal_supersession", "memory_lineage_segment_lag_revocation", "memory_lineage_segment_lag_supersession", "memory_lineage_segment_restore_revocation", "memory_lineage_segment_restore_supersession", "memory_lineage_segment_inflight_revocation", "memory_lineage_segment_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession"] }
+invalidation_coverage_matrix = { kinds = ["semantic_lineage_segment", "memory_lineage_segment", "derived_lineage_segment", "base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["semantic_lineage_segment_normal_revocation", "semantic_lineage_segment_normal_supersession", "semantic_lineage_segment_lag_revocation", "semantic_lineage_segment_lag_supersession", "semantic_lineage_segment_restore_revocation", "semantic_lineage_segment_restore_supersession", "semantic_lineage_segment_inflight_revocation", "semantic_lineage_segment_inflight_supersession", "memory_lineage_segment_normal_revocation", "memory_lineage_segment_normal_supersession", "memory_lineage_segment_lag_revocation", "memory_lineage_segment_lag_supersession", "memory_lineage_segment_restore_revocation", "memory_lineage_segment_restore_supersession", "memory_lineage_segment_inflight_revocation", "memory_lineage_segment_inflight_supersession", "derived_lineage_segment_normal_revocation", "derived_lineage_segment_normal_supersession", "derived_lineage_segment_lag_revocation", "derived_lineage_segment_lag_supersession", "derived_lineage_segment_restore_revocation", "derived_lineage_segment_restore_supersession", "derived_lineage_segment_inflight_revocation", "derived_lineage_segment_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession"] }
 min_invalidation_matrix_cases_per_cell = 1
 max_invalidation_matrix_stale_hits_per_cell = 0
 invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
@@ -120,3 +119,9 @@ max_shifted_effects_admitted = 0
 min_shifted_taint_cases = 1
 max_untainted_shifted_results = 0
 inflight_consumption_interval = "returned or repacked K/V still being consumed after the secondary-index lookup"
+inflight_race_reason = "consumption-time shifted-reuse races: returned or repacked K/V still being consumed after the secondary-index lookup (S4)"
+restore_applicable = true
+# Preregistered choices for this experiment (no code default exists).
+min_raw_ancestor_omission_cases = 1
+max_reuse_after_raw_ancestor_removed = 0
+raw_ancestor_rule = "every raw ancestor (Raw, content_digest) recorded in the lineage must be present in the current request prefix, as a multiset"

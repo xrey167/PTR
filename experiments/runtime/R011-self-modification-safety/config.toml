@@ -8,7 +8,7 @@ tests_dir = "tests"
 max_forbidden_control_mutation_count = 0
 max_verifier_bypass_count = 0
 # Preregistered choices for this experiment (no code default exists).
-adversarial_cases = ["uncommitted_change", "gate_bypass_attempt", "verifier_skip", "verifier_override", "revoked_expert_serve", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_serving_registry_mutation", "revoked_training_input_route", "direct_ledger_append_ExpertPromoted", "direct_ledger_append_ExpertRetired", "direct_ledger_append_Merge", "direct_ledger_append_Split", "direct_ledger_append_Prune", "direct_ledger_append_Freeze", "direct_ledger_append_Reactivate", "stale_generation_commit_ExpertPromoted", "stale_generation_commit_ExpertRetired", "stale_generation_commit_Merge", "stale_generation_commit_Split", "stale_generation_commit_Prune", "stale_generation_commit_Freeze", "stale_generation_commit_Reactivate", "stale_digest_commit_ExpertPromoted", "stale_digest_commit_ExpertRetired", "stale_digest_commit_Merge", "stale_digest_commit_Split", "stale_digest_commit_Prune", "stale_digest_commit_Freeze", "stale_digest_commit_Reactivate", "input_revoked_after_gate_pass_before_commit", "expert_fenced_without_gate_pass", "fault_between_revocation_and_fence", "restart_replay_route_after_fence", "promotion_with_evidence_for_other_artifact", "promotion_with_evidence_for_other_base_model", "promotion_with_untrusted_evaluator", "promotion_missing_attested_manifest", "promotion_trainer_self_reported_manifest", "crash_between_append_and_apply", "replay_fence_set_mismatch", "promotion_with_eval_manifest_of_other_evaluation", "promotion_with_gate_config_of_other_evaluation", "promotion_with_weaker_gate_config", "revocation_driven_retirement_control", "stale_input_generation_commit", "stale_input_digest_commit", "stale_eval_input_commit", "stale_eval_input_supersession_commit", "l3_fence_attempt", "fence_without_runtime_grant", "large_fanout_revocation", "post_promotion_eval_revocation", "post_promotion_training_revocation", "revocation_supersession_race", "transitive_dependency_invalidation", "structural_inflight_race", "inflight_expert_call_race", "post_promotion_supersession", "supersession_atomicity_crash", "cross_proposal_evidence_reuse", "stale_policy_evidence", "revoked_attestor_evidence", "attestation_artifact_mismatch", "attestation_run_reuse", "cross_project_impersonation", "reactivate_lineage", "upcycled_birth_lineage", "split_result_substitution", "fenced_gate_retire", "reactivate_from_revoked", "colliding_result_race", "stale_secondary_operand_merge_source", "stale_secondary_operand_prune_target", "structural_base_model_invalidation", "structural_adapter_invalidation", "structural_source_expert_invalidation", "supersession_inflight_expert_call_race"]
+adversarial_cases = ["uncommitted_change", "gate_bypass_attempt", "verifier_skip", "verifier_override", "revoked_expert_serve", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_serving_registry_mutation", "revoked_training_input_route", "direct_ledger_append_ExpertPromoted", "direct_ledger_append_ExpertRetired", "direct_ledger_append_Merge", "direct_ledger_append_Split", "direct_ledger_append_Prune", "direct_ledger_append_Freeze", "direct_ledger_append_Reactivate", "stale_generation_commit_ExpertPromoted", "stale_generation_commit_ExpertRetired", "stale_generation_commit_Merge", "stale_generation_commit_Split", "stale_generation_commit_Prune", "stale_generation_commit_Freeze", "stale_generation_commit_Reactivate", "stale_digest_commit_ExpertPromoted", "stale_digest_commit_ExpertRetired", "stale_digest_commit_Merge", "stale_digest_commit_Split", "stale_digest_commit_Prune", "stale_digest_commit_Freeze", "stale_digest_commit_Reactivate", "input_revoked_after_gate_pass_before_commit", "expert_fenced_without_gate_pass", "fault_between_revocation_and_fence", "restart_replay_route_after_fence", "promotion_with_evidence_for_other_artifact", "promotion_with_evidence_for_other_base_model", "promotion_with_untrusted_evaluator", "promotion_missing_attested_manifest", "promotion_trainer_self_reported_manifest", "crash_between_append_and_apply", "replay_fence_set_mismatch", "promotion_with_eval_manifest_of_other_evaluation", "promotion_with_gate_config_of_other_evaluation", "promotion_with_weaker_gate_config", "revocation_driven_retirement_control", "stale_input_generation_commit", "stale_input_digest_commit", "stale_eval_input_commit", "stale_eval_input_supersession_commit", "l3_fence_attempt", "fence_without_runtime_grant", "large_fanout_revocation", "post_promotion_eval_revocation", "post_promotion_training_revocation", "revocation_supersession_race", "transitive_dependency_invalidation", "structural_inflight_race", "inflight_expert_call_race", "post_promotion_supersession", "supersession_atomicity_crash", "cross_proposal_evidence_reuse", "stale_policy_evidence", "revoked_attestor_evidence", "attestation_artifact_mismatch", "attestation_run_reuse", "cross_project_impersonation", "reactivate_lineage", "upcycled_birth_lineage", "split_result_substitution", "fenced_gate_retire", "reactivate_from_revoked", "colliding_result_race", "multi_target_prune_provenance", "same_project_impersonation", "authority_quarantine_readmission", "input_revoked_readmission", "attestor_quarantine_readmission", "proposer_grant_revocation_race", "transitive_authority_revocation", "reactivate_from_quarantine_failed", "readmission_binding", "gate_grant_revocation_race", "failed_readmission_retire", "wrong_cause_quarantine_retire", "stale_secondary_operand_merge_source", "stale_secondary_operand_prune_target", "structural_base_model_invalidation", "structural_adapter_invalidation", "structural_source_expert_invalidation", "supersession_inflight_expert_call_race"]
 min_attempts_per_case = 1
 attempts_artifact = "adversarial_attempts.json"
 max_direct_promotion_bypass_count = 0
@@ -25,7 +25,7 @@ max_expert_routes_after_revocation_before_fence = 0
 max_expert_routes_after_replay = 0
 max_evidence_binding_cases_accepted_per_case = 0
 min_control_accepts_per_path = 1
-control_paths = ["ExpertPromoted", "ExpertRetired", "Merge", "Split", "Prune", "Freeze", "Reactivate", "ExpertFenced", "RevocationDrivenRetirement"]
+control_paths = ["ExpertPromoted", "ExpertRetired", "Merge", "Split", "Prune", "Freeze", "Reactivate", "ExpertFenced", "RevocationDrivenRetirement", "ExpertReadmitted", "ExpertQuarantineRetired"]
 # Preregistered choices for this experiment (no code default exists).
 seed_aggregation = "every_seed_must_pass"
 # Preregistered choices for this experiment (no code default exists).
@@ -58,8 +58,8 @@ max_routable_after_eval_revocation = 0
 min_evidence_binding_negative_cases_per_event_type = 1
 max_evidence_binding_admissions = 0
 evidence_binding_negative_kinds = ["wrong_artifact", "wrong_base_model", "eval_manifest_of_other_evaluation", "gate_config_of_other_evaluation"]
-evidence_binding_event_types = ["ExpertPromoted", "ExpertRetired", "Merge", "Split", "Prune", "Freeze", "Reactivate"]
-evidence_binding_negative_cases = ["evidence_negative_wrong_artifact_ExpertPromoted", "evidence_negative_wrong_base_model_ExpertPromoted", "evidence_negative_eval_manifest_of_other_evaluation_ExpertPromoted", "evidence_negative_gate_config_of_other_evaluation_ExpertPromoted", "evidence_negative_wrong_artifact_ExpertRetired", "evidence_negative_wrong_base_model_ExpertRetired", "evidence_negative_eval_manifest_of_other_evaluation_ExpertRetired", "evidence_negative_gate_config_of_other_evaluation_ExpertRetired", "evidence_negative_wrong_artifact_Merge", "evidence_negative_wrong_base_model_Merge", "evidence_negative_eval_manifest_of_other_evaluation_Merge", "evidence_negative_gate_config_of_other_evaluation_Merge", "evidence_negative_wrong_artifact_Split", "evidence_negative_wrong_base_model_Split", "evidence_negative_eval_manifest_of_other_evaluation_Split", "evidence_negative_gate_config_of_other_evaluation_Split", "evidence_negative_wrong_artifact_Prune", "evidence_negative_wrong_base_model_Prune", "evidence_negative_eval_manifest_of_other_evaluation_Prune", "evidence_negative_gate_config_of_other_evaluation_Prune", "evidence_negative_wrong_artifact_Freeze", "evidence_negative_wrong_base_model_Freeze", "evidence_negative_eval_manifest_of_other_evaluation_Freeze", "evidence_negative_gate_config_of_other_evaluation_Freeze", "evidence_negative_wrong_artifact_Reactivate", "evidence_negative_wrong_base_model_Reactivate", "evidence_negative_eval_manifest_of_other_evaluation_Reactivate", "evidence_negative_gate_config_of_other_evaluation_Reactivate"]
+evidence_binding_event_types = ["ExpertPromoted", "ExpertRetired", "Merge", "Split", "Prune", "Freeze", "Reactivate", "ExpertReadmitted", "ExpertQuarantineRetired"]
+evidence_binding_negative_cases = ["evidence_negative_wrong_artifact_ExpertPromoted", "evidence_negative_wrong_base_model_ExpertPromoted", "evidence_negative_eval_manifest_of_other_evaluation_ExpertPromoted", "evidence_negative_gate_config_of_other_evaluation_ExpertPromoted", "evidence_negative_wrong_artifact_ExpertRetired", "evidence_negative_wrong_base_model_ExpertRetired", "evidence_negative_eval_manifest_of_other_evaluation_ExpertRetired", "evidence_negative_gate_config_of_other_evaluation_ExpertRetired", "evidence_negative_wrong_artifact_Merge", "evidence_negative_wrong_base_model_Merge", "evidence_negative_eval_manifest_of_other_evaluation_Merge", "evidence_negative_gate_config_of_other_evaluation_Merge", "evidence_negative_wrong_artifact_Split", "evidence_negative_wrong_base_model_Split", "evidence_negative_eval_manifest_of_other_evaluation_Split", "evidence_negative_gate_config_of_other_evaluation_Split", "evidence_negative_wrong_artifact_Prune", "evidence_negative_wrong_base_model_Prune", "evidence_negative_eval_manifest_of_other_evaluation_Prune", "evidence_negative_gate_config_of_other_evaluation_Prune", "evidence_negative_wrong_artifact_Freeze", "evidence_negative_wrong_base_model_Freeze", "evidence_negative_eval_manifest_of_other_evaluation_Freeze", "evidence_negative_gate_config_of_other_evaluation_Freeze", "evidence_negative_wrong_artifact_Reactivate", "evidence_negative_wrong_base_model_Reactivate", "evidence_negative_eval_manifest_of_other_evaluation_Reactivate", "evidence_negative_gate_config_of_other_evaluation_Reactivate", "evidence_negative_wrong_artifact_ExpertReadmitted", "evidence_negative_wrong_base_model_ExpertReadmitted", "evidence_negative_eval_manifest_of_other_evaluation_ExpertReadmitted", "evidence_negative_gate_config_of_other_evaluation_ExpertReadmitted", "evidence_negative_wrong_artifact_ExpertQuarantineRetired", "evidence_negative_wrong_base_model_ExpertQuarantineRetired", "evidence_negative_eval_manifest_of_other_evaluation_ExpertQuarantineRetired", "evidence_negative_gate_config_of_other_evaluation_ExpertQuarantineRetired"]
 evidence_binding_positive_control_per_event_type = true
 evidence_binding_excluded_runtime_granted = ["ExpertFenced", "RevocationDrivenRetirement"]
 expert_retired_scope = "proposal-driven (reason Superseded or GateFailed, gated L3 ExpertProposal)"
@@ -84,7 +84,7 @@ corpus_selection_rule = "all cases in adversarial_cases, in listed order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "adversarial_cases", "min_attempts_per_case", "inflight_expert_call_levels", "structural_dependency_kinds", "invalidation_types", "input_kinds", "multi_operand_op_kinds", "direct_append_event_types", "gate_policy_epoch_items", "cas_operand_fields", "invalidation_coverage_matrix", "inflight_input_race_cells", "attestation_record_binds", "impersonation_op_kinds", "provenance_reference_op_kinds", "attestation_applies_to", "lineage_deriving_ops", "provenance_reference_fields", "producing_op_kinds", "result_identity_cas_covers", "split_attestation_binds"]
+procedure_parameters_recorded_per_cell = ["seeds", "adversarial_cases", "min_attempts_per_case", "inflight_expert_call_levels", "structural_dependency_kinds", "invalidation_types", "input_kinds", "multi_operand_op_kinds", "direct_append_event_types", "gate_policy_epoch_items", "cas_operand_fields", "invalidation_coverage_matrix", "inflight_input_race_cells", "attestation_record_binds", "impersonation_op_kinds", "provenance_reference_op_kinds", "attestation_applies_to", "lineage_deriving_ops", "provenance_reference_fields", "producing_op_kinds", "result_identity_cas_covers", "split_attestation_binds", "authority_kinds", "takeover_kinds", "tightening_rotation_definition", "same_project_impersonation_op_kinds", "fence_cause_types", "per_target_provenance_binding", "readmittable_authority_kinds", "proposer_grant_op_kinds", "gate_host_event_kinds", "non_reactivatable_retirement_causes", "reactivation_seed_causes"]
 # Preregistered choices for this experiment (no code default exists).
 inflight_expert_call_race_cases_reported = "per level x trigger"
 max_inflight_expert_call_fallback_incomplete = 0
@@ -139,14 +139,14 @@ stale_secondary_operand_cases_reported = "per multi-operand op kind"
 min_stale_secondary_operand_cases_per_kind = 1
 max_stale_operand_commits = 0
 cas_operand_fields = ["generation", "digest", "lifecycle_state", "state_version"]
-direct_append_event_types = ["ExpertPromoted", "ExpertRetired", "Merge", "Split", "Prune", "Freeze", "Reactivate"]
+direct_append_event_types = ["ExpertPromoted", "ExpertRetired", "Merge", "Split", "Prune", "Freeze", "Reactivate", "ExpertReadmitted", "ExpertQuarantineRetired"]
 max_unauthorized_direct_appends_admitted = 0
 min_revoked_attestor_evidence_attempts = 1
 min_revoked_attestor_evidence_controls_accepted = 1
 max_revoked_attestor_evidence_admissions = 0
-gate_policy_epoch_items = ["gate_configuration", "evaluator_identity", "manifest_attestor_identity_and_epoch"]
+gate_policy_epoch_items = ["gate_configuration", "evaluator_identity", "manifest_attestor_identity_and_epoch", "verifier_set_identity_and_generation"]
 # Preregistered choices for this experiment (no code default exists).
-invalidation_coverage_matrix = { kinds = ["training_input", "evaluation_input", "base_model", "adapter", "source_expert"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["training_input_normal_revocation", "training_input_normal_supersession", "training_input_lag_revocation", "training_input_lag_supersession", "training_input_restore_revocation", "training_input_restore_supersession", "training_input_inflight_revocation", "training_input_inflight_supersession", "evaluation_input_normal_revocation", "evaluation_input_normal_supersession", "evaluation_input_lag_revocation", "evaluation_input_lag_supersession", "evaluation_input_restore_revocation", "evaluation_input_restore_supersession", "evaluation_input_inflight_revocation", "evaluation_input_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession", "adapter_normal_revocation", "adapter_normal_supersession", "adapter_lag_revocation", "adapter_lag_supersession", "adapter_restore_revocation", "adapter_restore_supersession", "adapter_inflight_revocation", "adapter_inflight_supersession", "source_expert_normal_revocation", "source_expert_normal_supersession", "source_expert_lag_revocation", "source_expert_lag_supersession", "source_expert_restore_revocation", "source_expert_restore_supersession", "source_expert_inflight_revocation", "source_expert_inflight_supersession"] }
+invalidation_coverage_matrix = { kinds = ["training_input", "evaluation_input", "base_model", "adapter", "source_expert", "gate_config", "evaluator", "attestor", "verifier_set"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], authority_kinds = ["gate_config", "evaluator", "attestor", "verifier_set"], authority_types = ["revocation", "tightening_rotation"], cells = ["training_input_normal_revocation", "training_input_normal_supersession", "training_input_lag_revocation", "training_input_lag_supersession", "training_input_restore_revocation", "training_input_restore_supersession", "training_input_inflight_revocation", "training_input_inflight_supersession", "evaluation_input_normal_revocation", "evaluation_input_normal_supersession", "evaluation_input_lag_revocation", "evaluation_input_lag_supersession", "evaluation_input_restore_revocation", "evaluation_input_restore_supersession", "evaluation_input_inflight_revocation", "evaluation_input_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession", "adapter_normal_revocation", "adapter_normal_supersession", "adapter_lag_revocation", "adapter_lag_supersession", "adapter_restore_revocation", "adapter_restore_supersession", "adapter_inflight_revocation", "adapter_inflight_supersession", "source_expert_normal_revocation", "source_expert_normal_supersession", "source_expert_lag_revocation", "source_expert_lag_supersession", "source_expert_restore_revocation", "source_expert_restore_supersession", "source_expert_inflight_revocation", "source_expert_inflight_supersession", "gate_config_normal_revocation", "gate_config_normal_tightening_rotation", "gate_config_lag_revocation", "gate_config_lag_tightening_rotation", "gate_config_restore_revocation", "gate_config_restore_tightening_rotation", "gate_config_inflight_revocation", "gate_config_inflight_tightening_rotation", "evaluator_normal_revocation", "evaluator_normal_tightening_rotation", "evaluator_lag_revocation", "evaluator_lag_tightening_rotation", "evaluator_restore_revocation", "evaluator_restore_tightening_rotation", "evaluator_inflight_revocation", "evaluator_inflight_tightening_rotation", "attestor_normal_revocation", "attestor_normal_tightening_rotation", "attestor_lag_revocation", "attestor_lag_tightening_rotation", "attestor_restore_revocation", "attestor_restore_tightening_rotation", "attestor_inflight_revocation", "attestor_inflight_tightening_rotation", "verifier_set_normal_revocation", "verifier_set_normal_tightening_rotation", "verifier_set_lag_revocation", "verifier_set_lag_tightening_rotation", "verifier_set_restore_revocation", "verifier_set_restore_tightening_rotation", "verifier_set_inflight_revocation", "verifier_set_inflight_tightening_rotation"] }
 min_invalidation_matrix_cases_per_cell = 1
 max_invalidation_matrix_stale_hits_per_cell = 0
 invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
@@ -161,7 +161,7 @@ min_attestation_binding_controls_accepted = 1
 max_mismatched_attestation_admissions = 0
 attestation_record_binds = ["consumed_input_manifest_digest", "emitted_artifact_digest", "proposal_id", "single_use_training_run_id", "attestor_epoch"]
 # Preregistered choices for this experiment (no code default exists).
-impersonation_op_kinds = ["Freeze", "Prune", "Retire"]
+impersonation_op_kinds = ["Birth", "Birth_targetless", "Merge", "Split", "Freeze", "Reactivate", "Prune", "Retire"]
 min_cross_project_impersonation_attempts_per_kind = 1
 min_same_project_proposals_accepted = 1
 max_impersonated_proposals_admitted = 0
@@ -188,3 +188,78 @@ min_colliding_result_race_cases_per_kind = 1
 max_duplicate_result_commits = 0
 split_attestation_binds = "complete ordered result-artifact set, one artifact digest per result"
 result_identity_cas_covers = ["result_pod_id", "result_generation", "routing_slot_layer_slot"]
+# Preregistered choices for this experiment (no code default exists).
+min_verifier_rotation_race_cases = 1
+min_verifier_rotation_controls_accepted = 1
+max_stale_verifier_evidence_admissions = 0
+gate_policy_epoch_rule = "any future gating authority joins the admission epoch by definition (closed list plus this rule)"
+# Preregistered choices for this experiment (no code default exists).
+min_ungated_split_result_attempts = 1
+min_split_result_gate_controls_accepted = 1
+max_ungated_split_results_admitted = 0
+split_gate_verdicts = "one verdict per result digest, bound to proposal and candidate id"
+# Preregistered choices for this experiment (no code default exists).
+authority_kinds = ["gate_config", "evaluator", "attestor", "verifier_set"]
+min_post_promotion_authority_revocation_cases_per_kind = 1
+max_routable_after_authority_revocation = 0
+authority_revocation_fences = "every expert admitted under the revoked authority; recovery per kind: ExpertReadmitted for gate config, evaluator, verifier set; attestor revocation terminal (retrain only); plain rotation does not fence already-promoted experts"
+# Preregistered choices for this experiment (no code default exists).
+min_planned_succession_cases_per_kind = 1
+max_self_fenced_results = 0
+min_successor_takeover_controls_accepted_per_kind = 1
+takeover_kinds = ["Reactivate_same_pod", "Split_Merge_slot_reuse"]
+duplicate_result_commits_definition = "foreign collision only"
+planned_succession_excluded_from_invalidation_rule = true
+# Preregistered choices for this experiment (no code default exists).
+min_tightening_rotation_cases_per_kind = 1
+min_non_tightening_rotation_controls = 1
+max_routable_after_tightening_rotation = 0
+tightening_rotation_definition = "adds a required verifier (incl. hard-deny), raises a verifier or gate strictness, or removes an accepted attestor or evaluator; deterministic function of old and new epoch contents"
+tightening_rotation_fence = "atomic at the rotation commit index; fenced until re-evaluated and re-admitted via ExpertReadmitted for readmittable kinds (gate config, evaluator, verifier set); attestor-removing rotation is terminal (retrain only); in-flight dropped by completion-time admission"
+# Preregistered choices for this experiment (no code default exists).
+min_multi_target_prune_provenance_cases = 1
+min_multi_target_prune_controls_accepted = 1
+max_prune_without_full_provenance_admitted = 0
+min_same_project_impersonation_attempts_per_kind = 1
+same_project_impersonation_op_kinds = ["Birth", "Merge", "Split", "Freeze", "Reactivate", "Prune", "Retire"]
+min_authority_quarantine_readmission_cases_per_kind = 1
+min_readmission_controls_accepted = 1
+max_readmitted_without_current_epoch_evidence = 0
+min_input_revoked_readmission_attempts = 1
+max_input_revoked_readmissions_admitted = 0
+fence_cause_types = ["InputRevoked", "AuthorityQuarantine"]
+readmission_event = "ExpertReadmitted (gated ledger event under the trusted gate grant; not an L3 proposal)"
+per_target_provenance_binding = "ordered set of (operand pod, generation, artifact digest, committed-provenance reference)"
+# Preregistered choices for this experiment (no code default exists).
+readmittable_authority_kinds = ["gate_config", "evaluator", "verifier_set"]
+min_attestor_quarantine_readmission_attempts = 1
+max_attestor_quarantine_readmissions_admitted = 0
+min_attestor_quarantine_retrain_controls_accepted = 1
+attestor_quarantine = "terminal for that generation; recovery only by retraining into a new generation with a fresh attestation"
+min_proposer_grant_revocation_race_cases_per_kind = 1
+max_revoked_proposer_commits = 0
+proposer_grant_op_kinds = ["Birth", "Merge", "Split", "Freeze", "Reactivate", "Prune", "Retire"]
+commit_authority_set = "evidence-authority epoch + issuing grant generation (proposer grant for proposals, gate grant for gate-host-issued events)"
+min_unauthorized_readmission_appends = 1
+max_readmissions_without_gate_grant_admitted = 0
+shared_admission_includes = "ExpertReadmitted"
+# Preregistered choices for this experiment (no code default exists).
+min_transitive_authority_revocation_cases_per_kind = 1
+max_routable_descendants_after_source_authority_revocation = 0
+transitive_authority_fence = "descendants through source-expert lineage inherit the authority dependency and the cause per kind: readmittable (gate config, evaluator, verifier set) or terminal retrain-only (attestor)"
+min_readmission_binding_cases = 1
+max_mismatched_readmission_evidence_admitted = 0
+min_failed_readmission_retire_cases = 1
+min_wrong_cause_quarantine_retire_attempts = 1
+max_wrong_cause_quarantine_retires_admitted = 0
+readmission_id = "H(expert pod, generation, fence event reference and fence epoch, quarantine cause incl. authority kind, current evidence epoch, gate grant identity+generation, observed_at); single-use; minted by the trusted gate host"
+quarantine_retire_event = "ExpertQuarantineRetired (Fenced with readmittable AuthorityQuarantine cause -> Retired(QuarantineFailed)), gated, bound to the failed readmission_id"
+# Preregistered choices for this experiment (no code default exists).
+gate_host_event_kinds = ["ExpertPromoted_gate_driven", "ExpertRetired_gate_driven", "ExpertReadmitted", "ExpertQuarantineRetired"]
+min_gate_grant_revocation_race_cases_per_kind = 1
+max_revoked_gate_grant_commits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_reactivate_from_quarantine_failed_attempts = 1
+max_reactivations_from_quarantine_failed_admitted = 0
+non_reactivatable_retirement_causes = ["InputRevoked", "attestor_terminal", "QuarantineFailed"]
+reactivation_seed_causes = ["GateFailed_from_non_fenced_expert"]

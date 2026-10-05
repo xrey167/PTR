@@ -75,7 +75,7 @@ public_suite_selection_rule = "the first 2000 questions in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm", "hyperparameter_tuning_budget_trials_per_arm", "lifecycle_operations", "proposal_generating_arms", "recovery_target_fraction_of_pre_retirement_score", "split_rule_single_split_corpora", "flops_relative_tolerance", "active_param_tolerance", "validation_position_modulus", "validation_position_residue", "overlap_counters_per_corpus", "gsm8k_test_partition_modulus"]
+procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm", "hyperparameter_tuning_budget_trials_per_arm", "lifecycle_operations", "proposal_generating_arms", "recovery_target_fraction_of_pre_retirement_score", "split_rule_single_split_corpora", "flops_relative_tolerance", "active_param_tolerance", "validation_position_modulus", "validation_position_residue", "overlap_counters_per_corpus", "gsm8k_test_partition_modulus", "arm_matrix"]
 # Preregistered choices for this experiment (no code default exists).
 split_rule_single_split_corpora = "index mod 3: 0 = training, 1 = gate suite, 2 = held-out evaluation"
 max_training_data_outside_training_partition_count = 0
@@ -109,3 +109,5 @@ active_params_recorded_per_stage_per_arm = true
 # Preregistered choices for this experiment (no code default exists).
 training_flops_checked = "per seed and per stage"
 max_training_flops_mismatch_cells = 0
+# Preregistered choices for this experiment (no code default exists).
+arm_matrix = [{ arm = "lifecycle_full_context", lifecycle = true, l3_context = "full" }, { arm = "lifecycle_context_ablated", lifecycle = true, l3_context = "removed" }, { arm = "lifecycle_heuristic", lifecycle = true, l3_context = "threshold_rules" }, { arm = "static_expert_set", lifecycle = false, l3_context = "none" }, { arm = "naive_adapter_chain", lifecycle = false, l3_context = "none" }]

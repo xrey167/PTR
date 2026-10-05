@@ -40,7 +40,7 @@ corpus_selection_rule = "all items of each split in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "compared_arms", "flops_relative_tolerance", "split_rule_single_split_corpora", "validation_position_modulus", "validation_position_residue"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "compared_arms", "flops_relative_tolerance", "split_rule_single_split_corpora", "validation_position_modulus", "validation_position_residue", "arm_matrix"]
 # Preregistered choices for this experiment (no code default exists).
 tuning_trials_used_recorded_per_arm = true
 max_tuning_budget_mismatches = 0
@@ -68,3 +68,5 @@ tuning_selects_on_validation_only = true
 max_validation_overlap_count = 0
 validation_overlap_counted_per_corpus = true
 validation_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+arm_matrix = [{ arm = "perft_r_emergent", method = "perft_r", specialisation = "emergent" }, { arm = "perft_r_prescribed", method = "perft_r", specialisation = "prescribed" }, { arm = "plain_lora", method = "lora", specialisation = "none" }, { arm = "mixlora", method = "mixlora_top_k", specialisation = "none" }]

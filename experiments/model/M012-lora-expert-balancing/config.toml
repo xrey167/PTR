@@ -49,7 +49,7 @@ load_cv_and_dead_experts_eval_tokens = 8192
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue", "arm_matrix"]
 # Preregistered choices for this experiment (no code default exists).
 expert_token_fraction_definition = "expert routed assignments / total routed assignments in the layer; sums to 1 over experts"
 # Preregistered choices for this experiment (no code default exists).
@@ -67,3 +67,5 @@ mean_load_cv_noninferiority_margin = 0.05
 mean_load_cv_direction = "lower is better"
 mean_load_cv_checked = ["per_seed", "seed_mean"]
 between_arm_orderings_claimed = "auxiliary-loss-free non-inferior to auxiliary-loss and to phi-balancing only"
+# Preregistered choices for this experiment (no code default exists).
+arm_matrix = [{ arm = "aux_free_bias", balancing = "auxiliary_loss_free_bias" }, { arm = "aux_loss", balancing = "auxiliary_balance_loss" }, { arm = "phi_balancing", balancing = "phi" }]

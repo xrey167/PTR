@@ -38,7 +38,7 @@ min_cross_principal_attempts = 1
 max_cross_principal_hits = 0
 min_discarded_overlay_entry_attempts = 1
 max_discarded_overlay_entry_hits = 0
-min_fresh_exact_recomputation_admitted = 1
+min_fresh_exact_recomputation_controls = 1
 min_candidate_taint_hops = 2
 min_approximate_pod_result_promotion_attempts = 1
 max_approximate_pod_result_promotions_accepted = 0
@@ -106,7 +106,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "concurrency", "max_trie_nodes", "max_kv_page_bytes", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "kv_page_bytes_per_node", "metadata_bytes_per_node", "nodes_only_run_max_kv_page_bytes", "bytes_only_run_max_trie_nodes", "workload_limits", "invalidation_coverage_matrix", "superseded_lookup_cells", "saturation_definition"]
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "concurrency", "max_trie_nodes", "max_kv_page_bytes", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "kv_page_bytes_per_node", "metadata_bytes_per_node", "nodes_only_run_max_kv_page_bytes", "bytes_only_run_max_trie_nodes", "workload_limits", "invalidation_coverage_matrix", "superseded_lookup_cells", "saturation_definition", "chain_layer_covers"]
 # Preregistered choices for this experiment (no code default exists).
 capacity_refused_requests_completed_equals_exhausted_refusals = true
 max_capacity_fallback_output_mismatches = 0
@@ -144,7 +144,7 @@ max_base_model_inflight_outputs_after_invalidation = 0
 max_base_model_inflight_cache_inserts = 0
 base_model_inflight_race_cases_reported = "per invalidation type"
 # Preregistered choices for this experiment (no code default exists).
-invalidation_coverage_matrix = { kinds = ["semantic_input", "memory_input", "base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_restore_revocation", "semantic_input_restore_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_restore_revocation", "memory_input_restore_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession"] }
+invalidation_coverage_matrix = { kinds = ["semantic_input", "memory_input", "derived_input", "base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_restore_revocation", "semantic_input_restore_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_restore_revocation", "memory_input_restore_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "derived_input_normal_revocation", "derived_input_normal_supersession", "derived_input_lag_revocation", "derived_input_lag_supersession", "derived_input_restore_revocation", "derived_input_restore_supersession", "derived_input_inflight_revocation", "derived_input_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession"] }
 min_invalidation_matrix_cases_per_cell = 1
 max_invalidation_matrix_stale_hits_per_cell = 0
 invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
@@ -156,3 +156,10 @@ max_superseded_stale_hits = 0
 min_saturation_demand_cases = 1
 min_capacity_exhausted_refusals = 1
 saturation_definition = "attempted demand of concurrent forks exceeds capacity; the accepted pinned set stays within bounds; the excess insertion is refused with CapacityExhausted"
+# Preregistered choices for this experiment (no code default exists).
+min_current_layer_kv_transform_change_cases = 1
+max_stale_exact_hits = 0
+min_stale_witness_replay_cases = 1
+min_witness_reuse_attempts = 1
+max_stale_or_reused_witness_forks_admitted = 0
+chain_layer_covers = ["layers_below", "pre_attention_norm", "kv_projection_weights_and_biases", "qk_norm_weights_and_eps", "stored_post_rope_rotary_parameters", "kv_quantization_parameters"]
