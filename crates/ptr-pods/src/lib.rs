@@ -66,9 +66,10 @@ pub use neural::{
 };
 pub use output::{OutputError, PodOutput, PodOutputKind};
 pub use paged_kv::{
-    InMemoryKvSnapshotLease, InMemoryPagedKvBackend, InMemoryPagedKvCache, KvPageBinding,
-    KvPageEntry, KvPageId, KvPageMetrics, KvPageSize, KvPageSnapshot, KvPageState, KvPagedSnapshot,
-    KvPrefixKey, KvRuntimeLeaseBinding, KvSharedPrefix, PagedKvTensorBackend,
+    InMemoryKvSnapshotLease, InMemoryPagedKvBackend, InMemoryPagedKvCache, KvForkAuthority,
+    KvForkWitness, KvPageBinding, KvPageEntry, KvPageId, KvPageMetrics, KvPageSize, KvPageSnapshot,
+    KvPageState, KvPagedSnapshot, KvPrefixKey, KvRuntimeLeaseBinding, KvSharedPrefix,
+    KvWitnessRejection, KvWitnessRevoker, KvWitnessState, PagedKvTensorBackend,
 };
 pub use protocol::{
     ConnectionScope, DeliveryMode, EgressPolicy, MessagePattern, NativeProtocolExecutor,

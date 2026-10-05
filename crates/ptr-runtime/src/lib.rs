@@ -4,6 +4,7 @@ pub mod directory;
 pub mod execution;
 pub mod identity;
 pub mod kv;
+pub mod kv_prefix;
 pub mod manifest;
 pub mod memory;
 pub mod merge;
@@ -28,6 +29,12 @@ pub use identity::{
     JwksRefresher, JwksStore, OidcAlgorithm, OidcError, OidcIdentityAdapter,
 };
 pub use kv::{KvUseError, KvUseRequest, KvUseTicket, RuntimeKvAuthority};
+pub use kv_prefix::{
+    chunk_keys, CatalogLimits, KvCapacityResource, KvCatalogError, KvCatalogHit, KvCatalogStats,
+    KvCatalogWiringError, KvChainId, KvChunkKey, KvDependency, KvForkError, KvInsert,
+    KvLivenessOracle, KvLookup, KvPin, KvPrefixCatalog, KvPrefixRetirer, KvRequestPositions,
+    KvSalt, KV_CHUNK_TOKENS,
+};
 pub use manifest::{
     validate_and_build, validate_authority, ExecutionManifestRegistry, ManifestAuthorityRegistry,
     ManifestBindingAuthority, RuntimeExecutionManifestResolver, RuntimeManifestError,
@@ -624,6 +631,8 @@ pub struct PtrRuntime {
     revoked_sessions: BTreeSet<ptr_types::SessionId>,
     hypotheses: BTreeMap<String, PodHypothesis>,
     tier_journal: TierJournalProjection,
+    /// Exact KV prefix catalog; none until the host calls `enable_kv_prefix_catalog`.
+    kv_catalog: Option<kv_prefix::KvPrefixCatalog>,
 }
 
 impl PtrRuntime {
@@ -673,6 +682,7 @@ impl PtrRuntime {
             revoked_sessions: BTreeSet::new(),
             hypotheses: BTreeMap::new(),
             tier_journal: TierJournalProjection::default(),
+            kv_catalog: None,
         })
     }
 
@@ -2824,6 +2834,7 @@ impl PtrRuntime {
         committed: &CommittedEvent,
         semantic: Option<PreparedDelta>,
     ) -> Result<(), RuntimeError> {
+        self.invalidate_kv_catalog(&committed.event, semantic.as_ref());
         match &committed.event {
             LedgerEvent::SemanticDeltaCommitted { .. } => {
                 self.semdb
