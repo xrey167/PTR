@@ -47,6 +47,10 @@ The request flow spans many crates, so read these together:
 
 Invariants in `docs/INVARIANTS.md` are binding: raw is never replaced by typed state, search never self-promotes to truth, uncommitted state is never authoritative, effects pass a hard security boundary requiring current revision/generation, queues are bounded, and a learned score cannot override a deterministic verifier contradiction. `docs/COMPONENT_CONTRACTS.md` and `docs/architecture/` hold the details. Backend-specific types must not leak into domain crates.
 
+## Claude Code plugins
+
+The repo-local marketplace `.claude-plugin/marketplace.json` (name `ptr`) ships `ptr-dev` (skills such as `ptr-verify`, `ptr-results`, `ptr-new-experiment`, `ptr-offline-sync`, `experiment-run`; read-only agents `ptr-invariant-reviewer`, `ptr-claims-auditor`, `ptr-experiment-designer`; guard hooks that deny edits to `vendor/`, `training/runs/`, frozen experiments and a `.cargo/config.toml` `[env]` table) and `ptr-mods` (`/runs` pane, status line). Install with `claude plugin marketplace add ./` then `claude plugin install ptr-dev@ptr`; see `docs/CLAUDE_TOOLING.md`.
+
 ## Conventions and CI checks
 
 - **Docs-as-code freshness**: any change under `crates/<crate>/src/**` or `crates/<crate>/Cargo.toml` must also update `crates/<crate>/component.toml`. Then run `make docs` to refresh the generated README blocks and `docs/components/STATUS.md`. `scripts/check_component_metadata.py` checks this against the base commit.

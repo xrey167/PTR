@@ -60,3 +60,49 @@ repository rules are in `CLAUDE.md`.
      falsification criteria, seeds and baselines as written in its manifest, and report
      negative or inconclusive outcomes the same way.
 8. Leave `training/runs/` uncommitted and tell the user where the files are.
+
+## M011 (routed PEFT on OLMoE)
+
+**Requires the `claude/m011-routed-peft` branch merged**: `training/src/ptr_training/moe/m011.py`
+and its tests exist only there today, and the experiment manifest
+`experiments/model/M011-routed-peft/` lives on `claude/experiments-kv-moe`. Without them
+these commands do not exist. M011 is a preregistered-style experiment: follow its manifest for
+seeds, baselines and falsification; the same hard rules above apply (do not edit prepared
+records, no commits under `training/runs/`).
+
+Entrypoint `python -m ptr_training.moe.m011`; arms (`--arm`, required): `perft_r_emergent`,
+`perft_r_prescribed`, `plain_lora`, `mixlora`. Pinned seeds: 17 29 43 71 101; pinned 2000 steps.
+
+```bash
+# tiny smoke: random 2-layer OLMoE, in-memory fixture corpora, CPU, nothing downloaded
+# (pipeline evidence only)
+PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.moe.m011 \
+  --arm perft_r_prescribed --seed 1 --out /tmp/m011-smoke --model tiny --max-steps 2 --eval-limit 3
+# tests (about 35 s on CPU)
+PYTHONPATH=training/src training/.venv/bin/python -m unittest discover -s training/tests -p 'test_m011*'
+
+# real run on the RTX 4090 (downloads OLMoE and the three corpora at the pinned revisions),
+# per arm: 1. tune once on the first pinned seed (8 trials, 500 steps each), frozen tuning.json
+python -m ptr_training.moe.m011 --arm mixlora --out runs/m011/mixlora/tune --model olmoe --tune
+# 2. every pinned seed at the full 2000 steps with the frozen hyperparameters
+python -m ptr_training.moe.m011 --arm mixlora --out runs/m011/mixlora --model olmoe --all-seeds \
+  --hparams runs/m011/mixlora/tune/tuning.json     # writes runs/m011/mixlora/seed<N>/
+# or both in one command:
+python -m ptr_training.moe.m011 --arm mixlora --out runs/m011/mixlora --model olmoe --tune --all-seeds
+# a single seed with frozen hyperparameters:
+python -m ptr_training.moe.m011 --arm mixlora --seed 29 --out runs/m011/mixlora/seed29 \
+  --model olmoe --hparams runs/m011/mixlora/tune/tuning.json
+```
+
+Other flags: `--max-steps`, `--device {auto,cpu,cuda}`, `--tune-budget`, `--tune-steps`, `--lr`,
+`--batch-size`, `--micro-batch-size`, `--eval-limit`, `--max-new-tokens`,
+`--corpora {fixture,hf}`, `--gradient-checkpointing / --no-gradient-checkpointing`.
+`--all-seeds` rejects `--seed` and needs `--tune` or `--hparams`. Run it with the background
+and monitoring steps above (one arm takes many hours); use the training venv's python and run
+from the repo root, paths under `runs/` are relative to the working directory so prefer
+`training/runs/m011/...` to stay inside the gitignored tree.
+
+Outputs per run: `run.json`, `metrics.json`, and `tuning.json` for tuning. Any departure from
+the pinned seed, steps or 8 trials is recorded in `deviations`/`tuning_deviations`; quote them.
+Smoke (`--model tiny`) is pipeline evidence; only the full 4-arm, 5-seed run against the
+manifest's falsification criterion can be reported as a research result (see `ptr-results`).
