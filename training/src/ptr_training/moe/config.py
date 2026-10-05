@@ -344,7 +344,8 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             f"moe.rl.min_verification_level must be one of {LEVELS}, "
             f"got {rl.min_verification_level!r}"
         )
-    if rl.steps < 1:
+    # Execution-only RL validations apply only when an RL arm will actually run.
+    if algos and rl.steps < 1:
         # transformers only honours a positive max_steps; 0 would silently fall back to the
         # default epoch count. Disable RL with `algorithms = []` instead.
         raise ConfigError(
@@ -378,7 +379,7 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
         raise ConfigError("moe.rl.beta must be >= 0")
     if rl.epsilon_high < rl.epsilon and "epsilon_high" in r:
         raise ConfigError("moe.rl.epsilon_high must be >= moe.rl.epsilon")
-    if rl.mini_steps > rl.steps:
+    if algos and rl.mini_steps > rl.steps:
         raise ConfigError(
             f"moe.rl.mini_steps ({rl.mini_steps}) must not exceed moe.rl.steps ({rl.steps}): "
             "TRL would build a generation batch larger than the whole run"
@@ -442,13 +443,15 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             "moe.output.probe_tokens": probe_tokens,
         }
         for key, value in values.items():
+            if key.startswith("moe.rl.") and not algos:
+                continue  # RL never runs
             if value > _MAXIMA[key]:
                 raise ConfigError(
                     f"{key} = {value} exceeds the sanity limit {_MAXIMA[key]}; "
                     "set [moe] allow_large = true to override"
                 )
         generation_batch = rl.mini_steps * rl.prompts_per_step * rl.num_generations
-        if generation_batch > MAX_GENERATION_BATCH:
+        if algos and generation_batch > MAX_GENERATION_BATCH:
             raise ConfigError(
                 f"generation batch mini_steps * prompts_per_step * num_generations = "
                 f"{generation_batch} exceeds {MAX_GENERATION_BATCH} rollouts; "

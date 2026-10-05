@@ -228,6 +228,13 @@ router stays frozen.
 - Gate pairs record `requested_rank`, `effective_rank_a/b` (basis columns actually passed; a
   low-rank delta yields fewer than requested) and `rank_truncated` (always false: the binding's
   `subspace_overlap` / `chance_overlap` accept unequal ranks).
+- Gate snapshots are capped in aggregate (`gates.MAX_TOTAL_GATE_ELEMENTS` = 16,777,216
+  Python-list elements over all layers and experts, computed from tensor shapes before any
+  conversion; `[moe] allow_large = true` lifts it): over the cap the gate report is `skipped` with
+  "snapshot too large (N elements > cap)". With `algorithms = []` the RL-only validations (steps,
+  `mini_steps`, generation batch) are skipped. Every RL arm sets `GRPOConfig.disable_dropout`
+  (trl 1.14.1 `grpo_config.py` ~452, applied at `grpo_trainer.py` ~988). The SFT state is
+  snapshotted only for 2+ arms and restored only before arms 2..n.
 - Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
 - `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
   actually present (PEFT may keep LoRA weights in fp32).

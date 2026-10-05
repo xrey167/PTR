@@ -354,9 +354,12 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         evals["init"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
 
     track_gates = cfg.model.kind == "tiny-random" and not cfg.lora.enabled
-    gate_problem = gates.binding_problem() if track_gates else None
+    gate_cap = None if cfg.allow_large else gates.MAX_TOTAL_GATE_ELEMENTS
+    gate_problem = None
+    if track_gates:
+        gate_problem = gates.binding_problem() or gates.snapshot_problem(model, gate_cap)
     run_gate_calls = track_gates and gate_problem is None  # never flatten weights nobody reads
-    w_init = gates.flatten_experts(model) if run_gate_calls else None
+    w_init = gates.flatten_experts(model, max_total=gate_cap) if run_gate_calls else None
 
     torch.manual_seed(seed)
     with _Timer(timings, "sft"):
@@ -365,15 +368,17 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     with _Timer(timings, "snapshot_after_sft"):
         snap("after_sft")
         evals["after_sft"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
-    w_sft = gates.flatten_experts(model) if run_gate_calls else None
-    # Only needed to restore the SFT starting point before each RL arm.
-    sft_state = model_mod.trainable_state(model) if cfg.rl.algorithms else None
+    w_sft = gates.flatten_experts(model, max_total=gate_cap) if run_gate_calls else None
+    # The SFT state is restored only before arms 2..n (arm 1 starts from it already), so it is
+    # snapshotted only when there is more than one arm.
+    sft_state = model_mod.trainable_state(model) if len(cfg.rl.algorithms) > 1 else None
 
     rl_results: dict = {}
     churn = {"init_to_after_sft": churn_between("init", "after_sft")}
     gate_reports: dict = {}
-    for algo in cfg.rl.algorithms:
-        model_mod.load_trainable_state(model, sft_state)
+    for arm, algo in enumerate(cfg.rl.algorithms):
+        if arm > 0:
+            model_mod.load_trainable_state(model, sft_state)
         torch.manual_seed(seed)
         with _Timer(timings, f"rl_{algo}"):
             rl_results[algo] = run_rl(model, tokenizer, rl_tasks, algo, cfg.rl, seed)
@@ -388,7 +393,9 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
                 if run_gate_calls:
                     gate_reports[f"sft_to_rl_{algo}"] = _gate_status(
                         gates.run_gates(
-                            w_sft, gates.flatten_experts(model), subspace_rank=cfg.gates.subspace_rank
+                            w_sft,
+                            gates.flatten_experts(model, max_total=gate_cap),
+                            subspace_rank=cfg.gates.subspace_rank,
                         )
                     )
                 else:

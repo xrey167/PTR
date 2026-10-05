@@ -211,6 +211,53 @@ class MoeGatesTests(unittest.TestCase):
         basis = gates.top_left_subspace(rank1, 3)
         self.assertEqual(len(basis[0]), 1)  # numerical rank 1, not the requested 3
 
+    def test_snapshot_elements_and_problem_from_shapes_only(self):
+        torch = __import__("torch") if __import__("importlib").util.find_spec("torch") else None
+        if torch is None:
+            self.skipTest("torch not installed")
+        import types
+
+        def expert_model(layers, experts, h=4, i=3):
+            mk = lambda: types.SimpleNamespace(
+                mlp=types.SimpleNamespace(
+                    experts=types.SimpleNamespace(
+                        gate_up_proj=torch.zeros(experts, 2 * i, h), down_proj=torch.zeros(experts, h, i)
+                    )
+                )
+            )
+            core = types.SimpleNamespace(layers=[mk() for _ in range(layers)])
+            return types.SimpleNamespace(model=core)
+
+        model = expert_model(layers=3, experts=5)
+        per_expert = 2 * 3 * 4 + 2 * (4 * 3)  # gate_up + 2 * down
+        self.assertEqual(gates.snapshot_elements(model), 3 * 5 * per_expert)
+        self.assertIsNone(gates.snapshot_problem(model))
+        self.assertIsNone(gates.snapshot_problem(model, None))
+        problem = gates.snapshot_problem(model, 100)
+        self.assertEqual(problem["status"], "skipped")
+        self.assertIn(f"snapshot too large ({3 * 5 * per_expert} elements > 100)", problem["reason"])
+
+    def test_oversize_total_never_converts_to_lists(self):
+        torch = __import__("torch") if __import__("importlib").util.find_spec("torch") else None
+        if torch is None:
+            self.skipTest("torch not installed")
+        import types
+
+        mk = lambda: types.SimpleNamespace(
+            mlp=types.SimpleNamespace(
+                experts=types.SimpleNamespace(
+                    gate_up_proj=torch.zeros(4, 6, 4), down_proj=torch.zeros(4, 4, 3)
+                )
+            )
+        )
+        model = types.SimpleNamespace(model=types.SimpleNamespace(layers=[mk(), mk()]))
+        # per-expert size (36) is far under MAX_FLAT_ELEMENTS; only the total exceeds the cap
+        with mock.patch.object(gates, "_flat", side_effect=AssertionError("converted")) as spy:
+            with self.assertRaises(gates.GateSnapshotTooLarge):
+                gates.flatten_experts(model, max_total=100)
+        spy.assert_not_called()
+        self.assertEqual(len(gates.flatten_experts(model, max_total=None)), 2)
+
     def test_binding_version_from_distribution_metadata(self):
         stub = types.ModuleType("ptr_py")
         with mock.patch.object(gates.metadata, "version", return_value="0.1.0"):

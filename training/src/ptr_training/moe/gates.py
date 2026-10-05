@@ -67,6 +67,33 @@ def binding_problem() -> dict | None:
     return None
 
 
+MAX_TOTAL_GATE_ELEMENTS = 16_777_216  # aggregate Python-list elements per snapshot
+
+
+class GateSnapshotTooLarge(RuntimeError):
+    pass
+
+
+def snapshot_elements(model) -> int:
+    """Python-list elements `flatten_experts` would create for the whole model, computed from
+    tensor shapes alone: per expert, gate_up + down (flat) plus down again (matrix)."""
+    total = 0
+    for layer in expert_weights(model):
+        n = layer["gate_up"].shape[0]
+        total += n * (layer["gate_up"][0].numel() + 2 * layer["down"][0].numel())
+    return total
+
+
+def snapshot_problem(model, max_total: int | None = MAX_TOTAL_GATE_ELEMENTS) -> dict | None:
+    """Skipped-report if the whole snapshot would exceed `max_total` elements (None = no cap)."""
+    if max_total is None:
+        return None
+    total = snapshot_elements(model)
+    if total > max_total:
+        return {"status": "skipped", "reason": f"snapshot too large ({total} elements > {max_total})"}
+    return None
+
+
 def _flat(tensor) -> list[float]:
     return tensor.detach().float().reshape(-1).cpu().tolist()
 
@@ -83,14 +110,20 @@ def expert_weights(model) -> list[dict]:
     return layers
 
 
-def flatten_experts(model, max_elements: int | None = None) -> list:
+def flatten_experts(
+    model, max_elements: int | None = None, max_total: int | None = MAX_TOTAL_GATE_ELEMENTS
+) -> list:
     """[layer][expert] -> {"flat": gate_up+down weights, "down": down_proj rows [H][I]}.
 
     The element count is checked on the tensors first; a layer whose per-expert vector would
     exceed `max_elements` (default `MAX_FLAT_ELEMENTS`) is returned as `None` and never
-    converted to Python lists.
+    converted to Python lists. The aggregate size over all layers is capped by `max_total`
+    (`MAX_TOTAL_GATE_ELEMENTS`; None disables) and checked before any conversion.
     """
     limit = MAX_FLAT_ELEMENTS if max_elements is None else max_elements
+    problem = snapshot_problem(model, max_total)  # shape-only check, before any conversion
+    if problem is not None:
+        raise GateSnapshotTooLarge(problem["reason"])
     out = []
     for layer in expert_weights(model):
         n = layer["gate_up"].shape[0]

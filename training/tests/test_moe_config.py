@@ -165,6 +165,21 @@ class MoeConfigTests(unittest.TestCase):
         raw["moe"]["allow_large"] = True
         moe_config.parse(raw)
 
+    def test_rl_execution_validations_skipped_when_rl_disabled(self):
+        def mutate(r):
+            r["moe"]["rl"].update(algorithms=[], steps=0, mini_steps=5, prompts_per_step=1000,
+                                  num_generations=1000)
+
+        cfg = moe_config.parse(self._mutate(mutate))
+        self.assertEqual((cfg.rl.algorithms, cfg.rl.steps), ((), 0))
+        # the same values are rejected as soon as an arm would run
+        def with_algo(r):
+            mutate(r)
+            r["moe"]["rl"]["algorithms"] = ["gspo"]
+
+        with self.assertRaisesRegex(ConfigError, r"moe\.rl\.steps"):
+            moe_config.parse(self._mutate(with_algo))
+
     def test_generation_batch_ceiling(self):
         # 64 * 64 * 2 = 8192 rollouts at once (each key under its own ceiling)
         def mutate(r):

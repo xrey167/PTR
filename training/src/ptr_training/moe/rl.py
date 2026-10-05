@@ -83,6 +83,10 @@ def build_grpo_config(algorithm: str, cfg: RlConfig, *, seed: int, output_dir: s
         disable_tqdm=True,
         seed=seed,
         bf16=bf16,
+        # trl 1.14.1: GRPOConfig.disable_dropout (grpo_config.py ~452, default False) is applied
+        # in GRPOTrainer.__init__ (grpo_trainer.py ~988: disable_dropout_in_model). Policy and
+        # reference must be deterministic for the logprob ratio / KL to mean anything.
+        disable_dropout=True,
         # TRL reloads the (non-PEFT) reference model with these kwargs and defaults to float32,
         # which would make a bf16 policy's KL be measured against an fp32 reference.
         model_init_kwargs={"dtype": "bfloat16" if bf16 else "float32"} if cfg.beta > 0 else None,

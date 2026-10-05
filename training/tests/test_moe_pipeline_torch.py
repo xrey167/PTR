@@ -430,6 +430,81 @@ class MoeTorchPipelineTests(unittest.TestCase):
         self.assertAlmostEqual(g["grad_norm_per_step"][0], s["grad_norm_per_step"][0], delta=1e-4)
         self.assertNotAlmostEqual(g["loss_per_step"][0], s["loss_per_step"][0], places=3)
 
+    def test_oversize_gate_snapshot_is_skipped_without_conversion(self):
+        import dataclasses
+        import sys
+        import types
+        from unittest import mock
+
+        from ptr_training.moe import gates, pipeline
+
+        small = dataclasses.replace(
+            self.cfg,
+            sft=dataclasses.replace(self.cfg.sft, steps=1, batch=2, examples=8),
+            rl=dataclasses.replace(self.cfg.rl, algorithms=()),
+        )
+        stub = types.ModuleType("ptr_py")
+        for name in ("aimer_score", "rank_experts_for_pruning", "subspace_overlap", "chance_overlap"):
+            setattr(stub, name, lambda *a: 0.0)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            sys.modules, {"ptr_py": stub}
+        ), mock.patch.object(gates, "MAX_TOTAL_GATE_ELEMENTS", 10), mock.patch.object(
+            gates, "_flat", side_effect=AssertionError("converted")
+        ) as spy:
+            data = pipeline.execute(small, Path(tmp))
+        spy.assert_not_called()
+        self.assertEqual(data["gates"]["init_to_sft"]["status"], "skipped")
+        self.assertIn("snapshot too large", data["gates"]["init_to_sft"]["reason"])
+        self.assertFalse(data["gates_evaluated"])
+
+    def test_grpo_config_disables_dropout(self):
+        from ptr_training.moe.rl import build_grpo_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for algo in ("gspo", "sapo"):
+                g = build_grpo_config(algo, self.cfg.rl, seed=1, output_dir=tmp, bf16=False)
+                self.assertTrue(g.disable_dropout)
+
+    def test_sft_state_snapshot_only_for_multiple_arms(self):
+        import dataclasses
+        from unittest import mock
+
+        from ptr_training.moe import pipeline, rl
+
+        def small(algos):
+            return dataclasses.replace(
+                self.cfg,
+                sft=dataclasses.replace(self.cfg.sft, steps=2, batch=2, examples=8),
+                rl=dataclasses.replace(
+                    self.cfg.rl, algorithms=algos, steps=1, mini_steps=1, num_generations=2,
+                    prompts_per_step=1, beta=0.0,
+                ),
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            self.model_mod, "trainable_state", side_effect=AssertionError("snapshot")
+        ) as snap, mock.patch.object(
+            self.model_mod, "load_trainable_state", side_effect=AssertionError("restore")
+        ) as restore:
+            pipeline.execute(small(("gspo",)), Path(tmp))  # one arm: no snapshot, no restore
+        snap.assert_not_called()
+        restore.assert_not_called()
+
+        starts = []
+        real_rl = rl.run_rl
+
+        def recording(model, *a, **k):
+            starts.append({n: p.detach().clone() for n, p in model.named_parameters()})
+            return real_rl(model, *a, **k)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(rl, "run_rl", recording):
+            pipeline.execute(small(("gspo", "sapo")), Path(tmp))
+        self.assertEqual(len(starts), 2)
+        import torch
+
+        # arm 2 starts from the SFT state (== arm 1's start), not from arm 1's trained weights
+        self.assertTrue(all(torch.equal(starts[0][n], starts[1][n]) for n in starts[0]))
+
     def test_model_context_window_check(self):
         import types
 
