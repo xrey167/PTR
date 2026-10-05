@@ -157,6 +157,17 @@ class TuningTests(unittest.TestCase):
         self.assertEqual(m011.trial_set_digest(two), m011.trial_set_digest(m011.sample_trials(budget=2)))
         self.assertNotEqual(m011.trial_set_digest(two), m011.trial_set_digest(full))
 
+    def test_tb1_tuning_steps_and_deviations(self):
+        self.assertEqual(m011.PINS["seeds"], [17, 29, 43, 71, 101])
+        self.assertEqual(m011.tuning_steps_for(2000), 500)
+        self.assertEqual(m011.tuning_steps_for(7), 1)
+        self.assertEqual(m011.tuning_steps_for(1), 1)  # at least one step
+        self.assertEqual(m011.tuning_deviations(seed=17, steps=500, trials=8), [])
+        self.assertEqual(
+            [d["parameter"] for d in m011.tuning_deviations(seed=29, steps=499, trials=8)],
+            ["tuning_seed", "tuning_steps"],
+        )
+
     def test_select_best_ties_to_lowest_index(self):
         rs = [
             {"index": 0, "macro_accuracy": 0.2},

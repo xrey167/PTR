@@ -350,18 +350,45 @@ PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.moe.m011 \
 # tests (about 35 s on CPU)
 PYTHONPATH=training/src training/.venv/bin/python -m unittest discover -s training/tests -p 'test_m011*'
 
-# real run on the RTX 4090 (downloads OLMoE and the three corpora at the pinned revisions):
-# 1. tune once per arm (8 trials, seeded random search, selects on validation only)
-python -m ptr_training.moe.m011 --arm mixlora --seed 1 --out runs/m011/mixlora/tune --model olmoe --tune
-# 2. one run per seed with the frozen hyperparameters (>= 5 seeds)
-python -m ptr_training.moe.m011 --arm mixlora --seed 1 --out runs/m011/mixlora/seed1 \
+# real run on the RTX 4090 (downloads OLMoE and the three corpora at the pinned revisions),
+# two commands per arm (TB1 protocol):
+# 1. tune ONCE on the first pinned seed (17): 8 trials, each floor(0.25 * 2000) = 500 steps,
+#    seeded random search, selection on validation only -> frozen tuning.json
+python -m ptr_training.moe.m011 --arm mixlora --out runs/m011/mixlora/tune --model olmoe --tune
+# 2. every pinned seed (17 29 43 71 101) at the full 2000 steps with the frozen hyperparameters
+python -m ptr_training.moe.m011 --arm mixlora --out runs/m011/mixlora --model olmoe --all-seeds \
+  --hparams runs/m011/mixlora/tune/tuning.json     # writes runs/m011/mixlora/seed<N>/
+# or both in one command (tunes into <out>/tune, then runs the seeds):
+python -m ptr_training.moe.m011 --arm mixlora --out runs/m011/mixlora --model olmoe --tune --all-seeds
+# a single seed with frozen hyperparameters:
+python -m ptr_training.moe.m011 --arm mixlora --seed 29 --out runs/m011/mixlora/seed29 \
   --model olmoe --hparams runs/m011/mixlora/tune/tuning.json
 ```
+
+Tuning protocol (TB1): `--tune` runs on the tuning seed only (default: the first pinned seed,
+17) with `tuning_steps = max(1, floor(0.25 * steps))` per trial (500 for 2000). `--tune-steps`,
+`--tune-budget` and a non-first `--seed` stay available as overrides; every departure from the
+pinned seed, steps or 8 trials is written to `deviations` in `tuning.json` and
+`tuning_deviations` in `run.json`. `tuning.json` also holds `tuning_seed`, `tuning_steps`,
+`tuning_trials_used`, `trial_set_digest`, the trials and the `selected` values
+(`frozen_for_all_seeds`). Runs with `--hparams` copy `tuning_seed`, `tuning_steps`,
+`tuning_trials_used`, `tuning_trial_set_digest`, `tuning_selected` and `tuning_deviations` into
+their own `run.json` and train the full budget.
+
+GPU time per arm, a rough ESTIMATE that has NOT been measured (no GPU was available when this
+was written): tuning is 8 x 500 = 4,000 steps and the seeds are 5 x 2,000 = 10,000 steps, so
+14,000 optimizer steps per arm plus evaluation generation (greedy up to 256/384/128 new tokens
+over GSM8K test 1319 + HumanEval and BFCL held-out items, plus the 747/55/133-item validation
+sets after each of the 8 trials). If one step (batch 16-64 split in micro-batches of 4, bf16,
+gradient checkpointing, up to 1024 tokens) takes a guessed 1.5-4 s, that is about 6-16 h of
+training per arm, so roughly 1-3 days for four arms before evaluation. Measure with the first
+`--max-steps 20 --model olmoe` run (`metrics.json` `training`) and rescale; batch 64 trials
+will be the slowest.
 
 `--max-steps` overrides the pinned 2000 steps (recorded as `smoke_override`), `--eval-limit`
 caps items per domain, `--device auto|cpu|cuda`, `--micro-batch-size` sets gradient accumulation
 (default 4 on OLMoE), `--gradient-checkpointing/--no-gradient-checkpointing` (default on for
-OLMoE). `--tune --tune-budget 2` exercises tuning cheaply.
+OLMoE). `--tune --tune-budget 2` exercises tuning cheaply; `--all-seeds` takes no `--seed`.
 
 Outputs: `run.json` (arm, seed, pins, corpus selection digests per split, validation-overlap
 counters, expert-domain assignment digest vs the pinned one, trainable parameters,
@@ -369,7 +396,7 @@ hyperparameters and their source, tuning trials used and trial-set digest, versi
 sandbox mode, git commit, the list of unpinned choices), `metrics.json` (per-domain accuracy,
 `mean_task_accuracy` = macro average, `load_cv`, `routing_entropy` and their source, per-domain
 adapter-router stats, base-router stats, trainable params, training loss and first-step FLOPs),
-`tuning.json` (`--tune`: trials, `tuning_trials_used`, trial-set digest, selected trial).
+`tuning.json` (`--tune`: see above).
 
 Implemented and tested on CPU: all four arm topologies and their counts, domain-masked routing
 (training and evaluation), corpus partitions and digests, GSM8K / HumanEval / BFCL-simple
@@ -386,8 +413,7 @@ Known gaps and unpinned choices:
 - Not pinned by the config and chosen here: optimizer (AdamW, constant lr, clip 1.0),
   domain-balanced batch sampling, PERFT activation (SiLU, `W_up` zero-init), gate weights
   (softmax over the selected logits), no balancing loss on the adapter routers, max length,
-  generation lengths, the BFCL possible-answer file path, default untuned hyperparameters, steps
-  per tuning trial (default: the full budget). The full list is `UNPINNED_CHOICES` in `m011.py`.
+  generation lengths, the BFCL possible-answer file path, default untuned hyperparameters. The full list is `UNPINNED_CHOICES` in `m011.py`.
 - Dataset field names were checked against the dataset cards / files at the pinned revisions
   (GSM8K `question`/`answer`, HumanEval `task_id`/`prompt`/`canonical_solution`/`test`/
   `entry_point`, BFCL `id`/`question`/`function` plus `possible_answer/` `ground_truth`);

@@ -76,19 +76,28 @@ class TinyEndToEndTests(unittest.TestCase):
             routing = json.loads((out / "metrics.json").read_text())["routing"]
             self.assertEqual(set(routing["per_domain_adapter_router"]), {"code", "math", "tool"})
 
-    def test_tuning_budget_two_records_trials_and_feeds_a_final_run(self):
+    def test_tuning_protocol_tb1_and_frozen_hparams_across_seeds(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tune_dir, final_dir = Path(tmp) / "tune", Path(tmp) / "final"
-            rc = m011.main(["--arm", "mixlora", "--seed", "1", "--out", str(tune_dir), "--tune",
+            tune_dir = Path(tmp) / "tune"
+            # no --seed: tuning defaults to the first pinned seed; 4 steps -> 1 tuning step
+            rc = m011.main(["--arm", "mixlora", "--out", str(tune_dir), "--tune",
                             "--tune-budget", "2", "--model", "tiny", "--device", "cpu",
-                            "--max-steps", "1", "--eval-limit", "2"])
+                            "--max-steps", "4", "--eval-limit", "2"])
             self.assertEqual(rc, 0)
             tuning = json.loads((tune_dir / "tuning.json").read_text())
             run = json.loads((tune_dir / "run.json").read_text())
+            self.assertEqual((tuning["tuning_seed"], run["seed"], run["tuning_seed"]), (17, 17, 17))
+            self.assertEqual((tuning["tuning_steps"], run["tuning_steps"]), (1, 1))
             self.assertEqual(tuning["tuning_trials_used"], 2)
             self.assertEqual(run["tuning_trials_used"], 2)
+            self.assertTrue(tuning["frozen_for_all_seeds"])
             self.assertEqual(run["mode"], "tune")
             self.assertEqual(run["evaluation"]["split"], "validation")
+            # deviations from the pinned protocol are recorded (steps 500 -> 1, trials 8 -> 2)
+            params = {d["parameter"]: d for d in tuning["deviations"]}
+            self.assertEqual(set(params), {"tuning_steps", "tuning_trials_used"})
+            self.assertEqual((params["tuning_steps"]["pinned"], params["tuning_steps"]["used"]), (500, 1))
+            self.assertEqual(run["tuning_deviations"], tuning["deviations"])
             trials = m011.sample_trials(budget=2)
             self.assertEqual(tuning["trial_set_digest"], m011.trial_set_digest(trials))
             self.assertEqual(run["tuning_trial_set_digest"], tuning["trial_set_digest"])
@@ -96,19 +105,68 @@ class TinyEndToEndTests(unittest.TestCase):
                 [(t["learning_rate"], t["batch_size"]) for t in tuning["trials"]],
                 [(t["learning_rate"], t["batch_size"]) for t in trials],
             )
-            self.assertIn(tuning["selected_trial"], (0, 1))
+            self.assertEqual(run["tuning_selected"], tuning["selected"])
             self.assertFalse((tune_dir / "metrics.json").exists())
 
-            rc = m011.main(["--arm", "mixlora", "--seed", "2", "--out", str(final_dir),
-                            "--hparams", str(tune_dir / "tuning.json"), "--model", "tiny",
-                            "--device", "cpu", "--max-steps", "1", "--eval-limit", "2",
-                            "--micro-batch-size", "2"])
+            # the same frozen hyperparameters are used for two different seeds, full budget
+            for seed in (29, 43):
+                final_dir = Path(tmp) / f"seed{seed}"
+                rc = m011.main(["--arm", "mixlora", "--seed", str(seed), "--out", str(final_dir),
+                                "--hparams", str(tune_dir / "tuning.json"), "--model", "tiny",
+                                "--device", "cpu", "--max-steps", "3", "--eval-limit", "2",
+                                "--micro-batch-size", "2"])
+                self.assertEqual(rc, 0)
+                final = json.loads((final_dir / "run.json").read_text())
+                hp = final["hyperparameters"]
+                self.assertEqual(hp["source"], "tuned")
+                self.assertEqual(hp["learning_rate"], tuning["selected"]["learning_rate"])
+                self.assertEqual(hp["batch_size"], tuning["selected"]["batch_size"])
+                self.assertEqual(final["training_steps"]["run"], 3)
+                self.assertEqual(final["seed"], seed)
+                self.assertEqual(final["tuning_seed"], 17)
+                self.assertEqual(final["tuning_steps"], 1)
+                self.assertEqual(final["tuning_trials_used"], 2)
+                self.assertEqual(final["tuning_trial_set_digest"], tuning["trial_set_digest"])
+                self.assertEqual(final["tuning_selected"], tuning["selected"])
+
+    def test_tune_steps_override_and_other_seed_are_recorded_as_deviations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = m011.main(["--arm", "plain_lora", "--seed", "29", "--out", tmp, "--tune",
+                            "--tune-budget", "1", "--tune-steps", "2", "--model", "tiny",
+                            "--device", "cpu", "--max-steps", "4", "--eval-limit", "1"])
             self.assertEqual(rc, 0)
-            final = json.loads((final_dir / "run.json").read_text())
-            self.assertEqual(final["hyperparameters"]["source"], "tuned")
-            self.assertEqual(final["hyperparameters"]["learning_rate"], tuning["selected"]["learning_rate"])
-            self.assertEqual(final["tuning_trials_used"], 2)
-            self.assertEqual(final["tuning_trial_set_digest"], tuning["trial_set_digest"])
+            tuning = json.loads((Path(tmp) / "tuning.json").read_text())
+            self.assertEqual(tuning["tuning_steps"], 2)
+            self.assertEqual(
+                {d["parameter"] for d in tuning["deviations"]},
+                {"tuning_seed", "tuning_steps", "tuning_trials_used"},
+            )
+
+    def test_all_seeds_driver_tunes_once_then_runs_every_pinned_seed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = m011.main(["--arm", "plain_lora", "--out", tmp, "--all-seeds", "--tune",
+                            "--tune-budget", "1", "--model", "tiny", "--device", "cpu",
+                            "--max-steps", "2", "--eval-limit", "1"])
+            self.assertEqual(rc, 0)
+            root = Path(tmp)
+            tuning = json.loads((root / "tune" / "tuning.json").read_text())
+            seeds = []
+            for seed in m011.PINS["seeds"]:
+                run = json.loads((root / f"seed{seed}" / "run.json").read_text())
+                self.assertTrue((root / f"seed{seed}" / "metrics.json").exists())
+                self.assertEqual(run["hyperparameters"]["learning_rate"], tuning["selected"]["learning_rate"])
+                self.assertEqual(run["tuning_seed"], 17)
+                seeds.append(run["seed"])
+            self.assertEqual(seeds, [17, 29, 43, 71, 101])
+
+    def test_all_seeds_requires_frozen_hparams_and_no_seed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                m011.main(["--arm", "mixlora", "--out", tmp, "--all-seeds", "--model", "tiny"])
+            with self.assertRaises(SystemExit):
+                m011.main(["--arm", "mixlora", "--out", tmp, "--all-seeds", "--seed", "1"])
+            with self.assertRaises(SystemExit):
+                m011.main(["--arm", "mixlora", "--out", tmp])  # no seed, no --tune
 
     def test_same_seed_is_reproducible(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:

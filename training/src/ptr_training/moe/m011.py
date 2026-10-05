@@ -47,6 +47,10 @@ PINS = {
     "training_steps_per_arm": 2000,
     "domains": list(DOMAINS),
     "min_seeds": 5,
+    "seeds": [17, 29, 43, 71, 101],
+    # TB1: tune on the first pinned seed only, each trial at 25% of the pinned step budget
+    # (rounded down, at least 1); the selected hyperparameters are frozen for every seed.
+    "tuning_protocol": {"seed_rule": "first pinned seed", "steps_fraction": 0.25},
     "corpora": {
         k: {"repo": p.repo, "revision": p.revision, "config": p.config, "file": p.file}
         for k, p in corpora.PINNED_CORPORA.items()
@@ -82,7 +86,6 @@ UNPINNED_CHOICES = {
     "humaneval_scorer": "pass@1 greedy, subprocess, 10 s timeout, unshare net namespace if usable",
     "routing_probe": "teacher-forced eval items, first 8 per domain, batch of 1, <=256 tokens",
     "routing_metrics": "load CV / entropy via routing_metrics.py, mean over layers",
-    "tuning_trial_steps_default": "pinned training steps (override --tune-steps)",
     "tuning_trial_set": "same trial set for every arm (one selection_seed), prefix-stable in budget",
     "default_untuned_hparams": {"olmoe": {"lr": 1e-4, "batch": 16}, "tiny": {"lr": 1e-3, "batch": 4}},
     "micro_batch_size": "gradient accumulation; default 4 (olmoe) / whole batch (tiny)",
@@ -131,6 +134,24 @@ def trial_set_digest(trials: list[dict]) -> str:
 def select_best(results: list[dict]) -> dict:
     """Highest macro validation accuracy; ties go to the lowest trial index."""
     return max(results, key=lambda r: (r["macro_accuracy"], -r["index"]))
+
+
+def tuning_steps_for(budget_steps: int) -> int:
+    """TB1: floor(0.25 * pinned per-arm budget), at least 1."""
+    return max(1, math.floor(PINS["tuning_protocol"]["steps_fraction"] * budget_steps))
+
+
+def tuning_deviations(*, seed: int, steps: int, trials: int) -> list[dict]:
+    """Departures of a tuning run from the pinned protocol (empty for a conforming run)."""
+    pinned = {
+        "tuning_seed": PINS["seeds"][0],
+        "tuning_steps": tuning_steps_for(PINS["training_steps_per_arm"]),
+        "tuning_trials_used": PINS["tuning_search_spec"]["trial_budget"],
+    }
+    used = {"tuning_seed": seed, "tuning_steps": steps, "tuning_trials_used": trials}
+    return [
+        {"parameter": k, "pinned": pinned[k], "used": used[k]} for k in pinned if used[k] != pinned[k]
+    ]
 
 
 # ------------------------------------------------------------------------------------ helpers
@@ -558,11 +579,15 @@ def run(args) -> int:
         run_json["tuning_trials_used"] = tuned_in["tuning_trials_used"]
         run_json["tuning_trial_set_digest"] = tuned_in["trial_set_digest"]
         run_json["tuning_source"] = str(args.hparams)
+        run_json.update(
+            tuning_seed=tuned_in["tuning_seed"], tuning_steps=tuned_in["tuning_steps"],
+            tuning_selected=tuned_in["selected"], tuning_deviations=tuned_in["deviations"],
+        )
 
     if args.tune:
         trials = sample_trials(PINS["tuning_search_spec"], args.tune_budget)
         results = []
-        tune_steps = args.tune_steps or steps
+        tune_steps = args.tune_steps or tuning_steps_for(steps)
         for t in trials:
             tr = one_training(t["learning_rate"], t["batch_size"], tune_steps)
             per, counts = evaluate_accuracy(
@@ -574,13 +599,18 @@ def run(args) -> int:
                             "final_loss": tr["final_loss"]})
             print(f"trial {t['index']}: macro {results[-1]['macro_accuracy']:.4f}", file=sys.stderr)
         best = select_best(results)
+        deviations = tuning_deviations(seed=args.seed, steps=tune_steps, trials=len(results))
         tuning = {
             "arm": args.arm,
             "seed": args.seed,
+            "tuning_seed": args.seed,
+            "tuning_steps": tune_steps,
+            "tuning_steps_rule": "floor(0.25 * training steps), at least 1",
+            "frozen_for_all_seeds": True,
+            "deviations": deviations,
             "search_spec": PINS["tuning_search_spec"],
             "tuning_trials_used": len(results),
             "trial_set_digest": trial_set_digest(trials),
-            "trial_steps": tune_steps,
             "trials": results,
             "selected_trial": best["index"],
             "selected": {"learning_rate": best["learning_rate"], "batch_size": best["batch_size"]},
@@ -589,6 +619,10 @@ def run(args) -> int:
         _write_json(out_dir / "tuning.json", tuning)
         run_json["tuning_trials_used"] = len(results)
         run_json["tuning_trial_set_digest"] = tuning["trial_set_digest"]
+        run_json.update(
+            tuning_seed=args.seed, tuning_steps=tune_steps, tuning_selected=tuning["selected"],
+            tuning_deviations=deviations,
+        )
         run_json["wall_seconds"] = time.time() - t0
         _write_json(out_dir / "run.json", run_json)
         print(json.dumps({"selected": tuning["selected"], "trials": len(results)}))
@@ -628,14 +662,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--arm", required=True,
         choices=["perft_r_emergent", "perft_r_prescribed", "plain_lora", "mixlora"],
     )
-    p.add_argument("--seed", type=int, required=True)
+    p.add_argument(
+        "--seed", type=int, default=None,
+        help="run seed; for --tune defaults to the first pinned seed (17)",
+    )
+    p.add_argument(
+        "--all-seeds", action="store_true",
+        help="run every pinned seed at the full budget into <out>/seed<N> (with --tune: tune "
+        "first into <out>/tune, then use its frozen hyperparameters; else needs --hparams)",
+    )
     p.add_argument("--out", required=True)
     p.add_argument("--model", choices=["tiny", "olmoe"], default="tiny")
     p.add_argument("--max-steps", type=int, default=None, help="override the pinned 2000 steps")
     p.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     p.add_argument("--tune", action="store_true", help="seeded random search on validation")
     p.add_argument("--tune-budget", type=int, default=None, help="trials (pinned: 8)")
-    p.add_argument("--tune-steps", type=int, default=None, help="steps per trial")
+    p.add_argument("--tune-steps", type=int, default=None, help="steps per trial (default floor(0.25*steps); recorded as a deviation)")
     p.add_argument("--hparams", default=None, help="tuning.json from a --tune run")
     p.add_argument("--lr", type=float, default=None)
     p.add_argument("--batch-size", type=int, default=None)
@@ -649,8 +691,41 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def run_all_seeds(args) -> int:
+    """Desktop driver: (optionally tune on seeds[0]) then one full-budget run per pinned seed."""
+    import copy
+
+    out = Path(args.out)
+    hparams = args.hparams
+    if args.tune:
+        t_args = copy.copy(args)
+        t_args.all_seeds, t_args.seed, t_args.out = False, PINS["seeds"][0], str(out / "tune")
+        if (rc := run(t_args)) != 0:
+            return rc
+        hparams = str(out / "tune" / "tuning.json")
+    if not hparams:
+        raise SystemExit("--all-seeds needs --tune or --hparams (hyperparameters are frozen first)")
+    for seed in PINS["seeds"]:
+        s_args = copy.copy(args)
+        s_args.tune, s_args.all_seeds, s_args.seed = False, False, seed
+        s_args.hparams, s_args.out = hparams, str(out / f"seed{seed}")
+        if (rc := run(s_args)) != 0:
+            return rc
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    return run(build_parser().parse_args(argv))
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.all_seeds:
+        if args.seed is not None:
+            parser.error("--all-seeds runs the pinned seeds; do not pass --seed")
+        return run_all_seeds(args)
+    if args.seed is None:
+        if not args.tune:
+            parser.error("--seed is required unless --tune or --all-seeds")
+        args.seed = PINS["seeds"][0]
+    return run(args)
 
 
 if __name__ == "__main__":
