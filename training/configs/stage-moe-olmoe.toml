@@ -4,6 +4,11 @@ version = 1
 # allenai/OLMoE-1B-7B-0125 (OlmoeForCausalLM, 64 experts, top-8, 16 layers) on one
 # 24 GB GPU with LoRA in bf16. The tiny-random smoke (stage-moe-smoke.toml)
 # validates the mechanism; whether this configuration fits and trains is untested.
+# Run order on the 4090 desktop: (1) stage-moe-smoke-gpu.toml (tiny model, device check),
+# (2) stage-moe-olmoe-sft-smoke.toml (this model, SFT only, gradient checkpointing; the first
+# real-model step), (3) this config (SFT + GSPO + SAPO). This file still names the 3090 hardware
+# profile and sets neither gradient checkpointing nor allow_unselected_backend, so `--execute`
+# refuses it until a step-3 config is derived deliberately from the SFT smoke's measured memory.
 [codebook]
 version = 1
 fingerprint = "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"
