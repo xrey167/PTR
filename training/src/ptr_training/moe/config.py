@@ -373,24 +373,28 @@ def parse(raw: dict, source_path: str | None = None) -> MoeConfig:
             f"moe.rl.max_prompt_length ({rl.max_prompt_length}) is below the longest task "
             f"prompt ({longest_prompt_tokens} tokens)"
         )
-    if rl.num_generations < 2:
-        raise ConfigError("moe.rl.num_generations must be >= 2 (group-relative advantages)")
-    if rl.beta < 0:
-        raise ConfigError("moe.rl.beta must be >= 0")
-    if rl.epsilon_high < rl.epsilon and "epsilon_high" in r:
-        raise ConfigError("moe.rl.epsilon_high must be >= moe.rl.epsilon")
-    if algos and rl.mini_steps > rl.steps:
-        raise ConfigError(
-            f"moe.rl.mini_steps ({rl.mini_steps}) must not exceed moe.rl.steps ({rl.steps}): "
-            "TRL would build a generation batch larger than the whole run"
-        )
-    if rl.sapo_temperature_neg <= rl.sapo_temperature_pos:
-        raise ConfigError(
-            "moe.rl.sapo_temperature_neg must be > moe.rl.sapo_temperature_pos "
-            f"(got {rl.sapo_temperature_neg} <= {rl.sapo_temperature_pos})"
-        )
-    if rl.gspo_epsilon_high < rl.gspo_epsilon:
-        raise ConfigError("moe.rl.gspo_epsilon_high must be >= moe.rl.gspo_epsilon")
+    # GRPO-only constraints: no GRPOConfig is built when `algorithms = []`, so an SFT-only
+    # config is not rejected for them. (max_completion_length, the verification level and the
+    # field types stay validated above: the policy evaluation uses them without RL.)
+    if algos:
+        if rl.num_generations < 2:
+            raise ConfigError("moe.rl.num_generations must be >= 2 (group-relative advantages)")
+        if rl.beta < 0:
+            raise ConfigError("moe.rl.beta must be >= 0")
+        if rl.epsilon_high < rl.epsilon and "epsilon_high" in r:
+            raise ConfigError("moe.rl.epsilon_high must be >= moe.rl.epsilon")
+        if rl.mini_steps > rl.steps:
+            raise ConfigError(
+                f"moe.rl.mini_steps ({rl.mini_steps}) must not exceed moe.rl.steps ({rl.steps}): "
+                "TRL would build a generation batch larger than the whole run"
+            )
+        if "sapo" in algos and rl.sapo_temperature_neg <= rl.sapo_temperature_pos:
+            raise ConfigError(
+                "moe.rl.sapo_temperature_neg must be > moe.rl.sapo_temperature_pos "
+                f"(got {rl.sapo_temperature_neg} <= {rl.sapo_temperature_pos})"
+            )
+        if "gspo" in algos and rl.gspo_epsilon_high < rl.gspo_epsilon:
+            raise ConfigError("moe.rl.gspo_epsilon_high must be >= moe.rl.gspo_epsilon")
 
     lo = _table(moe, "lora", required=False)
     _check_keys(lo, _LORA_KEYS, "moe.lora")

@@ -181,6 +181,40 @@ class MoeConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, r"moe\.rl\.steps"):
             moe_config.parse(self._mutate(with_algo))
 
+    def test_num_generations_minimum_only_when_rl_runs(self):
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(algorithms=[], num_generations=1))
+        self.assertEqual(moe_config.parse(raw).rl.algorithms, ())
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(num_generations=1))
+        with self.assertRaisesRegex(ConfigError, "num_generations"):
+            moe_config.parse(raw)
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(algorithms=["sapo"], num_generations=1))
+        with self.assertRaisesRegex(ConfigError, "num_generations"):
+            moe_config.parse(raw)
+
+    def test_other_grpo_only_constraints_skipped_without_rl(self):
+        def mutate(r):
+            r["moe"]["rl"].update(
+                algorithms=[], beta=-1.0, epsilon=0.3, epsilon_high=0.2,
+                sapo_temperature_pos=2.0, sapo_temperature_neg=1.0,
+                gspo_epsilon=0.5, gspo_epsilon_high=0.1,
+            )
+
+        moe_config.parse(self._mutate(mutate))  # parses: no GRPOConfig is built
+        for key, bad in (("beta", {"beta": -1.0}),
+                         ("epsilon_high", {"epsilon": 0.3, "epsilon_high": 0.2}),
+                         ("sapo_temperature_neg", {"sapo_temperature_pos": 2.0, "sapo_temperature_neg": 1.0,
+                                                    "algorithms": ["sapo"]}),
+                         ("gspo_epsilon_high", {"gspo_epsilon": 0.5, "gspo_epsilon_high": 0.1,
+                                                 "algorithms": ["gspo"]})):
+            with self.subTest(key=key):
+                raw = self._mutate(lambda r: r["moe"]["rl"].update(bad))
+                with self.assertRaisesRegex(ConfigError, key):
+                    moe_config.parse(raw)
+        # type validation of the fields themselves still applies without RL
+        raw = self._mutate(lambda r: r["moe"]["rl"].update(algorithms=[], num_generations="x"))
+        with self.assertRaisesRegex(ConfigError, "num_generations"):
+            moe_config.parse(raw)
+
     def test_generation_batch_ceiling(self):
         # 64 * 64 * 2 = 8192 rollouts at once (each key under its own ceiling)
         def mutate(r):
