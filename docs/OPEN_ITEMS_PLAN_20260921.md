@@ -670,4 +670,5 @@ leader without a second channel); the reasoning for the six decisions is ADR-002
 | C9 trainer binds as it saves | `seal_checkpoint`, `save_bound_checkpoint` | #107 |
 
 Found on the way and fixed, not on this list: the L003 racing-checkpoint deadlock
-(#113), and a feature-gated exhaustive match the D5 records broke (#106).
+(fixed on `main` by #129, which superseded the same fix in #113), and a
+feature-gated exhaustive match the D5 records broke (#106).
