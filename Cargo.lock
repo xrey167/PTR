@@ -4613,6 +4613,7 @@ name = "ptr-model-api"
 version = "0.1.0"
 dependencies = [
  "ptr-types",
+ "sha2 0.11.0",
 ]
 
 [[package]]
