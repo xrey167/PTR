@@ -8,8 +8,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-04  
-**Code footprint:** 21 Rust source files · 14871 nonblank source lines · 47 integration-test files · 408 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-05  
+**Code footprint:** 21 Rust source files · 14895 nonblank source lines · 48 integration-test files · 411 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -105,6 +105,7 @@
 - Tier placement policies in src/tier.rs: the TierPlacementPolicy trait with DeterministicLruPolicy (least access, ties by digest), ExplicitTierPolicy, LookaheadPrefetchPolicy (at most max_objects) and BudgetedReplicaPolicy (ReplicaBudgetUnsatisfied when the preferred tiers cannot cover the minimum); they return a TierPlan and no code in this crate calls plan or choose_eviction on a controller, so nothing applies a plan; TierResidencyController::prefetch wraps transfer into PrefetchOutcome::Ready or Skipped
 - ManagedKvRegistry paged path (src/tensor_kv.rs, for a ptr-pods PagedKvTensorBackend): allocate_paged binds a KvPageBinding (model, adapter, generation, execution manifest, principal, device, dtype, page size) and the lease's placement epoch and fencing token to the cache and refuses a zero execution manifest or a device other than the lease's (DeviceMismatch); seal_online_snapshot, materialize_online_snapshot and prepare_online_snapshot_to_tier take a snapshot while the cache stays appendable and re-check the lease and the epoch and token before publishing (StaleLease or TierBindingMismatch); restore_paged_snapshot and restore_paged_from_tier restore under a newly issued lease and fencing token; publish_prefix and fork_prefix share a prefix; page_metrics reports the backend's page counters
 - ManagedKvRegistry::snapshot_to_tier and restore_from_tier move a non-paged KV snapshot through the same KvTierBinding and journal-authority checks, and restore now refuses a snapshot whose device is not the new lease's device (DeviceMismatch, lease revoked) and revokes the lease when the backend restore fails; invalidate also revokes the lease and calls the backend's revoke
+- commit refuses an expert structural record (RuntimeError::StructuralRecordOutsideAdmissionPath) and so do replay, open_durable and the other replay paths, which fail closed on a log holding one; the admission path that will write and re-check such records does not exist yet
 
 ### Missing for the target architecture
 
@@ -126,6 +127,7 @@
 - Async isolate scheduler integration
 - Configured raft-engine/raft-rs/Turso backend composition for production runtime modes
 - Streaming client response lifecycle and cancellation
+- The expert admission path (admit_expert_proposal): proposer authentication, evidence and epoch checks and the compare-and-set before an ExpertStructuralCommitted record is appended, and the replay re-check that replaces the current fail-closed refusal
 
 ### Next milestones
 
@@ -216,6 +218,7 @@
 - tests/tier_kv_e2e.rs: managed_kv_snapshot_roundtrips_cpu_nvme_and_restores_under_new_lease and paged_kv_snapshot_roundtrips_cpu_nvme_with_page_aligned_chunks use InMemoryKvTensorBackend and InMemoryPagedKvBackend (ptr-pods), a CpuTierBackend and a FileTierBackend in a temp directory, and a PtrRuntime::new runtime (an in-memory ledger, so these two tests do not reopen anything): snapshot to tier with a stale fencing token refused (TierBindingMismatch), journaled register and transfer cpu to file, evict of the cpu replica, read_admitted_object from the file tier, an object admitted by a controller the journal does not know refused (TierBindingMismatch), a restore under a placement on another device refused (DeviceMismatch), then restore under the original device with a new state id and a changed fencing token, append continuing (sequence length 1 to 2 in the non-paged test; 3 and a new token in the paged test, whose snapshot has 3 page-aligned chunks)
 - tests/tensor_kv.rs, the two paged tests: managed_paged_cache_binds_runtime_lease_and_snapshots_without_blocking_continuation (a snapshot of length 3 stays 3 while the live cache grows to 4, one copy-on-write copy is counted, append after invalidate returns Invalidated, restore_paged_snapshot gives length 3 and a new fencing token) and online_snapshot_revalidates_fencing_before_paged_tier_publication (2 chunks prepared, and after the Pod is assigned again prepare_online_snapshot_to_tier returns StaleLease); both use InMemoryPagedKvBackend. The one-line edit to tests/migration.rs only adds key_value_heads to the schema helper. tests/tensor_kv_cuda.rs was extended for the paged path with CandleKvTensorBackend and CandleGpuTierBackend but is compiled only with feature candle-cuda and was not compiled or run here, so nothing is claimed about it
 - the workspace test run at this state is green (1281 tests, 0 failures); that confirms the tests above pass and does not check any single statement in the entries above, which were written from reading src/tier.rs, src/lib.rs, src/tensor_kv.rs and the tests
+- tests/expert_record_refused.rs: a direct commit of each op kind is refused with nothing appended and no index consumed; replay and open_durable of a history holding one fail closed, the file left unchanged
 
 <!-- PTR:STATUS:END -->
 

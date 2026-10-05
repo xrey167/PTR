@@ -490,6 +490,12 @@ pub enum RuntimeError {
     /// `commit` was handed a semantic record: those are written only by the
     /// semantic write paths, which build and check them.
     SemanticRecordOutsideSemanticPath,
+    /// An expert structural record ([`LedgerEvent::ExpertStructuralCommitted`]) was handed to
+    /// `commit`, or found in a log being replayed. Such a record may only be written by the
+    /// runtime's expert admission path, which checks the proposer, the evidence and the
+    /// compare-and-set before appending; that path does not exist yet, so every route fails
+    /// closed. The admission package replaces the replay refusal with a re-check of the record.
+    StructuralRecordOutsideAdmissionPath,
     /// A semantic record written before origins existed, replayed after a
     /// record with an attributed origin (rule R1).
     LegacySemanticRecord {
@@ -2795,6 +2801,12 @@ impl PtrRuntime {
                     RuntimeError::InvalidConfig(format!("invalid tier journal event: {error:?}"))
                 })
             }
+            // Fail closed: an expert structural record is authority over which experts serve,
+            // and nothing yet re-checks one on replay (proposer, evidence, compare-and-set). A
+            // log holding one does not open until the admission path replaces this arm.
+            LedgerEvent::ExpertStructuralCommitted { .. } => {
+                Err(RuntimeError::StructuralRecordOutsideAdmissionPath)
+            }
             // Revocation tombstones are monotone and may precede activation.
             // Verifier/snapshot records do not confer permissions or load state.
             LedgerEvent::SemanticDeltaCommitted { .. }
@@ -2906,6 +2918,11 @@ impl PtrRuntime {
             LedgerEvent::MeshTunnelLifecycle(_)
             | LedgerEvent::PodEvidenceCommitted { .. }
             | LedgerEvent::PodOutputAdmitted { .. } => {}
+            // Unreachable through the paths above, which refuse the record first; kept as its
+            // own arm so applying one can never silently succeed.
+            LedgerEvent::ExpertStructuralCommitted { .. } => {
+                return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
+            }
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }
             | LedgerEvent::TierReplicaLifecycle { .. } => {
@@ -3094,7 +3111,14 @@ impl PtrRuntime {
 /// A semantic record is refused outright
 /// ([`RuntimeError::SemanticRecordOutsideSemanticPath`]): only the semantic
 /// write paths build one, with the origin they checked.
+///
+/// An expert structural record is refused the same way
+/// ([`RuntimeError::StructuralRecordOutsideAdmissionPath`]): only the expert admission path may
+/// build one.
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
+    if matches!(event, LedgerEvent::ExpertStructuralCommitted { .. }) {
+        return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
+    }
     if matches!(event, LedgerEvent::SemanticDeltaCommitted { .. }) {
         return Err(RuntimeError::SemanticRecordOutsideSemanticPath);
     }

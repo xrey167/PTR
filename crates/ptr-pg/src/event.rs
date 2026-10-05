@@ -91,7 +91,9 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::SessionRevoked { .. }
         | LedgerEvent::TierBackendLifecycle { .. }
         | LedgerEvent::TierObjectCommitted { .. }
-        | LedgerEvent::TierReplicaLifecycle { .. } => LifecycleChange::None,
+        | LedgerEvent::TierReplicaLifecycle { .. }
+        // The projection holds no expert catalog yet; structural records stay in the ledger.
+        | LedgerEvent::ExpertStructuralCommitted { .. } => LifecycleChange::None,
     }
 }
 
@@ -124,6 +126,7 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::TierBackendLifecycle { .. } => "storage.tier_backend_lifecycle",
         LedgerEvent::TierObjectCommitted { .. } => "storage.tier_object_committed",
         LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
+        LedgerEvent::ExpertStructuralCommitted { .. } => "expert.structural_committed",
     }
 }
 
@@ -196,6 +199,7 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             backend_id,
             ..
         } => format!("tier-replica:{}:{backend_id}", hex_digest(root_digest)),
+        LedgerEvent::ExpertStructuralCommitted { project, .. } => format!("project:{project}"),
     }
 }
 
@@ -212,10 +216,27 @@ pub fn event_payload(committed: &CommittedEvent) -> serde_json::Value {
         .into_iter()
         .map(|(key, value)| (key, serde_json::Value::String(value)))
         .collect();
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "commit_index": committed.index.0,
         "entries": entries,
-    })
+    });
+    // The record itself is opaque here; a consumer gets the digests that identify it.
+    if let LedgerEvent::ExpertStructuralCommitted {
+        op_kind,
+        proposal_id,
+        operation_id,
+        evidence_digest,
+        ..
+    } = &committed.event
+    {
+        payload["expert"] = serde_json::json!({
+            "op_kind": op_kind.code(),
+            "proposal_id": hex_digest(proposal_id),
+            "operation_id": hex_digest(operation_id),
+            "evidence_digest": hex_digest(evidence_digest),
+        });
+    }
+    payload
 }
 
 #[cfg(test)]
@@ -228,6 +249,30 @@ mod tests {
             index: CommitIndex(index),
             event,
         }
+    }
+
+    #[test]
+    fn expert_structural_events_have_a_topic_subject_and_digest_payload() {
+        let event = committed(
+            9,
+            LedgerEvent::ExpertStructuralCommitted {
+                project: ProjectId::from("p"),
+                op_kind: ptr_ledger::ExpertOpKind::Prune,
+                proposal_id: [1; 32],
+                operation_id: [2; 32],
+                evidence_digest: [3; 32],
+                record: vec![7],
+            },
+        );
+        assert_eq!(event_topic(&event.event), "expert.structural_committed");
+        assert_eq!(event_subject(&event), "project:p");
+        assert_eq!(lifecycle_change(&event), LifecycleChange::None);
+        let payload = event_payload(&event);
+        assert_eq!(payload["commit_index"], 9);
+        assert_eq!(payload["entries"], serde_json::json!({}));
+        assert_eq!(payload["expert"]["op_kind"], 5);
+        assert_eq!(payload["expert"]["proposal_id"], "01".repeat(32));
+        assert_eq!(payload["expert"]["evidence_digest"], "03".repeat(32));
     }
 
     #[test]

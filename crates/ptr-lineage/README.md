@@ -9,13 +9,13 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-04  
-**Code footprint:** 9 Rust source files · 4039 nonblank source lines · 6 integration-test files · 112 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-05  
+**Code footprint:** 9 Rust source files · 4306 nonblank source lines · 6 integration-test files · 116 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
 - Adapter records bound to one exact base model and revision, with origin, parent or consolidation sources and a data manifest, carrying the weights' artifact id and SHA-256 and the training-data fingerprint as the trainer supplies them (recorded, never read or checked here; erasure follows the manifest exactly as declared); a consolidation must name at least one registered source
-- Registration always starts as a candidate; only a passing forgetting gate report naming that adapter lets it serve, and only the gate can produce one (it binds the adapter id, not the scores it was given)
+- Registration always starts as a candidate; only a passing forgetting gate report naming that adapter lets it serve, and only the gate can produce one (it binds the adapter id, not the scores it was given; bind adds the subject and gate configuration digests the evaluator claims)
 - Forgetting gate with thresholds on average and per-task forgetting, backward transfer and public-suite regression, computed from an accuracy matrix whose summaries never overflow for finite scores (infinite only when the exact value exceeds f64::MAX, never NaN) and never underflow on the way to their value: a task's forgetting is its exact change, subnormal or not, and every mean is rounded once, so a summary is zero only when its exact value is at most half of 5e-324; a nonfinite threshold or public-suite score is refused before anything is evaluated
 - Revoking a training input names every adapter, descendant and consolidation that depends on it through the registered data manifests
 - Principal-angle overlap of the column and row spaces of delta_W = B A per layer, by Gram-Schmidt over the columns and rows of the product, never col(B) and row(A): run in coordinates of orthonormal bases of the factors, in O((d_out + d_in) r^2) time and O((d_out + d_in) r) memory, where the factors are smaller than the product, no factor entry is more than 2^400 below the largest of its factor and the product's largest column and row are at most 2^8 below their size without cancellation, agreeing with the formed product up to rounding; and on the formed product otherwise, in O(d_out d_in r) time, where factorizations whose products are computed as the same matrix give the same bases and a direction left after large terms cancel is kept; each side reported with the chance level of the comparison that produced its overlap, plus activation interference of two updates of one layer (a different layer name or output size is refused); an adapter that updates a layer twice is refused before anything is measured; a report names the candidate adapter measure_interference measured it for, so storing it under another adapter by mistake is refused (ptr-pg), though its fields are public and a report relabelled or built by hand names whatever it was given; bases and norms are computed at a power-of-two scale, and interference effects, the products bases are taken from and every delta_weight product f64 cannot provably form exactly (a running sum that overflows or a term that underflows) with an exponent range f64 does not bound, rounding each step as f64 does and an entry's last step once, straight to f64 (an entry of one term is the f64 product), so finite factors of any magnitude are measured, an entry far smaller than the largest of its matrix keeps its effect, terms that each round to zero still make the subnormal entry they sum to in delta_weight as in the bases, and only a product entry or ratio beyond f64::MAX is refused; matrix shapes whose size overflows and subspaces of different dimensions are refused, an entry index outside a matrix panics instead of reading another row, and a layer update can only be built with aligned factors
@@ -24,10 +24,11 @@
 - Held-out samples cannot enter the replay pool
 - AIMER expert-pruning score (arXiv:2603.18492) s(w) = ||w||_1 / (sqrt(N) ||w||_2) of a flattened expert, computed on w / max|w| so any finite magnitude is scored, with both norms accumulated over the sorted magnitudes so the score depends only on the multiset of weights and not on their layout (empty, nonfinite and all-zero vectors refused), and a ranking of one layer's experts by descending score (highest prunes first, ties in input order, equal weight counts required, an unscorable expert named in the error); it only ranks, and a prune decision must still pass the forgetting gate
 - Internal, no behaviour change: #[allow(clippy::manual_is_multiple_of)] on test helpers only (values_of_every_magnitude in src/scale.rs, forgotten_samples_are_drawn_far_more_often_than_retained_ones in tests/replay.rs), so the newer toolchain lints stay clean; no library code changed
+- GateReport::bind attaches a GateSubject (proposal id, operation id, artifact digest, base model digest, evaluation manifest digest, all supplied by the trusted evaluator) and the ForgettingGate's config_digest (domain tag and the four thresholds as f64 bits) and yields a BoundGateReport with private fields (compile-fail doctest against a literal) and a SHA-256 digest over a domain tag, every field, the adapter and the violations; the digest pins what was claimed, not that the measurements were taken on that artifact
 
 ### Missing for the target architecture
 
-- Adapter promotion and revocation as committed ledger events
+- Adapter promotion and revocation as committed ledger events (the ledger now has an expert structural event and the gate verdict can be bound to its subject, but no adapter promotion event is written or admitted, and nothing checks that a BoundGateReport subject matches a committed artifact)
 - Serving admission through checkpoint binding
 - A lineage adapter in ptr-pg over the rest of the work schema (ptr-pg stores interference reports only)
 - A training-run record per adapter run once an adapter is actually trained: training chain, adapter produced, run-manifest input fingerprint and adapter data fingerprint (different digests), trigger event, replay and new sample counts, wall-clock and model times, gate result
@@ -61,6 +62,7 @@
 - tests/replay.rs forgetting model and sampling, including nonfinite model times, unbounded draw counts, repeated probes, hand-built memory states and a stability floor above the initial stability
 - tests/aimer.rs AIMER score cases (uniform, one-hot, hand-computed, scale invariance at 1e300 and 1e-300, permutation invariance, refusals) and pruning order with a deterministic tie, permuted-weight ties and mismatched weight counts
 - workspace fmt/check/test/clippy
+- forgetting::tests bound_report_digest_* pin one bound-report digest and one gate-config digest and show the digest changing with each subject field, each of the four thresholds, the verdict and the adapter
 
 <!-- PTR:STATUS:END -->
 

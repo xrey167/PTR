@@ -1004,6 +1004,10 @@ pub enum ExpertProposalError {
     DuplicateResultSlot { layer: u16, index: u16 },
     /// Two different source experts occupy the same Token `(layer, index)` slot.
     DuplicateSourceSlot { layer: u16, index: u16 },
+    /// A decoded record held an identity field that is not valid.
+    Identity(ExpertIdentityError),
+    /// The bytes are not the canonical encoding of an [`ExpertCommitRecord`].
+    MalformedRecord(&'static str),
 }
 
 impl fmt::Display for ExpertProposalError {
@@ -1121,6 +1125,8 @@ impl fmt::Display for ExpertProposalError {
                     "two results claim token slot layer {layer} index {index}"
                 )
             }
+            Self::Identity(error) => write!(f, "record holds an invalid identity: {error}"),
+            Self::MalformedRecord(reason) => write!(f, "malformed expert commit record: {reason}"),
         }
     }
 }
@@ -1912,4 +1918,467 @@ fn check_result(
         }
     }
     Ok(())
+}
+
+/// Leading magic and version of an [`ExpertCommitRecord`] encoding. A change to the layout below
+/// needs a new magic, so an old reader refuses new bytes instead of misreading them.
+const RECORD_MAGIC: &[u8; 8] = b"PTREXR01";
+
+/// An [`ExpertProposal`] as committed to the ledger, with the digest of the trusted evidence it
+/// was admitted on and the gate-policy epoch that evidence was issued under.
+///
+/// The record is the opaque payload of the ledger's structural-commit event. This type only
+/// defines and re-validates the bytes: it does not decide admission, and holding one proves
+/// nothing about the evidence. The fields are private, and [`ExpertCommitRecord::decode_canonical`]
+/// rebuilds the proposal through [`ExpertProposal::new`], so bytes that decode always describe a
+/// proposal that validates.
+///
+/// # Canonical encoding
+///
+/// All integers are little-endian. `record = magic "PTREXR01" | proposal | evidence_digest[32] |
+/// gate_epoch u64`. A string is a `u32` byte length and its UTF-8 bytes, a list a `u32` count and
+/// its items, an option a `0`/`1` byte. The proposal is its project, proposer (project, pod,
+/// generation), `observed_at`, rationale digest and a one-byte operation tag (0 Birth, 1 Merge,
+/// 2 Split, 3 Freeze, 4 Reactivate, 5 Prune, 6 Retire) with its operands, in field order. A level
+/// is a tag byte (0 Token with `layer u16`, `index u16`; 1 Segment); a state is a tag byte (0
+/// Candidate, 1 Gated, 2 Serving, 3 Frozen, 4 Fenced, 5 Superseded, 6 Retired followed by a
+/// reason byte); a reason byte is 0 Pruned, 1 Superseded, 2 GateFailed, 3 InputRevoked.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertCommitRecord {
+    proposal: ExpertProposal,
+    evidence_digest: [u8; 32],
+    gate_epoch: u64,
+}
+
+impl ExpertCommitRecord {
+    /// Bind a proposal to the digest of the evidence it was admitted on and the gate-policy
+    /// epoch. Rejects an all-zero evidence digest.
+    pub fn new(
+        proposal: ExpertProposal,
+        evidence_digest: [u8; 32],
+        gate_epoch: u64,
+    ) -> Result<Self, ExpertProposalError> {
+        if evidence_digest == ZERO_DIGEST {
+            return Err(ExpertProposalError::MalformedRecord(
+                "evidence digest is all zero",
+            ));
+        }
+        Ok(Self {
+            proposal,
+            evidence_digest,
+            gate_epoch,
+        })
+    }
+
+    pub fn proposal(&self) -> &ExpertProposal {
+        &self.proposal
+    }
+
+    pub fn evidence_digest(&self) -> &[u8; 32] {
+        &self.evidence_digest
+    }
+
+    pub fn gate_epoch(&self) -> u64 {
+        self.gate_epoch
+    }
+
+    /// The canonical bytes; see the type documentation for the layout.
+    pub fn encode_canonical(&self) -> Vec<u8> {
+        let mut w = Writer::default();
+        w.bytes.extend_from_slice(RECORD_MAGIC);
+        w.proposal(&self.proposal);
+        w.bytes.extend_from_slice(&self.evidence_digest);
+        w.u64(self.gate_epoch);
+        w.bytes
+    }
+
+    /// Decode and re-validate. The proposal is rebuilt through [`ExpertProposal::new`] and every
+    /// identity through its constructor.
+    ///
+    /// # Errors
+    /// Rejects a wrong magic, truncated or trailing bytes, an unknown tag, an invalid identity or
+    /// digest, a proposal that does not validate, and any byte string that is not exactly the
+    /// canonical encoding of the record it decodes to.
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, ExpertProposalError> {
+        let mut r = Reader { bytes };
+        if r.take(RECORD_MAGIC.len())? != RECORD_MAGIC {
+            return Err(ExpertProposalError::MalformedRecord("unknown magic"));
+        }
+        let proposal = r.proposal()?;
+        let evidence_digest = r.array32()?;
+        let gate_epoch = r.u64()?;
+        if !r.bytes.is_empty() {
+            return Err(ExpertProposalError::MalformedRecord("trailing bytes"));
+        }
+        let record = Self::new(proposal, evidence_digest, gate_epoch)?;
+        if record.encode_canonical() != bytes {
+            return Err(ExpertProposalError::MalformedRecord(
+                "non-canonical encoding",
+            ));
+        }
+        Ok(record)
+    }
+}
+
+#[derive(Default)]
+struct Writer {
+    bytes: Vec<u8>,
+}
+
+impl Writer {
+    fn u8(&mut self, value: u8) {
+        self.bytes.push(value);
+    }
+
+    fn u16(&mut self, value: u16) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn u64(&mut self, value: u64) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn count(&mut self, value: usize) {
+        // Ids are at most 128 bytes and no operation holds anywhere near 2^32 operands; a value
+        // that did not fit would encode a truncated count and fail to decode, never alias.
+        self.bytes.extend_from_slice(&(value as u32).to_le_bytes());
+    }
+
+    fn str(&mut self, value: &str) {
+        self.count(value.len());
+        self.bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn digest(&mut self, value: &Digest) {
+        self.bytes.extend_from_slice(value);
+    }
+
+    fn level(&mut self, level: ExpertLevel) {
+        match level {
+            ExpertLevel::Token { layer, index } => {
+                self.u8(0);
+                self.u16(layer);
+                self.u16(index);
+            }
+            ExpertLevel::Segment => self.u8(1),
+        }
+    }
+
+    fn reason(&mut self, reason: RetiredReason) {
+        self.u8(match reason {
+            RetiredReason::Pruned => 0,
+            RetiredReason::Superseded => 1,
+            RetiredReason::GateFailed => 2,
+            RetiredReason::InputRevoked => 3,
+        });
+    }
+
+    fn state(&mut self, state: ExpertState) {
+        match state {
+            ExpertState::Candidate => self.u8(0),
+            ExpertState::Gated => self.u8(1),
+            ExpertState::Serving => self.u8(2),
+            ExpertState::Frozen => self.u8(3),
+            ExpertState::Fenced => self.u8(4),
+            ExpertState::Superseded => self.u8(5),
+            ExpertState::Retired(reason) => {
+                self.u8(6);
+                self.reason(reason);
+            }
+        }
+    }
+
+    fn base_model(&mut self, base: &BaseModelRef) {
+        self.str(&base.id.0);
+        self.digest(base.digest.as_bytes());
+        self.u64(base.generation);
+    }
+
+    fn spec(&mut self, spec: &ExpertPodSpec) {
+        self.str(&spec.project.0);
+        self.str(&spec.pod.0);
+        self.digest(spec.manifest_digest.as_bytes());
+        self.level(spec.level);
+        self.base_model(&spec.base_model);
+        self.u64(spec.generation.0);
+    }
+
+    fn target(&mut self, target: &ExpertTarget) {
+        self.str(&target.project.0);
+        self.str(&target.pod.0);
+        self.u64(target.generation.0);
+        self.level(target.level);
+        self.base_model(&target.base_model);
+        self.digest(target.manifest_digest.as_bytes());
+        self.state(target.state);
+        self.u64(target.state_version);
+    }
+
+    fn targets(&mut self, targets: &[ExpertTarget]) {
+        self.count(targets.len());
+        for target in targets {
+            self.target(target);
+        }
+    }
+
+    fn proposal(&mut self, proposal: &ExpertProposal) {
+        let ProposalParts {
+            project,
+            proposer,
+            observed_at,
+            op,
+            rationale,
+        } = proposal.parts();
+        self.str(&project.0);
+        self.str(&proposer.project.0);
+        self.str(&proposer.pod.0);
+        self.u64(proposer.generation.0);
+        self.u64(observed_at.0);
+        self.digest(rationale.as_bytes());
+        match op {
+            StructuralOp::Birth { result } => {
+                self.u8(0);
+                self.spec(result);
+            }
+            StructuralOp::Merge { sources, result } => {
+                self.u8(1);
+                self.targets(sources);
+                self.spec(result);
+            }
+            StructuralOp::Split { source, results } => {
+                self.u8(2);
+                self.target(source);
+                self.count(results.len());
+                for result in results {
+                    self.spec(result);
+                }
+            }
+            StructuralOp::Freeze { target } => {
+                self.u8(3);
+                self.target(target);
+            }
+            StructuralOp::Reactivate { target, result } => {
+                self.u8(4);
+                self.target(target);
+                match result {
+                    Some(result) => {
+                        self.u8(1);
+                        self.spec(result);
+                    }
+                    None => self.u8(0),
+                }
+            }
+            StructuralOp::Prune { targets } => {
+                self.u8(5);
+                self.targets(targets);
+            }
+            StructuralOp::Retire { target, reason } => {
+                self.u8(6);
+                self.target(target);
+                self.reason(*reason);
+            }
+        }
+    }
+}
+
+struct Reader<'a> {
+    bytes: &'a [u8],
+}
+
+fn malformed<T>(reason: &'static str) -> Result<T, ExpertProposalError> {
+    Err(ExpertProposalError::MalformedRecord(reason))
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], ExpertProposalError> {
+        if self.bytes.len() < n {
+            return malformed("truncated");
+        }
+        let (head, tail) = self.bytes.split_at(n);
+        self.bytes = tail;
+        Ok(head)
+    }
+
+    fn u8(&mut self) -> Result<u8, ExpertProposalError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, ExpertProposalError> {
+        Ok(u16::from_le_bytes(
+            self.take(2)?.try_into().expect("2 bytes"),
+        ))
+    }
+
+    fn u32(&mut self) -> Result<u32, ExpertProposalError> {
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().expect("4 bytes"),
+        ))
+    }
+
+    fn u64(&mut self) -> Result<u64, ExpertProposalError> {
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
+    }
+
+    fn array32(&mut self) -> Result<[u8; 32], ExpertProposalError> {
+        Ok(self.take(32)?.try_into().expect("32 bytes"))
+    }
+
+    /// A list count. Every item takes at least one byte, so a count above the remaining length
+    /// is refused before anything is allocated.
+    fn count(&mut self) -> Result<usize, ExpertProposalError> {
+        let n = self.u32()? as usize;
+        if n > self.bytes.len() {
+            return malformed("count exceeds the remaining bytes");
+        }
+        Ok(n)
+    }
+
+    fn string(&mut self) -> Result<String, ExpertProposalError> {
+        let n = self.count()?;
+        match std::str::from_utf8(self.take(n)?) {
+            Ok(s) => Ok(s.to_owned()),
+            Err(_) => malformed("string is not UTF-8"),
+        }
+    }
+
+    fn level(&mut self) -> Result<ExpertLevel, ExpertProposalError> {
+        match self.u8()? {
+            0 => Ok(ExpertLevel::Token {
+                layer: self.u16()?,
+                index: self.u16()?,
+            }),
+            1 => Ok(ExpertLevel::Segment),
+            _ => malformed("unknown level tag"),
+        }
+    }
+
+    fn reason(&mut self) -> Result<RetiredReason, ExpertProposalError> {
+        match self.u8()? {
+            0 => Ok(RetiredReason::Pruned),
+            1 => Ok(RetiredReason::Superseded),
+            2 => Ok(RetiredReason::GateFailed),
+            3 => Ok(RetiredReason::InputRevoked),
+            _ => malformed("unknown retirement reason"),
+        }
+    }
+
+    fn state(&mut self) -> Result<ExpertState, ExpertProposalError> {
+        match self.u8()? {
+            0 => Ok(ExpertState::Candidate),
+            1 => Ok(ExpertState::Gated),
+            2 => Ok(ExpertState::Serving),
+            3 => Ok(ExpertState::Frozen),
+            4 => Ok(ExpertState::Fenced),
+            5 => Ok(ExpertState::Superseded),
+            6 => Ok(ExpertState::Retired(self.reason()?)),
+            _ => malformed("unknown state tag"),
+        }
+    }
+
+    fn manifest_digest(&mut self) -> Result<ManifestDigest, ExpertProposalError> {
+        match ManifestDigest::new(self.array32()?) {
+            Ok(d) => Ok(d),
+            Err(ZeroDigest) => malformed("manifest digest is all zero"),
+        }
+    }
+
+    fn base_model(&mut self) -> Result<BaseModelRef, ExpertProposalError> {
+        let id = BaseModelId::new(self.string()?).map_err(ExpertProposalError::Identity)?;
+        let digest = match BaseModelDigest::new(self.array32()?) {
+            Ok(d) => d,
+            Err(ZeroDigest) => return malformed("base model digest is all zero"),
+        };
+        BaseModelRef::new(id, digest, self.u64()?).map_err(ExpertProposalError::Identity)
+    }
+
+    fn spec(&mut self) -> Result<ExpertPodSpec, ExpertProposalError> {
+        let project = ProjectId(self.string()?);
+        let pod = PodId(self.string()?);
+        let manifest = self.manifest_digest()?;
+        let level = self.level()?;
+        let base = self.base_model()?;
+        let generation = Generation(self.u64()?);
+        ExpertPodSpec::new(project, pod, manifest, level, base, generation)
+            .map_err(ExpertProposalError::Identity)
+    }
+
+    fn target(&mut self) -> Result<ExpertTarget, ExpertProposalError> {
+        let project = ProjectId(self.string()?);
+        let pod = PodId(self.string()?);
+        let generation = Generation(self.u64()?);
+        let level = self.level()?;
+        let base_model = self.base_model()?;
+        let manifest_digest = self.manifest_digest()?;
+        let state = self.state()?;
+        let state_version = self.u64()?;
+        ExpertTarget::new(ExpertTargetInit {
+            project,
+            pod,
+            generation,
+            level,
+            base_model,
+            manifest_digest,
+            state,
+            state_version,
+        })
+        .map_err(ExpertProposalError::Identity)
+    }
+
+    fn targets(&mut self) -> Result<Vec<ExpertTarget>, ExpertProposalError> {
+        let n = self.count()?;
+        (0..n).map(|_| self.target()).collect()
+    }
+
+    fn proposal(&mut self) -> Result<ExpertProposal, ExpertProposalError> {
+        let project = ProjectId(self.string()?);
+        let proposer = ProposerRef::new(
+            ProjectId(self.string()?),
+            PodId(self.string()?),
+            Generation(self.u64()?),
+        )
+        .map_err(ExpertProposalError::Identity)?;
+        let observed_at = CommitIndex(self.u64()?);
+        let rationale = match RationaleDigest::new(self.array32()?) {
+            Ok(d) => d,
+            Err(ZeroDigest) => return malformed("rationale digest is all zero"),
+        };
+        let op = match self.u8()? {
+            0 => StructuralOp::Birth {
+                result: self.spec()?,
+            },
+            1 => StructuralOp::Merge {
+                sources: self.targets()?,
+                result: self.spec()?,
+            },
+            2 => {
+                let source = self.target()?;
+                let n = self.count()?;
+                let results = (0..n).map(|_| self.spec()).collect::<Result<Vec<_>, _>>()?;
+                StructuralOp::Split { source, results }
+            }
+            3 => StructuralOp::Freeze {
+                target: self.target()?,
+            },
+            4 => {
+                let target = self.target()?;
+                let result = match self.u8()? {
+                    0 => None,
+                    1 => Some(self.spec()?),
+                    _ => return malformed("unknown option tag"),
+                };
+                StructuralOp::Reactivate { target, result }
+            }
+            5 => StructuralOp::Prune {
+                targets: self.targets()?,
+            },
+            6 => StructuralOp::Retire {
+                target: self.target()?,
+                reason: self.reason()?,
+            },
+            _ => return malformed("unknown operation tag"),
+        };
+        ExpertProposal::new(project, proposer, observed_at, op, rationale)
+    }
 }

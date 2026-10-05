@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-29  
-**Code footprint:** 1 Rust source files · 377 nonblank source lines · 3 integration-test files · 10 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-05  
+**Code footprint:** 1 Rust source files · 380 nonblank source lines · 3 integration-test files · 10 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -27,6 +27,7 @@
 - projection_entries is the one event-to-entries mapping, shared by the reference, Turso and ptr-pg so no backend can project an event differently
 - projection_entries now maps the newer ledger variants: ProtectedStateCommitted projects protected:<domain>:<logical_id>:generation/revision/ciphertext (the ciphertext digest as lowercase hex, never the ciphertext), MeshTunnelLifecycle projects mesh:<network>:<peer>:revision/state, and ExecutionManifestAdmitted/Revoked project execution-manifest:<digest hex>:state as admitted/revoked
 - ScopeLifecycle, PodEvidenceCommitted, PodOutputAdmitted, PodHypothesisCommitted, PolicyBundleActivated/Revoked and SessionRevoked deliberately project no entries (they advance last_applied only); the match over LedgerEvent stays exhaustive
+- ExpertStructuralCommitted projects no entries (the record stays in the ledger; no expert catalog is projected yet)
 
 ### Missing for the target architecture
 

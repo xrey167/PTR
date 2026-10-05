@@ -235,7 +235,70 @@ pub enum LedgerEvent {
         latency_millis: u64,
         verification: Attestation,
     },
+    /// A structural change to the expert set (birth, merge, split, freeze,
+    /// reactivate, prune or retire) committed by the runtime's expert
+    /// admission path. `record` is a versioned canonical expert commit record
+    /// owned by ptr-pods; the ledger stores it opaquely and checks only its
+    /// size. The ids and digests are the committing path's own claim about
+    /// that record, carried so a reader can index the event without decoding
+    /// the record; this crate cannot check that they agree with it.
+    ExpertStructuralCommitted {
+        project: ProjectId,
+        op_kind: ExpertOpKind,
+        proposal_id: [u8; 32],
+        operation_id: [u8; 32],
+        evidence_digest: [u8; 32],
+        record: Vec<u8>,
+    },
 }
+
+/// Which structural operation an [`LedgerEvent::ExpertStructuralCommitted`]
+/// records. The codes are pinned data ([`ExpertOpKind::code`]); inserting a
+/// member must not renumber stored records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertOpKind {
+    Birth,
+    Merge,
+    Split,
+    Freeze,
+    Reactivate,
+    Prune,
+    Retire,
+}
+
+impl ExpertOpKind {
+    /// The stored code: Birth 0, Merge 1, Split 2, Freeze 3, Reactivate 4,
+    /// Prune 5, Retire 6.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Birth => 0,
+            Self::Merge => 1,
+            Self::Split => 2,
+            Self::Freeze => 3,
+            Self::Reactivate => 4,
+            Self::Prune => 5,
+            Self::Retire => 6,
+        }
+    }
+
+    /// The member for a stored code, or `None` for an unknown one.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Birth),
+            1 => Some(Self::Merge),
+            2 => Some(Self::Split),
+            3 => Some(Self::Freeze),
+            4 => Some(Self::Reactivate),
+            5 => Some(Self::Prune),
+            6 => Some(Self::Retire),
+            _ => None,
+        }
+    }
+}
+
+/// An expert structural record is at most this many bytes, far below
+/// [`integrity::MAX_RECORD_BYTES`] so one record cannot crowd out its log.
+pub const MAX_EXPERT_RECORD_BYTES: usize = 1 << 20;
 
 /// Why a semantic write was allowed. ptr-runtime writes it in the same append
 /// as the delta and checks it with the same function on append and on every
@@ -595,6 +658,22 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_u64(&mut out, revision.0);
             put_u64(&mut out, policy_revision.0);
             put_bytes(&mut out, manifest);
+        }
+        LedgerEvent::ExpertStructuralCommitted {
+            project,
+            op_kind,
+            proposal_id,
+            operation_id,
+            evidence_digest,
+            record,
+        } => {
+            out.push(27);
+            put_string(&mut out, &project.0);
+            out.push(op_kind.code());
+            out.extend_from_slice(proposal_id);
+            out.extend_from_slice(operation_id);
+            out.extend_from_slice(evidence_digest);
+            put_bytes(&mut out, record);
         }
         LedgerEvent::ExecutionManifestRevoked {
             manifest_digest,
@@ -1008,6 +1087,29 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             revision: Revision(cursor.u64()?),
             event_digest: cursor.digest()?,
         },
+        27 => {
+            let project = ProjectId(cursor.string()?);
+            let code = cursor.u8()?;
+            let op_kind = ExpertOpKind::from_code(code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown expert operation code {code}"),
+                )
+            })?;
+            let proposal_id = cursor.digest()?;
+            let operation_id = cursor.digest()?;
+            let evidence_digest = cursor.digest()?;
+            let record = cursor.bytes()?.to_vec();
+            check_expert_record(&record)?;
+            LedgerEvent::ExpertStructuralCommitted {
+                project,
+                op_kind,
+                proposal_id,
+                operation_id,
+                evidence_digest,
+                record,
+            }
+        }
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1124,6 +1226,7 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
             check_hypothesis_dependency_count(dependencies.len())?;
             check_attestation(verification)?;
         }
+        LedgerEvent::ExpertStructuralCommitted { record, .. } => check_expert_record(record)?,
         LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
             endpoint: Some(endpoint),
             ..
@@ -1131,6 +1234,15 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
         _ => {}
+    }
+    Ok(())
+}
+
+/// An expert structural record is non-empty and at most
+/// [`MAX_EXPERT_RECORD_BYTES`].
+fn check_expert_record(record: &[u8]) -> Result<(), io::Error> {
+    if record.is_empty() || record.len() > MAX_EXPERT_RECORD_BYTES {
+        return Err(integrity::invalid("PTR_LEDGER_EXPERT_RECORD_LIMIT"));
     }
     Ok(())
 }
@@ -1996,6 +2108,95 @@ mod effect_record_tests {
             // framing does not pin its own length.
             assert!(decode_event(&encoded[..encoded.len() - 1]).is_err());
         }
+    }
+
+    fn expert_event() -> LedgerEvent {
+        LedgerEvent::ExpertStructuralCommitted {
+            project: ProjectId::from("p"),
+            op_kind: ExpertOpKind::Merge,
+            proposal_id: [1; 32],
+            operation_id: [2; 32],
+            evidence_digest: [3; 32],
+            record: b"PTREXR01-opaque".to_vec(),
+        }
+    }
+
+    #[test]
+    fn expert_op_kinds_have_pinned_codes() {
+        for (kind, code) in [
+            (ExpertOpKind::Birth, 0),
+            (ExpertOpKind::Merge, 1),
+            (ExpertOpKind::Split, 2),
+            (ExpertOpKind::Freeze, 3),
+            (ExpertOpKind::Reactivate, 4),
+            (ExpertOpKind::Prune, 5),
+            (ExpertOpKind::Retire, 6),
+        ] {
+            assert_eq!(kind.code(), code);
+            assert_eq!(ExpertOpKind::from_code(code), Some(kind));
+        }
+        assert_eq!(ExpertOpKind::from_code(7), None);
+        assert_eq!(ExpertOpKind::from_code(255), None);
+    }
+
+    #[test]
+    fn expert_structural_events_round_trip_with_a_stable_tag() {
+        for op_kind in (0..=6).map(|c| ExpertOpKind::from_code(c).unwrap()) {
+            let event = LedgerEvent::ExpertStructuralCommitted {
+                project: ProjectId::from("p"),
+                op_kind,
+                proposal_id: [1; 32],
+                operation_id: [2; 32],
+                evidence_digest: [3; 32],
+                record: b"PTREXR01-opaque".to_vec(),
+            };
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 27);
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            check_encodable(&event).unwrap();
+            assert!(decode_event(&encoded[..encoded.len() - 1]).is_err());
+        }
+    }
+
+    #[test]
+    fn expert_structural_events_refuse_trailing_bytes_and_unknown_op_codes() {
+        let mut encoded = encode_event(&expert_event());
+        // tag, project (4-byte length + "p"), then the op code.
+        let op_at = 1 + 4 + 1;
+        assert_eq!(encoded[op_at], ExpertOpKind::Merge.code());
+        let mut unknown = encoded.clone();
+        unknown[op_at] = 7;
+        let error = decode_event(&unknown).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error
+            .to_string()
+            .contains("unknown expert operation code 7"));
+        encoded.push(0);
+        assert!(decode_event(&encoded).is_err());
+    }
+
+    #[test]
+    fn expert_structural_records_are_bounded_and_non_empty() {
+        let with_record = |record: Vec<u8>| LedgerEvent::ExpertStructuralCommitted {
+            project: ProjectId::from("p"),
+            op_kind: ExpertOpKind::Freeze,
+            proposal_id: [1; 32],
+            operation_id: [2; 32],
+            evidence_digest: [3; 32],
+            record,
+        };
+        for record in [Vec::new(), vec![0; MAX_EXPERT_RECORD_BYTES + 1]] {
+            let event = with_record(record);
+            assert_eq!(
+                check_encodable(&event).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            // What the append path refuses, the decoder refuses too.
+            assert!(decode_event(&encode_event(&event)).is_err());
+        }
+        let largest = with_record(vec![9; MAX_EXPERT_RECORD_BYTES]);
+        check_encodable(&largest).unwrap();
+        assert_eq!(decode_event(&encode_event(&largest)).unwrap(), largest);
     }
 
     #[test]
