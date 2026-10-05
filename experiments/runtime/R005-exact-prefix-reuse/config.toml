@@ -120,3 +120,7 @@ max_cache_inserts_after_supersession = 0
 min_misclassified_revocable_as_raw_attempts = 1
 max_misclassified_raw_admissions = 0
 segment_kind_authority = "ingress record"
+# Preregistered choices for this experiment (no code default exists).
+min_approximate_output_reintroduced_as_raw_attempts = 1
+max_laundered_exact_admissions = 0
+runtime_produced_content_segment_kind = "Derived (never Raw), provenance and Approximate taint propagate until exact recomputation"

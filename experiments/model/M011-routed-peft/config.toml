@@ -44,3 +44,9 @@ procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lo
 # Preregistered choices for this experiment (no code default exists).
 tuning_trials_used_recorded_per_arm = true
 max_tuning_budget_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+perft_vs_lora_margin_points = 1.0
+perft_vs_mixlora_margin_points = 1.0
+compared_arms = ["perft_r_emergent", "perft_r_prescribed", "plain_lora", "mixlora"]
+frozen_base_arm = false
+compute_matching = "equal trainable parameters (1%) and equal training steps"

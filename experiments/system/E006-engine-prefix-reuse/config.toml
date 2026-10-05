@@ -122,3 +122,13 @@ procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens"
 # Preregistered choices for this experiment (no code default exists).
 inflight_restart_output_mismatches_max = 0
 inflight_restarts_equal_cancellations = true
+# Preregistered choices for this experiment (no code default exists).
+attacker_classifier = "logistic regression"
+attacker_features = ["single_request_ttft", "eight_request_repeated_bundle_ttft"]
+attacker_samples_per_class = 1000
+attacker_bootstrap_resamples = 10000
+attacker_bootstrap_seed = 20240607
+attacker_auc_ci_upper_max = 0.55
+unaffected_principal_dependency_kinds = ["semantic", "memory", "adapter", "expert", "base_model"]
+unaffected_principal_hit_rate_tolerance = 0.02
+reverse_index = "principal <- dependency-generation mapping, covering every dependency kind in a request lineage"
