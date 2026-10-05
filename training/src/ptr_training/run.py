@@ -206,6 +206,22 @@ def write_manifest(path: Path, manifest: dict) -> None:
         handle.write("\n")
 
 
+def _execute_trl_moe(manifest: dict, config_path: Path) -> int | str:
+    """Dispatch the `trl-moe` backend; heavy dependencies are imported lazily."""
+    from ptr_training.moe import pipeline
+
+    try:
+        pipeline.require_extra()
+    except pipeline.MissingExtraError as error:
+        return str(error)
+    metrics_path = pipeline.run(manifest, config_path)
+    try:
+        print(metrics_path.relative_to(ROOT))
+    except ValueError:
+        print(metrics_path)
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -226,6 +242,16 @@ def main() -> None:
     elif not out.is_absolute():
         out = ROOT / out
 
+    if manifest["config"]["training"].get("backend") == "trl-moe":
+        # Component decision for training-backend is still `unlocked` and trl-peft is
+        # `to-evaluate` (evaluations/components/training-backend/candidates.toml).
+        manifest["backend_selection"] = {
+            "status": "unselected",
+            "component": "training-backend",
+            "candidate": "trl-peft",
+            "note": "unselected backend, pipeline evidence only",
+        }
+
     write_manifest(out, manifest)
     print(out.relative_to(ROOT))
 
@@ -240,6 +266,16 @@ def main() -> None:
             raise SystemExit(
                 "training backend is not selected; run manifest prepared but no weights were trained"
             )
+        if backend == "trl-moe":
+            from ptr_training.moe import config as moe_config
+
+            try:  # the same gate run_config / execute apply
+                moe_config.require_backend_opt_in(
+                    manifest["config"]["training"].get("allow_unselected_backend")
+                )
+            except moe_config.BackendNotSelected as error:
+                raise SystemExit(str(error)) from error
+            raise SystemExit(_execute_trl_moe(manifest, config_path))
         raise SystemExit(f"training backend {backend!r} is not implemented yet")
 
 
