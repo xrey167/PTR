@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-28  
-**Code footprint:** 17 Rust source files · 6466 nonblank source lines · 2 integration-test files · 156 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-05  
+**Code footprint:** 17 Rust source files · 6510 nonblank source lines · 2 integration-test files · 157 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -56,6 +56,7 @@
 - Capability probe that never creates an extension; refusal, because the build links no TLS connector, of every hostaddr that is not a loopback address and every host that is not a Unix socket, a loopback address or localhost, with localhost never looked up: without a hostaddr it is given 127.0.0.1 as one, which the driver connects to instead of resolving the name
 - One server per substrate: a connection string naming more than one host or more than one hostaddr is refused with MultipleHosts before any session opens, so the migration lock's session connects to the loopback address or Unix socket the substrate's session reached, not to another server the driver could try
 - Rebuild drops the instance's own projection and derived schemas and replays; working state survives. drop_all, for tests and decommissioning, drops all three without the migration lock, which its caller must serialize
+- ExpertStructuralCommitted maps to no lifecycle change, topic expert.structural_committed, subject project:<project> and an event payload that adds an expert object with the op code and the proposal, operation and evidence digests in hex; its record bytes are not stored
 
 ### Missing for the target architecture
 

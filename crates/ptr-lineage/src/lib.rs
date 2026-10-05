@@ -30,7 +30,10 @@ mod subspace;
 
 pub use aimer::{aimer_score, rank_experts_for_pruning, ExpertWeights};
 pub use error::LineageError;
-pub use forgetting::{AccuracyMatrix, ForgettingGate, GateReport, GateViolation, PublicSuite};
+pub use forgetting::{
+    AccuracyMatrix, BoundGateReport, ForgettingGate, GateReport, GateSubject, GateViolation,
+    PublicSuite,
+};
 pub use lineage::{
     AdapterId, AdapterRecord, AdapterStatus, BaseModel, ConsolidationPolicy, Lineage, Origin,
 };

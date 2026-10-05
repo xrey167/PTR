@@ -253,6 +253,9 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         LedgerEvent::PodEvidenceCommitted { .. }
         | LedgerEvent::PodOutputAdmitted { .. }
         | LedgerEvent::PodHypothesisCommitted { .. }
+        // Expert structure is not projected into queryable keys yet; the record stays in the
+        // ledger, which is authoritative.
+        | LedgerEvent::ExpertStructuralCommitted { .. }
         | LedgerEvent::PolicyBundleActivated { .. }
         | LedgerEvent::PolicyBundleRevoked { .. }
         | LedgerEvent::SessionRevoked { .. }

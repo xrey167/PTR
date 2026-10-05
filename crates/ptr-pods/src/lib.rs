@@ -42,11 +42,11 @@ pub use evidence::{
     EvidenceVerifier, PodEvidenceBundle, ReplayedEvidence,
 };
 pub use expert::{
-    BaseModelDigest, BaseModelId, BaseModelRef, ExpertIdentityError, ExpertLevel,
-    ExpertOperationRequest, ExpertPodSpec, ExpertProposal, ExpertProposalError, ExpertState,
-    ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId, ProposalId,
-    ProposalParts, ProposerRef, RationaleDigest, RequestedOp, ResultIntent, RetiredReason,
-    StructuralOp, ZeroDigest,
+    BaseModelDigest, BaseModelId, BaseModelRef, ExpertCommitRecord, ExpertIdentityError,
+    ExpertLevel, ExpertOperationRequest, ExpertPodSpec, ExpertProposal, ExpertProposalError,
+    ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId,
+    ProposalId, ProposalParts, ProposerRef, RationaleDigest, RequestedOp, ResultIntent,
+    RetiredReason, StructuralOp, ZeroDigest,
 };
 pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
 pub use kv::{

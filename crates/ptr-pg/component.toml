@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-pg"
 maturity = "prototype"
-last_reviewed = "2026-09-28"
+last_reviewed = "2026-10-05"
 
 implemented = [
   "An instance is the three schemas SchemaSet::with_prefix makes of one prefix, never pg or a prefix beginning pg_, whose names PostgreSQL reserves for system schemas and would refuse to create; connect_with refuses any other set (InvalidSchemaSet) before it connects, so the names are distinct and no two instances share a schema, and a rebuild, a migration or the projector never touches another instance's",
@@ -46,6 +46,7 @@ implemented = [
   "Capability probe that never creates an extension; refusal, because the build links no TLS connector, of every hostaddr that is not a loopback address and every host that is not a Unix socket, a loopback address or localhost, with localhost never looked up: without a hostaddr it is given 127.0.0.1 as one, which the driver connects to instead of resolving the name",
   "One server per substrate: a connection string naming more than one host or more than one hostaddr is refused with MultipleHosts before any session opens, so the migration lock's session connects to the loopback address or Unix socket the substrate's session reached, not to another server the driver could try",
   "Rebuild drops the instance's own projection and derived schemas and replays; working state survives. drop_all, for tests and decommissioning, drops all three without the migration lock, which its caller must serialize",
+  "ExpertStructuralCommitted maps to no lifecycle change, topic expert.structural_committed, subject project:<project> and an event payload that adds an expert object with the op code and the proposal, operation and evidence digests in hex; its record bytes are not stored",
 ]
 
 missing = [
