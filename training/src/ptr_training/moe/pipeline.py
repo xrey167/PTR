@@ -211,9 +211,13 @@ def build_task_splits(cfg: moe_config.MoeConfig):
     eval_tasks = generate_heldout(EVAL_TASKS, seed=cfg.seed + 2)
     held = frozenset(t.prompt for t in eval_tasks)
     sft_tasks = generate_tasks(cfg.sft.examples, seed=cfg.seed, exclude_prompts=held)
-    # One generation batch (prompts_per_step prompts) feeds `mini_steps` optimizer steps, so a
-    # run consumes ceil(steps / mini_steps) * prompts_per_step prompts; keep a floor of 64.
-    rl_n = max(64, -(-cfg.rl.steps // cfg.rl.mini_steps) * cfg.rl.prompts_per_step)
+    # TRL (steps_per_generation = mini_steps) draws one generation batch of
+    # mini_steps * prompts_per_step NEW prompts (RepeatSampler batch_size =
+    # generation_batch_size // num_generations) and slices it across `mini_steps` optimizer
+    # steps, so each optimizer step consumes prompts_per_step fresh prompts. A run needs
+    # ceil(steps / mini_steps) whole generation batches (the last may be partial); floor of 64.
+    generation_batches = -(-cfg.rl.steps // cfg.rl.mini_steps)
+    rl_n = max(64, generation_batches * cfg.rl.mini_steps * cfg.rl.prompts_per_step)
     rl_tasks = generate_tasks(rl_n, seed=cfg.seed + 1, exclude_prompts=held)
     train = {t.prompt for t in sft_tasks} | {t.prompt for t in rl_tasks}
     overlap = len(held & train)

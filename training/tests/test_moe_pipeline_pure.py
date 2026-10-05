@@ -24,15 +24,36 @@ class MoeTaskSplitTests(unittest.TestCase):
                 self.assertEqual(stats["sft_tasks"], cfg.sft.examples)
                 self.assertEqual(len(ev), pipeline.EVAL_TASKS)
 
-    def test_rl_task_count_matches_prompts_consumed(self):
+    def _rl_rows(self, name, **rl):
         import dataclasses
 
-        cfg = moe_config.load(CONFIGS / "stage-moe-smoke.toml")
-        big = dataclasses.replace(
-            cfg, rl=dataclasses.replace(cfg.rl, steps=400, mini_steps=4, prompts_per_step=2)
-        )
-        _, rl_tasks, _, _ = pipeline.build_task_splits(big)
-        self.assertEqual(len(rl_tasks), 100 * 2)  # ceil(400/4) generation batches x 2 prompts
+        cfg = moe_config.load(CONFIGS / name)
+        cfg = dataclasses.replace(cfg, rl=dataclasses.replace(cfg.rl, **rl))
+        return len(pipeline.build_task_splits(cfg)[1])
+
+    def test_rl_pool_sized_from_optimizer_steps(self):
+        # per optimizer step TRL consumes prompts_per_step NEW prompts; the pool covers whole
+        # generation batches: ceil(steps / mini_steps) * mini_steps * prompts_per_step
+        self.assertEqual(self._rl_rows("stage-moe-smoke.toml", steps=400, mini_steps=4,
+                                       prompts_per_step=2), 400 * 2)
+        # partial final generation batch: 10 steps, mini_steps 4 -> 3 batches x 4 x 2 = 24 rows
+        # (floor of 64 hides it, so use a larger prompts_per_step)
+        self.assertEqual(self._rl_rows("stage-moe-smoke.toml", steps=10, mini_steps=4,
+                                       prompts_per_step=8), 3 * 4 * 8)
+        self.assertEqual(self._rl_rows("stage-moe-smoke.toml", steps=13, mini_steps=4,
+                                       prompts_per_step=8), 4 * 4 * 8)
+        self.assertEqual(self._rl_rows("stage-moe-smoke.toml", steps=1, mini_steps=1,
+                                       prompts_per_step=1), 64)  # floor
+
+    def test_rl_pool_for_stage_configs(self):
+        smoke = moe_config.load(CONFIGS / "stage-moe-smoke.toml").rl  # 16 steps, mini 2, 2/step
+        self.assertEqual(self._rl_rows("stage-moe-smoke.toml"),
+                         max(64, -(-smoke.steps // smoke.mini_steps) * smoke.mini_steps
+                             * smoke.prompts_per_step))
+        olmoe = moe_config.load(CONFIGS / "stage-moe-olmoe.toml").rl  # 50 steps, mini 4, 2/step
+        rows = self._rl_rows("stage-moe-olmoe.toml")
+        self.assertGreaterEqual(rows, olmoe.steps * olmoe.prompts_per_step)  # >= 100
+        self.assertEqual(rows, max(64, 13 * 4 * 2))  # ceil(50/4)=13 batches of 4 steps x 2
 
     def test_deterministic(self):
         cfg = moe_config.load(CONFIGS / "stage-moe-smoke.toml")

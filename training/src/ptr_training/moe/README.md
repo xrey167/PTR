@@ -214,8 +214,10 @@ router stays frozen.
   `max_length >=` longest prompt + longest answer + EOS (26), so the EOS label always survives.
 - `run_moe_tests.py --require-backend` exit codes: 0 ok, 1 test failure, 2 environment missing
   (moe extra absent and no `training/.venv` to re-exec into; not a code defect), 3 tests skipped.
-  The RL prompt pool is `ceil(steps / mini_steps) * prompts_per_step` (floor 64) prompts, the
-  amount a run actually consumes; the full-fine-tune reference model is reloaded in the policy
+  The RL prompt pool is `ceil(steps / mini_steps) * mini_steps * prompts_per_step` (floor 64):
+  TRL draws `mini_steps * prompts_per_step` new prompts per generation batch and slices it over
+  `mini_steps` optimizer steps (each step consumes `prompts_per_step` fresh prompts), including
+  the final partial batch; the full-fine-tune reference model is reloaded in the policy
   dtype (`model_init_kwargs`), and `config._name_or_path` is restored after each RL arm.
 - Seeding: python/numpy/torch are seeded before model construction and again before LoRA init.
 - `precision = "bf16"` is applied to the tiny model too; `model.param_dtypes` records the dtypes
