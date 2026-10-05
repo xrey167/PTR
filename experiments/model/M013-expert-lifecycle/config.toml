@@ -66,7 +66,7 @@ corpus_code_revision = "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
 corpus_tool = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 corpus_tool_revision = "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
 corpus_tool_file = "BFCL_v3_simple.json"
-corpus_split_rule = "HumanEval and BFCL items are split by index mod 3: 0 = training, 1 = gate suite, 2 = held-out evaluation; GSM8K uses its train split for training and its test split partitioned by index mod 2 (0 = gate suite, 1 = held-out evaluation); training data for Birth, Split, reactivation and the fresh-expert control comes only from the training partition"
+corpus_split_rule = "HumanEval and BFCL items are split by index mod 3: 0 = training, 1 = gate suite, 2 = held-out evaluation; GSM8K uses its train items with position mod 10 != 9 for training (mod 10 == 9 is the tuning validation) and its test split partitioned by index mod 2 (0 = gate suite, 1 = held-out evaluation); training data for Birth, Split, reactivation and the fresh-expert control comes only from the training partition"
 public_suite_dataset = "cais/mmlu"
 public_suite_revision = "c30699e8356da336a370243923dbaf21066bb9fe"
 public_suite_config = "all"
@@ -75,7 +75,7 @@ public_suite_selection_rule = "the first 2000 questions in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm", "hyperparameter_tuning_budget_trials_per_arm", "lifecycle_operations", "proposal_generating_arms", "recovery_target_fraction_of_pre_retirement_score", "split_rule_single_split_corpora", "flops_relative_tolerance", "active_param_tolerance", "validation_position_modulus", "validation_position_residue", "overlap_counters_per_corpus", "gsm8k_test_partition_modulus", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons"]
+procedure_parameters_recorded_per_cell = ["seeds", "tuning_trials_used", "domain_sequence", "max_recovery_steps", "min_proposals_generated_per_arm", "hyperparameter_tuning_budget_trials_per_arm", "lifecycle_operations", "proposal_generating_arms", "recovery_target_fraction_of_pre_retirement_score", "split_rule_single_split_corpora", "flops_relative_tolerance", "active_param_tolerance", "validation_position_modulus", "validation_position_residue", "overlap_counters_per_corpus", "gsm8k_test_partition_modulus", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons", "opportunities_per_seed", "cumulative_net_quality_per_opportunity_margin"]
 # Preregistered choices for this experiment (no code default exists).
 split_rule_single_split_corpora = "index mod 3: 0 = training, 1 = gate suite, 2 = held-out evaluation"
 max_training_data_outside_training_partition_count = 0
@@ -130,3 +130,10 @@ tuning_trial_set_digest_recorded_in_run_json = true
 # Preregistered choices for this experiment (no code default exists).
 arm_comparisons = { lifecycle_full_context = "claim 13 compared with context_ablated and heuristic", lifecycle_context_ablated = "comparison arm", lifecycle_heuristic = "comparison arm", static_expert_set = "claim 11 comparison baseline", naive_adapter_chain = "claim 11 comparison baseline (strictly below)" }
 arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+opportunities_per_seed = 200
+opportunity_set_digest_recorded_in_run_json = true
+opportunity_set_rule = "common set of proposal opportunities: same ids, same order, shared by the three proposal-generating arms"
+abstentions_and_gate_rejections_counted_per_arm = true
+cumulative_net_quality_per_opportunity_margin = 0.0
+abstention_net_quality = 0

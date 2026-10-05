@@ -49,7 +49,7 @@ load_cv_and_dead_experts_eval_tokens = 8192
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "tuning_trials_used", "lora_rank", "lora_alpha", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "load_cv_and_dead_experts_eval_tokens", "comparison_arms", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "lora_expert_config", "tuning_search_spec", "arm_comparisons", "update_rules", "phi_eta"]
 # Preregistered choices for this experiment (no code default exists).
 expert_token_fraction_definition = "expert routed assignments / total routed assignments in the layer; sums to 1 over experts"
 # Preregistered choices for this experiment (no code default exists).
@@ -90,3 +90,10 @@ tuning_trial_set_digest_recorded_in_run_json = true
 # Preregistered choices for this experiment (no code default exists).
 arm_comparisons = { aux_free_bias = "compared with aux_loss and phi_balancing (0.05 and 1 point margins)", aux_loss = "comparison baseline", phi_balancing = "comparison baseline" }
 arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+update_rules = { aux_free_bias = "b_i added to router scores for top-k selection only; gating weights from unbiased scores; after every optimizer step b_i <- b_i + u * sign(mean_load - load_i); u = bias_update_rate (tuned); b init 0", aux_loss = "L_aux = alpha * N * sum_i f_i * P_i per layer per step; f_i token fraction routed to i, P_i mean router probability; alpha = aux_coefficient (tuned)", phi_balancing = "m <- (1 - eta) m + eta * p_t; q = log(m) + 1 with stop-gradient; L_phi = coefficient * <p_t, q>; coefficient = aux_coefficient (same tuning range); m init uniform; eta = 0.65" }
+phi_eta = 0.65
+phi_coefficient = "aux_coefficient"
+bias_init = 0
+# Preregistered choices for this experiment (no code default exists).
+update_rule_symbols = ["L_aux", "L_phi", "P_i", "b_i", "f_i", "load_i", "mean_load", "p_t", "sum_i"]

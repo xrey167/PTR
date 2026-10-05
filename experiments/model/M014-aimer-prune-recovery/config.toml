@@ -56,7 +56,7 @@ forgetting_gate_public_suite_is_same_object_as_quality_suite = false
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "recovery_sft_steps", "recovery_rl_steps", "recovery_sequences", "vram_batch_size", "vram_sequence_length", "pruning_fractions", "named_baseline_pruning_methods", "pruned_model_revision", "gate_suite_range", "quality_eval_range", "recovery_sft_corpus_revision", "recovery_sft_corpus_size", "arm_matrix", "recovery_overlap_checks", "recovery_overlap_slices", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "recovery_protocol", "random_pruning", "usage_frequency_pruning", "arm_comparisons"]
+procedure_parameters_recorded_per_cell = ["seeds", "recovery_sft_steps", "recovery_rl_steps", "recovery_sequences", "vram_batch_size", "vram_sequence_length", "pruning_fractions", "named_baseline_pruning_methods", "pruned_model_revision", "gate_suite_range", "quality_eval_range", "recovery_sft_corpus_revision", "recovery_sft_corpus_size", "arm_matrix", "recovery_overlap_checks", "recovery_overlap_slices", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "recovery_protocol", "random_pruning", "usage_frequency_pruning", "arm_comparisons", "aimer_selection"]
 # Preregistered choices for this experiment (no code default exists).
 pruned_model = "allenai/OLMoE-1B-7B-0125"
 pruned_model_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
@@ -102,3 +102,9 @@ max_recovery_protocol_mismatches = 0
 # Preregistered choices for this experiment (no code default exists).
 arm_comparisons = { aimer = "non-inferiority versus random and usage_frequency within 0.01 and floors versus the unpruned control", random = "named baseline", usage_frequency = "named baseline", unpruned = "matched control per recovery sequence and seed" }
 arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+aimer_selection = { weight_vector = "concat(gate_up_proj [2I, H], down_proj [H, I]) flattened row-major per expert", score = "ptr_lineage::aimer_score", ranking = "ptr_lineage::rank_experts_for_pruning, highest score first, stable on ties (lower expert index first), per layer", pruned_count = "round(f * 64)", pruned_counts = { f025 = 16, f050 = 32 }, source = "crates/ptr-lineage/src/aimer.rs" }
+recorded_selection_must_equal_recomputed = true
+max_aimer_selection_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+aimer_api_and_tensor_names = ["aimer_score", "down_proj", "gate_up_proj", "ptr_lineage", "rank_experts_for_pruning"]

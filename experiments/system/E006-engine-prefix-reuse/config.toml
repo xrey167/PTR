@@ -37,7 +37,7 @@ engine = "vllm"
 vllm_batch_invariant_env = "VLLM_BATCH_INVARIANT=1"
 missing_batch_invariance_outcome = "inconclusive"
 caching_disabled_outcome = "not-applicable"
-salt_epoch_rotation = "per_principal"
+salt_epoch_rotation = "per_principal_project"
 global_flush_used = false
 n_requests = 64
 prompt_tokens = 2048
@@ -115,7 +115,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix", "arm_matrix", "enabled_backends", "backend_versions", "persistent_cache_declared_per_backend", "salt_epochs", "dependency_journal_crash_points", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "capacity_partitioning", "capacity_partitioning_options", "max_live_associations_per_principal_project", "association_dedup_key", "capacity_partitioning_granularity", "declared_dependency_kinds", "software_stack", "rope_regime_inputs", "production_modes", "derived_state_carriers", "arm_comparisons"]
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "warmup_requests", "n_timing_samples_per_arm", "concurrency", "vllm_version", "shared_prefix_fraction", "stale_probe_requests_after_transition", "test_lora_rank", "test_lora_targets", "test_lora_seed", "expert_generations", "tost_equivalence_bound_fraction", "tost_alpha", "memory_revocation_arms", "supersession_arms", "generation_dimensions", "salt_dimensions", "inflight_race_kinds", "inflight_race_triggers", "attacker_features", "attacker_samples_per_class", "attacker_bootstrap_resamples", "attacker_bootstrap_seed", "corpus_generator_seed", "invalidation_types", "transition_types", "attacker_model", "attacker_penalty", "attacker_C", "attacker_solver", "attacker_max_iter", "attacker_split", "attacker_split_seed", "attacker_cv", "attacker_auc_computed_on", "invalidation_coverage_matrix", "arm_matrix", "enabled_backends", "backend_versions", "persistent_cache_declared_per_backend", "salt_epochs", "dependency_journal_crash_points", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "capacity_partitioning", "capacity_partitioning_options", "max_live_associations_per_principal_project", "association_dedup_key", "capacity_partitioning_granularity", "declared_dependency_kinds", "software_stack", "rope_regime_inputs", "production_modes", "derived_state_carriers", "arm_comparisons", "salt_epoch_rotation", "salt_epoch_key", "numerics_binding_environment_fields"]
 # Preregistered choices for this experiment (no code default exists).
 inflight_restart_output_mismatches_max = 0
 inflight_restarts_equal_cancellations = true
@@ -126,7 +126,7 @@ attacker_samples_per_class = 1000
 attacker_bootstrap_resamples = 10000
 attacker_bootstrap_seed = 20240607
 attacker_auc_ci_upper_max = 0.55
-unaffected_principal_dependency_kinds = ["semantic", "memory", "adapter", "expert", "base_model"]
+unaffected_principal_dependency_kinds = ["semantic", "memory", "derived", "adapter", "expert", "base_model"]
 unaffected_principal_hit_rate_tolerance = 0.02
 reverse_index = "principal <- dependency-generation mapping, covering every dependency kind in a request lineage"
 # Preregistered choices for this experiment (no code default exists).
@@ -262,3 +262,9 @@ timing_workload_per_backend = true
 # Preregistered choices for this experiment (no code default exists).
 arm_comparisons = { cache_disabled = "primary comparator for ttft_gain and bit-identity", unsalted_control = "positive control for stale hits", salted = "system under test" }
 arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+numerics_binding_environment_fields = ["gpu_or_cpu_architecture", "driver_version", "cuda_runtime_version", "attention_gemm_kernel_library", "backend_build_identity"]
+producer_environment_recorded_in_run_json = true
+min_cross_environment_restore_cases = 1
+max_exact_hits_across_environment = 0
+cross_environment_simulation = "a changed build-identity field"

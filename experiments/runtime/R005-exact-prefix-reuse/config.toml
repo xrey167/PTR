@@ -106,7 +106,7 @@ corpus_selection_rule = "deterministic generator, sequence i derived from seed a
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "concurrency", "max_trie_nodes", "max_kv_page_bytes", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "kv_page_bytes_per_node", "metadata_bytes_per_node", "nodes_only_run_max_kv_page_bytes", "bytes_only_run_max_trie_nodes", "workload_limits", "invalidation_coverage_matrix", "superseded_lookup_cells", "saturation_definition", "chain_layer_covers", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds", "production_modes", "derived_state_carriers"]
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "concurrency", "max_trie_nodes", "max_kv_page_bytes", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "kv_page_bytes_per_node", "metadata_bytes_per_node", "nodes_only_run_max_kv_page_bytes", "bytes_only_run_max_trie_nodes", "workload_limits", "invalidation_coverage_matrix", "superseded_lookup_cells", "saturation_definition", "chain_layer_covers", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds", "production_modes", "derived_state_carriers", "numerics_binding_environment_fields"]
 # Preregistered choices for this experiment (no code default exists).
 capacity_refused_requests_completed_equals_exhausted_refusals = true
 max_capacity_fallback_output_mismatches = 0
@@ -195,3 +195,9 @@ max_exact_hits_with_mismatched_positions = 0
 canonical_positions = "position ids = trie depth offset from 0; no explicit position ids or offset; otherwise Exact lookup is bypassed (miss)"
 # Preregistered choices for this experiment (no code default exists).
 binding_limit_per_workload = { main = "max_trie_nodes", nodes_only = "max_trie_nodes", bytes_only = "max_kv_page_bytes" }
+# Preregistered choices for this experiment (no code default exists).
+numerics_binding_environment_fields = ["gpu_or_cpu_architecture", "driver_version", "cuda_runtime_version", "attention_gemm_kernel_library", "backend_build_identity"]
+producer_environment_recorded_in_run_json = true
+min_cross_environment_restore_cases = 1
+max_exact_hits_across_environment = 0
+cross_environment_simulation = "a changed build-identity field"

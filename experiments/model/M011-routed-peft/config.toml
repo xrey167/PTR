@@ -35,12 +35,12 @@ corpus_code_revision = "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
 corpus_tool = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 corpus_tool_revision = "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
 corpus_tool_file = "BFCL_v3_simple.json"
-corpus_split_rule = "HumanEval and BFCL items are split by index mod 3: 0 = training, 1 = tuning validation, 2 = held-out evaluation; GSM8K uses train for training and test for evaluation; training data comes only from the training partition"
+corpus_split_rule = "HumanEval and BFCL items are split by index mod 3: 0 = training, 1 = tuning validation, 2 = held-out evaluation; GSM8K uses the train items with position mod 10 != 9 for training (mod 10 == 9 is the tuning validation) and test for evaluation; training data comes only from the training partition"
 corpus_selection_rule = "all items of each split in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "compared_arms", "flops_relative_tolerance", "split_rule_single_split_corpora", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "arm_lora", "tuning_search_spec", "arm_lora", "arm_comparisons"]
+procedure_parameters_recorded_per_cell = ["seeds", "training_steps_per_arm", "lora_rank_per_arm", "tuning_trials_used", "domains", "hyperparameter_tuning_budget_trials_per_arm", "search_space", "compared_arms", "flops_relative_tolerance", "split_rule_single_split_corpora", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "arm_lora", "tuning_search_spec", "arm_lora", "arm_comparisons", "prescribed_expert_domain_assignment"]
 # Preregistered choices for this experiment (no code default exists).
 tuning_trials_used_recorded_per_arm = true
 max_tuning_budget_mismatches = 0
@@ -98,3 +98,9 @@ tuning_trial_set_digest_recorded_in_run_json = true
 # Preregistered choices for this experiment (no code default exists).
 arm_comparisons = { perft_r_emergent = "compared with plain_lora and mixlora (1 point margins)", perft_r_prescribed = "non-inferiority comparison with perft_r_emergent", plain_lora = "comparison baseline", mixlora = "comparison baseline" }
 arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+prescribed_expert_domain_assignment = { code = [0, 1, 2], math = [3, 4, 5], tool = [6, 7] }
+prescribed_routing = "masked by the task domain label in training and evaluation; top-2 among the domain experts"
+emergent_routing = "unmasked"
+expert_domain_assignment_expected_digest = "sha256:b9028e88fa67731865af758a396194920d13520504ef746198837cbab31035b4"
+expert_domain_assignment_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of prescribed_expert_domain_assignment"

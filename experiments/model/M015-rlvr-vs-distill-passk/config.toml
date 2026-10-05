@@ -48,10 +48,10 @@ training_data_disjoint_from_test_split = true
 max_training_test_overlap_count = 0
 training_set_digest_recorded_per_arm = true
 # Preregistered choices for this experiment (no code default exists).
-corpus_train = "openai/gsm8k train for RLVR prompts and distillation prompts"
+corpus_train = "openai/gsm8k train items with position mod 10 != 9, for RLVR prompts and distillation prompts"
 corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
 corpus_train_split = "train"
-corpus_selection_rule = "all 7473 train problems in index order for training; all 1319 test problems in index order for evaluation"
+corpus_selection_rule = "training and distillation prompts: GSM8K train items with position mod 10 != 9 (6726 of 7473 items, in index order), the complement of the tuning-validation partition (mod 10 == 9, 747 items); evaluation: all 1319 test problems in index order"
 corpus_selection_digest_recorded_in_run_json = true
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
@@ -110,3 +110,6 @@ tuning_trial_set_digest_recorded_in_run_json = true
 # Preregistered choices for this experiment (no code default exists).
 arm_comparisons = { base = "comparison baseline", rlvr = "compared with base", sft_distilled = "compared with base" }
 arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+training_prompt_set = { dataset = "openai/gsm8k", split = "train", rule = "position mod 10 != 9", size = 6726 }
+tuning_validation_set = { rule = "position mod 10 == 9", size = 747 }
