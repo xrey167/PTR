@@ -1,3 +1,14 @@
+mod propensity;
+mod router;
+mod sampling;
+
+pub use propensity::{Propensity, PropensityError};
+pub use router::{
+    route_checked, CheckedRouter, DistributionError, PolicyFailure, RouteDistribution, RouteError,
+    RouteFeatures, RouteRequest, RoutedChoice, RoutedError, Router,
+};
+pub use sampling::{DecisionNonce, NonceExhausted, NonceSequence, SamplingKey};
+
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, PodId, Probability, ProjectId, TypeId};
 
