@@ -167,22 +167,25 @@
 //!
 //! [`ExpertOperationRequest::operation_id`] exists before training: it identifies the requested
 //! operation (kind, operands with their observed generation, manifest digest, state and state
-//! version, retire reason, proposer, project, `observed_at`, rationale digest) and excludes
-//! every result field (the [`ExpertPodSpec`] contents and so any manifest digest of a trained
-//! result). It is SHA-256 over a length-prefixed canonical encoding with domain separator
-//! `ptr.pods.expert-operation.v1`.
+//! version, retire reason, proposer, project, `observed_at`, rationale digest) and the intended
+//! results, in order, as [`ResultIntent`]s: every [`ExpertPodSpec`] field (project, pod,
+//! generation, level with Token layer and slot, base model ref) except the manifest digest,
+//! which only training produces. So two requests that would create different experts have
+//! different ids, and the id is unchanged by the manifest digest of a trained result. It is
+//! SHA-256 over a length-prefixed canonical encoding with domain separator
+//! `ptr.pods.expert-operation.v2`.
 //!
-//! An [`ExpertOperationRequest`] (with [`RequestedOp`], a [`StructuralOp`] without result specs)
-//! is the validated pre-result form: its constructor runs every proposal rule that involves no
-//! result, so an orchestrator mints the id without fabricating a trained result.
-//! [`ExpertProposal::operation_request`] derives the request from a proposal and
-//! [`ExpertProposal::operation_id`] delegates to it, so both paths agree. Admission checks
-//! `proposal.operation_id() == request.operation_id()`; no constructor binds a request to
-//! results.
+//! An [`ExpertOperationRequest`] (with [`RequestedOp`], a [`StructuralOp`] whose results are
+//! [`ResultIntent`]s) is the validated pre-result form: its constructor runs exactly the rules
+//! of [`ExpertProposal::new`], through the same code, so an orchestrator mints the id without
+//! fabricating a trained result. [`ExpertProposal::operation_request`] derives the request from
+//! a proposal and [`ExpertProposal::operation_id`] delegates to it, so both paths agree.
+//! Admission checks `proposal.operation_id() == request.operation_id()`, which covers the
+//! intended results; no constructor binds a request to results.
 //!
 //! [`ExpertProposal::proposal_id`] exists after training and identifies the candidate: SHA-256
 //! over a length-prefixed canonical encoding of every field including results (domain separator
-//! `ptr.pods.expert-proposal.v1`). It is deterministic, order-sensitive in operand lists, and
+//! `ptr.pods.expert-proposal.v2`). It is deterministic, order-sensitive in operand lists, and
 //! changes with any field, including `observed_at` and the result specs.
 
 use crate::manifest::ArtifactLifecycle;
@@ -264,22 +267,67 @@ impl ProposalId {
     }
 }
 
-/// The base model an expert adapts: its digest and the base model's own generation.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// Stable identity of a logical base-model record: 1 to 128 bytes of ASCII `[A-Za-z0-9._:-]`,
+/// the same rules as project and pod ids. Two records may share weights (a digest) and a
+/// generation yet be different base models; the id tells them apart.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BaseModelId(String);
+
+impl BaseModelId {
+    /// Validate and wrap an id. Rejects blank (whitespace-only) and non-canonical ids.
+    pub fn new(id: impl Into<String>) -> Result<Self, ExpertIdentityError> {
+        let id = id.into();
+        check_id(
+            &id,
+            ExpertIdentityError::BlankBaseModel,
+            ExpertIdentityError::NonCanonicalBaseModel,
+        )?;
+        Ok(Self(id))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for BaseModelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The base model an expert adapts: its stable identity, its weights digest and the base
+/// model's own generation. All three take part in equality, so two records with the same digest
+/// and generation but different ids are different base models (a `MixedBaseModels` for Merge and
+/// Prune, a result base-model mismatch, and a different proposal and operation id).
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct BaseModelRef {
+    id: BaseModelId,
     digest: BaseModelDigest,
     generation: u64,
 }
 
 impl BaseModelRef {
-    /// Bind a base model digest to the base model's generation. Rejects generation zero (never
-    /// a committed generation). The digest is non-zero by type.
-    pub fn new(digest: BaseModelDigest, generation: u64) -> Result<Self, ExpertIdentityError> {
+    /// Bind a base model id and digest to the base model's generation. Rejects generation zero
+    /// (never a committed generation). The id and digest are valid by type.
+    pub fn new(
+        id: BaseModelId,
+        digest: BaseModelDigest,
+        generation: u64,
+    ) -> Result<Self, ExpertIdentityError> {
         if generation == 0 {
             Err(ExpertIdentityError::ZeroBaseModelGeneration)
         } else {
-            Ok(Self { digest, generation })
+            Ok(Self {
+                id,
+                digest,
+                generation,
+            })
         }
+    }
+
+    pub fn id(&self) -> &BaseModelId {
+        &self.id
     }
 
     pub fn digest(&self) -> &BaseModelDigest {
@@ -519,7 +567,7 @@ fn check_pod_id(pod: &PodId) -> Result<(), ExpertIdentityError> {
     )
 }
 
-/// An identity field (project, pod, generation) was malformed.
+/// An identity field (project, pod, base model, generation) was malformed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ExpertIdentityError {
@@ -527,6 +575,8 @@ pub enum ExpertIdentityError {
     NonCanonicalProject,
     BlankPod,
     NonCanonicalPod,
+    BlankBaseModel,
+    NonCanonicalBaseModel,
     ZeroGeneration,
     ZeroBaseModelGeneration,
 }
@@ -538,6 +588,10 @@ impl fmt::Display for ExpertIdentityError {
             Self::NonCanonicalProject => "project id is not 1-128 bytes of ASCII [A-Za-z0-9._:-]",
             Self::BlankPod => "pod id is blank",
             Self::NonCanonicalPod => "pod id is not 1-128 bytes of ASCII [A-Za-z0-9._:-]",
+            Self::BlankBaseModel => "base model id is blank",
+            Self::NonCanonicalBaseModel => {
+                "base model id is not 1-128 bytes of ASCII [A-Za-z0-9._:-]"
+            }
             Self::ZeroGeneration => "generation is zero",
             Self::ZeroBaseModelGeneration => "base model generation is zero",
         })
@@ -599,6 +653,75 @@ impl ExpertPodSpec {
 
     pub fn manifest_digest(&self) -> &ManifestDigest {
         &self.manifest_digest
+    }
+
+    pub fn level(&self) -> ExpertLevel {
+        self.level
+    }
+
+    pub fn base_model(&self) -> &BaseModelRef {
+        &self.base_model
+    }
+
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+
+    /// The spec without its training-produced manifest digest.
+    pub fn intent(&self) -> ResultIntent {
+        ResultIntent {
+            project: self.project.clone(),
+            pod: self.pod.clone(),
+            level: self.level,
+            base_model: self.base_model.clone(),
+            generation: self.generation,
+        }
+    }
+}
+
+/// The pre-training intent of a result expert: every field of an [`ExpertPodSpec`] except the
+/// manifest digest, which only training produces. It carries the project, pod id, generation,
+/// level (including the Token layer and slot) and base model ref.
+///
+/// A request names its intended results this way, so the [`OperationId`] separates two requests
+/// that differ in what they would create, while staying stable across training.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResultIntent {
+    project: ProjectId,
+    pod: PodId,
+    level: ExpertLevel,
+    base_model: BaseModelRef,
+    generation: Generation,
+}
+
+impl ResultIntent {
+    /// Build an intent. Rejects blank or non-canonical project and pod ids and generation zero,
+    /// like [`ExpertPodSpec::new`].
+    pub fn new(
+        project: ProjectId,
+        pod: PodId,
+        level: ExpertLevel,
+        base_model: BaseModelRef,
+        generation: Generation,
+    ) -> Result<Self, ExpertIdentityError> {
+        check_project_id(&project)?;
+        check_pod_id(&pod)?;
+        check_generation(generation)?;
+        Ok(Self {
+            project,
+            pod,
+            level,
+            base_model,
+            generation,
+        })
+    }
+
+    pub fn project(&self) -> &ProjectId {
+        &self.project
+    }
+
+    pub fn pod(&self) -> &PodId {
+        &self.pod
     }
 
     pub fn level(&self) -> ExpertLevel {
@@ -1001,22 +1124,29 @@ impl fmt::Display for ExpertProposalError {
 
 impl std::error::Error for ExpertProposalError {}
 
-/// A structural operation as requested, before any training: [`StructuralOp`] without result
-/// specs. Birth names no operand, so it carries nothing.
+/// A structural operation as requested, before any training: [`StructuralOp`] with each result
+/// spec replaced by its [`ResultIntent`] (the spec without the training-produced manifest
+/// digest).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RequestedOp {
-    Birth,
+    Birth {
+        result: ResultIntent,
+    },
     Merge {
         sources: Vec<ExpertTarget>,
+        result: ResultIntent,
     },
     Split {
         source: ExpertTarget,
+        results: Vec<ResultIntent>,
     },
     Freeze {
         target: ExpertTarget,
     },
+    /// `result` is required iff `target` is `Retired` and forbidden iff it is `Frozen`.
     Reactivate {
         target: ExpertTarget,
+        result: Option<ResultIntent>,
     },
     Prune {
         targets: Vec<ExpertTarget>,
@@ -1030,7 +1160,7 @@ pub enum RequestedOp {
 impl RequestedOp {
     pub fn kind(&self) -> OpKind {
         match self {
-            Self::Birth => OpKind::Birth,
+            Self::Birth { .. } => OpKind::Birth,
             Self::Merge { .. } => OpKind::Merge,
             Self::Split { .. } => OpKind::Split,
             Self::Freeze { .. } => OpKind::Freeze,
@@ -1043,30 +1173,45 @@ impl RequestedOp {
     /// Existing experts the operation names.
     pub fn sources(&self) -> Vec<&ExpertTarget> {
         match self {
-            Self::Birth => Vec::new(),
-            Self::Merge { sources } => sources.iter().collect(),
-            Self::Split { source: target }
+            Self::Birth { .. } => Vec::new(),
+            Self::Merge { sources, .. } => sources.iter().collect(),
+            Self::Split { source: target, .. }
             | Self::Freeze { target }
-            | Self::Reactivate { target }
+            | Self::Reactivate { target, .. }
             | Self::Retire { target, .. } => vec![target],
             Self::Prune { targets } => targets.iter().collect(),
         }
     }
 
+    /// Intended new expert generations, in order.
+    pub fn results(&self) -> Vec<&ResultIntent> {
+        match self {
+            Self::Birth { result } | Self::Merge { result, .. } => vec![result],
+            Self::Split { results, .. } => results.iter().collect(),
+            Self::Reactivate { result, .. } => result.iter().collect(),
+            Self::Freeze { .. } | Self::Prune { .. } | Self::Retire { .. } => Vec::new(),
+        }
+    }
+
     fn from_structural(op: &StructuralOp) -> Self {
         match op {
-            StructuralOp::Birth { .. } => Self::Birth,
-            StructuralOp::Merge { sources, .. } => Self::Merge {
-                sources: sources.clone(),
+            StructuralOp::Birth { result } => Self::Birth {
+                result: result.intent(),
             },
-            StructuralOp::Split { source, .. } => Self::Split {
+            StructuralOp::Merge { sources, result } => Self::Merge {
+                sources: sources.clone(),
+                result: result.intent(),
+            },
+            StructuralOp::Split { source, results } => Self::Split {
                 source: source.clone(),
+                results: results.iter().map(ExpertPodSpec::intent).collect(),
             },
             StructuralOp::Freeze { target } => Self::Freeze {
                 target: target.clone(),
             },
-            StructuralOp::Reactivate { target, .. } => Self::Reactivate {
+            StructuralOp::Reactivate { target, result } => Self::Reactivate {
                 target: target.clone(),
+                result: result.as_ref().map(ExpertPodSpec::intent),
             },
             StructuralOp::Prune { targets } => Self::Prune {
                 targets: targets.clone(),
@@ -1080,15 +1225,14 @@ impl RequestedOp {
 }
 
 /// A validated, inert request for a structural change that exists before training: everything
-/// in an [`ExpertProposal`] except the result specs. It lets an orchestrator mint the
-/// pre-training [`OperationId`] without fabricating a trained result.
+/// in an [`ExpertProposal`] except the training-produced manifest digest of each result, which
+/// is replaced by [`ResultIntent`]s. It lets an orchestrator mint the pre-training
+/// [`OperationId`] without fabricating a trained result.
 ///
-/// [`ExpertOperationRequest::new`] runs every proposal rule that involves no result, in the
-/// order documented on [`ExpertProposal::new`]: rules 1, 2, the source part of 3 (Merge at
-/// least two sources, Prune at least one), the source part of 4, 5 and the source-only part of
-/// 6. Result rules (a Split's result count, a Reactivate's result presence, rules 7 and 8) are
-/// checked only when the [`ExpertProposal`] is built. There is no constructor binding a request
-/// to results: admission checks `proposal.operation_id() == request.operation_id()`.
+/// [`ExpertOperationRequest::new`] runs exactly the rules [`ExpertProposal::new`] runs, in the
+/// order documented there, through the same code: none of them needs the manifest digest. There
+/// is no constructor binding a request to results: admission checks
+/// `proposal.operation_id() == request.operation_id()`, which covers the intended results.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExpertOperationRequest {
     project: ProjectId,
@@ -1108,16 +1252,7 @@ impl ExpertOperationRequest {
         rationale: RationaleDigest,
     ) -> Result<Self, ExpertProposalError> {
         check_proposal_header(&project, &proposer)?;
-        let kind = op.kind();
-        let sources = op.sources();
-        check_source_counts(kind, &sources)?;
-        check_source_projects(&sources, &project)?;
-        check_source_states(kind, &sources)?;
-        let reason = match &op {
-            RequestedOp::Retire { reason, .. } => Some(*reason),
-            _ => None,
-        };
-        check_source_structure(kind, &sources, reason)?;
+        validate_requested(&op, &project)?;
         Ok(Self {
             project,
             proposer,
@@ -1151,10 +1286,10 @@ impl ExpertOperationRequest {
     /// Pre-training identity: SHA-256 over the canonical encoding of the project, proposer,
     /// `observed_at`, rationale digest, operation kind, operands (with observed generation,
     /// manifest digest, state and state version) and, for Retire, the reason, under domain
-    /// separator `ptr.pods.expert-operation.v1`. It contains no result field.
+    /// separator `ptr.pods.expert-operation.v2`. It contains no result field.
     pub fn operation_id(&self) -> OperationId {
         let mut e = Encoder::default();
-        e.str("ptr.pods.expert-operation.v1");
+        e.str("ptr.pods.expert-operation.v2");
         e.str(&self.project.0);
         e.str(&self.proposer.project.0);
         e.str(&self.proposer.pod.0);
@@ -1178,6 +1313,12 @@ impl ExpertOperationRequest {
         // The retirement reason is a request parameter, not a result.
         if let RequestedOp::Retire { reason, .. } = &self.op {
             e.reason(*reason);
+        }
+        // The intended results, in order; the manifest digest is not part of an intent.
+        let results = self.op.results();
+        e.u64(results.len() as u64);
+        for result in results {
+            e.intent(result);
         }
         OperationId(Sha256::digest(e.bytes).into())
     }
@@ -1213,7 +1354,7 @@ impl ExpertProposal {
         rationale: RationaleDigest,
     ) -> Result<Self, ExpertProposalError> {
         check_proposal_header(&project, &proposer)?;
-        validate_op(&op, &project)?;
+        validate_requested(&RequestedOp::from_structural(&op), &project)?;
         Ok(Self {
             project,
             proposer,
@@ -1306,7 +1447,7 @@ impl ExpertProposal {
             rationale,
         } = self.parts();
         let mut e = Encoder::default();
-        e.str("ptr.pods.expert-proposal.v1");
+        e.str("ptr.pods.expert-proposal.v2");
         e.str(&project.0);
         e.str(&proposer.project.0);
         e.str(&proposer.pod.0);
@@ -1415,6 +1556,7 @@ impl Encoder {
     }
 
     fn base_model(&mut self, base: &BaseModelRef) {
+        self.str(&base.id.0);
         self.digest(base.digest.as_bytes());
         self.u64(base.generation);
     }
@@ -1426,6 +1568,14 @@ impl Encoder {
         self.level(spec.level);
         self.base_model(&spec.base_model);
         self.u64(spec.generation.0);
+    }
+
+    fn intent(&mut self, intent: &ResultIntent) {
+        self.str(&intent.project.0);
+        self.str(&intent.pod.0);
+        self.level(intent.level);
+        self.base_model(&intent.base_model);
+        self.u64(intent.generation.0);
     }
 
     fn target(&mut self, target: &ExpertTarget) {
@@ -1447,14 +1597,17 @@ impl Encoder {
     }
 }
 
-fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertProposalError> {
+/// Rules 3 to 8 over a requested operation: the single implementation behind both
+/// [`ExpertProposal::new`] (which passes the intents of its result specs) and
+/// [`ExpertOperationRequest::new`].
+fn validate_requested(op: &RequestedOp, project: &ProjectId) -> Result<(), ExpertProposalError> {
     let kind = op.kind();
     let sources = op.sources();
     let results = op.results();
 
     // 3. operand counts (a Split's result count is a result rule, checked here in order).
     check_source_counts(kind, &sources)?;
-    if let StructuralOp::Split { .. } = op {
+    if let RequestedOp::Split { .. } = op {
         let expected = OperandCount::AtLeast(2);
         if !expected.accepts(results.len()) {
             return Err(ExpertProposalError::WrongResultCount {
@@ -1476,14 +1629,14 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
 
     // 5. source states and 6. source-only operation structure.
     let reason = match op {
-        StructuralOp::Retire { reason, .. } => Some(*reason),
+        RequestedOp::Retire { reason, .. } => Some(*reason),
         _ => None,
     };
     check_source_states(kind, &sources)?;
     check_source_structure(kind, &sources, reason)?;
 
     // 6 (continued). A reactivation result is present iff the target is `Retired`.
-    if let StructuralOp::Reactivate { target, result } = op {
+    if let RequestedOp::Reactivate { target, result } = op {
         match (target.state, result) {
             (ExpertState::Retired(_), None) => {
                 return Err(ExpertProposalError::MissingResult { op: kind });
@@ -1696,7 +1849,7 @@ fn check_same_base(sources: &[&ExpertTarget]) -> Result<(), ExpertProposalError>
 fn check_result(
     kind: OpKind,
     sources: &[&ExpertTarget],
-    result: &ExpertPodSpec,
+    result: &ResultIntent,
 ) -> Result<(), ExpertProposalError> {
     match kind {
         OpKind::Reactivate => {
