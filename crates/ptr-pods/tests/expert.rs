@@ -1,8 +1,8 @@
 use ptr_pods::{
     ArtifactLifecycle, BaseModelDigest, BaseModelRef, ExpertIdentityError, ExpertLevel,
     ExpertPodSpec, ExpertProposal, ExpertProposalError, ExpertState, ExpertTarget,
-    ExpertTargetInit, ManifestDigest, OpKind, OperandCount, ProposalParts, ProposerRef,
-    RationaleDigest, RetiredReason, StructuralOp, ZeroDigest,
+    ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId, ProposalParts,
+    ProposerRef, RationaleDigest, RetiredReason, StructuralOp, ZeroDigest,
 };
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
 
@@ -183,7 +183,7 @@ fn allowed_operation_state_pairs_match_the_documented_table() {
         (Gated, [false, false, false, false, false, false, false]),
         (Serving, [false, true, true, true, false, true, true]),
         (Frozen, [false, true, true, false, true, false, true]),
-        (Fenced, [false, false, false, false, false, false, true]),
+        (Fenced, [false, false, false, false, false, false, false]),
         (
             Superseded,
             [false, false, false, false, false, false, false],
@@ -216,8 +216,8 @@ fn allowed_operation_state_pairs_match_the_documented_table() {
     }
 }
 
-/// Validation agrees with `allows_state` for every pair, and Fenced/Superseded are valid only
-/// for Retire.
+/// Validation agrees with `allows_state` for every pair. A Fenced operand is `FencedTarget` for
+/// every operation (see `fenced_operands_are_rejected_for_every_operation`).
 #[test]
 fn validation_enforces_the_table_for_every_state() {
     for state in all_states() {
@@ -226,6 +226,10 @@ fn validation_enforces_the_table_for_every_state() {
             Ok(_) => true,
             Err(ExpertProposalError::WrongTargetState { state: s, .. }) => {
                 assert_eq!(s, state);
+                false
+            }
+            Err(ExpertProposalError::FencedTarget { .. }) => {
+                assert_eq!(state, ExpertState::Fenced);
                 false
             }
             Err(other) => panic!("unexpected error for {state:?}: {other:?}"),
@@ -260,7 +264,7 @@ fn validation_enforces_the_table_for_every_state() {
         if !matches!(state, ExpertState::Retired(_) | ExpertState::Frozen) {
             assert!(!ok(reactivate(t(), None)));
         }
-        if matches!(state, ExpertState::Fenced | ExpertState::Superseded) {
+        if matches!(state, ExpertState::Superseded) {
             for op in [
                 StructuralOp::Freeze { target: t() },
                 StructuralOp::Prune { targets: vec![t()] },
@@ -1236,10 +1240,12 @@ fn retire_is_allowed_exactly_where_the_lifecycle_gate_permits_retirement() {
                 .is_ok()
         })
     };
+    // Fenced maps to Active, so the gate would allow it, but a proposal never retires a fenced
+    // expert: that is the runtime revocation path.
     for state in all_states() {
         assert_eq!(
             OpKind::Retire.allows_state(state),
-            gate_allows_retired(state),
+            gate_allows_retired(state) && state != ExpertState::Fenced,
             "{state:?}"
         );
     }
@@ -1261,11 +1267,7 @@ fn retire_is_allowed_exactly_where_the_lifecycle_gate_permits_retirement() {
             })
         );
     }
-    for state in [
-        ExpertState::Serving,
-        ExpertState::Frozen,
-        ExpertState::Fenced,
-    ] {
+    for state in [ExpertState::Serving, ExpertState::Frozen] {
         assert_eq!(state.artifact_lifecycles(), &[ArtifactLifecycle::Active]);
         assert!(propose(StructuralOp::Retire {
             target: in_state("a", state),
@@ -1398,4 +1400,241 @@ fn unfreezing_is_an_in_place_overlay_without_lineage_transition() {
     let reseed = propose(reactivate(failed, Some(spec("a", 2, slot("a"))))).unwrap();
     assert!(reseed.creates_new_generation());
     assert_eq!(reseed.op().results().len(), 1);
+}
+
+fn retire(target: ExpertTarget, reason: RetiredReason) -> StructuralOp {
+    StructuralOp::Retire { target, reason }
+}
+
+#[test]
+fn retire_of_a_fenced_operand_is_rejected_for_every_reason() {
+    for reason in ALL_REASONS {
+        let fenced = retire(in_state("a", ExpertState::Fenced), reason);
+        // The fenced check precedes the reason check, so the error does not depend on the reason.
+        assert_eq!(
+            propose(fenced),
+            Err(ExpertProposalError::FencedTarget {
+                op: OpKind::Retire,
+                pod: PodId::from("a")
+            }),
+            "{reason:?}"
+        );
+    }
+    // A serving operand still retires with a proposable reason, and InputRevoked stays barred.
+    for reason in [RetiredReason::Superseded, RetiredReason::GateFailed] {
+        assert!(propose(retire(serving("a"), reason)).is_ok(), "{reason:?}");
+    }
+    assert_eq!(
+        propose(retire(serving("a"), RetiredReason::InputRevoked)),
+        Err(ExpertProposalError::ReasonNotProposable {
+            reason: RetiredReason::InputRevoked
+        })
+    );
+    assert_eq!(
+        ExpertProposalError::FencedTarget {
+            op: OpKind::Retire,
+            pod: PodId::from("a")
+        }
+        .to_string(),
+        "retire cannot name fenced expert a; only the runtime revocation path may retire it"
+    );
+}
+
+#[test]
+fn fenced_operands_are_rejected_for_every_operation() {
+    let fenced = || in_state("a", ExpertState::Fenced);
+    let cases = [
+        (OpKind::Freeze, StructuralOp::Freeze { target: fenced() }),
+        (
+            OpKind::Prune,
+            StructuralOp::Prune {
+                targets: vec![fenced()],
+            },
+        ),
+        (OpKind::Reactivate, reactivate(fenced(), None)),
+        (
+            OpKind::Split,
+            StructuralOp::Split {
+                source: fenced(),
+                results: vec![result("x"), result("y")],
+            },
+        ),
+        (OpKind::Merge, merge(vec![serving("b"), fenced()])),
+    ];
+    for (op, proposal) in cases {
+        assert_eq!(
+            propose(proposal),
+            Err(ExpertProposalError::FencedTarget {
+                op,
+                pod: PodId::from("a")
+            }),
+            "{op}"
+        );
+    }
+}
+
+#[test]
+fn reactivate_from_input_revoked_is_never_a_seed() {
+    let revoked = in_state("a", ExpertState::Retired(RetiredReason::InputRevoked));
+    for result in [None, Some(spec("a", 2, slot("a")))] {
+        assert_eq!(
+            propose(reactivate(revoked.clone(), result)),
+            Err(ExpertProposalError::SeedUnavailable {
+                pod: PodId::from("a"),
+                reason: RetiredReason::InputRevoked
+            })
+        );
+    }
+}
+
+fn proposal_with(
+    op: StructuralOp,
+    proposer: ProposerRef,
+    observed_at: u64,
+    rationale: RationaleDigest,
+) -> ExpertProposal {
+    ExpertProposal::new(project(), proposer, CommitIndex(observed_at), op, rationale).unwrap()
+}
+
+fn merge_with_result(result: ExpertPodSpec) -> StructuralOp {
+    StructuralOp::Merge {
+        sources: vec![serving("a"), serving("b")],
+        result,
+    }
+}
+
+fn operation_id(op: StructuralOp) -> OperationId {
+    proposal_with(op, proposer(), 10, rationale()).operation_id()
+}
+
+#[test]
+fn operation_id_ignores_result_fields_but_proposal_id_does_not() {
+    let base_result = result("merged");
+    let other_manifest = ExpertPodSpec::new(
+        project(),
+        PodId::from("merged"),
+        ManifestDigest::new([77; 32]).unwrap(),
+        base_result.level(),
+        *base_result.base_model(),
+        base_result.generation(),
+    )
+    .unwrap();
+    let other_slot = spec(
+        "merged",
+        1,
+        ExpertLevel::Token {
+            layer: 3,
+            index: 99,
+        },
+    );
+    let a = proposal_with(
+        merge_with_result(base_result.clone()),
+        proposer(),
+        10,
+        rationale(),
+    );
+    for changed in [other_manifest, other_slot, result("renamed")] {
+        let b = proposal_with(merge_with_result(changed), proposer(), 10, rationale());
+        assert_eq!(a.operation_id(), b.operation_id());
+        assert_ne!(a.proposal_id(), b.proposal_id());
+    }
+    // Same op and result: both ids are stable.
+    let again = proposal_with(merge_with_result(base_result), proposer(), 10, rationale());
+    assert_eq!(a.operation_id(), again.operation_id());
+    assert_eq!(a.proposal_id(), again.proposal_id());
+    // The two ids use distinct domains.
+    assert_ne!(a.operation_id().as_bytes(), a.proposal_id().as_bytes());
+}
+
+#[test]
+fn operation_id_changes_with_every_pre_training_field() {
+    let base_op = || merge(vec![serving("a"), serving("b")]);
+    let reference = operation_id(base_op());
+
+    // Operands: set, order, and each observed target field.
+    assert_ne!(
+        reference,
+        operation_id(merge(vec![serving("a"), serving("c")]))
+    );
+    assert_ne!(
+        reference,
+        operation_id(merge(vec![serving("b"), serving("a")]))
+    );
+    assert_ne!(
+        reference,
+        operation_id(merge(vec![serving("a"), serving("b"), serving("c")]))
+    );
+    let tweak = |f: &dyn Fn(&mut ExpertTargetInit)| {
+        let mut i = init("b", 1, slot("b"), ExpertState::Serving);
+        f(&mut i);
+        operation_id(merge(vec![serving("a"), ExpertTarget::new(i).unwrap()]))
+    };
+    assert_eq!(reference, tweak(&|_| {}));
+    assert_ne!(reference, tweak(&|i| i.generation = Generation(2)));
+    assert_ne!(
+        reference,
+        tweak(&|i| i.manifest_digest = ManifestDigest::new([5; 32]).unwrap())
+    );
+    assert_ne!(reference, tweak(&|i| i.state_version = 2));
+    // A merge needs one shared state, so the state is checked through Retire.
+    assert_ne!(
+        operation_id(retire(serving("a"), RetiredReason::Superseded)),
+        operation_id(retire(
+            in_state("a", ExpertState::Frozen),
+            RetiredReason::Superseded
+        ))
+    );
+    // Op kind: same single operand under different operations.
+    let freeze = operation_id(StructuralOp::Freeze {
+        target: serving("a"),
+    });
+    let prune = operation_id(StructuralOp::Prune {
+        targets: vec![serving("a")],
+    });
+    let retire_super = operation_id(retire(serving("a"), RetiredReason::Superseded));
+    let retire_failed = operation_id(retire(serving("a"), RetiredReason::GateFailed));
+    let ids = [freeze, prune, retire_super, retire_failed];
+    for (i, x) in ids.iter().enumerate() {
+        for y in &ids[i + 1..] {
+            assert_ne!(x, y);
+        }
+    }
+    // Proposer, observed_at, rationale. The project is validated to equal the proposer's.
+    let id =
+        |proposer, at, rationale| proposal_with(base_op(), proposer, at, rationale).operation_id();
+    assert_eq!(reference, id(proposer(), 10, rationale()));
+    let other_proposer = ProposerRef::new(project(), PodId::from("meta2"), Generation(1)).unwrap();
+    let newer_proposer = ProposerRef::new(project(), PodId::from("meta"), Generation(2)).unwrap();
+    assert_ne!(reference, id(other_proposer, 10, rationale()));
+    assert_ne!(reference, id(newer_proposer, 10, rationale()));
+    assert_ne!(reference, id(proposer(), 11, rationale()));
+    assert_ne!(
+        reference,
+        id(proposer(), 10, RationaleDigest::new([8; 32]).unwrap())
+    );
+}
+
+#[test]
+fn operation_id_changes_with_the_project() {
+    let other = ProjectId::from("proj2");
+    let target_in = |p: &ProjectId| {
+        let mut i = init("a", 1, slot("a"), ExpertState::Serving);
+        i.project = p.clone();
+        ExpertTarget::new(i).unwrap()
+    };
+    let id = |p: &ProjectId| {
+        let proposer = ProposerRef::new(p.clone(), PodId::from("meta"), Generation(1)).unwrap();
+        ExpertProposal::new(
+            p.clone(),
+            proposer,
+            CommitIndex(10),
+            StructuralOp::Freeze {
+                target: target_in(p),
+            },
+            rationale(),
+        )
+        .unwrap()
+        .operation_id()
+    };
+    assert_ne!(id(&project()), id(&other));
 }

@@ -44,8 +44,8 @@ pub use evidence::{
 pub use expert::{
     BaseModelDigest, BaseModelRef, ExpertIdentityError, ExpertLevel, ExpertPodSpec, ExpertProposal,
     ExpertProposalError, ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind,
-    OperandCount, ProposalId, ProposalParts, ProposerRef, RationaleDigest, RetiredReason,
-    StructuralOp, ZeroDigest,
+    OperandCount, OperationId, ProposalId, ProposalParts, ProposerRef, RationaleDigest,
+    RetiredReason, StructuralOp, ZeroDigest,
 };
 pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
 pub use kv::{
@@ -159,6 +159,25 @@ pub struct RegisteredPodBinding {
     manifest: PodManifest,
 }
 
+/// A non-replacing registration found the pod id already registered.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PodRegistrationError {
+    AlreadyRegistered { project: ProjectId, pod: PodId },
+}
+
+impl std::fmt::Display for PodRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyRegistered { project, pod } => {
+                write!(f, "pod {pod} is already registered in project {project}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PodRegistrationError {}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PodBindingError {
     NotFound { project: ProjectId, pod: PodId },
@@ -189,10 +208,35 @@ pub struct PodRegistry {
 }
 
 impl PodRegistry {
+    /// Insert or REPLACE the pod with this `(project, id)`, returning the previous entry.
+    ///
+    /// Structural-admission paths (a birth, merge, split or reactivation result becoming a
+    /// registered pod) must use [`PodRegistry::register_new`] instead: replacing a live pod
+    /// silently would swap an expert without any lifecycle transition.
     pub fn register(&mut self, pod: Arc<dyn DynPod>) -> Option<Arc<dyn DynPod>> {
         let manifest = pod.manifest();
         let key = (manifest.project.clone(), manifest.id.clone());
         self.pods.insert(key, pod)
+    }
+
+    /// Insert a pod without replacing: fails with
+    /// [`PodRegistrationError::AlreadyRegistered`] if its `(project, id)` is taken, leaving the
+    /// existing entry unchanged. Structural-admission paths must use this, not
+    /// [`PodRegistry::register`]. The registry tracks no token-expert `(layer, slot)`, so slot
+    /// ownership is not checked here.
+    pub fn register_new(&mut self, pod: Arc<dyn DynPod>) -> Result<(), PodRegistrationError> {
+        let manifest = pod.manifest();
+        let key = (manifest.project.clone(), manifest.id.clone());
+        match self.pods.entry(key) {
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                let (project, pod) = entry.key().clone();
+                Err(PodRegistrationError::AlreadyRegistered { project, pod })
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(pod);
+                Ok(())
+            }
+        }
     }
 
     pub fn get(&self, project: &ProjectId, id: &PodId) -> Option<Arc<dyn DynPod>> {

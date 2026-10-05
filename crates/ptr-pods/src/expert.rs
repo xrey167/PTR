@@ -28,7 +28,7 @@
 //! | `Freeze` | one `Serving` target | none |
 //! | `Reactivate` | one `Frozen` or `Retired(GateFailed)` target | `Frozen`: none; `Retired`: one new generation |
 //! | `Prune` | at least one `Serving` target, one Token layer | none |
-//! | `Retire` | one target and a proposable [`RetiredReason`] (`Superseded`, `GateFailed`) | none |
+//! | `Retire` | one `Serving` or `Frozen` target and a proposable [`RetiredReason`] (`Superseded`, `GateFailed`) | none |
 //!
 //! # Expert states and the lineage mapping
 //!
@@ -48,8 +48,8 @@
 //! | `Retired(reason)` | `Retired` | `Retired`; `Revoked` for `RetiredReason::InputRevoked` |
 //!
 //! `ptr-lineage` has no `Frozen` or `Fenced`; those are expert-layer overlays on a serving
-//! expert, hence `Serving`/`Active`. That is also why `Retire` can name them:
-//! `LifecycleGate::transition` allows `Retired` only from `Active`. `Lineage` itself only gates
+//! expert, hence `Serving`/`Active`. `LifecycleGate::transition` allows `Retired` only from
+//! `Active`; a proposal may still retire only `Serving` and `Frozen`, never `Fenced`. `Lineage` itself only gates
 //! `Candidate` to `Gated` and serves `Gated` to `Serving`, so no expert-layer overlay has a
 //! lineage transition: unfreezing a `Frozen` expert leaves lineage at `Serving` / `Active`
 //! (see Reactivation). `ptr-pods` does not depend on `ptr-lineage`, so the adapter status is
@@ -66,15 +66,24 @@
 //! | `Gated` | no | no | no | no | no | no |
 //! | `Serving` | yes | yes | yes | no | yes | yes |
 //! | `Frozen` | yes | yes | no | yes | no | yes |
-//! | `Fenced` | no | no | no | no | no | yes |
+//! | `Fenced` | no | no | no | no | no | no |
 //! | `Superseded` | no | no | no | no | no | no |
 //! | `Retired(GateFailed)` | no | no | no | yes | no | no |
 //! | `Retired(Pruned \| Superseded \| InputRevoked)` | no | no | no | no | no | no |
 //!
-//! `Birth` has no source. `Retire` is allowed exactly from `Serving`, `Frozen` and `Fenced`, the
-//! states that map to `Active`, mirroring `LifecycleGate::transition`. A `Candidate` or `Gated`
-//! expert is not retired by a proposal (a failed candidate is dropped by its gate), and a
-//! `Superseded` expert is already withdrawn. `Fenced` is valid only for `Retire`. A
+//! `Birth` has no source. `Retire` is allowed exactly from `Serving` and `Frozen`. A `Candidate`
+//! or `Gated` expert is not retired by a proposal (a failed candidate is dropped by its gate),
+//! and a `Superseded` expert is already withdrawn.
+//!
+//! # Fenced experts are outside the proposal API
+//!
+//! A `Fenced` expert has had its inputs revoked or its authority withdrawn. No proposal may name
+//! it as an operand, for any operation: validation rejects it with
+//! [`ExpertProposalError::FencedTarget`] before the generic state check. In particular a policy
+//! cannot retire a fenced expert as `Retired(GateFailed)` and later reactivate it from its
+//! revoked weights. A fenced expert reaches `Retired(InputRevoked)` only through the runtime
+//! revocation path (a runtime-grant ledger event), never through an [`ExpertProposal`], and
+//! `InputRevoked` is also not a proposable reason or a valid reactivation seed. A
 //! `Merge` additionally needs all its sources in the *same* state. A `Reactivate` of a `Retired`
 //! target with any reason other than `GateFailed` is reported as
 //! [`ExpertProposalError::SeedUnavailable`] (not as a generic state error): `Pruned` weights are
@@ -96,7 +105,7 @@
 //!
 //! # Retirement reasons
 //!
-//! `Retire` accepts only `Superseded` and `GateFailed`. `Pruned` has its own operation
+//! `Retire` of a `Serving` or `Frozen` target accepts only `Superseded` and `GateFailed`. `Pruned` has its own operation
 //! ([`StructuralOp::Prune`]) and `InputRevoked` is a runtime-grant ledger event, never a proposal
 //! (rejected with [`ExpertProposalError::ReasonNotProposable`]).
 //!
@@ -122,8 +131,8 @@
 //! 2. the proposer belongs to the proposal project;
 //! 3. operand counts (Merge and Prune sources, Split results);
 //! 4. every source and result belongs to the proposal project;
-//! 5. source states against the table above (a non-`GateFailed` retired Reactivate target is
-//!    `SeedUnavailable` here);
+//! 5. source states: a `Fenced` operand is `FencedTarget` for every operation; then the table
+//!    above (a non-`GateFailed` retired Reactivate target is `SeedUnavailable` here);
 //! 6. operation structure, per operation:
 //!    * Merge: Token level, duplicates and multiple generations, one layer, one base model,
 //!      distinct Token slots (`DuplicateSourceSlot`), one shared state (`MixedStates`);
@@ -154,11 +163,19 @@
 //! complete field list as [`ProposalParts`], so a reviewer (and the test in `tests/expert.rs`)
 //! can see that adding a field is a visible, breaking change.
 //!
-//! # Proposal id
+//! # Two-stage identity
 //!
-//! [`ExpertProposal::proposal_id`] is SHA-256 over a length-prefixed canonical encoding of every
-//! field (domain separator `ptr.pods.expert-proposal.v1`). It is deterministic, order-sensitive
-//! in operand lists, and changes with any field, including `observed_at`.
+//! [`ExpertProposal::operation_id`] exists before training: it identifies the requested
+//! operation (kind, operands with their observed generation, manifest digest, state and state
+//! version, proposer, project, `observed_at`, rationale digest) and excludes every result field
+//! (the [`ExpertPodSpec`] contents and so any manifest digest of a trained result). It is
+//! SHA-256 over a length-prefixed canonical encoding with domain separator
+//! `ptr.pods.expert-operation.v1`.
+//!
+//! [`ExpertProposal::proposal_id`] exists after training and identifies the candidate: SHA-256
+//! over a length-prefixed canonical encoding of every field including results (domain separator
+//! `ptr.pods.expert-proposal.v1`). It is deterministic, order-sensitive in operand lists, and
+//! changes with any field, including `observed_at` and the result specs.
 
 use crate::manifest::ArtifactLifecycle;
 use ptr_types::{CommitIndex, Digest, Generation, PodId, ProjectId};
@@ -215,7 +232,21 @@ digest_newtype!(
     /// Digest of the proposer's rationale (non-zero).
     RationaleDigest
 );
-/// Deterministic identity of a proposal, minted only by [`ExpertProposal::proposal_id`].
+/// Deterministic identity of a requested operation before any training, minted only by
+/// [`ExpertProposal::operation_id`]. It covers no result field, so it is stable across the
+/// training that produces the result. [`ProposalId`] identifies the candidate after training.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct OperationId(Digest);
+
+impl OperationId {
+    pub fn as_bytes(&self) -> &Digest {
+        &self.0
+    }
+}
+
+/// Deterministic identity of a proposal (the candidate, including its result specs), minted only
+/// by [`ExpertProposal::proposal_id`]. Exists after training; see [`OperationId`] for the
+/// pre-training identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ProposalId(Digest);
 
@@ -290,7 +321,8 @@ pub enum ExpertState {
     Gated,
     Serving,
     Frozen,
-    /// Fenced off by authority; only `Retire` may name it.
+    /// Fenced off by authority. No proposal may name it ([`ExpertProposalError::FencedTarget`]);
+    /// it leaves this state only through the runtime revocation path.
     Fenced,
     /// Replaced by a successor generation; only `Retire` may name it.
     Superseded,
@@ -353,11 +385,8 @@ impl OpKind {
                 state,
                 ExpertState::Frozen | ExpertState::Retired(RetiredReason::GateFailed)
             ),
-            // Mirrors `LifecycleGate::transition`: retirement only from `Active`.
-            Self::Retire => matches!(
-                state,
-                ExpertState::Serving | ExpertState::Frozen | ExpertState::Fenced
-            ),
+            // `Fenced` maps to `Active` but is revoked by the runtime, never retired by a proposal.
+            Self::Retire => matches!(state, ExpertState::Serving | ExpertState::Frozen),
         }
     }
 }
@@ -784,6 +813,9 @@ pub enum ExpertProposalError {
         expected: ProjectId,
         found: ProjectId,
     },
+    /// An operand is observed `Fenced`. No proposal may name a fenced expert: it reaches
+    /// `Retired(InputRevoked)` only through the runtime revocation path.
+    FencedTarget { op: OpKind, pod: PodId },
     /// A source's state does not allow the operation.
     WrongTargetState {
         op: OpKind,
@@ -864,6 +896,11 @@ impl fmt::Display for ExpertProposalError {
             Self::MixedProjects { expected, found } => write!(
                 f,
                 "expert belongs to project {found}, but the proposal is for project {expected}"
+            ),
+            Self::FencedTarget { op, pod } => write!(
+                f,
+                "{op} cannot name fenced expert {pod}; only the runtime revocation path may \
+                 retire it"
             ),
             Self::WrongTargetState { op, pod, state } => {
                 write!(f, "{op} cannot target expert {pod} in state {state:?}")
@@ -1039,7 +1076,51 @@ impl ExpertProposal {
         }
     }
 
-    /// Deterministic identity: SHA-256 over the canonical encoding of every field.
+    /// Pre-training identity of the requested operation: SHA-256 over the canonical encoding of
+    /// the operation kind, its operands (with observed generation, manifest digest, state and
+    /// state version), the proposer, project, `observed_at` and rationale digest. It excludes
+    /// every result field, so it is unchanged by the result specs a training run produces. The
+    /// candidate is identified by [`ExpertProposal::proposal_id`] after training.
+    pub fn operation_id(&self) -> OperationId {
+        let ProposalParts {
+            project,
+            proposer,
+            observed_at,
+            op,
+            rationale,
+        } = self.parts();
+        let mut e = Encoder::default();
+        e.str("ptr.pods.expert-operation.v1");
+        e.str(&project.0);
+        e.str(&proposer.project.0);
+        e.str(&proposer.pod.0);
+        e.u64(proposer.generation.0);
+        e.u64(observed_at.0);
+        e.digest(rationale.as_bytes());
+        e.u64(match op.kind() {
+            OpKind::Birth => 0,
+            OpKind::Merge => 1,
+            OpKind::Split => 2,
+            OpKind::Freeze => 3,
+            OpKind::Reactivate => 4,
+            OpKind::Prune => 5,
+            OpKind::Retire => 6,
+        });
+        let sources = op.sources();
+        e.u64(sources.len() as u64);
+        for source in sources {
+            e.target(source);
+        }
+        // The retirement reason is a request parameter, not a result.
+        if let StructuralOp::Retire { reason, .. } = op {
+            e.reason(*reason);
+        }
+        OperationId(Sha256::digest(e.bytes).into())
+    }
+
+    /// Deterministic identity of the candidate: SHA-256 over the canonical encoding of every
+    /// field, results included. Exists after training; see [`ExpertProposal::operation_id`] for
+    /// the identity that exists before.
     pub fn proposal_id(&self) -> ProposalId {
         let ProposalParts {
             project,
@@ -1238,6 +1319,12 @@ fn validate_op(op: &StructuralOp, project: &ProjectId) -> Result<(), ExpertPropo
                 });
             }
         }
+    }
+    if let Some(target) = sources.iter().find(|t| t.state == ExpertState::Fenced) {
+        return Err(ExpertProposalError::FencedTarget {
+            op: kind,
+            pod: target.pod.clone(),
+        });
     }
     if let Some(target) = sources.iter().find(|t| !kind.allows_state(t.state)) {
         return Err(ExpertProposalError::WrongTargetState {

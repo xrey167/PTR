@@ -1,4 +1,4 @@
-use ptr_pods::{DynPod, PodManifest, PodRegistry};
+use ptr_pods::{DynPod, PodManifest, PodRegistrationError, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_types::{CapabilityId, Effect, PodId, ProjectId, TypeId};
 use std::sync::Arc;
@@ -99,4 +99,58 @@ fn two_projects_may_each_register_the_same_pod_id_without_shadowing() {
     // Re-registering within one project still replaces, as before.
     assert!(registry.register(echo("p", "echo")).is_some());
     assert_eq!(registry.len(), 2);
+}
+
+#[test]
+fn register_new_inserts_a_new_id() {
+    let mut registry = PodRegistry::default();
+    assert_eq!(registry.register_new(echo("p", "echo")), Ok(()));
+    // Another project's identical id is a different key.
+    assert_eq!(registry.register_new(echo("other", "echo")), Ok(()));
+    assert_eq!(registry.len(), 2);
+    assert!(registry
+        .get(&ProjectId::from("p"), &PodId::from("echo"))
+        .is_some());
+}
+
+#[test]
+fn register_new_rejects_a_duplicate_and_keeps_the_original() {
+    let mut registry = PodRegistry::default();
+    let original = echo("p", "echo");
+    registry.register_new(original.clone()).unwrap();
+
+    let err = registry.register_new(echo("p", "echo")).unwrap_err();
+    assert_eq!(
+        err,
+        PodRegistrationError::AlreadyRegistered {
+            project: ProjectId::from("p"),
+            pod: PodId::from("echo"),
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "pod echo is already registered in project p"
+    );
+    assert_eq!(registry.len(), 1);
+    let kept = registry
+        .get(&ProjectId::from("p"), &PodId::from("echo"))
+        .unwrap();
+    let original: Arc<dyn DynPod> = original;
+    assert!(Arc::ptr_eq(&kept, &original));
+}
+
+#[test]
+fn register_still_replaces_after_register_new() {
+    let mut registry = PodRegistry::default();
+    let first = echo("p", "echo");
+    registry.register_new(first.clone()).unwrap();
+    let second = echo("p", "echo");
+    let previous = registry.register(second.clone()).expect("replaces");
+    let first: Arc<dyn DynPod> = first;
+    let second: Arc<dyn DynPod> = second;
+    assert!(Arc::ptr_eq(&previous, &first));
+    let now = registry
+        .get(&ProjectId::from("p"), &PodId::from("echo"))
+        .unwrap();
+    assert!(Arc::ptr_eq(&now, &second));
 }
