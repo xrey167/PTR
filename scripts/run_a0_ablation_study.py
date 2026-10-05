@@ -22,6 +22,16 @@ sequences what that document fixes:
 It never edits criteria.toml, and `eval` refuses to start unless the worktree
 is clean and the only files changed since the preregistration tag are the
 learning-rate selection and the sweep records (gate G4).
+
+`--study v2` (before the phase) selects the successor study, research/
+falsification/A0-ablations-v2/DESIGN.md. Its processes are seeds of listed
+experiments run serially through the hardened runner (scripts/a0_study.py), so
+the phases differ: `prereg` registers the frozen sweep experiments, `sweep`
+and `eval` and `contingency` run the next unrun seeds (`--commit` commits each
+record alone, as the runner requires before the next launch), `select` writes the
+learning-rate selection, `prereg-stage eval|contingency` registers the later
+stages, and `g6` runs the correctness checks at a clean commit. v1 stays the
+default and behaves as before.
 """
 
 from __future__ import annotations
@@ -32,6 +42,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 import shlex
 import shutil
 import tempfile
@@ -42,14 +53,21 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-STUDY_DIR = ROOT / "research/falsification/A0-ablations-v1"
-CONFIG = ROOT / "model/configs/a0_ablation_study.toml"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import a0_study  # noqa: E402
+
+# The active study. v1 is the default and behaves as it always did; `--study v2`
+# (see `use_study`) selects the hardened successor, whose processes are listed
+# experiments of their own (scripts/a0_study.py).
+STUDY = a0_study.V1
+STUDY_DIR = STUDY.path
+CONFIG = ROOT / STUDY.config
 BENCHMARK = ROOT / "benchmarks/operator-routing"
 LOCK = BENCHMARK / "splits.lock.json"
 DATA = "datasets/generated/operator_routing_v1"
 TARGET_DIR = "model/burn-a0/target-a0-study"
 BINARY = ROOT / TARGET_DIR / "release/examples/a0_ablation"
-PREREG_TAG = "a0-ablation-prereg-v1"
+PREREG_TAG = STUDY.prereg_tag
 EXPERIMENTS = {
     "M001": "model/M001-semantic-slots",
     "M002": "model/M002-typed-attention",
@@ -66,6 +84,17 @@ RUN_PREFIX = (
     f"cargo {TOOLCHAIN} run --release --locked --offline --quiet --target-dir {TARGET_DIR} "
     "--manifest-path model/burn-a0/Cargo.toml --example a0_ablation --"
 )
+
+
+def use_study(key: str) -> None:
+    """Select the study every later phase works on: its directory, configuration
+    and preregistration tag. v1 is the default; the module globals are what the
+    phases read, so tests may still patch them."""
+    global STUDY, STUDY_DIR, CONFIG, PREREG_TAG
+    STUDY = a0_study.STUDIES[key]
+    STUDY_DIR = STUDY.path
+    CONFIG = ROOT / STUDY.config
+    PREREG_TAG = STUDY.prereg_tag
 
 
 def config() -> dict:
@@ -279,6 +308,16 @@ def prepare_r2() -> dict:
             "data_fnv64": data_fnv()}
 
 
+def test_environment() -> dict:
+    """v2 keeps one build directory: its debug test build goes into the study's
+    own target directory (without debug information or incremental state), not a
+    second one beside it. v1 builds where it always did."""
+    if not STUDY.hardened:
+        return {}
+    return {"env": {**os.environ, "CARGO_TARGET_DIR": str(ROOT / TARGET_DIR), "CARGO_INCREMENTAL": "0",
+                    "CARGO_PROFILE_TEST_DEBUG": "0", "CARGO_PROFILE_DEV_DEBUG": "0"}}
+
+
 def prefreeze(_args) -> None:
     """Generate and check data, calibrate training, and write a bounded study plan."""
     if not worktree_clean():
@@ -295,7 +334,7 @@ def prefreeze(_args) -> None:
     must(BUILD)
     must([str(BINARY), "--phase", "self-test", "--data", DATA, "--data-fnv64", data_fnv()])
     tests = must(["cargo", TOOLCHAIN, "test", "--locked", "--manifest-path", "model/burn-a0/Cargo.toml"],
-                 capture_output=True)
+                 capture_output=True, **test_environment())
     (STUDY_DIR / "logs").mkdir(parents=True, exist_ok=True)
     (STUDY_DIR / "logs/prefreeze-cargo-test.log").write_text(tests.stdout + tests.stderr, encoding="utf-8")
 
@@ -374,6 +413,8 @@ def toml_string(value: str) -> str:
 
 def prereg(_args) -> None:
     """Append calibrated A0 entrypoints and the hardware profile to experiment manifests."""
+    if STUDY.hardened:
+        return v2_register("sweep")
     plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
     for experiment, path in EXPERIMENTS.items():
         manifest = ROOT / "experiments" / path / "experiment.toml"
@@ -422,8 +463,10 @@ def require_frozen() -> None:
         raise SystemExit("the worktree must be clean")
 
 
-def sweep(_args) -> None:
+def sweep(args) -> None:
     """Run the budgeted learning-rate grid from a frozen, clean worktree."""
+    if STUDY.hardened:
+        return v2_run("sweep", args)
     require_frozen()
     plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
     if not plan["sweep"]:
@@ -548,7 +591,7 @@ def selection_table(record_commit: str | None = None) -> list[dict]:
 
 def select(_args) -> None:
     """Validate all sweep provenance before writing either selection artifact."""
-    table = selection_table()
+    table = v2_selection_table() if STUDY.hardened else selection_table()
     lines = ["arm\tlr\tval_accuracy\tflag"]
     lines += [f"{row['arm']}\t{row['lr']}\t{row['val_accuracy']}\t{row['flag']}" for row in table]
     (STUDY_DIR / "lr_selection.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -565,6 +608,7 @@ def aggregator():
     spec = importlib.util.spec_from_file_location("aggregate_a0_ablation", ROOT / "scripts/aggregate_a0_ablation.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.use_study(STUDY.key)
     return module
 
 
@@ -594,13 +638,26 @@ def correctness(logs: Path | None = None) -> dict:
     Each log is kept under logs/ for the results commit."""
     logs = logs if logs is not None else STUDY_DIR / "logs"
     logs.mkdir(parents=True, exist_ok=True)
+    env = None
+    binary = str(BINARY)
+    scratch = None
+    if STUDY.hardened:
+        # The evaluation runs from a checkout that holds no git-ignored file, so
+        # these builds go to a directory outside the repository, and the Python
+        # suites write no bytecode cache into it. The environment is not part of
+        # a check's argv; it only keeps the debug build small.
+        scratch = Path(tempfile.mkdtemp(prefix="a0-g6-"))
+        env = {**os.environ, "CARGO_TARGET_DIR": str(scratch / "test"), "CARGO_INCREMENTAL": "0",
+               "CARGO_PROFILE_TEST_DEBUG": "0", "CARGO_PROFILE_DEV_DEBUG": "0", "PYTHONDONTWRITEBYTECODE": "1"}
+        build = [str(scratch / "bin") if token == TARGET_DIR else token for token in BUILD]
+        must(build, env=env)
+        binary = str(scratch / "bin/release/examples/a0_ablation")
     checks = {
         "cargo_test": ["cargo", TOOLCHAIN, "test", "--locked", "--manifest-path", "model/burn-a0/Cargo.toml"],
-        "self_test": [str(BINARY), "--phase", "self-test", "--data", DATA, "--data-fnv64", data_fnv()],
-        "benchmark_tests": [sys.executable, "-m", "unittest", "discover", "-s", "benchmarks/operator-routing/tests"],
-        "aggregator_tests": [sys.executable, "-m", "unittest", "scripts/tests/test_a0_ablation_aggregate.py"],
-        "config_tests": [sys.executable, "-m", "unittest", "scripts/tests/test_a0_ablation_config.py"],
+        "self_test": [binary, "--phase", "self-test", "--data", DATA, "--data-fnv64", data_fnv()],
     }
+    for name, tail in a0_study.python_check_tails(STUDY).items():
+        checks[name] = [sys.executable, *tail]
     def revision() -> str:
         return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
                               capture_output=True, check=True).stdout.strip()
@@ -609,7 +666,7 @@ def correctness(logs: Path | None = None) -> dict:
     outcome = {}
     pending_logs = {}
     for name, command in checks.items():
-        result = run(command, capture_output=True)
+        result = run(command, capture_output=True, **({"env": env} if env else {}))
         log = (result.stdout + result.stderr).encode("utf-8")
         pending_logs[name] = log
         evidence["checks"][name] = {"argv": command, "exit_code": result.returncode,
@@ -620,6 +677,8 @@ def correctness(logs: Path | None = None) -> dict:
     # before the post-check snapshot is taken.
     for name, log in pending_logs.items():
         (logs / f"g6-{name}.log").write_bytes(log)
+    if scratch is not None:
+        shutil.rmtree(scratch, ignore_errors=True)
     write_json(logs / "g6.json", evidence)
     if evidence["git_dirty"] or evidence["git_dirty_after"] or evidence["git_sha"] != evidence["git_sha_after"]:
         outcome["source_provenance"] = "fail"
@@ -628,6 +687,8 @@ def correctness(logs: Path | None = None) -> dict:
 
 def eval_phase(_args) -> None:
     """Check correctness, run every evaluation seed and the rerun, and retry failures once."""
+    if STUDY.hardened:
+        return v2_run("eval", _args)
     require_eval_commit()
     must(BUILD)
     # Keep tracked G6 artifacts unchanged until every model process has recorded
@@ -660,6 +721,8 @@ def eval_phase(_args) -> None:
 
 def contingency(args) -> None:
     """Run the selected arm and its full-arm comparator at the contingency budget."""
+    if STUDY.hardened:
+        return v2_run("contingency", args)
     require_eval_commit()
     seeds = config()["seeds"]["declared"]
     arm = args.arm
@@ -675,22 +738,290 @@ def contingency(args) -> None:
 
 def aggregate(_args) -> None:
     """Run the study aggregator and report generator, stopping on either failure."""
-    must([sys.executable, "scripts/aggregate_a0_ablation.py"])
-    must([sys.executable, "scripts/report_a0_ablation.py"])
+    study = ["--study", STUDY.key]
+    must([sys.executable, "scripts/aggregate_a0_ablation.py", *study])
+    must([sys.executable, "scripts/report_a0_ablation.py", *study])
+
+
+# --------------------------------------------------------------------------- v2 (hardened)
+#
+# Every v2 process is one seed of a listed experiment (scripts/a0_study.py). The
+# hardened runner runs from a clean tree that holds HEAD and no git-ignored file,
+# one run at a time, and refuses a seed that already ran, so these phases run the
+# next unrun seeds serially and, with --commit, commit each record alone before
+# the next launch.
+
+HARDWARE_PROFILE = "hardware/a0-cpu-4core.toml"
+TRAILERS = ("Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
+            "Claude-Session: https://claude.ai/code/session_0182GazcgrLUC32kYDr7Xs4v")
+
+
+def families_of(plan: dict) -> list[str]:
+    """Families with arms in the budget plan, most arms first (the v1 order)."""
+    return sorted((f for f in a0_study.FAMILIES if plan["arms"].get(f)), key=lambda f: -len(plan["arms"][f]))
+
+
+def v2_registrations(kind: str, plan: dict, *, arm: str | None = None) -> list:
+    """The listed experiments of a stage, from the budget plan and (for the
+    evaluation) the committed learning-rate selection."""
+    rules = config()
+    common = {"d_model": plan["d_model"], "data": DATA, "data_fnv64": data_fnv()}
+    declared = rules["seeds"]["declared"]
+    study = STUDY
+    out = []
+    if kind == "sweep":
+        if not plan["sweep"]:
+            raise SystemExit("v2 requires the learning-rate sweep, but the budget rule skipped it")
+        for family in families_of(plan):
+            for lr in rules["learning_rate"]["grid"]:
+                out.append(a0_study.registration(study, "sweep", family, arms=plan["arms"][family],
+                                                 seeds=[a0_study.SEED], steps=plan["sweep_steps"], lr=lr, **common))
+    elif kind == "eval":
+        lr_file = f"{STUDY.directory}/lr_selection.tsv"
+        for family in families_of(plan):
+            out.append(a0_study.registration(study, "eval", family, arms=plan["arms"][family], seeds=declared,
+                                             steps=plan["steps"], lr_file=lr_file, **common))
+        out.append(a0_study.registration(study, "rerun", "M001", arms=["full"], seeds=[a0_study.SEED],
+                                         steps=plan["steps"], lr_file=lr_file, **common))
+    else:
+        family = next(a["experiment"] for a in rules["arm"] if a["name"] == arm)
+        steps = tomllib.loads((STUDY_DIR / "criteria.toml").read_text(encoding="utf-8"))["learnability"]["contingency_steps"]
+        lr_file = f"{STUDY.directory}/lr_selection.tsv"
+        arms = ["full", arm] if family == "M001" else [arm]
+        out.append(a0_study.registration(study, "contingency", family, arms=arms, seeds=declared, steps=steps,
+                                         lr_file=lr_file, arm=arm, **common))
+        if family != "M001":
+            out.append(a0_study.registration(study, "contingency", "M001", arms=["full"], seeds=declared,
+                                             steps=steps, lr_file=lr_file, arm="full", **common))
+    return out
+
+
+def v2_register(kind: str, arm: str | None = None) -> None:
+    """Create and register a stage's experiments, frozen (status prepared), for
+    the hand commit that freezes them. Experiments already registered are kept."""
+    plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
+    if kind != "sweep" and not (STUDY_DIR / "lr_selection.tsv").exists():
+        raise SystemExit("no lr_selection.tsv: run select and commit it first")
+    registered = (ROOT / "experiments/registry.toml").read_text(encoding="utf-8")
+    for reg in v2_registrations(kind, plan, arm=arm):
+        if f'id = "{reg.exp_id}"' in registered:
+            say(f"{reg.exp_id} is already registered")
+            continue
+        a0_study.write_experiment(ROOT, STUDY, reg, HARDWARE_PROFILE)
+        say(f"registered {reg.exp_id} ({reg.path})")
+
+
+def ignored_files() -> list[str]:
+    """What git ignores in the checkout (build output, caches); a listed run refuses to start while any exists."""
+    return subprocess.run(["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory"],
+                          cwd=ROOT, text=True, capture_output=True, check=True).stdout.split()
+
+
+def seed_ran(exp_id: str, seed: int) -> bool:
+    """Whether a record of `seed` of the experiment exists whose command ran."""
+    results = ROOT / "experiments" / STUDY.experiment_path(exp_id) / "results"
+    for path in results.glob("run-*.json"):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("seed") == seed and record.get("status") != "failed-to-launch":
+            return True
+    return False
+
+
+def commit_record(exp_id: str, seed: int) -> None:
+    """Commit the experiment's new record and nothing else."""
+    directory = f"experiments/{STUDY.experiment_path(exp_id)}/results"
+    status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=ROOT, text=True,
+                            capture_output=True, check=True).stdout.splitlines()
+    stray = [line for line in status if not line[3:].startswith(directory + "/run-")]
+    if stray:
+        raise SystemExit(f"refusing to commit: changes beyond {exp_id}'s record: {stray}")
+    must(["git", "add", directory])
+    must(["git", "commit", "-q", "-m", f"research: record {exp_id} seed {seed}\n\n{TRAILERS}"])
+
+
+def serial(jobs: list[tuple[str, int]], commit: bool) -> None:
+    """Run each (experiment, seed) not yet run, one at a time. A failed run
+    spent its seed (the hardened runner never reruns one): its record is kept
+    and committed, and the study stops."""
+    import time
+    for exp_id, seed in jobs:
+        if seed_ran(exp_id, seed):
+            say(f"{exp_id} seed {seed}: already ran")
+            continue
+        if not worktree_clean():
+            raise SystemExit("the worktree must be clean before each hardened run (commit the previous record)")
+        if ignored_files():
+            raise SystemExit(f"a listed run refuses a checkout holding git-ignored files: {ignored_files()[:5]}; "
+                             "remove them (git clean -fdX) and run again")
+        started = time.monotonic()
+        result = run([sys.executable, "scripts/run_experiment.py", "run", exp_id, "--entrypoint", "entrypoint",
+                      "--seed", str(seed)], capture_output=True)
+        say(f"{exp_id} seed {seed}: exit {result.returncode} in {time.monotonic() - started:.0f}s (cold build included)")
+        if result.returncode:
+            sys.stderr.write(result.stderr[-3000:])
+        if commit and seed_ran(exp_id, seed):
+            commit_record(exp_id, seed)
+        if result.returncode:
+            raise SystemExit(f"{exp_id} seed {seed} failed; the seed is spent and the study needs a successor")
+
+
+def v2_jobs(kind: str, arm: str | None = None) -> list[tuple[str, int]]:
+    """The (experiment, seed) pairs of a phase, in run order."""
+    plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
+    return [(reg.exp_id, seed) for reg in v2_registrations(kind, plan, arm=arm) for seed in reg.seeds]
+
+
+def v2_run(kind: str, args) -> None:
+    """Run a v2 phase serially from a frozen, clean checkout."""
+    require_frozen()
+    arm = getattr(args, "arm", None)
+    if kind != "sweep":
+        require_eval_commit_v2()
+    serial(v2_jobs(kind, arm), getattr(args, "commit", False))
+
+
+def require_eval_commit_v2() -> None:
+    """The evaluation phases need the committed selection, and G6 evidence
+    committed at a commit with the same code."""
+    if not (STUDY_DIR / "lr_selection.tsv").exists():
+        raise SystemExit("no lr_selection.tsv: run select and commit it first")
+    evidence = STUDY_DIR / "logs/g6.json"
+    if not evidence.exists():
+        raise SystemExit("no logs/g6.json: run the g6 phase at the freeze commit and commit its logs first")
+    sha = json.loads(evidence.read_text(encoding="utf-8")).get("git_sha")
+    stray = aggregator().code_changes(sha, "HEAD")
+    if stray:
+        raise SystemExit(f"G6 evidence at {str(sha)[:12]} does not describe this code; changed since: {stray}")
+
+
+def g6(_args) -> None:
+    """Gate G6 for v2 at a clean commit; commit the logs afterwards."""
+    if not worktree_clean():
+        raise SystemExit("g6 runs from a clean commit")
+    outcome = correctness()
+    say(f"G6 checks: {outcome}")
+    if any(value != "pass" for value in outcome.values()):
+        raise SystemExit(f"G6 failed: {outcome}")
+
+
+def prereg_stage(args) -> None:
+    """Register the second-stage (`eval`) or a contingency's experiments."""
+    v2_register(args.stage, getattr(args, "arm", None))
+
+
+def v2_selection_table() -> list[dict]:
+    """Reproduce the learning-rate selection from the sweep experiments' records,
+    each checked against the experiment as frozen at the preregistration tag."""
+    frozen = aggregator()
+    reference = frozen.preregistration_ref()
+    rules = tomllib.loads(frozen.at_tag(CONFIG.relative_to(ROOT).as_posix()).decode())
+    plan = json.loads(frozen.at_tag(f"{STUDY.directory}/budget.json"))
+    lock = json.loads(frozen.at_tag("benchmarks/operator-routing/splits.lock.json"))
+    grid = rules["learning_rate"]["grid"]
+    tolerance = rules["learning_rate"]["selection_tolerance"]
+    identity = set()
+    table = []
+    for family in families_of(plan):
+        results: dict[str, dict[float, dict]] = {}
+        for lr in grid:
+            exp_id = STUDY.sweep_id(family, lr)
+            directory = STUDY.experiment_path(exp_id)
+            manifest_bytes = frozen.at_tag(f"experiments/{directory}/experiment.toml")
+            if manifest_bytes is None:
+                raise SystemExit(f"{exp_id} is not frozen at the preregistration tag")
+            manifest = tomllib.loads(manifest_bytes.decode())
+            frozen_table = tomllib.loads(frozen.at_tag(f"experiments/{directory}/config.toml").decode())["preregistration"]
+            found = [r for r in records_in(exp_id) if r.get("status") == "completed"]
+            if len(found) != 1:
+                raise SystemExit(f"{exp_id}: expected one completed sweep record, found {len(found)}")
+            record = found[0]
+            label = record["_path"]
+
+            def refuse(reason, label=label):
+                raise ValueError(f"{label}: invalid frozen sweep: {reason}")
+            if record.get("experiment_id") != exp_id or record.get("git_dirty") is not False:
+                refuse("experiment or clean source identity")
+            if record.get("git_tracked_diff_sha256") != hashlib.sha256(b"").hexdigest():
+                refuse("unverified clean source")
+            if subprocess.run(["git", "merge-base", "--is-ancestor", reference, record.get("git_sha", "")],
+                              cwd=ROOT).returncode != 0:
+                refuse("commit is not a descendant of the preregistration")
+            if record.get("seed") != a0_study.SEED or record.get("exit_code") != 0 or record.get("entrypoint") != "entrypoint":
+                refuse("seed, entrypoint or exit status")
+            if record.get("manifest_sha256") != hashlib.sha256(manifest_bytes).hexdigest():
+                refuse("manifest identity")
+            values = {"seed": str(a0_study.SEED), **{k: str(v) for k, v in frozen_table.items()}}
+            expected = [re.sub(r"<(\w+)>", lambda m: values[m.group(1)], token)
+                        for token in shlex.split(manifest["entrypoint"])]
+            if record.get("command") != expected or float(frozen_table["lr"]) != lr:
+                refuse("command differs from the frozen one")
+            host = record.get("host")
+            if not isinstance(host, dict) or not all(host.get(k) for k in ("system", "release", "machine", "cpu_model", "logical_cpus", "memory_bytes")):
+                refuse("missing measured host")
+            if not record.get("toolchain") or not record.get("executable"):
+                refuse("missing toolchain or executable identity")
+            identity.add(json.dumps([host, record["toolchain"], record["executable"]], sort_keys=True))
+            if len(identity) != 1:
+                refuse("mixed host, toolchain or executable")
+            profile = record.get("hardware_profile_record", {})
+            if record.get("hardware_profile") != manifest["hardware_profile"] or profile.get("sha256") != hashlib.sha256(frozen.at_tag(manifest["hardware_profile"])).hexdigest():
+                refuse("hardware profile differs from freeze")
+            parsed = rows(record.get("stdout", ""))
+            data_rows = [row for row in parsed if row.get("row") == "data"]
+            if len(data_rows) != 1 or data_rows[0].get("data_fnv64") != lock["data_fnv1a64"]:
+                refuse("dataset identity")
+            sweep_rows = [row for row in parsed if row.get("row") == "sweep"]
+            if sorted(row.get("arm", "") for row in sweep_rows) != sorted(plan["arms"][family]):
+                refuse("missing, extra or duplicate arm rows")
+            for row in sweep_rows:
+                if row.get("lr") != lr:
+                    refuse("row learning rate differs from the experiment's")
+                results.setdefault(row["arm"], {})[lr] = row
+        for arm in plan["arms"][family]:
+            lr, flag, eligible = choose_lr(arm, results.get(arm, {}), grid, tolerance)
+            table.append({"arm": arm, "lr": lr, "flag": flag, "val_accuracy": eligible[lr],
+                          "by_lr": {str(k): v for k, v in sorted(eligible.items())}})
+    return table
+
+
+def records_in(exp_id: str) -> list[dict]:
+    """The run records (with a seed) of one v2 experiment, with their paths."""
+    results = ROOT / "experiments" / STUDY.experiment_path(exp_id) / "results"
+    out = []
+    for path in sorted(results.glob("run-*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if "seed" in record:
+            record["_path"] = str(path.relative_to(ROOT))
+            out.append(record)
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
     """Dispatch the requested study phase and return zero when it completes."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--study", choices=sorted(a0_study.STUDIES))
     sub = parser.add_subparsers(dest="phase", required=True)
-    for name in ["prefreeze", "prereg", "sweep", "select", "eval", "aggregate"]:
+    for name in ["prefreeze", "prereg", "select", "aggregate", "g6"]:
         sub.add_parser(name)
+    for name in ["sweep", "eval"]:
+        phase = sub.add_parser(name)
+        phase.add_argument("--commit", action="store_true", help="v2: commit each record before the next run")
     cont = sub.add_parser("contingency")
     cont.add_argument("arm")
+    cont.add_argument("--commit", action="store_true")
+    stage = sub.add_parser("prereg-stage")
+    stage.add_argument("stage", choices=["eval", "contingency"])
+    stage.add_argument("--arm")
     args = parser.parse_args(argv)
+    if args.study is not None:
+        use_study(args.study)
+    if args.phase in {"g6", "prereg-stage"} and not STUDY.hardened:
+        raise SystemExit("this phase exists only for --study v2")
     {
         "prefreeze": prefreeze,
         "prereg": prereg,
+        "prereg-stage": prereg_stage,
+        "g6": g6,
         "sweep": sweep,
         "select": select,
         "eval": eval_phase,
