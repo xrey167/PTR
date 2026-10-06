@@ -1638,6 +1638,7 @@ fn decode_snapshot(
             generation: Generation(reader.u64()?),
             schema_digest: reader.digest()?,
             prefix_digest: reader.digest()?,
+            layers: ptr_pods::KvLayerRange::Full,
         };
         let sequence_length = reader.u64()?;
         if sequence_length != (depth * KV_CHUNK_TOKENS) as u64 {

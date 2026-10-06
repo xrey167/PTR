@@ -2,11 +2,11 @@
 
 use crate::{
     DescriptorError, DeviceLease, DeviceLeaseError, InMemoryKvTensorBackend, KvBackendError,
-    KvCacheTier, KvLayerSnapshot, KvPageBinding, KvPageEntry, KvPageId, KvPageMetrics, KvPageSize,
-    KvPageSnapshot, KvPageState, KvPagedSnapshot, KvPrefixKey, KvRuntimeLeaseBinding,
-    KvSharedPrefix, KvTensorBackend, KvTensorSchema, KvTensorSnapshot, LeaseState,
-    NeuralPodDescriptor, NeuralPodError, NeuralPodExecutor, NeuralPodLease, PagedKvTensorBackend,
-    TensorDType, TensorRef, TypedPayload,
+    KvCacheTier, KvLayerRange, KvLayerSnapshot, KvPageBinding, KvPageEntry, KvPageId,
+    KvPageMetrics, KvPageSize, KvPageSnapshot, KvPageState, KvPagedSnapshot, KvPrefixKey,
+    KvRuntimeLeaseBinding, KvSharedPrefix, KvTensorBackend, KvTensorSchema, KvTensorSnapshot,
+    LeaseState, NeuralPodDescriptor, NeuralPodError, NeuralPodExecutor, NeuralPodLease,
+    PagedKvTensorBackend, TensorDType, TensorRef, TypedPayload,
 };
 use candle_core::{DType, Device, Tensor};
 use ptr_storage::{
@@ -825,6 +825,7 @@ impl PagedKvTensorBackend for CandlePagedKvBackend {
             generation: cache.binding.generation,
             schema_digest: crate::paged_kv::schema_digest(&cache.schema, cache.binding.page_tokens),
             prefix_digest: crate::paged_kv::digest_list(b"ptr-kv-prefix-v1\0", &page_digests),
+            layers: KvLayerRange::Full,
         };
         let sequence_length = pages.len() * cache.binding.page_tokens.get();
         self.state
