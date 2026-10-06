@@ -1,0 +1,3 @@
+results_git_sha = "f8cbef98d11a3e36eea35275d610b2190c1915f9"
+stale_since = "c68ea7de2fb5204885615f684a1404c2da9060e3"
+reason = "No code under test changed after R009's seed records. The repository-wide provenance counts the records of the other experiment run from the same freeze: c68ea7de is R010's prepare record, followed by R010's seed records, its aggregate and its completion status. R009 was aggregated at the commit of its own records (24efb20e) and its results archived through a side branch; R009 and R010 share one freeze commit (d904daa6, tags r009-prereg and r010-prereg)."
