@@ -70,9 +70,11 @@
 use crate::kv_infer_layered::{BindingError, BindingRecord, LayeredReuseReport, StackBinding};
 use crate::kv_infer_session::{KvSession, KvSessionFinish, KvSessionStats};
 use crate::{
-    CatalogLimits, KvCatalogError, KvCatalogStats, KvChainId, KvDependency, KvLivenessOracle,
-    KvPin, KvPrefixCatalog, KvRestoreReport, KvSalt, KvSnapshotError, KV_CHUNK_TOKENS,
+    CatalogLimits, KvCatalogError, KvCatalogStats, KvChainId, KvDependency, KvDependencyKind,
+    KvLivenessOracle, KvPin, KvPrefixCatalog, KvRestoreReport, KvSalt, KvSnapshotError,
+    KV_CHUNK_TOKENS,
 };
+use ptr_ledger::LedgerEvent;
 use ptr_model_api::{
     ByteTokenizer, InferenceBackend, KvReuseHint, KvReusePolicy, KvReusingBackend, ModelError,
     ModelEvent, ModelRequest, ModelRun, PromptSegment, SegmentedModelRequest, TokenContractError,
@@ -317,13 +319,77 @@ pub(crate) enum CacheUse {
 pub(crate) struct RevokedInputs {
     revoked: BTreeSet<(String, Generation)>,
     floors: BTreeMap<String, Generation>,
+    /// Expert identities with a committed fence epoch: an expert dependency recorded below it
+    /// (or with none) is not live.
+    fences: BTreeMap<String, u64>,
+    /// Expert identities a committed structural record named: dead at every generation.
+    dead_experts: BTreeSet<String>,
+    /// A structural record that could not be decoded: every expert dependency is dead.
+    all_experts_dead: bool,
 }
 
 impl RevokedInputs {
+    /// Record what a committed event makes not live, mirroring the catalog mapping of
+    /// `invalidate_catalog_for_event`.
+    fn note_event(&mut self, event: &LedgerEvent) {
+        match event {
+            LedgerEvent::Revoked {
+                subject,
+                generation,
+            } => {
+                self.revoked.insert((subject.clone(), *generation));
+            }
+            LedgerEvent::ProcedureRevoked { id, generation } => {
+                self.revoked
+                    .insert((format!("procedure:{id}"), *generation));
+            }
+            LedgerEvent::CapsuleCommitted {
+                capsule,
+                generation,
+                ..
+            } => self.raise_floor(capsule.to_string(), *generation),
+            LedgerEvent::CapsuleSuperseded { capsule, new, .. } => {
+                self.raise_floor(capsule.to_string(), *new);
+            }
+            LedgerEvent::HardConstraintCommitted { key, generation } => {
+                self.raise_floor(format!("constraint:{key}"), *generation);
+            }
+            LedgerEvent::ProcedurePromoted { id, generation } => {
+                self.raise_floor(format!("procedure:{id}"), *generation);
+            }
+            LedgerEvent::ExpertStructuralCommitted { record, .. } => {
+                match crate::kv_prefix::expert_operand_identities(record) {
+                    Some(identities) => self.dead_experts.extend(identities),
+                    None => self.all_experts_dead = true,
+                }
+            }
+            LedgerEvent::ExpertFenceCommitted { .. } => {
+                for (identity, epoch) in crate::expert::expert_fence_epochs(event) {
+                    let known = self.fences.entry(identity).or_insert(epoch);
+                    *known = (*known).max(epoch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn raise_floor(&mut self, identity: String, generation: Generation) {
+        let floor = self.floors.entry(identity).or_insert(generation);
+        *floor = (*floor).max(generation);
+    }
+
     fn is_live(&self, dependency: &KvDependency) -> bool {
-        !self
-            .revoked
-            .contains(&(dependency.identity.clone(), dependency.generation))
+        let expert_dead = dependency.kind == KvDependencyKind::Expert
+            && (self.all_experts_dead
+                || self.dead_experts.contains(&dependency.identity)
+                || self
+                    .fences
+                    .get(&dependency.identity)
+                    .is_some_and(|epoch| dependency.fence_epoch < *epoch));
+        !expert_dead
+            && !self
+                .revoked
+                .contains(&(dependency.identity.clone(), dependency.generation))
             && self
                 .floors
                 .get(&dependency.identity)
@@ -803,6 +869,47 @@ impl ReferenceKvReuseBackend {
             return Ok(0);
         }
         let keys = state.catalog.invalidate_superseded(live);
+        let retired = keys.len();
+        for key in &keys {
+            self.retire(&mut state, key)?;
+        }
+        self.drain_retirements(&mut state)?;
+        Ok(retired)
+    }
+
+    /// Apply one committed ledger event to this backend's own catalog through the same
+    /// mapping the runtime's `apply_committed` hook uses (`Revoked`, `ProcedureRevoked`,
+    /// capsule and constraint supersession, `ExpertFenceCommitted`,
+    /// `ExpertStructuralCommitted`): the affected entries are tombstoned, their witnesses
+    /// revoked and the backend prefixes they held retired. The backend's own liveness set
+    /// follows (revoked pairs, supersession floors, fence epochs, structurally named
+    /// experts), so use-time checks agree with the index. Returns how many backend prefixes
+    /// were retired.
+    ///
+    /// A `SemanticDeltaCommitted` event carries no delta here, so it changes nothing; apply
+    /// it through [`Self::invalidate_inputs`] with the affected keys. Only committed events
+    /// may be passed; this method is the host's fence hook for a standalone backend, not a
+    /// replacement for the runtime's. [`IndexUpdate::Suppressed`] applies as for
+    /// [`Self::invalidate_inputs`].
+    pub fn apply_committed_event(&self, event: &LedgerEvent) -> Result<usize, ReferenceKvError> {
+        let mut state = self.lock()?;
+        {
+            let mut inputs = self
+                .liveness
+                .inner
+                .lock()
+                .map_err(|_| ReferenceKvError::Poisoned)?;
+            inputs.note_event(event);
+        }
+        if state.faults.index_update == IndexUpdate::Suppressed {
+            state.stats.suppressed_index_updates += 1;
+            return Ok(0);
+        }
+        let Some(keys) =
+            crate::kv_prefix::invalidate_catalog_for_event(&mut state.catalog, event, None)
+        else {
+            return Ok(0);
+        };
         let retired = keys.len();
         for key in &keys {
             self.retire(&mut state, key)?;

@@ -607,6 +607,7 @@ fn a_superseded_expert_restarts_on_its_successor_generation() {
             layer: 1,
             index,
             generation: 2,
+            fence_epoch: 0,
         }],
     });
     let reference = ReferenceKvReuseBackend::new(ReferenceKvLimits::default(), scope()).unwrap();
@@ -1037,4 +1038,284 @@ fn revoking_any_live_expert_tombstones_the_layers_above_it_and_cancels_the_sessi
             );
         }
     }
+}
+
+// ---- successor fence epochs and the backend's own fence hook ----------------------------------
+
+/// An oracle with a materialised `(generation, epoch)` per expert identity, the way the
+/// registry judges a dependency recorded at a non-zero fence epoch: the generation and the
+/// epoch must both be exactly the current ones. Everything else is live.
+#[derive(Default)]
+struct EpochOracle {
+    experts: std::sync::Mutex<BTreeMap<String, (u64, u64)>>,
+}
+
+impl EpochOracle {
+    fn set(&self, identity: &str, generation: u64, epoch: u64) {
+        self.experts
+            .lock()
+            .unwrap()
+            .insert(identity.to_owned(), (generation, epoch));
+    }
+}
+
+impl KvLivenessOracle for EpochOracle {
+    fn is_live(&self, dependency: &KvDependency) -> bool {
+        if dependency.kind != KvDependencyKind::Expert {
+            return true;
+        }
+        self.experts
+            .lock()
+            .unwrap()
+            .get(&dependency.identity)
+            .is_some_and(|(generation, epoch)| {
+                dependency.generation.0 == *generation && dependency.fence_epoch == *epoch
+            })
+    }
+}
+
+/// `binding` with the tracked expert `(layer, index)` recorded at `fence_epoch`.
+fn with_tracked_epoch(
+    binding: StackBinding,
+    layer: usize,
+    index: usize,
+    fence_epoch: u64,
+) -> StackBinding {
+    let StackBinding {
+        moe: Some(mut bound),
+        ..
+    } = binding
+    else {
+        unreachable!()
+    };
+    for tracked in &mut bound.experts {
+        if (tracked.layer, tracked.index) == (layer, index) {
+            tracked.fence_epoch = fence_epoch;
+        }
+    }
+    StackBinding::with_moe(bound)
+}
+
+struct EpochCase {
+    backend: ReferenceKvReuseBackend,
+    oracle: EpochOracle,
+    req: SegmentedModelRequest,
+    index: usize,
+    identity: String,
+    /// Tracked at generation 1, epoch 3, with `successor` as the only candidate.
+    binding: StackBinding,
+    /// The same MoE on generation 2 tracked at epoch 5 (what a restart should run).
+    cold_successor: ReferenceKvOutcome,
+    successor: StackBinding,
+}
+
+fn epoch_case(successor_epoch: u64) -> EpochCase {
+    let backend = backend();
+    let project = ProjectId::from("p");
+    let pod = PodId::from("moe-pod");
+    let req = request(&backend, "ep", &varied(PROMPT, 31));
+    let index = routed_expert(&backend, &req, &project, &pod);
+    let recorded = with_tracked_epoch(
+        moe_binding(&backend, &project, &pod, index, Qwen2RoutingMode::Dropless),
+        1,
+        index,
+        3,
+    );
+    let StackBinding {
+        moe: Some(bound), ..
+    } = recorded.clone()
+    else {
+        unreachable!()
+    };
+    let successor = with_tracked_epoch(
+        StackBinding::with_moe(MoeBinding {
+            moe: bound
+                .moe
+                .clone()
+                .with_expert_generation(backend.stack_config(), 1, index, 2)
+                .unwrap(),
+            experts: bound.experts.clone(),
+        }),
+        1,
+        index,
+        5,
+    );
+    let binding = recorded.with_successors(BindingSuccessors {
+        adapters: Vec::new(),
+        experts: vec![ExpertSuccessor {
+            layer: 1,
+            index,
+            generation: 2,
+            fence_epoch: successor_epoch,
+        }],
+    });
+    let reference = ReferenceKvReuseBackend::new(ReferenceKvLimits::default(), scope()).unwrap();
+    let cold_successor = reference
+        .infer_cold_bound(&scope(), &req, None, &successor)
+        .unwrap();
+    let identity = expert_identity(&project, &pod_of(&pod, 1, index));
+    let oracle = EpochOracle::default();
+    // Every other expert is serving at its recorded epoch (0), this one at (1, 3).
+    for layer in 0..LAYERS {
+        for other in 0..4 {
+            oracle.set(
+                &expert_identity(&project, &pod_of(&pod, layer, other)),
+                1,
+                0,
+            );
+        }
+    }
+    oracle.set(&identity, 1, 3);
+    EpochCase {
+        backend,
+        oracle,
+        req,
+        index,
+        identity,
+        binding,
+        cold_successor,
+        successor,
+    }
+}
+
+#[test]
+fn a_fenced_then_readmitted_expert_restarts_on_its_successor_at_the_successor_epoch() {
+    let case = epoch_case(5);
+    let mut sess = case
+        .backend
+        .begin_session_bound(&scope(), &case.req, None, &case.binding, &case.oracle)
+        .unwrap();
+    prefill_chunks(&mut sess, &case.oracle, 1);
+    // The expert is fenced (epoch 4) and readmitted as generation 2 (epoch 5).
+    case.oracle.set(&case.identity, 2, 5);
+    assert!(matches!(
+        sess.prefill_chunk(&case.oracle).unwrap(),
+        KvSessionStep::Cancelled(_)
+    ));
+    let restarted = sess.restart_with(&case.oracle).unwrap();
+    same_result(&restarted, &case.cold_successor);
+    assert_eq!(
+        restarted.binding.experts_superseded,
+        vec![(1, case.index, 1, 2)]
+    );
+    assert!(restarted.binding.experts_masked_by_resolution.is_empty());
+    assert!(restarted.binding.masked_experts.is_empty());
+
+    // The restart tracked the successor at its own epoch: its guards named epoch 5, so the
+    // run completed under the oracle (an inherited epoch 3 would have cancelled it), and
+    // the successor binding (tracked at epoch 5) is accepted at begin.
+    case.backend
+        .begin_session_bound(&scope(), &case.req, None, &case.successor, &case.oracle)
+        .unwrap();
+}
+
+#[test]
+fn a_successor_recorded_at_a_stale_epoch_is_not_live_and_the_expert_is_masked() {
+    // The old behaviour: the successor inherited the superseded binding's epoch (3), which
+    // the registry no longer accepts once the expert sits at epoch 5.
+    for stale in [0, 3, 4] {
+        let case = epoch_case(stale);
+        let mut sess = case
+            .backend
+            .begin_session_bound(&scope(), &case.req, None, &case.binding, &case.oracle)
+            .unwrap();
+        prefill_chunks(&mut sess, &case.oracle, 1);
+        case.oracle.set(&case.identity, 2, 5);
+        assert!(matches!(
+            sess.prefill_chunk(&case.oracle).unwrap(),
+            KvSessionStep::Cancelled(_)
+        ));
+        let restarted = sess.restart_with(&case.oracle).unwrap();
+        assert_eq!(
+            restarted.binding.experts_masked_by_resolution,
+            vec![(1, case.index)],
+            "epoch {stale}"
+        );
+        assert!(restarted.binding.experts_superseded.is_empty());
+    }
+}
+
+#[test]
+fn the_backend_applies_a_committed_fence_through_the_same_hook_as_the_runtime() {
+    use ptr_ledger::{ExpertFenceAction, ExpertFenceCause, ExpertFenceResume, LedgerEvent};
+    let backend = backend();
+    let project = ProjectId::from("p");
+    let pod = PodId::from("moe-pod");
+    let req = request(&backend, "fh", &varied(PROMPT, 37));
+    let index = routed_expert(&backend, &req, &project, &pod);
+    let binding = moe_binding(&backend, &project, &pod, index, Qwen2RoutingMode::Dropless);
+    backend
+        .infer_scoped_bound(&scope(), &req, None, &binding)
+        .unwrap();
+    assert_eq!(backend.catalog_stats().unwrap().entries, 4 * LAYERS);
+
+    let fence = |pod: PodId, epoch: u64| LedgerEvent::ExpertFenceCommitted {
+        project: project.clone(),
+        pod,
+        action: ExpertFenceAction::Fence,
+        cause: ExpertFenceCause::AuthorityQuarantine,
+        resume: ExpertFenceResume::Serving,
+        generation: Generation(1),
+        expected_state_version: 1,
+        epoch,
+        revocation: None,
+        evidence: None,
+    };
+    // Negative: an unrelated pod, an event that names nothing the catalog holds, and a
+    // semantic delta (which carries no delta here) change nothing.
+    assert_eq!(
+        backend
+            .apply_committed_event(&fence(PodId::from("other"), 2))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        backend
+            .apply_committed_event(&LedgerEvent::Revoked {
+                subject: "doc:unrelated".to_owned(),
+                generation: Generation(1)
+            })
+            .unwrap(),
+        0
+    );
+    assert_eq!(backend.catalog_stats().unwrap().entries, 4 * LAYERS);
+
+    // The fence of expert (1, index): its dependants (layers 2 and 3) are tombstoned and
+    // their backend prefixes retired; layers 0 and 1 do not depend on it.
+    let retired = backend
+        .apply_committed_event(&fence(pod_of(&pod, 1, index), 2))
+        .unwrap();
+    assert_eq!(retired, 4 * 2);
+    assert_eq!(backend.catalog_stats().unwrap().entries, 4 * 2);
+
+    // The backend's own liveness follows: a dependency recorded below the fence epoch is
+    // not live, one at or above it is, and other experts are unaffected.
+    let live = backend.own_liveness();
+    let identity = expert_identity(&project, &pod_of(&pod, 1, index));
+    let at = |epoch: u64| {
+        KvDependency::expert_fenced(
+            &project,
+            &pod_of(&pod, 1, index),
+            Generation(1),
+            [0; 32],
+            epoch,
+        )
+    };
+    assert_eq!(at(0).identity, identity);
+    assert!(!live.is_live(&at(0)));
+    assert!(!live.is_live(&at(1)));
+    assert!(live.is_live(&at(2)));
+    assert!(live.is_live(&KvDependency::expert(
+        &project,
+        &pod_of(&pod, 1, (index + 1) % 4),
+        Generation(1),
+        [0; 32]
+    )));
+    // Replaying the same event retires nothing more.
+    assert_eq!(
+        backend
+            .apply_committed_event(&fence(pod_of(&pod, 1, index), 2))
+            .unwrap(),
+        0
+    );
 }
