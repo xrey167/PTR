@@ -6,6 +6,7 @@ pub mod expert;
 pub mod identity;
 pub mod kv;
 pub mod kv_infer;
+pub mod kv_infer_layered;
 pub mod kv_infer_session;
 pub mod kv_prefix;
 pub mod kv_taint;
@@ -37,6 +38,10 @@ pub use kv::{KvUseError, KvUseRequest, KvUseTicket, RuntimeKvAuthority};
 pub use kv_infer::{
     IndexUpdate, ReferenceKvError, ReferenceKvFaults, ReferenceKvLimits, ReferenceKvLiveness,
     ReferenceKvOutcome, ReferenceKvReuseBackend, ReferenceKvScope, REFERENCE_KV_WEIGHT_SEED,
+};
+pub use kv_infer_layered::{
+    BindingError, BindingRecord, BindingSuccessors, BoundExpert, ExpertSuccessor, LayerAssembly,
+    LayeredReuseReport, MoeBinding, StackBinding,
 };
 pub use kv_infer_session::{
     KvCancelReason, KvCancellation, KvSession, KvSessionFinish, KvSessionPhase, KvSessionStats,

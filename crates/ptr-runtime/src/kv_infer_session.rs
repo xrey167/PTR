@@ -60,6 +60,10 @@ use crate::kv_infer::{
     argmax, check_scope, CacheUse, ReferenceCache, ReferenceKvError, ReferenceKvOutcome,
     ReferenceKvReuseBackend, ReferenceKvScope, ReuseState, LOGITS_DOMAIN,
 };
+use crate::kv_infer_layered::{
+    adopt_pending, assemble, offer_layers, record_of, resolve_binding, AssembleInput, BindingError,
+    BindingRecord, LayeredReuseReport, LayeredState, StackBinding,
+};
 use crate::{
     KvCatalogError, KvChainId, KvDependency, KvDependencyKind, KvLivenessOracle, KvLookup,
     KvPageCharge, KvPagedInsert, KvPin, KvRequestPositions, KvSalt, KV_CHUNK_TOKENS,
@@ -68,7 +72,9 @@ use ptr_model_api::{
     KvReuseMode, KvReusePolicy, KvReuseReport, LineageContribution, ModelEvent, ModelRun,
     SegmentedModelRequest, TokenId, Tokenizer,
 };
-use ptr_pods::{KvBackendError, PagedKvTensorBackend, Qwen2RopeRegime, Qwen2StackInput};
+use ptr_pods::{
+    KvBackendError, PagedKvTensorBackend, Qwen2Binding, Qwen2RopeRegime, Qwen2StackInput,
+};
 use ptr_types::{Digest, RequestId};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
@@ -99,6 +105,19 @@ pub struct KvSessionStats {
     pub stale_hits: u64,
     /// Invalidations whose catalog index update was suppressed by the fault hook.
     pub suppressed_index_updates: u64,
+    /// Sessions opened on a non-default [`StackBinding`] (per-layer entries).
+    pub bound_sessions: u64,
+    /// Sessions run Approximate (batch-variant routing): no lookup, no insert.
+    pub approximate_sessions: u64,
+    /// Chunk boundaries at which an Approximate session would have inserted and was refused.
+    /// An Approximate run never reaches the Exact catalog; the catalog's own insert counters
+    /// do not move for it.
+    pub approximate_inserts_refused: u64,
+    /// Rows at or after an aLoRA invocation inserted under a base-only key of an adapted
+    /// layer, over every session. Must stay zero.
+    pub post_invocation_rows_under_base_key: u64,
+    /// Rows checked adoption found different from the computed ones. Must stay zero.
+    pub adoption_mismatches: u64,
 }
 
 /// Where a session is.
@@ -197,7 +216,8 @@ pub struct KvSession<'a> {
     cache: ReferenceCache,
     hit_tokens: usize,
     pin: Option<KvPin>,
-    /// Every segment dependency of the request's whole lineage.
+    /// Every segment dependency of the request's whole lineage, plus (bound sessions) the
+    /// base model, the adapter and every tracked live expert.
     dependencies: Vec<KvDependency>,
     /// The lineage was live at begin, so a later failure cancels.
     guarded: bool,
@@ -208,6 +228,15 @@ pub struct KvSession<'a> {
     work: Work,
     phase: KvSessionPhase,
     restarted: bool,
+    /// The binding currently in force (re-resolved by a restart).
+    binding: StackBinding,
+    record: BindingRecord,
+    /// Per-layer state of a bound session; `None` for the default binding.
+    layered: Option<LayeredState>,
+    /// `false` when the binding routes batch-variantly: the run is Approximate.
+    exact: bool,
+    /// The caller asked for the catalog (an Approximate run still counts the refusals).
+    catalog_requested: bool,
 }
 
 impl std::fmt::Debug for KvSession<'_> {
@@ -261,16 +290,29 @@ fn lineage_dependencies(request: &SegmentedModelRequest, covered: usize) -> Vec<
 
 /// Count and forget every open session's pin whose entry was evicted or reclaimed under it.
 pub(crate) fn audit_pins(state: &mut ReuseState) {
-    let missing: Vec<u64> = state
-        .pins
-        .iter()
-        .filter(|(_, pin)| !state.catalog.pin_held(pin))
-        .map(|(id, _)| *id)
-        .collect();
-    for id in missing {
-        state.pins.remove(&id);
-        state.stats.pinned_entry_evictions += 1;
+    let mut missing = 0u64;
+    let mut emptied: Vec<u64> = Vec::new();
+    let ids: Vec<u64> = state.pins.keys().copied().collect();
+    for id in ids {
+        let Some(pins) = state.pins.get(&id) else {
+            continue;
+        };
+        let held: Vec<KvPin> = pins
+            .iter()
+            .filter(|pin| state.catalog.pin_held(pin))
+            .cloned()
+            .collect();
+        missing += (pins.len() - held.len()) as u64;
+        if held.is_empty() {
+            emptied.push(id);
+        } else if let Some(slot) = state.pins.get_mut(&id) {
+            *slot = held;
+        }
     }
+    for id in emptied {
+        state.pins.remove(&id);
+    }
+    state.stats.pinned_entry_evictions += missing;
 }
 
 impl<'a> KvSession<'a> {
@@ -281,6 +323,29 @@ impl<'a> KvSession<'a> {
         policy: KvReusePolicy,
         cache_use: CacheUse,
         admission: SessionAdmission,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<Self, ReferenceKvError> {
+        Self::begin_bound(
+            backend,
+            scope,
+            request,
+            policy,
+            cache_use,
+            admission,
+            &StackBinding::base(),
+            liveness,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_bound(
+        backend: &'a ReferenceKvReuseBackend,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        policy: KvReusePolicy,
+        cache_use: CacheUse,
+        admission: SessionAdmission,
+        binding: &StackBinding,
         liveness: &dyn KvLivenessOracle,
     ) -> Result<Self, ReferenceKvError> {
         check_scope(scope)?;
@@ -300,10 +365,43 @@ impl<'a> KvSession<'a> {
         let salt = backend.salt(scope);
         // Fixed once here; prefill and every decode step use this value.
         let regime = backend.admit_regime(total)?;
-        let chain = backend.chain_for(&regime)?;
+        let mut layered = if binding.is_default() {
+            None
+        } else {
+            Some(LayeredState::prepare(backend, binding, &regime)?)
+        };
+        let exact = layered
+            .as_ref()
+            .is_none_or(|layered| !layered.approximate());
+        if !exact && policy == KvReusePolicy::ExactOnly {
+            return Err(BindingError::ApproximateNotAllowed.into());
+        }
+        let catalog_requested = cache_use == CacheUse::Enabled;
+        // An Approximate run never consults or feeds the Exact catalog.
+        let cache_use = if exact { cache_use } else { CacheUse::Disabled };
+        let chain = match &layered {
+            Some(layered) => layered.chain,
+            None => backend.chain_for(&regime)?,
+        };
+        let mut cache = match &layered {
+            Some(layered) => layered.fresh_cache(backend, scope)?,
+            None => backend.new_cache(scope, &chain)?,
+        };
         let ids: Vec<u32> = tokens.iter().map(|token| token.0).collect();
-        let mut cache = backend.new_cache(scope, &chain)?;
-        let dependencies = lineage_dependencies(request, total);
+        let mut dependencies = lineage_dependencies(request, total);
+        if let Some(layered) = &layered {
+            for dependency in layered.session_dependencies() {
+                if catalog_requested && !liveness.is_live(&dependency) {
+                    return Err(BindingError::NotLive {
+                        identity: dependency.identity,
+                    }
+                    .into());
+                }
+                if !dependencies.contains(&dependency) {
+                    dependencies.push(dependency);
+                }
+            }
+        }
         let guarded = cache_use == CacheUse::Enabled
             && dependencies
                 .iter()
@@ -321,43 +419,60 @@ impl<'a> KvSession<'a> {
         let mut hit_tokens = 0usize;
         let mut pin: Option<KvPin> = None;
         if cache_use == CacheUse::Enabled {
-            let lookup = KvLookup {
-                salt: &salt,
-                chain: &chain,
-                request,
-                positions: &KvRequestPositions::Canonical,
-            };
-            if let Some(hit) = state.catalog.lookup(lookup, liveness) {
-                let matched = hit.matched_tokens();
-                if matched >= total {
-                    // The stack needs the logits of the last prompt token, which a cache
-                    // does not hold: refuse the whole-prompt hit and prefill from scratch.
-                    let hit_pin = hit.pin().clone();
-                    state.catalog.release(&hit_pin);
-                } else {
-                    match state
-                        .catalog
-                        .fork(&backend.paged, &mut cache, hit, liveness)
-                    {
-                        Ok(forked) => {
-                            let covered = lineage_dependencies(request, matched);
-                            if covered
-                                .iter()
-                                .all(|dependency| liveness.is_live(dependency))
-                            {
-                                pin = Some(forked);
-                                hit_tokens = matched;
-                            } else {
-                                // The oracle contradicts a hit the catalog just served:
-                                // drop it, never use it.
-                                state.stats.stale_hits += 1;
-                                state.catalog.release(&forked);
+            if let Some(layered) = layered.as_mut() {
+                hit_tokens = assemble(
+                    AssembleInput {
+                        backend,
+                        scope,
+                        salt: &salt,
+                        request,
+                        total,
+                        liveness,
+                    },
+                    &mut state,
+                    &mut cache,
+                    layered,
+                )?;
+            } else {
+                let lookup = KvLookup {
+                    salt: &salt,
+                    chain: &chain,
+                    request,
+                    positions: &KvRequestPositions::Canonical,
+                };
+                if let Some(hit) = state.catalog.lookup(lookup, liveness) {
+                    let matched = hit.matched_tokens();
+                    if matched >= total {
+                        // The stack needs the logits of the last prompt token, which a cache
+                        // does not hold: refuse the whole-prompt hit and prefill from scratch.
+                        let hit_pin = hit.pin().clone();
+                        state.catalog.release(&hit_pin);
+                    } else {
+                        match state
+                            .catalog
+                            .fork(&backend.paged, &mut cache, hit, liveness)
+                        {
+                            Ok(forked) => {
+                                let covered = lineage_dependencies(request, matched);
+                                if covered
+                                    .iter()
+                                    .all(|dependency| liveness.is_live(dependency))
+                                {
+                                    pin = Some(forked);
+                                    hit_tokens = matched;
+                                } else {
+                                    // The oracle contradicts a hit the catalog just served:
+                                    // drop it, never use it.
+                                    state.stats.stale_hits += 1;
+                                    state.catalog.release(&forked);
+                                    cache = backend.new_cache(scope, &chain)?;
+                                }
+                            }
+                            Err(_) => {
+                                // The fork was refused before use; start from an untouched
+                                // cache.
                                 cache = backend.new_cache(scope, &chain)?;
                             }
-                        }
-                        Err(_) => {
-                            // The fork was refused before use; start from an untouched cache.
-                            cache = backend.new_cache(scope, &chain)?;
                         }
                     }
                 }
@@ -368,8 +483,18 @@ impl<'a> KvSession<'a> {
         let id = state.next_session;
         state.open_sessions += 1;
         state.stats.sessions_begun += 1;
-        if let Some(pin) = &pin {
-            state.pins.insert(id, pin.clone());
+        if layered.is_some() {
+            state.stats.bound_sessions += 1;
+        }
+        if !exact {
+            state.stats.approximate_sessions += 1;
+        }
+        let mut pins: Vec<KvPin> = pin.iter().cloned().collect();
+        if let Some(layered) = &layered {
+            pins.extend(layered.all_pins());
+        }
+        if !pins.is_empty() {
+            state.pins.insert(id, pins);
         }
         drop(state);
         Ok(Self {
@@ -396,6 +521,11 @@ impl<'a> KvSession<'a> {
             work: Work::default(),
             phase: KvSessionPhase::Prefilling,
             restarted: false,
+            binding: binding.clone(),
+            record: record_of(binding, backend.stack.config()),
+            layered,
+            exact,
+            catalog_requested,
         })
     }
 
@@ -420,6 +550,23 @@ impl<'a> KvSession<'a> {
     /// Tokens emitted so far.
     pub fn generated(&self) -> &[TokenId] {
         &self.generated
+    }
+
+    /// The binding the session currently runs under (re-resolved by a restart).
+    pub fn binding_record(&self) -> &BindingRecord {
+        &self.record
+    }
+
+    /// Layer-scoped reuse accounting so far (`None` for the default binding); the counts
+    /// that depend on the prompt length are filled in the outcome.
+    pub fn layered_report(&self) -> Option<&LayeredReuseReport> {
+        self.layered.as_ref().map(|layered| &layered.report)
+    }
+
+    /// Diagnostic: how many leading rows of `layer` in cache page `page` are physically the
+    /// same allocation in this session's cache and in `other`'s.
+    pub fn shared_leading_rows(&self, other: &KvSession<'_>, page: usize, layer: usize) -> usize {
+        self.cache.shared_leading_rows(&other.cache, page, layer)
     }
 
     fn require(
@@ -451,17 +598,31 @@ impl<'a> KvSession<'a> {
         let total = self.ids.len();
         let from = self.position;
         let next = total.min((from / KV_CHUNK_TOKENS + 1) * KV_CHUNK_TOKENS);
-        let output = backend.stack.prefill_in_regime(
+        let stack = self
+            .layered
+            .as_ref()
+            .and_then(|layered| layered.stack.as_ref())
+            .unwrap_or(&backend.stack);
+        let output = stack.prefill_bound_in_regime(
             &backend.paged,
             &mut self.cache,
             Qwen2StackInput {
                 tokens: self.ids[from..next].to_vec(),
             },
             &self.regime,
+            &Qwen2Binding {
+                adapter: self.binding.adapter.as_ref(),
+            },
         )?;
         self.work.prefilled += next - from;
         self.last_logits = output.logits.into_iter().next_back().unwrap_or_default();
         self.position = next;
+        if next >= total {
+            self.adopt_layers(liveness)?;
+        }
+        if !self.exact && self.catalog_requested && next.is_multiple_of(KV_CHUNK_TOKENS) {
+            self.backend.lock()?.stats.approximate_inserts_refused += 1;
+        }
         if self.cache_use == CacheUse::Enabled && next.is_multiple_of(KV_CHUNK_TOKENS) {
             // Re-check immediately before the insert: nothing derived from a revoked input
             // may enter the catalog.
@@ -495,13 +656,21 @@ impl<'a> KvSession<'a> {
         let token = argmax(&self.last_logits);
         self.generated.push(TokenId(token));
         if self.generated.len() < backend.max_new() {
-            let output = backend.stack.decode_in_regime(
+            let stack = self
+                .layered
+                .as_ref()
+                .and_then(|layered| layered.stack.as_ref())
+                .unwrap_or(&backend.stack);
+            let output = stack.decode_bound_in_regime(
                 &backend.paged,
                 &mut self.cache,
                 Qwen2StackInput {
                     tokens: vec![token],
                 },
                 &self.regime,
+                &Qwen2Binding {
+                    adapter: self.binding.adapter.as_ref(),
+                },
             )?;
             self.last_logits = output.logits.into_iter().next().unwrap_or_default();
         } else {
@@ -530,7 +699,16 @@ impl<'a> KvSession<'a> {
         let logits_digest: Digest = std::mem::replace(&mut self.hasher, new_hasher())
             .finalize()
             .into();
-        let report = KvReuseReport::new(self.hit_tokens, KvReuseMode::Exact, total, self.policy)?;
+        let report = KvReuseReport::new(
+            self.hit_tokens,
+            if self.exact {
+                KvReuseMode::Exact
+            } else {
+                KvReuseMode::Approximate
+            },
+            total,
+            self.policy,
+        )?;
         let outcome = ReferenceKvOutcome {
             run: ModelRun {
                 events: vec![
@@ -549,6 +727,11 @@ impl<'a> KvSession<'a> {
             insert_refusals: self.work.refusals.len(),
             insert_refusal_reasons: std::mem::take(&mut self.work.refusals),
             restarted_after_cancel: self.restarted,
+            binding: self.record.clone(),
+            layered: self
+                .layered
+                .as_ref()
+                .map(|layered| layered.report.finalized(total)),
         };
         self.phase = KvSessionPhase::Closed;
         self.close_slot(SlotEnd::Completed)?;
@@ -579,10 +762,45 @@ impl<'a> KvSession<'a> {
     /// logits digest, run) to a fresh cold run of the same request and carries
     /// `restarted_after_cancel`. The request id is recorded in
     /// [`KvSessionStats::restarted_requests`].
+    ///
+    /// A bound session first **re-resolves its binding** against the backend's own liveness
+    /// ([`Self::restart_with`] takes another oracle): see
+    /// [`crate::kv_infer_layered`].
     pub fn restart(&mut self) -> Result<ReferenceKvOutcome, ReferenceKvError> {
+        let liveness = self.backend.own_liveness();
+        self.restart_with(&liveness)
+    }
+
+    /// Like [`Self::restart`], re-resolving a bound session's binding against `liveness`: a
+    /// superseded adapter moves to its newest live successor, a revoked one to the base
+    /// model, a revoked tracked expert is masked and a superseded one moves to its live
+    /// successor generation. The run is cold on that binding and its outcome records it
+    /// ([`ReferenceKvOutcome::binding`]).
+    pub fn restart_with(
+        &mut self,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<ReferenceKvOutcome, ReferenceKvError> {
         self.require(KvSessionPhase::Cancelled, "restart")?;
         self.release_pin()?;
-        self.cache = self.backend.new_cache(&self.scope, &self.chain)?;
+        if self.layered.is_some() {
+            let (binding, record) =
+                resolve_binding(&self.binding, self.backend.stack.config(), liveness)?;
+            let layered = LayeredState::prepare(self.backend, &binding, &self.regime)?;
+            self.cache = layered.fresh_cache(self.backend, &self.scope)?;
+            self.chain = layered.chain;
+            let mut dependencies = lineage_dependencies(&self.request, self.ids.len());
+            for dependency in layered.session_dependencies() {
+                if !dependencies.contains(&dependency) {
+                    dependencies.push(dependency);
+                }
+            }
+            self.dependencies = dependencies;
+            self.binding = binding;
+            self.record = record;
+            self.layered = Some(layered);
+        } else {
+            self.cache = self.backend.new_cache(&self.scope, &self.chain)?;
+        }
         self.cache_use = CacheUse::Disabled;
         self.guarded = false;
         self.hit_tokens = 0;
@@ -623,14 +841,21 @@ impl<'a> KvSession<'a> {
                 .all(|dependency| liveness.is_live(dependency))
         {
             Some(KvCancelReason::InputNotLive)
-        } else if let Some(pin) = &self.pin {
-            if self.backend.lock()?.catalog.pin_is_live(pin) {
+        } else {
+            let mut pins: Vec<KvPin> = self.pin.iter().cloned().collect();
+            if let Some(layered) = &self.layered {
+                pins.extend(layered.all_pins());
+            }
+            if pins.is_empty() {
                 None
             } else {
-                Some(KvCancelReason::PrefixTombstoned)
+                let state = self.backend.lock()?;
+                if pins.iter().all(|pin| state.catalog.pin_is_live(pin)) {
+                    None
+                } else {
+                    Some(KvCancelReason::PrefixTombstoned)
+                }
             }
-        } else {
-            None
         };
         let Some(reason) = reason else {
             return Ok(None);
@@ -654,13 +879,49 @@ impl<'a> KvSession<'a> {
     }
 
     fn release_pin(&mut self) -> Result<(), ReferenceKvError> {
-        let Some(pin) = self.pin.take() else {
+        let mut pins: Vec<KvPin> = self.pin.take().into_iter().collect();
+        if let Some(layered) = self.layered.as_mut() {
+            pins.extend(std::mem::take(&mut layered.forked_pins));
+            // Queued adoptions are dropped with their witnesses unused.
+            pins.extend(
+                std::mem::take(&mut layered.pending)
+                    .into_iter()
+                    .map(|pending| pending.into_pin()),
+            );
+        }
+        if pins.is_empty() {
             return Ok(());
-        };
+        }
         let mut state = self.backend.lock()?;
-        state.catalog.release(&pin);
+        for pin in &pins {
+            state.catalog.release(pin);
+        }
         state.pins.remove(&self.id);
         self.backend.drain_retirements(&mut state)
+    }
+
+    /// Adopt the live layers queued by a partial hit into the fully computed cache (checked
+    /// mode) once the whole prompt is prefilled.
+    fn adopt_layers(&mut self, liveness: &dyn KvLivenessOracle) -> Result<(), ReferenceKvError> {
+        let Some(layered) = self.layered.as_mut() else {
+            return Ok(());
+        };
+        if layered.pending.is_empty() {
+            return Ok(());
+        }
+        let backend = self.backend;
+        let mut state = backend.lock()?;
+        let mismatches_before = layered.report.adoption_mismatches;
+        adopt_pending(backend, &mut state, &mut self.cache, layered, liveness);
+        state.stats.adoption_mismatches +=
+            (layered.report.adoption_mismatches - mismatches_before) as u64;
+        let remaining = layered.all_pins();
+        if remaining.is_empty() {
+            state.pins.remove(&self.id);
+        } else {
+            state.pins.insert(self.id, remaining);
+        }
+        backend.drain_retirements(&mut state)
     }
 
     fn close_slot(&mut self, end: SlotEnd) -> Result<(), ReferenceKvError> {
@@ -681,6 +942,27 @@ impl<'a> KvSession<'a> {
     /// error.
     fn offer_boundary(&mut self, liveness: &dyn KvLivenessOracle) -> Result<(), ReferenceKvError> {
         let backend = self.backend;
+        if let Some(layered) = self.layered.as_mut() {
+            let offered = offer_layers(
+                backend,
+                &mut self.cache,
+                layered,
+                &self.request,
+                &self.salt,
+                self.binding.adapter.as_ref(),
+                liveness,
+            )?;
+            match offered.refusal {
+                None => {
+                    if offered.inserted_entries > 0 {
+                        self.work.inserted += 1;
+                        layered.report.inserted_layer_entries += offered.inserted_entries;
+                    }
+                }
+                Some(error) => self.work.refusals.push(error),
+            }
+            return Ok(());
+        }
         let prefix = backend.paged.publish_prefix(&mut self.cache)?;
         let key = prefix.key.clone();
         // Per-page charges: each unique page digest is charged once with its real bytes.

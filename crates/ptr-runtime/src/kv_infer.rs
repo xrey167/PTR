@@ -12,8 +12,9 @@
 //! 3. prefills only the remaining tokens, 16 tokens (one chunk) at a time, publishing and
 //!    inserting every completed chunk boundary of the prompt into the catalog,
 //! 4. decodes greedily for a bounded number of tokens and
-//! 5. returns a [`ModelRun`] whose [`KvReuseReport`] is always [`KvReuseMode::Exact`].
-//!    This backend never produces Approximate output.
+//! 5. returns a [`ModelRun`] whose [`KvReuseReport`] is [`KvReuseMode::Exact`]. The default
+//!    binding never produces Approximate output; only a [`StackBinding`] whose MoE routes
+//!    batch-variantly does, and it then neither looks up nor inserts.
 //!
 //! # Chain id
 //!
@@ -23,7 +24,8 @@
 //! projections, QK-norm, attention and MLP weights, RoPE configuration (per the PreRope /
 //! PostRope rule), the base model identity and generation, the tokenizer and the backend
 //! build identity (also folded into the catalog salt). Two stacks with the same seed but
-//! any different weight get different ids. Not covered: adapters (none exist).
+//! any different weight get different ids. Adapters and MoE experts of a [`StackBinding`]
+//! are covered per layer by [`crate::kv_infer_layered`].
 //!
 //! # RoPE regime
 //!
@@ -65,6 +67,7 @@
 //! points use the fallback; nothing wires a one-shot run to the ledger. This is an
 //! experiment skeleton, not an R005 result.
 
+use crate::kv_infer_layered::{BindingError, BindingRecord, LayeredReuseReport, StackBinding};
 use crate::kv_infer_session::{KvSession, KvSessionFinish, KvSessionStats};
 use crate::{
     CatalogLimits, KvCatalogError, KvCatalogStats, KvChainId, KvDependency, KvLivenessOracle,
@@ -95,7 +98,7 @@ const MANIFEST_DOMAIN: &[u8] = b"ptr.kv.reference-manifest.v1\0";
 /// R005 `weight_seed`.
 pub const REFERENCE_KV_WEIGHT_SEED: u64 = 20240607;
 const MODEL_NAME: &str = "r005-tiny";
-const ADAPTER_NAME: &str = "base";
+pub(crate) const BASE_ADAPTER_NAME: &str = "base";
 const DEVICE_NAME: &str = "cpu";
 const NUMERICS: &str = "cpu-f32-sequential-reference";
 const SCHEMA_NAME: &str = "ptr-reference-kv-v1";
@@ -186,6 +189,8 @@ pub enum ReferenceKvError {
         phase: crate::kv_infer_session::KvSessionPhase,
     },
     Snapshot(KvSnapshotError),
+    /// A [`StackBinding`] was refused (see [`BindingError`]).
+    Binding(BindingError),
 }
 
 impl fmt::Display for ReferenceKvError {
@@ -218,6 +223,7 @@ impl fmt::Display for ReferenceKvError {
                 write!(f, "{operation} is not allowed in session phase {phase:?}")
             }
             Self::Snapshot(error) => write!(f, "catalog snapshot: {error}"),
+            Self::Binding(error) => write!(f, "stack binding: {error}"),
         }
     }
 }
@@ -280,6 +286,11 @@ pub struct ReferenceKvOutcome {
     pub insert_refusal_reasons: Vec<KvCatalogError>,
     /// The fork was cancelled by an invalidation and the run restarted from a fresh prefill.
     pub restarted_after_cancel: bool,
+    /// The binding the run executed under: the request's own, or for a restart the
+    /// re-resolved one (see [`BindingRecord::re_resolved`]).
+    pub binding: BindingRecord,
+    /// Layer-scoped reuse accounting of a bound run; `None` for the default binding.
+    pub layered: Option<LayeredReuseReport>,
 }
 
 /// Whether a run may look up and insert.
@@ -334,7 +345,7 @@ pub(crate) struct ReuseState {
     pub(crate) faults: ReferenceKvFaults,
     pub(crate) stats: KvSessionStats,
     /// Pins of the open sessions, by session id.
-    pub(crate) pins: BTreeMap<u64, KvPin>,
+    pub(crate) pins: BTreeMap<u64, Vec<KvPin>>,
     pub(crate) open_sessions: usize,
     pub(crate) next_session: u64,
 }
@@ -454,7 +465,7 @@ impl ReferenceKvReuseBackend {
         let paged = InMemoryPagedKvBackend::new(KvPageSize::new(KV_CHUNK_TOKENS as u16)?);
         let schema = stack.kv_schema(
             ModelVersion::from(MODEL_NAME),
-            AdapterVersion::from(ADAPTER_NAME),
+            AdapterVersion::from(BASE_ADAPTER_NAME),
             DeviceId::from(DEVICE_NAME),
         )?;
         let tokenizer = ByteTokenizer::new();
@@ -495,6 +506,12 @@ impl ReferenceKvReuseBackend {
 
     pub fn limits(&self) -> ReferenceKvLimits {
         self.limits
+    }
+
+    /// The tiny reference stack's configuration, for building adapters and MoE layers that
+    /// fit it.
+    pub fn stack_config(&self) -> &Qwen2StackConfig {
+        self.stack.config()
     }
 
     pub fn tokenizer(&self) -> &ByteTokenizer {
@@ -599,7 +616,41 @@ impl ReferenceKvReuseBackend {
         hint: Option<&KvReuseHint>,
     ) -> Result<ReferenceKvOutcome, ReferenceKvError> {
         let policy = hint.map_or(KvReusePolicy::ExactOnly, |hint| hint.policy);
-        self.generate(scope, request, policy, CacheUse::Enabled)
+        self.generate(
+            scope,
+            request,
+            policy,
+            CacheUse::Enabled,
+            &StackBinding::base(),
+        )
+    }
+
+    /// Like [`Self::infer_scoped`] on a [`StackBinding`] (one shot: a revocation that
+    /// cancels the run restarts it cold on the re-resolved binding).
+    pub fn infer_scoped_bound(
+        &self,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        hint: Option<&KvReuseHint>,
+        binding: &StackBinding,
+    ) -> Result<ReferenceKvOutcome, ReferenceKvError> {
+        let policy = hint.map_or(KvReusePolicy::ExactOnly, |hint| hint.policy);
+        self.generate(scope, request, policy, CacheUse::Enabled, binding)
+    }
+
+    /// Like [`Self::infer_cold`] on a [`StackBinding`]: no lookup and no insert, and the
+    /// binding is not checked for liveness (a cold run depends on no cached state). A
+    /// batch-variant binding is reported Approximate and needs
+    /// [`KvReusePolicy::AllowApproximate`] in `hint`.
+    pub fn infer_cold_bound(
+        &self,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        hint: Option<&KvReuseHint>,
+        binding: &StackBinding,
+    ) -> Result<ReferenceKvOutcome, ReferenceKvError> {
+        let policy = hint.map_or(KvReusePolicy::ExactOnly, |hint| hint.policy);
+        self.generate(scope, request, policy, CacheUse::Disabled, binding)
     }
 
     /// Run `request` with no lookup and no insert: the cold path.
@@ -608,7 +659,13 @@ impl ReferenceKvReuseBackend {
         scope: &ReferenceKvScope,
         request: &SegmentedModelRequest,
     ) -> Result<ReferenceKvOutcome, ReferenceKvError> {
-        self.generate(scope, request, KvReusePolicy::ExactOnly, CacheUse::Disabled)
+        self.generate(
+            scope,
+            request,
+            KvReusePolicy::ExactOnly,
+            CacheUse::Disabled,
+            &StackBinding::base(),
+        )
     }
 
     /// The backend's own liveness oracle (the fallback when no ledger-anchored one is
@@ -646,6 +703,32 @@ impl ReferenceKvReuseBackend {
             policy,
             CacheUse::Enabled,
             crate::kv_infer_session::SessionAdmission::Counted,
+            liveness,
+        )
+    }
+
+    /// Open a stepwise session on a [`StackBinding`]; see the [`crate::kv_infer_layered`]
+    /// module documentation. The binding's adapter and tracked experts are asked of
+    /// `liveness` at begin (a dead one is refused with [`BindingError::NotLive`]) and
+    /// before every emitted token and catalog insert. The default binding behaves exactly as
+    /// [`Self::begin_session`].
+    pub fn begin_session_bound<'a>(
+        &'a self,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        hint: Option<&KvReuseHint>,
+        binding: &StackBinding,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<KvSession<'a>, ReferenceKvError> {
+        let policy = hint.map_or(KvReusePolicy::ExactOnly, |hint| hint.policy);
+        KvSession::begin_bound(
+            self,
+            scope,
+            request,
+            policy,
+            CacheUse::Enabled,
+            crate::kv_infer_session::SessionAdmission::Counted,
+            binding,
             liveness,
         )
     }
@@ -798,10 +881,38 @@ impl ReferenceKvReuseBackend {
         scope: &ReferenceKvScope,
         chain: &KvChainId,
     ) -> Result<ReferenceCache, ReferenceKvError> {
+        self.new_cache_with(scope, chain, None)
+    }
+
+    /// A cache whose schema and page binding carry `adapter` (the base adapter when `None`).
+    pub(crate) fn new_cache_with(
+        &self,
+        scope: &ReferenceKvScope,
+        chain: &KvChainId,
+        adapter: Option<&AdapterVersion>,
+    ) -> Result<ReferenceCache, ReferenceKvError> {
         let capacity = self.limits.max_prompt_tokens + self.limits.max_new_tokens;
-        Ok(self
-            .paged
-            .allocate_bound(self.schema.clone(), capacity, self.binding(scope, chain)?)?)
+        let mut schema = self.schema.clone();
+        let mut binding = self.binding(scope, chain)?;
+        if let Some(adapter) = adapter {
+            schema.adapter = adapter.clone();
+            binding.adapter = adapter.clone();
+        }
+        Ok(self.paged.allocate_bound(schema, capacity, binding)?)
+    }
+
+    /// What identifies the producer of this backend's chains.
+    pub(crate) fn chain_identity(&self) -> KvChainIdentity {
+        KvChainIdentity {
+            base_model: MODEL_NAME.to_owned(),
+            generation: 1,
+            build: self.build.clone(),
+            tokenizer: format!(
+                "{}@{}",
+                self.tokenizer.identity().name(),
+                self.tokenizer.identity().version()
+            ),
+        }
     }
 
     fn generate(
@@ -810,19 +921,21 @@ impl ReferenceKvReuseBackend {
         request: &SegmentedModelRequest,
         policy: KvReusePolicy,
         cache_use: CacheUse,
+        binding: &StackBinding,
     ) -> Result<ReferenceKvOutcome, ReferenceKvError> {
         let _gate = self
             .oneshot
             .lock()
             .map_err(|_| ReferenceKvError::Poisoned)?;
         let liveness = self.own_liveness();
-        let mut session = KvSession::begin(
+        let mut session = KvSession::begin_bound(
             self,
             scope,
             request,
             policy,
             cache_use,
             crate::kv_infer_session::SessionAdmission::OneShot,
+            binding,
             &liveness,
         )?;
         match session.run_to_end(&liveness)? {
