@@ -672,9 +672,17 @@ fn reinserting_the_same_layers_is_idempotent_and_layered_entries_do_not_alias_wh
     assert!(hit.is_none());
 }
 
+fn reseal_v3(body: &[u8]) -> Vec<u8> {
+    reseal_with(b"ptr.kv.catalog-snapshot.v3\0", body)
+}
+
 fn reseal_v2(body: &[u8]) -> Vec<u8> {
+    reseal_with(b"ptr.kv.catalog-snapshot.v2\0", body)
+}
+
+fn reseal_with(domain: &[u8], body: &[u8]) -> Vec<u8> {
     let mut hasher = Sha256::new();
-    hasher.update(b"ptr.kv.catalog-snapshot.v2\0");
+    hasher.update(domain);
     hasher.update(body);
     let mut out = body.to_vec();
     out.extend_from_slice(&hasher.finalize());
@@ -697,12 +705,12 @@ fn restore(snapshot: &[u8]) -> Result<ptr_runtime::KvRestoreReport, KvSnapshotEr
 }
 
 #[test]
-fn snapshot_v2_round_trips_with_the_layer_index() {
+fn snapshot_v3_round_trips_with_the_layer_index() {
     let req = two_chunks('b');
     let mut source = harness(CatalogLimits::default());
     source.insert_all(&req);
     let snapshot = source.catalog.export_entries().unwrap();
-    assert!(snapshot.starts_with(b"PTRKVL02"));
+    assert!(snapshot.starts_with(b"PTRKVL03"));
     assert_eq!(
         snapshot,
         source.catalog.export_entries().unwrap(),
@@ -749,7 +757,7 @@ fn snapshot_v2_round_trips_with_the_layer_index() {
         )
         .unwrap();
     let snapshot = mixed.catalog.export_entries().unwrap();
-    assert!(snapshot.starts_with(b"PTRKVL02"));
+    assert!(snapshot.starts_with(b"PTRKVL03"));
     let mut again = harness(CatalogLimits::default());
     again.catalog.restore_entries(&snapshot).unwrap();
     assert_eq!(again.catalog.export_entries().unwrap(), snapshot);
@@ -784,11 +792,11 @@ fn a_whole_stack_catalog_still_exports_and_restores_v1() {
     assert_eq!(restore(&snapshot).unwrap().entries, 1);
     // A v1 body with the v2 digest domain (or the reverse) is a checksum failure.
     let body = &snapshot[..snapshot.len() - 32];
-    assert_eq!(restore(&reseal_v2(body)), Err(KvSnapshotError::BadChecksum));
+    assert_eq!(restore(&reseal_v3(body)), Err(KvSnapshotError::BadChecksum));
 }
 
 #[test]
-fn tampered_v2_snapshots_are_rejected_and_admit_nothing() {
+fn tampered_v3_snapshots_are_rejected_and_admit_nothing() {
     let req = two_chunks('b');
     let mut source = harness(CatalogLimits::default());
     source.insert_all(&req);
@@ -819,32 +827,32 @@ fn tampered_v2_snapshots_are_rejected_and_admit_nothing() {
     let mut unknown = body.clone();
     unknown[tag_at] = 7;
     assert_eq!(
-        restore(&reseal_v2(&unknown)),
+        restore(&reseal_v3(&unknown)),
         Err(KvSnapshotError::NonCanonical("unknown layer tag"))
     );
     // Declaring the entry whole-stack leaves two layer bytes where the page count starts:
     // the record no longer parses to a canonical entry.
     let mut shifted = body.clone();
     shifted[tag_at] = 0;
-    assert!(restore(&reseal_v2(&shifted)).is_err());
+    assert!(restore(&reseal_v3(&shifted)).is_err());
     // Trailing bytes, a lying count and a truncated body.
     let mut trailing = body.clone();
     trailing.push(0);
     assert_eq!(
-        restore(&reseal_v2(&trailing)),
+        restore(&reseal_v3(&trailing)),
         Err(KvSnapshotError::NonCanonical("trailing bytes"))
     );
     let mut lying = body.clone();
     lying[8..12].copy_from_slice(&(LAYERS as u32 + 1).to_le_bytes());
-    assert_eq!(restore(&reseal_v2(&lying)), Err(KvSnapshotError::Truncated));
-    // A v2 body under the v1 magic is rejected, and an unknown magic is BadMagic.
+    assert_eq!(restore(&reseal_v3(&lying)), Err(KvSnapshotError::Truncated));
+    // A v3 body under the v1 magic is rejected, and an unknown magic is BadMagic.
     let mut as_v1 = body.clone();
     as_v1[..8].copy_from_slice(b"PTRKVC01");
     assert!(restore(&reseal_v1(&as_v1)).is_err());
     let mut unknown_magic = body;
-    unknown_magic[..8].copy_from_slice(b"PTRKVL03");
+    unknown_magic[..8].copy_from_slice(b"PTRKVL04");
     assert_eq!(
-        restore(&reseal_v2(&unknown_magic)),
+        restore(&reseal_v3(&unknown_magic)),
         Err(KvSnapshotError::BadMagic)
     );
     // A failed restore leaves the catalog empty and usable.
@@ -868,4 +876,96 @@ fn a_restored_layered_entry_whose_dependency_died_misses_only_on_that_layer() {
     };
     assert_eq!(target.depths(&req, &fenced), vec![FULL, FULL, None, None]);
     assert_eq!(target.catalog.stats().entries, 2);
+}
+
+/// The `(offset of the layer tag within an entry)` for the two-chunk requests of these tests:
+/// the path (4 + 2 * 96 bytes), then chain and lineage.
+const ENTRY_TAG_AT: usize = 4 + 2 * 96 + 64;
+
+fn splice(body: &[u8], at: usize, remove: usize, insert: &[u8]) -> Vec<u8> {
+    let mut out = body[..at].to_vec();
+    out.extend_from_slice(insert);
+    out.extend_from_slice(&body[at + remove..]);
+    out
+}
+
+#[test]
+fn v3_scope_bytes_are_strictly_canonical() {
+    let req = two_chunks('b');
+    let mut source = harness(CatalogLimits::default());
+    source.insert_all(&req);
+    let good = source.catalog.export_entries().unwrap();
+    let body = good[..good.len() - 32].to_vec();
+    let tag_at = 8 + 4 + ENTRY_TAG_AT;
+    assert_eq!(body[tag_at], 1, "the first entry is layered");
+    assert_eq!(body[tag_at + 3], 0, "a Full key encodes the scope tag 0");
+
+    let mut unknown = body.clone();
+    unknown[tag_at + 3] = 9;
+    assert_eq!(
+        restore(&reseal_v3(&unknown)),
+        Err(KvSnapshotError::NonCanonical("unknown layer scope tag"))
+    );
+    // A span with start == end (and one with start > end) is not a scope.
+    for (start, end) in [(2u16, 2u16), (3, 1)] {
+        let mut insert = vec![1u8];
+        insert.extend_from_slice(&start.to_le_bytes());
+        insert.extend_from_slice(&end.to_le_bytes());
+        let empty = splice(&body, tag_at + 3, 1, &insert);
+        assert_eq!(
+            restore(&reseal_v3(&empty)),
+            Err(KvSnapshotError::NonCanonical("empty layer span"))
+        );
+    }
+    // A whole-stack entry cannot carry a layer span.
+    let mut insert = vec![0u8, 1];
+    insert.extend_from_slice(&0u16.to_le_bytes());
+    insert.extend_from_slice(&1u16.to_le_bytes());
+    let whole_with_span = splice(&body, tag_at, 4, &insert);
+    assert_eq!(
+        restore(&reseal_v3(&whole_with_span)),
+        Err(KvSnapshotError::NonCanonical(
+            "whole-stack entry has a layer span"
+        ))
+    );
+    // A truncated scope is a truncated body.
+    let cut = splice(&body, tag_at + 3, 1, &[1, 0]);
+    assert!(restore(&reseal_v3(&cut)).is_err());
+}
+
+#[test]
+fn a_v2_snapshot_still_decodes_but_its_layered_entries_are_skipped() {
+    let req = two_chunks('b');
+    let mut source = harness(CatalogLimits::default());
+    source.insert_all(&req);
+    let good = source.catalog.export_entries().unwrap();
+    let body = good[..good.len() - 32].to_vec();
+    // Down-convert: drop the scope byte of every entry (all share the same path prefix).
+    let header = body[12..12 + 4 + 2 * 96].to_vec();
+    let mut starts = Vec::new();
+    let mut at = 12;
+    while at + header.len() <= body.len() {
+        if body[at..at + header.len()] == header[..] {
+            starts.push(at);
+            at += header.len();
+        } else {
+            at += 1;
+        }
+    }
+    assert_eq!(starts.len(), LAYERS as usize);
+    let mut v2 = body.clone();
+    for start in starts.iter().rev() {
+        v2 = splice(&v2, start + ENTRY_TAG_AT + 3, 1, &[]);
+    }
+    v2[..8].copy_from_slice(b"PTRKVL02");
+    let mut target = harness(CatalogLimits::default());
+    let report = target.catalog.restore_entries(&reseal_v2(&v2)).unwrap();
+    assert_eq!(report.entries, 0);
+    assert_eq!(report.skipped_unscoped_layered, LAYERS as usize);
+    assert_eq!(target.catalog.stats().entries, 0);
+    assert_eq!(target.catalog.stats().restored_entries, 0);
+    // A v3 restore reports no skips.
+    let report = restore(&good).unwrap();
+    assert_eq!(report.skipped_unscoped_layered, 0);
+    assert_eq!(report.entries, LAYERS as usize);
 }

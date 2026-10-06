@@ -608,6 +608,11 @@ pub struct KvCatalogStats {
     pub restored_entries: u64,
     /// Entries dropped because the backend no longer holds their prefix at fork time.
     pub backend_missing_rejections: u64,
+    /// Forks of per-layer entries the backend refused with `PrefixMismatch`: the entry's key
+    /// scope (layer range, effective adapter or schema) disagrees with what its layer needs.
+    /// That is a bug or a corrupt entry, never a miss; the entry is tombstoned and this stays
+    /// zero on every correct path.
+    pub layered_scope_mismatches: u64,
     pub noncanonical_misses: u64,
     pub use_time_rejections: u64,
     pub cancelled_pins: u64,
@@ -860,6 +865,15 @@ impl KvPrefixCatalog {
                 Err(KvForkError::Backend(error))
             }
         }
+    }
+
+    /// A backend refused the fork or adoption of a per-layer entry as `PrefixMismatch`. Counted
+    /// separately from a clean miss so a scope bug cannot hide as one; the entry is tombstoned
+    /// (it can never be served) and the pin released.
+    pub fn reject_scope_mismatch_pin(&mut self, pin: &KvPin) {
+        self.stats.layered_scope_mismatches += 1;
+        self.tombstone_entry(&pin.node, &pin.entry);
+        self.release(pin);
     }
 
     /// Drop the entry behind `pin` because the backend no longer holds its pages (a layered
@@ -1692,6 +1706,15 @@ const SNAPSHOT_DOMAIN: &[u8] = b"ptr.kv.catalog-snapshot.v1\0";
 /// A v1 snapshot always decodes (every entry is a whole-stack entry).
 const SNAPSHOT_MAGIC_V2: &[u8; 8] = b"PTRKVL02";
 const SNAPSHOT_DOMAIN_V2: &[u8] = b"ptr.kv.catalog-snapshot.v2\0";
+/// Snapshot v3: v2 plus the key's layer scope after each entry's layer tag (`0` = `Full`,
+/// `1` + `start` + `end` as little-endian `u16` = a non-empty span). The effective adapter of
+/// the key was already part of every version's key encoding. This is what the writer emits
+/// whenever the catalog holds a per-layer entry. A v2 snapshot still decodes, but its layered
+/// entries have an unknown layer scope and are **skipped** on restore (see
+/// [`KvRestoreReport::skipped_unscoped_layered`]): serving one under a guessed `Full` scope
+/// would be refused by the backend as a scope mismatch, never as a hit.
+const SNAPSHOT_MAGIC_V3: &[u8; 8] = b"PTRKVL03";
+const SNAPSHOT_DOMAIN_V3: &[u8] = b"ptr.kv.catalog-snapshot.v3\0";
 /// Largest snapshot exported or accepted.
 pub const KV_SNAPSHOT_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SNAPSHOT_MAX_DEPENDENCIES: usize = 1024;
@@ -1740,7 +1763,11 @@ impl std::error::Error for KvSnapshotError {}
 /// What a restore admitted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KvRestoreReport {
+    /// Entries admitted into the catalog.
     pub entries: usize,
+    /// Per-layer entries of a v2 snapshot that were not admitted because that format does not
+    /// record the key's layer scope. Zero for a v1 or v3 snapshot.
+    pub skipped_unscoped_layered: usize,
 }
 
 struct SnapshotEntry {
@@ -1750,6 +1777,8 @@ struct SnapshotEntry {
     dependencies: Vec<KvDependency>,
     charge: PageCharge,
     layer: Option<u16>,
+    /// The entry came from a v2 snapshot and its key's layer scope is unknown.
+    scope_unknown: bool,
 }
 
 fn put_u32(out: &mut Vec<u8>, value: usize) {
@@ -1786,7 +1815,7 @@ fn encode_snapshot(entries: &[SnapshotEntry]) -> Result<Vec<u8>, KvSnapshotError
     let layered = entries.iter().any(|entry| entry.layer.is_some());
     let mut out = Vec::new();
     out.extend_from_slice(if layered {
-        SNAPSHOT_MAGIC_V2
+        SNAPSHOT_MAGIC_V3
     } else {
         SNAPSHOT_MAGIC
     });
@@ -1806,6 +1835,14 @@ fn encode_snapshot(entries: &[SnapshotEntry]) -> Result<Vec<u8>, KvSnapshotError
                 Some(layer) => {
                     out.push(1);
                     out.extend_from_slice(&layer.to_le_bytes());
+                }
+            }
+            match entry.prefix.key.layers {
+                ptr_pods::KvLayerRange::Full => out.push(0),
+                ptr_pods::KvLayerRange::Span { start, end } => {
+                    out.push(1);
+                    out.extend_from_slice(&start.to_le_bytes());
+                    out.extend_from_slice(&end.to_le_bytes());
                 }
             }
         }
@@ -1852,7 +1889,7 @@ fn encode_snapshot(entries: &[SnapshotEntry]) -> Result<Vec<u8>, KvSnapshotError
     }
     let mut hasher = Sha256::new();
     hasher.update(if layered {
-        SNAPSHOT_DOMAIN_V2
+        SNAPSHOT_DOMAIN_V3
     } else {
         SNAPSHOT_DOMAIN
     });
@@ -1923,19 +1960,21 @@ fn decode_snapshot(
             KvSnapshotError::BadMagic
         });
     }
-    let layered = if bytes.starts_with(SNAPSHOT_MAGIC) {
-        false
+    let (layered, scoped) = if bytes.starts_with(SNAPSHOT_MAGIC) {
+        (false, false)
     } else if bytes.starts_with(SNAPSHOT_MAGIC_V2) {
-        true
+        (true, false)
+    } else if bytes.starts_with(SNAPSHOT_MAGIC_V3) {
+        (true, true)
     } else {
         return Err(KvSnapshotError::BadMagic);
     };
     let (body, trailer) = bytes.split_at(bytes.len() - 32);
     let mut hasher = Sha256::new();
-    hasher.update(if layered {
-        SNAPSHOT_DOMAIN_V2
-    } else {
-        SNAPSHOT_DOMAIN
+    hasher.update(match (layered, scoped) {
+        (false, _) => SNAPSHOT_DOMAIN,
+        (true, false) => SNAPSHOT_DOMAIN_V2,
+        (true, true) => SNAPSHOT_DOMAIN_V3,
     });
     hasher.update(body);
     let expected: [u8; 32] = hasher.finalize().into();
@@ -1989,6 +2028,27 @@ fn decode_snapshot(
         } else {
             None
         };
+        let layers = if scoped {
+            match reader.u8()? {
+                0 => ptr_pods::KvLayerRange::Full,
+                1 => {
+                    let start = u16::from_le_bytes(reader.take(2)?.try_into().expect("two bytes"));
+                    let end = u16::from_le_bytes(reader.take(2)?.try_into().expect("two bytes"));
+                    if start >= end {
+                        return Err(KvSnapshotError::NonCanonical("empty layer span"));
+                    }
+                    ptr_pods::KvLayerRange::Span { start, end }
+                }
+                _ => return Err(KvSnapshotError::NonCanonical("unknown layer scope tag")),
+            }
+        } else {
+            ptr_pods::KvLayerRange::Full
+        };
+        if layer.is_none() && layers != ptr_pods::KvLayerRange::Full {
+            return Err(KvSnapshotError::NonCanonical(
+                "whole-stack entry has a layer span",
+            ));
+        }
         let key = KvPrefixKey {
             principal: PrincipalId::from(reader.text()?.as_str()),
             execution_manifest: reader.digest()?,
@@ -1997,7 +2057,7 @@ fn decode_snapshot(
             generation: Generation(reader.u64()?),
             schema_digest: reader.digest()?,
             prefix_digest: reader.digest()?,
-            layers: ptr_pods::KvLayerRange::Full,
+            layers,
         };
         let sequence_length = reader.u64()?;
         if sequence_length != (depth * KV_CHUNK_TOKENS) as u64 {
@@ -2078,6 +2138,7 @@ fn decode_snapshot(
             dependencies,
             charge,
             layer,
+            scope_unknown: layer.is_some() && !scoped,
         };
         if entries.last().is_some_and(|last| {
             (last.path.last(), last.entry_key) >= (entry.path.last(), entry.entry_key)
@@ -2123,6 +2184,7 @@ impl KvPrefixCatalog {
                     dependencies,
                     charge: entry.charge.clone(),
                     layer: entry.layer,
+                    scope_unknown: false,
                 });
             }
         }
@@ -2142,8 +2204,14 @@ impl KvPrefixCatalog {
             return Err(KvSnapshotError::NotEmpty);
         }
         let entries = decode_snapshot(snapshot, &self.limits)?;
-        let count = entries.len();
+        let mut count = 0usize;
+        let mut skipped = 0usize;
         for entry in entries {
+            if entry.scope_unknown {
+                skipped += 1;
+                continue;
+            }
+            count += 1;
             let admitted = self.admit(
                 Admission {
                     path: entry.path,
@@ -2167,7 +2235,10 @@ impl KvPrefixCatalog {
             }
         }
         self.stats.restored_entries += count as u64;
-        Ok(KvRestoreReport { entries: count })
+        Ok(KvRestoreReport {
+            entries: count,
+            skipped_unscoped_layered: skipped,
+        })
     }
 }
 
@@ -2556,65 +2627,75 @@ impl PtrRuntime {
         let Some(catalog) = self.kv_catalog.as_mut() else {
             return;
         };
-        let retire = match event {
-            LedgerEvent::SemanticDeltaCommitted { .. } => match semantic {
-                Some(delta) => catalog.invalidate_identities(delta.affected()),
-                None => return,
-            },
-            LedgerEvent::Revoked {
-                subject,
-                generation,
-            } => {
-                // The exact pair for every kind, and every generation of a semantic key
-                // of that name (the oracle treats a revocation as a floor for it).
-                let mut retire =
-                    catalog.invalidate_inputs(&BTreeSet::from([(subject.clone(), *generation)]));
-                retire.extend(catalog.invalidate_kind_identities(
-                    KvDependencyKind::Segment(SegmentKind::Semantic),
-                    &BTreeSet::from([subject.clone()]),
-                ));
-                retire
-            }
-            LedgerEvent::ProcedureRevoked { id, generation } => catalog
-                .invalidate_inputs(&BTreeSet::from([(format!("procedure:{id}"), *generation)])),
-            LedgerEvent::CapsuleCommitted {
-                capsule,
-                generation,
-                ..
-            } => {
-                catalog.invalidate_superseded(&BTreeMap::from([(capsule.to_string(), *generation)]))
-            }
-            LedgerEvent::CapsuleSuperseded { capsule, new, .. } => {
-                catalog.invalidate_superseded(&BTreeMap::from([(capsule.to_string(), *new)]))
-            }
-            LedgerEvent::HardConstraintCommitted { key, generation } => catalog
-                .invalidate_superseded(&BTreeMap::from([(
-                    format!("constraint:{key}"),
-                    *generation,
-                )])),
-            LedgerEvent::ProcedurePromoted { id, generation } => catalog
-                .invalidate_superseded(&BTreeMap::from([(format!("procedure:{id}"), *generation)])),
-            // Committed expert structure: every operand identity is invalidated for every
-            // generation. Today `commit` refuses this record before it is applied, so the arm
-            // is the future admission path's hook; an undecodable record flushes every expert
-            // dependency rather than guessing its operands.
-            LedgerEvent::ExpertStructuralCommitted { record, .. } => {
-                match expert_operand_identities(record) {
-                    Some(identities) => {
-                        catalog.invalidate_identities(&identities.into_iter().collect())
-                    }
-                    None => catalog.invalidate_all_experts(),
-                }
-            }
-            // A committed fence or readmission: every dependency recorded below the new epoch,
-            // or with none, is tombstoned and retired now rather than at its next use.
-            LedgerEvent::ExpertFenceCommitted { .. } => {
-                catalog.invalidate_expert_fences(&crate::expert::expert_fence_epochs(event))
-            }
-            _ => return,
-        };
-        retire_keys(catalog, retire);
+        if let Some(retire) = invalidate_catalog_for_event(catalog, event, semantic) {
+            retire_keys(catalog, retire);
+        }
     }
+}
+
+/// The one mapping from a committed event to catalog invalidation, shared by the runtime hook
+/// and [`ReferenceKvReuseBackend::apply_committed_event`](crate::ReferenceKvReuseBackend).
+/// Returns the backend prefixes to retire, or `None` for an event that invalidates nothing
+/// (or a semantic delta event without its delta).
+pub(crate) fn invalidate_catalog_for_event(
+    catalog: &mut KvPrefixCatalog,
+    event: &LedgerEvent,
+    semantic: Option<&PreparedDelta>,
+) -> Option<Vec<KvPrefixKey>> {
+    let retire = match event {
+        LedgerEvent::SemanticDeltaCommitted { .. } => {
+            catalog.invalidate_identities(semantic?.affected())
+        }
+        LedgerEvent::Revoked {
+            subject,
+            generation,
+        } => {
+            // The exact pair for every kind, and every generation of a semantic key
+            // of that name (the oracle treats a revocation as a floor for it).
+            let mut retire =
+                catalog.invalidate_inputs(&BTreeSet::from([(subject.clone(), *generation)]));
+            retire.extend(catalog.invalidate_kind_identities(
+                KvDependencyKind::Segment(SegmentKind::Semantic),
+                &BTreeSet::from([subject.clone()]),
+            ));
+            retire
+        }
+        LedgerEvent::ProcedureRevoked { id, generation } => {
+            catalog.invalidate_inputs(&BTreeSet::from([(format!("procedure:{id}"), *generation)]))
+        }
+        LedgerEvent::CapsuleCommitted {
+            capsule,
+            generation,
+            ..
+        } => catalog.invalidate_superseded(&BTreeMap::from([(capsule.to_string(), *generation)])),
+        LedgerEvent::CapsuleSuperseded { capsule, new, .. } => {
+            catalog.invalidate_superseded(&BTreeMap::from([(capsule.to_string(), *new)]))
+        }
+        LedgerEvent::HardConstraintCommitted { key, generation } => catalog.invalidate_superseded(
+            &BTreeMap::from([(format!("constraint:{key}"), *generation)]),
+        ),
+        LedgerEvent::ProcedurePromoted { id, generation } => catalog
+            .invalidate_superseded(&BTreeMap::from([(format!("procedure:{id}"), *generation)])),
+        // Committed expert structure: every operand identity is invalidated for every
+        // generation. Today `commit` refuses this record before it is applied, so the arm
+        // is the future admission path's hook; an undecodable record flushes every expert
+        // dependency rather than guessing its operands.
+        LedgerEvent::ExpertStructuralCommitted { record, .. } => {
+            match expert_operand_identities(record) {
+                Some(identities) => {
+                    catalog.invalidate_identities(&identities.into_iter().collect())
+                }
+                None => catalog.invalidate_all_experts(),
+            }
+        }
+        // A committed fence or readmission: every dependency recorded below the new epoch,
+        // or with none, is tombstoned and retired now rather than at its next use.
+        LedgerEvent::ExpertFenceCommitted { .. } => {
+            catalog.invalidate_expert_fences(&crate::expert::expert_fence_epochs(event))
+        }
+        _ => return None,
+    };
+    Some(retire)
 }
 
 /// Retire every queued prefix on the catalog's registered backend.

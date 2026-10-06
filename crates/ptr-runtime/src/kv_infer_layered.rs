@@ -197,6 +197,11 @@ pub struct ExpertSuccessor {
     pub layer: usize,
     pub index: usize,
     pub generation: u64,
+    /// The successor's own fence epoch (the expert's transition epoch at the commit that
+    /// admitted this generation, `0` for an expert that was never fenced). It is NOT inherited
+    /// from the superseded binding: a binding recorded at a non-zero epoch is judged by the
+    /// registry state version, so a successor carrying the old epoch could never be live.
+    pub fence_epoch: u64,
 }
 
 /// Candidates a restart re-resolves a revoked or superseded binding to. Empty means a revoked
@@ -547,6 +552,7 @@ pub(crate) fn resolve_binding(
 
     if let Some(bound) = &binding.moe {
         let mut moe = bound.moe.clone();
+        let mut tracked_experts = bound.experts.clone();
         for tracked in &bound.experts {
             let Some(current) = expert_dependency(bound, tracked) else {
                 continue; // already masked by the binding
@@ -554,7 +560,7 @@ pub(crate) fn resolve_binding(
             if liveness.is_live(&current) {
                 continue;
             }
-            let mut successors: Vec<u64> = binding
+            let mut successors: Vec<(u64, u64)> = binding
                 .successors
                 .experts
                 .iter()
@@ -563,22 +569,34 @@ pub(crate) fn resolve_binding(
                         && successor.index == tracked.index
                         && successor.generation > current.generation.0
                 })
-                .map(|successor| successor.generation)
+                .map(|successor| (successor.generation, successor.fence_epoch))
                 .collect();
             successors.sort_unstable_by(|a, b| b.cmp(a));
             let mut moved = false;
-            for generation in successors {
+            for (generation, fence_epoch) in successors {
                 let candidate = moe
                     .clone()
                     .with_expert_generation(config, tracked.layer, tracked.index, generation)
                     .map_err(BindingError::Moe)?;
+                let moved_tracked = BoundExpert {
+                    fence_epoch,
+                    ..tracked.clone()
+                };
                 let candidate_binding = MoeBinding {
                     moe: candidate.clone(),
-                    experts: bound.experts.clone(),
+                    experts: Vec::new(),
                 };
-                let live = expert_dependency(&candidate_binding, tracked)
+                let live = expert_dependency(&candidate_binding, &moved_tracked)
                     .is_some_and(|dependency| liveness.is_live(&dependency));
                 if live {
+                    // The resolved binding tracks the successor at its own epoch, so the
+                    // dependencies of the entries it publishes name that epoch.
+                    if let Some(entry) = tracked_experts
+                        .iter_mut()
+                        .find(|entry| entry.layer == tracked.layer && entry.index == tracked.index)
+                    {
+                        entry.fence_epoch = fence_epoch;
+                    }
                     experts_superseded.push((
                         tracked.layer,
                         tracked.index,
@@ -599,7 +617,7 @@ pub(crate) fn resolve_binding(
         }
         resolved.moe = Some(MoeBinding {
             moe,
-            experts: bound.experts.clone(),
+            experts: tracked_experts,
         });
     }
 
@@ -1200,10 +1218,13 @@ fn fork_chosen(
         }
         Err(error) => {
             for pin in &pins {
-                if matches!(error, KvBackendError::PrefixNotFound) {
-                    state.catalog.reject_missing_backend_pin(pin);
-                } else {
-                    state.catalog.release(pin);
+                match error {
+                    KvBackendError::PrefixNotFound => state.catalog.reject_missing_backend_pin(pin),
+                    // A scope disagreement is a bug (or a corrupt entry), not a miss: count it.
+                    KvBackendError::PrefixMismatch => state.catalog.reject_scope_mismatch_pin(pin),
+                    _ => {
+                        state.catalog.release(pin);
+                    }
                 }
             }
             *cache = layered.fresh_cache(backend, scope)?;
@@ -1265,6 +1286,10 @@ pub(crate) fn adopt_pending(
             Err(KvAdoptError::Backend(KvBackendError::PrefixNotFound)) => {
                 layered.report.adoptions_skipped += 1;
                 state.catalog.reject_missing_backend_pin(&pin);
+            }
+            Err(KvAdoptError::Backend(KvBackendError::PrefixMismatch)) => {
+                layered.report.adoptions_skipped += 1;
+                state.catalog.reject_scope_mismatch_pin(&pin);
             }
             Err(KvAdoptError::Backend(_)) => {
                 layered.report.adoptions_skipped += 1;
