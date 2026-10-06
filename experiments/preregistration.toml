@@ -261,3 +261,6 @@ required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data
 
 [experiment.M001-a0v2-rerun]
 required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr_file = "file" }
+
+[experiment.M001-a0v2-cont-no-semantic-slots]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr_file = "file" }

@@ -364,3 +364,8 @@ status = "prepared"
 id = "M001-a0v2-rerun"
 path = "model/M001-a0v2-rerun"
 status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-cont-no-semantic-slots"
+path = "model/M001-a0v2-cont-no-semantic-slots"
+status = "prepared"
