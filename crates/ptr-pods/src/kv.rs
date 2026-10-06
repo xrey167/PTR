@@ -75,6 +75,9 @@ pub enum KvKeyEncoding {
 }
 
 const PRE_ROPE_MODEL_SUFFIX: &str = "#kv-key-encoding=pre-rope";
+/// Reserved: a model identity may contain this only as the one trailing
+/// [`PRE_ROPE_MODEL_SUFFIX`] written by [`KvTensorSchema::with_key_encoding`].
+const KEY_ENCODING_RESERVED: &str = "#kv-key-encoding=";
 
 impl KvTensorSchema {
     /// The key encoding this schema declares; a schema without a marker is `PostRope`.
@@ -84,6 +87,25 @@ impl KvTensorSchema {
         } else {
             KvKeyEncoding::PostRope
         }
+    }
+
+    /// Rejects a model identity that uses the reserved key-encoding marker anywhere except
+    /// as the single trailing pre-RoPE suffix. A real model name therefore cannot carry any
+    /// other marker text (for example `...=post-rope` or a doubled marker). A real name
+    /// that itself ends in the exact pre-RoPE suffix is indistinguishable from a marked
+    /// one and is by construction a `PreRope` identity.
+    pub fn validate_key_encoding(&self) -> Result<(), KvBackendError> {
+        let base = self
+            .model
+            .0
+            .strip_suffix(PRE_ROPE_MODEL_SUFFIX)
+            .unwrap_or(&self.model.0);
+        if base.contains(KEY_ENCODING_RESERVED) {
+            return Err(KvBackendError::InvalidSchema(
+                "model identity uses the reserved key-encoding marker".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Returns this schema declaring `encoding`. Idempotent; the model identity is
@@ -283,6 +305,7 @@ pub struct InMemoryKvTensorBackend;
 
 impl InMemoryKvTensorBackend {
     pub(crate) fn validate_schema(schema: &KvTensorSchema) -> Result<(), KvBackendError> {
+        schema.validate_key_encoding()?;
         if schema.layer_count == 0
             || schema.attention_heads == 0
             || schema.key_value_heads == 0

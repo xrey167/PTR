@@ -294,6 +294,7 @@ impl Qwen2PagedStack {
             });
         }
         let before = backend.snapshot(cache)?;
+        before.schema.validate_key_encoding()?;
         let found = before.schema.key_encoding();
         if found != self.config.key_encoding {
             return Err(Qwen2StackError::KeyEncodingMismatch {

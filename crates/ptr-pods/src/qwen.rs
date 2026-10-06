@@ -293,6 +293,7 @@ impl Qwen2PagedDecoder {
             return Err(KvBackendError::ShapeMismatch);
         }
         let before = backend.snapshot(cache)?;
+        before.schema.validate_key_encoding()?;
         let head_dim = self.config.head_dim()?;
         // This decoder rotates keys before storing them, so it only serves a cache that
         // declares post-RoPE keys; a pre-RoPE cache would be silently mislabelled.

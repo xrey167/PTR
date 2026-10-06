@@ -381,3 +381,66 @@ fn one_layer_decoder_refuses_a_pre_rope_cache() {
         KvBackendError::SnapshotSchemaMismatch
     );
 }
+
+#[test]
+fn spoofed_model_marker_is_refused_and_a_legitimate_marker_is_accepted() {
+    let backend = backend();
+    let stack = stack(KvKeyEncoding::PreRope);
+    let legit = schema_for(&stack);
+    assert!(legit.validate_key_encoding().is_ok());
+    assert!(backend
+        .allocate_bound(legit.clone(), CAPACITY, binding(&legit))
+        .is_ok());
+
+    for name in [
+        "m#kv-key-encoding=post-rope",
+        "m#kv-key-encoding=pre-rope-x",
+        "m#kv-key-encoding=#kv-key-encoding=pre-rope",
+        "#kv-key-encoding=",
+    ] {
+        let mut spoof = legit.clone();
+        spoof.model = ModelVersion::from(name);
+        assert!(spoof.validate_key_encoding().is_err(), "{name}");
+        assert!(
+            matches!(
+                backend.allocate_bound(spoof.clone(), CAPACITY, binding(&spoof)),
+                Err(KvBackendError::InvalidSchema(_))
+            ),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn reference_attention_executor_is_rope_free_and_refuses_a_pre_rope_cache() {
+    use ptr_pods::{
+        CausalAttentionInput, CausalAttentionWeights, ReferenceCausalAttentionExecutor,
+    };
+    let executor =
+        ReferenceCausalAttentionExecutor::new(CausalAttentionWeights::identity(4).unwrap(), 2)
+            .unwrap();
+    let schema = KvTensorSchema {
+        model: ModelVersion::from("attn"),
+        adapter: AdapterVersion::from("base"),
+        device: DeviceId::from("cpu"),
+        layer_count: 1,
+        attention_heads: 2,
+        key_value_heads: 2,
+        head_dim: 2,
+        batch_size: 1,
+        dtype: KvTensorDType::F32,
+    };
+    let backend = backend();
+    let tokens = CausalAttentionInput {
+        tokens: vec![vec![1.0, 0.0, 0.5, -0.5]],
+    };
+    let mut post = new_cache(&backend, schema.clone());
+    executor
+        .prefill(&backend, &mut post, tokens.clone())
+        .unwrap();
+    let mut pre = new_cache(&backend, schema.with_key_encoding(KvKeyEncoding::PreRope));
+    assert_eq!(
+        executor.prefill(&backend, &mut pre, tokens).unwrap_err(),
+        KvBackendError::SnapshotSchemaMismatch
+    );
+}
