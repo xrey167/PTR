@@ -326,15 +326,20 @@ fn identical_tokens_with_different_lineage_hold_separate_entries() {
     // A raw-only request with the same tokens is a third lineage and also misses.
     let as_raw = request(vec![raw(&format!("{}{}", block('a'), text))]);
     assert!(h.lookup(&s, &as_raw, &live).is_none());
-    // A different semantic revision is a different lineage too.
+    // The semantic revision is not part of the lineage: the same segments at a later
+    // revision hit (the bound segment's liveness is what guards reuse).
     let moved = SegmentedModelRequest::new(
         RequestId::from("r"),
         context(7),
         ByteTokenizer::new().identity().clone(),
-        gen1.segments().to_vec(),
+        gen2.segments().to_vec(),
     )
     .unwrap();
-    assert!(h.lookup(&s, &moved, &live).is_none());
+    let hit = h
+        .lookup(&s, &moved, &live)
+        .expect("revision is not lineage");
+    assert_eq!(hit.matched_tokens(), 2 * KV_CHUNK_TOKENS);
+    h.catalog.release(hit.pin());
 }
 
 #[test]

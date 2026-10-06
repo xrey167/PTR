@@ -69,6 +69,8 @@ pub const MAX_REQUEST_TEXT_BYTES: usize = 1024 * 1024;
 pub const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Largest typed Pod output the default verifier accepts, in bytes.
 pub const MAX_POD_OUTPUT_BYTES: usize = 64 * 1024;
+/// Response header of the KV path: prompt tokens the backend served from its KV cache.
+pub const KV_HIT_TOKENS_HEADER: &str = "x-ptr-kv-hit-tokens";
 
 pub struct DemoNoteExecutor {
     data_dir: std::path::PathBuf,
@@ -209,6 +211,7 @@ pub struct KvBackend {
     backend: Arc<dyn KvReusingBackend>,
     tokenizer: Arc<dyn Tokenizer>,
     hint: Option<KvReuseHint>,
+    max_prompt_tokens: Option<usize>,
 }
 
 impl KvBackend {
@@ -221,7 +224,26 @@ impl KvBackend {
             backend,
             tokenizer,
             hint,
+            max_prompt_tokens: None,
         }
+    }
+
+    /// Refuse (413, before any runtime call) a request text that tokenizes to more than
+    /// `max` tokens; pass the backend's own prompt limit.
+    pub fn with_max_prompt_tokens(mut self, max: usize) -> Self {
+        self.max_prompt_tokens = Some(max);
+        self
+    }
+
+    fn check_prompt_length(&self, text: &str) -> Result<(), ApiError> {
+        let Some(maximum) = self.max_prompt_tokens else {
+            return Ok(());
+        };
+        let tokens = self.tokenizer.encode(text).len();
+        if tokens > maximum {
+            return Err(ApiError::PromptTooLong { tokens, maximum });
+        }
+        Ok(())
     }
 
     fn infer(
@@ -448,7 +470,7 @@ async fn health() -> Json<HealthResponse> {
 async fn request(
     State(state): State<ServerState>,
     Json(input): Json<ApiRequest>,
-) -> Result<Json<ApiResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     if input.id.trim().is_empty() || input.text.trim().is_empty() {
         return Err(ApiError::BadRequest("id and text must be non-empty".into()));
     }
@@ -473,7 +495,7 @@ async fn request(
     .map_err(|error| ApiError::Internal(format!("request task failed: {error}")))?
 }
 
-fn process_request(state: &ServerState, input: ApiRequest) -> Result<Json<ApiResponse>, ApiError> {
+fn process_request(state: &ServerState, input: ApiRequest) -> Result<Response, ApiError> {
     let mut runtime = state
         .runtime
         .lock()
@@ -492,6 +514,7 @@ fn process_request(state: &ServerState, input: ApiRequest) -> Result<Json<ApiRes
         }
     }
     let request_id = RequestId::from(input.id.as_str());
+    let kv_hit_tokens = std::cell::Cell::new(None);
     let run = match &state.backend {
         ServerBackend::Resumable(backend) => runtime.run_resumable_with_pods_using_router(
             request_id,
@@ -506,8 +529,13 @@ fn process_request(state: &ServerState, input: ApiRequest) -> Result<Json<ApiRes
         ServerBackend::KvReusing(kv) => {
             let text = input.text.as_str();
             let id = request_id.clone();
-            runtime
-                .run_model_run_resumable(request_id, text, |context| kv.infer(&id, context, text))
+            // Before any runtime call: an over-long prompt must not reach the ledger.
+            kv.check_prompt_length(text)?;
+            runtime.run_model_run_resumable(request_id, text, |context| {
+                let run = kv.infer(&id, context, text)?;
+                kv_hit_tokens.set(Some(run.kv_report.map_or(0, |report| report.hit_tokens())));
+                Ok(run)
+            })
         }
     }
     .map_err(ApiError::Runtime)?;
@@ -562,7 +590,7 @@ fn process_request(state: &ServerState, input: ApiRequest) -> Result<Json<ApiRes
         })
         .collect::<String>();
 
-    Ok(Json(ApiResponse {
+    let body = Json(ApiResponse {
         id: input.id,
         revision: runtime.revision().0,
         text,
@@ -572,7 +600,12 @@ fn process_request(state: &ServerState, input: ApiRequest) -> Result<Json<ApiRes
             .map(|output| format!("{}:{}", output.type_id, output.bytes.len()))
             .collect(),
         effect,
-    }))
+    });
+    // Read-only report of the KV path; absent for a plain backend.
+    Ok(match kv_hit_tokens.get() {
+        Some(hits) => ([(KV_HIT_TOKENS_HEADER, hits.to_string())], body).into_response(),
+        None => body.into_response(),
+    })
 }
 
 /// Sizing and encoding rules for typed Pod output.
@@ -745,6 +778,11 @@ pub enum ApiError {
     EffectConflict(String),
     /// The request mailbox is full.
     Saturated,
+    /// The text tokenizes beyond the KV backend's prompt limit.
+    PromptTooLong {
+        tokens: usize,
+        maximum: usize,
+    },
 }
 
 impl ApiError {
@@ -820,13 +858,12 @@ impl IntoResponse for ApiError {
             | Self::Runtime(RuntimeError::ApproximateStateAtEffectBoundary { .. }) => {
                 (StatusCode::CONFLICT, format!("{self:?}"))
             }
+            // 507, not 503: the registry never drains, so the condition is not transient
+            // and a Retry-After would invite retries that cannot succeed.
             Self::Runtime(RuntimeError::KvTaintRegistryFull { .. }) => {
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(serde_json::json!({ "error": format!("{self:?}") })),
-                )
-                    .into_response();
+                (StatusCode::INSUFFICIENT_STORAGE, format!("{self:?}"))
             }
+            Self::PromptTooLong { .. } => (StatusCode::PAYLOAD_TOO_LARGE, format!("{self:?}")),
             Self::Runtime(error) => (StatusCode::UNPROCESSABLE_ENTITY, format!("{error:?}")),
             Self::Effect(message) => (StatusCode::UNPROCESSABLE_ENTITY, message),
             Self::EffectConflict(message) => (StatusCode::CONFLICT, message),
@@ -879,6 +916,20 @@ mod tests {
             ["payload-utf8"]
         );
         assert!(codes(&payload("binary", &[0xff])).is_empty());
+    }
+
+    #[test]
+    fn a_full_taint_registry_is_507_without_retry_after_and_a_long_prompt_is_413() {
+        let response =
+            ApiError::Runtime(RuntimeError::KvTaintRegistryFull { limit: 1 }).into_response();
+        assert_eq!(response.status(), StatusCode::INSUFFICIENT_STORAGE);
+        assert!(response.headers().get(header::RETRY_AFTER).is_none());
+        let response = ApiError::PromptTooLong {
+            tokens: 9,
+            maximum: 4,
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[test]
