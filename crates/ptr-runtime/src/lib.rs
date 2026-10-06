@@ -45,9 +45,10 @@ pub use kv_infer_session::{
 pub use kv_prefix::{
     chunk_keys, expert_operand_identities, CatalogLimits, KvCapacityResource, KvCatalogError,
     KvCatalogHit, KvCatalogStats, KvCatalogWiringError, KvChainId, KvChunkKey, KvDependency,
-    KvDependencyKind, KvForkError, KvInsert, KvLivenessOracle, KvLookup, KvPageCharge,
-    KvPagedInsert, KvPin, KvPrefixCatalog, KvPrefixRetirer, KvRequestPositions, KvRestoreReport,
-    KvSalt, KvSnapshotError, SemanticSegmentError, KV_CHUNK_TOKENS, KV_SNAPSHOT_MAX_BYTES,
+    KvDependencyKind, KvForkError, KvInsert, KvLayerEntry, KvLayerHit, KvLayerQuery,
+    KvLayeredInsert, KvLayeredLookup, KvLivenessOracle, KvLookup, KvPageCharge, KvPagedInsert,
+    KvPin, KvPrefixCatalog, KvPrefixRetirer, KvRequestPositions, KvRestoreReport, KvSalt,
+    KvSnapshotError, SemanticSegmentError, KV_CHUNK_TOKENS, KV_SNAPSHOT_MAX_BYTES,
 };
 pub use manifest::{
     validate_and_build, validate_authority, ExecutionManifestRegistry, ManifestAuthorityRegistry,

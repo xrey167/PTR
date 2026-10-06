@@ -215,6 +215,8 @@ struct Admission {
     prefix: KvSharedPrefix,
     dependencies: Vec<KvDependency>,
     charge: PageCharge,
+    /// `Some` for a per-layer entry ([`KvPrefixCatalog::insert_layers`]).
+    layer: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -245,6 +247,9 @@ pub enum KvCatalogError {
     /// The per-page charges do not describe the prefix's pages, or one page digest is
     /// charged with two different byte sizes.
     PageChargeMismatch,
+    /// A per-layer insert or lookup names no layer, a layer twice, or per-layer prefixes
+    /// of different lengths.
+    LayerShape,
 }
 
 impl fmt::Display for KvCatalogError {
@@ -260,6 +265,7 @@ impl fmt::Display for KvCatalogError {
             Self::DuplicateEntry => write!(f, "a different prefix already holds this entry"),
             Self::SlotDraining => write!(f, "the slot is held by a cancelled, still pinned entry"),
             Self::PageChargeMismatch => write!(f, "page charges do not match the prefix pages"),
+            Self::LayerShape => write!(f, "per-layer entries are empty, repeated or ragged"),
         }
     }
 }
@@ -415,6 +421,54 @@ pub struct KvPagedInsert<'a> {
     pub extra_dependencies: Vec<KvDependency>,
 }
 
+/// One layer's slice of a [`KvLayeredInsert`]: the layer's chain `chain(l)`, the prefix the
+/// backend published for that layer's pages, the per-page charges and the dependencies the
+/// layer's K/V was computed from.
+#[derive(Debug)]
+pub struct KvLayerEntry {
+    pub layer: u16,
+    pub chain: KvChainId,
+    pub prefix: KvSharedPrefix,
+    /// One charge per unique digest of `prefix.page_digests`, in first-occurrence order.
+    pub pages: Vec<KvPageCharge>,
+    /// The layer's own dependencies beyond the request's segments: the base model on every
+    /// layer, the adapter only on the layers it touches (`l >= f`), expert `(j, i)` only on
+    /// layers above `j`. The caller states them; the catalog does not infer them.
+    pub extra_dependencies: Vec<KvDependency>,
+}
+
+/// A finished prefill offered as one entry per layer ([`KvPrefixCatalog::insert_layers`]).
+#[derive(Debug)]
+pub struct KvLayeredInsert<'a> {
+    pub salt: &'a KvSalt,
+    pub request: &'a SegmentedModelRequest,
+    pub layers: Vec<KvLayerEntry>,
+}
+
+/// One layer asked for by [`KvPrefixCatalog::lookup_layers`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvLayerQuery {
+    pub layer: u16,
+    pub chain: KvChainId,
+}
+
+/// A per-layer lookup ([`KvPrefixCatalog::lookup_layers`]).
+#[derive(Clone, Copy, Debug)]
+pub struct KvLayeredLookup<'a> {
+    pub salt: &'a KvSalt,
+    pub request: &'a SegmentedModelRequest,
+    pub positions: &'a KvRequestPositions,
+    pub layers: &'a [KvLayerQuery],
+}
+
+/// The outcome of one layer of a [`KvPrefixCatalog::lookup_layers`]: its own deepest live
+/// node, or a miss, independent of every other layer.
+#[derive(Debug)]
+pub struct KvLayerHit {
+    pub layer: u16,
+    pub hit: Option<KvCatalogHit>,
+}
+
 /// How an entry's bytes are charged.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PageCharge {
@@ -426,12 +480,50 @@ enum PageCharge {
 
 type EntryKey = (KvChainId, Digest);
 
+const LAYER_LINEAGE_DOMAIN: &[u8] = b"ptr.kv.layer-lineage.v1\0";
+
+/// The lineage slot of an entry key: the prefix lineage itself for a whole-stack entry, and
+/// the lineage bound to the layer index for a per-layer entry, so two layers whose chains
+/// happened to be equal still never share a slot and a per-layer key never aliases a
+/// whole-stack one.
+fn entry_lineage(lineage: Digest, layer: Option<u16>) -> Digest {
+    let Some(layer) = layer else { return lineage };
+    let mut hasher = Sha256::new();
+    hasher.update(LAYER_LINEAGE_DOMAIN);
+    hasher.update(lineage);
+    hasher.update(layer.to_le_bytes());
+    hasher.finalize().into()
+}
+
+fn unique_page_charges_match(prefix: &KvSharedPrefix, pages: &[KvPageCharge]) -> bool {
+    let mut unique: Vec<Digest> = Vec::new();
+    for digest in &prefix.page_digests {
+        if !unique.contains(digest) {
+            unique.push(*digest);
+        }
+    }
+    pages.len() == unique.len()
+        && pages
+            .iter()
+            .zip(&unique)
+            .all(|(page, digest)| page.digest == *digest)
+}
+
 /// Handle on a pinned entry. Release it with [`KvPrefixCatalog::release`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KvPin {
     node: KvChunkKey,
     entry: EntryKey,
     id: u64,
+    layer: Option<u16>,
+}
+
+impl KvPin {
+    /// The layer of a per-layer pin ([`KvPrefixCatalog::lookup_layers`]); `None` for a
+    /// whole-stack pin.
+    pub fn layer(&self) -> Option<u16> {
+        self.layer
+    }
 }
 
 /// A hit: the prefix to fork, the witness that authorises forking it once, how many
@@ -456,6 +548,11 @@ impl KvCatalogHit {
 
     pub fn pin(&self) -> &KvPin {
         &self.pin
+    }
+
+    /// The layer this hit is for; `None` for a whole-stack hit.
+    pub fn layer(&self) -> Option<u16> {
+        self.pin.layer
     }
 
     /// Split into the witness, the prefix and the pin, for a caller that forks through the
@@ -528,6 +625,7 @@ struct Entry {
     live_ref: bool,
     last_used: u64,
     pins: BTreeMap<u64, KvWitnessRevoker>,
+    layer: Option<u16>,
 }
 
 struct Node {
@@ -630,17 +728,40 @@ impl KvPrefixCatalog {
         }
         let tokens = lookup.request.tokens();
         let keys = chunk_keys(lookup.salt, &tokens);
+        let hit = self.find_live(&keys, lookup.request, &tokens, lookup.chain, None, liveness);
+        if hit.is_none() {
+            self.stats.misses += 1;
+        }
+        hit
+    }
+
+    /// The deepest node on `keys` holding a live entry for `(chain, layer)`; a candidate
+    /// whose dependencies are no longer live is tombstoned and the walk falls back to its
+    /// ancestor. Counts the hit, never the miss.
+    fn find_live(
+        &mut self,
+        keys: &[KvChunkKey],
+        request: &SegmentedModelRequest,
+        tokens: &[TokenId],
+        chain: &KvChainId,
+        layer: Option<u16>,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Option<KvCatalogHit> {
         let mut candidates: Vec<(KvChunkKey, EntryKey, usize)> = Vec::new();
         for (index, key) in keys.iter().enumerate() {
             let Some(node) = self.nodes.get(key) else {
                 break;
             };
-            if !node.entries.keys().any(|(chain, _)| chain == lookup.chain) {
+            if !node
+                .entries
+                .keys()
+                .any(|(entry_chain, _)| entry_chain == chain)
+            {
                 continue;
             }
             let covered = (index + 1) * KV_CHUNK_TOKENS;
-            let (lineage, _) = prefix_lineage(lookup.request, &tokens, covered);
-            let entry_key = (*lookup.chain, lineage);
+            let (lineage, _) = prefix_lineage(request, tokens, covered);
+            let entry_key = (*chain, entry_lineage(lineage, layer));
             if node
                 .entries
                 .get(&entry_key)
@@ -655,7 +776,7 @@ impl KvPrefixCatalog {
                 .entry(&node_key, &entry_key)
                 .map(|entry| entry.dependencies.iter().all(|dep| liveness.is_live(dep)));
             match live {
-                Some(true) => return Some(self.pin_hit(node_key, entry_key, covered)),
+                Some(true) => return Some(self.pin_hit(node_key, entry_key, covered, layer)),
                 Some(false) => {
                     self.stats.use_time_rejections += 1;
                     self.tombstone_entry(&node_key, &entry_key);
@@ -663,7 +784,6 @@ impl KvPrefixCatalog {
                 None => {}
             }
         }
-        self.stats.misses += 1;
         None
     }
 
@@ -672,6 +792,7 @@ impl KvPrefixCatalog {
         node_key: KvChunkKey,
         entry_key: EntryKey,
         covered: usize,
+        layer: Option<u16>,
     ) -> KvCatalogHit {
         self.clock += 1;
         self.next_pin += 1;
@@ -694,6 +815,7 @@ impl KvPrefixCatalog {
                 node: node_key,
                 entry: entry_key,
                 id: pin_id,
+                layer,
             },
         }
     }
@@ -878,6 +1000,7 @@ impl KvPrefixCatalog {
                 prefix,
                 dependencies,
                 charge,
+                layer: None,
             },
             Eviction::Lru,
         )
@@ -960,6 +1083,7 @@ impl KvPrefixCatalog {
             prefix,
             dependencies,
             charge,
+            layer,
         } = admission;
         let leaf = *path.last().ok_or(KvCatalogError::PrefixShape)?;
         if let Some(existing) = self.entry(&leaf, &entry_key) {
@@ -1050,6 +1174,7 @@ impl KvPrefixCatalog {
                 live_ref: true,
                 last_used: self.clock,
                 pins: BTreeMap::new(),
+                layer,
             },
         );
         Ok(())
@@ -1368,10 +1493,195 @@ fn kind_tag(kind: SegmentKind) -> u8 {
     }
 }
 
+impl KvPrefixCatalog {
+    /// Offer a finished prefill as one entry per layer. Each chunk node holds up to `L`
+    /// entries keyed `(chain(l), layer-bound lineage)`, each with its own dependency set
+    /// (the request's segments plus the layer's `extra_dependencies`), so an invalidation
+    /// reaches exactly the layers that depend on the input. Page bytes are charged once per
+    /// unique page digest across all layers and entries.
+    ///
+    /// All-or-nothing: every dependency of every layer is checked live first, and if any
+    /// layer is refused (capacity, a draining slot, a conflicting entry) the layers of this
+    /// call admitted before it are tombstoned again and the error is returned. The layers of
+    /// one call never evict one another.
+    pub fn insert_layers(
+        &mut self,
+        insert: KvLayeredInsert<'_>,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<(), KvCatalogError> {
+        let KvLayeredInsert {
+            salt,
+            request,
+            layers,
+        } = insert;
+        let Some(first) = layers.first() else {
+            return Err(KvCatalogError::LayerShape);
+        };
+        let covered = first.prefix.sequence_length;
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for layer in &layers {
+            if !seen.insert(layer.layer) || layer.prefix.sequence_length != covered {
+                return Err(KvCatalogError::LayerShape);
+            }
+            if layer.prefix.position_offset != 0 {
+                return Err(KvCatalogError::NonCanonicalPosition);
+            }
+            if !unique_page_charges_match(&layer.prefix, &layer.pages) {
+                return Err(KvCatalogError::PageChargeMismatch);
+            }
+        }
+        let tokens = request.tokens();
+        if covered == 0 || !covered.is_multiple_of(KV_CHUNK_TOKENS) || covered > tokens.len() {
+            return Err(KvCatalogError::PrefixShape);
+        }
+        let (lineage, segment_dependencies) = prefix_lineage(request, &tokens, covered);
+        let path: Vec<KvChunkKey> = chunk_keys(salt, &tokens)
+            .into_iter()
+            .take(covered / KV_CHUNK_TOKENS)
+            .collect();
+        let mut admissions = Vec::with_capacity(layers.len());
+        for layer in layers {
+            let mut dependencies = segment_dependencies.clone();
+            for dependency in layer.extra_dependencies {
+                if !dependencies.contains(&dependency) {
+                    dependencies.push(dependency);
+                }
+            }
+            if !dependencies.iter().all(|dep| liveness.is_live(dep)) {
+                return Err(KvCatalogError::DependencyNotLive);
+            }
+            admissions.push(Admission {
+                path: path.clone(),
+                entry_key: (layer.chain, entry_lineage(lineage, Some(layer.layer))),
+                prefix: layer.prefix,
+                dependencies,
+                charge: PageCharge::Pages(layer.pages),
+                layer: Some(layer.layer),
+            });
+        }
+        let leaf = *path.last().ok_or(KvCatalogError::PrefixShape)?;
+        // Entries this call created, each held by one refcount so no later layer of the
+        // same call can evict it.
+        let mut created: Vec<EntryKey> = Vec::new();
+        let mut failure = None;
+        for admission in admissions {
+            let entry_key = admission.entry_key;
+            let existed = self.entry(&leaf, &entry_key).is_some();
+            match self.admit(admission, Eviction::Lru) {
+                Ok(()) if existed => {}
+                Ok(()) => {
+                    if let Some(entry) = self
+                        .nodes
+                        .get_mut(&leaf)
+                        .and_then(|node| node.entries.get_mut(&entry_key))
+                    {
+                        entry.refcount += 1;
+                    }
+                    created.push(entry_key);
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        for entry_key in &created {
+            if let Some(entry) = self
+                .nodes
+                .get_mut(&leaf)
+                .and_then(|node| node.entries.get_mut(entry_key))
+            {
+                entry.refcount -= 1;
+            }
+        }
+        if let Some(error) = failure {
+            for entry_key in &created {
+                self.tombstone_entry(&leaf, entry_key);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Per-layer lookup: for each requested layer, the deepest node of the request's chunk
+    /// chain whose entry for `(chain(l), lineage)` is live. Layers are independent. A layer
+    /// whose entries were tombstoned, whose dependency is no longer live (checked now, per
+    /// layer) or which was never inserted misses on its own and does not change another
+    /// layer's hit, so the matched depth can differ per layer. Every hit pins its entry and
+    /// carries a witness for the layer's prefix.
+    pub fn lookup_layers(
+        &mut self,
+        lookup: KvLayeredLookup<'_>,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<Vec<KvLayerHit>, KvCatalogError> {
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        if lookup.layers.is_empty() || !lookup.layers.iter().all(|query| seen.insert(query.layer)) {
+            return Err(KvCatalogError::LayerShape);
+        }
+        if *lookup.positions != KvRequestPositions::Canonical {
+            let count = lookup.layers.len() as u64;
+            self.stats.noncanonical_misses += count;
+            self.stats.misses += count;
+            return Ok(lookup
+                .layers
+                .iter()
+                .map(|query| KvLayerHit {
+                    layer: query.layer,
+                    hit: None,
+                })
+                .collect());
+        }
+        let tokens = lookup.request.tokens();
+        let keys = chunk_keys(lookup.salt, &tokens);
+        let mut hits = Vec::with_capacity(lookup.layers.len());
+        for query in lookup.layers {
+            let hit = self.find_live(
+                &keys,
+                lookup.request,
+                &tokens,
+                &query.chain,
+                Some(query.layer),
+                liveness,
+            );
+            if hit.is_none() {
+                self.stats.misses += 1;
+            }
+            hits.push(KvLayerHit {
+                layer: query.layer,
+                hit,
+            });
+        }
+        Ok(hits)
+    }
+
+    /// Re-check, at use, that the entry behind a per-layer (or whole-stack) `pin` is still
+    /// reachable and that every dependency of that entry is live now. A dependency that is
+    /// dead tombstones this entry, so the pin reads as cancelled ([`Self::pin_is_live`]),
+    /// without touching the other layers, which are judged by their own dependencies.
+    pub fn revalidate_pin(&mut self, pin: &KvPin, liveness: &dyn KvLivenessOracle) -> bool {
+        if !self.pin_is_live(pin) {
+            return false;
+        }
+        let live = self
+            .entry(&pin.node, &pin.entry)
+            .is_some_and(|entry| entry.dependencies.iter().all(|dep| liveness.is_live(dep)));
+        if !live {
+            self.stats.use_time_rejections += 1;
+            self.tombstone_entry(&pin.node, &pin.entry);
+        }
+        live
+    }
+}
+
 // Snapshot -------------------------------------------------------------------------------
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"PTRKVC01";
 const SNAPSHOT_DOMAIN: &[u8] = b"ptr.kv.catalog-snapshot.v1\0";
+/// Snapshot v2: v1 plus a layer tag per entry. Written only when the catalog holds a
+/// per-layer entry, so a catalog without one still exports the byte-identical v1 snapshot.
+/// A v1 snapshot always decodes (every entry is a whole-stack entry).
+const SNAPSHOT_MAGIC_V2: &[u8; 8] = b"PTRKVL02";
+const SNAPSHOT_DOMAIN_V2: &[u8] = b"ptr.kv.catalog-snapshot.v2\0";
 /// Largest snapshot exported or accepted.
 pub const KV_SNAPSHOT_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SNAPSHOT_MAX_DEPENDENCIES: usize = 1024;
@@ -1429,6 +1739,7 @@ struct SnapshotEntry {
     prefix: KvSharedPrefix,
     dependencies: Vec<KvDependency>,
     charge: PageCharge,
+    layer: Option<u16>,
 }
 
 fn put_u32(out: &mut Vec<u8>, value: usize) {
@@ -1462,8 +1773,13 @@ fn dependency_from_tag(tag: u8, segment: u8) -> Option<KvDependencyKind> {
 }
 
 fn encode_snapshot(entries: &[SnapshotEntry]) -> Result<Vec<u8>, KvSnapshotError> {
+    let layered = entries.iter().any(|entry| entry.layer.is_some());
     let mut out = Vec::new();
-    out.extend_from_slice(SNAPSHOT_MAGIC);
+    out.extend_from_slice(if layered {
+        SNAPSHOT_MAGIC_V2
+    } else {
+        SNAPSHOT_MAGIC
+    });
     put_u32(&mut out, entries.len());
     for entry in entries {
         put_u32(&mut out, entry.path.len());
@@ -1474,6 +1790,15 @@ fn encode_snapshot(entries: &[SnapshotEntry]) -> Result<Vec<u8>, KvSnapshotError
         }
         out.extend_from_slice(&entry.entry_key.0 .0);
         out.extend_from_slice(&entry.entry_key.1);
+        if layered {
+            match entry.layer {
+                None => out.push(0),
+                Some(layer) => {
+                    out.push(1);
+                    out.extend_from_slice(&layer.to_le_bytes());
+                }
+            }
+        }
         let key = &entry.prefix.key;
         put_str(&mut out, &key.principal.0);
         out.extend_from_slice(&key.execution_manifest);
@@ -1516,7 +1841,11 @@ fn encode_snapshot(entries: &[SnapshotEntry]) -> Result<Vec<u8>, KvSnapshotError
         }
     }
     let mut hasher = Sha256::new();
-    hasher.update(SNAPSHOT_DOMAIN);
+    hasher.update(if layered {
+        SNAPSHOT_DOMAIN_V2
+    } else {
+        SNAPSHOT_DOMAIN
+    });
     hasher.update(&out);
     let trailer: [u8; 32] = hasher.finalize().into();
     out.extend_from_slice(&trailer);
@@ -1584,12 +1913,20 @@ fn decode_snapshot(
             KvSnapshotError::BadMagic
         });
     }
-    if !bytes.starts_with(SNAPSHOT_MAGIC) {
+    let layered = if bytes.starts_with(SNAPSHOT_MAGIC) {
+        false
+    } else if bytes.starts_with(SNAPSHOT_MAGIC_V2) {
+        true
+    } else {
         return Err(KvSnapshotError::BadMagic);
-    }
+    };
     let (body, trailer) = bytes.split_at(bytes.len() - 32);
     let mut hasher = Sha256::new();
-    hasher.update(SNAPSHOT_DOMAIN);
+    hasher.update(if layered {
+        SNAPSHOT_DOMAIN_V2
+    } else {
+        SNAPSHOT_DOMAIN
+    });
     hasher.update(body);
     let expected: [u8; 32] = hasher.finalize().into();
     if expected != trailer {
@@ -1630,6 +1967,18 @@ fn decode_snapshot(
         }
         let chain = KvChainId(reader.digest()?);
         let lineage = reader.digest()?;
+        let layer = if layered {
+            match reader.u8()? {
+                0 => None,
+                1 => {
+                    let raw: [u8; 2] = reader.take(2)?.try_into().expect("two bytes");
+                    Some(u16::from_le_bytes(raw))
+                }
+                _ => return Err(KvSnapshotError::NonCanonical("unknown layer tag")),
+            }
+        } else {
+            None
+        };
         let key = KvPrefixKey {
             principal: PrincipalId::from(reader.text()?.as_str()),
             execution_manifest: reader.digest()?,
@@ -1717,6 +2066,7 @@ fn decode_snapshot(
             },
             dependencies,
             charge,
+            layer,
         };
         if entries.last().is_some_and(|last| {
             (last.path.last(), last.entry_key) >= (entry.path.last(), entry.entry_key)
@@ -1761,6 +2111,7 @@ impl KvPrefixCatalog {
                     prefix: entry.prefix.clone(),
                     dependencies,
                     charge: entry.charge.clone(),
+                    layer: entry.layer,
                 });
             }
         }
@@ -1789,6 +2140,7 @@ impl KvPrefixCatalog {
                     prefix: entry.prefix,
                     dependencies: entry.dependencies,
                     charge: entry.charge,
+                    layer: entry.layer,
                 },
                 Eviction::Refuse,
             );
