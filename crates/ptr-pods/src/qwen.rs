@@ -89,7 +89,7 @@ impl Qwen2LinearWeights {
         Ok(())
     }
 
-    fn apply(&self, input: &[f32]) -> Result<Vec<f32>, KvBackendError> {
+    pub(crate) fn apply(&self, input: &[f32]) -> Result<Vec<f32>, KvBackendError> {
         self.validate()?;
         if input.len() != self.input_size {
             return Err(KvBackendError::ShapeMismatch);
@@ -293,8 +293,12 @@ impl Qwen2PagedDecoder {
             return Err(KvBackendError::ShapeMismatch);
         }
         let before = backend.snapshot(cache)?;
+        before.schema.validate_key_encoding()?;
         let head_dim = self.config.head_dim()?;
-        if before.schema.layer_count != 1
+        // This decoder rotates keys before storing them, so it only serves a cache that
+        // declares post-RoPE keys; a pre-RoPE cache would be silently mislabelled.
+        if before.schema.key_encoding() != crate::KvKeyEncoding::PostRope
+            || before.schema.layer_count != 1
             || before.schema.attention_heads != self.config.num_attention_heads
             || before.schema.key_value_heads != self.config.num_key_value_heads
             || before.schema.head_dim != head_dim
@@ -407,7 +411,11 @@ impl<B: PagedKvTensorBackend> crate::KvContinuationExecutor<B> for Qwen2PagedDec
     }
 }
 
-fn rms_norm(input: &[f32], weights: &[f32], epsilon: f32) -> Result<Vec<f32>, KvBackendError> {
+pub(crate) fn rms_norm(
+    input: &[f32],
+    weights: &[f32],
+    epsilon: f32,
+) -> Result<Vec<f32>, KvBackendError> {
     if input.len() != weights.len() || input.is_empty() {
         return Err(KvBackendError::ShapeMismatch);
     }
@@ -420,7 +428,7 @@ fn rms_norm(input: &[f32], weights: &[f32], epsilon: f32) -> Result<Vec<f32>, Kv
         .collect())
 }
 
-fn apply_rope(
+pub(crate) fn apply_rope(
     values: &mut [f32],
     heads: usize,
     head_dim: usize,
@@ -448,7 +456,7 @@ fn apply_rope(
     Ok(())
 }
 
-fn grouped_causal_attention(
+pub(crate) fn grouped_causal_attention(
     query: &[f32],
     keys: &[f32],
     values: &[f32],
@@ -499,7 +507,7 @@ fn grouped_causal_attention(
     output
 }
 
-fn add(left: &[f32], right: &[f32]) -> Result<Vec<f32>, KvBackendError> {
+pub(crate) fn add(left: &[f32], right: &[f32]) -> Result<Vec<f32>, KvBackendError> {
     if left.len() != right.len() {
         return Err(KvBackendError::ShapeMismatch);
     }
@@ -510,6 +518,6 @@ fn add(left: &[f32], right: &[f32]) -> Result<Vec<f32>, KvBackendError> {
         .collect())
 }
 
-fn silu(value: f32) -> f32 {
+pub(crate) fn silu(value: f32) -> f32 {
     value / (1.0 + (-value).exp())
 }

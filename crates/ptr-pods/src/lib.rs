@@ -21,6 +21,7 @@ mod output;
 mod paged_kv;
 mod protocol;
 mod qwen;
+mod qwen_stack;
 mod runtime;
 mod semantic;
 mod tier_storage;
@@ -52,8 +53,8 @@ pub use expert::{
 pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
 pub use kv::{
     InMemoryKvCache, InMemoryKvTensorBackend, KvBackendError, KvCacheLayout, KvCacheTier,
-    KvLayerSnapshot, KvPageTable, KvTensorBackend, KvTensorDType, KvTensorSchema, KvTensorSnapshot,
-    TensorRef,
+    KvKeyEncoding, KvLayerSnapshot, KvPageTable, KvTensorBackend, KvTensorDType, KvTensorSchema,
+    KvTensorSnapshot, TensorRef,
 };
 pub use manifest::{
     ArtifactLifecycle, ExecutionManifest, LifecycleGate, LineageBinding,
@@ -80,6 +81,10 @@ pub use protocol::{
 pub use qwen::{
     Qwen2Activation, Qwen2DecoderInput, Qwen2DecoderOutput, Qwen2DecoderWeights, Qwen2LayerConfig,
     Qwen2LinearWeights, Qwen2PagedDecoder, Qwen2RopeScaling,
+};
+pub use qwen_stack::{
+    Qwen2PagedStack, Qwen2QkNorm, Qwen2StackConfig, Qwen2StackError, Qwen2StackInput,
+    Qwen2StackLayerWeights, Qwen2StackOutput, Qwen2StackWeights,
 };
 pub use runtime::{
     ArtifactCatalog, ArtifactError, ExecutorError, ExecutorFactory, HealthStatus,
