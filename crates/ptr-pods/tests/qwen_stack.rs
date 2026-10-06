@@ -700,3 +700,50 @@ fn invalid_dynamic_ntk_parameters_are_rejected() {
         Err(KvBackendError::InvalidSchema(_))
     ));
 }
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Pinned before the adapter/MoE extension point was added (WP2a): the R005 reference
+/// weights, the final chain id and a logits digest of a fixed prompt must stay
+/// bit-identical for the default (unbound, dense) path.
+#[test]
+fn reference_chain_id_and_logits_digest_are_pinned() {
+    use sha2::{Digest as _, Sha256};
+    let stack = stack(KvKeyEncoding::PreRope);
+    let identity = ptr_pods::KvChainIdentity {
+        base_model: "r005-tiny".to_owned(),
+        generation: 1,
+        build: "pin-build".to_owned(),
+        tokenizer: "ptr.byte@1".to_owned(),
+    };
+    let chains = ptr_pods::derive_kv_layer_chains(&stack, &identity).unwrap();
+    let mut weights = Sha256::new();
+    for value in &stack.weights().embedding {
+        weights.update(value.to_bits().to_le_bytes());
+    }
+    for layer in &stack.weights().layers {
+        for value in &layer.decoder.down.weight {
+            weights.update(value.to_bits().to_le_bytes());
+        }
+    }
+    let mut logits = Sha256::new();
+    for row in full_logits(&stack, &tokens(12, 5)) {
+        for bits in row {
+            logits.update(bits.to_le_bytes());
+        }
+    }
+    assert_eq!(
+        hex(&chains.final_id()),
+        "da61ed31c1854fe4110588b833d5259b405661122c9f4fe8cf8903a4ae859e6e"
+    );
+    assert_eq!(
+        hex(&weights.finalize()),
+        "74aacde5f18b897f284941d76efe690f60fe0ac84d9b573aa3a1a62488b24a4f"
+    );
+    assert_eq!(
+        hex(&logits.finalize()),
+        "bd906bf44a63bbd7b30bb1f51e834675f7e3f509936b3f8e42a11d17f016a10c"
+    );
+}
