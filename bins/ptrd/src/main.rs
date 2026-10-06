@@ -1,10 +1,13 @@
 use ptr_config::{CliOverrides, PtrConfig};
 use ptr_ledger::LedgerEvent;
-use ptr_model_api::{ReferenceEchoBackend, ScenarioBackend};
+use ptr_model_api::{
+    ByteTokenizer, KvReuseHint, KvReusePolicy, ReferenceEchoBackend, ScenarioBackend,
+};
 use ptr_pods::PodRegistry;
 use ptr_router::SamplingKey;
-use ptr_runtime::PtrRuntime;
-use ptr_types::{CapabilityId, CapsuleId, Generation};
+use ptr_runtime::{PtrRuntime, ReferenceKvLimits, ReferenceKvReuseBackend, ReferenceKvScope};
+use ptr_server::{KvBackend, ServerBackend};
+use ptr_types::{CapabilityId, CapsuleId, Generation, PrincipalId, ProjectId};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -15,6 +18,9 @@ async fn main() {
             println!(
                 "usage: ptrd [--config PATH] [--bind HOST:PORT] [--mode standalone|cluster] \
                  [--data-dir PATH] [--backend NAME] \
+                 (backends: reference-echo, scenario, reference-kv; reference-kv is a CPU \
+                 reference with seeded random weights that reuses KV across requests, its \
+                 output is deterministic byte text, not a language model) \
                  [--mailbox-capacity N] [--max-parallel-candidates N] \
                  [--require-current-revision true|false] \
                  [--require-live-generation true|false]"
@@ -51,7 +57,10 @@ async fn main() {
         eprintln!("refusing to start ptrd: {err}");
         std::process::exit(2);
     }
-    if !matches!(config.model.backend.as_str(), "reference-echo" | "scenario") {
+    if !matches!(
+        config.model.backend.as_str(),
+        "reference-echo" | "scenario" | "reference-kv"
+    ) {
         eprintln!(
             "refusing to start ptrd: unsupported explicit backend {}",
             config.model.backend
@@ -79,9 +88,39 @@ async fn main() {
         .permissions_mut()
         .capabilities
         .insert(CapabilityId::from("demo.local-note.create"));
-    let backend: Arc<dyn ptr_model_api::ResumableInferenceBackend> = match backend_name.as_str() {
-        "reference-echo" => Arc::new(ReferenceEchoBackend),
-        "scenario" => Arc::new(ScenarioBackend),
+    let backend = match backend_name.as_str() {
+        "reference-echo" => ServerBackend::Resumable(Arc::new(ReferenceEchoBackend)),
+        "scenario" => ServerBackend::Resumable(Arc::new(ScenarioBackend)),
+        "reference-kv" => {
+            let limits = ReferenceKvLimits::default();
+            let max_prompt_tokens = limits.max_prompt_tokens;
+            let backend = ReferenceKvReuseBackend::new(
+                limits,
+                ReferenceKvScope {
+                    principal: PrincipalId::from("ptrd"),
+                    project: ProjectId::from("demo"),
+                },
+            )
+            .unwrap_or_else(|err| {
+                eprintln!("refusing to start ptrd: reference-kv backend: {err:?}");
+                std::process::exit(2);
+            });
+            println!(
+                "reference-kv: CPU reference with seeded random weights; output is \
+                 deterministic byte text, not a language model"
+            );
+            ServerBackend::KvReusing(
+                KvBackend::new(
+                    Arc::new(backend),
+                    Arc::new(ByteTokenizer::new()),
+                    Some(KvReuseHint {
+                        requested_prefix_tokens: 0,
+                        policy: KvReusePolicy::ExactOnly,
+                    }),
+                )
+                .with_max_prompt_tokens(max_prompt_tokens),
+            )
+        }
         _ => unreachable!("backend validated above"),
     };
     let sampling_key =
@@ -109,7 +148,7 @@ async fn main() {
         .unwrap_or_else(|err| panic!("failed to bind {bind}: {err}"));
 
     println!("ptrd listening on http://{bind}");
-    if let Err(err) = ptr_server::serve_with_dependencies(
+    if let Err(err) = ptr_server::serve_with_backend(
         listener,
         runtime,
         backend,

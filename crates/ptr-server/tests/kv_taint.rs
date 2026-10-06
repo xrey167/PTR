@@ -170,6 +170,13 @@ async fn send(app: axum::Router, request: Request<Body>) -> (StatusCode, Value) 
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
+fn ledger_events(dir: &TempDir) -> usize {
+    PtrRuntime::open_durable(PtrConfig::default(), dir.ledger())
+        .unwrap()
+        .committed_events()
+        .len()
+}
+
 fn effect_attempts(dir: &TempDir) -> usize {
     PtrRuntime::open_durable(PtrConfig::default(), dir.ledger())
         .unwrap()
@@ -299,4 +306,52 @@ async fn a_segmented_run_that_asks_for_a_pod_is_refused() {
         .as_str()
         .unwrap()
         .contains("cannot resume a Pod"));
+}
+
+#[tokio::test]
+async fn an_over_limit_prompt_is_refused_with_413_before_the_ledger_is_touched() {
+    let dir = TempDir::new();
+    // Creates the demo-note capsule; nothing else is committed.
+    drop(app(&dir, kv_backend(None).0));
+    let before = ledger_events(&dir);
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let backend = ServerBackend::KvReusing(
+        KvBackend::new(
+            Arc::new(DoubleKv {
+                mode: None,
+                seen: Arc::clone(&seen),
+            }),
+            Arc::new(ByteTokenizer::new()),
+            None,
+        )
+        .with_max_prompt_tokens(4),
+    );
+    let router = app(&dir, backend);
+    let (status, body) = send(router.clone(), request("r1", "too long", "key-1")).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    // At the limit is accepted.
+    let (status, body) = send(router.clone(), request("r2", "four", "key-2")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    drop(router);
+    assert_eq!(seen.lock().unwrap().texts, ["four"]);
+    // Only the accepted request wrote anything (request text, effect records).
+    let after = ledger_events(&dir);
+    assert!(after > before);
+    let refused_only = TempDir::new();
+    drop(app(&refused_only, kv_backend(None).0));
+    let base = ledger_events(&refused_only);
+    let backend = ServerBackend::KvReusing(
+        KvBackend::new(
+            Arc::new(DoubleKv {
+                mode: None,
+                seen: Arc::new(Mutex::new(Seen::default())),
+            }),
+            Arc::new(ByteTokenizer::new()),
+            None,
+        )
+        .with_max_prompt_tokens(4),
+    );
+    let (status, _) = send(app(&refused_only, backend), request("r1", "too long", "k")).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(ledger_events(&refused_only), base);
 }

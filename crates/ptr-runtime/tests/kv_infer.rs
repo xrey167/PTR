@@ -142,7 +142,7 @@ fn a_prompt_that_is_entirely_cached_is_prefilled_again_and_still_equal() {
 }
 
 #[test]
-fn another_principal_project_or_revision_never_hits() {
+fn another_principal_or_project_never_hits() {
     let prefix = text(32, 5);
     let prompt = format!("{prefix}{}", text(6, 6));
     let backend = backend();
@@ -161,10 +161,50 @@ fn another_principal_project_or_revision_never_hits() {
     let moved = run(&backend, &other_project, &raw(&backend, "c", 1, &prompt));
     assert_eq!(moved.hit_tokens, 0, "different project (salt)");
     assert_same_result(&baseline, &moved);
+}
 
-    let later = run(&backend, &scope("alice"), &raw(&backend, "d", 2, &prompt));
-    assert_eq!(later.hit_tokens, 0, "different semantic revision (lineage)");
-    assert_same_result(&baseline, &later);
+#[test]
+fn a_raw_prefix_hits_at_a_later_revision_and_is_bitwise_equal_to_cold() {
+    let prompt = format!("{}{}", text(32, 5), text(6, 6));
+    let backend = backend();
+    run(&backend, &scope("alice"), &raw(&backend, "a", 1, &prompt));
+    let later = run(&backend, &scope("alice"), &raw(&backend, "d", 9, &prompt));
+    assert_eq!(later.hit_tokens, 32, "the semantic revision is not lineage");
+    let cold_backend = backend_with(ReferenceKvLimits::default());
+    let cold = cold_backend
+        .infer_cold(&scope("alice"), &raw(&cold_backend, "d", 9, &prompt))
+        .unwrap();
+    assert_same_result(&cold, &later);
+}
+
+#[test]
+fn a_bound_segment_with_another_generation_or_content_never_hits() {
+    let semantic = text(32, 7);
+    let backend = backend();
+    run(
+        &backend,
+        &scope("alice"),
+        &semantic_request(&backend, "a", 1, &semantic, &text(8, 8)),
+    );
+    let same = run(
+        &backend,
+        &scope("alice"),
+        &semantic_request(&backend, "b", 1, &semantic, &text(8, 9)),
+    );
+    assert_eq!(same.hit_tokens, 32);
+    let newer = run(
+        &backend,
+        &scope("alice"),
+        &semantic_request(&backend, "c", 2, &semantic, &text(8, 9)),
+    );
+    assert_eq!(newer.hit_tokens, 0, "another generation");
+    assert_same_result(&same, &newer);
+    let other = run(
+        &backend,
+        &scope("alice"),
+        &semantic_request(&backend, "d", 1, &text(32, 8), &text(8, 9)),
+    );
+    assert_eq!(other.hit_tokens, 0, "another content digest");
 }
 
 fn semantic_request(

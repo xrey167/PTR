@@ -63,7 +63,7 @@ const SALT_DOMAIN: &[u8] = b"ptr.kv.salt.v1\0";
 const ROOT_DOMAIN: &[u8] = b"ptr.kv.root.v1\0";
 const CHUNK_DOMAIN: &[u8] = b"ptr.kv.chunk.v1\0";
 const NODE_DOMAIN: &[u8] = b"ptr.kv.node.v1\0";
-const PREFIX_LINEAGE_DOMAIN: &[u8] = b"ptr.kv.prefix-lineage.v1\0";
+const PREFIX_LINEAGE_DOMAIN: &[u8] = b"ptr.kv.prefix-lineage.v2\0";
 
 fn put_text(hasher: &mut Sha256, text: &str) {
     hasher.update((text.len() as u64).to_le_bytes());
@@ -969,9 +969,15 @@ impl KvPrefixCatalog {
     }
 }
 
+/// The global SemDB revision is deliberately not hashed (doc 36 section D): a prefix's
+/// lineage is per segment, and each bound segment's liveness is checked at use against its
+/// own identity and generation. Hashing the revision made every committed request miss,
+/// because each request commits its text and so advances it. The domain tag is `v2` so a
+/// key from the revision-bound `v1` scheme can never alias a `v2` key.
+///
 /// Lineage digest of the first `covered` tokens, and the dependencies of that prefix.
 ///
-/// The digest covers the semantic revision, the tokenizer and, per segment overlapping the
+/// The digest covers the tokenizer and, per segment overlapping the
 /// prefix: the kind, for a bound segment its identity, generation and whole-content digest,
 /// and the number of tokens covered; for a Raw segment the digest of the covered tokens
 /// (content-bound, no identity). Requests that share a Raw prefix and differ afterwards
@@ -983,7 +989,6 @@ fn prefix_lineage(
 ) -> (Digest, Vec<KvDependency>) {
     let mut hasher = Sha256::new();
     hasher.update(PREFIX_LINEAGE_DOMAIN);
-    hasher.update(request.revision().0.to_le_bytes());
     put_text(&mut hasher, request.tokenizer().name());
     put_text(&mut hasher, request.tokenizer().version());
     let mut dependencies: Vec<KvDependency> = Vec::new();
