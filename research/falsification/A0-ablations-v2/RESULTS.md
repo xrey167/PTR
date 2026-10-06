@@ -154,7 +154,7 @@ Compositional transfer (descriptive; the strict transfer subset of ood_compose_r
 
 M001-primary is INCONCLUSIVE and M001-secondary is INCONCLUSIVE (decided at 4000 steps); see their details above.
 
-For the rank-1 typed attention bias, a benefit of 2 points or more is excluded at this scale (M002-necessity); it is a candidate for simplification. The per-slot nonlinearity is used: removing the latent step costs 9.0 points on test_iid, and removing only its gelu costs 10.2. The paired design detected a difference between the frozen and the learned router, two models equivalent up to reparameterisation; this is a probable optimisation artefact, and effects near 2 points elsewhere must be read with it in mind.
+For the rank-1 typed attention bias, a benefit of 2 points or more on composite B lies outside the 95% t-interval of five seeds (upper bound +0.0160; M002-necessity). The interval is wide relative to the margin and half of composite B is near floor for every arm, so this is a weak exclusion: a candidate for simplification in A0, not shown useless (see `AUDIT.md`). The per-slot nonlinearity is used: removing the latent step costs 9.0 points on test_iid, and removing only its gelu costs 10.2. The paired design detected a difference between the frozen and the learned router, two models equivalent up to reparameterisation; this is a probable optimisation artefact, and effects near 2 points elsewhere must be read with it in mind.
 
 ## Reading these results
 
@@ -162,5 +162,6 @@ Every verdict holds only for this A0 (one block, d_model 32, 1500 steps) on oper
 
 ## Deviations noted after the run (hand-added; not generated)
 
-- `PREREGISTRATION.md` (section "Registered experiments") says the contingency experiments are "registered at the second freeze". `DESIGN.md` D4 and procedure step 7 say a contingency's experiments are registered in a later commit, only if the frozen learnability rule triggers it. The run followed `DESIGN.md`: `M001-a0v2-cont-no-semantic-slots` was registered after the evaluation, in its own commit with no code change. The frozen preregistration file was not edited.
-- The preliminary aggregate committed after the evaluation (`fc38fbea`) was removed before the contingency records were made, because the study's code-identity rule counts files outside run records, logs and later-stage registration as code. It remains in git history; this file supersedes it.
+- Contingency registration deviates from the governing text: `PREREGISTRATION.md` line 45 (which by its line 7 governs over `DESIGN.md`) says contingency experiments are registered at the second freeze; `DESIGN.md` D4 and step 7 say afterwards, only if triggered. The run followed D4 (`49fd055c`, after the evaluation aggregate had shown the trigger). Criteria, the aggregator's rule, arms, seeds, steps and learning rates were all fixed before outcomes were known; the frozen files were not edited.
+- The preliminary aggregate committed after the evaluation (`fc38fbea`) was removed (`1f4d36a4`) before the contingency records were made, because the study's code-identity rule counts files outside run records, logs and later-stage registration as code. It remains in git history; this file supersedes it.
+- At S* the M001-secondary contrast was +0.2009 [+0.1197, +0.2821], 5/5 positive, blocked only by learnability; at 4000 steps it is +0.0702 and carried by seed 17. Details, and further reading notes on M002-necessity, M004 and M001-primary: `AUDIT.md`.

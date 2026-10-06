@@ -17,4 +17,8 @@
 
 R006, R007, R008, M016, E006 and E007 are mechanism checks: they test published methods (positional KV reuse, span forgetting, lossy KV tiers, approximate chunk reuse, engine prefix caching, split-pod activation transport) on PTR's contracts and are not themselves new architectural claims. The PTR-specific claims they support are 14 and the revocation and taint rules in doc 36.
 
+## Evidence log
+
+- A0-ablations-v2 (`research/falsification/A0-ablations-v2/`; A0 with d_model 32 on the synthetic operator-routing v1, 5 seeds, all gates passed) touches claims 1-3 only inside that toy. Claim 2: the rank-1 typed attention bias adds no measurable benefit beyond QK on the distractor/regime composite (M002-necessity FALSIFIES in A0, a weak exclusion; candidate for simplification), but helps when it is the only metadata-dependent read (M002-sufficiency SUPPORTS); calibration and hard-constraint retention were not tested. Claim 1: typed-slot content is INCONCLUSIVE (M001-primary 4/5 seeds; M001-secondary INCONCLUSIVE at 4000 steps). Claim 3: the M004 negative control shows a 3-point optimisation artefact between equivalent routers. None of this is a baseline comparison or language-model evidence.
+
 Each claim remains provisional until benchmarked and compared with relevant prior work.
