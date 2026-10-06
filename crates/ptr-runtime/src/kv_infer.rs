@@ -47,37 +47,49 @@
 //! the *insert* side: the chunk is not cached, the refusal is counted in the outcome and
 //! the output is unchanged. Capacity never changes a result.
 //!
+//! # Sessions
+//!
+//! Every run is a [`KvSession`] ([`ReferenceKvReuseBackend::begin_session`]): the one-shot
+//! entry points below drive one to completion under a single-request gate, so their
+//! behaviour is unchanged. A caller that drives the steps itself can interleave a
+//! revocation between two decode steps deterministically, which is how the R005 race arms
+//! are tested. See [`crate::kv_infer_session`].
+//!
 //! # Scope
 //!
-//! Liveness of bound prompt segments is answered by this backend's own revocation set
-//! ([`ReferenceKvReuseBackend::invalidate_inputs`]); it is not wired to the ledger's
-//! lifecycle state. This is an experiment skeleton, not an R005 result.
+//! Liveness is asked of a [`KvLivenessOracle`] the caller passes to every session step;
+//! `PtrRuntime` implements it from the committed lifecycle state, and
+//! [`ReferenceKvReuseBackend::own_liveness`] answers from this backend's own revocation
+//! set ([`ReferenceKvReuseBackend::invalidate_inputs`],
+//! [`ReferenceKvReuseBackend::supersede_inputs`]) as the fallback. The one-shot entry
+//! points use the fallback; nothing wires a one-shot run to the ledger. This is an
+//! experiment skeleton, not an R005 result.
 
+use crate::kv_infer_session::{KvSession, KvSessionFinish, KvSessionStats};
 use crate::{
     CatalogLimits, KvCatalogError, KvCatalogStats, KvChainId, KvDependency, KvLivenessOracle,
-    KvLookup, KvPageCharge, KvPagedInsert, KvPin, KvPrefixCatalog, KvRequestPositions, KvSalt,
-    KV_CHUNK_TOKENS,
+    KvPin, KvPrefixCatalog, KvRestoreReport, KvSalt, KvSnapshotError, KV_CHUNK_TOKENS,
 };
 use ptr_model_api::{
-    ByteTokenizer, InferenceBackend, KvReuseHint, KvReuseMode, KvReusePolicy, KvReuseReport,
-    KvReusingBackend, ModelError, ModelEvent, ModelRequest, ModelRun, PromptSegment,
-    SegmentedModelRequest, TokenContractError, TokenId, Tokenizer, TokenizerIdentity,
+    ByteTokenizer, InferenceBackend, KvReuseHint, KvReusePolicy, KvReusingBackend, ModelError,
+    ModelEvent, ModelRequest, ModelRun, PromptSegment, SegmentedModelRequest, TokenContractError,
+    TokenId, Tokenizer, TokenizerIdentity,
 };
 use ptr_pods::{
     derive_kv_layer_chains_in_regime, InMemoryPagedKvBackend, KvBackendError, KvChainError,
     KvChainIdentity, KvPageBinding, KvPageSize, KvPrefixKey, KvTensorDType, KvTensorSchema,
     PagedKvTensorBackend, Qwen2Activation, Qwen2LayerConfig, Qwen2PagedStack, Qwen2QkNorm,
-    Qwen2RopeRegime, Qwen2RopeScaling, Qwen2StackConfig, Qwen2StackError, Qwen2StackInput,
+    Qwen2RopeRegime, Qwen2RopeScaling, Qwen2StackConfig, Qwen2StackError,
 };
 use ptr_types::{
     AdapterVersion, DeviceId, Digest, Generation, ModelVersion, PrincipalId, ProjectId,
 };
 use sha2::{Digest as _, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-const LOGITS_DOMAIN: &[u8] = b"ptr.kv.reference-logits.v1\0";
+pub(crate) const LOGITS_DOMAIN: &[u8] = b"ptr.kv.reference-logits.v1\0";
 const MANIFEST_DOMAIN: &[u8] = b"ptr.kv.reference-manifest.v1\0";
 
 /// R005 `weight_seed`.
@@ -96,6 +108,10 @@ pub struct ReferenceKvLimits {
     pub max_prompt_tokens: usize,
     /// Tokens generated per request by greedy decoding.
     pub max_new_tokens: usize,
+    /// Most [`KvSession`]s open at once on one backend. One more is refused with
+    /// [`ReferenceKvError::SessionLimit`]; the one-shot entry points are serialized by a
+    /// gate and do not count.
+    pub max_sessions: usize,
     pub catalog: CatalogLimits,
 }
 
@@ -104,6 +120,7 @@ impl Default for ReferenceKvLimits {
         Self {
             max_prompt_tokens: 256,
             max_new_tokens: 8,
+            max_sessions: 8,
             catalog: CatalogLimits::default(),
         }
     }
@@ -115,6 +132,26 @@ impl Default for ReferenceKvLimits {
 pub struct ReferenceKvScope {
     pub principal: PrincipalId,
     pub project: ProjectId,
+}
+
+/// Explicit fault configuration of one backend, for the R005 lag arm. The default is no
+/// fault.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReferenceKvFaults {
+    pub index_update: IndexUpdate,
+}
+
+/// Whether [`ReferenceKvReuseBackend::invalidate_inputs`] and
+/// [`ReferenceKvReuseBackend::supersede_inputs`] update the catalog index.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum IndexUpdate {
+    /// Tombstone and retire the affected entries (production behaviour).
+    #[default]
+    Applied,
+    /// Record the revocation in the backend's liveness set only. The catalog index stays
+    /// stale, so only the use-time liveness check keeps a stale entry from being served
+    /// (doc 36: invalidation is an optimisation, not the safety mechanism).
+    Suppressed,
 }
 
 /// Typed failures of the reference backend.
@@ -139,6 +176,16 @@ pub enum ReferenceKvError {
     NonFiniteLogits,
     /// The state lock was poisoned by a panic in an earlier request.
     Poisoned,
+    /// [`ReferenceKvLimits::max_sessions`] sessions are already open.
+    SessionLimit {
+        maximum: usize,
+    },
+    /// A session step was called in a phase that does not allow it.
+    SessionPhase {
+        operation: &'static str,
+        phase: crate::kv_infer_session::KvSessionPhase,
+    },
+    Snapshot(KvSnapshotError),
 }
 
 impl fmt::Display for ReferenceKvError {
@@ -164,6 +211,13 @@ impl fmt::Display for ReferenceKvError {
             Self::Contract(error) => write!(f, "token contract: {error}"),
             Self::NonFiniteLogits => write!(f, "the reference stack produced non-finite logits"),
             Self::Poisoned => write!(f, "reference KV state lock poisoned"),
+            Self::SessionLimit { maximum } => {
+                write!(f, "{maximum} reference KV sessions are already open")
+            }
+            Self::SessionPhase { operation, phase } => {
+                write!(f, "{operation} is not allowed in session phase {phase:?}")
+            }
+            Self::Snapshot(error) => write!(f, "catalog snapshot: {error}"),
         }
     }
 }
@@ -221,50 +275,86 @@ pub struct ReferenceKvOutcome {
     pub inserted_chunks: usize,
     /// Chunk boundaries the catalog declined (capacity, draining slot, dead dependency).
     pub insert_refusals: usize,
+    /// Why each declined boundary was declined, in order (`CapacityExhausted` is the
+    /// saturation behaviour: the run continues uncached and bitwise equal to cold).
+    pub insert_refusal_reasons: Vec<KvCatalogError>,
     /// The fork was cancelled by an invalidation and the run restarted from a fresh prefill.
     pub restarted_after_cancel: bool,
 }
 
 /// Whether a run may look up and insert.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CacheUse {
+pub(crate) enum CacheUse {
     Disabled,
     Enabled,
 }
 
-/// Liveness as this backend knows it: an input is live unless it was revoked.
+/// Liveness as this backend knows it: an input is live unless it was revoked or its
+/// generation is below the floor a supersession set for its identity.
 #[derive(Debug, Default)]
-struct RevokedInputs {
+pub(crate) struct RevokedInputs {
     revoked: BTreeSet<(String, Generation)>,
+    floors: BTreeMap<String, Generation>,
 }
 
-impl KvLivenessOracle for RevokedInputs {
+impl RevokedInputs {
     fn is_live(&self, dependency: &KvDependency) -> bool {
         !self
             .revoked
             .contains(&(dependency.identity.clone(), dependency.generation))
+            && self
+                .floors
+                .get(&dependency.identity)
+                .is_none_or(|floor| dependency.generation >= *floor)
     }
 }
 
-struct ReuseState {
-    catalog: KvPrefixCatalog,
-    liveness: RevokedInputs,
+/// The backend's own liveness answer, the fallback oracle when no ledger-anchored one is
+/// passed. A clone shares the same set, so it sees revocations made after it was taken. A
+/// poisoned set answers "not live" (fail closed). It has its own lock, so it can be asked
+/// while a catalog operation holds the state lock.
+#[derive(Clone, Debug, Default)]
+pub struct ReferenceKvLiveness {
+    inner: Arc<Mutex<RevokedInputs>>,
+}
+
+impl KvLivenessOracle for ReferenceKvLiveness {
+    fn is_live(&self, dependency: &KvDependency) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|inputs| inputs.is_live(dependency))
+    }
+}
+
+pub(crate) struct ReuseState {
+    pub(crate) catalog: KvPrefixCatalog,
     /// Backend prefix keys some catalog entry holds or held and whose retirement the
     /// catalog has not yet reported; a refused insert must not retire these.
-    held: BTreeSet<KvPrefixKey>,
+    pub(crate) held: BTreeSet<KvPrefixKey>,
+    pub(crate) faults: ReferenceKvFaults,
+    pub(crate) stats: KvSessionStats,
+    /// Pins of the open sessions, by session id.
+    pub(crate) pins: BTreeMap<u64, KvPin>,
+    pub(crate) open_sessions: usize,
+    pub(crate) next_session: u64,
 }
+
+pub(crate) type ReferenceCache = <InMemoryPagedKvBackend as ptr_pods::KvTensorBackend>::Cache;
 
 /// See the module documentation.
 pub struct ReferenceKvReuseBackend {
-    stack: Qwen2PagedStack,
+    pub(crate) stack: Qwen2PagedStack,
     tokenizer: ByteTokenizer,
-    paged: InMemoryPagedKvBackend,
+    pub(crate) paged: InMemoryPagedKvBackend,
     chain: KvChainId,
     build: String,
     schema: KvTensorSchema,
     limits: ReferenceKvLimits,
     default_scope: ReferenceKvScope,
-    state: Mutex<ReuseState>,
+    pub(crate) state: Mutex<ReuseState>,
+    liveness: ReferenceKvLiveness,
+    /// Serializes the one-shot entry points, as the former whole-request lock did.
+    oneshot: Mutex<()>,
 }
 
 impl fmt::Debug for ReferenceKvReuseBackend {
@@ -355,7 +445,7 @@ impl ReferenceKvReuseBackend {
         weight_seed: u64,
         rope_scaling: Qwen2RopeScaling,
     ) -> Result<Self, ReferenceKvError> {
-        if limits.max_prompt_tokens == 0 || limits.max_new_tokens == 0 {
+        if limits.max_prompt_tokens == 0 || limits.max_new_tokens == 0 || limits.max_sessions == 0 {
             return Err(ReferenceKvError::InvalidLimits);
         }
         check_scope(&default_scope)?;
@@ -391,9 +481,15 @@ impl ReferenceKvReuseBackend {
             default_scope,
             state: Mutex::new(ReuseState {
                 catalog,
-                liveness: RevokedInputs::default(),
                 held: BTreeSet::new(),
+                faults: ReferenceKvFaults::default(),
+                stats: KvSessionStats::default(),
+                pins: BTreeMap::new(),
+                open_sessions: 0,
+                next_session: 0,
             }),
+            liveness: ReferenceKvLiveness::default(),
+            oneshot: Mutex::new(()),
         })
     }
 
@@ -429,7 +525,10 @@ impl ReferenceKvReuseBackend {
             .admit_rope_regime(prompt_tokens, self.limits.max_new_tokens)?)
     }
 
-    fn chain_for(&self, regime: &Qwen2RopeRegime) -> Result<KvChainId, ReferenceKvError> {
+    pub(crate) fn chain_for(
+        &self,
+        regime: &Qwen2RopeRegime,
+    ) -> Result<KvChainId, ReferenceKvError> {
         derive_chain(&self.stack, &self.build, self.tokenizer.identity(), regime)
     }
 
@@ -444,7 +543,7 @@ impl ReferenceKvReuseBackend {
         Ok(self.lock()?.catalog.stats())
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, ReuseState>, ReferenceKvError> {
+    pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, ReuseState>, ReferenceKvError> {
         self.state.lock().map_err(|_| ReferenceKvError::Poisoned)
     }
 
@@ -512,15 +611,67 @@ impl ReferenceKvReuseBackend {
         self.generate(scope, request, KvReusePolicy::ExactOnly, CacheUse::Disabled)
     }
 
+    /// The backend's own liveness oracle (the fallback when no ledger-anchored one is
+    /// passed to a session).
+    pub fn own_liveness(&self) -> ReferenceKvLiveness {
+        self.liveness.clone()
+    }
+
+    /// Replace the fault configuration (the R005 lag arm).
+    pub fn set_faults(&self, faults: ReferenceKvFaults) -> Result<(), ReferenceKvError> {
+        self.lock()?.faults = faults;
+        Ok(())
+    }
+
+    /// Counters of the session lifecycle: cancelled and restarted request ids, saturation,
+    /// eviction audit (see [`KvSessionStats`]).
+    pub fn session_stats(&self) -> Result<KvSessionStats, ReferenceKvError> {
+        Ok(self.lock()?.stats.clone())
+    }
+
+    /// Open a stepwise session for `request` in `scope`; see [`KvSession`]. `liveness` is
+    /// asked at begin and before every emitted token and catalog insert.
+    pub fn begin_session<'a>(
+        &'a self,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        hint: Option<&KvReuseHint>,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<KvSession<'a>, ReferenceKvError> {
+        let policy = hint.map_or(KvReusePolicy::ExactOnly, |hint| hint.policy);
+        KvSession::begin(
+            self,
+            scope,
+            request,
+            policy,
+            CacheUse::Enabled,
+            crate::kv_infer_session::SessionAdmission::Counted,
+            liveness,
+        )
+    }
+
     /// Record that `(identity, generation)` pairs are no longer live: every entry that
     /// depends on one is tombstoned, its unused witnesses are revoked and the backend
-    /// prefixes it held are retired. Later lookups also see the revocation at use time.
+    /// prefixes it held are retired. Later lookups and session steps also see the
+    /// revocation at use time through [`Self::own_liveness`].
+    ///
+    /// With [`IndexUpdate::Suppressed`] only the liveness set changes and `0` is returned:
+    /// the catalog index stays stale on purpose.
     pub fn invalidate_inputs(
         &self,
         invalidated: &BTreeSet<(String, Generation)>,
     ) -> Result<usize, ReferenceKvError> {
         let mut state = self.lock()?;
-        state.liveness.revoked.extend(invalidated.iter().cloned());
+        self.liveness
+            .inner
+            .lock()
+            .map_err(|_| ReferenceKvError::Poisoned)?
+            .revoked
+            .extend(invalidated.iter().cloned());
+        if state.faults.index_update == IndexUpdate::Suppressed {
+            state.stats.suppressed_index_updates += 1;
+            return Ok(0);
+        }
         let keys = state.catalog.invalidate_inputs(invalidated);
         let retired = keys.len();
         for key in &keys {
@@ -528,6 +679,58 @@ impl ReferenceKvReuseBackend {
         }
         self.drain_retirements(&mut state)?;
         Ok(retired)
+    }
+
+    /// Record that every generation of an identity below `live[identity]` is superseded:
+    /// the matching entries are tombstoned and retired like [`Self::invalidate_inputs`],
+    /// and the liveness set refuses the older generations from now on (never lowered by a
+    /// later call). [`IndexUpdate::Suppressed`] applies here too.
+    pub fn supersede_inputs(
+        &self,
+        live: &BTreeMap<String, Generation>,
+    ) -> Result<usize, ReferenceKvError> {
+        let mut state = self.lock()?;
+        {
+            let mut inputs = self
+                .liveness
+                .inner
+                .lock()
+                .map_err(|_| ReferenceKvError::Poisoned)?;
+            for (identity, generation) in live {
+                let floor = inputs.floors.entry(identity.clone()).or_insert(*generation);
+                *floor = (*floor).max(*generation);
+            }
+        }
+        if state.faults.index_update == IndexUpdate::Suppressed {
+            state.stats.suppressed_index_updates += 1;
+            return Ok(0);
+        }
+        let keys = state.catalog.invalidate_superseded(live);
+        let retired = keys.len();
+        for key in &keys {
+            self.retire(&mut state, key)?;
+        }
+        self.drain_retirements(&mut state)?;
+        Ok(retired)
+    }
+
+    /// The catalog's canonical snapshot (keys, lineage, dependencies; no K/V pages).
+    pub fn export_catalog(&self) -> Result<Vec<u8>, ReferenceKvError> {
+        self.lock()?
+            .catalog
+            .export_entries()
+            .map_err(ReferenceKvError::Snapshot)
+    }
+
+    /// Admit a snapshot into the empty catalog without a liveness check: the first use
+    /// decides (the R005 restore arm). An entry whose input was revoked meanwhile misses
+    /// through the use-time check; one whose pages this backend does not hold is dropped
+    /// when its fork finds them missing.
+    pub fn restore_catalog(&self, snapshot: &[u8]) -> Result<KvRestoreReport, ReferenceKvError> {
+        self.lock()?
+            .catalog
+            .restore_entries(snapshot)
+            .map_err(ReferenceKvError::Snapshot)
     }
 
     /// Evict every unpinned entry and retire its backend prefix. Returns how many entries
@@ -539,10 +742,15 @@ impl ReferenceKvReuseBackend {
             evicted += 1;
         }
         self.drain_retirements(&mut state)?;
+        crate::kv_infer_session::audit_pins(&mut state);
         Ok(evicted)
     }
 
-    fn retire(&self, state: &mut ReuseState, key: &KvPrefixKey) -> Result<(), ReferenceKvError> {
+    pub(crate) fn retire(
+        &self,
+        state: &mut ReuseState,
+        key: &KvPrefixKey,
+    ) -> Result<(), ReferenceKvError> {
         state.held.remove(key);
         match self.paged.retire_prefix(key) {
             Ok(()) | Err(KvBackendError::PrefixNotFound) => Ok(()),
@@ -550,14 +758,14 @@ impl ReferenceKvReuseBackend {
         }
     }
 
-    fn drain_retirements(&self, state: &mut ReuseState) -> Result<(), ReferenceKvError> {
+    pub(crate) fn drain_retirements(&self, state: &mut ReuseState) -> Result<(), ReferenceKvError> {
         for key in state.catalog.take_retirements() {
             self.retire(state, &key)?;
         }
         Ok(())
     }
 
-    fn binding(
+    pub(crate) fn binding(
         &self,
         scope: &ReferenceKvScope,
         chain: &KvChainId,
@@ -574,7 +782,7 @@ impl ReferenceKvReuseBackend {
         })
     }
 
-    fn salt(&self, scope: &ReferenceKvScope) -> KvSalt {
+    pub(crate) fn salt(&self, scope: &ReferenceKvScope) -> KvSalt {
         KvSalt::derive(
             &scope.principal,
             &scope.project,
@@ -585,12 +793,11 @@ impl ReferenceKvReuseBackend {
         )
     }
 
-    fn new_cache(
+    pub(crate) fn new_cache(
         &self,
         scope: &ReferenceKvScope,
         chain: &KvChainId,
-    ) -> Result<<InMemoryPagedKvBackend as ptr_pods::KvTensorBackend>::Cache, ReferenceKvError>
-    {
+    ) -> Result<ReferenceCache, ReferenceKvError> {
         let capacity = self.limits.max_prompt_tokens + self.limits.max_new_tokens;
         Ok(self
             .paged
@@ -604,257 +811,42 @@ impl ReferenceKvReuseBackend {
         policy: KvReusePolicy,
         cache_use: CacheUse,
     ) -> Result<ReferenceKvOutcome, ReferenceKvError> {
-        check_scope(scope)?;
-        if request.tokenizer() != self.tokenizer.identity() {
-            return Err(ReferenceKvError::TokenizerMismatch {
-                found: request.tokenizer().clone(),
-            });
+        let _gate = self
+            .oneshot
+            .lock()
+            .map_err(|_| ReferenceKvError::Poisoned)?;
+        let liveness = self.own_liveness();
+        let mut session = KvSession::begin(
+            self,
+            scope,
+            request,
+            policy,
+            cache_use,
+            crate::kv_infer_session::SessionAdmission::OneShot,
+            &liveness,
+        )?;
+        match session.run_to_end(&liveness)? {
+            KvSessionFinish::Completed(outcome) => Ok(*outcome),
+            // An invalidation cancelled the run: nothing produced after it escaped, and
+            // the restart is a cold run (no lookup, no insert).
+            KvSessionFinish::Cancelled(_) => session.restart(),
         }
-        let total = request.total_tokens();
-        if total > self.limits.max_prompt_tokens {
-            return Err(ReferenceKvError::PromptTooLong {
-                tokens: total,
-                maximum: self.limits.max_prompt_tokens,
-            });
-        }
-        let mut state = self.lock()?;
-        let mut outcome = self.attempt(&mut state, scope, request, policy, cache_use)?;
-        if outcome.cancelled {
-            // An invalidation cancelled the fork: nothing produced after it may escape.
-            outcome = self.attempt(&mut state, scope, request, policy, CacheUse::Disabled)?;
-            outcome.value.restarted_after_cancel = true;
-        }
-        Ok(outcome.value)
     }
 
-    fn attempt(
-        &self,
-        state: &mut ReuseState,
-        scope: &ReferenceKvScope,
-        request: &SegmentedModelRequest,
-        policy: KvReusePolicy,
-        cache_use: CacheUse,
-    ) -> Result<Attempt, ReferenceKvError> {
-        let salt = self.salt(scope);
-        let tokens = request.tokens();
-        let total = tokens.len();
-        // Fixed once here; prefill and every decode step use this value.
-        let regime = self.admit_regime(total)?;
-        let chain = self.chain_for(&regime)?;
-        let ids: Vec<u32> = tokens.iter().map(|token| token.0).collect();
-        let mut cache = self.new_cache(scope, &chain)?;
-        let mut hit_tokens = 0usize;
-        let mut pin: Option<KvPin> = None;
-
-        if cache_use == CacheUse::Enabled {
-            let lookup = KvLookup {
-                salt: &salt,
-                chain: &chain,
-                request,
-                positions: &KvRequestPositions::Canonical,
-            };
-            let hit = state.catalog.lookup(lookup, &state.liveness);
-            if let Some(hit) = hit {
-                let matched = hit.matched_tokens();
-                if matched >= total {
-                    // The stack needs the logits of the last prompt token, which a cache
-                    // does not hold: refuse the whole-prompt hit and prefill from scratch.
-                    let hit_pin = hit.pin().clone();
-                    state.catalog.release(&hit_pin);
-                } else {
-                    match state
-                        .catalog
-                        .fork(&self.paged, &mut cache, hit, &state.liveness)
-                    {
-                        Ok(forked) => {
-                            pin = Some(forked);
-                            hit_tokens = matched;
-                        }
-                        Err(_) => {
-                            // The fork was refused before use; start from an untouched cache.
-                            cache = self.new_cache(scope, &chain)?;
-                        }
-                    }
-                }
-            }
-            self.drain_retirements(state)?;
-        }
-
-        let result = self.prefill_and_decode(
-            state, request, &salt, &chain, &regime, &ids, &mut cache, hit_tokens, cache_use,
-        );
-        let still_live = pin
-            .as_ref()
-            .is_none_or(|pin| state.catalog.pin_is_live(pin));
-        if let Some(pin) = &pin {
-            state.catalog.release(pin);
-        }
-        self.drain_retirements(state)?;
-        let work = result?;
-        let prompt_tokens = total;
-        let mut outcome = ReferenceKvOutcome {
-            run: ModelRun {
-                events: Vec::new(),
-                kv_report: None,
-            },
-            generated: work.generated,
-            logits_digest: work.logits_digest,
-            prompt_tokens,
-            rope_regime: regime,
-            hit_tokens,
-            prefilled_tokens: work.prefilled,
-            inserted_chunks: work.inserted,
-            insert_refusals: work.refused,
-            restarted_after_cancel: false,
-        };
-        if !still_live {
-            return Ok(Attempt {
-                cancelled: true,
-                value: outcome,
-            });
-        }
-        let bytes: Vec<u8> = outcome
-            .generated
-            .iter()
-            .map(|token| u8::try_from(token.0).unwrap_or(b'?'))
-            .collect();
-        let report = KvReuseReport::new(hit_tokens, KvReuseMode::Exact, total, policy)?;
-        outcome.run = ModelRun {
-            events: vec![
-                ModelEvent::Token(String::from_utf8_lossy(&bytes).into_owned()),
-                ModelEvent::Finished,
-            ],
-            kv_report: Some(report),
-        };
-        Ok(Attempt {
-            cancelled: false,
-            value: outcome,
-        })
+    pub(crate) fn max_session_limit(&self) -> usize {
+        self.limits.max_sessions
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn prefill_and_decode(
-        &self,
-        state: &mut ReuseState,
-        request: &SegmentedModelRequest,
-        salt: &KvSalt,
-        chain: &KvChainId,
-        regime: &Qwen2RopeRegime,
-        ids: &[u32],
-        cache: &mut <InMemoryPagedKvBackend as ptr_pods::KvTensorBackend>::Cache,
-        hit_tokens: usize,
-        cache_use: CacheUse,
-    ) -> Result<Work, ReferenceKvError> {
-        let total = ids.len();
-        let mut work = Work::default();
-        let mut position = hit_tokens;
-        let mut last_logits: Vec<f32> = Vec::new();
-        while position < total {
-            let next = total.min((position / KV_CHUNK_TOKENS + 1) * KV_CHUNK_TOKENS);
-            let output = self.stack.prefill_in_regime(
-                &self.paged,
-                cache,
-                Qwen2StackInput {
-                    tokens: ids[position..next].to_vec(),
-                },
-                regime,
-            )?;
-            work.prefilled += next - position;
-            last_logits = output.logits.into_iter().next_back().unwrap_or_default();
-            position = next;
-            if cache_use == CacheUse::Enabled && position.is_multiple_of(KV_CHUNK_TOKENS) {
-                self.offer_boundary(state, salt, chain, request, cache, &mut work)?;
-            }
-        }
-        let mut hasher = Sha256::new();
-        hasher.update(LOGITS_DOMAIN);
-        for step in 0..self.limits.max_new_tokens {
-            if last_logits.iter().any(|value| !value.is_finite()) {
-                return Err(ReferenceKvError::NonFiniteLogits);
-            }
-            for value in &last_logits {
-                hasher.update(value.to_bits().to_le_bytes());
-            }
-            let token = argmax(&last_logits);
-            work.generated.push(TokenId(token));
-            if step + 1 < self.limits.max_new_tokens {
-                let output = self.stack.decode_in_regime(
-                    &self.paged,
-                    cache,
-                    Qwen2StackInput {
-                        tokens: vec![token],
-                    },
-                    regime,
-                )?;
-                last_logits = output.logits.into_iter().next().unwrap_or_default();
-            }
-        }
-        work.logits_digest = hasher.finalize().into();
-        Ok(work)
+    pub(crate) fn prompt_bound(&self) -> usize {
+        self.limits.max_prompt_tokens
     }
 
-    /// Publish the cache's full pages and offer them to the catalog. A refusal that only
-    /// means "not cached" is counted; anything else is an error.
-    fn offer_boundary(
-        &self,
-        state: &mut ReuseState,
-        salt: &KvSalt,
-        chain: &KvChainId,
-        request: &SegmentedModelRequest,
-        cache: &mut <InMemoryPagedKvBackend as ptr_pods::KvTensorBackend>::Cache,
-        work: &mut Work,
-    ) -> Result<(), ReferenceKvError> {
-        let prefix = self.paged.publish_prefix(cache)?;
-        let key = prefix.key.clone();
-        // Per-page charges: each unique page digest is charged once with its real bytes, so
-        // prompts that share a long prefix do not re-charge it (the former whole-cache
-        // `resident_bytes` figure grew quadratically with prefix length).
-        let pages = self
-            .paged
-            .prefix_page_bytes(&prefix)?
-            .into_iter()
-            .map(|(digest, bytes)| KvPageCharge { digest, bytes })
-            .collect();
-        let ReuseState {
-            catalog, liveness, ..
-        } = state;
-        let result = catalog.insert_paged(
-            KvPagedInsert {
-                salt,
-                chain,
-                request,
-                prefix,
-                pages,
-                extra_dependencies: Vec::new(),
-            },
-            liveness,
-        );
-        match result {
-            Ok(()) => {
-                work.inserted += 1;
-                state.held.insert(key);
-            }
-            Err(
-                KvCatalogError::CapacityExhausted(_)
-                | KvCatalogError::SlotDraining
-                | KvCatalogError::DuplicateEntry
-                | KvCatalogError::DependencyNotLive,
-            ) => {
-                work.refused += 1;
-                if !state.held.contains(&key) {
-                    match self.paged.retire_prefix(&key) {
-                        Ok(()) | Err(KvBackendError::PrefixNotFound) => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-            }
-            Err(error) => return Err(ReferenceKvError::Catalog(error)),
-        }
-        self.drain_retirements(state)
+    pub(crate) fn max_new(&self) -> usize {
+        self.limits.max_new_tokens
     }
 }
 
-fn check_scope(scope: &ReferenceKvScope) -> Result<(), ReferenceKvError> {
+pub(crate) fn check_scope(scope: &ReferenceKvScope) -> Result<(), ReferenceKvError> {
     if scope.principal.0.trim().is_empty() || scope.project.0.trim().is_empty() {
         return Err(ReferenceKvError::InvalidScope);
     }
@@ -862,7 +854,7 @@ fn check_scope(scope: &ReferenceKvScope) -> Result<(), ReferenceKvError> {
 }
 
 /// Index of the first maximum.
-fn argmax(logits: &[f32]) -> u32 {
+pub(crate) fn argmax(logits: &[f32]) -> u32 {
     let mut best = 0usize;
     for (index, value) in logits.iter().enumerate() {
         if *value > logits[best] {
@@ -870,20 +862,6 @@ fn argmax(logits: &[f32]) -> u32 {
         }
     }
     best as u32
-}
-
-#[derive(Default)]
-struct Work {
-    generated: Vec<TokenId>,
-    logits_digest: Digest,
-    prefilled: usize,
-    inserted: usize,
-    refused: usize,
-}
-
-struct Attempt {
-    cancelled: bool,
-    value: ReferenceKvOutcome,
 }
 
 impl KvReusingBackend for ReferenceKvReuseBackend {

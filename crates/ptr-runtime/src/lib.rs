@@ -6,6 +6,7 @@ pub mod expert;
 pub mod identity;
 pub mod kv;
 pub mod kv_infer;
+pub mod kv_infer_session;
 pub mod kv_prefix;
 pub mod kv_taint;
 pub mod manifest;
@@ -34,8 +35,12 @@ pub use identity::{
 };
 pub use kv::{KvUseError, KvUseRequest, KvUseTicket, RuntimeKvAuthority};
 pub use kv_infer::{
-    ReferenceKvError, ReferenceKvLimits, ReferenceKvOutcome, ReferenceKvReuseBackend,
-    ReferenceKvScope, REFERENCE_KV_WEIGHT_SEED,
+    IndexUpdate, ReferenceKvError, ReferenceKvFaults, ReferenceKvLimits, ReferenceKvLiveness,
+    ReferenceKvOutcome, ReferenceKvReuseBackend, ReferenceKvScope, REFERENCE_KV_WEIGHT_SEED,
+};
+pub use kv_infer_session::{
+    KvCancelReason, KvCancellation, KvSession, KvSessionFinish, KvSessionPhase, KvSessionStats,
+    KvSessionStep,
 };
 pub use kv_prefix::{
     chunk_keys, expert_operand_identities, CatalogLimits, KvCapacityResource, KvCatalogError,

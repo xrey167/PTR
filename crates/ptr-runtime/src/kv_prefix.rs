@@ -746,6 +746,14 @@ impl KvPrefixCatalog {
             .is_some_and(|entry| !entry.tombstoned && entry.pins.contains_key(&pin.id))
     }
 
+    /// Whether the entry behind `pin` still exists and still holds the pin, tombstoned or
+    /// not. `false` means the entry was evicted or reclaimed under the pin, which the
+    /// catalog never does while the pin is held (the session audit checks it).
+    pub fn pin_held(&self, pin: &KvPin) -> bool {
+        self.entry(&pin.node, &pin.entry)
+            .is_some_and(|entry| entry.pins.contains_key(&pin.id))
+    }
+
     /// Drop a pin. A tombstoned entry is reclaimed when its last pin is released.
     /// Returns whether the pin was known.
     pub fn release(&mut self, pin: &KvPin) -> bool {
