@@ -191,6 +191,12 @@ pub enum ReferenceKvError {
     Snapshot(KvSnapshotError),
     /// A [`StackBinding`] was refused (see [`BindingError`]).
     Binding(BindingError),
+    /// [`KvSession::restart_with`] was cancelled by a revocation or fence on every one of its
+    /// attempts. Nothing produced by those attempts was returned.
+    RestartCancelled {
+        attempts: usize,
+        last: crate::kv_infer_session::KvCancellation,
+    },
 }
 
 impl fmt::Display for ReferenceKvError {
@@ -224,6 +230,11 @@ impl fmt::Display for ReferenceKvError {
             }
             Self::Snapshot(error) => write!(f, "catalog snapshot: {error}"),
             Self::Binding(error) => write!(f, "stack binding: {error}"),
+            Self::RestartCancelled { attempts, last } => write!(
+                f,
+                "restart cancelled on all {attempts} attempts (last: {:?})",
+                last.reason
+            ),
         }
     }
 }
@@ -639,7 +650,10 @@ impl ReferenceKvReuseBackend {
     }
 
     /// Like [`Self::infer_cold`] on a [`StackBinding`]: no lookup and no insert, and the
-    /// binding is not checked for liveness (a cold run depends on no cached state). A
+    /// binding is **not checked for liveness**, neither at begin nor during the run (a cold
+    /// run depends on no cached state, so a revoked adapter or expert is the caller's policy
+    /// question here and the run executes on exactly the binding passed). Use
+    /// [`Self::infer_scoped_bound`] or a session for a guarded run. A
     /// batch-variant binding is reported Approximate and needs
     /// [`KvReusePolicy::AllowApproximate`] in `hint`.
     pub fn infer_cold_bound(
@@ -941,8 +955,8 @@ impl ReferenceKvReuseBackend {
         match session.run_to_end(&liveness)? {
             KvSessionFinish::Completed(outcome) => Ok(*outcome),
             // An invalidation cancelled the run: nothing produced after it escaped, and
-            // the restart is a cold run (no lookup, no insert).
-            KvSessionFinish::Cancelled(_) => session.restart(),
+            // the restart is a cold run (no lookup, no insert) guarded by the same oracle.
+            KvSessionFinish::Cancelled(_) => session.restart_with(&liveness),
         }
     }
 

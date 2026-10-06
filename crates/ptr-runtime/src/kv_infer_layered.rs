@@ -46,6 +46,27 @@
 //! revoked tracked expert is masked from routing and a superseded one moves to its live
 //! successor generation. The restart runs cold on that binding, is bitwise equal to a cold
 //! run of it, and records the re-resolved binding in the outcome.
+//!
+//! The restart is **guarded**: it uses no cache and pins nothing, but before every prefill
+//! chunk, every token and at finish it asks the oracle it was given
+//! ([`KvSession::restart_with`](crate::KvSession); a bound session has no oracle-less
+//! restart, so a restart can never silently use a different oracle than the run it
+//! replaces) about the resolved binding's base model, adapter and tracked experts. A
+//! revocation or fence during the restart cancels that attempt, nothing it produced is
+//! returned, and the binding is re-resolved and the run restarted, up to
+//! [`MAX_RESTART_ATTEMPTS`](crate::kv_infer_session) attempts, after which
+//! `ReferenceKvError::RestartCancelled` is returned. Segment (lineage) dependencies are not
+//! re-checked by a restart, as before: a revoked input is the caller's policy question.
+//!
+//! # Tracked experts and caller-trusted layering
+//!
+//! A MoE does not carry the project and pod identity a lifecycle fence names, so the binding
+//! must track **every live expert of every MoE layer** ([`MoeBinding::experts`]); an
+//! omitted live expert is refused with [`BindingError::UntrackedLiveExpert`]. The layered
+//! fork and adopt requests of `ptr-pods` trust the caller's per-layer assignment: this
+//! module picks every layer's entry by that layer's own chain (the adapted chain, or the
+//! base chain for an unadapted layer or a prefix at or before an aLoRA invocation) and
+//! never hands the backend a prefix chosen by anything else.
 
 use crate::kv_infer::{
     ReferenceCache, ReferenceKvError, ReferenceKvReuseBackend, ReferenceKvScope, ReuseState,
@@ -58,7 +79,7 @@ use crate::{
 use ptr_model_api::SegmentedModelRequest;
 use ptr_pods::{
     derive_adapted_kv_layer_chains_in_regime, derive_kv_layer_chains_in_regime, KvAdaptedChains,
-    KvAdapterLayering, KvAdoptError, KvBackendError, KvChainError, KvChainIdentity, KvForkWitness,
+    KvAdapterLayering, KvAdoptError, KvBackendError, KvChainIdentity, KvForkWitness,
     KvLayerAdoptRequest, KvLayerForkRequest, KvLayerPublishRequest, KvLayerRange, KvSharedPrefix,
     KvTensorBackend, PagedKvTensorBackend, Qwen2Adapter, Qwen2AdapterKind, Qwen2Moe, Qwen2MoeError,
     Qwen2PagedStack, Qwen2RopeRegime, Qwen2StackConfig, RoutingDeterminism,
@@ -90,6 +111,23 @@ pub enum BindingError {
     /// The binding routes batch-variantly, which can only be reported Approximate, and the
     /// request's policy is `ExactOnly`.
     ApproximateNotAllowed,
+    /// A live expert of a MoE layer is not among the tracked experts, so a revocation or
+    /// fence of it would not invalidate the entries that depend on it. The MoE carries no
+    /// project or pod identity, so the binding must name every live expert; mask an expert
+    /// that should not be depended on.
+    UntrackedLiveExpert {
+        layer: usize,
+        index: usize,
+    },
+    /// The stack derived no chain for a layer (a chain-derivation bug, refused instead of
+    /// keying the layer under a placeholder).
+    MissingLayerChain {
+        layer: usize,
+    },
+    /// A bound session was restarted through [`KvSession::restart`](crate::KvSession), which
+    /// has no oracle; its restart must be guarded by the oracle the session was driven with,
+    /// so use `restart_with`.
+    RestartNeedsOracle,
     Moe(Qwen2MoeError),
 }
 
@@ -112,6 +150,17 @@ impl fmt::Display for BindingError {
                 f,
                 "batch-variant routing is Approximate and the policy is ExactOnly"
             ),
+            Self::UntrackedLiveExpert { layer, index } => write!(
+                f,
+                "live expert ({layer}, {index}) is not tracked by the binding"
+            ),
+            Self::MissingLayerChain { layer } => {
+                write!(f, "no KV chain was derived for layer {layer}")
+            }
+            Self::RestartNeedsOracle => write!(
+                f,
+                "a bound session restarts with restart_with and the oracle it was driven with"
+            ),
             Self::Moe(error) => write!(f, "moe: {error}"),
         }
     }
@@ -132,7 +181,10 @@ pub struct BoundExpert {
 }
 
 /// The MoE a request runs on (generations, live masks and routing mode included) and the
-/// experts whose lifecycle it tracks.
+/// experts whose lifecycle it tracks. `experts` must cover **every live expert of every MoE
+/// layer** (a masked expert needs no tracking); a binding that omits one is refused with
+/// [`BindingError::UntrackedLiveExpert`], because the MoE does not carry the project and pod
+/// identity a lifecycle fence names, so the runtime cannot derive the dependency itself.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MoeBinding {
     pub moe: Qwen2Moe,
@@ -325,8 +377,14 @@ pub struct LayeredReuseReport {
     /// Per-layer catalog entries this run inserted.
     pub inserted_layer_entries: usize,
     /// Rows at positions at or after an aLoRA invocation that this run inserted under a
-    /// base-only key of an adapted layer. Must be zero.
+    /// base-only key of an adapted layer. Must be zero: such an entry is refused before it is
+    /// published (see [`Self::post_invocation_entries_refused`]), so this never rises.
     pub post_invocation_rows_under_base_key: usize,
+    /// Per-layer entries refused because they would have held post-invocation rows under a
+    /// base-only key. Zero unless the chain derivation is wrong.
+    pub post_invocation_entries_refused: usize,
+    /// Rows in those refused entries.
+    pub post_invocation_rows_refused: usize,
 }
 
 impl LayeredReuseReport {
@@ -346,6 +404,8 @@ impl LayeredReuseReport {
             boundary_rows: 0,
             inserted_layer_entries: 0,
             post_invocation_rows_under_base_key: 0,
+            post_invocation_entries_refused: 0,
+            post_invocation_rows_refused: 0,
         }
     }
 
@@ -579,16 +639,21 @@ impl LayerPlan {
         identity: &KvChainIdentity,
         adapter: Option<&Qwen2Adapter>,
         regime: &Qwen2RopeRegime,
-    ) -> Result<Self, KvChainError> {
+    ) -> Result<Self, ReferenceKvError> {
         let count = stack.config().num_layers;
         match adapter {
             None => {
                 let chains = derive_kv_layer_chains_in_regime(stack, identity, regime)?;
+                let base = (0..count)
+                    .map(|l| {
+                        chains
+                            .layer(l)
+                            .ok_or(BindingError::MissingLayerChain { layer: l })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(Self {
                     root: chains.root(),
-                    base: (0..count)
-                        .map(|l| chains.layer(l).unwrap_or([0; 32]))
-                        .collect(),
+                    base,
                     adapted: None,
                     activation: 0,
                 })
@@ -596,11 +661,17 @@ impl LayerPlan {
             Some(adapter) => {
                 let chains =
                     derive_adapted_kv_layer_chains_in_regime(stack, identity, adapter, regime)?;
+                let base = (0..count)
+                    .map(|l| {
+                        chains
+                            .base()
+                            .layer(l)
+                            .ok_or(BindingError::MissingLayerChain { layer: l })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(Self {
                     root: chains.base().root(),
-                    base: (0..count)
-                        .map(|l| chains.base().layer(l).unwrap_or([0; 32]))
-                        .collect(),
+                    base,
                     activation: chains.activation_position(),
                     adapted: Some(chains),
                 })
@@ -715,6 +786,18 @@ impl LayeredState {
                         index: tracked.index,
                     }
                     .into());
+                }
+            }
+            // Every live expert of every MoE layer must be tracked: an untracked one would
+            // feed the KV rows with no dependency to invalidate them by.
+            for layer in 0..config.num_layers {
+                let Some(moe_layer) = bound.moe.layer(layer) else {
+                    continue;
+                };
+                for (index, expert) in moe_layer.experts.iter().enumerate() {
+                    if expert.live && !seen.contains(&(layer, index)) {
+                        return Err(BindingError::UntrackedLiveExpert { layer, index }.into());
+                    }
                 }
             }
         }
@@ -1095,7 +1178,16 @@ fn fork_chosen(
         Ok(()) => {
             let mut served = depth;
             if let Some(keep) = truncate_to {
-                backend.paged.truncate(cache, keep)?;
+                if let Err(error) = backend.paged.truncate(cache, keep) {
+                    // The fork succeeded but cannot be cut to the invocation: nothing of it
+                    // may be used, and the pins taken for it must not leak (the session was
+                    // never created, so nobody else would release them).
+                    for pin in &pins {
+                        state.catalog.release(pin);
+                    }
+                    *cache = layered.fresh_cache(backend, scope)?;
+                    return Err(error.into());
+                }
                 served = keep;
                 layered.report.boundary_rows = keep % KV_CHUNK_TOKENS;
             }
@@ -1205,12 +1297,26 @@ pub(crate) fn offer_layers(
     let layering = layered.plan.layering_at(covered);
     let mut entries = Vec::new();
     let mut keys = Vec::new();
-    let mut post_rows = 0usize;
+    let mut refused_rows = 0usize;
+    let mut refused_entries = 0usize;
     for layer in 0..layer_count {
         if layered.hit_depth[layer] >= covered {
             continue;
         }
         let chain = layered.plan.chain_at(layer, covered);
+        // Fail closed: rows at or after the invocation never go under a base-only key of an
+        // adapted layer. The entry is skipped before anything is published for it.
+        if let Some(adapter) = adapter {
+            if adapter.adapts_kv()
+                && adapter.layer(layer).is_some()
+                && chain == layered.plan.base[layer]
+                && covered > layered.plan.activation
+            {
+                refused_rows += covered - layered.plan.activation;
+                refused_entries += 1;
+                continue;
+            }
+        }
         let prefix = backend.paged.publish_prefix_layers(
             cache,
             KvLayerPublishRequest {
@@ -1224,14 +1330,6 @@ pub(crate) fn offer_layers(
             .into_iter()
             .map(|(digest, bytes)| KvPageCharge { digest, bytes })
             .collect();
-        if let Some(adapter) = adapter {
-            if adapter.adapts_kv()
-                && adapter.layer(layer).is_some()
-                && chain == layered.plan.base[layer]
-            {
-                post_rows += covered.saturating_sub(layered.plan.activation);
-            }
-        }
         keys.push(prefix.key.clone());
         entries.push(KvLayerEntry {
             layer: layer as u16,
@@ -1241,7 +1339,8 @@ pub(crate) fn offer_layers(
             extra_dependencies: layered.layer_dependencies(layer, covered),
         });
     }
-    layered.report.post_invocation_rows_under_base_key += post_rows;
+    layered.report.post_invocation_entries_refused += refused_entries;
+    layered.report.post_invocation_rows_refused += refused_rows;
     if entries.is_empty() {
         return Ok(Offered {
             inserted_entries: 0,
@@ -1250,7 +1349,6 @@ pub(crate) fn offer_layers(
     }
     let count = entries.len();
     let mut state = backend.lock()?;
-    state.stats.post_invocation_rows_under_base_key += post_rows as u64;
     let evictions_before = state.catalog.stats().evictions;
     let result = state.catalog.insert_layers(
         KvLayeredInsert {
@@ -1311,4 +1409,80 @@ impl From<BindingError> for ReferenceKvError {
 
 pub(crate) fn record_of(binding: &StackBinding, config: &Qwen2StackConfig) -> BindingRecord {
     BindingRecord::of(binding, config, routing_of(binding))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ReferenceKvLimits;
+    use ptr_model_api::{PromptSegment, Tokenizer};
+    use ptr_types::{PrincipalId, RequestId, Revision, SemanticContext};
+
+    fn scope() -> ReferenceKvScope {
+        ReferenceKvScope {
+            principal: PrincipalId::from("alice"),
+            project: ProjectId::from("p"),
+        }
+    }
+
+    /// A failing truncation after a successful fork must release every pin the fork took:
+    /// the session is never created, so nothing else would.
+    #[test]
+    fn a_failed_boundary_truncation_releases_the_fork_pins() {
+        let backend = ReferenceKvReuseBackend::new(ReferenceKvLimits::default(), scope()).unwrap();
+        let body: String = (0..70)
+            .map(|i| char::from(b'a' + ((i * 7 + i / 16 * 5) % 26) as u8))
+            .collect();
+        let segment = PromptSegment::raw_from_text(backend.tokenizer(), &body).unwrap();
+        let request = SegmentedModelRequest::new(
+            RequestId::from("t"),
+            SemanticContext {
+                revision: Revision(1),
+                entries: Vec::new(),
+            },
+            backend.tokenizer().identity().clone(),
+            vec![segment],
+        )
+        .unwrap();
+        backend
+            .infer_scoped_bound(&scope(), &request, None, &StackBinding::base_layered())
+            .unwrap();
+
+        let liveness = backend.own_liveness();
+        let regime = backend.admit_regime(70).unwrap();
+        let mut layered =
+            LayeredState::prepare(&backend, &StackBinding::base_layered(), &regime).unwrap();
+        let mut cache = layered.fresh_cache(&backend, &scope()).unwrap();
+        let salt = backend.salt(&scope());
+        let queries: Vec<KvLayerQuery> = (0..layered.plan.layer_count())
+            .map(|layer| KvLayerQuery {
+                layer: layer as u16,
+                chain: KvChainId(layered.plan.query_chain(layer)),
+            })
+            .collect();
+        let mut state = backend.lock().unwrap();
+        let hits: Vec<KvCatalogHit> =
+            lookup_hits(&mut state.catalog, &salt, &request, &queries, &liveness)
+                .into_iter()
+                .map(|hit| hit.expect("every layer was inserted"))
+                .collect();
+        let pins: Vec<KvPin> = hits.iter().map(|hit| hit.pin().clone()).collect();
+        assert!(pins.iter().all(|pin| state.catalog.pin_held(pin)));
+
+        // Truncating beyond the sequence length is refused by the backend.
+        let result = fork_chosen(
+            &backend,
+            &scope(),
+            &mut state,
+            &mut cache,
+            &mut layered,
+            hits,
+            (64, false, Some(10_000)),
+            &liveness,
+        );
+        assert!(matches!(result, Err(ReferenceKvError::Kv(_))), "{result:?}");
+        assert!(pins.iter().all(|pin| !state.catalog.pin_held(pin)));
+        assert!(layered.forked_pins.is_empty());
+        assert_eq!(cache.sequence_length, 0);
+    }
 }
