@@ -2,9 +2,9 @@
 //! Public API only.
 
 use ptr_pods::{
-    derive_kv_layer_chains, KvChainError, KvChainIdentity, KvKeyEncoding, KvLayerChains,
-    Qwen2Activation, Qwen2LayerConfig, Qwen2PagedStack, Qwen2QkNorm, Qwen2RopeScaling,
-    Qwen2StackConfig, Qwen2StackError, Qwen2StackWeights,
+    derive_kv_layer_chains, derive_kv_layer_chains_in_regime, KvChainError, KvChainIdentity,
+    KvKeyEncoding, KvLayerChains, Qwen2Activation, Qwen2LayerConfig, Qwen2PagedStack, Qwen2QkNorm,
+    Qwen2RopeScaling, Qwen2StackConfig, Qwen2StackError, Qwen2StackWeights,
 };
 
 const LAYERS: usize = 4;
@@ -261,5 +261,83 @@ fn blank_identity_and_nan_weights_are_refused() {
     assert_eq!(
         Qwen2PagedStack::new(config, infinite).unwrap_err(),
         Qwen2StackError::InvalidWeights("non-finite weight")
+    );
+}
+
+// ---- RoPE regime fixed at admission ----
+
+fn ntk(encoding: KvKeyEncoding, factor: f32) -> Qwen2PagedStack {
+    let mut config = config(encoding, Qwen2QkNorm::Disabled);
+    config.layer.rope_scaling = Qwen2RopeScaling::DynamicNtk {
+        factor,
+        original_max_position_embeddings: 8,
+    };
+    Qwen2PagedStack::reference(config, 5).unwrap()
+}
+
+fn in_regime(stack: &Qwen2PagedStack, admitted: usize) -> KvLayerChains {
+    let regime = stack.admit_rope_regime(admitted, 0).unwrap();
+    derive_kv_layer_chains_in_regime(stack, &identity(), &regime).unwrap()
+}
+
+#[test]
+fn chain_follows_the_regime_per_the_rope_rule() {
+    // PostRope: the stored key is rotated, so the regime enters every layer including 0.
+    let post = ntk(KvKeyEncoding::PostRope, 4.0);
+    assert_eq!(
+        differing(&in_regime(&post, 12), &in_regime(&post, 30)),
+        vec![0, 1, 2, 3]
+    );
+    // PreRope: layer 0 projects from the embedding before any attention, so layers >= 1.
+    let pre = ntk(KvKeyEncoding::PreRope, 4.0);
+    assert_eq!(
+        differing(&in_regime(&pre, 12), &in_regime(&pre, 30)),
+        vec![1, 2, 3]
+    );
+    // Deterministic, and one regime is one chain.
+    assert_eq!(in_regime(&pre, 30), in_regime(&pre, 30));
+}
+
+#[test]
+fn lengths_within_the_original_maximum_share_one_regime() {
+    for encoding in [KvKeyEncoding::PreRope, KvKeyEncoding::PostRope] {
+        let stack = ntk(encoding, 4.0);
+        // Both give the plain base, so the chains are equal and entries may be shared.
+        let a = in_regime(&stack, 3);
+        assert_eq!(a, in_regime(&stack, 8));
+        assert_ne!(a, in_regime(&stack, 9));
+    }
+}
+
+#[test]
+fn scaling_policy_changes_the_chain_even_at_equal_base() {
+    let four = ntk(KvKeyEncoding::PostRope, 4.0);
+    let two = ntk(KvKeyEncoding::PostRope, 2.0);
+    // Within omp both stacks use the plain base, yet the policy is bound.
+    assert_eq!(
+        differing(&in_regime(&four, 4), &in_regime(&two, 4)),
+        vec![0, 1, 2, 3]
+    );
+    // No scaling at all is a different policy from dynamic NTK at the plain base.
+    let (config, weights) = base(KvKeyEncoding::PostRope, Qwen2QkNorm::Disabled);
+    assert_eq!(
+        differing(&chains(&config, &weights), &in_regime(&four, 4)),
+        vec![0, 1, 2, 3]
+    );
+}
+
+#[test]
+fn regime_is_required_and_checked() {
+    let stack = ntk(KvKeyEncoding::PreRope, 4.0);
+    assert_eq!(
+        derive_kv_layer_chains(&stack, &identity()).unwrap_err(),
+        KvChainError::RopeRegimeRequired
+    );
+    // A regime of another configuration is refused.
+    let other = ntk(KvKeyEncoding::PreRope, 2.0);
+    let foreign = other.admit_rope_regime(30, 0).unwrap();
+    assert_eq!(
+        derive_kv_layer_chains_in_regime(&stack, &identity(), &foreign).unwrap_err(),
+        KvChainError::RopeRegimeMismatch
     );
 }

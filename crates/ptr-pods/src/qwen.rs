@@ -6,10 +6,67 @@ pub enum Qwen2Activation {
     Unsupported(String),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// RoPE context-extension scheme of a Qwen2 layer.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Qwen2RopeScaling {
     None,
+    /// Dynamic NTK-aware scaling, the Hugging Face `rope_type = "dynamic"` scheme.
+    ///
+    /// For a sequence length `seq_len` longer than `original_max_position_embeddings`
+    /// (`omp`) the rotary base becomes
+    ///
+    /// ```text
+    /// base' = theta * ((factor * seq_len / omp) - (factor - 1)) ^ (head_dim / (head_dim - 2))
+    /// ```
+    ///
+    /// and for `seq_len <= omp` it stays `theta`. Source: Hugging Face transformers,
+    /// `modeling_rope_utils._compute_dynamic_ntk_parameters` (with a full rotary
+    /// dimension, so `dim == head_dim`).
+    ///
+    /// The effective base depends on the sequence length, so a request must fix it once
+    /// at admission: see [`Qwen2RopeRegime`].
+    DynamicNtk {
+        factor: f32,
+        original_max_position_embeddings: usize,
+    },
     Unsupported(String),
+}
+
+/// The effective RoPE regime of one request, fixed at admission (doc 36 section D).
+///
+/// The regime is the **effective rotary base** computed once, from the admitted maximum
+/// sequence length (`prompt_tokens + max_new_tokens`), by [`Qwen2LayerConfig::rope_regime`].
+/// It is represented by the exact bits of that `f32` base ([`Self::effective_base_bits`]):
+/// two admitted lengths that give the same base (every length `<= omp` gives `theta`) are
+/// the same regime and may share cache entries, because every rotation they produce is
+/// bitwise identical. The base is computed in `f64` and rounded once to `f32`.
+///
+/// Prefill and decode of the request both use this one value and never recompute it, so a
+/// decode that crosses `omp` stays bitwise equal to a full prefill under the same regime.
+/// The regime also records the admitted length: a run that would go beyond it is refused
+/// (an actual regime transition needs a fresh admission and a recompute).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Qwen2RopeRegime {
+    effective_base: f32,
+    admitted_sequence_length: usize,
+}
+
+impl Qwen2RopeRegime {
+    /// The rotary base every rotation of the request uses.
+    pub fn effective_base(&self) -> f32 {
+        self.effective_base
+    }
+
+    /// Exact bits of [`Self::effective_base`]; what the KV chain binds.
+    pub fn effective_base_bits(&self) -> u32 {
+        self.effective_base.to_bits()
+    }
+
+    /// The maximum sequence length the regime was admitted for (`usize::MAX` when the
+    /// layer has no scaling and so no length dependence).
+    pub fn admitted_sequence_length(&self) -> usize {
+        self.admitted_sequence_length
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -45,7 +102,6 @@ impl Qwen2LayerConfig {
             || !(self.rope_theta.is_finite() && self.rope_theta > 0.0)
             || !(self.rms_norm_eps.is_finite() && self.rms_norm_eps > 0.0)
             || self.sliding_window == Some(0)
-            || !matches!(&self.rope_scaling, Qwen2RopeScaling::None)
             || !matches!(&self.hidden_act, Qwen2Activation::Silu)
         {
             return Err(KvBackendError::InvalidSchema(
@@ -58,7 +114,96 @@ impl Qwen2LayerConfig {
                 "Qwen2 RoPE requires an even head dimension".into(),
             ));
         }
+        match &self.rope_scaling {
+            Qwen2RopeScaling::None => {}
+            Qwen2RopeScaling::DynamicNtk {
+                factor,
+                original_max_position_embeddings,
+            } => {
+                // `head_dim / (head_dim - 2)` needs head_dim > 2.
+                if !(factor.is_finite() && *factor >= 1.0)
+                    || *original_max_position_embeddings == 0
+                    || head_dim <= 2
+                {
+                    return Err(KvBackendError::InvalidSchema(
+                        "invalid Qwen2 dynamic NTK scaling".into(),
+                    ));
+                }
+            }
+            Qwen2RopeScaling::Unsupported(_) => {
+                return Err(KvBackendError::InvalidSchema(
+                    "invalid Qwen2 layer configuration".into(),
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// Fix the effective RoPE regime for a request admitted with at most
+    /// `admitted_sequence_length` positions (`prompt_tokens + max_new_tokens`).
+    pub fn rope_regime(
+        &self,
+        admitted_sequence_length: usize,
+    ) -> Result<Qwen2RopeRegime, KvBackendError> {
+        self.validate()?;
+        if admitted_sequence_length == 0 {
+            return Err(KvBackendError::InvalidSchema(
+                "admitted sequence length must be positive".into(),
+            ));
+        }
+        match &self.rope_scaling {
+            Qwen2RopeScaling::None => Ok(self.static_rope_regime()),
+            Qwen2RopeScaling::DynamicNtk {
+                factor,
+                original_max_position_embeddings: omp,
+            } => {
+                let effective_base = if admitted_sequence_length <= *omp {
+                    self.rope_theta
+                } else {
+                    let head_dim = (self.hidden_size / self.num_attention_heads) as f64;
+                    let factor = f64::from(*factor);
+                    let scale =
+                        factor * admitted_sequence_length as f64 / *omp as f64 - (factor - 1.0);
+                    let base = f64::from(self.rope_theta) * scale.powf(head_dim / (head_dim - 2.0));
+                    let rounded = base as f32;
+                    if !(base.is_finite() && rounded.is_finite() && rounded > 0.0) {
+                        return Err(KvBackendError::InvalidSchema(
+                            "dynamic NTK base is not finite".into(),
+                        ));
+                    }
+                    rounded
+                };
+                Ok(Qwen2RopeRegime {
+                    effective_base,
+                    admitted_sequence_length,
+                })
+            }
+            Qwen2RopeScaling::Unsupported(_) => Err(KvBackendError::InvalidSchema(
+                "invalid Qwen2 layer configuration".into(),
+            )),
+        }
+    }
+
+    /// The regime of a layer with no length-dependent scaling: the plain `rope_theta`.
+    /// Only meaningful when `rope_scaling` is [`Qwen2RopeScaling::None`].
+    pub(crate) fn static_rope_regime(&self) -> Qwen2RopeRegime {
+        Qwen2RopeRegime {
+            effective_base: self.rope_theta,
+            admitted_sequence_length: usize::MAX,
+        }
+    }
+
+    /// Whether `regime` is exactly what [`Self::rope_regime`] yields for its admitted
+    /// length under this configuration.
+    pub(crate) fn accepts_regime(&self, regime: &Qwen2RopeRegime) -> bool {
+        let expected = match self.rope_scaling {
+            Qwen2RopeScaling::None => Ok(self.static_rope_regime()),
+            _ => self.rope_regime(regime.admitted_sequence_length),
+        };
+        expected.is_ok_and(|expected| {
+            expected.effective_base_bits() == regime.effective_base_bits()
+                && expected.admitted_sequence_length == regime.admitted_sequence_length
+        })
     }
 }
 
@@ -269,6 +414,13 @@ impl Qwen2PagedDecoder {
         weights: Qwen2DecoderWeights,
     ) -> Result<Self, KvBackendError> {
         weights.validate(&config)?;
+        // This decoder applies `rope_theta` as is and has no admission-time regime, so it
+        // must not silently ignore a scaling scheme.
+        if config.rope_scaling != Qwen2RopeScaling::None {
+            return Err(KvBackendError::InvalidSchema(
+                "Qwen2PagedDecoder supports no RoPE scaling".into(),
+            ));
+        }
         Ok(Self { config, weights })
     }
 

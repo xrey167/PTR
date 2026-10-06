@@ -14,7 +14,7 @@
 
 use crate::qwen::{
     add, apply_rope, grouped_causal_attention, rms_norm, silu, Qwen2DecoderWeights,
-    Qwen2LayerConfig, Qwen2LinearWeights,
+    Qwen2LayerConfig, Qwen2LinearWeights, Qwen2RopeRegime, Qwen2RopeScaling,
 };
 use crate::{
     KvBackendError, KvContinuationExecutor, KvKeyEncoding, KvTensorDType, KvTensorSchema,
@@ -68,6 +68,18 @@ pub enum Qwen2StackError {
     ContextExceeded {
         required: usize,
         maximum: usize,
+    },
+    /// The layer scales RoPE by sequence length, so every run needs the regime fixed at
+    /// admission ([`Qwen2PagedStack::admit_rope_regime`]); the regime-less trait entry
+    /// points cannot choose one.
+    RopeRegimeRequired,
+    /// The regime is not the one this stack's configuration yields for its admitted length.
+    RopeRegimeMismatch,
+    /// The run would reach a position beyond the length the regime was admitted for. A
+    /// different effective regime needs a new admission and a recompute.
+    RopeRegimeExceeded {
+        required: usize,
+        admitted: usize,
     },
     Kv(KvBackendError),
 }
@@ -302,13 +314,69 @@ impl Qwen2PagedStack {
         .with_key_encoding(self.config.key_encoding))
     }
 
+    /// Fix the effective RoPE regime of a request admitted with `prompt_tokens` prompt
+    /// tokens and at most `max_new_tokens` generated tokens (doc 36 section D). Compute it
+    /// once per request and pass the same value to every
+    /// [`Self::prefill_in_regime`] / [`Self::decode_in_regime`] of that request.
+    pub fn admit_rope_regime(
+        &self,
+        prompt_tokens: usize,
+        max_new_tokens: usize,
+    ) -> Result<Qwen2RopeRegime, Qwen2StackError> {
+        let admitted =
+            prompt_tokens
+                .checked_add(max_new_tokens)
+                .ok_or(Qwen2StackError::ContextExceeded {
+                    required: usize::MAX,
+                    maximum: self.config.layer.max_position_embeddings,
+                })?;
+        self.config
+            .layer
+            .rope_regime(admitted)
+            .map_err(Qwen2StackError::InvalidLayer)
+    }
+
+    /// The regime of a stack without length-dependent scaling.
+    fn static_regime(&self) -> Result<Qwen2RopeRegime, Qwen2StackError> {
+        match self.config.layer.rope_scaling {
+            Qwen2RopeScaling::None => Ok(self.config.layer.static_rope_regime()),
+            _ => Err(Qwen2StackError::RopeRegimeRequired),
+        }
+    }
+
+    /// Prefill under a regime fixed at admission. Never recomputes the regime.
+    pub fn prefill_in_regime<B: PagedKvTensorBackend>(
+        &self,
+        backend: &B,
+        cache: &mut B::Cache,
+        input: Qwen2StackInput,
+        regime: &Qwen2RopeRegime,
+    ) -> Result<Qwen2StackOutput, Qwen2StackError> {
+        self.run(backend, cache, input, false, regime)
+    }
+
+    /// Decode one token under the regime fixed at admission. Never recomputes the regime.
+    pub fn decode_in_regime<B: PagedKvTensorBackend>(
+        &self,
+        backend: &B,
+        cache: &mut B::Cache,
+        input: Qwen2StackInput,
+        regime: &Qwen2RopeRegime,
+    ) -> Result<Qwen2StackOutput, Qwen2StackError> {
+        self.run(backend, cache, input, true, regime)
+    }
+
     fn run<B: PagedKvTensorBackend>(
         &self,
         backend: &B,
         cache: &mut B::Cache,
         input: Qwen2StackInput,
         require_single_token: bool,
+        regime: &Qwen2RopeRegime,
     ) -> Result<Qwen2StackOutput, Qwen2StackError> {
+        if !self.config.layer.accepts_regime(regime) {
+            return Err(Qwen2StackError::RopeRegimeMismatch);
+        }
         if input.tokens.is_empty() {
             return Err(Qwen2StackError::EmptyInput);
         }
@@ -355,9 +423,16 @@ impl Qwen2PagedStack {
         }
 
         let first_position = before.position_offset + before.sequence_length;
+        let end_position = first_position + input.tokens.len();
+        if end_position > regime.admitted_sequence_length() {
+            return Err(Qwen2StackError::RopeRegimeExceeded {
+                required: end_position,
+                admitted: regime.admitted_sequence_length(),
+            });
+        }
         let mut logits = Vec::with_capacity(input.tokens.len());
         for token in input.tokens {
-            logits.push(self.forward_token(backend, cache, token)?);
+            logits.push(self.forward_token(backend, cache, token, regime.effective_base())?);
         }
         Ok(Qwen2StackOutput {
             next_position: first_position + logits.len(),
@@ -371,6 +446,7 @@ impl Qwen2PagedStack {
         backend: &B,
         cache: &mut B::Cache,
         token: u32,
+        theta: f32,
     ) -> Result<Vec<f32>, Qwen2StackError> {
         let layer_config = &self.config.layer;
         let heads = layer_config.num_attention_heads;
@@ -379,7 +455,6 @@ impl Qwen2PagedStack {
         let head_dim = hidden / heads;
         let kv_width = kv_heads * head_dim;
         let eps = layer_config.rms_norm_eps;
-        let theta = layer_config.rope_theta;
         let encoding = self.config.key_encoding;
 
         let state = backend.snapshot(cache)?;
@@ -499,7 +574,8 @@ impl<B: PagedKvTensorBackend> KvContinuationExecutor<B> for Qwen2PagedStack {
         cache: &mut B::Cache,
         input: Self::Input,
     ) -> Result<Self::Output, Self::Error> {
-        self.run(backend, cache, input, false)
+        let regime = self.static_regime()?;
+        self.run(backend, cache, input, false, &regime)
     }
 
     fn decode(
@@ -508,7 +584,8 @@ impl<B: PagedKvTensorBackend> KvContinuationExecutor<B> for Qwen2PagedStack {
         cache: &mut B::Cache,
         input: Self::Input,
     ) -> Result<Self::Output, Self::Error> {
-        self.run(backend, cache, input, true)
+        let regime = self.static_regime()?;
+        self.run(backend, cache, input, true, &regime)
     }
 }
 

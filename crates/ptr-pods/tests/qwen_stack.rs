@@ -2,8 +2,8 @@ use ptr_pods::{
     InMemoryPagedKvBackend, KvBackendError, KvContinuationExecutor, KvKeyEncoding, KvPageBinding,
     KvPageSize, KvTensorBackend, KvTensorDType, KvTensorSchema, PagedKvTensorBackend,
     Qwen2Activation, Qwen2DecoderInput, Qwen2DecoderWeights, Qwen2LayerConfig, Qwen2LinearWeights,
-    Qwen2PagedDecoder, Qwen2PagedStack, Qwen2QkNorm, Qwen2RopeScaling, Qwen2StackConfig,
-    Qwen2StackError, Qwen2StackInput,
+    Qwen2PagedDecoder, Qwen2PagedStack, Qwen2QkNorm, Qwen2RopeRegime, Qwen2RopeScaling,
+    Qwen2StackConfig, Qwen2StackError, Qwen2StackInput,
 };
 use ptr_types::{AdapterVersion, DeviceId, Generation, ModelVersion, PrincipalId};
 
@@ -443,4 +443,260 @@ fn reference_attention_executor_is_rope_free_and_refuses_a_pre_rope_cache() {
         executor.prefill(&backend, &mut pre, tokens).unwrap_err(),
         KvBackendError::SnapshotSchemaMismatch
     );
+}
+
+// ---- dynamic NTK scaling, regime fixed at admission (doc 36 section D) ----
+
+const OMP: usize = 8;
+const FACTOR: f32 = 4.0;
+
+fn ntk_config(encoding: KvKeyEncoding) -> Qwen2StackConfig {
+    let mut config = config(encoding, Qwen2QkNorm::Disabled);
+    config.layer.rope_scaling = Qwen2RopeScaling::DynamicNtk {
+        factor: FACTOR,
+        original_max_position_embeddings: OMP,
+    };
+    config
+}
+
+fn ntk_stack(encoding: KvKeyEncoding) -> Qwen2PagedStack {
+    Qwen2PagedStack::reference(ntk_config(encoding), SEED).unwrap()
+}
+
+/// Independent closed form of the Hugging Face `_compute_dynamic_ntk_parameters` base.
+fn expected_base(seq_len: usize) -> f32 {
+    if seq_len <= OMP {
+        return 10_000.0;
+    }
+    let (factor, head_dim) = (f64::from(FACTOR), 16.0_f64);
+    let scale = factor * seq_len as f64 / OMP as f64 - (factor - 1.0);
+    (10_000.0_f64 * scale.powf(head_dim / (head_dim - 2.0))) as f32
+}
+
+fn in_regime_logits(
+    stack: &Qwen2PagedStack,
+    sequence: &[u32],
+    prefix: usize,
+    regime: &Qwen2RopeRegime,
+) -> Vec<Vec<u32>> {
+    let backend = backend();
+    let mut cache = new_cache(&backend, schema_for(stack));
+    let mut logits: Vec<Vec<u32>> = stack
+        .prefill_in_regime(&backend, &mut cache, input(&sequence[..prefix]), regime)
+        .unwrap()
+        .logits
+        .iter()
+        .map(|row| bits(row))
+        .collect();
+    for token in &sequence[prefix..] {
+        let out = stack
+            .decode_in_regime(&backend, &mut cache, input(&[*token]), regime)
+            .unwrap();
+        logits.push(bits(&out.logits[0]));
+    }
+    logits
+}
+
+#[test]
+fn regime_follows_the_hugging_face_dynamic_ntk_formula() {
+    let stack = ntk_stack(KvKeyEncoding::PreRope);
+    for admitted in [1, 7, OMP, OMP + 1, 14, 33, 60] {
+        let regime = stack.admit_rope_regime(admitted, 0).unwrap();
+        assert_eq!(
+            regime.effective_base().to_bits(),
+            expected_base(admitted).to_bits(),
+            "admitted {admitted}"
+        );
+        assert_eq!(regime.admitted_sequence_length(), admitted);
+    }
+    // Every length up to omp is the plain base, so one regime; above it the base grows.
+    let plain = stack.admit_rope_regime(3, 2).unwrap();
+    assert_eq!(plain.effective_base(), 10_000.0);
+    assert_eq!(
+        plain.effective_base_bits(),
+        stack
+            .admit_rope_regime(OMP, 0)
+            .unwrap()
+            .effective_base_bits()
+    );
+    let longer = stack.admit_rope_regime(OMP + 1, 0).unwrap();
+    assert!(longer.effective_base() > 10_000.0);
+    assert!(stack.admit_rope_regime(40, 0).unwrap().effective_base() > longer.effective_base());
+    // The split into prompt and max_new_tokens does not matter, only the sum.
+    assert_eq!(
+        stack.admit_rope_regime(6, 8).unwrap(),
+        stack.admit_rope_regime(10, 4).unwrap()
+    );
+    assert!(stack.admit_rope_regime(0, 0).is_err());
+}
+
+#[test]
+fn decode_crossing_omp_under_the_admission_fixed_regime_is_bitwise_equal_to_full_prefill() {
+    for encoding in [KvKeyEncoding::PreRope, KvKeyEncoding::PostRope] {
+        let stack = ntk_stack(encoding);
+        let sequence = tokens(14, 3);
+        let prompt = 6;
+        // Admitted at prompt + max_new_tokens = 14 > omp = 8; the decode crosses omp.
+        let regime = stack
+            .admit_rope_regime(prompt, sequence.len() - prompt)
+            .unwrap();
+        assert!(regime.effective_base() > 10_000.0);
+        assert!(prompt < OMP && OMP < sequence.len());
+
+        let expected = in_regime_logits(&stack, &sequence, sequence.len(), &regime);
+        let actual = in_regime_logits(&stack, &sequence, prompt, &regime);
+        assert_eq!(actual, expected, "{encoding:?}");
+        assert!(expected.iter().flatten().any(|bits| *bits != 0));
+    }
+}
+
+#[test]
+fn the_regime_is_observable_in_the_logits() {
+    let stack = ntk_stack(KvKeyEncoding::PreRope);
+    let sequence = tokens(OMP, 9);
+    let plain = stack.admit_rope_regime(OMP, 0).unwrap();
+    let stretched = stack.admit_rope_regime(20, 0).unwrap();
+    let a = in_regime_logits(&stack, &sequence, sequence.len(), &plain);
+    let b = in_regime_logits(&stack, &sequence, sequence.len(), &stretched);
+    // Position 0 has angle 0 under any base; later positions rotate differently.
+    assert_eq!(a[0], b[0]);
+    assert_ne!(a[1..], b[1..]);
+    // Under the plain regime the NTK stack equals the unscaled stack bit for bit.
+    let unscaled =
+        Qwen2PagedStack::reference(config(KvKeyEncoding::PreRope, Qwen2QkNorm::Disabled), SEED)
+            .unwrap();
+    assert_eq!(a, full_logits(&unscaled, &sequence));
+}
+
+#[test]
+fn regime_misuse_is_refused_without_touching_the_cache() {
+    let stack = ntk_stack(KvKeyEncoding::PreRope);
+    let backend = backend();
+    let mut cache = new_cache(&backend, schema_for(&stack));
+    let empty = backend.snapshot(&cache).unwrap();
+
+    // The regime-less trait entry points cannot choose a regime for a scaled stack.
+    assert_eq!(
+        stack
+            .prefill(&backend, &mut cache, input(&[1, 2]))
+            .unwrap_err(),
+        Qwen2StackError::RopeRegimeRequired
+    );
+    assert_eq!(
+        stack.decode(&backend, &mut cache, input(&[1])).unwrap_err(),
+        Qwen2StackError::RopeRegimeRequired
+    );
+
+    // A run past the admitted length is a regime transition: refused, never served.
+    let regime = stack.admit_rope_regime(3, 2).unwrap();
+    assert_eq!(
+        stack
+            .prefill_in_regime(&backend, &mut cache, input(&tokens(6, 1)), &regime)
+            .unwrap_err(),
+        Qwen2StackError::RopeRegimeExceeded {
+            required: 6,
+            admitted: 5
+        }
+    );
+
+    // A regime of another configuration (other factor, or unscaled) is not accepted.
+    let mut other = ntk_config(KvKeyEncoding::PreRope);
+    other.layer.rope_scaling = Qwen2RopeScaling::DynamicNtk {
+        factor: 2.0,
+        original_max_position_embeddings: OMP,
+    };
+    let other = Qwen2PagedStack::reference(other, SEED).unwrap();
+    let foreign = other.admit_rope_regime(20, 0).unwrap();
+    assert_eq!(
+        stack
+            .prefill_in_regime(&backend, &mut cache, input(&[1]), &foreign)
+            .unwrap_err(),
+        Qwen2StackError::RopeRegimeMismatch
+    );
+    let unscaled = self::stack(KvKeyEncoding::PreRope);
+    let mut unscaled_cache = new_cache(&backend, schema_for(&unscaled));
+    assert_eq!(
+        unscaled
+            .prefill_in_regime(&backend, &mut unscaled_cache, input(&[1]), &foreign)
+            .unwrap_err(),
+        Qwen2StackError::RopeRegimeMismatch
+    );
+    assert_eq!(backend.snapshot(&cache).unwrap(), empty);
+}
+
+#[test]
+fn unscaled_stack_default_path_is_unchanged() {
+    let stack = stack(KvKeyEncoding::PreRope);
+    let sequence = tokens(12, 5);
+    let regime = stack.admit_rope_regime(7, 5).unwrap();
+    assert_eq!(regime.effective_base(), 10_000.0);
+    assert_eq!(
+        in_regime_logits(&stack, &sequence, 7, &regime),
+        full_logits(&stack, &sequence)
+    );
+}
+
+#[test]
+fn invalid_dynamic_ntk_parameters_are_rejected() {
+    let invalid = |factor: f32, omp: usize| {
+        let mut config = ntk_config(KvKeyEncoding::PreRope);
+        config.layer.rope_scaling = Qwen2RopeScaling::DynamicNtk {
+            factor,
+            original_max_position_embeddings: omp,
+        };
+        Qwen2PagedStack::reference(config, SEED).unwrap_err()
+    };
+    for (factor, omp) in [
+        (0.99, OMP),
+        (0.0, OMP),
+        (-2.0, OMP),
+        (f32::NAN, OMP),
+        (f32::INFINITY, OMP),
+        (FACTOR, 0),
+    ] {
+        assert!(
+            matches!(
+                invalid(factor, omp),
+                Qwen2StackError::InvalidLayer(KvBackendError::InvalidSchema(_))
+            ),
+            "factor {factor} omp {omp}"
+        );
+    }
+    // factor == 1 is valid (boundary); the formula then reduces to (seq_len / omp)^(d/(d-2)).
+    let mut config = ntk_config(KvKeyEncoding::PreRope);
+    config.layer.rope_scaling = Qwen2RopeScaling::DynamicNtk {
+        factor: 1.0,
+        original_max_position_embeddings: OMP,
+    };
+    let boundary = Qwen2PagedStack::reference(config, SEED).unwrap();
+    let expected = (10_000.0_f64 * (50.0_f64 / OMP as f64).powf(16.0 / 14.0)) as f32;
+    assert_eq!(
+        boundary
+            .admit_rope_regime(50, 0)
+            .unwrap()
+            .effective_base()
+            .to_bits(),
+        expected.to_bits()
+    );
+
+    // head_dim 2 divides by zero in head_dim / (head_dim - 2).
+    let mut narrow = ntk_config(KvKeyEncoding::PreRope);
+    narrow.layer.hidden_size = 8;
+    narrow.layer.num_attention_heads = 4;
+    narrow.layer.num_key_value_heads = 2;
+    narrow.layer.intermediate_size = 16;
+    assert!(matches!(
+        Qwen2PagedStack::reference(narrow, SEED).unwrap_err(),
+        Qwen2StackError::InvalidLayer(KvBackendError::InvalidSchema(_))
+    ));
+
+    // The single-layer decoder has no regime and must not silently ignore scaling.
+    let layer = ntk_config(KvKeyEncoding::PostRope).layer;
+    let weights = ntk_stack(KvKeyEncoding::PostRope).weights().layers[0]
+        .decoder
+        .clone();
+    assert!(matches!(
+        Qwen2PagedDecoder::new(layer, weights),
+        Err(KvBackendError::InvalidSchema(_))
+    ));
 }
