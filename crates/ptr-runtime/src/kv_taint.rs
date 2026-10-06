@@ -2,7 +2,7 @@
 //!
 //! A model run produced under Approximate KV reuse may only yield candidates. The runtime
 //! records the taint of every action it ingests from such a run, keyed by the action's
-//! audit digest, and `authorize_action` refuses a recorded action with
+//! revision- and generation-independent identity digest, and `authorize_action` refuses a recorded action with
 //! [`RuntimeError::ApproximateStateAtEffectBoundary`], so the check sits before any
 //! `EffectAttempted` record for callers that authorize first (the HTTP path does).
 //! Keying by digest means the bare `ActionIr` that callers hold stays enforced although it
@@ -12,11 +12,39 @@
 //! a restart and an identical clean action stays refused while its tainted twin is
 //! recorded; both are open (see component.toml).
 
-use crate::execution::action_digest;
 use crate::{PtrRuntime, ResumableRun, RuntimeError};
+use ptr_ledger::{effect_code, integrity};
 use ptr_model_api::{KvReuseTaint, ModelEvent, ModelRun};
 use ptr_types::ActionIr;
 use std::collections::BTreeMap;
+
+const TAINT_IDENTITY_DOMAIN: &[u8] = b"ptr.kv.taint.action-identity.v1\0";
+
+/// What was asked for, without where the runtime stood when it was asked.
+///
+/// Covers target, operation, capability, input type, effect and payload, but not revision
+/// or generation: re-stamping a stale action to the current revision (the normal flow after
+/// any unrelated commit) must not shed the taint, which keying by `action_digest` would
+/// allow. The payload stays in the key because it is the content the Approximate run
+/// produced; a different payload is a different, separately derived action, and leaving it
+/// out would refuse every action on the same target and capability. Domain-separated from
+/// `action_digest`, so the two digests of one action never collide.
+fn taint_identity(action: &ActionIr) -> [u8; 32] {
+    let mut material = Vec::from(TAINT_IDENTITY_DOMAIN);
+    for field in [
+        action.target.as_str(),
+        action.operation.as_str(),
+        action.capability.0.as_str(),
+        action.input_type.0.as_str(),
+    ] {
+        material.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        material.extend_from_slice(field.as_bytes());
+    }
+    material.extend_from_slice(&(action.payload.len() as u64).to_le_bytes());
+    material.extend_from_slice(&action.payload);
+    material.push(effect_code(action.effect));
+    integrity::sha256(&material)
+}
 
 /// Most distinct tainted actions the runtime remembers.
 pub const MAX_TAINTED_ACTIONS: usize = 4096;
@@ -29,13 +57,13 @@ pub(crate) struct TaintedActions {
 impl TaintedActions {
     fn taint_of(&self, action: &ActionIr) -> KvReuseTaint {
         self.by_digest
-            .get(&action_digest(action))
+            .get(&taint_identity(action))
             .copied()
             .unwrap_or(KvReuseTaint::Exact)
     }
 
     fn record(&mut self, action: &ActionIr, taint: KvReuseTaint) -> Result<(), RuntimeError> {
-        let digest = action_digest(action);
+        let digest = taint_identity(action);
         if !self.by_digest.contains_key(&digest) && self.by_digest.len() >= MAX_TAINTED_ACTIONS {
             return Err(RuntimeError::KvTaintRegistryFull {
                 limit: MAX_TAINTED_ACTIONS,

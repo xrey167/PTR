@@ -261,3 +261,51 @@ fn untainted_and_exact_actions_still_execute_on_the_execution_path() {
     assert_eq!(effect_attempts(&runtime), 1);
     assert_eq!(probe.executions(), 1);
 }
+
+#[test]
+fn restamped_tainted_action_is_still_refused_on_both_paths() {
+    let (mut runtime, action) = fixture();
+    let probe = Probe::default();
+    let session = session(&mut runtime, &action, &probe, "alice");
+    runtime
+        .ingest_model_run(&run_with(&action, KvReuseMode::Approximate))
+        .unwrap();
+    // An unrelated commit moves the revision; the stale action is re-stamped to it.
+    let new_revision = runtime
+        .ingest_text(RequestId::from("later"), "unrelated")
+        .unwrap();
+    let restamped = ActionIr {
+        revision: new_revision,
+        generation: Generation(1),
+        ..action.clone()
+    };
+    assert_ne!(restamped.revision, action.revision);
+    assert!(runtime.action_kv_taint(&restamped).is_approximate());
+    assert!(matches!(
+        runtime.authorize_action(&restamped),
+        Err(RuntimeError::ApproximateStateAtEffectBoundary { .. })
+    ));
+    let committed = runtime.committed_events().len();
+    // A different idempotency key does not shed it either.
+    for key in ["key-a", "key-b"] {
+        let denied = runtime
+            .prepare_execution_once(
+                &session,
+                &ProjectId::from("p"),
+                &restamped,
+                PREPARE_TTL,
+                key,
+            )
+            .unwrap_err();
+        assert!(is_approximate_denial(&denied), "{denied:?}");
+    }
+    assert_eq!(effect_attempts(&runtime), 0);
+    assert_eq!(runtime.committed_events().len(), committed);
+
+    // A different payload is a different action and is not tainted.
+    let other = ActionIr {
+        payload: b"verified payload but different".to_vec(),
+        ..restamped
+    };
+    assert_eq!(runtime.action_kv_taint(&other), KvReuseTaint::Exact);
+}
