@@ -57,7 +57,10 @@ pub use kv::{
     KvKeyEncoding, KvLayerSnapshot, KvPageTable, KvTensorBackend, KvTensorDType, KvTensorSchema,
     KvTensorSnapshot, TensorRef,
 };
-pub use kv_chain::{derive_kv_layer_chains, KvChainError, KvChainIdentity, KvLayerChains};
+pub use kv_chain::{
+    derive_kv_layer_chains, derive_kv_layer_chains_in_regime, KvChainError, KvChainIdentity,
+    KvLayerChains,
+};
 pub use manifest::{
     ArtifactLifecycle, ExecutionManifest, LifecycleGate, LineageBinding,
     ManifestError as ExecutionManifestError,
@@ -82,7 +85,7 @@ pub use protocol::{
 };
 pub use qwen::{
     Qwen2Activation, Qwen2DecoderInput, Qwen2DecoderOutput, Qwen2DecoderWeights, Qwen2LayerConfig,
-    Qwen2LinearWeights, Qwen2PagedDecoder, Qwen2RopeScaling,
+    Qwen2LinearWeights, Qwen2PagedDecoder, Qwen2RopeRegime, Qwen2RopeScaling,
 };
 pub use qwen_stack::{
     Qwen2PagedStack, Qwen2QkNorm, Qwen2StackConfig, Qwen2StackError, Qwen2StackInput,

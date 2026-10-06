@@ -13,7 +13,7 @@
 //!               layer l input norm weights + eps,
 //!               layer l K/V projection weights and biases,
 //!               layer l key-norm weights + eps, or "disabled",
-//!               [l >= 1 or PostRope] RoPE: theta, scaling policy, regime placeholder)
+//!               [l >= 1 or PostRope] RoPE: theta, scaling policy, regime base bits)
 //! ```
 //!
 //! Rules and where doc 36 states them:
@@ -29,8 +29,11 @@
 //!   `chain(l)` for `l >= 1` only, because the attention of layers `< l` rotated Q/K and
 //!   shaped the residual (consequences table: "PreRope keys: layers >= 1").
 //! * Regime: the effective RoPE scaling regime is fixed at admission from the maximum
-//!   sequence length (doc 36). The stack supports no scaling, so the regime term is the
-//!   constant placeholder `none`; it must become the real regime when scaling lands.
+//!   sequence length (doc 36) and enters the same `[l >= 1 or PostRope]` term as the exact
+//!   bits of the effective rotary base ([`Qwen2RopeRegime`]); the scaling policy (factor,
+//!   original maximum positions) is hashed beside it. Requests in different regimes never
+//!   share a chain, so reuse across a regime boundary is a miss. All lengths `<= omp`
+//!   give the base `theta` and so one regime.
 //! * Floats are hashed as exact little-endian bit patterns (bitwise reuse: `-0.0` and
 //!   `0.0` differ). The stack refuses non-finite weights at construction, so no NaN
 //!   payload can alias.
@@ -41,7 +44,7 @@
 
 use crate::{
     KvKeyEncoding, Qwen2Activation, Qwen2LinearWeights, Qwen2PagedStack, Qwen2QkNorm,
-    Qwen2RopeScaling, Qwen2StackLayerWeights,
+    Qwen2RopeRegime, Qwen2RopeScaling, Qwen2StackLayerWeights,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -63,6 +66,11 @@ pub struct KvChainIdentity {
 pub enum KvChainError {
     /// One identity field is blank.
     BlankIdentity(&'static str),
+    /// The stack scales RoPE by sequence length: use
+    /// [`derive_kv_layer_chains_in_regime`] with the regime fixed at admission.
+    RopeRegimeRequired,
+    /// The regime is not the one the stack's configuration yields for its admitted length.
+    RopeRegimeMismatch,
 }
 
 impl std::fmt::Display for KvChainError {
@@ -101,11 +109,31 @@ impl KvLayerChains {
     }
 }
 
-/// Derive the chain of every layer from the stack's weights and configuration.
+/// Derive the chain of every layer from the stack's weights and configuration, for a stack
+/// without length-dependent RoPE scaling. A dynamic-NTK stack needs the regime fixed at
+/// admission and is refused with [`KvChainError::RopeRegimeRequired`].
 pub fn derive_kv_layer_chains(
     stack: &Qwen2PagedStack,
     identity: &KvChainIdentity,
 ) -> Result<KvLayerChains, KvChainError> {
+    match stack.config().layer.rope_scaling {
+        Qwen2RopeScaling::None => {
+            let regime = stack.config().layer.static_rope_regime();
+            derive_kv_layer_chains_in_regime(stack, identity, &regime)
+        }
+        _ => Err(KvChainError::RopeRegimeRequired),
+    }
+}
+
+/// Derive the chain of every layer under the effective RoPE regime fixed at admission.
+pub fn derive_kv_layer_chains_in_regime(
+    stack: &Qwen2PagedStack,
+    identity: &KvChainIdentity,
+    regime: &Qwen2RopeRegime,
+) -> Result<KvLayerChains, KvChainError> {
+    if !stack.config().layer.accepts_regime(regime) {
+        return Err(KvChainError::RopeRegimeMismatch);
+    }
     for (name, value) in [
         ("base_model", &identity.base_model),
         ("build", &identity.build),
@@ -167,7 +195,7 @@ pub fn derive_kv_layer_chains(
             _ => text(&mut hasher, "key-norm:disabled"),
         }
         if index >= 1 || post_rope {
-            rope(&mut hasher, stack);
+            rope(&mut hasher, stack, regime);
         } else {
             text(&mut hasher, "rope:bound-at-use");
         }
@@ -209,19 +237,28 @@ fn linear(hasher: &mut Sha256, weights: &Qwen2LinearWeights) {
     }
 }
 
-fn rope(hasher: &mut Sha256, stack: &Qwen2PagedStack) {
+fn rope(hasher: &mut Sha256, stack: &Qwen2PagedStack, regime: &Qwen2RopeRegime) {
     let layer = &stack.config().layer;
     text(hasher, "rope");
     hasher.update(layer.rope_theta.to_bits().to_le_bytes());
     match &layer.rope_scaling {
         Qwen2RopeScaling::None => text(hasher, "scaling:none"),
+        Qwen2RopeScaling::DynamicNtk {
+            factor,
+            original_max_position_embeddings,
+        } => {
+            text(hasher, "scaling:dynamic-ntk");
+            hasher.update(factor.to_bits().to_le_bytes());
+            hasher.update((*original_max_position_embeddings as u64).to_le_bytes());
+        }
         Qwen2RopeScaling::Unsupported(name) => {
             text(hasher, "scaling:unsupported");
             text(hasher, name);
         }
     }
-    // Placeholder for the effective regime fixed at admission (doc 36); no scaling exists.
-    text(hasher, "regime:none");
+    // The effective regime fixed at admission (doc 36): exact bits of the effective base.
+    text(hasher, "regime:effective-base");
+    hasher.update(regime.effective_base_bits().to_le_bytes());
     hasher.update(((layer.hidden_size / layer.num_attention_heads) as u64).to_le_bytes());
 }
 

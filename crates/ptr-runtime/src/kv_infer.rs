@@ -23,8 +23,20 @@
 //! projections, QK-norm, attention and MLP weights, RoPE configuration (per the PreRope /
 //! PostRope rule), the base model identity and generation, the tokenizer and the backend
 //! build identity (also folded into the catalog salt). Two stacks with the same seed but
-//! any different weight get different ids. Not covered: the effective RoPE scaling regime
-//! (the stack supports no scaling; a placeholder is hashed) and adapters (none exist).
+//! any different weight get different ids. Not covered: adapters (none exist).
+//!
+//! # RoPE regime
+//!
+//! A backend built with [`ReferenceKvReuseBackend::with_rope_scaling`] and
+//! [`Qwen2RopeScaling::DynamicNtk`] has a length-dependent effective rotary base. At
+//! admission the backend fixes that regime once from `prompt_tokens + max_new_tokens`
+//! (`Qwen2LayerConfig::rope_regime`); prefill and every decode step of the request run
+//! under that one value. The chain id is derived **per request** under its regime, so
+//! requests in different regimes never share a catalog entry: a request whose admission
+//! regime differs from a cached entry's misses and is recomputed (Exact, never served
+//! across a transition). Lengths up to the original maximum positions all give the plain
+//! base and so one shared regime. [`ReferenceKvReuseBackend::chain_id`] is the chain of
+//! that plain-base regime (the only one without scaling).
 //!
 //! # Bounds and failure
 //!
@@ -52,10 +64,10 @@ use ptr_model_api::{
     SegmentedModelRequest, TokenContractError, TokenId, Tokenizer, TokenizerIdentity,
 };
 use ptr_pods::{
-    derive_kv_layer_chains, InMemoryPagedKvBackend, KvBackendError, KvChainError, KvChainIdentity,
-    KvContinuationExecutor, KvPageBinding, KvPageSize, KvPrefixKey, KvTensorDType, KvTensorSchema,
+    derive_kv_layer_chains_in_regime, InMemoryPagedKvBackend, KvBackendError, KvChainError,
+    KvChainIdentity, KvPageBinding, KvPageSize, KvPrefixKey, KvTensorDType, KvTensorSchema,
     PagedKvTensorBackend, Qwen2Activation, Qwen2LayerConfig, Qwen2PagedStack, Qwen2QkNorm,
-    Qwen2RopeScaling, Qwen2StackConfig, Qwen2StackError, Qwen2StackInput,
+    Qwen2RopeRegime, Qwen2RopeScaling, Qwen2StackConfig, Qwen2StackError, Qwen2StackInput,
 };
 use ptr_types::{
     AdapterVersion, DeviceId, Digest, Generation, ModelVersion, PrincipalId, ProjectId,
@@ -199,6 +211,8 @@ pub struct ReferenceKvOutcome {
     /// logits.
     pub logits_digest: Digest,
     pub prompt_tokens: usize,
+    /// The effective RoPE regime fixed at admission and used for the whole request.
+    pub rope_regime: Qwen2RopeRegime,
     /// Prompt tokens served from the catalog.
     pub hit_tokens: usize,
     /// Prompt tokens actually run through the stack.
@@ -248,7 +262,6 @@ pub struct ReferenceKvReuseBackend {
     chain: KvChainId,
     build: String,
     schema: KvTensorSchema,
-    manifest: Digest,
     limits: ReferenceKvLimits,
     default_scope: ReferenceKvScope,
     state: Mutex<ReuseState>,
@@ -263,7 +276,7 @@ impl fmt::Debug for ReferenceKvReuseBackend {
     }
 }
 
-fn stack_config(limits: &ReferenceKvLimits) -> Qwen2StackConfig {
+fn stack_config(limits: &ReferenceKvLimits, rope_scaling: Qwen2RopeScaling) -> Qwen2StackConfig {
     // R005 tiny_model_config: 4 layers, hidden 64, 4 heads, 2 KV heads, head_dim 16, vocab 256.
     Qwen2StackConfig {
         layer: Qwen2LayerConfig {
@@ -273,7 +286,7 @@ fn stack_config(limits: &ReferenceKvLimits) -> Qwen2StackConfig {
             num_key_value_heads: 2,
             max_position_embeddings: limits.max_prompt_tokens + limits.max_new_tokens,
             rope_theta: 10_000.0,
-            rope_scaling: Qwen2RopeScaling::None,
+            rope_scaling,
             rms_norm_eps: 1e-6,
             hidden_act: Qwen2Activation::Silu,
             sliding_window: None,
@@ -297,11 +310,13 @@ fn build_identity() -> String {
     )
 }
 
-/// `chain(L-1)` of the actual stack weights and configuration (doc 36 section D).
+/// `chain(L-1)` of the actual stack weights and configuration under the RoPE regime
+/// fixed at admission (doc 36 section D).
 fn derive_chain(
     stack: &Qwen2PagedStack,
     build: &str,
     tokenizer: &TokenizerIdentity,
+    regime: &Qwen2RopeRegime,
 ) -> Result<KvChainId, ReferenceKvError> {
     let identity = KvChainIdentity {
         base_model: MODEL_NAME.to_owned(),
@@ -310,7 +325,7 @@ fn derive_chain(
         tokenizer: format!("{}@{}", tokenizer.name(), tokenizer.version()),
     };
     Ok(KvChainId(
-        derive_kv_layer_chains(stack, &identity)?.final_id(),
+        derive_kv_layer_chains_in_regime(stack, &identity, regime)?.final_id(),
     ))
 }
 
@@ -328,11 +343,23 @@ impl ReferenceKvReuseBackend {
         default_scope: ReferenceKvScope,
         weight_seed: u64,
     ) -> Result<Self, ReferenceKvError> {
+        Self::with_rope_scaling(limits, default_scope, weight_seed, Qwen2RopeScaling::None)
+    }
+
+    /// Like [`Self::with_seed`] with a RoPE scaling scheme. With
+    /// [`Qwen2RopeScaling::DynamicNtk`] every request fixes its regime at admission (see the
+    /// module documentation).
+    pub fn with_rope_scaling(
+        limits: ReferenceKvLimits,
+        default_scope: ReferenceKvScope,
+        weight_seed: u64,
+        rope_scaling: Qwen2RopeScaling,
+    ) -> Result<Self, ReferenceKvError> {
         if limits.max_prompt_tokens == 0 || limits.max_new_tokens == 0 {
             return Err(ReferenceKvError::InvalidLimits);
         }
         check_scope(&default_scope)?;
-        let config = stack_config(&limits);
+        let config = stack_config(&limits, rope_scaling);
         let stack = Qwen2PagedStack::reference(config, weight_seed)?;
         let paged = InMemoryPagedKvBackend::new(KvPageSize::new(KV_CHUNK_TOKENS as u16)?);
         let schema = stack.kv_schema(
@@ -342,13 +369,13 @@ impl ReferenceKvReuseBackend {
         )?;
         let tokenizer = ByteTokenizer::new();
         let build = build_identity();
-        let chain = derive_chain(&stack, &build, tokenizer.identity())?;
-        let manifest: Digest = {
-            let mut hasher = Sha256::new();
-            hasher.update(MANIFEST_DOMAIN);
-            hasher.update(chain.0);
-            hasher.finalize().into()
-        };
+        // The chain of the plain-base regime; requests derive their own at admission.
+        let plain = stack
+            .config()
+            .layer
+            .rope_regime(1)
+            .map_err(Qwen2StackError::InvalidLayer)?;
+        let chain = derive_chain(&stack, &build, tokenizer.identity(), &plain)?;
         let authority = paged.take_fork_authority()?;
         let catalog = KvPrefixCatalog::new(authority, limits.catalog)
             .map_err(ReferenceKvError::Catalog)?
@@ -360,7 +387,6 @@ impl ReferenceKvReuseBackend {
             chain,
             build,
             schema,
-            manifest,
             limits,
             default_scope,
             state: Mutex::new(ReuseState {
@@ -379,9 +405,39 @@ impl ReferenceKvReuseBackend {
         &self.tokenizer
     }
 
-    /// The chain id every entry of this backend is stored under.
+    /// The chain id of the plain-base RoPE regime: every entry of a backend without
+    /// scaling is stored under it. With dynamic NTK each request's chain also follows its
+    /// admission regime, see [`Self::chain_id_for_admission`].
     pub fn chain_id(&self) -> KvChainId {
         self.chain
+    }
+
+    /// The chain id a request of `prompt_tokens` tokens is stored and looked up under
+    /// (the regime is fixed from `prompt_tokens + max_new_tokens`).
+    pub fn chain_id_for_admission(
+        &self,
+        prompt_tokens: usize,
+    ) -> Result<KvChainId, ReferenceKvError> {
+        let regime = self.admit_regime(prompt_tokens)?;
+        self.chain_for(&regime)
+    }
+
+    /// The RoPE regime a request of `prompt_tokens` tokens is admitted under.
+    pub fn admit_regime(&self, prompt_tokens: usize) -> Result<Qwen2RopeRegime, ReferenceKvError> {
+        Ok(self
+            .stack
+            .admit_rope_regime(prompt_tokens, self.limits.max_new_tokens)?)
+    }
+
+    fn chain_for(&self, regime: &Qwen2RopeRegime) -> Result<KvChainId, ReferenceKvError> {
+        derive_chain(&self.stack, &self.build, self.tokenizer.identity(), regime)
+    }
+
+    fn manifest_for(chain: &KvChainId) -> Digest {
+        let mut hasher = Sha256::new();
+        hasher.update(MANIFEST_DOMAIN);
+        hasher.update(chain.0);
+        hasher.finalize().into()
     }
 
     pub fn catalog_stats(&self) -> Result<KvCatalogStats, ReferenceKvError> {
@@ -501,12 +557,16 @@ impl ReferenceKvReuseBackend {
         Ok(())
     }
 
-    fn binding(&self, scope: &ReferenceKvScope) -> Result<KvPageBinding, ReferenceKvError> {
+    fn binding(
+        &self,
+        scope: &ReferenceKvScope,
+        chain: &KvChainId,
+    ) -> Result<KvPageBinding, ReferenceKvError> {
         Ok(KvPageBinding {
             model: self.schema.model.clone(),
             adapter: self.schema.adapter.clone(),
             generation: Generation(1),
-            execution_manifest: self.manifest,
+            execution_manifest: Self::manifest_for(chain),
             principal: scope.principal.clone(),
             device: self.schema.device.clone(),
             dtype: KvTensorDType::F32,
@@ -528,12 +588,13 @@ impl ReferenceKvReuseBackend {
     fn new_cache(
         &self,
         scope: &ReferenceKvScope,
+        chain: &KvChainId,
     ) -> Result<<InMemoryPagedKvBackend as ptr_pods::KvTensorBackend>::Cache, ReferenceKvError>
     {
         let capacity = self.limits.max_prompt_tokens + self.limits.max_new_tokens;
         Ok(self
             .paged
-            .allocate_bound(self.schema.clone(), capacity, self.binding(scope)?)?)
+            .allocate_bound(self.schema.clone(), capacity, self.binding(scope, chain)?)?)
     }
 
     fn generate(
@@ -577,15 +638,18 @@ impl ReferenceKvReuseBackend {
         let salt = self.salt(scope);
         let tokens = request.tokens();
         let total = tokens.len();
+        // Fixed once here; prefill and every decode step use this value.
+        let regime = self.admit_regime(total)?;
+        let chain = self.chain_for(&regime)?;
         let ids: Vec<u32> = tokens.iter().map(|token| token.0).collect();
-        let mut cache = self.new_cache(scope)?;
+        let mut cache = self.new_cache(scope, &chain)?;
         let mut hit_tokens = 0usize;
         let mut pin: Option<KvPin> = None;
 
         if cache_use == CacheUse::Enabled {
             let lookup = KvLookup {
                 salt: &salt,
-                chain: &self.chain,
+                chain: &chain,
                 request,
                 positions: &KvRequestPositions::Canonical,
             };
@@ -608,7 +672,7 @@ impl ReferenceKvReuseBackend {
                         }
                         Err(_) => {
                             // The fork was refused before use; start from an untouched cache.
-                            cache = self.new_cache(scope)?;
+                            cache = self.new_cache(scope, &chain)?;
                         }
                     }
                 }
@@ -617,7 +681,7 @@ impl ReferenceKvReuseBackend {
         }
 
         let result = self.prefill_and_decode(
-            state, request, &salt, &ids, &mut cache, hit_tokens, cache_use,
+            state, request, &salt, &chain, &regime, &ids, &mut cache, hit_tokens, cache_use,
         );
         let still_live = pin
             .as_ref()
@@ -636,6 +700,7 @@ impl ReferenceKvReuseBackend {
             generated: work.generated,
             logits_digest: work.logits_digest,
             prompt_tokens,
+            rope_regime: regime,
             hit_tokens,
             prefilled_tokens: work.prefilled,
             inserted_chunks: work.inserted,
@@ -673,6 +738,8 @@ impl ReferenceKvReuseBackend {
         state: &mut ReuseState,
         request: &SegmentedModelRequest,
         salt: &KvSalt,
+        chain: &KvChainId,
+        regime: &Qwen2RopeRegime,
         ids: &[u32],
         cache: &mut <InMemoryPagedKvBackend as ptr_pods::KvTensorBackend>::Cache,
         hit_tokens: usize,
@@ -684,18 +751,19 @@ impl ReferenceKvReuseBackend {
         let mut last_logits: Vec<f32> = Vec::new();
         while position < total {
             let next = total.min((position / KV_CHUNK_TOKENS + 1) * KV_CHUNK_TOKENS);
-            let output = self.stack.prefill(
+            let output = self.stack.prefill_in_regime(
                 &self.paged,
                 cache,
                 Qwen2StackInput {
                     tokens: ids[position..next].to_vec(),
                 },
+                regime,
             )?;
             work.prefilled += next - position;
             last_logits = output.logits.into_iter().next_back().unwrap_or_default();
             position = next;
             if cache_use == CacheUse::Enabled && position.is_multiple_of(KV_CHUNK_TOKENS) {
-                self.offer_boundary(state, salt, request, cache, &mut work)?;
+                self.offer_boundary(state, salt, chain, request, cache, &mut work)?;
             }
         }
         let mut hasher = Sha256::new();
@@ -710,12 +778,13 @@ impl ReferenceKvReuseBackend {
             let token = argmax(&last_logits);
             work.generated.push(TokenId(token));
             if step + 1 < self.limits.max_new_tokens {
-                let output = self.stack.decode(
+                let output = self.stack.decode_in_regime(
                     &self.paged,
                     cache,
                     Qwen2StackInput {
                         tokens: vec![token],
                     },
+                    regime,
                 )?;
                 last_logits = output.logits.into_iter().next().unwrap_or_default();
             }
@@ -730,6 +799,7 @@ impl ReferenceKvReuseBackend {
         &self,
         state: &mut ReuseState,
         salt: &KvSalt,
+        chain: &KvChainId,
         request: &SegmentedModelRequest,
         cache: &mut <InMemoryPagedKvBackend as ptr_pods::KvTensorBackend>::Cache,
         work: &mut Work,
@@ -751,7 +821,7 @@ impl ReferenceKvReuseBackend {
         let result = catalog.insert_paged(
             KvPagedInsert {
                 salt,
-                chain: &self.chain,
+                chain,
                 request,
                 prefix,
                 pages,
@@ -876,12 +946,19 @@ mod tests {
     }
 
     fn chain_of(stack: &Qwen2PagedStack) -> KvChainId {
-        derive_chain(stack, &build_identity(), ByteTokenizer::new().identity()).unwrap()
+        let regime = stack.config().layer.rope_regime(1).unwrap();
+        derive_chain(
+            stack,
+            &build_identity(),
+            ByteTokenizer::new().identity(),
+            &regime,
+        )
+        .unwrap()
     }
 
     #[test]
     fn chain_follows_weights_not_seed() {
-        let config = stack_config(&ReferenceKvLimits::default());
+        let config = stack_config(&ReferenceKvLimits::default(), Qwen2RopeScaling::None);
         let a = Qwen2PagedStack::reference(config.clone(), 1).unwrap();
         assert_eq!(chain_of(&a), chain_of(&a.clone()));
         let b = Qwen2PagedStack::reference(config.clone(), 2).unwrap();
@@ -904,13 +981,14 @@ mod tests {
 
     #[test]
     fn build_identity_changes_the_chain() {
-        let config = stack_config(&ReferenceKvLimits::default());
+        let config = stack_config(&ReferenceKvLimits::default(), Qwen2RopeScaling::None);
         let stack = Qwen2PagedStack::reference(config, 1).unwrap();
         let tokenizer = ByteTokenizer::new();
-        let here = derive_chain(&stack, &build_identity(), tokenizer.identity()).unwrap();
-        let other = derive_chain(&stack, "another-build", tokenizer.identity()).unwrap();
+        let regime = stack.config().layer.rope_regime(1).unwrap();
+        let here = derive_chain(&stack, &build_identity(), tokenizer.identity(), &regime).unwrap();
+        let other = derive_chain(&stack, "another-build", tokenizer.identity(), &regime).unwrap();
         assert_ne!(here, other);
-        assert!(derive_chain(&stack, " ", tokenizer.identity()).is_err());
+        assert!(derive_chain(&stack, " ", tokenizer.identity(), &regime).is_err());
     }
 
     #[test]

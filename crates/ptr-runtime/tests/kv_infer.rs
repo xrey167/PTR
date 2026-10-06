@@ -7,6 +7,7 @@ use ptr_model_api::{
     ModelEvent, ModelRequest, PromptSegment, SegmentSource, SegmentedModelRequest, Tokenizer,
     TokenizerIdentity,
 };
+use ptr_pods::Qwen2RopeScaling;
 use ptr_runtime::{
     CatalogLimits, PtrRuntime, ReferenceKvError, ReferenceKvLimits, ReferenceKvOutcome,
     ReferenceKvReuseBackend, ReferenceKvScope,
@@ -536,4 +537,196 @@ fn a_bytes_only_limit_evicts_as_configured_and_outputs_stay_equal_to_cold() {
     // 10 unique pages do not fit in 7: the byte limit, not the node limit, bound the catalog.
     assert!(stats.evictions + stats.capacity_refusals >= 1);
     assert!(stats.nodes < CatalogLimits::default().max_trie_nodes);
+}
+
+// ---- dynamic NTK: the RoPE regime is fixed at admission ----
+
+const NTK_OMP: usize = 24;
+
+fn ntk_backend() -> ReferenceKvReuseBackend {
+    ntk_backend_with(ReferenceKvLimits::default())
+}
+
+fn ntk_backend_with(limits: ReferenceKvLimits) -> ReferenceKvReuseBackend {
+    ReferenceKvReuseBackend::with_rope_scaling(
+        limits,
+        scope("alice"),
+        20240607,
+        Qwen2RopeScaling::DynamicNtk {
+            factor: 4.0,
+            original_max_position_embeddings: NTK_OMP,
+        },
+    )
+    .unwrap()
+}
+
+fn cold(backend: &ReferenceKvReuseBackend, request: &SegmentedModelRequest) -> ReferenceKvOutcome {
+    backend.infer_cold(&scope("alice"), request).unwrap()
+}
+
+#[test]
+fn decode_crossing_omp_under_the_admission_fixed_regime_is_exact_and_bitwise_equal_to_cold() {
+    let backend = ntk_backend();
+    let prefix = text(16, 4);
+    let first = format!("{prefix}{}", text(4, 5));
+    let second = format!("{prefix}{}", text(4, 6));
+    // 20 prompt tokens + 8 new tokens = 28 > omp = 24: the decode crosses omp (position 24),
+    // yet both requests run under the one regime fixed at admission.
+    let a = raw(&backend, "a", 1, &first);
+    let b = raw(&backend, "b", 1, &second);
+    let first_out = run(&backend, &scope("alice"), &a);
+    assert_eq!(first_out.rope_regime, backend.admit_regime(20).unwrap());
+    assert!(first_out.rope_regime.effective_base() > 10_000.0);
+    assert_eq!(first_out.rope_regime.admitted_sequence_length(), 28);
+    assert_same_result(&first_out, &cold(&backend, &a));
+
+    let warm = run(&backend, &scope("alice"), &b);
+    assert_eq!(warm.hit_tokens, 16);
+    assert_eq!(warm.rope_regime, first_out.rope_regime);
+    assert_eq!(
+        warm.run.kv_report.as_ref().unwrap().mode(),
+        KvReuseMode::Exact
+    );
+    assert_same_result(&warm, &cold(&backend, &b));
+}
+
+#[test]
+fn requests_in_different_admission_regimes_never_share_entries() {
+    let backend = ntk_backend();
+    let shared = text(32, 7);
+    let long = format!("{shared}{}", text(8, 1)); // 40 + 8 = 48
+    let shorter = format!("{shared}{}", text(4, 2)); // 36 + 8 = 44
+    let same_as_long = format!("{shared}{}", text(8, 3)); // 40 + 8 = 48
+
+    let a = raw(&backend, "a", 1, &long);
+    let b = raw(&backend, "b", 1, &shorter);
+    let c = raw(&backend, "c", 1, &same_as_long);
+    assert_ne!(
+        backend.chain_id_for_admission(40).unwrap(),
+        backend.chain_id_for_admission(36).unwrap()
+    );
+    assert_eq!(
+        backend.chain_id_for_admission(40).unwrap(),
+        backend.chain_id_for_admission(40).unwrap()
+    );
+
+    let a_out = run(&backend, &scope("alice"), &a);
+    assert_eq!(a_out.hit_tokens, 0);
+    assert!(a_out.inserted_chunks > 0);
+
+    // Same 32-token prefix, different admission regime: a miss, recomputed, Exact, and
+    // bitwise equal to its own cold run.
+    let b_out = run(&backend, &scope("alice"), &b);
+    assert_ne!(b_out.rope_regime, a_out.rope_regime);
+    assert_eq!(b_out.hit_tokens, 0);
+    assert_eq!(b_out.prefilled_tokens, 36);
+    assert_eq!(
+        b_out.run.kv_report.as_ref().unwrap().mode(),
+        KvReuseMode::Exact
+    );
+    assert_eq!(b_out.run.kv_report.as_ref().unwrap().hit_tokens(), 0);
+    assert_same_result(&b_out, &cold(&backend, &b));
+
+    // Control: the same regime as `a` does share.
+    let c_out = run(&backend, &scope("alice"), &c);
+    assert_eq!(c_out.rope_regime, a_out.rope_regime);
+    assert_eq!(c_out.hit_tokens, 32);
+    assert_same_result(&c_out, &cold(&backend, &c));
+
+    // The regime changes what the model computes: the unscaled backend differs.
+    let plain = backend_with(ReferenceKvLimits::default());
+    let plain_out = cold(&plain, &raw(&plain, "a", 1, &long));
+    assert_ne!(plain_out.logits_digest, cold(&backend, &a).logits_digest);
+}
+
+#[test]
+fn a_forced_regime_transition_recomputes_instead_of_serving_the_cached_prefix() {
+    let backend = ntk_backend_with(ReferenceKvLimits {
+        max_new_tokens: 2,
+        ..ReferenceKvLimits::default()
+    });
+    // 16 + 2 = 18 <= omp = 24: the plain-base regime, cached after the first run.
+    let prefix = text(16, 9);
+    let short = raw(&backend, "short", 1, &prefix);
+    let short_out = run(&backend, &scope("alice"), &short);
+    assert_eq!(short_out.rope_regime.effective_base(), 10_000.0);
+    assert_eq!(short_out.inserted_chunks, 1);
+    assert_eq!(
+        backend.chain_id_for_admission(16).unwrap(),
+        backend.chain_id_for_admission(5).unwrap(),
+        "every length up to omp is one regime"
+    );
+
+    // The longer request extends the same prefix but is admitted into a larger regime.
+    let longer_text = format!("{prefix}{}", text(20, 10));
+    let longer = raw(&backend, "longer", 1, &longer_text);
+    let longer_out = run(&backend, &scope("alice"), &longer);
+    assert!(longer_out.rope_regime.effective_base() > 10_000.0);
+    assert_eq!(longer_out.hit_tokens, 0);
+    assert_eq!(longer_out.prefilled_tokens, 36);
+    assert_same_result(&longer_out, &cold(&backend, &longer));
+
+    // Back in the plain regime the original entry is still served.
+    let again = run(
+        &backend,
+        &scope("alice"),
+        &raw(&backend, "again", 1, &format!("{prefix}x")),
+    );
+    assert_eq!(
+        again.rope_regime.effective_base_bits(),
+        short_out.rope_regime.effective_base_bits()
+    );
+    assert_eq!(again.hit_tokens, 16);
+    assert_same_result(
+        &again,
+        &cold(&backend, &raw(&backend, "again", 1, &format!("{prefix}x"))),
+    );
+}
+
+#[test]
+fn invalid_rope_scaling_is_refused_by_the_backend() {
+    for scaling in [
+        Qwen2RopeScaling::DynamicNtk {
+            factor: 0.5,
+            original_max_position_embeddings: 24,
+        },
+        Qwen2RopeScaling::DynamicNtk {
+            factor: f32::NAN,
+            original_max_position_embeddings: 24,
+        },
+        Qwen2RopeScaling::DynamicNtk {
+            factor: 2.0,
+            original_max_position_embeddings: 0,
+        },
+        Qwen2RopeScaling::Unsupported("yarn".into()),
+    ] {
+        assert!(matches!(
+            ReferenceKvReuseBackend::with_rope_scaling(
+                ReferenceKvLimits::default(),
+                scope("alice"),
+                1,
+                scaling,
+            ),
+            Err(ReferenceKvError::Stack(_))
+        ));
+    }
+}
+
+#[test]
+fn default_backend_reports_the_plain_base_regime_and_one_chain() {
+    let backend = backend();
+    let out = run(
+        &backend,
+        &scope("alice"),
+        &raw(&backend, "a", 1, &text(20, 1)),
+    );
+    assert_eq!(out.rope_regime.effective_base(), 10_000.0);
+    assert_eq!(
+        backend.chain_id_for_admission(1).unwrap(),
+        backend.chain_id()
+    );
+    assert_eq!(
+        backend.chain_id_for_admission(200).unwrap(),
+        backend.chain_id()
+    );
 }
