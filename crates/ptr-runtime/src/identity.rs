@@ -113,7 +113,7 @@ pub struct HttpJwksRefresher {
 /// panics. Installing is idempotent and a provider another component already
 /// installed is kept.
 #[cfg(feature = "oidc-http")]
-pub(crate) fn ensure_rustls_provider() {
+pub(crate) fn install_rustls_provider() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -125,7 +125,7 @@ pub(crate) fn ensure_rustls_provider() {
 /// the configured URL.
 #[cfg(feature = "oidc-http")]
 pub(crate) fn hardened_client_builder() -> reqwest::blocking::ClientBuilder {
-    ensure_rustls_provider();
+    install_rustls_provider();
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .https_only(true)
