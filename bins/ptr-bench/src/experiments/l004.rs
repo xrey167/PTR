@@ -1089,6 +1089,7 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::TierObjectCommitted { .. } => "storage.tier_object_committed",
         LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
         LedgerEvent::ExpertStructuralCommitted { .. } => "expert.structural_committed",
+        LedgerEvent::ExpertFenceCommitted { .. } => "expert.fence_committed",
     }
 }
 
@@ -1164,7 +1165,8 @@ fn expected_subject(record: &CommittedEvent) -> String {
             backend_id,
             ..
         } => format!("tier-replica:{}:{backend_id}", hex_of(root_digest)),
-        LedgerEvent::ExpertStructuralCommitted { project, .. } => format!("project:{project}"),
+        LedgerEvent::ExpertStructuralCommitted { project, .. }
+        | LedgerEvent::ExpertFenceCommitted { project, .. } => format!("project:{project}"),
     }
 }
 

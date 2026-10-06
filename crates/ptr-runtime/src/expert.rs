@@ -56,9 +56,41 @@
 //!
 //! [`ptr_pods::StructuralOp::outcomes`] is the single definition of the state each operand and
 //! result is left in; this module stores it, `ptr-state` projects it.
+//!
+//! # Fencing
+//!
+//! A fence is not a proposal: no proposal may name a fenced expert, and the gate does not judge
+//! one. [`PtrRuntime::fence_expert`] and [`PtrRuntime::readmit_expert`] write
+//! [`LedgerEvent::ExpertFenceCommitted`] under an [`ExpertFenceGrant`] the host builds from its
+//! own authority: a fence needs [`ExpertFenceAuthority::RuntimeRevocation`], a readmission
+//! [`ExpertFenceAuthority::Gate`]. Both compare-and-set the expert's generation and state
+//! version and move the state version to the next value, the expert's **fence epoch**: a fence
+//! takes a `Serving` or `Frozen` expert to `Fenced` at an unchanged generation, a readmission
+//! returns a fenced expert to `Serving`. A readmission is accepted only for a fence of cause
+//! [`ExpertFenceCause::AuthorityQuarantine`]; an `InputRevoked` fence is final. The public
+//! `commit` refuses the event like it refuses a structural record. A KV entry that recorded the
+//! expert's earlier epoch is never revived, because the materialized value
+//! (`<generation>:<state>:<epoch>`) no longer carries that epoch.
+//!
+//! Replay repeats the compare-and-set against the registry as of that point of the history; it
+//! cannot re-check the grant, which is not recorded.
+//!
+//! A fence never waits for a gate. A readmission does: it needs a passed [`BoundGateReport`]
+//! whose subject is bound to this expert, generation, state version and epoch
+//! ([`expert_readmission_subject_ids`]) and produced under the gate configuration the
+//! [`ExpertFenceAuthority::Gate`] grant requires. The report's canonical bytes, the gate epoch
+//! and the required configuration digest travel in the event, and replay re-verifies them as for
+//! a structural record (canonical decode, passed, subject, configuration, one configuration per
+//! gate epoch).
+//!
+//! The registry also keeps a fence memo: the highest epoch each expert was ever fenced at. A KV
+//! dependency whose recorded epoch is `0` or at most the memo is never live, also after a
+//! readmission, so an entry recorded before the fence (or with no epoch) is never revived.
 
 use crate::{PtrRuntime, RuntimeError};
-use ptr_ledger::{ExpertOpKind, LedgerEvent};
+use ptr_ledger::{
+    ExpertFenceAction, ExpertFenceCause, ExpertFenceEvidence, ExpertOpKind, LedgerEvent,
+};
 use ptr_lineage::BoundGateReport;
 use ptr_pods::{
     BaseModelRef, ExpertCommitRecord, ExpertLevel, ExpertProposal, ExpertState, ManifestDigest,
@@ -176,6 +208,94 @@ pub enum ExpertAdmissionError {
     Unencodable,
     /// The event disagrees with the record it carries.
     EventMismatch { field: ExpertEventField },
+    /// The fence request names a project other than the one the grant authenticated.
+    FenceProjectMismatch,
+    /// The grant's authority does not allow this fence action.
+    FenceAuthorityMismatch {
+        action: ExpertFenceAction,
+        required: ExpertFenceAuthority,
+    },
+    /// The expert is not `Serving` or `Frozen`, so it cannot be fenced.
+    NotFenceable { pod: String, state: ExpertState },
+    /// A readmission names an expert that is not `Fenced`.
+    NotFenced { pod: String, state: ExpertState },
+    /// A readmission names a different cause than the fence it would clear.
+    FenceCauseMismatch { pod: String },
+    /// The fence was caused by a revoked input, or its cause is unknown (a snapshot restored
+    /// from before causes were recorded): it is never readmitted.
+    NotReadmittable { pod: String },
+    /// A readmission carries no gate evidence.
+    FenceEvidenceMissing { pod: String },
+    /// A fence carries gate evidence: a fence never waits for a gate.
+    FenceEvidenceUnexpected { pod: String },
+    /// The event's epoch is not exactly one above the state version it compares against.
+    FenceEpochMismatch { pod: String },
+}
+
+/// Which of the host's authorities a fence grant carries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertFenceAuthority {
+    /// The runtime's revocation authority: it may fence.
+    RuntimeRevocation,
+    /// The gate host's authority: it may readmit a quarantined expert.
+    Gate,
+}
+
+/// What the host has authenticated for one fence or readmission.
+///
+/// As with [`ExpertAdmissionGrant`], only the host constructs one, from its own authority, and
+/// the runtime does not remember it between calls. A readmission grant also carries the gate
+/// epoch the host stands at and the digest of the gate configuration it requires evidence from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertFenceGrant {
+    project: ProjectId,
+    authority: ExpertFenceAuthority,
+    gate: Option<(u64, [u8; 32])>,
+}
+
+impl ExpertFenceGrant {
+    /// A grant of the runtime's revocation authority: it may fence, never readmit.
+    pub fn revocation(project: ProjectId) -> Self {
+        Self {
+            project,
+            authority: ExpertFenceAuthority::RuntimeRevocation,
+            gate: None,
+        }
+    }
+
+    /// A grant of the gate authority: it may readmit on a report produced under
+    /// `required_gate_config_digest`, never fence.
+    pub fn gate(
+        project: ProjectId,
+        gate_epoch: u64,
+        required_gate_config_digest: [u8; 32],
+    ) -> Self {
+        Self {
+            project,
+            authority: ExpertFenceAuthority::Gate,
+            gate: Some((gate_epoch, required_gate_config_digest)),
+        }
+    }
+
+    pub fn project(&self) -> &ProjectId {
+        &self.project
+    }
+
+    pub fn authority(&self) -> ExpertFenceAuthority {
+        self.authority
+    }
+}
+
+/// The expert a fence or readmission names, as the caller last observed it: the generation and
+/// state version are the compare-and-set operands.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertFenceRequest {
+    pub project: ProjectId,
+    pub pod: PodId,
+    pub generation: Generation,
+    pub expected_state_version: u64,
+    /// The cause of the fence, or for a readmission the cause of the fence it clears.
+    pub cause: ExpertFenceCause,
 }
 
 /// How the evidence behind an expert's latest structural record was checked on replay.
@@ -210,6 +330,23 @@ pub struct ExpertRegistryProjection {
     legacy: BTreeSet<(String, String)>,
     /// The gate configuration digest the first verified record of each gate epoch required.
     epoch_gate_configs: BTreeMap<u64, [u8; 32]>,
+    /// The cause of the fence every `Fenced` expert is under. An expert absent here but `Fenced`
+    /// (restored from a snapshot that did not record causes) is not readmittable.
+    fence_causes: BTreeMap<(String, String), ExpertFenceCause>,
+    /// The highest epoch each expert was ever fenced at. Never lowered, kept after a
+    /// readmission; see [`ExpertRegistryProjection::highest_fenced_epoch`].
+    fenced_epochs: BTreeMap<(String, String), u64>,
+}
+
+/// What applying one fence event changes.
+struct FencePlan {
+    key: (String, String),
+    entry: ExpertEntry,
+    /// `Some` when the expert is now fenced for that cause, `None` when the fence is cleared.
+    cause: Option<ExpertFenceCause>,
+    /// `Some` when the event fenced the expert at that epoch.
+    fenced_at: Option<u64>,
+    verified: Option<VerifiedEvidence>,
 }
 
 type Plan = Vec<((String, String), ExpertEntry)>;
@@ -238,11 +375,15 @@ impl ExpertRegistryProjection {
         entries: Vec<((String, String), ExpertEntry)>,
         legacy: BTreeSet<(String, String)>,
         epoch_gate_configs: BTreeMap<u64, [u8; 32]>,
+        fence_causes: BTreeMap<(String, String), ExpertFenceCause>,
+        fenced_epochs: BTreeMap<(String, String), u64>,
     ) -> Self {
         Self {
             entries: entries.into_iter().collect(),
             legacy,
             epoch_gate_configs,
+            fence_causes,
+            fenced_epochs,
         }
     }
 
@@ -250,11 +391,54 @@ impl ExpertRegistryProjection {
     /// (PTRCS005): every expert is unverified legacy and no epoch configuration is known.
     pub(crate) fn from_entries_all_legacy(entries: Vec<((String, String), ExpertEntry)>) -> Self {
         let legacy = entries.iter().map(|(key, _)| key.clone()).collect();
-        Self::from_parts(entries, legacy, BTreeMap::new())
+        // A snapshot from before the memo: every fenced expert was fenced at its current epoch.
+        let fenced_epochs = fenced_at_current_epoch(&entries);
+        Self::from_parts(
+            entries,
+            legacy,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            fenced_epochs,
+        )
     }
 
     pub(crate) fn legacy_keys(&self) -> impl Iterator<Item = (&str, &str)> {
         self.legacy.iter().map(|(p, d)| (p.as_str(), d.as_str()))
+    }
+
+    pub(crate) fn fenced_epoch_entries(&self) -> impl Iterator<Item = (&str, &str, u64)> {
+        self.fenced_epochs
+            .iter()
+            .map(|((project, pod), epoch)| (project.as_str(), pod.as_str(), *epoch))
+    }
+
+    /// The highest epoch the expert `identity` (`expert:{project}/{pod}`) was ever fenced at, or
+    /// `None` when it never was. A dependency whose recorded fence epoch is `0` or at most this
+    /// is never live: it was recorded before the fence ended it, and a readmission does not
+    /// revive it.
+    pub fn highest_fenced_epoch(&self, identity: &str) -> Option<u64> {
+        let (project, pod) = identity
+            .strip_prefix(ptr_state::EXPERT_PREFIX)?
+            .split_once('/')?;
+        self.fenced_epochs
+            .get(&(project.to_owned(), pod.to_owned()))
+            .copied()
+    }
+
+    pub(crate) fn fence_cause_entries(
+        &self,
+    ) -> impl Iterator<Item = (&str, &str, ExpertFenceCause)> {
+        self.fence_causes
+            .iter()
+            .map(|((project, pod), cause)| (project.as_str(), pod.as_str(), *cause))
+    }
+
+    /// The cause `pod`'s fence was committed for, or `None` when it is not fenced or the cause
+    /// is unknown.
+    pub fn fence_cause(&self, project: &ProjectId, pod: &PodId) -> Option<ExpertFenceCause> {
+        self.fence_causes
+            .get(&(project.0.clone(), pod.0.clone()))
+            .copied()
     }
 
     pub(crate) fn epoch_configs(&self) -> impl Iterator<Item = (u64, [u8; 32])> + '_ {
@@ -375,6 +559,175 @@ impl ExpertRegistryProjection {
                 )
             })
             .collect())
+    }
+
+    /// Compare-and-set a fence event against this projection; the entry it would write.
+    fn plan_fence(&self, event: &LedgerEvent) -> Result<FencePlan, ExpertAdmissionError> {
+        let LedgerEvent::ExpertFenceCommitted {
+            project,
+            pod,
+            action,
+            cause,
+            generation,
+            expected_state_version,
+            epoch,
+            evidence,
+        } = event
+        else {
+            return Err(ExpertAdmissionError::InvalidRecord(
+                "not a fence event".to_owned(),
+            ));
+        };
+        let key = (project.0.clone(), pod.0.clone());
+        let entry = self
+            .entries
+            .get(&key)
+            .ok_or_else(|| ExpertAdmissionError::UnknownOperand { pod: pod.0.clone() })?;
+        let stale = |field| ExpertAdmissionError::StaleOperand {
+            pod: pod.0.clone(),
+            field,
+        };
+        if entry.generation != *generation {
+            return Err(stale(ExpertStaleField::Generation));
+        }
+        if entry.state_version != *expected_state_version {
+            return Err(stale(ExpertStaleField::StateVersion));
+        }
+        if expected_state_version.checked_add(1) != Some(*epoch) {
+            return Err(ExpertAdmissionError::FenceEpochMismatch { pod: pod.0.clone() });
+        }
+        let (state, recorded, verified) = match action {
+            ExpertFenceAction::Fence => {
+                if evidence.is_some() {
+                    return Err(ExpertAdmissionError::FenceEvidenceUnexpected {
+                        pod: pod.0.clone(),
+                    });
+                }
+                if !matches!(entry.state, ExpertState::Serving | ExpertState::Frozen) {
+                    return Err(ExpertAdmissionError::NotFenceable {
+                        pod: pod.0.clone(),
+                        state: entry.state,
+                    });
+                }
+                (ExpertState::Fenced, Some(*cause), None)
+            }
+            ExpertFenceAction::Readmit => {
+                if entry.state != ExpertState::Fenced {
+                    return Err(ExpertAdmissionError::NotFenced {
+                        pod: pod.0.clone(),
+                        state: entry.state,
+                    });
+                }
+                match self.fence_causes.get(&key) {
+                    Some(ExpertFenceCause::AuthorityQuarantine)
+                        if *cause == ExpertFenceCause::AuthorityQuarantine => {}
+                    Some(ExpertFenceCause::AuthorityQuarantine) => {
+                        return Err(ExpertAdmissionError::FenceCauseMismatch {
+                            pod: pod.0.clone(),
+                        });
+                    }
+                    Some(ExpertFenceCause::InputRevoked) | None => {
+                        return Err(ExpertAdmissionError::NotReadmittable { pod: pod.0.clone() });
+                    }
+                }
+                let evidence = evidence.as_ref().ok_or_else(|| {
+                    ExpertAdmissionError::FenceEvidenceMissing { pod: pod.0.clone() }
+                })?;
+                let verified = self.verify_readmission_evidence(event, evidence)?;
+                (ExpertState::Serving, None, Some(verified))
+            }
+        };
+        Ok(FencePlan {
+            key,
+            entry: ExpertEntry {
+                state,
+                state_version: *epoch,
+                ..entry.clone()
+            },
+            cause: recorded,
+            fenced_at: (*action == ExpertFenceAction::Fence).then_some(*epoch),
+            verified,
+        })
+    }
+
+    /// Re-verify the evidence a readmission embeds, at commit and on replay alike: the report
+    /// decodes canonically, passed, is bound to exactly this readmission, was produced under the
+    /// gate configuration the event says was required, and agrees with every other record of its
+    /// gate epoch.
+    fn verify_readmission_evidence(
+        &self,
+        event: &LedgerEvent,
+        evidence: &ExpertFenceEvidence,
+    ) -> Result<VerifiedEvidence, ExpertAdmissionError> {
+        let LedgerEvent::ExpertFenceCommitted {
+            project,
+            pod,
+            generation,
+            expected_state_version,
+            epoch,
+            cause,
+            ..
+        } = event
+        else {
+            return Err(ExpertAdmissionError::InvalidRecord(
+                "not a fence event".to_owned(),
+            ));
+        };
+        let report = BoundGateReport::decode_canonical(&evidence.report)
+            .map_err(|error| ExpertAdmissionError::EvidenceUndecodable(error.to_string()))?;
+        if !report.passed() {
+            return Err(ExpertAdmissionError::GateFailed);
+        }
+        let (proposal_id, operation_id) = expert_readmission_subject_ids(
+            project,
+            pod,
+            *generation,
+            *expected_state_version,
+            *epoch,
+            *cause,
+        );
+        let subject = report.subject();
+        if subject.proposal_id != proposal_id {
+            return Err(ExpertAdmissionError::EvidenceProposalMismatch);
+        }
+        if subject.operation_id != operation_id {
+            return Err(ExpertAdmissionError::EvidenceOperationMismatch);
+        }
+        if report.gate_config_digest() != evidence.required_gate_config_digest {
+            return Err(ExpertAdmissionError::GateConfigMismatch);
+        }
+        if let Some(known) = self.epoch_gate_configs.get(&evidence.gate_epoch) {
+            if *known != evidence.required_gate_config_digest {
+                return Err(ExpertAdmissionError::EpochGateConfigConflict {
+                    epoch: evidence.gate_epoch,
+                });
+            }
+        }
+        Ok(VerifiedEvidence {
+            epoch: evidence.gate_epoch,
+            gate_config_digest: evidence.required_gate_config_digest,
+        })
+    }
+
+    fn apply_fence(&mut self, plan: FencePlan) {
+        if let Some(verified) = plan.verified {
+            self.epoch_gate_configs
+                .entry(verified.epoch)
+                .or_insert(verified.gate_config_digest);
+        }
+        if let Some(epoch) = plan.fenced_at {
+            let highest = self.fenced_epochs.entry(plan.key.clone()).or_insert(0);
+            *highest = (*highest).max(epoch);
+        }
+        match plan.cause {
+            Some(cause) => {
+                self.fence_causes.insert(plan.key.clone(), cause);
+            }
+            None => {
+                self.fence_causes.remove(&plan.key);
+            }
+        }
+        self.entries.insert(plan.key, plan.entry);
     }
 
     fn apply(&mut self, plan: ExpertPlan) {
@@ -498,6 +851,143 @@ impl PtrRuntime {
         self.append_prepared(event, None)
     }
 
+    /// Fence the expert `request` names: a committed, ledger-ordered withdrawal from serving at
+    /// an unchanged generation, moving its fence epoch (state version) up by one. Needs a grant
+    /// of [`ExpertFenceAuthority::RuntimeRevocation`] for the request's project.
+    ///
+    /// # Errors
+    /// [`RuntimeError::Expert`] with the first failing check; nothing is appended on error.
+    pub fn fence_expert(
+        &mut self,
+        request: &ExpertFenceRequest,
+        grant: &ExpertFenceGrant,
+    ) -> Result<CommitIndex, RuntimeError> {
+        self.commit_expert_fence(ExpertFenceAction::Fence, request, None, grant)
+    }
+
+    /// Readmit a fenced expert at its unchanged generation as `Serving`, at a new fence epoch,
+    /// so no entry recorded under an earlier epoch is revived. Needs a grant of
+    /// [`ExpertFenceAuthority::Gate`], a fence of cause
+    /// [`ExpertFenceCause::AuthorityQuarantine`] and a passed `report` bound to this readmission
+    /// ([`expert_readmission_subject_ids`]) under the grant's gate configuration.
+    ///
+    /// # Errors
+    /// [`RuntimeError::Expert`] with the first failing check; nothing is appended on error.
+    pub fn readmit_expert(
+        &mut self,
+        request: &ExpertFenceRequest,
+        report: &BoundGateReport,
+        grant: &ExpertFenceGrant,
+    ) -> Result<CommitIndex, RuntimeError> {
+        self.commit_expert_fence(ExpertFenceAction::Readmit, request, Some(report), grant)
+    }
+
+    fn commit_expert_fence(
+        &mut self,
+        action: ExpertFenceAction,
+        request: &ExpertFenceRequest,
+        report: Option<&BoundGateReport>,
+        grant: &ExpertFenceGrant,
+    ) -> Result<CommitIndex, RuntimeError> {
+        let expert = RuntimeError::Expert;
+        if request.project != *grant.project() {
+            return Err(expert(ExpertAdmissionError::FenceProjectMismatch));
+        }
+        let required = match action {
+            ExpertFenceAction::Fence => ExpertFenceAuthority::RuntimeRevocation,
+            ExpertFenceAction::Readmit => ExpertFenceAuthority::Gate,
+        };
+        if grant.authority() != required {
+            return Err(expert(ExpertAdmissionError::FenceAuthorityMismatch {
+                action,
+                required,
+            }));
+        }
+        let epoch = request
+            .expected_state_version
+            .checked_add(1)
+            .ok_or_else(|| {
+                expert(ExpertAdmissionError::FenceEpochMismatch {
+                    pod: request.pod.0.clone(),
+                })
+            })?;
+        let evidence = match (action, report, grant.gate) {
+            (ExpertFenceAction::Fence, _, _) => None,
+            (ExpertFenceAction::Readmit, Some(report), Some((gate_epoch, required))) => {
+                let (proposal_id, operation_id) = expert_readmission_subject_ids(
+                    &request.project,
+                    &request.pod,
+                    request.generation,
+                    request.expected_state_version,
+                    epoch,
+                    request.cause,
+                );
+                let subject = report.subject();
+                if subject.proposal_id != proposal_id {
+                    return Err(expert(ExpertAdmissionError::EvidenceProposalMismatch));
+                }
+                if subject.operation_id != operation_id {
+                    return Err(expert(ExpertAdmissionError::EvidenceOperationMismatch));
+                }
+                if report.gate_config_digest() != required {
+                    return Err(expert(ExpertAdmissionError::GateConfigMismatch));
+                }
+                if !report.passed() {
+                    return Err(expert(ExpertAdmissionError::GateFailed));
+                }
+                Some(ExpertFenceEvidence {
+                    gate_epoch,
+                    required_gate_config_digest: required,
+                    report: report.encode_canonical(),
+                })
+            }
+            (ExpertFenceAction::Readmit, _, _) => {
+                return Err(expert(ExpertAdmissionError::FenceEvidenceMissing {
+                    pod: request.pod.0.clone(),
+                }));
+            }
+        };
+        let event = LedgerEvent::ExpertFenceCommitted {
+            project: request.project.clone(),
+            pod: request.pod.clone(),
+            action,
+            cause: request.cause,
+            generation: request.generation,
+            expected_state_version: request.expected_state_version,
+            epoch,
+            evidence,
+        };
+        self.validate_expert_fence_event(&event)?;
+        self.append_prepared(event, None)
+    }
+
+    /// Replay-time and commit-time check of a fence event: the ledger can frame it and the
+    /// compare-and-set holds against the registry as of now.
+    pub(crate) fn validate_expert_fence_event(
+        &self,
+        event: &LedgerEvent,
+    ) -> Result<(), RuntimeError> {
+        ptr_ledger::check_encodable(event)
+            .map_err(|_| RuntimeError::Expert(ExpertAdmissionError::Unencodable))?;
+        self.experts
+            .plan_fence(event)
+            .map(|_| ())
+            .map_err(RuntimeError::Expert)
+    }
+
+    /// Apply a committed fence event to the registry.
+    pub(crate) fn apply_expert_fence_event(
+        &mut self,
+        event: &LedgerEvent,
+    ) -> Result<(), RuntimeError> {
+        let plan = self
+            .experts
+            .plan_fence(event)
+            .map_err(RuntimeError::Expert)?;
+        self.experts.apply_fence(plan);
+        Ok(())
+    }
+
     /// Replay-time and admission-time check of a structural event: the record decodes, every id
     /// the event carries is re-derived from it, the ledger can frame it, and the compare-and-set
     /// holds against the registry as of now.
@@ -592,6 +1082,64 @@ impl PtrRuntime {
         let plan = self.plan_expert_event(event)?;
         self.experts.apply(plan);
         Ok(())
+    }
+}
+
+/// The `(proposal_id, operation_id)` a gate report must be bound to for it to justify the
+/// readmission of `pod` at `generation`, from state version `expected_state_version` to `epoch`,
+/// out of a fence of `cause`. Both are domain-separated digests of every one of those fields, so
+/// a report for another expert, generation, epoch or cause does not match.
+pub fn expert_readmission_subject_ids(
+    project: &ProjectId,
+    pod: &PodId,
+    generation: Generation,
+    expected_state_version: u64,
+    epoch: u64,
+    cause: ExpertFenceCause,
+) -> ([u8; 32], [u8; 32]) {
+    let digest = |domain: &str| {
+        let mut bytes = Vec::new();
+        for text in [domain, project.0.as_str(), pod.0.as_str()] {
+            bytes.extend_from_slice(&(text.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(text.as_bytes());
+        }
+        bytes.extend_from_slice(&generation.0.to_le_bytes());
+        bytes.extend_from_slice(&expected_state_version.to_le_bytes());
+        bytes.extend_from_slice(&epoch.to_le_bytes());
+        bytes.push(cause.code());
+        ptr_ledger::integrity::sha256(&bytes)
+    };
+    (
+        digest("ptr.expert.readmission.proposal.v1"),
+        digest("ptr.expert.readmission.operation.v1"),
+    )
+}
+
+/// The fence memo of a registry that predates it: each `Fenced` expert was fenced at the epoch
+/// it now stands at, and nothing is known about any earlier fence.
+pub(crate) fn fenced_at_current_epoch(
+    entries: &[((String, String), ExpertEntry)],
+) -> BTreeMap<(String, String), u64> {
+    entries
+        .iter()
+        .filter(|(_, entry)| entry.state == ExpertState::Fenced)
+        .map(|(key, entry)| (key.clone(), entry.state_version))
+        .collect()
+}
+
+/// The fence epoch now in force, by `expert:{project}/{pod}` identity, for a committed fence or
+/// readmission event; empty for any other event. This is the map
+/// [`crate::KvPrefixCatalog::invalidate_expert_fences`] takes: an entry that recorded an epoch
+/// below it, or none, is tombstoned.
+pub fn expert_fence_epochs(event: &LedgerEvent) -> BTreeMap<String, u64> {
+    match event {
+        LedgerEvent::ExpertFenceCommitted {
+            project,
+            pod,
+            epoch,
+            ..
+        } => BTreeMap::from([(ptr_state::expert_key(&project.0, &pod.0), *epoch)]),
+        _ => BTreeMap::new(),
     }
 }
 

@@ -2034,12 +2034,18 @@ impl PtrRuntime {
 
     /// Whether the materialized `expert:{project}/{pod}` value, written as
     /// `{generation}:{state}:{state_version}`, names `generation` in a serving or frozen
-    /// state. An absent, malformed or other-state value is not live (fail closed).
+    /// state. An absent, malformed or other-state value is not live (fail closed). An expert
+    /// that was ever fenced is live only for a dependency recorded at an epoch above its highest
+    /// fence (never `0`, never an epoch at or below it), also after a readmission.
     fn expert_is_serving(&self, identity: &str, generation: Generation, fence_epoch: u64) -> bool {
         self.materialized_state()
             .values
             .get(identity)
             .is_some_and(|value| expert_value_is_serving(value, generation, fence_epoch))
+            && self
+                .experts
+                .highest_fenced_epoch(identity)
+                .is_none_or(|fenced| fence_epoch > fenced)
     }
 }
 
@@ -2236,6 +2242,11 @@ impl PtrRuntime {
                     }
                     None => catalog.invalidate_all_experts(),
                 }
+            }
+            // A committed fence or readmission: every dependency recorded below the new epoch,
+            // or with none, is tombstoned and retired now rather than at its next use.
+            LedgerEvent::ExpertFenceCommitted { .. } => {
+                catalog.invalidate_expert_fences(&crate::expert::expert_fence_epochs(event))
             }
             _ => return,
         };

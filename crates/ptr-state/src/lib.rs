@@ -1,4 +1,4 @@
-use ptr_ledger::{CommittedEvent, LedgerEvent};
+use ptr_ledger::{CommittedEvent, ExpertFenceAction, LedgerEvent};
 use ptr_pods::{ExpertCommitRecord, ExpertState, RetiredReason};
 use std::collections::BTreeMap;
 
@@ -254,6 +254,23 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         LedgerEvent::ExpertStructuralCommitted {
             project, record, ..
         } => expert_entries(project, record),
+        LedgerEvent::ExpertFenceCommitted {
+            project,
+            pod,
+            action,
+            generation,
+            epoch,
+            ..
+        } => {
+            let state = match action {
+                ExpertFenceAction::Fence => ExpertState::Fenced,
+                ExpertFenceAction::Readmit => ExpertState::Serving,
+            };
+            vec![(
+                expert_key(&project.0, &pod.0),
+                expert_entry(generation.0, state, *epoch),
+            )]
+        }
         LedgerEvent::PodEvidenceCommitted { .. }
         | LedgerEvent::PodOutputAdmitted { .. }
         | LedgerEvent::PodHypothesisCommitted { .. }
@@ -444,6 +461,36 @@ impl TursoMaterializedState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_fence_event_projects_fenced_at_its_epoch_and_a_readmission_serving_at_the_next() {
+        use ptr_ledger::ExpertFenceCause;
+        use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
+        let project_event = |event| {
+            projection_entries(&CommittedEvent {
+                index: CommitIndex(1),
+                event,
+            })
+        };
+        let event = |action, expected, epoch| LedgerEvent::ExpertFenceCommitted {
+            project: ProjectId::from("p"),
+            pod: PodId::from("a"),
+            action,
+            cause: ExpertFenceCause::AuthorityQuarantine,
+            generation: Generation(2),
+            expected_state_version: expected,
+            epoch,
+            evidence: None,
+        };
+        assert_eq!(
+            project_event(event(ExpertFenceAction::Fence, 1, 2)),
+            vec![("expert:p/a".to_owned(), "2:fenced:2".to_owned())]
+        );
+        assert_eq!(
+            project_event(event(ExpertFenceAction::Readmit, 2, 3)),
+            vec![("expert:p/a".to_owned(), "2:serving:3".to_owned())]
+        );
+    }
+
     #[test]
     fn expert_entries_use_a_stable_three_field_encoding() {
         use ptr_pods::{ExpertState, RetiredReason};
