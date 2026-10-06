@@ -118,6 +118,96 @@ impl KvRuntimeLeaseBinding {
     }
 }
 
+/// The layers of a model a published prefix covers. `Full` is every layer (the only scope
+/// before layer-scoped publishing, and the canonical form of a span that covers all layers,
+/// so one content has one key); `Span` is the half-open range `start..end`. `Range<u16>`
+/// itself is not `Ord`, which a map key needs.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum KvLayerRange {
+    Full,
+    Span { start: u16, end: u16 },
+}
+
+impl KvLayerRange {
+    /// A non-empty span `start..end`. It is not checked against a layer count here; the
+    /// backend resolves it against the cache's schema.
+    pub fn span(start: u16, end: u16) -> Result<Self, KvBackendError> {
+        if start >= end {
+            return Err(KvBackendError::InvalidSchema(
+                "KV layer range must be non-empty".into(),
+            ));
+        }
+        Ok(Self::Span { start, end })
+    }
+
+    /// The covered layers as `start..end` for a model with `layer_count` layers.
+    pub fn resolve(self, layer_count: usize) -> Result<std::ops::Range<usize>, KvBackendError> {
+        match self {
+            Self::Full => Ok(0..layer_count),
+            Self::Span { start, end } => {
+                let (start, end) = (usize::from(start), usize::from(end));
+                if start >= end || end > layer_count {
+                    return Err(KvBackendError::InvalidLayer(end));
+                }
+                Ok(start..end)
+            }
+        }
+    }
+
+    /// The canonical scope of `range` in a model with `layer_count` layers.
+    fn canonical(
+        range: std::ops::Range<usize>,
+        layer_count: usize,
+    ) -> Result<Self, KvBackendError> {
+        if range.start == 0 && range.end == layer_count {
+            return Ok(Self::Full);
+        }
+        let to_u16 =
+            |value: usize| u16::try_from(value).map_err(|_| KvBackendError::InvalidLayer(value));
+        Self::span(to_u16(range.start)?, to_u16(range.end)?)
+    }
+}
+
+/// How an adapter is applied across layers: layers below `first_adapted_layer` are computed
+/// by `base_adapter` alone (a LoRA that starts at layer f leaves layers `0..f` untouched), so
+/// their KV rows are the base model's and may be shared across adapters.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct KvAdapterLayering {
+    pub base_adapter: AdapterVersion,
+    pub first_adapted_layer: u16,
+}
+
+/// The adapter that actually determined the KV rows of `range` in a cache bound to
+/// `cache_adapter`: the base adapter when the whole range lies below the first adapted layer.
+fn effective_adapter(
+    cache_adapter: &AdapterVersion,
+    layering: Option<&KvAdapterLayering>,
+    range: &std::ops::Range<usize>,
+) -> AdapterVersion {
+    match layering {
+        Some(layering) if range.end <= usize::from(layering.first_adapted_layer) => {
+            layering.base_adapter.clone()
+        }
+        _ => cache_adapter.clone(),
+    }
+}
+
+fn check_layering(
+    layering: Option<&KvAdapterLayering>,
+    layer_count: usize,
+) -> Result<(), KvBackendError> {
+    match layering {
+        Some(layering) if usize::from(layering.first_adapted_layer) > layer_count => Err(
+            KvBackendError::InvalidLayer(usize::from(layering.first_adapted_layer)),
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// A published prefix's identity. `adapter` is the EFFECTIVE adapter of `layers`: for a span
+/// below a LoRA's first adapted layer it is the base adapter, not the publishing cache's
+/// adapter, and `schema_digest` is computed with that adapter. For a `Full` key it is the
+/// cache's adapter, as before layer scoping.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct KvPrefixKey {
     pub principal: PrincipalId,
@@ -127,6 +217,60 @@ pub struct KvPrefixKey {
     pub generation: Generation,
     pub schema_digest: Digest,
     pub prefix_digest: Digest,
+    pub layers: KvLayerRange,
+}
+
+/// Publish the full pages of `layers` only.
+#[derive(Clone, Debug)]
+pub struct KvLayerPublishRequest {
+    pub layers: KvLayerRange,
+    /// How the publishing cache's adapter is layered; `None` means the cache's adapter
+    /// determines every layer.
+    pub layering: Option<KvAdapterLayering>,
+}
+
+/// Fork a cache from several layer-scoped prefixes that together cover every layer.
+#[derive(Debug)]
+pub struct KvLayerForkRequest {
+    /// One published prefix with its single-use witness per layer span.
+    pub parts: Vec<(KvSharedPrefix, KvForkWitness)>,
+    /// How the receiving cache's adapter is layered (the adapter check compares each part's
+    /// effective adapter for its span).
+    pub layering: Option<KvAdapterLayering>,
+}
+
+/// Checked adoption of a layer-scoped prefix into a cache that already computed its rows.
+#[derive(Debug)]
+pub struct KvLayerAdoptRequest {
+    pub prefix: KvSharedPrefix,
+    pub witness: KvForkWitness,
+    pub layering: Option<KvAdapterLayering>,
+}
+
+/// A successful checked adoption.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvAdoptReport {
+    /// Rows compared, summed over adopted layers.
+    pub compared_rows: usize,
+    /// Layer pages that now share the published allocation (already shared ones excluded).
+    pub swapped_layer_pages: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum KvAdoptError {
+    /// The request was refused before any row was compared.
+    Backend(KvBackendError),
+    /// At least one row differs bitwise from the published row; the cache is unchanged.
+    Mismatch {
+        mismatched_rows: usize,
+        compared_rows: usize,
+    },
+}
+
+impl From<KvBackendError> for KvAdoptError {
+    fn from(error: KvBackendError) -> Self {
+        Self::Backend(error)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -304,6 +448,40 @@ pub trait PagedKvTensorBackend: KvTensorBackend {
     ) -> Result<Self::Cache, KvBackendError>;
 
     fn publish_prefix(&self, cache: &mut Self::Cache) -> Result<KvSharedPrefix, KvBackendError>;
+
+    /// Publish the full pages of a layer span. The default is
+    /// [`KvBackendError::Unsupported`].
+    fn publish_prefix_layers(
+        &self,
+        _cache: &mut Self::Cache,
+        _request: KvLayerPublishRequest,
+    ) -> Result<KvSharedPrefix, KvBackendError> {
+        Err(KvBackendError::Unsupported("publish_prefix_layers"))
+    }
+
+    /// Fork an empty cache from layer-scoped prefixes covering every layer disjointly with
+    /// identical page boundaries, under one single-use witness per part. The default is
+    /// [`KvBackendError::Unsupported`].
+    fn fork_prefix_layers_admitted(
+        &self,
+        _cache: &mut Self::Cache,
+        _request: KvLayerForkRequest,
+    ) -> Result<(), KvBackendError> {
+        Err(KvBackendError::Unsupported("fork_prefix_layers_admitted"))
+    }
+
+    /// Checked adoption: compare every published row bitwise with the rows the cache already
+    /// computed and, only if all are equal, share the published allocation. The default is
+    /// [`KvBackendError::Unsupported`].
+    fn adopt_prefix_layers_admitted(
+        &self,
+        _cache: &mut Self::Cache,
+        _request: KvLayerAdoptRequest,
+    ) -> Result<KvAdoptReport, KvAdoptError> {
+        Err(KvAdoptError::Backend(KvBackendError::Unsupported(
+            "adopt_prefix_layers_admitted",
+        )))
+    }
 
     /// Remove a published prefix so it can no longer be forked. A key that is not
     /// registered is [`KvBackendError::PrefixNotFound`], so a double retire is visible.
@@ -494,7 +672,173 @@ struct HostPageBundle {
     digest: Option<Digest>,
     /// One independently shared allocation per layer: cloning a bundle is shallow and a write
     /// to layer `l` copies only layer `l` (`Arc::make_mut`), never the other layers.
-    layers: Vec<Arc<KvLayerSnapshot>>,
+    layers: Vec<PageLayer>,
+}
+
+/// The leading rows of an allocation owned by someone else.
+#[derive(Clone, Debug)]
+struct SharedRows {
+    source: Arc<KvLayerSnapshot>,
+    rows: usize,
+}
+
+/// One layer of one page: optionally the first `shared.rows` rows of a shared allocation,
+/// followed by the rows of `owned`. Truncating a shared layer keeps the surviving rows
+/// physically shared (a view of the shared allocation) and later appends go to `owned`, so a
+/// boundary page can share its pre-boundary rows with the page it was cut from. The
+/// representation is invisible to digests, snapshots and row access.
+#[derive(Clone, Debug)]
+struct PageLayer {
+    shared: Option<SharedRows>,
+    owned: Arc<KvLayerSnapshot>,
+}
+
+impl PageLayer {
+    fn whole(layer: KvLayerSnapshot) -> Self {
+        Self {
+            shared: None,
+            owned: Arc::new(layer),
+        }
+    }
+
+    fn width(&self) -> usize {
+        self.owned.keys.shape.get(1).copied().unwrap_or(0)
+    }
+
+    fn shared_rows(&self) -> usize {
+        self.shared.as_ref().map_or(0, |shared| shared.rows)
+    }
+
+    fn rows(&self) -> usize {
+        self.shared_rows() + self.owned.keys.shape.first().copied().unwrap_or(0)
+    }
+
+    /// Key and value values in row order as at most two contiguous segments.
+    fn segments(&self) -> ([&[f32]; 2], [&[f32]; 2]) {
+        let owned = (&self.owned.keys.values[..], &self.owned.values.values[..]);
+        match &self.shared {
+            None => ([owned.0, &[]], [owned.1, &[]]),
+            Some(shared) => {
+                let len = shared.rows * self.width();
+                (
+                    [&shared.source.keys.values[..len], owned.0],
+                    [&shared.source.values.values[..len], owned.1],
+                )
+            }
+        }
+    }
+
+    fn row(&self, row: usize) -> (&[f32], &[f32]) {
+        let width = self.width();
+        let (keys, values) = self.segments();
+        let start = row * width;
+        let first = keys[0].len();
+        if start < first {
+            (
+                &keys[0][start..start + width],
+                &values[0][start..start + width],
+            )
+        } else {
+            let start = start - first;
+            (
+                &keys[1][start..start + width],
+                &values[1][start..start + width],
+            )
+        }
+    }
+
+    fn materialize(&self, index: usize) -> KvLayerSnapshot {
+        let (keys, values) = self.segments();
+        let shape = vec![self.rows(), self.width()];
+        KvLayerSnapshot {
+            keys: TensorRef {
+                layer: index,
+                shape: shape.clone(),
+                values: keys.concat(),
+            },
+            values: TensorRef {
+                layer: index,
+                shape,
+                values: values.concat(),
+            },
+        }
+    }
+
+    fn value_count(&self) -> usize {
+        let (keys, values) = self.segments();
+        keys.iter()
+            .chain(values.iter())
+            .map(|part| part.len())
+            .sum()
+    }
+
+    fn digest(&self, index: usize) -> Digest {
+        let (keys, values) = self.segments();
+        layer_digest_segments(index, &[self.rows(), self.width()], keys, values)
+    }
+
+    fn extend(&mut self, keys: &[f32], values: &[f32], count: usize) {
+        let target = Arc::make_mut(&mut self.owned);
+        target.keys.values.extend_from_slice(keys);
+        target.values.values.extend_from_slice(values);
+        target.keys.shape[0] += count;
+        target.values.shape[0] += count;
+    }
+
+    /// Keep the first `keep` rows (`0 < keep < rows`). A layer that is shared with another
+    /// page keeps its rows as a shared view instead of being copied; returns whether rows
+    /// had to be copied.
+    fn truncate(&mut self, keep: usize) -> bool {
+        let width = self.width();
+        let layer = self.owned.keys.layer;
+        let shared_rows = self.shared_rows();
+        if keep <= shared_rows {
+            if let Some(shared) = &mut self.shared {
+                shared.rows = keep;
+            }
+            self.owned = Arc::new(empty_layer(layer, width));
+            return false;
+        }
+        if self.shared.is_none() && Arc::strong_count(&self.owned) > 1 {
+            let source = std::mem::replace(&mut self.owned, Arc::new(empty_layer(layer, width)));
+            self.shared = Some(SharedRows { source, rows: keep });
+            return false;
+        }
+        let copied = Arc::strong_count(&self.owned) > 1;
+        let owned = Arc::make_mut(&mut self.owned);
+        let rows = keep - shared_rows;
+        owned.keys.values.truncate(rows * width);
+        owned.values.values.truncate(rows * width);
+        owned.keys.shape[0] = rows;
+        owned.values.shape[0] = rows;
+        copied
+    }
+
+    /// The allocation and row count of the first segment, for sharing diagnostics.
+    fn leading_segment(&self) -> (*const KvLayerSnapshot, usize) {
+        match &self.shared {
+            Some(shared) => (Arc::as_ptr(&shared.source), shared.rows),
+            None => (
+                Arc::as_ptr(&self.owned),
+                self.owned.keys.shape.first().copied().unwrap_or(0),
+            ),
+        }
+    }
+}
+
+fn empty_layer(layer: usize, width: usize) -> KvLayerSnapshot {
+    KvLayerSnapshot {
+        keys: TensorRef {
+            layer,
+            shape: vec![0, width],
+            values: Vec::new(),
+        },
+        values: TensorRef {
+            layer,
+            shape: vec![0, width],
+            values: Vec::new(),
+        },
+    }
 }
 
 impl HostPageBundle {
@@ -509,10 +853,33 @@ impl HostPageBundle {
 }
 
 #[derive(Clone)]
-struct PrefixRecord {
+enum PrefixRecord {
+    /// Every layer of whole pages, published by `publish_prefix`.
+    Whole(WholePrefix),
+    /// The layers of one span, published by `publish_prefix_layers`.
+    Layered(Arc<LayeredPrefix>),
+}
+
+#[derive(Clone)]
+struct WholePrefix {
     pages: Vec<Arc<HostPageBundle>>,
     sequence_length: usize,
     position_offset: usize,
+}
+
+struct LayeredPrefix {
+    /// The resolved layer span.
+    layers: std::ops::Range<usize>,
+    pages: Vec<LayeredPage>,
+    sequence_length: usize,
+    position_offset: usize,
+}
+
+struct LayeredPage {
+    valid_tokens: u16,
+    digest: Digest,
+    /// One entry per layer of the span, in layer order.
+    layers: Vec<PageLayer>,
 }
 
 struct PagedBackendState {
@@ -567,7 +934,7 @@ impl InMemoryPagedKvBackend {
         let mut layers = Vec::with_capacity(schema.layer_count);
         for layer in 0..schema.layer_count {
             let range = start * width..(start + count) * width;
-            layers.push(Arc::new(KvLayerSnapshot {
+            layers.push(PageLayer::whole(KvLayerSnapshot {
                 keys: TensorRef {
                     layer,
                     shape: vec![count, width],
@@ -607,7 +974,7 @@ impl InMemoryPagedKvBackend {
             page.layers
                 .iter()
                 .enumerate()
-                .map(|(index, layer)| layer_digest(index, layer)),
+                .map(|(index, layer)| layer.digest(index)),
         );
         page.digest = Some(digest);
         page.state = KvPageState::Sealed;
@@ -647,11 +1014,7 @@ impl InMemoryPagedKvBackend {
         values: &[f32],
         count: usize,
     ) {
-        let target = Arc::make_mut(&mut page.layers[layer]);
-        target.keys.values.extend_from_slice(keys);
-        target.values.values.extend_from_slice(values);
-        target.keys.shape[0] += count;
-        target.values.shape[0] += count;
+        page.layers[layer].extend(keys, values, count);
     }
 
     fn validate_append(
@@ -697,7 +1060,12 @@ impl InMemoryPagedKvBackend {
             pages.push(KvPageSnapshot {
                 ordinal,
                 valid_tokens: page.valid_tokens,
-                layers: page.layers.iter().map(|layer| (**layer).clone()).collect(),
+                layers: page
+                    .layers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, layer)| layer.materialize(index))
+                    .collect(),
                 digest,
             });
         }
@@ -713,6 +1081,92 @@ impl InMemoryPagedKvBackend {
         snapshot.digest = paged_snapshot_digest(&snapshot);
         Ok(snapshot)
     }
+}
+
+impl InMemoryPagedKvBackend {
+    /// The stored layered record for `prefix`, after checking that the cache may use it: same
+    /// principal and model, the cache's EFFECTIVE adapter for the span equals the key's
+    /// adapter, and the schema digest (computed with that adapter) matches.
+    fn layered_record_for(
+        &self,
+        cache: &InMemoryPagedKvCache,
+        layering: Option<&KvAdapterLayering>,
+        prefix: &KvSharedPrefix,
+    ) -> Result<Arc<LayeredPrefix>, KvBackendError> {
+        let key = &prefix.key;
+        let span = key.layers.resolve(cache.schema.layer_count)?;
+        let adapter = effective_adapter(&cache.binding.adapter, layering, &span);
+        let mut schema = cache.schema.clone();
+        schema.adapter = adapter.clone();
+        if cache.binding.principal != key.principal
+            || cache.binding.model != key.model
+            || adapter != key.adapter
+            || schema_digest(&schema, cache.binding.page_tokens) != key.schema_digest
+        {
+            return Err(KvBackendError::PrefixMismatch);
+        }
+        let record = self
+            .state
+            .prefixes
+            .lock()
+            .map_err(|_| KvBackendError::Backend("prefix catalog poisoned".into()))?
+            .get(key)
+            .cloned()
+            .ok_or(KvBackendError::PrefixNotFound)?;
+        match record {
+            PrefixRecord::Layered(record) if record.layers == span => Ok(record),
+            PrefixRecord::Layered(_) | PrefixRecord::Whole(_) => {
+                Err(KvBackendError::PrefixMismatch)
+            }
+        }
+    }
+
+    fn layered_page_bytes(
+        record: &LayeredPrefix,
+        prefix: &KvSharedPrefix,
+    ) -> Result<Vec<(Digest, u64)>, KvBackendError> {
+        let stored: Vec<Digest> = record.pages.iter().map(|page| page.digest).collect();
+        if stored != prefix.page_digests {
+            return Err(KvBackendError::PrefixMismatch);
+        }
+        let mut charges: Vec<(Digest, u64)> = Vec::new();
+        for page in &record.pages {
+            if charges.iter().any(|(seen, _)| *seen == page.digest) {
+                continue;
+            }
+            let values: usize = page.layers.iter().map(PageLayer::value_count).sum();
+            charges.push((
+                page.digest,
+                u64::try_from(values.saturating_mul(4)).unwrap_or(u64::MAX),
+            ));
+        }
+        Ok(charges)
+    }
+}
+
+fn bits_equal(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+/// Page digest for a layer-scoped prefix: the binding (with the effective adapter), the
+/// page position, the layer span and the span's ordered per-layer digests.
+fn layered_page_digest(
+    binding: &KvPageBinding,
+    ordinal: usize,
+    valid_tokens: u16,
+    span: &std::ops::Range<usize>,
+    layer_digests: impl Iterator<Item = Digest>,
+) -> Digest {
+    let mut bytes = b"ptr-paged-kv-page-layers-v1\0".to_vec();
+    put_binding(&mut bytes, binding);
+    bytes.extend_from_slice(&(ordinal as u64).to_le_bytes());
+    bytes.extend_from_slice(&valid_tokens.to_le_bytes());
+    bytes.extend_from_slice(&(span.start as u64).to_le_bytes());
+    bytes.extend_from_slice(&(span.end as u64).to_le_bytes());
+    for digest in layer_digests {
+        bytes.extend_from_slice(&digest);
+    }
+    Sha256::digest(bytes).into()
 }
 
 #[derive(Clone, Debug)]
@@ -731,6 +1185,28 @@ pub struct InMemoryPagedKvCache {
 impl InMemoryPagedKvCache {
     pub fn page_table(&self) -> Vec<KvPageEntry> {
         self.pages.iter().map(|page| page.entry()).collect()
+    }
+
+    /// Diagnostic: how many leading rows of `layer` in `page` are physically the same
+    /// allocation in this cache and in `other` (0 when either does not have the page layer
+    /// or they do not start in the same allocation).
+    pub fn shared_leading_rows(&self, other: &Self, page: usize, layer: usize) -> usize {
+        let (Some(mine), Some(theirs)) = (
+            self.pages.get(page).and_then(|page| page.layers.get(layer)),
+            other
+                .pages
+                .get(page)
+                .and_then(|page| page.layers.get(layer)),
+        ) else {
+            return 0;
+        };
+        let ((mine_ptr, mine_rows), (their_ptr, their_rows)) =
+            (mine.leading_segment(), theirs.leading_segment());
+        if mine_ptr == their_ptr {
+            mine_rows.min(their_rows)
+        } else {
+            0
+        }
     }
 }
 
@@ -826,13 +1302,8 @@ impl KvTensorBackend for InMemoryPagedKvBackend {
                 page.page_id = self.next_page_id()?;
                 page.state = KvPageState::Writable;
                 page.digest = None;
-                let width = cache.schema.key_value_heads * cache.schema.head_dim;
                 for layer in &mut page.layers {
-                    let layer = Arc::make_mut(layer);
-                    layer.keys.values.truncate(keep * width);
-                    layer.values.values.truncate(keep * width);
-                    layer.keys.shape[0] = keep;
-                    layer.values.shape[0] = keep;
+                    layer.truncate(keep);
                 }
                 page.valid_tokens = u16::try_from(keep).map_err(|_| KvBackendError::OutOfMemory)?;
                 *last = Arc::new(page);
@@ -1048,6 +1519,7 @@ impl PagedKvTensorBackend for InMemoryPagedKvBackend {
             generation: cache.binding.generation,
             schema_digest: schema_digest(&cache.schema, cache.binding.page_tokens),
             prefix_digest,
+            layers: KvLayerRange::Full,
         };
         let sequence_length = full_pages.len() * cache.binding.page_tokens.get();
         self.state
@@ -1056,17 +1528,240 @@ impl PagedKvTensorBackend for InMemoryPagedKvBackend {
             .map_err(|_| KvBackendError::Backend("prefix catalog poisoned".into()))?
             .insert(
                 key.clone(),
-                PrefixRecord {
+                PrefixRecord::Whole(WholePrefix {
                     pages: full_pages,
                     sequence_length,
                     position_offset: cache.position_offset,
-                },
+                }),
             );
         Ok(KvSharedPrefix {
             key,
             sequence_length,
             position_offset: cache.position_offset,
             page_digests,
+        })
+    }
+
+    fn publish_prefix_layers(
+        &self,
+        cache: &mut Self::Cache,
+        request: KvLayerPublishRequest,
+    ) -> Result<KvSharedPrefix, KvBackendError> {
+        let layer_count = cache.schema.layer_count;
+        let span = request.layers.resolve(layer_count)?;
+        check_layering(request.layering.as_ref(), layer_count)?;
+        let scope = KvLayerRange::canonical(span.clone(), layer_count)?;
+        let adapter = effective_adapter(&cache.binding.adapter, request.layering.as_ref(), &span);
+        let _ = self.seal_snapshot(cache)?;
+        let page_tokens = cache.binding.page_tokens.get();
+        let mut binding = cache.binding.clone();
+        binding.adapter = adapter.clone();
+        let mut pages = Vec::new();
+        for (ordinal, page) in cache
+            .pages
+            .iter()
+            .take_while(|page| usize::from(page.valid_tokens) == page_tokens)
+            .enumerate()
+        {
+            let layers: Vec<PageLayer> = page.layers[span.clone()].to_vec();
+            let digest = layered_page_digest(
+                &binding,
+                ordinal,
+                page.valid_tokens,
+                &span,
+                layers
+                    .iter()
+                    .zip(span.clone())
+                    .map(|(layer, index)| layer.digest(index)),
+            );
+            pages.push(LayeredPage {
+                valid_tokens: page.valid_tokens,
+                digest,
+                layers,
+            });
+        }
+        if pages.is_empty() {
+            return Err(KvBackendError::PrefixMismatch);
+        }
+        let page_digests: Vec<Digest> = pages.iter().map(|page| page.digest).collect();
+        let mut schema = cache.schema.clone();
+        schema.adapter = adapter.clone();
+        let mut digest_bytes = b"ptr-kv-prefix-layers-v1\0".to_vec();
+        digest_bytes.extend_from_slice(&(span.start as u64).to_le_bytes());
+        digest_bytes.extend_from_slice(&(span.end as u64).to_le_bytes());
+        for digest in &page_digests {
+            digest_bytes.extend_from_slice(digest);
+        }
+        let key = KvPrefixKey {
+            principal: cache.binding.principal.clone(),
+            execution_manifest: cache.binding.execution_manifest,
+            model: cache.binding.model.clone(),
+            adapter,
+            generation: cache.binding.generation,
+            schema_digest: schema_digest(&schema, cache.binding.page_tokens),
+            prefix_digest: Sha256::digest(digest_bytes).into(),
+            layers: scope,
+        };
+        let sequence_length = pages.len() * page_tokens;
+        self.state
+            .prefixes
+            .lock()
+            .map_err(|_| KvBackendError::Backend("prefix catalog poisoned".into()))?
+            .insert(
+                key.clone(),
+                PrefixRecord::Layered(Arc::new(LayeredPrefix {
+                    layers: span,
+                    pages,
+                    sequence_length,
+                    position_offset: cache.position_offset,
+                })),
+            );
+        Ok(KvSharedPrefix {
+            key,
+            sequence_length,
+            position_offset: cache.position_offset,
+            page_digests,
+        })
+    }
+
+    fn fork_prefix_layers_admitted(
+        &self,
+        cache: &mut Self::Cache,
+        request: KvLayerForkRequest,
+    ) -> Result<(), KvBackendError> {
+        if cache.revoked || cache.sequence_length != 0 || !cache.pages.is_empty() {
+            return Err(KvBackendError::PrefixMismatch);
+        }
+        let layer_count = cache.schema.layer_count;
+        check_layering(request.layering.as_ref(), layer_count)?;
+        let mut parts = Vec::with_capacity(request.parts.len());
+        for (prefix, witness) in &request.parts {
+            let record = self.layered_record_for(cache, request.layering.as_ref(), prefix)?;
+            parts.push((prefix, witness, record));
+        }
+        parts.sort_by_key(|(_, _, record)| record.layers.start);
+        // Disjoint cover of 0..L: each part starts where the previous one ended.
+        let mut next = 0usize;
+        for (_, _, record) in &parts {
+            if record.layers.start != next {
+                return Err(KvBackendError::PrefixMismatch);
+            }
+            next = record.layers.end;
+        }
+        let Some((_, _, first)) = parts.first() else {
+            return Err(KvBackendError::PrefixMismatch);
+        };
+        if next != layer_count {
+            return Err(KvBackendError::PrefixMismatch);
+        }
+        // Identical page boundaries and position across parts.
+        for (_, _, record) in &parts {
+            if record.sequence_length != first.sequence_length
+                || record.position_offset != first.position_offset
+                || record.pages.len() != first.pages.len()
+                || record
+                    .pages
+                    .iter()
+                    .zip(&first.pages)
+                    .any(|(a, b)| a.valid_tokens != b.valid_tokens)
+            {
+                return Err(KvBackendError::PrefixMismatch);
+            }
+        }
+        if first.sequence_length > cache.capacity_tokens {
+            return Err(KvBackendError::PrefixMismatch);
+        }
+        // Every witness is spent by this call, whether or not a later one is refused.
+        for (prefix, witness, _) in &parts {
+            witness.consume(self.state.id, &prefix.key)?;
+        }
+        let mut pages = Vec::with_capacity(first.pages.len());
+        for ordinal in 0..first.pages.len() {
+            let mut layers: Vec<PageLayer> = Vec::with_capacity(layer_count);
+            for (_, _, record) in &parts {
+                layers.extend(record.pages[ordinal].layers.iter().cloned());
+            }
+            let mut bundle = HostPageBundle {
+                page_id: self.next_page_id()?,
+                valid_tokens: first.pages[ordinal].valid_tokens,
+                state: KvPageState::Writable,
+                digest: None,
+                layers,
+            };
+            Self::seal_page(&mut bundle, &cache.binding, ordinal)?;
+            pages.push(Arc::new(bundle));
+        }
+        cache.pages = pages;
+        cache.sequence_length = first.sequence_length;
+        cache.position_offset = first.position_offset;
+        Ok(())
+    }
+
+    fn adopt_prefix_layers_admitted(
+        &self,
+        cache: &mut Self::Cache,
+        request: KvLayerAdoptRequest,
+    ) -> Result<KvAdoptReport, KvAdoptError> {
+        if cache.revoked {
+            return Err(KvBackendError::StaleLease.into());
+        }
+        check_layering(request.layering.as_ref(), cache.schema.layer_count)?;
+        let record = self.layered_record_for(cache, request.layering.as_ref(), &request.prefix)?;
+        if record.sequence_length > cache.sequence_length
+            || record.position_offset != cache.position_offset
+            || record.pages.len() > cache.pages.len()
+            || record
+                .pages
+                .iter()
+                .zip(&cache.pages)
+                .any(|(stored, page)| stored.valid_tokens != page.valid_tokens)
+        {
+            return Err(KvBackendError::PrefixMismatch.into());
+        }
+        // The admission is spent from here on, also when the rows turn out to differ.
+        request
+            .witness
+            .consume(self.state.id, &request.prefix.key)?;
+        let mut compared_rows = 0usize;
+        let mut mismatched_rows = 0usize;
+        for (stored, page) in record.pages.iter().zip(&cache.pages) {
+            for (offset, stored_layer) in stored.layers.iter().enumerate() {
+                let layer = &page.layers[record.layers.start + offset];
+                if layer.rows() != stored_layer.rows() || layer.width() != stored_layer.width() {
+                    return Err(KvBackendError::PrefixMismatch.into());
+                }
+                for row in 0..layer.rows() {
+                    compared_rows += 1;
+                    let (keys, values) = layer.row(row);
+                    let (stored_keys, stored_values) = stored_layer.row(row);
+                    if !bits_equal(keys, stored_keys) || !bits_equal(values, stored_values) {
+                        mismatched_rows += 1;
+                    }
+                }
+            }
+        }
+        if mismatched_rows > 0 {
+            return Err(KvAdoptError::Mismatch {
+                mismatched_rows,
+                compared_rows,
+            });
+        }
+        let mut swapped_layer_pages = 0usize;
+        for (stored, page) in record.pages.iter().zip(&mut cache.pages) {
+            let page = Arc::make_mut(page);
+            for (offset, stored_layer) in stored.layers.iter().enumerate() {
+                let layer = &mut page.layers[record.layers.start + offset];
+                if layer.leading_segment() != stored_layer.leading_segment()
+                    || layer.shared_rows() != stored_layer.shared_rows()
+                {
+                    *layer = stored_layer.clone();
+                    swapped_layer_pages += 1;
+                }
+            }
+        }
+        Ok(KvAdoptReport {
+            compared_rows,
+            swapped_layer_pages,
         })
     }
 
@@ -1118,14 +1813,19 @@ impl PagedKvTensorBackend for InMemoryPagedKvBackend {
         {
             return Err(KvBackendError::PrefixMismatch);
         }
-        let record = self
+        let record = match self
             .state
             .prefixes
             .lock()
             .map_err(|_| KvBackendError::Backend("prefix catalog poisoned".into()))?
             .get(key)
             .cloned()
-            .ok_or(KvBackendError::PrefixNotFound)?;
+            .ok_or(KvBackendError::PrefixNotFound)?
+        {
+            PrefixRecord::Whole(record) => record,
+            // A layer-scoped prefix cannot stand alone; it forks through the layered path.
+            PrefixRecord::Layered(_) => return Err(KvBackendError::PrefixMismatch),
+        };
         if record.sequence_length > cache.capacity_tokens {
             return Err(KvBackendError::PrefixMismatch);
         }
@@ -1148,6 +1848,10 @@ impl PagedKvTensorBackend for InMemoryPagedKvBackend {
         let record = prefixes
             .get(&prefix.key)
             .ok_or(KvBackendError::PrefixNotFound)?;
+        let record = match record {
+            PrefixRecord::Whole(record) => record,
+            PrefixRecord::Layered(record) => return Self::layered_page_bytes(record, prefix),
+        };
         let stored: Vec<Option<Digest>> = record.pages.iter().map(|page| page.digest).collect();
         let offered: Vec<Option<Digest>> = prefix.page_digests.iter().map(|d| Some(*d)).collect();
         if stored != offered {
@@ -1160,11 +1864,7 @@ impl PagedKvTensorBackend for InMemoryPagedKvBackend {
                 continue;
             }
             // Same unit as `page_metrics`: every stored f32 of K and V, over all layers.
-            let values: usize = page
-                .layers
-                .iter()
-                .map(|layer| layer.keys.values.len() + layer.values.values.len())
-                .sum();
+            let values: usize = page.layers.iter().map(PageLayer::value_count).sum();
             charges.push((
                 digest,
                 u64::try_from(values.saturating_mul(4)).unwrap_or(u64::MAX),
@@ -1310,20 +2010,44 @@ pub(crate) fn page_digest_from_layer_digests(
 
 /// Digest of one layer's keys and values within a page (layer index included).
 pub(crate) fn layer_digest(index: usize, layer: &KvLayerSnapshot) -> Digest {
-    let mut bytes = b"ptr-paged-kv-layer-v1\0".to_vec();
-    bytes.extend_from_slice(&(index as u64).to_le_bytes());
-    for tensor in [&layer.keys, &layer.values] {
-        bytes.extend_from_slice(&(tensor.layer as u64).to_le_bytes());
-        bytes.extend_from_slice(&(tensor.shape.len() as u64).to_le_bytes());
-        for dimension in &tensor.shape {
-            bytes.extend_from_slice(&(*dimension as u64).to_le_bytes());
+    layer_digest_segments(
+        index,
+        &layer.keys.shape,
+        [&layer.keys.values, &[]],
+        [&layer.values.values, &[]],
+    )
+}
+
+/// The layer digest over rows given as contiguous segments: the bytes hashed are exactly
+/// those of the same rows in one allocation, so the digest does not depend on how a page
+/// layer is represented. Keys and values share `shape`; the tensors' layer index is `index`.
+fn layer_digest_segments(
+    index: usize,
+    shape: &[usize],
+    keys: [&[f32]; 2],
+    values: [&[f32]; 2],
+) -> Digest {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr-paged-kv-layer-v1\0");
+    hasher.update((index as u64).to_le_bytes());
+    for segments in [keys, values] {
+        hasher.update((index as u64).to_le_bytes());
+        hasher.update((shape.len() as u64).to_le_bytes());
+        for dimension in shape {
+            hasher.update((*dimension as u64).to_le_bytes());
         }
-        bytes.extend_from_slice(&(tensor.values.len() as u64).to_le_bytes());
-        for value in &tensor.values {
-            bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+        hasher.update(
+            segments
+                .iter()
+                .map(|part| part.len() as u64)
+                .sum::<u64>()
+                .to_le_bytes(),
+        );
+        for value in segments.into_iter().flatten() {
+            hasher.update(value.to_bits().to_le_bytes());
         }
     }
-    Sha256::digest(bytes).into()
+    hasher.finalize().into()
 }
 
 pub(crate) fn paged_snapshot_digest(snapshot: &KvPagedSnapshot) -> Digest {
@@ -1437,8 +2161,9 @@ mod per_layer_page_tests {
         for cache in caches {
             for page in &cache.pages {
                 for layer in &page.layers {
-                    if seen.insert(Arc::as_ptr(layer) as usize) {
-                        bytes += (layer.keys.values.len() + layer.values.values.len()) * 4;
+                    if seen.insert(Arc::as_ptr(&layer.owned) as usize) {
+                        bytes +=
+                            (layer.owned.keys.values.len() + layer.owned.values.values.len()) * 4;
                     }
                 }
             }
@@ -1462,8 +2187,8 @@ mod per_layer_page_tests {
         let tail = source.pages.len() - 1;
         for layer in 0..LAYERS {
             let same = Arc::ptr_eq(
-                &source.pages[tail].layers[layer],
-                &fork.pages[tail].layers[layer],
+                &source.pages[tail].layers[layer].owned,
+                &fork.pages[tail].layers[layer].owned,
             );
             assert_eq!(same, layer != 1, "layer {layer}");
             // Fully sealed head page is untouched and still shared whole.
@@ -1550,6 +2275,7 @@ mod witness_tests {
             generation: Generation(1),
             schema_digest: [2; 32],
             prefix_digest: [3; 32],
+            layers: KvLayerRange::Full,
         };
         let prefix = KvSharedPrefix {
             key: key.clone(),
@@ -1565,5 +2291,148 @@ mod witness_tests {
                 KvWitnessRejection::Consumed
             ))
         );
+    }
+}
+
+#[cfg(test)]
+mod layer_prefix_tests {
+    use super::*;
+
+    const LAYERS: usize = 3;
+    const WIDTH: usize = 4;
+
+    fn schema() -> KvTensorSchema {
+        KvTensorSchema {
+            model: ModelVersion::from("m"),
+            adapter: AdapterVersion::from("a"),
+            device: DeviceId::from("cpu"),
+            layer_count: LAYERS,
+            attention_heads: 2,
+            key_value_heads: 2,
+            head_dim: 2,
+            batch_size: 1,
+            dtype: KvTensorDType::F32,
+        }
+    }
+
+    fn rows(layer: usize, tokens: usize, seed: f32) -> TensorRef {
+        TensorRef {
+            layer,
+            shape: vec![tokens, WIDTH],
+            values: (0..tokens * WIDTH)
+                .map(|i| seed + (layer * 100 + i) as f32)
+                .collect(),
+        }
+    }
+
+    fn filled(backend: &InMemoryPagedKvBackend, tokens: usize, seed: f32) -> InMemoryPagedKvCache {
+        let mut cache = backend.allocate(schema(), 16).unwrap();
+        let keys: Vec<_> = (0..LAYERS).map(|l| rows(l, tokens, seed)).collect();
+        let values: Vec<_> = (0..LAYERS).map(|l| rows(l, tokens, 9.0)).collect();
+        backend.append(&mut cache, &keys, &values).unwrap();
+        cache
+    }
+
+    fn admitted(
+        authority: &KvForkAuthority,
+        prefix: &KvSharedPrefix,
+    ) -> (KvForkWitness, KvWitnessRevoker) {
+        authority.admit(prefix)
+    }
+
+    #[test]
+    fn adopted_layers_are_the_published_allocations_and_a_mismatch_changes_nothing() {
+        let backend = InMemoryPagedKvBackend::new(KvPageSize::new(4).unwrap());
+        let authority = backend.take_fork_authority().unwrap();
+        let mut source = filled(&backend, 8, 1.0);
+        let prefix = backend
+            .publish_prefix_layers(
+                &mut source,
+                KvLayerPublishRequest {
+                    layers: KvLayerRange::span(0, 2).unwrap(),
+                    layering: None,
+                },
+            )
+            .unwrap();
+        let (witness, _) = admitted(&authority, &prefix);
+        let mut computed = filled(&backend, 8, 1.0);
+        backend
+            .adopt_prefix_layers_admitted(
+                &mut computed,
+                KvLayerAdoptRequest {
+                    prefix: prefix.clone(),
+                    witness,
+                    layering: None,
+                },
+            )
+            .unwrap();
+        for page in 0..2 {
+            for layer in 0..LAYERS {
+                assert_eq!(
+                    Arc::ptr_eq(
+                        &computed.pages[page].layers[layer].owned,
+                        &source.pages[page].layers[layer].owned
+                    ),
+                    layer < 2,
+                    "page {page} layer {layer}"
+                );
+            }
+        }
+
+        // One differing row: refused, every layer allocation of the cache is unchanged.
+        let mut other = filled(&backend, 8, 1.0);
+        let mut changed = other.pages[1].as_ref().clone();
+        Arc::make_mut(&mut changed.layers[0].owned).keys.values[0] += 1.0;
+        other.pages[1] = Arc::new(changed);
+        let pointers = |cache: &InMemoryPagedKvCache| -> Vec<*const KvLayerSnapshot> {
+            cache
+                .pages
+                .iter()
+                .flat_map(|page| page.layers.iter().map(|l| Arc::as_ptr(&l.owned)))
+                .collect()
+        };
+        let before = pointers(&other);
+        let (witness, _) = admitted(&authority, &prefix);
+        let refused = backend.adopt_prefix_layers_admitted(
+            &mut other,
+            KvLayerAdoptRequest {
+                prefix,
+                witness,
+                layering: None,
+            },
+        );
+        assert_eq!(
+            refused,
+            Err(KvAdoptError::Mismatch {
+                mismatched_rows: 1,
+                compared_rows: 16
+            })
+        );
+        assert_eq!(pointers(&other), before);
+    }
+
+    #[test]
+    fn truncated_shared_layer_keeps_its_prefix_allocation_across_append() {
+        let backend = InMemoryPagedKvBackend::new(KvPageSize::new(4).unwrap());
+        let mut base = filled(&backend, 4, 1.0);
+        backend.seal_snapshot(&mut base).unwrap();
+        let mut fork = base.clone();
+        backend.truncate(&mut fork, 3).unwrap();
+        let keys: Vec<_> = (0..LAYERS).map(|l| rows(l, 1, 5.0)).collect();
+        backend.append(&mut fork, &keys, &keys).unwrap();
+        for layer in 0..LAYERS {
+            let forked = &fork.pages[0].layers[layer];
+            let shared = forked.shared.as_ref().expect("prefix stays shared");
+            assert!(Arc::ptr_eq(
+                &shared.source,
+                &base.pages[0].layers[layer].owned
+            ));
+            assert_eq!(shared.rows, 3);
+            assert_eq!(forked.owned.keys.shape[0], 1);
+            // The segmented layer digests like the same rows in one allocation.
+            let flat = forked.materialize(layer);
+            assert_eq!(forked.digest(layer), layer_digest(layer, &flat));
+        }
+        assert_eq!(fork.sequence_length, 4);
     }
 }
