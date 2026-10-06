@@ -175,10 +175,7 @@ mod tests {
         let digest = selection_digest("d", &a);
         assert_eq!(digest, selection_digest("d", &a));
         assert_ne!(digest, selection_digest("e", &a));
-        assert_ne!(
-            digest,
-            selection_digest("d", &[a[1].clone(), a[0].clone()])
-        );
+        assert_ne!(digest, selection_digest("d", &[a[1].clone(), a[0].clone()]));
         assert!(digest.starts_with("sha256:") && digest.len() == 7 + 64);
     }
 

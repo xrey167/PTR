@@ -8,6 +8,7 @@
 //! by a `Reactivate` of the retired generation, which commits generation + 1 of the same pod.
 
 use super::lab::{fail, Res, PROJECT};
+use ptr_ledger::{ExpertFenceCause, ExpertFenceRevocation};
 use ptr_lineage::{
     AccuracyMatrix, AdapterId, BoundGateReport, ForgettingGate, GateSubject, PublicSuite,
 };
@@ -16,7 +17,9 @@ use ptr_pods::{
     ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, ProposerRef, RationaleDigest,
     RetiredReason, StructuralOp,
 };
-use ptr_runtime::expert::ExpertAdmissionGrant;
+use ptr_runtime::expert::{
+    expert_readmission_subject_ids, ExpertAdmissionGrant, ExpertFenceGrant, ExpertFenceRequest,
+};
 use ptr_runtime::PtrRuntime;
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
 
@@ -195,4 +198,88 @@ pub fn state_of(
         .expert_registry()
         .get(&project(), &pod_of(layer, index))
         .map(|entry| (entry.state, entry.generation.0, entry.state_version))
+}
+
+/// Fence expert `(layer, index)` through the real authority path: `fence_expert` under the
+/// revocation authority's grant. The expert goes to `Fenced` at an unchanged generation and a
+/// new fence epoch. An `InputRevoked` fence names `revocation`, which the ledger must already
+/// hold committed.
+pub fn fence(
+    runtime: &mut PtrRuntime,
+    layer: usize,
+    index: usize,
+    cause: ExpertFenceCause,
+    revocation: Option<(&str, u64)>,
+) -> Res<()> {
+    let (_, generation, version) = state_of(runtime, layer, index)
+        .ok_or_else(|| format!("expert ({layer}, {index}) is not in the registry"))?;
+    let request = ExpertFenceRequest {
+        project: project(),
+        pod: pod_of(layer, index),
+        generation: Generation(generation),
+        expected_state_version: version,
+        cause,
+        revocation: revocation.map(|(subject, generation)| ExpertFenceRevocation {
+            subject: subject.to_string(),
+            generation: Generation(generation),
+        }),
+    };
+    runtime
+        .fence_expert(&request, &ExpertFenceGrant::revocation(project()))
+        .map(|_| ())
+        .map_err(fail("fencing an expert"))
+}
+
+/// Readmit the fenced expert `(layer, index)` through the gate authority path: a passed gate
+/// report bound to this readmission. The expert returns to the state the fence left it in, at
+/// the next fence epoch.
+pub fn readmit(
+    runtime: &mut PtrRuntime,
+    layer: usize,
+    index: usize,
+    cause: ExpertFenceCause,
+) -> Res<()> {
+    let (_, generation, version) = state_of(runtime, layer, index)
+        .ok_or_else(|| format!("expert ({layer}, {index}) is not in the registry"))?;
+    let request = ExpertFenceRequest {
+        project: project(),
+        pod: pod_of(layer, index),
+        generation: Generation(generation),
+        expected_state_version: version,
+        cause,
+        revocation: None,
+    };
+    let (proposal_id, operation_id) = expert_readmission_subject_ids(
+        &request.project,
+        &request.pod,
+        request.generation,
+        version,
+        version + 1,
+        cause,
+    );
+    let subject = GateSubject::new(proposal_id, operation_id, [3; 32], [4; 32], [5; 32]);
+    let matrix = AccuracyMatrix::new(vec![vec![0.9, 0.0], vec![0.9, 0.9]])
+        .map_err(fail("the accuracy matrix"))?;
+    let report: BoundGateReport = gate()
+        .evaluate(
+            &AdapterId::from("candidate"),
+            &matrix,
+            PublicSuite {
+                serving: 0.8,
+                candidate: 0.8,
+            },
+        )
+        .map_err(fail("the gate evaluation"))?
+        .bind(subject);
+    let digest = gate()
+        .config_digest()
+        .map_err(fail("the gate configuration digest"))?;
+    runtime
+        .readmit_expert(
+            &request,
+            &report,
+            &ExpertFenceGrant::gate(project(), GATE_EPOCH, digest),
+        )
+        .map(|_| ())
+        .map_err(fail("readmitting an expert"))
 }

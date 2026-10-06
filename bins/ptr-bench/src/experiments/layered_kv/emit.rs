@@ -117,6 +117,9 @@ pub fn fraction_json(
     ])
 }
 
+/// The metrics a run neither produced nor declared unsupported, each with its reason.
+pub type Gaps = Vec<(String, String)>;
+
 /// What a metric list looks like to a [`Tally`].
 #[derive(Clone, Copy, Debug)]
 pub struct MetricList {
@@ -169,16 +172,14 @@ impl Tally {
 
     /// Declare a metric the harness could not produce yet: unlike `unsupported`, this fails
     /// the run (it is listed under `harness_gaps` with its reason).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn gap(&mut self, name: &str, reason: &str) {
         self.gaps.insert(name.to_string(), reason.to_string());
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn get(&self, name: &str) -> i64 {
         self.ints.get(name).copied().unwrap_or(0)
-    }
-
-    pub fn has(&self, name: &str) -> bool {
-        self.ints.contains_key(name)
     }
 
     pub fn json_or_null(&self, name: &str) -> Json {
@@ -227,7 +228,7 @@ impl Tally {
 
     /// The metrics of the manifest as `(name, value)` in manifest order, plus the gaps: the
     /// names the harness neither filled nor declared unsupported, each with its reason.
-    pub fn metrics(&self) -> (Vec<(String, Json)>, Vec<(String, String)>) {
+    pub fn metrics(&self) -> (Vec<(String, Json)>, Gaps) {
         let mut printed = Vec::new();
         let mut gaps = Vec::new();
         for name in self.list.names {
@@ -445,6 +446,7 @@ pub fn judge(root: &Json, unsupported: &[String], rules: &[String]) -> Vec<Check
 
 /// The rules of a criteria list that are judged (not unsupported), in order: what
 /// `criteria.toml` holds.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn judged_rules(checks: &[Check]) -> Vec<String> {
     checks
         .iter()
@@ -497,7 +499,10 @@ mod tests {
         assert_eq!(
             gaps,
             vec![
-                ("a".to_string(), "no value and no declared reason".to_string()),
+                (
+                    "a".to_string(),
+                    "no value and no declared reason".to_string()
+                ),
                 ("gap".to_string(), "not merged".to_string())
             ]
         );
@@ -540,8 +545,16 @@ mod tests {
         let status: Vec<Status> = checks.iter().map(|check| check.status).collect();
         assert_eq!(
             status,
-            [Status::Pass, Status::Fail, Status::Unsupported, Status::Fail]
+            [
+                Status::Pass,
+                Status::Fail,
+                Status::Unsupported,
+                Status::Fail
+            ]
         );
-        assert_eq!(judged_rules(&checks), [rules[0].clone(), rules[1].clone(), rules[3].clone()]);
+        assert_eq!(
+            judged_rules(&checks),
+            [rules[0].clone(), rules[1].clone(), rules[3].clone()]
+        );
     }
 }

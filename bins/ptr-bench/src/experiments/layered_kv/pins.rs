@@ -22,9 +22,9 @@ use ptr_ledger::integrity::sha256;
 use ptr_model_api::{ByteTokenizer, Tokenizer};
 use ptr_pods::{
     derive_kv_layer_chains_in_regime, InMemoryPagedKvBackend, KvChainIdentity, KvKeyEncoding,
-    KvPageBinding, KvPageSize, KvTensorDType, PagedKvTensorBackend, Qwen2Activation, Qwen2Adapter,
-    Qwen2Binding, Qwen2LayerConfig, Qwen2PagedStack, Qwen2QkNorm, Qwen2RopeScaling,
-    Qwen2StackConfig, Qwen2StackInput,
+    KvPageBinding, KvPageSize, KvTensorBackend, KvTensorDType, PagedKvTensorBackend,
+    Qwen2Activation, Qwen2Adapter, Qwen2Binding, Qwen2LayerConfig, Qwen2PagedStack, Qwen2QkNorm,
+    Qwen2RopeScaling, Qwen2StackConfig, Qwen2StackInput,
 };
 use ptr_runtime::{ReferenceKvReuseBackend, StackBinding};
 use ptr_types::{AdapterVersion, DeviceId, Generation, ModelVersion, PrincipalId};
@@ -279,6 +279,73 @@ pub fn independent_prefill_rows(
     })
 }
 
+/// How often each expert of each MoE layer is selected when `stack` prefills `tokens`, and
+/// the logits of the last prompt token: the routing trace the revoked expert is chosen from.
+pub fn routing_trace(stack: &Qwen2PagedStack, tokens: &[u32]) -> Res<ptr_pods::RoutingCounts> {
+    let paged = InMemoryPagedKvBackend::new(
+        KvPageSize::new(CHUNK_TOKENS as u16).map_err(fail("the page size"))?,
+    );
+    let mut cache = fresh_cache(&paged, stack)?;
+    let regime = stack
+        .admit_rope_regime(tokens.len(), MAX_NEW_TOKENS)
+        .map_err(fail("the regime"))?;
+    let (_, counts) = stack
+        .prefill_traced_in_regime(
+            &paged,
+            &mut cache,
+            Qwen2StackInput {
+                tokens: tokens.to_vec(),
+            },
+            &regime,
+            &Qwen2Binding::default(),
+        )
+        .map_err(fail("the traced prefill"))?;
+    Ok(counts)
+}
+
+/// The last-token logits of each request of `batches` prefilled **co-batched** on `stack` in
+/// the given `order`, and the total of selections the capacity rule dropped.
+pub fn cobatched_last_logits(
+    stack: &Qwen2PagedStack,
+    batches: &[Vec<u32>],
+    order: &[usize],
+) -> Res<(Vec<Vec<f32>>, u64)> {
+    let paged = InMemoryPagedKvBackend::new(
+        KvPageSize::new(CHUNK_TOKENS as u16).map_err(fail("the page size"))?,
+    );
+    let mut caches = Vec::new();
+    for _ in batches {
+        caches.push(fresh_cache(&paged, stack)?);
+    }
+    let longest = batches.iter().map(Vec::len).max().unwrap_or(1);
+    let regime = stack
+        .admit_rope_regime(longest, MAX_NEW_TOKENS)
+        .map_err(fail("the regime"))?;
+    let output = stack
+        .prefill_cobatched_in_regime(
+            &paged,
+            &mut caches,
+            batches
+                .iter()
+                .map(|tokens| Qwen2StackInput {
+                    tokens: tokens.clone(),
+                })
+                .collect(),
+            order,
+            &regime,
+            &Qwen2Binding::default(),
+        )
+        .map_err(fail("the co-batched prefill"))?;
+    Ok((
+        output
+            .outputs
+            .iter()
+            .map(|out| out.logits.last().cloned().unwrap_or_default())
+            .collect(),
+        output.routing.total_dropped(),
+    ))
+}
+
 /// The checks of a model-pin verification, one mismatch per failed one.
 #[derive(Default)]
 pub struct PinChecks {
@@ -298,7 +365,13 @@ impl PinChecks {
     }
 
     /// Record the mismatch count in `tally` and assemble the `model_pins` object.
-    pub fn finish(self, tally: &mut Tally, pinned: Json, chosen: Json, build: Option<String>) -> Pins {
+    pub fn finish(
+        self,
+        tally: &mut Tally,
+        pinned: Json,
+        chosen: Json,
+        build: Option<String>,
+    ) -> Pins {
         tally.add("model_pin_mismatches", self.mismatches);
         let json = Json::Obj(
             self.items
@@ -519,13 +592,21 @@ mod tests {
             "ByteTokenizer, vocabulary 256 (no external revision)",
         )
         .unwrap();
-        assert!(build.is_some(), "the build identity reproduces the chain id");
+        assert!(
+            build.is_some(),
+            "the build identity reproduces the chain id"
+        );
         let mut tally = Tally::new(super::super::emit::MetricList {
             names: &[],
             grouped: &[],
         });
         let pins = checks.finish(&mut tally, Json::Null, Json::Null, build);
-        assert_eq!(tally.get("model_pin_mismatches"), 0, "{}", pins.json.render());
+        assert_eq!(
+            tally.get("model_pin_mismatches"),
+            0,
+            "{}",
+            pins.json.render()
+        );
     }
 
     #[test]

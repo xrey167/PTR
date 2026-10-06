@@ -218,7 +218,11 @@ pub fn same_result(a: &ReferenceKvOutcome, b: &ReferenceKvOutcome) -> bool {
 
 /// Count one comparison with the cold run and, when the two differ, one bitwise mismatch
 /// (and one mismatching run tagged Exact when the observed run is).
-pub fn compare(tally: &mut Tally, observed: &ReferenceKvOutcome, cold: &ReferenceKvOutcome) -> bool {
+pub fn compare(
+    tally: &mut Tally,
+    observed: &ReferenceKvOutcome,
+    cold: &ReferenceKvOutcome,
+) -> bool {
     tally.add("bitwise_compared", 1);
     let equal = same_result(observed, cold);
     if !equal {

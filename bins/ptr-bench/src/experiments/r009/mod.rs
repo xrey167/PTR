@@ -20,7 +20,7 @@ pub mod arms;
 pub mod metrics;
 pub mod params;
 
-use super::layered_kv::emit::{self, count, judge, Check, Json, Status, Tally};
+use super::layered_kv::emit::{self, count, judge, Check, Gaps, Json, Status, Tally};
 use super::layered_kv::lab::{self, fail, Ids, Res};
 use super::layered_kv::pins::{self, PinChecks};
 use super::layered_kv::{corpus, Scale};
@@ -49,7 +49,7 @@ const ZERO_BASED: [&str; 14] = [
 ];
 
 /// Internal violation counters the judgements read.
-const ZERO_BASED_INTERNAL: [&str; 8] = [
+const ZERO_BASED_INTERNAL: [&str; 9] = [
     "per_layer_fraction_mismatches",
     "prediction_structure_mismatches",
     "report_physical_mismatches",
@@ -57,6 +57,7 @@ const ZERO_BASED_INTERNAL: [&str; 8] = [
     "post_invocation_rows_under_base_key",
     "restart_resolution_mismatches",
     "matrix_selectivity_mismatches",
+    "restore_control_failures",
     "internal_entry_accounting_mismatches",
 ];
 
@@ -83,7 +84,10 @@ fn selection(tally: &mut Tally) -> Json {
     Json::obj([
         ("corpus", Json::str(params::CORPUS)),
         ("rule", Json::str(params::CORPUS_SELECTION_RULE)),
-        ("generator_seed", Json::Int(params::CORPUS_GENERATOR_SEED as i64)),
+        (
+            "generator_seed",
+            Json::Int(params::CORPUS_GENERATOR_SEED as i64),
+        ),
         ("domain", Json::str(params::SELECTION_DOMAIN)),
         ("computed", Json::str(computed)),
         ("pinned", Json::str(params::SELECTION_DIGEST)),
@@ -110,22 +114,37 @@ fn procedure_json(seed: u64, scale: Scale) -> Json {
         ("seed_is_declared", Json::Bool(seeds.contains(&seed))),
         ("seeds", ints(&seeds)),
         ("adapter_types_run", Json::strs(&params::ADAPTER_TYPES_RUN)),
-        ("qkv_lora_first_layers", ints(&params::QKV_LORA_FIRST_LAYERS)),
-        ("q_only_lora_first_layers", ints(&params::Q_ONLY_LORA_FIRST_LAYERS)),
-        ("mlp_only_lora_first_layers", ints(&params::MLP_ONLY_LORA_FIRST_LAYERS)),
+        (
+            "qkv_lora_first_layers",
+            ints(&params::QKV_LORA_FIRST_LAYERS),
+        ),
+        (
+            "q_only_lora_first_layers",
+            ints(&params::Q_ONLY_LORA_FIRST_LAYERS),
+        ),
+        (
+            "mlp_only_lora_first_layers",
+            ints(&params::MLP_ONLY_LORA_FIRST_LAYERS),
+        ),
         (
             "alora_invocation_position_tokens",
             Json::Int(params::ALORA_INVOCATION_POSITION_TOKENS as i64),
         ),
         ("prompt_tokens", Json::Int(params::PROMPT_TOKENS as i64)),
-        ("test_model_layers", Json::Int(params::TEST_MODEL_LAYERS as i64)),
+        (
+            "test_model_layers",
+            Json::Int(params::TEST_MODEL_LAYERS as i64),
+        ),
         ("weight_seed", Json::Int(params::WEIGHT_SEED as i64)),
         ("hidden_size", Json::Int(params::HIDDEN_SIZE as i64)),
         ("num_heads", Json::Int(params::NUM_HEADS as i64)),
         ("num_kv_heads", Json::Int(params::NUM_KV_HEADS as i64)),
         ("head_dim", Json::Int(params::HEAD_DIM as i64)),
         ("vocab_size", Json::Int(params::VOCAB_SIZE as i64)),
-        ("corpus_generator_seed", Json::Int(params::CORPUS_GENERATOR_SEED as i64)),
+        (
+            "corpus_generator_seed",
+            Json::Int(params::CORPUS_GENERATOR_SEED as i64),
+        ),
         (
             "required_interior_first_adapted_layer",
             Json::Int(params::REQUIRED_INTERIOR_FIRST_ADAPTED_LAYER as i64),
@@ -138,16 +157,28 @@ fn procedure_json(seed: u64, scale: Scale) -> Json {
         (
             "invalidation_coverage_matrix",
             Json::obj([
-                ("kinds", Json::strs(&params::INVALIDATION_COVERAGE_MATRIX_KINDS)),
-                ("types", Json::strs(&params::INVALIDATION_COVERAGE_MATRIX_TYPES)),
-                ("paths", Json::strs(&params::INVALIDATION_COVERAGE_MATRIX_PATHS)),
+                (
+                    "kinds",
+                    Json::strs(&params::INVALIDATION_COVERAGE_MATRIX_KINDS),
+                ),
+                (
+                    "types",
+                    Json::strs(&params::INVALIDATION_COVERAGE_MATRIX_TYPES),
+                ),
+                (
+                    "paths",
+                    Json::strs(&params::INVALIDATION_COVERAGE_MATRIX_PATHS),
+                ),
                 (
                     "cells",
                     Json::Int(params::INVALIDATION_COVERAGE_MATRIX_CELLS.len() as i64),
                 ),
             ]),
         ),
-        ("tiny_model_config_digest", Json::str(params::TINY_MODEL_CONFIG_DIGEST)),
+        (
+            "tiny_model_config_digest",
+            Json::str(params::TINY_MODEL_CONFIG_DIGEST),
+        ),
         ("tokenizer_pin", Json::str(params::TOKENIZER_PIN)),
         ("moe_topology", Json::str(params::MOE_TOPOLOGY)),
         (
@@ -166,7 +197,10 @@ fn procedure_json(seed: u64, scale: Scale) -> Json {
                 ("mlp_adapter_form", Json::str(params::MLP_ADAPTER_FORM)),
                 ("partial_hit_mode", Json::str(params::PARTIAL_HIT_MODE)),
                 ("restart_resolution", Json::str(params::RESTART_RESOLUTION)),
-                ("total_kv_rows_counts", Json::str(params::TOTAL_KV_ROWS_COUNTS)),
+                (
+                    "total_kv_rows_counts",
+                    Json::str(params::TOTAL_KV_ROWS_COUNTS),
+                ),
                 ("per_seed_role", Json::str(params::PER_SEED_ROLE)),
                 (
                     "matrix_adapter",
@@ -232,7 +266,10 @@ fn verify_pins(tally: &mut Tally) -> Res<pins::Pins> {
     Ok(checks.finish(
         tally,
         Json::obj([
-            ("tiny_model_config_digest", Json::str(params::TINY_MODEL_CONFIG_DIGEST)),
+            (
+                "tiny_model_config_digest",
+                Json::str(params::TINY_MODEL_CONFIG_DIGEST),
+            ),
             ("tokenizer_pin", Json::str(params::TOKENIZER_PIN)),
             ("moe_topology", Json::str(params::MOE_TOPOLOGY)),
             ("weights", Json::str(params::WEIGHTS)),
@@ -255,7 +292,7 @@ pub struct Report {
     pub json: Json,
     pub coverage: Vec<Check>,
     pub falsifiers: Vec<Check>,
-    pub gaps: Vec<(String, String)>,
+    pub gaps: Gaps,
 }
 
 impl Report {
@@ -282,9 +319,15 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
     for name in ZERO_BASED.iter().chain(&ZERO_BASED_INTERNAL) {
         tally.add(name, 0);
     }
-    tally.seed_group("adapter_revocations_performed_by_type", &params::ADAPTER_TYPES_RUN);
+    tally.seed_group(
+        "adapter_revocations_performed_by_type",
+        &params::ADAPTER_TYPES_RUN,
+    );
     tally.seed_group("adapter_reuse_attempts_by_type", &params::ADAPTER_TYPES_RUN);
-    tally.seed_group("inflight_adapter_revocation_race_cases", &params::INVALIDATION_TYPES);
+    tally.seed_group(
+        "inflight_adapter_revocation_race_cases",
+        &params::INVALIDATION_TYPES,
+    );
     tally.seed_group("inflight_input_race_cases", &params::INVALIDATION_TYPES);
     tally.seed_group(
         "invalidation_matrix_cases",
@@ -415,7 +458,10 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
                         Json::obj([
                             (
                                 "per_layer_shared_rows",
-                                tally.json_or_null(&format!("per_layer_shared_rows.{}", config.name)),
+                                tally.json_or_null(&format!(
+                                    "per_layer_shared_rows.{}",
+                                    config.name
+                                )),
                             ),
                             (
                                 "procedure_observed",
@@ -475,7 +521,10 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
     pairs.push((
         "summary".to_string(),
         Json::obj([
-            ("coverage_unmet", Json::Int(count(&coverage, Status::Fail) as i64)),
+            (
+                "coverage_unmet",
+                Json::Int(count(&coverage, Status::Fail) as i64),
+            ),
             (
                 "coverage_unsupported",
                 Json::Int(count(&coverage, Status::Unsupported) as i64),
@@ -543,5 +592,196 @@ pub fn run(seed: u64) {
             eprintln!("{}: {reason}", params::BENCHMARK);
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::experiments::layered_kv::emit;
+
+    const DRAFT: &str = include_str!(
+        "../../../../../experiments/runtime/R009-layer-shared-lora-kv/DRAFT_PREREGISTRATION.md"
+    );
+
+    /// The TOML code block of the draft that starts with `first_line`.
+    fn block(first_line: &str) -> toml::Table {
+        let start = DRAFT
+            .find(&format!("```toml\n{first_line}"))
+            .unwrap_or_else(|| panic!("a toml block starting {first_line:?}"));
+        let body = &DRAFT[start + "```toml\n".len()..];
+        let end = body.find("```").expect("a closing fence");
+        body[..end].parse().expect("the block parses")
+    }
+
+    /// The shared reduced run (a subset of the arms; it takes a few seconds in a debug build).
+    fn reduced_report() -> &'static Report {
+        static REPORT: std::sync::OnceLock<Report> = std::sync::OnceLock::new();
+        REPORT.get_or_init(|| execute(17, Scale::Reduced).expect("a reduced run"))
+    }
+
+    fn rules(table: &toml::Table, key: &str) -> Vec<String> {
+        table[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key} is an array"))
+            .iter()
+            .map(|rule| rule.as_str().expect("a rule is a string").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_manifest_seeds_are_read() {
+        assert_eq!(declared_seeds(), vec![17, 29, 43, 71, 101]);
+    }
+
+    #[test]
+    fn the_pinned_selection_digest_is_what_the_corpus_generator_produces() {
+        assert_eq!(arms::selection_digest(), params::SELECTION_DIGEST);
+        assert!(DRAFT.contains(params::SELECTION_DIGEST));
+    }
+
+    #[test]
+    fn the_draft_criteria_are_exactly_the_rules_the_harness_judges_in_its_order() {
+        let table = block("# R009 decision criteria");
+        assert_eq!(rules(&table, "coverage"), metrics::coverage());
+        assert_eq!(rules(&table, "falsifiers"), metrics::falsifiers());
+        assert_eq!(table["experiment"].as_str(), Some("R009"));
+    }
+
+    #[test]
+    fn every_rule_is_three_tokens_and_names_a_path_the_harness_prints() {
+        let report = reduced_report();
+        for rule in metrics::coverage().iter().chain(&metrics::falsifiers()) {
+            let tokens: Vec<&str> = rule.split(' ').collect();
+            assert_eq!(tokens.len(), 3, "{rule}");
+            for token in [tokens[0], tokens[2]] {
+                let literal = token
+                    .strip_prefix('-')
+                    .unwrap_or(token)
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit());
+                // The reduced run covers two of the six configurations.
+                let unrun_configuration = token.starts_with("shared_row_fraction.")
+                    && !token.contains("qkv_lora_f2")
+                    && !token.contains("alora_inv39");
+                if !literal && !unrun_configuration {
+                    assert!(
+                        emit::resolve(&report.json, token).is_some(),
+                        "{rule}: {token} does not resolve in the harness JSON"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_draft_entrypoint_is_the_subcommand_and_the_table_is_the_compiled_choices() {
+        assert!(DRAFT.contains(params::ENTRYPOINT));
+        assert_eq!(params::BENCHMARK, "layer-shared-lora-kv");
+        let table = block("[preregistration]");
+        let table = table["preregistration"]
+            .as_table()
+            .expect("[preregistration]");
+        let manifest: toml::Table = params::EXPERIMENT_TOML
+            .parse()
+            .expect("experiment.toml parses");
+        assert_eq!(table["seeds"], manifest["seeds"]);
+        assert_eq!(table["harness"].as_str(), Some(params::BENCHMARK));
+        assert_eq!(
+            table["corpus_selection_digest"].as_str(),
+            Some(params::SELECTION_DIGEST)
+        );
+        assert_eq!(
+            table["lora_rank"].as_integer(),
+            Some(params::LORA_RANK as i64)
+        );
+        assert_eq!(table["lora_scale"].as_str(), Some(params::LORA_SCALE));
+        assert_eq!(
+            table["adapter_seed"].as_integer(),
+            Some(params::ADAPTER_SEED as i64)
+        );
+        assert_eq!(
+            table["max_new_tokens"].as_integer(),
+            Some(params::MAX_NEW_TOKENS as i64)
+        );
+        assert_eq!(
+            table["partial_hit_mode"].as_str(),
+            Some(params::PARTIAL_HIT_MODE)
+        );
+        assert_eq!(
+            table["restart_resolution"].as_str(),
+            Some(params::RESTART_RESOLUTION)
+        );
+        assert_eq!(
+            table["mlp_adapter_form"].as_str(),
+            Some(params::MLP_ADAPTER_FORM)
+        );
+        assert_eq!(
+            table["matrix_adapter_first_layer"].as_integer(),
+            Some(params::MATRIX_ADAPTER_FIRST_LAYER as i64)
+        );
+    }
+
+    #[test]
+    fn a_reduced_run_assembles_one_json_object_with_every_metric_and_no_tripped_falsifier() {
+        let report = reduced_report();
+        assert!(!report.line.contains('\n'));
+        assert!(report
+            .line
+            .starts_with("{\"benchmark\":\"layer-shared-lora-kv\""));
+        for name in metrics::METRIC_NAMES {
+            assert!(report.line.contains(&format!("\"{name}\":")), "{name}");
+        }
+        assert!(report.line.contains("\"unsupported\":{"));
+        assert!(report.line.contains("\"harness_gaps\":["));
+        let tripped: Vec<&str> = report
+            .falsifiers
+            .iter()
+            .filter(|check| check.status == emit::Status::Fail)
+            .map(|check| check.rule.as_str())
+            .filter(|rule| {
+                !rule.starts_with("shared_row_fraction.")
+                    && !rule.contains("qkv_lora_f2")
+                    && !rule.contains("alora_inv39")
+                    || rule.starts_with("invalidation_matrix_stale_hits.")
+                        && !rule.contains("adapter_generation")
+            })
+            .collect();
+        assert!(tripped.is_empty(), "{tripped:?}");
+    }
+
+    #[test]
+    fn the_procedure_records_every_parameter_the_config_lists() {
+        let procedure = emit::resolve(&reduced_report().json, "procedure").expect("procedure");
+        for name in params::PROCEDURE_PARAMETERS_RECORDED_PER_CELL {
+            assert!(emit::resolve(procedure, name).is_some(), "{name}");
+        }
+    }
+
+    /// Repro of a runtime defect found by this harness (not fixed here): a catalog snapshot
+    /// decodes every restored key with `layers: KvLayerRange::Full` (crates/ptr-runtime/src/
+    /// kv_prefix.rs, in `decode_snapshot`), so a restored per-layer entry whose pages exist
+    /// again is refused at fork with `PrefixMismatch` and can never be served. Un-ignore it
+    /// when the runtime keeps the layer scope of a restored key.
+    #[test]
+    #[ignore = "runtime defect: restored per-layer entries cannot fork"]
+    fn repro_a_restored_per_layer_entry_forks_once_its_pages_exist() {
+        use crate::experiments::layered_kv::matrix::{self, Invalidation, Kind, Path};
+        let mut tally = Tally::new(metrics::LIST);
+        tally.add("restore_control_failures", 0);
+        let mut ids = Ids::default();
+        let mut infos = Vec::new();
+        matrix::run_cell(
+            &mut tally,
+            &mut ids,
+            &mut infos,
+            &arms::R009Rig,
+            17,
+            Kind::BaseModel,
+            Invalidation::Revocation,
+            Path::Restore,
+        )
+        .unwrap();
+        assert_eq!(tally.get("restore_control_failures"), 0);
     }
 }

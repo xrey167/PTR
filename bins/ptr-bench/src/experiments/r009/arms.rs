@@ -15,7 +15,7 @@ use crate::experiments::layered_kv::matrix::{
 use crate::experiments::layered_kv::pins;
 use crate::experiments::layered_kv::{Scale, SEQUENCE_SEED};
 use ptr_pods::{Qwen2Adapter, Qwen2AdapterSpec};
-use ptr_runtime::{BindingRecord, BindingSuccessors, StackBinding};
+use ptr_runtime::{BindingRecord, BindingSuccessors, IndexUpdate, ReferenceKvFaults, StackBinding};
 use ptr_types::Generation;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,7 +36,11 @@ fn prompt_of(config: &Config) -> Vec<u32> {
 }
 
 fn extra_of(config: &Config) -> Vec<u32> {
-    corpus::sequence(SEQUENCE_SEED, EXTRA_STREAM_BASE + config.stream, CHUNK_TOKENS)
+    corpus::sequence(
+        SEQUENCE_SEED,
+        EXTRA_STREAM_BASE + config.stream,
+        CHUNK_TOKENS,
+    )
 }
 
 /// `(base request tokens, adapter request tokens)` of a configuration. An aLoRA's base request
@@ -134,7 +138,9 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
     let mut authority = Authority::new(&oracle_ids)?;
     let adapter_a = seeded(&backend, config, params::ADAPTER_A, 1)?;
     if !b_is_nonzero(&adapter_a) {
-        return Err(format!("{name}: the adapter's B is zero, the run would be vacuous"));
+        return Err(format!(
+            "{name}: the adapter's B is zero, the run would be vacuous"
+        ));
     }
     let (base_tokens, adapter_tokens) = requests_of(config);
     let binding_a = StackBinding::with_adapter(adapter_a.clone());
@@ -206,7 +212,10 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
             return Err(format!("{name}: the base run was cancelled"))
         }
     }
-    let base_entries = backend.catalog_stats().map_err(fail("catalog stats"))?.entries;
+    let base_entries = backend
+        .catalog_stats()
+        .map_err(fail("catalog stats"))?
+        .entries;
     let base_chunks = base_tokens.len() / CHUNK_TOKENS;
     if base_entries != LAYERS * base_chunks {
         return Err(format!(
@@ -218,7 +227,13 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
     // 2. The adapter request reuses what it may.
     let adapter_request = raw(&format!("{name}-adapter"), &adapter_tokens);
     let mut adapter_session = backend
-        .begin_session_bound(&lab::scope(), &adapter_request, None, &binding_a, &authority)
+        .begin_session_bound(
+            &lab::scope(),
+            &adapter_request,
+            None,
+            &binding_a,
+            &authority,
+        )
         .map_err(fail("the adapter session"))?;
     tally.add(&format!("adapter_reuse_attempts_by_type.{ty}"), 1);
     if config.is_alora() {
@@ -240,11 +255,17 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
         .layered
         .clone()
         .ok_or_else(|| format!("{name}: no layered report"))?;
-    let after_adapter = backend.catalog_stats().map_err(fail("catalog stats"))?.entries;
+    let after_adapter = backend
+        .catalog_stats()
+        .map_err(fail("catalog stats"))?
+        .entries;
     if after_adapter - base_entries != report.inserted_layer_entries {
         tally.add("internal_entry_accounting_mismatches", 1);
     }
-    tally.add("adapter_entries_before_revocation", report.inserted_layer_entries as i64);
+    tally.add(
+        "adapter_entries_before_revocation",
+        report.inserted_layer_entries as i64,
+    );
     tally.add("adoption_mismatches", report.adoption_mismatches as i64);
     tally.add(
         "post_invocation_rows_under_base_key",
@@ -261,7 +282,9 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
     }
     let shared: usize = physical.iter().sum();
     let total = LAYERS * PROMPT;
-    let predicted: usize = (0..LAYERS).map(|layer| config.predicted_rows(layer, PROMPT)).sum();
+    let predicted: usize = (0..LAYERS)
+        .map(|layer| config.predicted_rows(layer, PROMPT))
+        .sum();
     for (layer, rows) in physical.iter().enumerate() {
         if *rows != config.predicted_rows(layer, PROMPT) {
             tally.add("per_layer_fraction_mismatches", 1);
@@ -303,7 +326,7 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
     let rows_adapter = pins::independent_prefill_rows(&stack, Some(&adapter_a), &adapter_tokens)?;
     let width = rows_base.kv_width;
     let comparable = base_tokens.len().min(adapter_tokens.len());
-    for layer in 0..LAYERS {
+    for (layer, shared_rows) in physical.iter().enumerate() {
         let differs_at = |position: usize| -> bool {
             let range = position * width..(position + 1) * width;
             let (bk, bv) = &rows_base.layers[layer];
@@ -316,7 +339,7 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
             })
         };
         // Rows the backend shares must be bit-identical to the base prefill's.
-        let mismatching = (0..physical[layer].min(comparable))
+        let mismatching = (0..(*shared_rows).min(comparable))
             .filter(|position| differs_at(*position))
             .count();
         tally.add("bitwise_mismatch_count", mismatching as i64);
@@ -337,8 +360,14 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
         &authority,
     )?;
     tally.add("cross_adapter_attempts", 1);
-    let shared_b = out_b.layered.as_ref().map_or(0, |layered| layered.shared_rows);
-    tally.add("cross_adapter_hits", shared_b.saturating_sub(predicted) as i64);
+    let shared_b = out_b
+        .layered
+        .as_ref()
+        .map_or(0, |layered| layered.shared_rows);
+    tally.add(
+        "cross_adapter_hits",
+        shared_b.saturating_sub(predicted) as i64,
+    );
     let cold_b = lab::cold(
         &backend,
         &raw(&format!("{name}-cross"), &adapter_tokens),
@@ -357,27 +386,57 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
         &binding_g1,
         &authority,
     )?;
-    let out_g2 = lab::run_completed(
-        &backend,
-        &raw(&format!("{name}-g2"), &adapter_tokens),
-        &binding_g2,
-        &authority,
-    )?;
-    let shared_g2 = out_g2.layered.as_ref().map_or(0, |layered| layered.shared_rows);
-    tally.add("old_generation_hits", shared_g2.saturating_sub(predicted) as i64);
-    let cold_g2 = lab::cold(
-        &backend,
-        &raw(&format!("{name}-g2"), &adapter_tokens),
-        &binding_g2,
-    )?;
-    compare(tally, &out_g2, &cold_g2);
+    // The supersession is committed but the catalog is never told (the index update is
+    // dropped): generation 1's entries stay in the index, so generation 2 can only miss them
+    // by its chain key, not by a tombstone. Its use-time rejections must stay at zero: it
+    // never even looked the old entries up.
     commit_supersession(&mut authority.runtime, params::ADAPTER_G, 1, 2)?;
+    backend
+        .set_faults(ReferenceKvFaults {
+            index_update: IndexUpdate::Suppressed,
+        })
+        .map_err(fail("dropping the index update"))?;
     backend
         .supersede_inputs(&BTreeMap::from([(
             params::ADAPTER_G.to_string(),
             Generation(2),
         )]))
         .map_err(fail("superseding the adapter"))?;
+    let rejections_before = backend
+        .catalog_stats()
+        .map_err(fail("catalog stats"))?
+        .use_time_rejections;
+    let out_g2 = lab::run_completed(
+        &backend,
+        &raw(&format!("{name}-g2"), &adapter_tokens),
+        &binding_g2,
+        &authority,
+    )?;
+    let rejections_after = backend
+        .catalog_stats()
+        .map_err(fail("catalog stats"))?
+        .use_time_rejections;
+    tally.add(
+        "generation_chain_isolation_rejections",
+        (rejections_after - rejections_before) as i64,
+    );
+    let shared_g2 = out_g2
+        .layered
+        .as_ref()
+        .map_or(0, |layered| layered.shared_rows);
+    tally.add(
+        "old_generation_hits",
+        shared_g2.saturating_sub(predicted) as i64,
+    );
+    let cold_g2 = lab::cold(
+        &backend,
+        &raw(&format!("{name}-g2"), &adapter_tokens),
+        &binding_g2,
+    )?;
+    compare(tally, &out_g2, &cold_g2);
+    backend
+        .set_faults(ReferenceKvFaults::default())
+        .map_err(fail("restoring the index update"))?;
     let presented = backend.begin_session_bound(
         &lab::scope(),
         &raw(&format!("{name}-g1-again"), &adapter_tokens),
@@ -408,7 +467,9 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
         )?;
         tally.set(
             "alora_full_prompt_cached_shared_rows",
-            out.layered.as_ref().map_or(0, |layered| layered.shared_rows) as i64,
+            out.layered
+                .as_ref()
+                .map_or(0, |layered| layered.shared_rows) as i64,
         );
     }
 
@@ -424,7 +485,11 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
         return Err(format!("{name}: the in-flight request forked nothing"));
     }
     let hit = session.hit_tokens();
-    let total_steps = Steps::count(race_request.total_tokens(), hit, params::MAX_NEW_TOKENS as usize);
+    let total_steps = Steps::count(
+        race_request.total_tokens(),
+        hit,
+        params::MAX_NEW_TOKENS as usize,
+    );
     let race_at = corpus::scenario(seed, name).range(0, total_steps as u64) as usize;
     let mut steps = Steps { session };
     for _ in 0..race_at {
@@ -446,7 +511,10 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
         steps.step(&authority)?
     } else {
         matches!(
-            steps.session.finish(&authority).map_err(fail("finishing"))?,
+            steps
+                .session
+                .finish(&authority)
+                .map_err(fail("finishing"))?,
             ptr_runtime::KvSessionFinish::Cancelled(_)
         )
     };
@@ -480,8 +548,10 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
 
     // 9. After the revocation: base pages stay, adapter entries are not served.
     tally.add("base_pages_before_revoke", base_entries as i64);
+    // Eight extra tokens, no new page boundary: the probe looks up exactly the base pages (the
+    // in-flight request's own chunk at depth 80 must not shift the depths it sees).
     let mut probe_tokens = base_tokens.clone();
-    probe_tokens.extend(extra_of(config));
+    probe_tokens.extend(&extra_of(config)[..8]);
     let probe = raw(&format!("{name}-base-probe"), &probe_tokens);
     let mut retained_session = backend
         .begin_session_bound(
@@ -493,6 +563,10 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
         )
         .map_err(fail("the base probe"))?;
     let retained = retained_session.hit_tokens() / CHUNK_TOKENS * LAYERS;
+    tally.set(
+        &format!("base_probe_hit_tokens.{name}"),
+        retained_session.hit_tokens() as i64,
+    );
     tally.add(
         "base_pages_dropped_on_revoke",
         base_entries.saturating_sub(retained) as i64,
@@ -565,14 +639,16 @@ impl Rig for R009Rig {
 
     fn resolved_binding(&self, ty: Invalidation) -> StackBinding {
         match ty {
-            Invalidation::Revocation => StackBinding::base(),
+            Invalidation::Revocation | Invalidation::Fence => StackBinding::base(),
             Invalidation::Supersession => StackBinding::with_adapter(matrix_adapter(2)),
         }
     }
 
     fn resolution_holds(&self, record: &BindingRecord, ty: Invalidation) -> bool {
         match ty {
-            Invalidation::Revocation => record.adapter.is_none() && record.adapter_revoked_to_base,
+            Invalidation::Revocation | Invalidation::Fence => {
+                record.adapter.is_none() && record.adapter_revoked_to_base
+            }
             Invalidation::Supersession => {
                 record.adapter == Some((params::MATRIX_ADAPTER.to_string(), 2))
                     && record.adapter_superseded == Some((1, 2))
@@ -600,6 +676,7 @@ impl Rig for R009Rig {
             Invalidation::Supersession => {
                 commit_supersession(&mut authority.runtime, params::MATRIX_ADAPTER, 1, 2)
             }
+            Invalidation::Fence => Err("an adapter has no fence".to_string()),
         }
     }
 
@@ -618,22 +695,48 @@ impl Rig for R009Rig {
                 mismatches.push(name.to_string());
             }
         };
-        check("test_model_layers", observed.layers as u64 == params::TEST_MODEL_LAYERS);
-        check("hidden_size", observed.hidden_size as u64 == params::HIDDEN_SIZE);
+        check(
+            "test_model_layers",
+            observed.layers as u64 == params::TEST_MODEL_LAYERS,
+        );
+        check(
+            "hidden_size",
+            observed.hidden_size as u64 == params::HIDDEN_SIZE,
+        );
         check("num_heads", observed.num_heads as u64 == params::NUM_HEADS);
-        check("num_kv_heads", observed.num_kv_heads as u64 == params::NUM_KV_HEADS);
-        check("vocab_size", observed.vocab_size as u64 == params::VOCAB_SIZE);
+        check(
+            "num_kv_heads",
+            observed.num_kv_heads as u64 == params::NUM_KV_HEADS,
+        );
+        check(
+            "vocab_size",
+            observed.vocab_size as u64 == params::VOCAB_SIZE,
+        );
         check("weight_seed", observed.weight_seed == params::WEIGHT_SEED);
-        check("page_tokens", observed.page_tokens as u64 == params::PAGE_TOKENS);
+        check(
+            "page_tokens",
+            observed.page_tokens as u64 == params::PAGE_TOKENS,
+        );
+        check(
+            "intermediate_size",
+            observed.intermediate_size == pins::INTERMEDIATE_SIZE,
+        );
+        check(
+            "max_new_tokens",
+            observed.max_new_tokens as u64 == params::MAX_NEW_TOKENS,
+        );
         check("moe_topology", observed.moe.is_none());
         check(
             "adapter",
-            observed.adapter.as_ref().is_some_and(|(kind, first, rank, scale)| {
-                kind == "Qkv"
-                    && *first as u64 == params::MATRIX_ADAPTER_FIRST_LAYER
-                    && *rank as u64 == params::LORA_RANK
-                    && scale.to_string() == "2"
-            }),
+            observed
+                .adapter
+                .as_ref()
+                .is_some_and(|(kind, first, rank, scale)| {
+                    kind == "Qkv"
+                        && *first as u64 == params::MATRIX_ADAPTER_FIRST_LAYER
+                        && *rank as u64 == params::LORA_RANK
+                        && scale.to_string() == "2"
+                }),
         );
         mismatches
     }
@@ -647,17 +750,27 @@ impl Rig for R009Rig {
             ("vocab_size", Json::Int(observed.vocab_size as i64)),
             ("weight_seed", Json::Int(observed.weight_seed as i64)),
             ("page_tokens", Json::Int(observed.page_tokens as i64)),
-            ("moe_topology", Json::str(if observed.moe.is_none() { "none" } else { "moe" })),
+            (
+                "moe_topology",
+                Json::str(if observed.moe.is_none() {
+                    "none"
+                } else {
+                    "moe"
+                }),
+            ),
             (
                 "adapter",
-                observed.adapter.as_ref().map_or(Json::Null, |(kind, first, rank, scale)| {
-                    Json::obj([
-                        ("kind", Json::str(kind.clone())),
-                        ("first_layer", Json::Int(*first as i64)),
-                        ("rank", Json::Int(*rank as i64)),
-                        ("scale", Json::str(scale.to_string())),
-                    ])
-                }),
+                observed
+                    .adapter
+                    .as_ref()
+                    .map_or(Json::Null, |(kind, first, rank, scale)| {
+                        Json::obj([
+                            ("kind", Json::str(kind.clone())),
+                            ("first_layer", Json::Int(*first as i64)),
+                            ("rank", Json::Int(*rank as i64)),
+                            ("scale", Json::str(scale.to_string())),
+                        ])
+                    }),
             ),
         ])
     }
@@ -669,7 +782,10 @@ impl Rig for R009Rig {
         let ty = cell.ty.name();
         if cell.is_dependency {
             tally.add(&format!("inflight_adapter_revocation_race_cases.{ty}"), 1);
-            tally.add("inflight_adapter_requests_cancelled", i64::from(inflight.cancelled));
+            tally.add(
+                "inflight_adapter_requests_cancelled",
+                i64::from(inflight.cancelled),
+            );
             tally.add(
                 "inflight_adapter_requests_restarted_from_fresh_prefill",
                 i64::from(inflight.restarted_fresh == Some(true)),

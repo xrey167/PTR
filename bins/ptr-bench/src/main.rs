@@ -68,14 +68,12 @@ fn main() {
                 }),
         )),
         // The harnesses of R009 and R010: one seed per run, no default seed.
-        "layer-shared-lora-kv" => experiments::r009::run(strict_or_exit(seed_arg(
-            &args,
-            "layer-shared-lora-kv",
-        ))),
-        "moe-expert-kv-revocation" => experiments::r010::run(strict_or_exit(seed_arg(
-            &args,
-            "moe-expert-kv-revocation",
-        ))),
+        "layer-shared-lora-kv" => {
+            experiments::r009::run(strict_or_exit(seed_arg(&args, "layer-shared-lora-kv")))
+        }
+        "moe-expert-kv-revocation" => {
+            experiments::r010::run(strict_or_exit(seed_arg(&args, "moe-expert-kv-revocation")))
+        }
         // Not an R005 result: an exactness smoke run of the CPU reference backend.
         "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(
             &args, 2, 8, "requests",

@@ -65,15 +65,24 @@ impl Path {
 pub enum Invalidation {
     Revocation,
     Supersession,
+    /// A committed fence of an expert (R010 only): the generation is unchanged.
+    Fence,
 }
 
 impl Invalidation {
     pub const ALL: [Invalidation; 2] = [Invalidation::Revocation, Invalidation::Supersession];
+    /// The types of an expert dependency.
+    pub const EXPERT: [Invalidation; 3] = [
+        Invalidation::Revocation,
+        Invalidation::Supersession,
+        Invalidation::Fence,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Revocation => "revocation",
             Self::Supersession => "supersession",
+            Self::Fence => "fence",
         }
     }
 }
@@ -231,8 +240,6 @@ pub struct CellRecord {
     pub is_dependency: bool,
     pub is_semantic_input: bool,
     pub ty: Invalidation,
-    pub path: Path,
-    pub stale_hits: i64,
     pub inflight: Option<Inflight>,
 }
 
@@ -245,8 +252,6 @@ pub struct Inflight {
     pub restarted_fresh: Option<bool>,
     /// Tokens or outputs that escaped after the event.
     pub escaped: i64,
-    /// Whether the recorded re-resolution is the one the owner decision names.
-    pub resolution_holds: Option<bool>,
 }
 
 /// One cell as the result describes it.
@@ -362,7 +367,8 @@ fn authority(ctx: &Ctx<'_>) -> Res<Authority> {
     let spec = ctx.kind.spec();
     let mut capsules: Vec<String> = ctx.rig.capsules();
     capsules.push(NEUTRAL.identity.to_string());
-    let segment_is_capsule = matches!(ctx.kind, Kind::Segment(spec) if spec.kind != SegmentKind::Semantic);
+    let segment_is_capsule =
+        matches!(ctx.kind, Kind::Segment(spec) if spec.kind != SegmentKind::Semantic);
     if segment_is_capsule {
         capsules.push(spec.identity.to_string());
     }
@@ -408,6 +414,7 @@ fn ledger_event(ctx: &Ctx<'_>, authority: &mut Authority) -> Res<()> {
         (Kind::Segment(spec), Invalidation::Supersession) => {
             commit_supersession(runtime, spec.identity, 1, 2)
         }
+        (_, Invalidation::Fence) => Err("only an expert has a fence".to_string()),
     }
 }
 
@@ -430,7 +437,11 @@ fn apply_event(
     ledger_event(ctx, authority)?;
     let identity = identity(ctx);
     match ctx.ty {
-        Invalidation::Revocation => backend
+        // A fence ends every entry that depends on the expert at the fence's commit; the
+        // backend's catalog has no fence hook of its own, so the harness applies the same
+        // tombstoning through the identity (the runtime's own catalog hook is unit-tested in
+        // crates/ptr-runtime/tests/expert_fence.rs).
+        Invalidation::Revocation | Invalidation::Fence => backend
             .invalidate_inputs(&BTreeSet::from([(identity, revoked_generation(ctx))]))
             .map_err(fail("invalidating inputs")),
         Invalidation::Supersession => backend
@@ -450,7 +461,10 @@ fn revoked_generation(ctx: &Ctx<'_>) -> Generation {
 }
 
 fn entries(backend: &ReferenceKvReuseBackend) -> Res<usize> {
-    Ok(backend.catalog_stats().map_err(fail("catalog stats"))?.entries)
+    Ok(backend
+        .catalog_stats()
+        .map_err(fail("catalog stats"))?
+        .entries)
 }
 
 /// The entries one invalidation drops of `layers * chunks`.
@@ -509,9 +523,7 @@ fn probe_entries(
         }
         // The probe then runs to its end, so the same request is also compared with a cold
         // run: a request on a dead input still computes the right answer, uncached.
-        let finish = session
-            .run_to_end(authority)
-            .map_err(fail("a probe run"))?;
+        let finish = session.run_to_end(authority).map_err(fail("a probe run"))?;
         let ptr_runtime::KvSessionFinish::Completed(outcome) = finish else {
             return Err("a probe session was cancelled".to_string());
         };
@@ -548,7 +560,12 @@ fn same_tokens_other_generation(
     Ok(hits)
 }
 
-fn procedure(tally: &mut Tally, ctx: &Ctx<'_>, backend: &ReferenceKvReuseBackend, binding: &StackBinding) -> Json {
+fn procedure(
+    tally: &mut Tally,
+    ctx: &Ctx<'_>,
+    backend: &ReferenceKvReuseBackend,
+    binding: &StackBinding,
+) -> Json {
     let observed = observe(backend, binding);
     let mismatches = ctx.rig.procedure_mismatches(&observed);
     tally.add("procedure_mismatches", mismatches.len() as i64);
@@ -557,7 +574,12 @@ fn procedure(tally: &mut Tally, ctx: &Ctx<'_>, backend: &ReferenceKvReuseBackend
         Json::Obj(mut pairs) => {
             pairs.push((
                 "mismatches".to_string(),
-                Json::Arr(mismatches.iter().map(|text| Json::str(text.clone())).collect()),
+                Json::Arr(
+                    mismatches
+                        .iter()
+                        .map(|text| Json::str(text.clone()))
+                        .collect(),
+                ),
             ));
             Json::Obj(pairs)
         }
@@ -655,7 +677,8 @@ fn normal_arm(
     }
     let mut extra_stale = 0i64;
     if ctx.is_segment() {
-        extra_stale += same_tokens_other_generation(tally, ctx, backend, authority, binding, &ctx.cell)?;
+        extra_stale +=
+            same_tokens_other_generation(tally, ctx, backend, authority, binding, &ctx.cell)?;
     }
     note_event(tally, ctx);
     apply_event(ctx, authority, backend)?;
@@ -665,7 +688,10 @@ fn normal_arm(
     if dropped != expected {
         tally.add("matrix_selectivity_mismatches", 1);
     }
-    tally.add(&format!("matrix_entries_dropped.{}", ctx.cell), dropped as i64);
+    tally.add(
+        &format!("matrix_entries_dropped.{}", ctx.cell),
+        dropped as i64,
+    );
     let probed = probe_entries(tally, ctx, backend, authority, binding, &ctx.cell)?;
     note_revocation_probes(tally, ctx, &probed);
     tally.add("normal_probe_lookups", probed.lookups);
@@ -873,12 +899,13 @@ fn restore_arm(
         &format!("{}-control-pages", ctx.cell),
     )?;
     let control_hit = live_control(ctx, &control, &live, binding, &ctx.cell)?;
+    // A live restored entry whose pages exist must fork. A control that does not is recorded
+    // (and judged by a coverage rule): the misses above would then be no evidence about the
+    // oracle, because no restored entry could be served at all.
     if control_hit != 32 {
-        return Err(format!(
-            "{}: a live restored entry with its pages did not fork ({control_hit} tokens)",
-            ctx.cell
-        ));
+        tally.add("restore_control_failures", 1);
     }
+    tally.add("restore_control_hit_tokens", control_hit as i64);
     let rejections = restored.catalog_stats().map_err(fail("catalog stats"))?;
     if ctx.is_segment() {
         tally.add("restore_arms", 1);
@@ -980,7 +1007,6 @@ fn inflight_arm(
     }
     escaped += (steps.session.generated().len() - tokens_at_event) as i64;
     let mut restarted_fresh = None;
-    let mut resolution_holds = None;
     if cancelled {
         match ctx.kind {
             Kind::BaseModel => {
@@ -1003,12 +1029,10 @@ fn inflight_arm(
                     && restarted.inserted_chunks == 0
                     && restarted.restarted_after_cancel;
                 restarted_fresh = Some(equal && fresh);
-                if matches!(ctx.kind, Kind::Dependency) {
-                    let holds = ctx.rig.resolution_holds(&restarted.binding, ctx.ty);
-                    if !holds {
-                        tally.add("restart_resolution_mismatches", 1);
-                    }
-                    resolution_holds = Some(holds);
+                if matches!(ctx.kind, Kind::Dependency)
+                    && !ctx.rig.resolution_holds(&restarted.binding, ctx.ty)
+                {
+                    tally.add("restart_resolution_mismatches", 1);
                 }
             }
         }
@@ -1035,14 +1059,16 @@ fn inflight_arm(
             cancelled,
             restarted_fresh,
             escaped,
-            resolution_holds,
         }),
         detail: Json::obj([
             ("race_at_step", Json::Int(race_at as i64)),
             ("steps", Json::Int(total_steps as i64)),
             ("cancelled", Json::Bool(cancelled)),
             ("escaped_outputs", Json::Int(escaped)),
-            ("entries_dropped_before_next_step", Json::Int(dropped as i64)),
+            (
+                "entries_dropped_before_next_step",
+                Json::Int(dropped as i64),
+            ),
             ("late_probe_hit", Json::Int(late_hit)),
             ("entries_inserted_after_event", Json::Int(inserted_after)),
             (
@@ -1099,8 +1125,6 @@ pub fn run_cell(
             is_dependency: matches!(kind, Kind::Dependency),
             is_semantic_input: matches!(kind, Kind::Segment(spec) if spec.kind == SegmentKind::Semantic),
             ty,
-            path,
-            stale_hits: result.stale,
             inflight: result.inflight,
         },
     );
