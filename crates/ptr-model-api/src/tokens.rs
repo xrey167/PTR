@@ -19,6 +19,7 @@ use std::fmt;
 
 const SEGMENT_DOMAIN: &[u8] = b"ptr.kv.segment.v1\0";
 const LINEAGE_DOMAIN: &[u8] = b"ptr.kv.lineage.v2\0";
+const REPORT_DOMAIN: &[u8] = b"ptr.kv.report.v1\0";
 
 /// One token id in a tokenizer's vocabulary.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -35,6 +36,8 @@ pub enum TokenContractError {
     RawSourceNeedsRawConstructor,
     /// Approximate reuse reported although the policy is `ExactOnly`.
     ApproximateNotAllowed,
+    /// A value tainted by Approximate KV reuse was requested as Exact.
+    ApproximateTaint,
     EmptySegment,
     EmptySegmentList,
     TokenizerMismatch {
@@ -62,6 +65,9 @@ impl fmt::Display for TokenContractError {
             }
             Self::ApproximateNotAllowed => {
                 write!(f, "approximate reuse reported under an ExactOnly policy")
+            }
+            Self::ApproximateTaint => {
+                write!(f, "value is tainted by Approximate KV reuse")
             }
             Self::EmptySegment => write!(f, "prompt segment has no tokens"),
             Self::EmptySegmentList => write!(f, "segmented request has no segments"),
@@ -518,8 +524,8 @@ impl SegmentedModelRequest {
     }
 }
 
-/// Strength of a KV reuse hit. Approximate output must never reach an effect path;
-/// enforcement is P2+.
+/// Strength of a KV reuse hit. Approximate output must never reach an effect path; the
+/// runtime enforces that through [`KvReuseTaint`] (P2a).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum KvReuseMode {
     Exact,
@@ -575,6 +581,123 @@ impl KvReuseReport {
     pub fn mode(&self) -> KvReuseMode {
         self.mode
     }
+
+    /// Domain-separated SHA-256 over the report's mode and hit count.
+    pub fn digest(&self) -> Digest {
+        let mut hasher = Sha256::new();
+        hasher.update(REPORT_DOMAIN);
+        hasher.update([match self.mode {
+            KvReuseMode::Exact => 0u8,
+            KvReuseMode::Approximate => 1u8,
+        }]);
+        hasher.update((self.hit_tokens as u64).to_le_bytes());
+        hasher.finalize().into()
+    }
+
+    /// The taint output produced under this reuse carries.
+    pub fn taint(&self) -> KvReuseTaint {
+        match self.mode {
+            KvReuseMode::Exact => KvReuseTaint::Exact,
+            KvReuseMode::Approximate => KvReuseTaint::Approximate {
+                report_digest: self.digest(),
+            },
+        }
+    }
+}
+
+/// Provenance of derived state with respect to KV reuse (doc 36, P2a).
+///
+/// `Approximate` is sticky: [`KvReuseTaint::join`] keeps it, [`Tainted`] offers no way to
+/// drop it, and the only way to read a value out of a tainted wrapper is
+/// [`Tainted::into_exact`], which refuses an Approximate one. `Exact` also covers "no
+/// reuse"; it is the default.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum KvReuseTaint {
+    #[default]
+    Exact,
+    Approximate {
+        /// Digest of the [`KvReuseReport`] of the (smallest-digest, after a join) run that
+        /// introduced the taint.
+        report_digest: Digest,
+    },
+}
+
+impl KvReuseTaint {
+    pub fn is_approximate(&self) -> bool {
+        matches!(self, Self::Approximate { .. })
+    }
+
+    /// Taint of a value derived from two inputs: Approximate dominates. Commutative,
+    /// associative and idempotent (two Approximate taints keep the smaller digest).
+    pub fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Exact, other) | (other, Self::Exact) => other,
+            (Self::Approximate { report_digest: a }, Self::Approximate { report_digest: b }) => {
+                Self::Approximate {
+                    report_digest: a.min(b),
+                }
+            }
+        }
+    }
+}
+
+/// A value together with the KV-reuse taint of everything it was derived from. There is no
+/// public constructor that takes an arbitrary taint for an existing value and no setter, so
+/// a taint cannot be downgraded by re-wrapping.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Tainted<T> {
+    value: T,
+    taint: KvReuseTaint,
+}
+
+impl<T> Tainted<T> {
+    /// A value produced without Approximate reuse.
+    pub fn exact(value: T) -> Self {
+        Self {
+            value,
+            taint: KvReuseTaint::Exact,
+        }
+    }
+
+    /// A value produced by a run that reported `report`.
+    pub fn from_report(value: T, report: Option<&KvReuseReport>) -> Self {
+        Self {
+            value,
+            taint: report.map_or(KvReuseTaint::Exact, KvReuseReport::taint),
+        }
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn taint(&self) -> KvReuseTaint {
+        self.taint
+    }
+
+    /// Derive a new value; the taint is inherited unchanged.
+    pub fn map<U>(self, derive: impl FnOnce(T) -> U) -> Tainted<U> {
+        Tainted {
+            value: derive(self.value),
+            taint: self.taint,
+        }
+    }
+
+    /// Derive a value from two inputs; the result carries the join of both taints.
+    pub fn combine<U, V>(self, other: Tainted<U>, derive: impl FnOnce(T, U) -> V) -> Tainted<V> {
+        Tainted {
+            value: derive(self.value, other.value),
+            taint: self.taint.join(other.taint),
+        }
+    }
+
+    /// The value, only when it is not Approximate-tainted.
+    pub fn into_exact(self) -> Result<T, TokenContractError> {
+        match self.taint {
+            KvReuseTaint::Exact => Ok(self.value),
+            KvReuseTaint::Approximate { .. } => Err(TokenContractError::ApproximateTaint),
+        }
+    }
 }
 
 /// Result of a segmented inference: the events and, when the backend reused a cache,
@@ -583,6 +706,25 @@ impl KvReuseReport {
 pub struct ModelRun {
     pub events: Vec<ModelEvent>,
     pub kv_report: Option<KvReuseReport>,
+}
+
+impl ModelRun {
+    /// Taint of every event of this run: Approximate exactly when the report says so; no
+    /// report (no reuse) is Exact.
+    pub fn taint(&self) -> KvReuseTaint {
+        self.kv_report
+            .as_ref()
+            .map_or(KvReuseTaint::Exact, KvReuseReport::taint)
+    }
+
+    /// The events, each carrying the run's taint.
+    pub fn into_tainted_events(self) -> Vec<Tainted<ModelEvent>> {
+        let taint = self.taint();
+        self.events
+            .into_iter()
+            .map(|value| Tainted { value, taint })
+            .collect()
+    }
 }
 
 /// Backend that accepts a segmented request and may reuse cached K/V state.

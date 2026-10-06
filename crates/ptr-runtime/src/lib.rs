@@ -6,6 +6,7 @@ pub mod expert;
 pub mod identity;
 pub mod kv;
 pub mod kv_prefix;
+pub mod kv_taint;
 pub mod manifest;
 pub mod memory;
 pub mod merge;
@@ -357,7 +358,7 @@ use ptr_ledger::{
     MAX_RETAINED_RESPONSE,
 };
 use ptr_model_api::{
-    InferenceBackend, ModelEvent, ModelObservation, ModelRequest, ModelResumeRequest,
+    InferenceBackend, KvReuseTaint, ModelEvent, ModelObservation, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
 };
 use ptr_pods::{EvidenceVerifier, PodEvidenceBundle, PodHypothesis, PodOutputKind, PodRegistry};
@@ -413,6 +414,15 @@ pub enum RuntimeError {
         actual: CommitIndex,
     },
     Model(String),
+    /// An action derived from a model run that used Approximate KV reuse reached the
+    /// hard effect boundary (doc 36, P2a). `report_digest` names the reuse report.
+    ApproximateStateAtEffectBoundary {
+        report_digest: ptr_types::Digest,
+    },
+    /// The bounded registry of tainted actions is full; the run is refused.
+    KvTaintRegistryFull {
+        limit: usize,
+    },
     PodUnavailable {
         capability: String,
         input_type: String,
@@ -587,6 +597,9 @@ pub struct ResumableRun {
     pub model_events: Vec<ModelEvent>,
     pub observations: Vec<TypedPayload>,
     pub action: Option<ActionIr>,
+    /// Join of the KV-reuse taint of the model output this run ingested; Exact unless the
+    /// run came through [`PtrRuntime::ingest_model_run`] with Approximate reuse.
+    pub kv_taint: KvReuseTaint,
 }
 
 enum RuntimeLedger {
@@ -641,6 +654,8 @@ pub struct PtrRuntime {
     experts: expert::ExpertRegistryProjection,
     /// Exact KV prefix catalog; none until the host calls `enable_kv_prefix_catalog`.
     kv_catalog: Option<kv_prefix::KvPrefixCatalog>,
+    /// Actions ingested from Approximate-reuse runs; refused by `authorize_action`.
+    tainted_actions: kv_taint::TaintedActions,
 }
 
 impl PtrRuntime {
@@ -692,6 +707,7 @@ impl PtrRuntime {
             tier_journal: TierJournalProjection::default(),
             experts: expert::ExpertRegistryProjection::default(),
             kv_catalog: None,
+            tainted_actions: kv_taint::TaintedActions::default(),
         })
     }
 
@@ -1628,6 +1644,7 @@ impl PtrRuntime {
     }
 
     pub fn authorize_action(&self, action: &ActionIr) -> Result<(), RuntimeError> {
+        self.check_kv_taint(action, KvReuseTaint::Exact)?;
         match self.authorization_decision(action) {
             AuthorizationDecision::Allow(_) => Ok(()),
             AuthorizationDecision::Deny(AuthorizationDenial::StaleRevision { action, current }) => {
