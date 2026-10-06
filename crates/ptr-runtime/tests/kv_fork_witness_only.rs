@@ -177,3 +177,83 @@ fn the_registry_fails_closed_when_the_fork_authority_is_already_taken() {
     ));
     assert_eq!(f.registry.page_metrics(&target).unwrap().shared_pages, 0);
 }
+
+#[test]
+fn a_prefix_of_an_invalidated_source_cannot_be_forked_by_a_fresh_cache() {
+    let mut f = fixture();
+    let p = pod(&mut f, "p1", 3);
+    let source = alloc(&mut f, "source", &p);
+    let fresh = alloc(&mut f, "fresh", &p);
+    let prefix = publish(&mut f, &source);
+    f.registry.invalidate(&mut f.placement, &source).unwrap();
+    assert_eq!(
+        f.registry.fork_prefix(&f.placement, &fresh, &prefix),
+        Err(TensorKvError::PrefixNotLive)
+    );
+    assert_eq!(f.registry.metadata(&fresh).unwrap().sequence_length, 0);
+    assert_eq!(f.registry.page_metrics(&fresh).unwrap().shared_pages, 0);
+    // The backend retired it too, so even a direct backend retire now reports it absent.
+    assert_eq!(
+        f.backend.retire_prefix(&prefix.key),
+        Err(KvBackendError::PrefixNotFound)
+    );
+}
+
+#[test]
+fn a_prefix_of_a_released_source_cannot_be_forked() {
+    let mut f = fixture();
+    let p = pod(&mut f, "p1", 3);
+    let source = alloc(&mut f, "source", &p);
+    let fresh = alloc(&mut f, "fresh", &p);
+    let prefix = publish(&mut f, &source);
+    f.registry.release(&mut f.placement, &source).unwrap();
+    assert_eq!(
+        f.registry.fork_prefix(&f.placement, &fresh, &prefix),
+        Err(TensorKvError::PrefixNotLive)
+    );
+    assert_eq!(f.registry.page_metrics(&fresh).unwrap().shared_pages, 0);
+}
+
+#[test]
+fn an_invalidated_record_cannot_publish() {
+    let mut f = fixture();
+    let p = pod(&mut f, "p1", 3);
+    let source = alloc(&mut f, "source", &p);
+    f.registry.invalidate(&mut f.placement, &source).unwrap();
+    assert_eq!(
+        f.registry.publish_prefix(&f.placement, &source),
+        Err(TensorKvError::Invalidated)
+    );
+}
+
+#[test]
+fn a_prefix_never_published_through_the_registry_is_not_live() {
+    let mut f = fixture();
+    let p = pod(&mut f, "p1", 3);
+    let source = alloc(&mut f, "source", &p);
+    let target = alloc(&mut f, "target", &p);
+    let mut prefix = publish(&mut f, &source);
+    prefix.key.prefix_digest = [0xEE; 32];
+    assert_eq!(
+        f.registry.fork_prefix(&f.placement, &target, &prefix),
+        Err(TensorKvError::PrefixNotLive)
+    );
+    assert_eq!(f.registry.page_metrics(&target).unwrap().shared_pages, 0);
+}
+
+#[test]
+fn forged_length_and_offset_do_not_reach_registry_metadata() {
+    let mut f = fixture();
+    let p = pod(&mut f, "p1", 3);
+    let source = alloc(&mut f, "source", &p);
+    let target = alloc(&mut f, "target", &p);
+    let mut prefix = publish(&mut f, &source);
+    let real = (prefix.sequence_length, prefix.position_offset);
+    prefix.sequence_length = 1;
+    prefix.position_offset = 7;
+    f.registry
+        .fork_prefix(&f.placement, &target, &prefix)
+        .unwrap();
+    let metadata = f.registry.metadata(&target).unwrap();
+    assert_eq!((metadata.sequence_length, metadata.position_offset), real);
+}
