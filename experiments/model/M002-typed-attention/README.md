@@ -13,8 +13,11 @@ Record matched baselines, hardware, seeds and negative results. Do not change su
 
 The `a0_*` entrypoints in `experiment.toml` run the A0 mechanism ablation study on
 synthetic operator-routing v1: no-typed-attention (necessity given QK) and the raw-blind manipulation check. The design's blind-query pair (sufficiency) was dropped by the preregistered budget rule, so no entrypoint runs it. It is an A0-internal ablation on synthetic
-data, **not** this manifest's baseline comparison. That comparison needs the plain
-model baseline, which is not pinned yet (owner decision O2), so `status` stays
+data, **not** this manifest's baseline comparison. That comparison's A0-scale
+baseline is the pinned A0-matched plain model (`research/baselines/plain_model/config.toml`,
+`ptr-burn-a0@matched-cross-attention-v1`), by owner decision O2 option (c), decided 2026-10-06
+([ADR-0021](../../../research/decisions/ADR-0021-o2-plain-baseline-hybrid.md)); a small pretrained open LM baseline is deferred to the GPU phase, so claims
+here stay restricted to A0/synthetic scale. `status` stays
 `planned` and `metrics.json` stays reserved for it; the study writes
 `results/a0_internal_metrics.json` instead. Design, criteria and results:
 `research/falsification/A0-ablations-v1/`. `hardware_profile` names the

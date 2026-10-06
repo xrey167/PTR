@@ -8,16 +8,10 @@ tests_dir = "tests"
 # Preregistered choices for this experiment (no code default exists).
 min_revoked_fork_attempts = 1
 max_revoked_fork_count = 0
-max_approximate_run_actions_admitted = 0
-max_approximate_semdb_promotions = 0
-min_approximate_candidate_path_attempts = 1
-max_approximate_candidate_exact_admissions = 0
 # Preregistered choices for this experiment (no code default exists).
 max_trie_nodes = 4096
 max_kv_page_bytes = 134217728
 max_active_fork_page_evictions = 0
-min_approximate_action_admission_attempts = 1
-min_approximate_semdb_promotion_attempts = 1
 min_evictions_with_active_fork_pinned = 1
 hit_rate_definition = "reused_prefix_tokens / total_prompt_tokens"
 # Preregistered choices for this experiment (no code default exists).
@@ -29,8 +23,6 @@ min_input_revocations_performed = 1
 min_post_revocation_lookups_matching_tokens = 1
 max_revoked_lineage_entry_hits = 0
 min_same_tokens_different_generation_cases = 1
-min_tainted_candidate_reload_attempts = 1
-max_taint_lost = 0
 min_revoked_pinned_page_attempts = 1
 max_revoked_pinned_page_served_after_revocation = 0
 revoked_pinned_page_bytes_reclaimed_after_release = "all"
@@ -38,12 +30,7 @@ min_cross_principal_attempts = 1
 max_cross_principal_hits = 0
 min_discarded_overlay_entry_attempts = 1
 max_discarded_overlay_entry_hits = 0
-min_fresh_exact_recomputation_controls = 1
-min_candidate_taint_hops = 2
-min_approximate_pod_result_promotion_attempts = 1
-max_approximate_pod_result_promotions_accepted = 0
 max_metadata_bytes = 8388608
-approximate_producer = "pinned stub backend returning KvReuseMode::Approximate"
 n_requests = 64
 prompt_tokens = 256
 shared_prefix_tokens = 128
@@ -114,13 +101,6 @@ max_capacity_refusal_cache_inserts = 0
 min_supersession_cancelled_forks = 1
 supersession_forks_restarted_from_fresh_prefill_equals_cancelled = true
 max_cache_inserts_after_supersession = 0
-min_misclassified_revocable_as_raw_attempts = 1
-max_misclassified_raw_admissions = 0
-segment_kind_authority = "ingress record"
-# Preregistered choices for this experiment (no code default exists).
-min_approximate_output_reintroduced_as_raw_attempts = 1
-max_laundered_exact_admissions = 0
-runtime_produced_content_segment_kind = "Derived (never Raw), provenance and Approximate taint propagate until exact recomputation"
 # Preregistered choices for this experiment (no code default exists).
 invalidation_types = ["revocation", "supersession"]
 dependency_kinds = ["semantic_input", "memory_input"]
@@ -134,10 +114,6 @@ workload_limits = { main = { max_trie_nodes = 4096, max_kv_page_bytes = 13421772
 workload_peaks_reported = "per workload, evaluated against that workload's own limits"
 # Preregistered choices for this experiment (no code default exists).
 outputs_after_supersession_field_family = "outputs_after_supersession"
-# Preregistered choices for this experiment (no code default exists).
-min_exact_echo_cases = 1
-max_taint_cleared_by_echo = 0
-taint_clearance_rule = "only exact recomputation of the same derived value from its original untainted inputs with the same operation"
 # Preregistered choices for this experiment (no code default exists).
 min_base_model_inflight_race_cases_per_type = 1
 max_base_model_inflight_outputs_after_invalidation = 0
@@ -160,7 +136,8 @@ saturation_definition = "attempted demand of concurrent forks exceeds capacity; 
 min_current_layer_kv_transform_change_cases = 1
 max_stale_exact_hits = 0
 min_stale_witness_replay_cases = 1
-min_witness_reuse_attempts = 1
+min_witness_reuse_static_evidence_passing = 2
+witness_reuse_evidence = "owner decision 2026-10-06: reuse of a consumed KvForkWitness is a compile-time error. Evidence is (1) the compile_fail doctest on KvForkWitness in crates/ptr-pods/src/paged_kv.rs (a second fork_prefix_admitted with the same witness must not compile) and (2) the unit test witness_tests::second_consume_of_the_same_witness_state_is_refused in the same file; no runtime witness_reuse_attempts is required"
 max_stale_or_reused_witness_forks_admitted = 0
 chain_layer_covers = ["layers_below", "pre_attention_norm", "kv_projection_weights_and_biases", "qk_norm_weights_and_eps", "stored_post_rope_rotary_parameters", "kv_quantization_parameters"]
 # Preregistered choices for this experiment (no code default exists).
@@ -188,8 +165,6 @@ min_effective_regime_transition_cases = 1
 max_exact_outputs_across_effective_regime_transition_without_recompute = 0
 forced_transition_examples = ["admitted max_new_tokens exceeded", "runtime switches regimes"]
 # Preregistered choices for this experiment (no code default exists).
-derived_state_carriers = { ptr_catalog_key = ["mode"], tainted_candidate = ["mode", "taint"] }
-# Preregistered choices for this experiment (no code default exists).
 min_mismatched_position_cases = 1
 max_exact_hits_with_mismatched_positions = 0
 canonical_positions = "position ids = trie depth offset from 0; no explicit position ids or offset; otherwise Exact lookup is bypassed (miss)"
@@ -201,3 +176,8 @@ producer_environment_recorded_in_run_json = true
 min_cross_environment_restore_cases = 1
 max_exact_hits_across_environment = 0
 cross_environment_simulation = "a changed build-identity field"
+
+# Split (2026-10-06, owner decision): the Approximate-family thresholds and cases live in
+# experiments/runtime/R012-approximate-taint-containment/config.toml. R005 keeps the Exact half.
+derived_state_carriers = { ptr_catalog_key = ["mode"] }
+approximate_family_successor = "R012-approximate-taint-containment"
