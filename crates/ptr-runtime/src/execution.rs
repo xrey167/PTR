@@ -1384,6 +1384,10 @@ impl PtrRuntime {
         if self.capsule_projects.get(&action.target) != Some(&project.0) {
             return Err(ExecutionError::ProjectMismatch);
         }
+        // Doc 36 P2a: an action from an Approximate-reuse run is refused here too, so a
+        // caller that skipped `authorize_action` still cannot reach `EffectAttempted`.
+        self.check_kv_taint(action, ptr_model_api::KvReuseTaint::Exact)
+            .map_err(audit)?;
         let decision = self.permissions.authorize(ActionAuthorization {
             target: action.target.clone(),
             capability: action.capability.clone(),
