@@ -1,5 +1,5 @@
 use ptr_pods::{
-    KvBackendError, KvPageBinding, KvPageMetrics, KvPageSize, KvPagedSnapshot,
+    KvBackendError, KvForkAuthority, KvPageBinding, KvPageMetrics, KvPageSize, KvPagedSnapshot,
     KvRuntimeLeaseBinding, KvSharedPrefix, KvTensorBackend, KvTensorSchema, KvTensorSnapshot,
     KvTierAdapter, KvTierBinding, PagedKvTensorBackend, PagedKvTierAdapter, PodTierError,
     TensorRef,
@@ -100,6 +100,9 @@ pub struct ManagedKvRegistry<B: KvTensorBackend> {
     backend: B,
     owner: u64,
     records: BTreeMap<StateId, Record<B::Cache>>,
+    /// The backend's one fork authority, taken lazily by the first fork. Witnesses are
+    /// minted only from here, never from caller input.
+    fork_authority: Option<KvForkAuthority>,
 }
 
 impl<B: KvTensorBackend> ManagedKvRegistry<B> {
@@ -108,6 +111,7 @@ impl<B: KvTensorBackend> ManagedKvRegistry<B> {
             backend,
             owner: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
             records: BTreeMap::new(),
+            fork_authority: None,
         }
     }
 
@@ -669,6 +673,14 @@ impl<B: PagedKvTensorBackend> ManagedKvRegistry<B> {
         Ok(prefix)
     }
 
+    /// Fork a published prefix into `handle`'s cache.
+    ///
+    /// Admission comes from this registry's own committed state, never from the caller: the
+    /// target must be valid, hold a current lease, and sit at the generation the prefix
+    /// was published under. The registry then mints a single-use [`ptr_pods::KvForkWitness`]
+    /// from the backend's fork authority and the backend forks only under that witness
+    /// (doc 36 defect 2). A backend without a witness-gated fork, or whose authority was
+    /// already taken elsewhere, fails closed with a backend error and shares no pages.
     pub fn fork_prefix(
         &mut self,
         placement: &crate::PodPlacementController,
@@ -678,15 +690,40 @@ impl<B: PagedKvTensorBackend> ManagedKvRegistry<B> {
         if handle.owner != self.owner {
             return Err(TensorKvError::ForeignHandle);
         }
+        {
+            let record = self
+                .records
+                .get(&handle.state_id)
+                .ok_or(TensorKvError::UnknownHandle)?;
+            if !record.metadata.valid {
+                return Err(TensorKvError::Invalidated);
+            }
+            placement
+                .validate_lease(&record.lease)
+                .map_err(|_| TensorKvError::StaleLease)?;
+            if prefix.key.generation != record.metadata.generation {
+                return Err(TensorKvError::Backend(KvBackendError::PrefixMismatch));
+            }
+        }
+        if self.fork_authority.is_none() {
+            self.fork_authority = Some(
+                self.backend
+                    .take_fork_authority()
+                    .map_err(TensorKvError::Backend)?,
+            );
+        }
+        let Some(authority) = self.fork_authority.as_ref() else {
+            return Err(TensorKvError::Backend(KvBackendError::Unsupported(
+                "take_fork_authority",
+            )));
+        };
+        let (witness, _revoker) = authority.admit(prefix);
         let (backend, records) = (&self.backend, &mut self.records);
         let record = records
             .get_mut(&handle.state_id)
             .ok_or(TensorKvError::UnknownHandle)?;
-        placement
-            .validate_lease(&record.lease)
-            .map_err(|_| TensorKvError::StaleLease)?;
         backend
-            .fork_prefix(&mut record.cache, prefix)
+            .fork_prefix_admitted(&mut record.cache, prefix, witness)
             .map_err(TensorKvError::Backend)?;
         record.metadata.sequence_length = prefix.sequence_length;
         record.metadata.position_offset = prefix.position_offset;

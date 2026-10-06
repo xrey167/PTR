@@ -106,13 +106,7 @@ fn admitted_fork_ignores_the_callers_generation_but_not_its_principal() {
     let authority = backend.take_fork_authority().unwrap();
     let (_source, prefix) = published(&backend, page);
 
-    // The legacy path trusts the caller's own binding and refuses a different generation.
-    let mut legacy = fresh(&backend, "alice", 2, page);
-    assert_eq!(
-        backend.fork_prefix(&mut legacy, &prefix),
-        Err(KvBackendError::PrefixMismatch)
-    );
-    // The witness path carries admission, so the generation is the catalog's concern.
+    // The witness carries admission, so the generation is the catalog's concern.
     let (witness, revoker) = authority.admit(&prefix);
     let mut target = fresh(&backend, "alice", 2, page);
     backend
@@ -345,13 +339,6 @@ impl PagedKvTensorBackend for NoRetireBackend {
     }
     fn publish_prefix(&self, cache: &mut Self::Cache) -> Result<KvSharedPrefix, KvBackendError> {
         self.0.publish_prefix(cache)
-    }
-    fn fork_prefix(
-        &self,
-        cache: &mut Self::Cache,
-        prefix: &KvSharedPrefix,
-    ) -> Result<(), KvBackendError> {
-        self.0.fork_prefix(cache, prefix)
     }
     fn synchronize(&self, cache: &Self::Cache) -> Result<(), KvBackendError> {
         self.0.synchronize(cache)

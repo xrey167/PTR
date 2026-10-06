@@ -255,6 +255,22 @@ pub struct KvPageMetrics {
     pub resident_bytes: u64,
 }
 
+/// Paged KV backend. The only way to fork a published prefix is
+/// [`PagedKvTensorBackend::fork_prefix_admitted`], which needs a single-use
+/// [`KvForkWitness`]; the former binding-trusting `fork_prefix` no longer exists.
+///
+/// ```compile_fail
+/// use ptr_pods::{InMemoryPagedKvBackend, InMemoryPagedKvCache, KvSharedPrefix, PagedKvTensorBackend};
+///
+/// fn fork_without_witness(
+///     backend: &InMemoryPagedKvBackend,
+///     cache: &mut InMemoryPagedKvCache,
+///     prefix: &KvSharedPrefix,
+/// ) {
+///     // The caller's binding is no longer trusted: this method does not exist.
+///     backend.fork_prefix(cache, prefix).unwrap();
+/// }
+/// ```
 pub trait PagedKvTensorBackend: KvTensorBackend {
     type SnapshotLease: Send;
 
@@ -289,12 +305,6 @@ pub trait PagedKvTensorBackend: KvTensorBackend {
 
     fn publish_prefix(&self, cache: &mut Self::Cache) -> Result<KvSharedPrefix, KvBackendError>;
 
-    fn fork_prefix(
-        &self,
-        cache: &mut Self::Cache,
-        prefix: &KvSharedPrefix,
-    ) -> Result<(), KvBackendError>;
-
     /// Remove a published prefix so it can no longer be forked. A key that is not
     /// registered is [`KvBackendError::PrefixNotFound`], so a double retire is visible.
     /// Caches that already forked the prefix keep their pages until they are released.
@@ -311,8 +321,9 @@ pub trait PagedKvTensorBackend: KvTensorBackend {
     }
 
     /// Fork a published prefix under a runtime-minted, single-use witness instead of
-    /// trusting the caller's binding generation (doc 36 defect 2). The witness is
-    /// consumed whether or not the fork then succeeds.
+    /// trusting the caller's binding generation (doc 36 defect 2). This is the only fork
+    /// path: the former binding-trusting `fork_prefix` is removed from the trait. The
+    /// witness is consumed whether or not the fork then succeeds.
     fn fork_prefix_admitted(
         &self,
         _cache: &mut Self::Cache,
@@ -384,7 +395,22 @@ impl KvForkAuthority {
 }
 
 /// Single-use proof that the runtime admitted one fork of one prefix. Not `Clone`; it is
-/// consumed by value.
+/// consumed by value, so a second fork with the same witness does not compile:
+///
+/// ```compile_fail
+/// use ptr_pods::{InMemoryPagedKvBackend, InMemoryPagedKvCache, KvForkWitness, KvSharedPrefix, PagedKvTensorBackend};
+///
+/// fn reuse(
+///     backend: &InMemoryPagedKvBackend,
+///     a: &mut InMemoryPagedKvCache,
+///     b: &mut InMemoryPagedKvCache,
+///     prefix: &KvSharedPrefix,
+///     witness: KvForkWitness,
+/// ) {
+///     let _ = backend.fork_prefix_admitted(a, prefix, witness);
+///     let _ = backend.fork_prefix_admitted(b, prefix, witness);
+/// }
+/// ```
 #[derive(Debug)]
 pub struct KvForkWitness {
     backend_id: u64,
@@ -994,40 +1020,6 @@ impl PagedKvTensorBackend for InMemoryPagedKvBackend {
         })
     }
 
-    fn fork_prefix(
-        &self,
-        cache: &mut Self::Cache,
-        prefix: &KvSharedPrefix,
-    ) -> Result<(), KvBackendError> {
-        if cache.revoked || cache.sequence_length != 0 || !cache.pages.is_empty() {
-            return Err(KvBackendError::PrefixMismatch);
-        }
-        let expected = KvPrefixKey {
-            principal: cache.binding.principal.clone(),
-            execution_manifest: cache.binding.execution_manifest,
-            model: cache.binding.model.clone(),
-            adapter: cache.binding.adapter.clone(),
-            generation: cache.binding.generation,
-            schema_digest: schema_digest(&cache.schema, cache.binding.page_tokens),
-            prefix_digest: prefix.key.prefix_digest,
-        };
-        if expected != prefix.key || prefix.sequence_length > cache.capacity_tokens {
-            return Err(KvBackendError::PrefixMismatch);
-        }
-        let record = self
-            .state
-            .prefixes
-            .lock()
-            .map_err(|_| KvBackendError::Backend("prefix catalog poisoned".into()))?
-            .get(&prefix.key)
-            .cloned()
-            .ok_or(KvBackendError::PrefixMismatch)?;
-        cache.pages = record.pages;
-        cache.sequence_length = record.sequence_length;
-        cache.position_offset = record.position_offset;
-        Ok(())
-    }
-
     fn retire_prefix(&self, key: &KvPrefixKey) -> Result<(), KvBackendError> {
         self.state
             .prefixes
@@ -1280,4 +1272,38 @@ pub(crate) fn digest_list(domain: &[u8], digests: &[Digest]) -> Digest {
         bytes.extend_from_slice(digest);
     }
     Sha256::digest(bytes).into()
+}
+
+#[cfg(test)]
+mod witness_tests {
+    use super::*;
+
+    #[test]
+    fn second_consume_of_the_same_witness_state_is_refused() {
+        let backend = InMemoryPagedKvBackend::new(KvPageSize::new(2).unwrap());
+        let authority = backend.take_fork_authority().unwrap();
+        let key = KvPrefixKey {
+            principal: PrincipalId::from("alice"),
+            execution_manifest: [1; 32],
+            model: ModelVersion::from("m"),
+            adapter: AdapterVersion::from("a"),
+            generation: Generation(1),
+            schema_digest: [2; 32],
+            prefix_digest: [3; 32],
+        };
+        let prefix = KvSharedPrefix {
+            key: key.clone(),
+            sequence_length: 0,
+            position_offset: 0,
+            page_digests: Vec::new(),
+        };
+        let (witness, _) = authority.admit(&prefix);
+        witness.consume(backend.state.id, &key).unwrap();
+        assert_eq!(
+            witness.consume(backend.state.id, &key),
+            Err(KvBackendError::ForkWitnessRejected(
+                KvWitnessRejection::Consumed
+            ))
+        );
+    }
 }

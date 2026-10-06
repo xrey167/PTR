@@ -54,6 +54,9 @@ impl CandlePageBundle {
     }
 }
 
+// The binding-trusting fork that read these fields was removed (doc 36 defect 2); the CUDA
+// backend has no witness-gated fork yet, so published records are write-only until it does.
+#[allow(dead_code)]
 #[derive(Clone)]
 struct CandlePrefixRecord {
     pages: Vec<Arc<CandlePageBundle>>,
@@ -842,40 +845,6 @@ impl PagedKvTensorBackend for CandlePagedKvBackend {
             position_offset: cache.position_offset,
             page_digests,
         })
-    }
-
-    fn fork_prefix(
-        &self,
-        cache: &mut Self::Cache,
-        prefix: &KvSharedPrefix,
-    ) -> Result<(), KvBackendError> {
-        if cache.revoked || cache.sequence_length != 0 || !cache.pages.is_empty() {
-            return Err(KvBackendError::PrefixMismatch);
-        }
-        let expected = KvPrefixKey {
-            principal: cache.binding.principal.clone(),
-            execution_manifest: cache.binding.execution_manifest,
-            model: cache.binding.model.clone(),
-            adapter: cache.binding.adapter.clone(),
-            generation: cache.binding.generation,
-            schema_digest: crate::paged_kv::schema_digest(&cache.schema, cache.binding.page_tokens),
-            prefix_digest: prefix.key.prefix_digest,
-        };
-        if expected != prefix.key || prefix.sequence_length > cache.capacity_tokens {
-            return Err(KvBackendError::PrefixMismatch);
-        }
-        let record = self
-            .state
-            .prefixes
-            .lock()
-            .map_err(|_| KvBackendError::Backend("CUDA prefix catalog poisoned".into()))?
-            .get(&prefix.key)
-            .cloned()
-            .ok_or(KvBackendError::PrefixMismatch)?;
-        cache.pages = record.pages;
-        cache.sequence_length = record.sequence_length;
-        cache.position_offset = record.position_offset;
-        Ok(())
     }
 
     fn synchronize(&self, cache: &Self::Cache) -> Result<(), KvBackendError> {
