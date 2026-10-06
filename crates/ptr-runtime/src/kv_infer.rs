@@ -17,13 +17,14 @@
 //!
 //! # Chain id
 //!
-//! The catalog's [`KvChainId`] is opaque to it. The stack does not expose its weights, so
-//! the chain is derived from what generates them: `chain(-1)` hashes the weight seed, the
-//! vocabulary and the key encoding, and `chain(l) = H(chain(l-1), l, layer shapes and
-//! rotary configuration)`; the id is `chain(L-1)`. This is sound only because the backend
-//! builds its stack through `Qwen2PagedStack::reference(config, seed)`, whose weights are
-//! a pure function of `(config, seed)`; it is not a digest of the weight bytes and must be
-//! replaced by one when real weights are loaded.
+//! The catalog's [`KvChainId`] is opaque to it. It is `chain(L-1)` of the per-layer chain
+//! of `ptr_pods::derive_kv_layer_chains` (doc 36 section D), computed from the actual
+//! weights and configuration of the stack: embedding digest, every layer's norms, K/V
+//! projections, QK-norm, attention and MLP weights, RoPE configuration (per the PreRope /
+//! PostRope rule), the base model identity and generation, the tokenizer and the backend
+//! build identity (also folded into the catalog salt). Two stacks with the same seed but
+//! any different weight get different ids. Not covered: the effective RoPE scaling regime
+//! (the stack supports no scaling; a placeholder is hashed) and adapters (none exist).
 //!
 //! # Bounds and failure
 //!
@@ -51,10 +52,10 @@ use ptr_model_api::{
     SegmentedModelRequest, TokenContractError, TokenId, Tokenizer, TokenizerIdentity,
 };
 use ptr_pods::{
-    InMemoryPagedKvBackend, KvBackendError, KvContinuationExecutor, KvPageBinding, KvPageSize,
-    KvPrefixKey, KvTensorDType, KvTensorSchema, PagedKvTensorBackend, Qwen2Activation,
-    Qwen2LayerConfig, Qwen2PagedStack, Qwen2QkNorm, Qwen2RopeScaling, Qwen2StackConfig,
-    Qwen2StackError, Qwen2StackInput,
+    derive_kv_layer_chains, InMemoryPagedKvBackend, KvBackendError, KvChainError, KvChainIdentity,
+    KvContinuationExecutor, KvPageBinding, KvPageSize, KvPrefixKey, KvTensorDType, KvTensorSchema,
+    PagedKvTensorBackend, Qwen2Activation, Qwen2LayerConfig, Qwen2PagedStack, Qwen2QkNorm,
+    Qwen2RopeScaling, Qwen2StackConfig, Qwen2StackError, Qwen2StackInput,
 };
 use ptr_types::{
     AdapterVersion, DeviceId, Digest, Generation, ModelVersion, PrincipalId, ProjectId,
@@ -64,7 +65,6 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-const CHAIN_DOMAIN: &[u8] = b"ptr.kv.reference-chain.v1\0";
 const LOGITS_DOMAIN: &[u8] = b"ptr.kv.reference-logits.v1\0";
 const MANIFEST_DOMAIN: &[u8] = b"ptr.kv.reference-manifest.v1\0";
 
@@ -119,6 +119,7 @@ pub enum ReferenceKvError {
         maximum: usize,
     },
     Stack(Qwen2StackError),
+    Chain(KvChainError),
     Kv(KvBackendError),
     /// A catalog refusal that is not a graceful insert miss (a bug in this backend).
     Catalog(KvCatalogError),
@@ -145,6 +146,7 @@ impl fmt::Display for ReferenceKvError {
                 )
             }
             Self::Stack(error) => write!(f, "reference stack: {error}"),
+            Self::Chain(error) => write!(f, "kv chain: {error}"),
             Self::Kv(error) => write!(f, "paged KV backend: {error:?}"),
             Self::Catalog(error) => write!(f, "prefix catalog: {error}"),
             Self::Contract(error) => write!(f, "token contract: {error}"),
@@ -159,6 +161,12 @@ impl std::error::Error for ReferenceKvError {}
 impl From<Qwen2StackError> for ReferenceKvError {
     fn from(error: Qwen2StackError) -> Self {
         Self::Stack(error)
+    }
+}
+
+impl From<KvChainError> for ReferenceKvError {
+    fn from(error: KvChainError) -> Self {
+        Self::Chain(error)
     }
 }
 
@@ -238,6 +246,7 @@ pub struct ReferenceKvReuseBackend {
     tokenizer: ByteTokenizer,
     paged: InMemoryPagedKvBackend,
     chain: KvChainId,
+    build: String,
     schema: KvTensorSchema,
     manifest: Digest,
     limits: ReferenceKvLimits,
@@ -276,26 +285,33 @@ fn stack_config(limits: &ReferenceKvLimits) -> Qwen2StackConfig {
     }
 }
 
-fn derive_chain(config: &Qwen2StackConfig, seed: u64) -> KvChainId {
-    let mut chain: [u8; 32] = {
-        let mut hasher = Sha256::new();
-        hasher.update(CHAIN_DOMAIN);
-        hasher.update(b"embedding");
-        hasher.update(seed.to_le_bytes());
-        hasher.update((config.vocab_size as u64).to_le_bytes());
-        hasher.update(format!("{:?}", config.key_encoding).as_bytes());
-        hasher.update(format!("{:?}", config.qk_norm).as_bytes());
-        hasher.finalize().into()
+/// Backend build identity folded into the chain root and the catalog salt: engine, version,
+/// numerics and producer platform (doc 36: Exact numerics bind the producer environment).
+fn build_identity() -> String {
+    format!(
+        "{}@{}|{NUMERICS}|{}-{}",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
+/// `chain(L-1)` of the actual stack weights and configuration (doc 36 section D).
+fn derive_chain(
+    stack: &Qwen2PagedStack,
+    build: &str,
+    tokenizer: &TokenizerIdentity,
+) -> Result<KvChainId, ReferenceKvError> {
+    let identity = KvChainIdentity {
+        base_model: MODEL_NAME.to_owned(),
+        generation: 1,
+        build: build.to_owned(),
+        tokenizer: format!("{}@{}", tokenizer.name(), tokenizer.version()),
     };
-    for layer in 0..config.num_layers {
-        let mut hasher = Sha256::new();
-        hasher.update(CHAIN_DOMAIN);
-        hasher.update(chain);
-        hasher.update((layer as u64).to_le_bytes());
-        hasher.update(format!("{:?}", config.layer).as_bytes());
-        chain = hasher.finalize().into();
-    }
-    KvChainId(chain)
+    Ok(KvChainId(
+        derive_kv_layer_chains(stack, &identity)?.final_id(),
+    ))
 }
 
 impl ReferenceKvReuseBackend {
@@ -317,14 +333,16 @@ impl ReferenceKvReuseBackend {
         }
         check_scope(&default_scope)?;
         let config = stack_config(&limits);
-        let stack = Qwen2PagedStack::reference(config.clone(), weight_seed)?;
+        let stack = Qwen2PagedStack::reference(config, weight_seed)?;
         let paged = InMemoryPagedKvBackend::new(KvPageSize::new(KV_CHUNK_TOKENS as u16)?);
         let schema = stack.kv_schema(
             ModelVersion::from(MODEL_NAME),
             AdapterVersion::from(ADAPTER_NAME),
             DeviceId::from(DEVICE_NAME),
         )?;
-        let chain = derive_chain(&config, weight_seed);
+        let tokenizer = ByteTokenizer::new();
+        let build = build_identity();
+        let chain = derive_chain(&stack, &build, tokenizer.identity())?;
         let manifest: Digest = {
             let mut hasher = Sha256::new();
             hasher.update(MANIFEST_DOMAIN);
@@ -337,9 +355,10 @@ impl ReferenceKvReuseBackend {
             .with_retirer(Arc::new(paged.clone()));
         Ok(Self {
             stack,
-            tokenizer: ByteTokenizer::new(),
+            tokenizer,
             paged,
             chain,
+            build,
             schema,
             manifest,
             limits,
@@ -501,7 +520,7 @@ impl ReferenceKvReuseBackend {
             &scope.project,
             &self.schema.model,
             self.tokenizer.identity(),
-            NUMERICS,
+            &self.build,
             SCHEMA_NAME,
         )
     }
@@ -839,15 +858,51 @@ mod tests {
         assert_eq!(argmax(&[0.0, 2.0, 2.0, 1.0]), 1);
     }
 
+    /// The pre-wave derivation: a hash of the seed and the config Debug text only.
+    fn legacy_seed_chain(config: &Qwen2StackConfig, seed: u64) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"legacy");
+        hasher.update(seed.to_le_bytes());
+        hasher.update(format!("{config:?}").as_bytes());
+        hasher.finalize().into()
+    }
+
+    fn chain_of(stack: &Qwen2PagedStack) -> KvChainId {
+        derive_chain(stack, &build_identity(), ByteTokenizer::new().identity()).unwrap()
+    }
+
     #[test]
-    fn chain_depends_on_seed_and_shape() {
-        let limits = ReferenceKvLimits::default();
-        let config = stack_config(&limits);
-        assert_eq!(derive_chain(&config, 1), derive_chain(&config, 1));
-        assert_ne!(derive_chain(&config, 1), derive_chain(&config, 2));
+    fn chain_follows_weights_not_seed() {
+        let config = stack_config(&ReferenceKvLimits::default());
+        let a = Qwen2PagedStack::reference(config.clone(), 1).unwrap();
+        assert_eq!(chain_of(&a), chain_of(&a.clone()));
+        let b = Qwen2PagedStack::reference(config.clone(), 2).unwrap();
+        assert_ne!(chain_of(&a), chain_of(&b));
         let mut other = config.clone();
         other.num_layers = 3;
-        assert_ne!(derive_chain(&config, 1), derive_chain(&other, 1));
+        let c = Qwen2PagedStack::reference(other, 1).unwrap();
+        assert_ne!(chain_of(&a), chain_of(&c));
+
+        // Same seed and config, one weight perturbed: the old derivation collides.
+        let mut weights = a.weights().clone();
+        weights.layers[1].decoder.gate.weight[0] += 1.0;
+        let perturbed = Qwen2PagedStack::new(config.clone(), weights).unwrap();
+        assert_eq!(
+            legacy_seed_chain(&config, 1),
+            legacy_seed_chain(perturbed.config(), 1)
+        );
+        assert_ne!(chain_of(&a), chain_of(&perturbed));
+    }
+
+    #[test]
+    fn build_identity_changes_the_chain() {
+        let config = stack_config(&ReferenceKvLimits::default());
+        let stack = Qwen2PagedStack::reference(config, 1).unwrap();
+        let tokenizer = ByteTokenizer::new();
+        let here = derive_chain(&stack, &build_identity(), tokenizer.identity()).unwrap();
+        let other = derive_chain(&stack, "another-build", tokenizer.identity()).unwrap();
+        assert_ne!(here, other);
+        assert!(derive_chain(&stack, " ", tokenizer.identity()).is_err());
     }
 
     #[test]
