@@ -2229,7 +2229,7 @@ fn wrong_magic_and_unknown_tags_are_rejected() {
     })
     .encode_canonical();
     let mut bad_magic = bytes.clone();
-    bad_magic[7] = b'2';
+    bad_magic[7] = b'3';
     assert_eq!(
         ExpertCommitRecord::decode_canonical(&bad_magic),
         Err(ExpertProposalError::MalformedRecord("unknown magic"))

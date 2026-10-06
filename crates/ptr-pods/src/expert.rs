@@ -8,8 +8,10 @@
 //! # Proposals are inert data
 //!
 //! An [`ExpertProposal`] changes nothing. Whether it is accepted is decided elsewhere, by the
-//! forgetting and interference gates, the verifier and a ledger commit. That acceptance path is
-//! not implemented yet. Every observed fact in a proposal (a target's `state`, `state_version`,
+//! forgetting and interference gates, the verifier and a ledger commit; `ptr-runtime`
+//! `admit_expert_proposal` is that acceptance path, and it commits an [`ExpertCommitRecord`] that
+//! embeds the gate evidence so replay re-verifies it. This crate defines the shapes and the
+//! record codec and decides no admission. Every observed fact in a proposal (a target's `state`, `state_version`,
 //! `generation`, `manifest_digest`, and the `observed_at` ledger index) is a caller-observed
 //! claim; the commit re-checks all of them against authority (compare-and-swap) and rejects the
 //! proposal if any is stale.
@@ -2008,14 +2010,40 @@ fn check_result(
     Ok(())
 }
 
-/// Leading magic and version of an [`ExpertCommitRecord`] encoding. A change to the layout below
-/// needs a new magic, so an old reader refuses new bytes instead of misreading them.
-const RECORD_MAGIC: &[u8; 8] = b"PTREXR01";
+/// Leading magic and version of a version 1 [`ExpertCommitRecord`] encoding, which carries only
+/// the evidence digest. A change to the layout below needs a new magic, so an old reader refuses
+/// new bytes instead of misreading them.
+const RECORD_MAGIC_V1: &[u8; 8] = b"PTREXR01";
+
+/// Leading magic of a version 2 record, which also embeds the evidence and the gate
+/// configuration digest the host required for its epoch.
+const RECORD_MAGIC_V2: &[u8; 8] = b"PTREXR02";
 
 /// The largest encoded [`ExpertCommitRecord`] [`ExpertCommitRecord::decode_canonical`] reads.
 /// It equals the ledger's `MAX_EXPERT_RECORD_BYTES` (1 MiB), the most a structural event may
 /// carry, and longer input is refused before any parsing.
 pub const MAX_EXPERT_COMMIT_RECORD_BYTES: usize = 1 << 20;
+
+/// The evidence a version 2 [`ExpertCommitRecord`] embeds so a replaying reader can re-verify it
+/// instead of trusting the digest: the gate report's canonical bytes (opaque to this crate;
+/// `ptr-lineage` `BoundGateReport::decode_canonical` reads them) and the digest of the gate
+/// configuration the host required for the record's gate epoch when it admitted the proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertEvidence {
+    required_gate_config_digest: [u8; 32],
+    report: Vec<u8>,
+}
+
+impl ExpertEvidence {
+    pub fn required_gate_config_digest(&self) -> &[u8; 32] {
+        &self.required_gate_config_digest
+    }
+
+    /// The canonical bytes of the embedded gate report.
+    pub fn report(&self) -> &[u8] {
+        &self.report
+    }
+}
 
 /// An [`ExpertProposal`] as committed to the ledger, with the digest of the trusted evidence it
 /// was admitted on and the gate-policy epoch that evidence was issued under.
@@ -2026,10 +2054,23 @@ pub const MAX_EXPERT_COMMIT_RECORD_BYTES: usize = 1 << 20;
 /// rebuilds the proposal through [`ExpertProposal::new`], so bytes that decode always describe a
 /// proposal that validates.
 ///
+/// # Versions
+///
+/// A version 2 record ([`ExpertCommitRecord::new_with_evidence`], the only kind admission
+/// writes) embeds the gate report and the required gate configuration digest, so replay can
+/// re-derive the report digest, check that it passed, is bound to this proposal and operation and
+/// was produced under the configuration the host required. A version 1 record
+/// ([`ExpertCommitRecord::new`]) carries only the evidence digest; it still decodes, because
+/// histories written before version 2 exist, but replay can verify nothing about its evidence
+/// and treats it as unverified legacy (see `ptr-runtime`'s `ExpertEvidenceStatus`). Nothing new
+/// writes version 1.
+///
 /// # Canonical encoding
 ///
-/// All integers are little-endian. `record = magic "PTREXR01" | proposal | evidence_digest[32] |
-/// gate_epoch u64`. A string is a `u32` byte length and its UTF-8 bytes, a list a `u32` count and
+/// All integers are little-endian. `record_v1 = magic "PTREXR01" | proposal | evidence_digest[32]
+/// | gate_epoch u64`; `record_v2 = magic "PTREXR02" | proposal | evidence_digest[32] |
+/// gate_epoch u64 | required_gate_config_digest[32] | report (u32 length, bytes)`. A string is a
+/// `u32` byte length and its UTF-8 bytes, a list a `u32` count and
 /// its items, an option a `0`/`1` byte. The proposal is its project, proposer (project, pod,
 /// generation), `observed_at`, rationale digest and a one-byte operation tag (0 Birth, 1 Merge,
 /// 2 Split, 3 Freeze, 4 Reactivate, 5 Prune, 6 Retire) with its operands, in field order. A level
@@ -2041,11 +2082,13 @@ pub struct ExpertCommitRecord {
     proposal: ExpertProposal,
     evidence_digest: [u8; 32],
     gate_epoch: u64,
+    evidence: Option<ExpertEvidence>,
 }
 
 impl ExpertCommitRecord {
-    /// Bind a proposal to the digest of the evidence it was admitted on and the gate-policy
-    /// epoch. Rejects an all-zero evidence digest.
+    /// A legacy version 1 record: a proposal bound to the digest of the evidence it was admitted
+    /// on and the gate-policy epoch, with no evidence embedded. Rejects an all-zero evidence
+    /// digest. Admission does not use this; see [`ExpertCommitRecord::new_with_evidence`].
     pub fn new(
         proposal: ExpertProposal,
         evidence_digest: [u8; 32],
@@ -2060,7 +2103,39 @@ impl ExpertCommitRecord {
             proposal,
             evidence_digest,
             gate_epoch,
+            evidence: None,
         })
+    }
+
+    /// A version 2 record embedding the gate report (`report`, its canonical bytes) and the gate
+    /// configuration digest the host required for `gate_epoch`. This type does not parse the
+    /// report: the reader that can (`ptr-lineage`) checks it against `evidence_digest`.
+    ///
+    /// # Errors
+    /// Rejects an all-zero evidence digest or configuration digest and an empty report.
+    pub fn new_with_evidence(
+        proposal: ExpertProposal,
+        evidence_digest: [u8; 32],
+        gate_epoch: u64,
+        required_gate_config_digest: [u8; 32],
+        report: Vec<u8>,
+    ) -> Result<Self, ExpertProposalError> {
+        if required_gate_config_digest == ZERO_DIGEST {
+            return Err(ExpertProposalError::MalformedRecord(
+                "required gate configuration digest is all zero",
+            ));
+        }
+        if report.is_empty() {
+            return Err(ExpertProposalError::MalformedRecord(
+                "embedded gate report is empty",
+            ));
+        }
+        let mut record = Self::new(proposal, evidence_digest, gate_epoch)?;
+        record.evidence = Some(ExpertEvidence {
+            required_gate_config_digest,
+            report,
+        });
+        Ok(record)
     }
 
     pub fn proposal(&self) -> &ExpertProposal {
@@ -2075,13 +2150,27 @@ impl ExpertCommitRecord {
         self.gate_epoch
     }
 
+    /// The embedded evidence of a version 2 record; `None` for a legacy version 1 record.
+    pub fn evidence(&self) -> Option<&ExpertEvidence> {
+        self.evidence.as_ref()
+    }
+
     /// The canonical bytes; see the type documentation for the layout.
     pub fn encode_canonical(&self) -> Vec<u8> {
         let mut w = Writer::default();
-        w.bytes.extend_from_slice(RECORD_MAGIC);
+        w.bytes.extend_from_slice(match self.evidence {
+            None => RECORD_MAGIC_V1,
+            Some(_) => RECORD_MAGIC_V2,
+        });
         w.proposal(&self.proposal);
         w.bytes.extend_from_slice(&self.evidence_digest);
         w.u64(self.gate_epoch);
+        if let Some(evidence) = &self.evidence {
+            w.bytes
+                .extend_from_slice(&evidence.required_gate_config_digest);
+            w.count(evidence.report.len());
+            w.bytes.extend_from_slice(&evidence.report);
+        }
         w.bytes
     }
 
@@ -2099,16 +2188,28 @@ impl ExpertCommitRecord {
             ));
         }
         let mut r = Reader { bytes };
-        if r.take(RECORD_MAGIC.len())? != RECORD_MAGIC {
+        let magic = r.take(RECORD_MAGIC_V1.len())?;
+        let embeds_evidence = if magic == RECORD_MAGIC_V1 {
+            false
+        } else if magic == RECORD_MAGIC_V2 {
+            true
+        } else {
             return Err(ExpertProposalError::MalformedRecord("unknown magic"));
-        }
+        };
         let proposal = r.proposal()?;
         let evidence_digest = r.array32()?;
         let gate_epoch = r.u64()?;
+        let record = if embeds_evidence {
+            let required = r.array32()?;
+            let len = r.count()?;
+            let report = r.take(len)?.to_vec();
+            Self::new_with_evidence(proposal, evidence_digest, gate_epoch, required, report)?
+        } else {
+            Self::new(proposal, evidence_digest, gate_epoch)?
+        };
         if !r.bytes.is_empty() {
             return Err(ExpertProposalError::MalformedRecord("trailing bytes"));
         }
-        let record = Self::new(proposal, evidence_digest, gate_epoch)?;
         if record.encode_canonical() != bytes {
             return Err(ExpertProposalError::MalformedRecord(
                 "non-canonical encoding",

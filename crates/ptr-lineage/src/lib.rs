@@ -32,7 +32,7 @@ pub use aimer::{aimer_score, rank_experts_for_pruning, ExpertWeights};
 pub use error::LineageError;
 pub use forgetting::{
     AccuracyMatrix, BoundGateReport, ForgettingGate, GateReport, GateSubject, GateViolation,
-    PublicSuite,
+    PublicSuite, MAX_BOUND_GATE_REPORT_BYTES,
 };
 pub use lineage::{
     AdapterId, AdapterRecord, AdapterStatus, BaseModel, ConsolidationPolicy, Lineage, Origin,

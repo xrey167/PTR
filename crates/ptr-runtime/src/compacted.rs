@@ -32,14 +32,23 @@ use ptr_state::MaterializedState;
 use ptr_types::{CommitIndex, Effect, Generation, ProjectId, Revision};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// PTRCS005 is the layout this build writes: its lifecycle section is
-/// PTRLC003, PTRLC002 followed by the expert registry
-/// ([`crate::expert::ExpertRegistryProjection`]) as a block of its own
-/// ([`REGISTRY_MAGIC`]).
+/// PTRCS006 is the layout this build writes: its lifecycle section is
+/// PTRLC004, PTRLC003 followed by the evidence block ([`EVIDENCE_MAGIC`]): which experts rest on
+/// unverified legacy evidence and the gate configuration digest first seen for each gate epoch.
 ///
-/// The magic moved so that a build from before the registry stops here: it
-/// would restore an empty registry and admit a result over a retired expert.
-const MAGIC: &[u8; 8] = b"PTRCS005";
+/// The magic moved so that a build from before the block stops here: it would restore every
+/// expert as verified and an empty epoch memo.
+const MAGIC: &[u8; 8] = b"PTRCS006";
+/// Opens the evidence block at the end of a PTRLC004 section.
+const EVIDENCE_MAGIC: &[u8; 8] = b"PTREV001";
+/// The lifecycle section of a PTRCS006 snapshot.
+const EVIDENCE_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC004";
+/// PTRCS005, the layout before the evidence block: still read, never written. It carries no
+/// record of which experts were verified, so the conservative rule applies: every restored
+/// expert is marked `UnverifiedLegacy` and the epoch memo starts empty. That can only
+/// understate what replay knew, never claim more; a later verified record clears a mark.
+/// Refusing it would make every existing snapshot unreadable.
+const PRE_EVIDENCE_MAGIC: &[u8; 8] = b"PTRCS005";
 /// PTRCS004, the layout before the expert registry: still read, never written.
 /// Its lifecycle section is PTRLC002. It describes a history with no expert
 /// structural record, so one whose materialized state holds an `expert:` key
@@ -65,6 +74,7 @@ const PRE_ATTESTATION_MAGIC: &[u8; 8] = b"PTRCS003";
 /// action nor named by its attempt, and a section in that layout is refused by
 /// version.
 const EXECUTION_MAGIC: &[u8; 8] = b"PTREX002";
+/// PTRLC003, the lifecycle section of a PTRCS005 snapshot.
 const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC003";
 /// The lifecycle section of a PTRCS003 snapshot, read only inside one.
 const PRE_ATTESTATION_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
@@ -73,6 +83,8 @@ const PRE_ATTESTATION_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
 /// says. The lifecycle section must be the one that layout pairs with.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Layout {
+    /// PTRCS006 with PTRLC004.
+    Evidence,
     /// PTRCS005 with PTRLC003.
     Registry,
     /// PTRCS004 with PTRLC002.
@@ -365,7 +377,7 @@ impl LifecycleState {
     /// Encode lifecycle maps and sets in deterministic key order.
     fn encode(&self) -> Result<Vec<u8>, RuntimeError> {
         let mut out = Writer(Vec::new());
-        out.raw(LIFECYCLE_MAGIC)?;
+        out.raw(EVIDENCE_LIFECYCLE_MAGIC)?;
         out.count(self.materialized.len())?;
         for (key, value) in &self.materialized {
             out.text(key)?;
@@ -407,6 +419,19 @@ impl LifecycleState {
             out.raw(entry.base_model.digest().as_bytes())?;
             out.number(entry.base_model.generation())?;
         }
+        out.raw(EVIDENCE_MAGIC)?;
+        let legacy: Vec<(&str, &str)> = self.experts.legacy_keys().collect();
+        out.count(legacy.len())?;
+        for (project, pod) in legacy {
+            out.text(project)?;
+            out.text(pod)?;
+        }
+        let memo: Vec<(u64, [u8; 32])> = self.experts.epoch_configs().collect();
+        out.count(memo.len())?;
+        for (epoch, digest) in memo {
+            out.number(epoch)?;
+            out.raw(&digest)?;
+        }
         Ok(out.0)
     }
 
@@ -427,6 +452,7 @@ impl LifecycleState {
         }
         let mut reader = Reader { bytes, offset: 0 };
         let magic = match layout {
+            Layout::Evidence => EVIDENCE_LIFECYCLE_MAGIC,
             Layout::Registry => LIFECYCLE_MAGIC,
             Layout::Attested => PRE_REGISTRY_LIFECYCLE_MAGIC,
             Layout::PreAttestation => PRE_ATTESTATION_LIFECYCLE_MAGIC,
@@ -479,8 +505,12 @@ impl LifecycleState {
             previous = Some(entry.clone());
             state.revoked_generations.insert(entry);
         }
-        if layout == Layout::Registry {
-            state.experts = decode_registry(&mut reader)?;
+        if matches!(layout, Layout::Evidence | Layout::Registry) {
+            let entries = decode_registry(&mut reader)?;
+            state.experts = match layout {
+                Layout::Evidence => decode_evidence(&mut reader, entries)?,
+                _ => ExpertRegistryProjection::from_entries_all_legacy(entries),
+            };
         }
         if !reader.finished() {
             return Err(invalid(CompactedError::LengthMismatch));
@@ -526,9 +556,12 @@ fn noncanonical<E>(_: E) -> RuntimeError {
     invalid(CompactedError::NoncanonicalSection)
 }
 
+/// The decoded registry entries, in key order.
+type RegistryEntries = Vec<((String, String), ExpertEntry)>;
+
 /// Read the registry block: strictly ascending `(project, pod)`, every identity through its
 /// constructor, so a value no admission could have written is refused.
-fn decode_registry(reader: &mut Reader<'_>) -> Result<ExpertRegistryProjection, RuntimeError> {
+fn decode_registry(reader: &mut Reader<'_>) -> Result<RegistryEntries, RuntimeError> {
     if reader.take(8)? != REGISTRY_MAGIC {
         return Err(invalid(CompactedError::UnsupportedVersion));
     }
@@ -577,7 +610,42 @@ fn decode_registry(reader: &mut Reader<'_>) -> Result<ExpertRegistryProjection, 
             },
         ));
     }
-    Ok(ExpertRegistryProjection::from_entries(entries))
+    Ok(entries)
+}
+
+/// Read the evidence block: legacy marks (strictly ascending, each naming a registered expert) and
+/// the per-epoch gate configuration memo (strictly ascending epochs, no zero digest).
+fn decode_evidence(
+    reader: &mut Reader<'_>,
+    entries: RegistryEntries,
+) -> Result<ExpertRegistryProjection, RuntimeError> {
+    if reader.take(8)? != EVIDENCE_MAGIC {
+        return Err(invalid(CompactedError::UnsupportedVersion));
+    }
+    let mut legacy = BTreeSet::new();
+    let mut previous: Option<(String, String)> = None;
+    for _ in 0..reader.count()? {
+        let key = (reader.text()?, reader.text()?);
+        if previous.as_ref().is_some_and(|last| *last >= key)
+            || !entries.iter().any(|(known, _)| *known == key)
+        {
+            return Err(invalid(CompactedError::NoncanonicalSection));
+        }
+        previous = Some(key.clone());
+        legacy.insert(key);
+    }
+    let mut memo = BTreeMap::new();
+    let mut previous: Option<u64> = None;
+    for _ in 0..reader.count()? {
+        let epoch = reader.number()?;
+        let digest: [u8; 32] = reader.take(32)?.try_into().expect("fixed digest");
+        if previous.is_some_and(|last| last >= epoch) || digest == [0; 32] {
+            return Err(invalid(CompactedError::NoncanonicalSection));
+        }
+        previous = Some(epoch);
+        memo.insert(epoch, digest);
+    }
+    Ok(ExpertRegistryProjection::from_parts(entries, legacy, memo))
 }
 
 impl LifecycleState {
@@ -589,7 +657,7 @@ impl LifecycleState {
             .keys()
             .filter(|key| key.starts_with(ptr_state::EXPERT_PREFIX))
             .count();
-        if layout != Layout::Registry {
+        if !matches!(layout, Layout::Evidence | Layout::Registry) {
             return if keys == 0 {
                 Ok(())
             } else {
@@ -946,7 +1014,8 @@ fn compacted_sections(
         return Err(invalid(CompactedError::SizeLimit));
     }
     let layout = match &bytes[..8] {
-        magic if magic == MAGIC => Layout::Registry,
+        magic if magic == MAGIC => Layout::Evidence,
+        magic if magic == PRE_EVIDENCE_MAGIC => Layout::Registry,
         magic if magic == PRE_REGISTRY_MAGIC => Layout::Attested,
         magic if magic == PRE_ATTESTATION_MAGIC => Layout::PreAttestation,
         _ => return Err(invalid(CompactedError::UnsupportedVersion)),

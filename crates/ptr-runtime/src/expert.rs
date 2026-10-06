@@ -18,18 +18,39 @@
 //! the caller, and the event is appended through the runtime's internal path. The public
 //! [`PtrRuntime::commit`] keeps refusing the event.
 //!
+//! The record committed is a version 2 [`ExpertCommitRecord`]: besides the report digest it embeds
+//! the report's canonical bytes and the gate configuration digest the grant required for its
+//! gate epoch.
+//!
 //! Replay (`replay`, `open_durable`) runs the same record checks without a grant: it decodes the
 //! record, re-derives the op kind, the proposal id, the operation id, the evidence digest and the
 //! project, refuses any disagreement with the event, and repeats the compare-and-set against the
-//! projection as of that point of the history. A tampered, reordered or truncated history
-//! therefore fails to open instead of producing a different expert registry.
+//! projection as of that point of the history. It also re-verifies the evidence itself: the
+//! embedded report must decode canonically, its re-derived digest must equal the record's
+//! evidence digest, it must have passed, its subject must be this record's proposal and
+//! operation, it must have been produced under the gate configuration the record says was
+//! required, and no two records of one gate epoch may disagree on that configuration. A tampered,
+//! reordered or truncated history therefore fails to open instead of producing a different
+//! expert registry, and a record whose digest was merely made self-consistent is refused.
+//!
+//! # Legacy records
+//!
+//! A version 1 record (written before evidence was embedded) carries only a digest. Rewriting
+//! history is not possible and refusing it would make existing ledgers unopenable, so replay
+//! accepts it, applies its compare-and-set and marks every expert it touched
+//! [`ExpertEvidenceStatus::UnverifiedLegacy`] in [`ExpertRegistryProjection::evidence_status`]
+//! until a later verified record rewrites the expert. Admission never writes version 1, so a
+//! legacy record cannot be admitted again, and it takes part in no epoch consistency check.
 //!
 //! # What this does not check
 //!
 //! The report is trusted to be what the host's evaluator produced (see `ptr-lineage`
-//! `BoundGateReport`): admission does not re-run the gate, does not check that attested training
-//! inputs are still live, and does not revalidate the proposer's session or the gate epoch at
-//! commit. The grant is a snapshot the host builds from its own current authority.
+//! `BoundGateReport`): neither admission nor replay re-runs the gate, and the digest is an
+//! unkeyed hash, so replay shows the committed evidence is the evidence that was admitted, not
+//! that the measurements are true. Nothing checks that attested training inputs are still live
+//! or revalidates the proposer's session or the gate epoch at commit. The grant is a snapshot the
+//! host builds from its own current authority. A compacted snapshot carries neither the legacy
+//! marks nor the per-epoch configuration digests, so both restart empty from one.
 //!
 //! # Post-operation state
 //!
@@ -44,7 +65,7 @@ use ptr_pods::{
     OpKind, ProposerRef, RetiredReason,
 };
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What the host has authenticated for one expert admission.
 ///
@@ -127,8 +148,15 @@ pub enum ExpertAdmissionError {
     EvidenceProposalMismatch,
     /// The gate report is bound to another operation.
     EvidenceOperationMismatch,
-    /// The gate report was produced under a gate configuration the grant does not require.
+    /// The gate report was produced under a gate configuration the grant (at admission) or the
+    /// record (on replay) does not require.
     GateConfigMismatch,
+    /// The embedded gate report does not decode canonically.
+    EvidenceUndecodable(String),
+    /// The embedded gate report's digest is not the record's evidence digest.
+    EvidenceDigestMismatch,
+    /// Two records of one gate epoch name different required gate configurations.
+    EpochGateConfigConflict { epoch: u64 },
     /// The gate report did not pass.
     GateFailed,
     /// An operand is not in the registry.
@@ -150,6 +178,16 @@ pub enum ExpertAdmissionError {
     EventMismatch { field: ExpertEventField },
 }
 
+/// How the evidence behind an expert's latest structural record was checked on replay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertEvidenceStatus {
+    /// The record embeds its gate report and replay re-verified it.
+    Verified,
+    /// The record is a version 1 record with only a digest; nothing about its evidence could be
+    /// re-verified.
+    UnverifiedLegacy,
+}
+
 /// The authoritative state of one expert, as projected from admitted records.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExpertEntry {
@@ -168,22 +206,78 @@ pub struct ExpertEntry {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExpertRegistryProjection {
     entries: BTreeMap<(String, String), ExpertEntry>,
+    /// Experts whose latest record is unverified legacy; every other entry is verified.
+    legacy: BTreeSet<(String, String)>,
+    /// The gate configuration digest the first verified record of each gate epoch required.
+    epoch_gate_configs: BTreeMap<u64, [u8; 32]>,
 }
 
 type Plan = Vec<((String, String), ExpertEntry)>;
+
+/// What applying one record changes: the entries, and how its evidence was checked.
+struct ExpertPlan {
+    entries: Plan,
+    verified: Option<VerifiedEvidence>,
+}
+
+/// The facts a verified record contributes to the projection.
+struct VerifiedEvidence {
+    epoch: u64,
+    gate_config_digest: [u8; 32],
+}
 
 impl ExpertRegistryProjection {
     pub fn get(&self, project: &ProjectId, pod: &PodId) -> Option<&ExpertEntry> {
         self.entries.get(&(project.0.clone(), pod.0.clone()))
     }
 
-    /// A registry holding exactly `entries`, as a compacted snapshot carries it. The snapshot
-    /// reader has already checked order and identities and cross-checks the result against the
-    /// materialized `expert:` keys.
-    pub(crate) fn from_entries(entries: Vec<((String, String), ExpertEntry)>) -> Self {
+    /// A registry holding exactly `entries`, with the evidence marks a compacted snapshot
+    /// carries. The snapshot reader has already checked order, identities and that every mark
+    /// names an entry, and cross-checks the result against the materialized `expert:` keys.
+    pub(crate) fn from_parts(
+        entries: Vec<((String, String), ExpertEntry)>,
+        legacy: BTreeSet<(String, String)>,
+        epoch_gate_configs: BTreeMap<u64, [u8; 32]>,
+    ) -> Self {
         Self {
             entries: entries.into_iter().collect(),
+            legacy,
+            epoch_gate_configs,
         }
+    }
+
+    /// A registry restored from a snapshot that does not say how its evidence was checked
+    /// (PTRCS005): every expert is unverified legacy and no epoch configuration is known.
+    pub(crate) fn from_entries_all_legacy(entries: Vec<((String, String), ExpertEntry)>) -> Self {
+        let legacy = entries.iter().map(|(key, _)| key.clone()).collect();
+        Self::from_parts(entries, legacy, BTreeMap::new())
+    }
+
+    pub(crate) fn legacy_keys(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.legacy.iter().map(|(p, d)| (p.as_str(), d.as_str()))
+    }
+
+    pub(crate) fn epoch_configs(&self) -> impl Iterator<Item = (u64, [u8; 32])> + '_ {
+        self.epoch_gate_configs.iter().map(|(e, d)| (*e, *d))
+    }
+
+    /// How the evidence behind `pod`'s latest structural record was checked, or `None` when the
+    /// registry holds no such expert. An expert restored from a compacted snapshot reads as
+    /// verified: the snapshot does not carry the legacy marks.
+    pub fn evidence_status(
+        &self,
+        project: &ProjectId,
+        pod: &PodId,
+    ) -> Option<ExpertEvidenceStatus> {
+        let key = (project.0.clone(), pod.0.clone());
+        if !self.entries.contains_key(&key) {
+            return None;
+        }
+        Some(if self.legacy.contains(&key) {
+            ExpertEvidenceStatus::UnverifiedLegacy
+        } else {
+            ExpertEvidenceStatus::Verified
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -283,8 +377,20 @@ impl ExpertRegistryProjection {
             .collect())
     }
 
-    fn apply(&mut self, plan: Plan) {
-        self.entries.extend(plan);
+    fn apply(&mut self, plan: ExpertPlan) {
+        for (key, _) in &plan.entries {
+            if plan.verified.is_some() {
+                self.legacy.remove(key);
+            } else {
+                self.legacy.insert(key.clone());
+            }
+        }
+        if let Some(verified) = plan.verified {
+            self.epoch_gate_configs
+                .entry(verified.epoch)
+                .or_insert(verified.gate_config_digest);
+        }
+        self.entries.extend(plan.entries);
     }
 }
 
@@ -377,10 +483,16 @@ impl PtrRuntime {
         grant: &ExpertAdmissionGrant,
     ) -> Result<CommitIndex, RuntimeError> {
         check_evidence(proposal, report, grant).map_err(RuntimeError::Expert)?;
-        let record = ExpertCommitRecord::new(proposal.clone(), report.digest(), grant.gate_epoch())
-            .map_err(|error| {
-                RuntimeError::Expert(ExpertAdmissionError::InvalidRecord(error.to_string()))
-            })?;
+        let record = ExpertCommitRecord::new_with_evidence(
+            proposal.clone(),
+            report.digest(),
+            grant.gate_epoch(),
+            *grant.required_gate_config_digest(),
+            report.encode_canonical(),
+        )
+        .map_err(|error| {
+            RuntimeError::Expert(ExpertAdmissionError::InvalidRecord(error.to_string()))
+        })?;
         let event = event_for(&record);
         self.validate_expert_event(&event)?;
         self.append_prepared(event, None)
@@ -393,7 +505,7 @@ impl PtrRuntime {
         self.plan_expert_event(event).map(|_| ())
     }
 
-    fn plan_expert_event(&self, event: &LedgerEvent) -> Result<Plan, RuntimeError> {
+    fn plan_expert_event(&self, event: &LedgerEvent) -> Result<ExpertPlan, RuntimeError> {
         let LedgerEvent::ExpertStructuralCommitted {
             project,
             op_kind,
@@ -429,7 +541,48 @@ impl PtrRuntime {
         }
         ptr_ledger::check_encodable(event)
             .map_err(|_| expert(ExpertAdmissionError::Unencodable))?;
-        self.experts.plan(&decoded).map_err(expert)
+        let verified = self.verify_expert_evidence(&decoded).map_err(expert)?;
+        let entries = self.experts.plan(&decoded).map_err(expert)?;
+        Ok(ExpertPlan { entries, verified })
+    }
+
+    /// Re-verify the evidence a record embeds. `None` for a legacy record, which embeds none.
+    fn verify_expert_evidence(
+        &self,
+        record: &ExpertCommitRecord,
+    ) -> Result<Option<VerifiedEvidence>, ExpertAdmissionError> {
+        let Some(evidence) = record.evidence() else {
+            return Ok(None);
+        };
+        let report = BoundGateReport::decode_canonical(evidence.report())
+            .map_err(|error| ExpertAdmissionError::EvidenceUndecodable(error.to_string()))?;
+        if report.digest() != *record.evidence_digest() {
+            return Err(ExpertAdmissionError::EvidenceDigestMismatch);
+        }
+        if !report.passed() {
+            return Err(ExpertAdmissionError::GateFailed);
+        }
+        let proposal = record.proposal();
+        let subject = report.subject();
+        if subject.proposal_id != *proposal.proposal_id().as_bytes() {
+            return Err(ExpertAdmissionError::EvidenceProposalMismatch);
+        }
+        if subject.operation_id != *proposal.operation_id().as_bytes() {
+            return Err(ExpertAdmissionError::EvidenceOperationMismatch);
+        }
+        if report.gate_config_digest() != *evidence.required_gate_config_digest() {
+            return Err(ExpertAdmissionError::GateConfigMismatch);
+        }
+        let epoch = record.gate_epoch();
+        if let Some(known) = self.experts.epoch_gate_configs.get(&epoch) {
+            if known != evidence.required_gate_config_digest() {
+                return Err(ExpertAdmissionError::EpochGateConfigConflict { epoch });
+            }
+        }
+        Ok(Some(VerifiedEvidence {
+            epoch,
+            gate_config_digest: *evidence.required_gate_config_digest(),
+        }))
     }
 
     /// Apply a committed structural event to the registry. The event passed validation before it
