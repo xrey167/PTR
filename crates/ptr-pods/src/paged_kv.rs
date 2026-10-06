@@ -333,6 +333,20 @@ pub trait PagedKvTensorBackend: KvTensorBackend {
         Err(KvBackendError::Unsupported("fork_prefix_admitted"))
     }
 
+    /// Read-only per-page byte sizes of a published prefix: one `(digest, bytes)` per
+    /// unique page digest of `prefix.page_digests`, in first-occurrence order. `bytes` is
+    /// the page's resident size in the same unit as [`KvPageMetrics::resident_bytes`]
+    /// (K and V values of every layer for the page's valid tokens, 4 bytes per value), so a
+    /// catalog can charge each shared page once. A prefix the backend no longer holds is
+    /// [`KvBackendError::PrefixNotFound`]; digests that do not match the stored pages are
+    /// [`KvBackendError::PrefixMismatch`]. The default is [`KvBackendError::Unsupported`].
+    fn prefix_page_bytes(
+        &self,
+        _prefix: &KvSharedPrefix,
+    ) -> Result<Vec<(Digest, u64)>, KvBackendError> {
+        Err(KvBackendError::Unsupported("prefix_page_bytes"))
+    }
+
     fn synchronize(&self, cache: &Self::Cache) -> Result<(), KvBackendError>;
 
     fn page_metrics(&self, cache: &Self::Cache) -> KvPageMetrics;
@@ -1120,6 +1134,43 @@ impl PagedKvTensorBackend for InMemoryPagedKvBackend {
         cache.sequence_length = record.sequence_length;
         cache.position_offset = record.position_offset;
         Ok(())
+    }
+
+    fn prefix_page_bytes(
+        &self,
+        prefix: &KvSharedPrefix,
+    ) -> Result<Vec<(Digest, u64)>, KvBackendError> {
+        let prefixes = self
+            .state
+            .prefixes
+            .lock()
+            .map_err(|_| KvBackendError::Backend("prefix catalog poisoned".into()))?;
+        let record = prefixes
+            .get(&prefix.key)
+            .ok_or(KvBackendError::PrefixNotFound)?;
+        let stored: Vec<Option<Digest>> = record.pages.iter().map(|page| page.digest).collect();
+        let offered: Vec<Option<Digest>> = prefix.page_digests.iter().map(|d| Some(*d)).collect();
+        if stored != offered {
+            return Err(KvBackendError::PrefixMismatch);
+        }
+        let mut charges: Vec<(Digest, u64)> = Vec::new();
+        for page in &record.pages {
+            let digest = page.digest.ok_or(KvBackendError::InvalidPageState)?;
+            if charges.iter().any(|(seen, _)| *seen == digest) {
+                continue;
+            }
+            // Same unit as `page_metrics`: every stored f32 of K and V, over all layers.
+            let values: usize = page
+                .layers
+                .iter()
+                .map(|layer| layer.keys.values.len() + layer.values.values.len())
+                .sum();
+            charges.push((
+                digest,
+                u64::try_from(values.saturating_mul(4)).unwrap_or(u64::MAX),
+            ));
+        }
+        Ok(charges)
     }
 
     fn synchronize(&self, cache: &Self::Cache) -> Result<(), KvBackendError> {

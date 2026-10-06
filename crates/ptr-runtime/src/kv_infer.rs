@@ -42,8 +42,8 @@
 //! lifecycle state. This is an experiment skeleton, not an R005 result.
 
 use crate::{
-    CatalogLimits, KvCatalogError, KvCatalogStats, KvChainId, KvDependency, KvInsert,
-    KvLivenessOracle, KvLookup, KvPin, KvPrefixCatalog, KvRequestPositions, KvSalt,
+    CatalogLimits, KvCatalogError, KvCatalogStats, KvChainId, KvDependency, KvLivenessOracle,
+    KvLookup, KvPageCharge, KvPagedInsert, KvPin, KvPrefixCatalog, KvRequestPositions, KvSalt,
     KV_CHUNK_TOKENS,
 };
 use ptr_model_api::{
@@ -736,17 +736,25 @@ impl ReferenceKvReuseBackend {
     ) -> Result<(), ReferenceKvError> {
         let prefix = self.paged.publish_prefix(cache)?;
         let key = prefix.key.clone();
-        let page_bytes = self.paged.page_metrics(cache).resident_bytes;
+        // Per-page charges: each unique page digest is charged once with its real bytes, so
+        // prompts that share a long prefix do not re-charge it (the former whole-cache
+        // `resident_bytes` figure grew quadratically with prefix length).
+        let pages = self
+            .paged
+            .prefix_page_bytes(&prefix)?
+            .into_iter()
+            .map(|(digest, bytes)| KvPageCharge { digest, bytes })
+            .collect();
         let ReuseState {
             catalog, liveness, ..
         } = state;
-        let result = catalog.insert(
-            KvInsert {
+        let result = catalog.insert_paged(
+            KvPagedInsert {
                 salt,
                 chain: &self.chain,
                 request,
                 prefix,
-                page_bytes,
+                pages,
                 extra_dependencies: Vec::new(),
             },
             liveness,
