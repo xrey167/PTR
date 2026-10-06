@@ -16,8 +16,6 @@ use crate::experiments::layered_kv::pins;
 use crate::experiments::layered_kv::{Scale, SEQUENCE_SEED};
 use ptr_pods::{Qwen2Adapter, Qwen2AdapterSpec};
 use ptr_runtime::{BindingRecord, BindingSuccessors, IndexUpdate, ReferenceKvFaults, StackBinding};
-use ptr_types::Generation;
-use std::collections::{BTreeMap, BTreeSet};
 
 /// Stream of the corpus prompt of configuration `stream`.
 const PROMPT_STREAM_BASE: u64 = 1_000;
@@ -390,18 +388,14 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
     // dropped): generation 1's entries stay in the index, so generation 2 can only miss them
     // by its chain key, not by a tombstone. Its use-time rejections must stay at zero: it
     // never even looked the old entries up.
+    let mark = authority.mark();
     commit_supersession(&mut authority.runtime, params::ADAPTER_G, 1, 2)?;
     backend
         .set_faults(ReferenceKvFaults {
             index_update: IndexUpdate::Suppressed,
         })
         .map_err(fail("dropping the index update"))?;
-    backend
-        .supersede_inputs(&BTreeMap::from([(
-            params::ADAPTER_G.to_string(),
-            Generation(2),
-        )]))
-        .map_err(fail("superseding the adapter"))?;
+    lab::apply_events(&backend, &authority.events_since(mark))?;
     let rejections_before = backend
         .catalog_stats()
         .map_err(fail("catalog stats"))?
@@ -498,13 +492,9 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
         }
     }
     let emitted = steps.session.generated().len();
+    let mark = authority.mark();
     commit_revocation(&mut authority.runtime, params::ADAPTER_A, 1)?;
-    backend
-        .invalidate_inputs(&BTreeSet::from([(
-            params::ADAPTER_A.to_string(),
-            Generation(1),
-        )]))
-        .map_err(fail("revoking the adapter"))?;
+    lab::apply_events(&backend, &authority.events_since(mark))?;
     tally.add(&format!("adapter_revocations_performed_by_type.{ty}"), 1);
     tally.add("inflight_adapter_revocation_race_cases.revocation", 1);
     let cancelled = if race_at < total_steps {
@@ -600,6 +590,7 @@ pub fn config_arm(tally: &mut Tally, ids: &mut Ids, seed: u64, config: &Config) 
         Err(error) => return Err(format!("{name}: the late request: {error:?}")),
     }
     drop(late);
+    lab::note_scope(tally, &backend)?;
     tally.add(&format!("config_runs.{name}"), 1);
     Ok(())
 }
@@ -630,14 +621,14 @@ impl Rig for R009Rig {
         "adapter_generation"
     }
 
-    fn binding(&self) -> StackBinding {
+    fn binding(&self, _: &Authority) -> StackBinding {
         StackBinding::with_adapter(matrix_adapter(1)).with_successors(BindingSuccessors {
             adapters: vec![matrix_adapter(2)],
             experts: Vec::new(),
         })
     }
 
-    fn resolved_binding(&self, ty: Invalidation) -> StackBinding {
+    fn resolved_binding(&self, ty: Invalidation, _: &Authority) -> StackBinding {
         match ty {
             Invalidation::Revocation | Invalidation::Fence => StackBinding::base(),
             Invalidation::Supersession => StackBinding::with_adapter(matrix_adapter(2)),

@@ -54,7 +54,7 @@ const ZERO_BASED_INTERNAL: [&str; 7] = [
     "adoption_mismatches",
     "restart_resolution_mismatches",
     "matrix_selectivity_mismatches",
-    "restore_control_failures",
+    "layered_scope_mismatches",
     "batch_invariance_mismatches",
     "approximate_catalog_movement",
     "expert_restart_output_mismatches",
@@ -241,7 +241,7 @@ fn verify_pins(tally: &mut Tally, world: &World) -> Res<pins::Pins> {
         .with_moe(moe.clone())
         .map_err(fail("the MoE stack"))?;
     let tokens = corpus::sequence(super::layered_kv::SEQUENCE_SEED, 9_998, 40);
-    let binding = world_binding(world);
+    let binding = world_binding(world)?;
     let observed = lab::cold(&backend, &corpus::raw_request("pin-moe", &tokens), &binding)?;
     let (generated, logits) = pins::independent_cold_run(&stack, None, &tokens)?;
     let observed_tokens: Vec<u32> = observed.generated.iter().map(|token| token.0).collect();
@@ -284,8 +284,10 @@ fn verify_pins(tally: &mut Tally, world: &World) -> Res<pins::Pins> {
     ))
 }
 
-fn world_binding(world: &World) -> StackBinding {
-    world.binding(0, false)
+fn world_binding(world: &World) -> Res<StackBinding> {
+    let mut authority = lab::Authority::new(&[])?;
+    arms::birth_all(&mut authority)?;
+    Ok(world.binding(&authority, false))
 }
 
 /// What a run produced, before it is printed.
@@ -389,10 +391,6 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
     tally.unsupported(
         "base_model_inflight_restart",
         "no live base model exists to re-resolve to: the in-flight base-model cells check cancellation, silence and no insert, and do not restart (a restart would compute from the revoked base model)",
-    );
-    tally.unsupported(
-        "fence_catalog_hook",
-        "the backend's catalog is not the runtime's hooked catalog: a fence commits through the real authority path (PtrRuntime::fence_expert) and the harness then tombstones the entries by the expert's identity with invalidate_inputs; the runtime's own hook is unit-tested in crates/ptr-runtime/tests/expert_fence.rs",
     );
     let unsupported_names = tally.unsupported_names();
 
@@ -552,19 +550,12 @@ mod tests {
     use super::*;
     use crate::experiments::layered_kv::emit;
 
-    const DRAFT: &str = include_str!(
-        "../../../../../experiments/runtime/R010-moe-expert-kv-revocation/DRAFT_PREREGISTRATION.md"
+    const PREREGISTRATION: &str = include_str!(
+        "../../../../../experiments/runtime/R010-moe-expert-kv-revocation/PREREGISTRATION.md"
     );
-
-    /// The TOML code block of the draft that starts with `first_line`.
-    fn block(first_line: &str) -> toml::Table {
-        let start = DRAFT
-            .find(&format!("```toml\n{first_line}"))
-            .unwrap_or_else(|| panic!("a toml block starting {first_line:?}"));
-        let body = &DRAFT[start + "```toml\n".len()..];
-        let end = body.find("```").expect("a closing fence");
-        body[..end].parse().expect("the block parses")
-    }
+    const CRITERIA: &str = include_str!(
+        "../../../../../experiments/runtime/R010-moe-expert-kv-revocation/criteria.toml"
+    );
 
     /// The shared reduced run (a subset of the arms; it takes a few seconds in a debug build).
     fn reduced_report() -> &'static Report {
@@ -589,12 +580,12 @@ mod tests {
     #[test]
     fn the_pinned_selection_digest_is_what_the_corpus_generator_produces() {
         assert_eq!(arms::selection_digest(), params::SELECTION_DIGEST);
-        assert!(DRAFT.contains(params::SELECTION_DIGEST));
+        assert!(PREREGISTRATION.contains(params::SELECTION_DIGEST));
     }
 
     #[test]
-    fn the_draft_criteria_are_exactly_the_rules_the_harness_judges_in_its_order() {
-        let table = block("# R010 decision criteria");
+    fn the_criteria_file_is_exactly_the_rules_the_harness_judges_in_its_order() {
+        let table: toml::Table = CRITERIA.parse().expect("criteria.toml is TOML");
         assert_eq!(rules(&table, "coverage"), metrics::coverage());
         assert_eq!(rules(&table, "falsifiers"), metrics::falsifiers());
         assert_eq!(table["experiment"].as_str(), Some("R010"));
@@ -623,16 +614,16 @@ mod tests {
     }
 
     #[test]
-    fn the_draft_entrypoint_is_the_subcommand_and_the_table_is_the_compiled_choices() {
-        assert!(DRAFT.contains(params::ENTRYPOINT));
+    fn the_manifest_entrypoint_is_the_subcommand_and_the_table_is_the_compiled_choices() {
         assert_eq!(params::BENCHMARK, "moe-expert-kv-revocation");
-        let table = block("[preregistration]");
-        let table = table["preregistration"]
+        let config: toml::Table = params::CONFIG_TOML.parse().expect("config.toml parses");
+        let table = config["preregistration"]
             .as_table()
             .expect("[preregistration]");
         let manifest: toml::Table = params::EXPERIMENT_TOML
             .parse()
             .expect("experiment.toml parses");
+        assert_eq!(manifest["entrypoint"].as_str(), Some(params::ENTRYPOINT));
         assert_eq!(table["seeds"], manifest["seeds"]);
         assert_eq!(table["harness"].as_str(), Some(params::BENCHMARK));
         assert_eq!(
@@ -715,18 +706,14 @@ mod tests {
         }
     }
 
-    /// Repro of a runtime defect found by this harness (not fixed here): a catalog snapshot
-    /// decodes every restored key with `layers: KvLayerRange::Full` (crates/ptr-runtime/src/
-    /// kv_prefix.rs, in `decode_snapshot`), so a restored per-layer entry whose pages exist
-    /// again is refused at fork with `PrefixMismatch` and can never be served. Un-ignore it
-    /// when the runtime keeps the layer scope of a restored key.
+    /// Regression for a runtime defect this harness found (restored per-layer entries
+    /// decoded with the whole-stack key scope and could never fork): a live restored entry
+    /// whose pages exist again forks, and no scope mismatch is counted.
     #[test]
-    #[ignore = "runtime defect: restored per-layer entries cannot fork"]
-    fn repro_a_restored_per_layer_entry_forks_once_its_pages_exist() {
+    fn a_restored_per_layer_entry_forks_once_its_pages_exist() {
         use crate::experiments::layered_kv::lab::Ids;
         use crate::experiments::layered_kv::matrix::{self, Invalidation, Kind, Path};
         let mut tally = Tally::new(metrics::LIST);
-        tally.add("restore_control_failures", 0);
         let mut ids = Ids::default();
         let mut infos = Vec::new();
         matrix::run_cell(
@@ -742,6 +729,7 @@ mod tests {
             Path::Restore,
         )
         .unwrap();
-        assert_eq!(tally.get("restore_control_failures"), 0);
+        assert_eq!(tally.get("restore_control_hit_tokens"), 32);
+        assert_eq!(tally.get("layered_scope_mismatches"), 0);
     }
 }

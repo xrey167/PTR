@@ -38,7 +38,7 @@ use ptr_runtime::{
     StackBinding,
 };
 use ptr_types::Generation;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Path {
@@ -208,9 +208,9 @@ pub trait Rig {
     /// The matrix name of the binding-carried kind (`adapter_generation`).
     fn dependency_kind(&self) -> &'static str;
     /// The live binding, with the successor a supersession moves to.
-    fn binding(&self) -> StackBinding;
+    fn binding(&self, authority: &Authority) -> StackBinding;
     /// The binding a restart re-resolves to after `ty` of the dependency.
-    fn resolved_binding(&self, ty: Invalidation) -> StackBinding;
+    fn resolved_binding(&self, ty: Invalidation, authority: &Authority) -> StackBinding;
     /// Whether the re-resolution a restart recorded is the one the owner decision names.
     fn resolution_holds(&self, record: &BindingRecord, ty: Invalidation) -> bool;
     /// The lifecycle identity of the dependency.
@@ -427,37 +427,29 @@ fn superseded_generation(ctx: &Ctx<'_>) -> u64 {
     }
 }
 
-/// Apply the event to the ledger and, unless suppressed, to the catalog of `backend`.
-/// Returns what the catalog retired.
+/// Commit the event to the ledger and hand the committed events to the backend's catalog hook
+/// (`apply_committed_event`, the host's equivalent of the runtime's hook), unless the fault
+/// hook suppresses the index update. A semantic edit commits a delta the hook cannot read, so
+/// its supersession floor is applied by identity. Returns what the catalog retired.
 fn apply_event(
     ctx: &Ctx<'_>,
     authority: &mut Authority,
     backend: &ReferenceKvReuseBackend,
 ) -> Res<usize> {
+    let mark = authority.mark();
     ledger_event(ctx, authority)?;
-    let identity = identity(ctx);
-    match ctx.ty {
-        // A fence ends every entry that depends on the expert at the fence's commit; the
-        // backend's catalog has no fence hook of its own, so the harness applies the same
-        // tombstoning through the identity (the runtime's own catalog hook is unit-tested in
-        // crates/ptr-runtime/tests/expert_fence.rs).
-        Invalidation::Revocation | Invalidation::Fence => backend
-            .invalidate_inputs(&BTreeSet::from([(identity, revoked_generation(ctx))]))
-            .map_err(fail("invalidating inputs")),
-        Invalidation::Supersession => backend
+    let mut retired = lab::apply_events(backend, &authority.events_since(mark))?;
+    if matches!(ctx.kind, Kind::Segment(spec) if spec.kind == SegmentKind::Semantic)
+        && ctx.ty == Invalidation::Supersession
+    {
+        retired += backend
             .supersede_inputs(&BTreeMap::from([(
-                identity,
+                identity(ctx),
                 Generation(superseded_generation(ctx)),
             )]))
-            .map_err(fail("superseding inputs")),
+            .map_err(fail("superseding inputs"))?;
     }
-}
-
-fn revoked_generation(ctx: &Ctx<'_>) -> Generation {
-    match ctx.kind {
-        Kind::BaseModel => Generation(BASE_MODEL_GENERATION),
-        _ => Generation(1),
-    }
+    Ok(retired)
 }
 
 fn entries(backend: &ReferenceKvReuseBackend) -> Res<usize> {
@@ -707,7 +699,7 @@ fn normal_arm(
         // The re-resolved binding computes the right answer on what survived (a binding-carried
         // dependency: the live successor, the base model, the masked router).
         let resolved = match ctx.kind {
-            Kind::Dependency => Some(ctx.rig.resolved_binding(ctx.ty)),
+            Kind::Dependency => Some(ctx.rig.resolved_binding(ctx.ty, authority)),
             _ => None,
         };
         if let Some(resolved) = resolved {
@@ -899,13 +891,16 @@ fn restore_arm(
         &format!("{}-control-pages", ctx.cell),
     )?;
     let control_hit = live_control(ctx, &control, &live, binding, &ctx.cell)?;
-    // A live restored entry whose pages exist must fork. A control that does not is recorded
-    // (and judged by a coverage rule): the misses above would then be no evidence about the
-    // oracle, because no restored entry could be served at all.
     if control_hit != 32 {
-        tally.add("restore_control_failures", 1);
+        return Err(format!(
+            "{}: a live restored entry with its pages did not fork ({control_hit} tokens; {:?})",
+            ctx.cell,
+            control.catalog_stats()
+        ));
     }
     tally.add("restore_control_hit_tokens", control_hit as i64);
+    lab::note_scope(tally, &control)?;
+    lab::note_scope(tally, &restored)?;
     let rejections = restored.catalog_stats().map_err(fail("catalog stats"))?;
     if ctx.is_segment() {
         tally.add("restore_arms", 1);
@@ -1019,7 +1014,7 @@ fn inflight_arm(
                     .restart_with(&*authority)
                     .map_err(fail("the restart"))?;
                 let reference = match ctx.kind {
-                    Kind::Dependency => ctx.rig.resolved_binding(ctx.ty),
+                    Kind::Dependency => ctx.rig.resolved_binding(ctx.ty, authority),
                     _ => binding.clone(),
                 };
                 let cold = lab::cold(backend, &request, &reference)?;
@@ -1104,7 +1099,7 @@ pub fn run_cell(
     };
     let backend = lab::backend()?;
     let mut authority = authority(&ctx)?;
-    let binding = rig.binding();
+    let binding = rig.binding(&authority);
     let procedure = procedure(tally, &ctx, &backend, &binding);
     let result = match path {
         Path::Normal => normal_arm(tally, &ctx, &backend, &mut authority, &binding)?,
@@ -1113,6 +1108,7 @@ pub fn run_cell(
         Path::Inflight => inflight_arm(tally, ids, &ctx, seed, &backend, &mut authority, &binding)?,
     };
     ids.absorb(&backend)?;
+    lab::note_scope(tally, &backend)?;
     tally.add(&format!("invalidation_matrix_cases.{}", ctx.cell), 1);
     tally.add(
         &format!("invalidation_matrix_stale_hits.{}", ctx.cell),

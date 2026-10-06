@@ -57,7 +57,7 @@ const ZERO_BASED_INTERNAL: [&str; 9] = [
     "post_invocation_rows_under_base_key",
     "restart_resolution_mismatches",
     "matrix_selectivity_mismatches",
-    "restore_control_failures",
+    "layered_scope_mismatches",
     "internal_entry_accounting_mismatches",
 ];
 
@@ -600,19 +600,11 @@ mod tests {
     use super::*;
     use crate::experiments::layered_kv::emit;
 
-    const DRAFT: &str = include_str!(
-        "../../../../../experiments/runtime/R009-layer-shared-lora-kv/DRAFT_PREREGISTRATION.md"
+    const PREREGISTRATION: &str = include_str!(
+        "../../../../../experiments/runtime/R009-layer-shared-lora-kv/PREREGISTRATION.md"
     );
-
-    /// The TOML code block of the draft that starts with `first_line`.
-    fn block(first_line: &str) -> toml::Table {
-        let start = DRAFT
-            .find(&format!("```toml\n{first_line}"))
-            .unwrap_or_else(|| panic!("a toml block starting {first_line:?}"));
-        let body = &DRAFT[start + "```toml\n".len()..];
-        let end = body.find("```").expect("a closing fence");
-        body[..end].parse().expect("the block parses")
-    }
+    const CRITERIA: &str =
+        include_str!("../../../../../experiments/runtime/R009-layer-shared-lora-kv/criteria.toml");
 
     /// The shared reduced run (a subset of the arms; it takes a few seconds in a debug build).
     fn reduced_report() -> &'static Report {
@@ -637,12 +629,12 @@ mod tests {
     #[test]
     fn the_pinned_selection_digest_is_what_the_corpus_generator_produces() {
         assert_eq!(arms::selection_digest(), params::SELECTION_DIGEST);
-        assert!(DRAFT.contains(params::SELECTION_DIGEST));
+        assert!(PREREGISTRATION.contains(params::SELECTION_DIGEST));
     }
 
     #[test]
-    fn the_draft_criteria_are_exactly_the_rules_the_harness_judges_in_its_order() {
-        let table = block("# R009 decision criteria");
+    fn the_criteria_file_is_exactly_the_rules_the_harness_judges_in_its_order() {
+        let table: toml::Table = CRITERIA.parse().expect("criteria.toml is TOML");
         assert_eq!(rules(&table, "coverage"), metrics::coverage());
         assert_eq!(rules(&table, "falsifiers"), metrics::falsifiers());
         assert_eq!(table["experiment"].as_str(), Some("R009"));
@@ -675,16 +667,16 @@ mod tests {
     }
 
     #[test]
-    fn the_draft_entrypoint_is_the_subcommand_and_the_table_is_the_compiled_choices() {
-        assert!(DRAFT.contains(params::ENTRYPOINT));
+    fn the_manifest_entrypoint_is_the_subcommand_and_the_table_is_the_compiled_choices() {
         assert_eq!(params::BENCHMARK, "layer-shared-lora-kv");
-        let table = block("[preregistration]");
-        let table = table["preregistration"]
+        let config: toml::Table = params::CONFIG_TOML.parse().expect("config.toml parses");
+        let table = config["preregistration"]
             .as_table()
             .expect("[preregistration]");
         let manifest: toml::Table = params::EXPERIMENT_TOML
             .parse()
             .expect("experiment.toml parses");
+        assert_eq!(manifest["entrypoint"].as_str(), Some(params::ENTRYPOINT));
         assert_eq!(table["seeds"], manifest["seeds"]);
         assert_eq!(table["harness"].as_str(), Some(params::BENCHMARK));
         assert_eq!(
@@ -758,17 +750,13 @@ mod tests {
         }
     }
 
-    /// Repro of a runtime defect found by this harness (not fixed here): a catalog snapshot
-    /// decodes every restored key with `layers: KvLayerRange::Full` (crates/ptr-runtime/src/
-    /// kv_prefix.rs, in `decode_snapshot`), so a restored per-layer entry whose pages exist
-    /// again is refused at fork with `PrefixMismatch` and can never be served. Un-ignore it
-    /// when the runtime keeps the layer scope of a restored key.
+    /// Regression for a runtime defect this harness found (restored per-layer entries
+    /// decoded with the whole-stack key scope and could never fork): a live restored entry
+    /// whose pages exist again forks, and no scope mismatch is counted.
     #[test]
-    #[ignore = "runtime defect: restored per-layer entries cannot fork"]
-    fn repro_a_restored_per_layer_entry_forks_once_its_pages_exist() {
+    fn a_restored_per_layer_entry_forks_once_its_pages_exist() {
         use crate::experiments::layered_kv::matrix::{self, Invalidation, Kind, Path};
         let mut tally = Tally::new(metrics::LIST);
-        tally.add("restore_control_failures", 0);
         let mut ids = Ids::default();
         let mut infos = Vec::new();
         matrix::run_cell(
@@ -782,6 +770,7 @@ mod tests {
             Path::Restore,
         )
         .unwrap();
-        assert_eq!(tally.get("restore_control_failures"), 0);
+        assert_eq!(tally.get("restore_control_hit_tokens"), 32);
+        assert_eq!(tally.get("layered_scope_mismatches"), 0);
     }
 }

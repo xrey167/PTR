@@ -93,3 +93,32 @@ max_model_pin_mismatches = 0
 # Preregistered choices for this experiment (no code default exists).
 declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "expert"]
 dependency_list_narrowing_reason = "narrowed: the MoE expert-revocation workload has no adapters"
+
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "moe-expert-kv-revocation"
+max_new_tokens = 8
+prompt_tokens = 64
+page_tokens = 16
+intermediate_size = 128
+rope_theta = "10000.0"
+rms_norm_eps = "1e-6"
+qk_norm = "disabled"
+moe_seed = 20240607
+moe_layers = "every decoder layer"
+expert_intermediate_size = 64
+top_k_normalisation = "none: the selected probabilities are used as is"
+tie_break = "lowest expert index wins"
+masked_expert = "stays in the softmax denominator with selection score -inf"
+revoked_expert_index = 0
+batch_variant_capacity = 1
+cobatch_requests = 2
+expert_tracking = "every live expert of every MoE layer"
+partial_hit_mode = "compute-then-adopt, checked"
+restart_resolution = "re-resolve to the live binding: revoked or fenced expert masked, superseded expert to its successor generation"
+per_seed_role = "request order and race points"
+corpus_selection_digest = "sha256:55a21badbe657d7bbee30769013d801c4f53136f6ea504e69cbefd3329652a05"
+preregistration_text = "experiments/runtime/R010-moe-expert-kv-revocation/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/runtime/R010-moe-expert-kv-revocation/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

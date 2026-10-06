@@ -32,6 +32,8 @@ const LAYERS: usize = params::TEST_MODEL_LAYERS as usize;
 const EXPERTS: usize = params::MOE_TOPOLOGY_NUM_EXPERTS as usize;
 const J: usize = params::J;
 /// Full pages of a run request.
+/// The state version of a freshly reactivated generation.
+const SUCCESSOR_FENCE_EPOCH: u64 = 1;
 const PAGES: usize = PROMPT / CHUNK_TOKENS;
 
 fn prompt() -> Vec<u32> {
@@ -126,8 +128,9 @@ impl World {
         })
     }
 
-    /// Every live expert of every MoE layer, tracked at fence epoch `epoch`.
-    fn tracked(&self, epoch: u64) -> Vec<BoundExpert> {
+    /// Every live expert of every MoE layer, each recording the fence epoch (the state version)
+    /// the registry holds for it now, so a later transition of any kind ends the dependency.
+    fn tracked(&self, authority: &Authority) -> Vec<BoundExpert> {
         (0..LAYERS)
             .flat_map(|layer| {
                 (0..EXPERTS).map(move |index| BoundExpert {
@@ -135,46 +138,29 @@ impl World {
                     index,
                     project: ProjectId::from(lab::PROJECT),
                     pod: experts::pod_of(layer, index),
-                    fence_epoch: epoch,
+                    fence_epoch: experts::state_of(&authority.runtime, layer, index)
+                        .map_or(0, |(_, _, version)| version),
                 })
             })
             .collect()
     }
 
-    /// The binding whose every tracked expert records the fence epoch (state version) the
-    /// registry holds for it now.
-    pub fn binding_recorded(&self, authority: &Authority) -> StackBinding {
-        let experts = self
-            .tracked(0)
-            .into_iter()
-            .map(|mut expert| {
-                if let Some((_, _, version)) =
-                    experts::state_of(&authority.runtime, expert.layer, expert.index)
-                {
-                    expert.fence_epoch = version;
-                }
-                expert
-            })
-            .collect();
-        StackBinding::with_moe(MoeBinding {
-            moe: self.moe.clone(),
-            experts,
-        })
-    }
-
-    /// The live binding. With `successor`, a supersession of `(j, i)` moves to generation 2.
-    pub fn binding(&self, epoch: u64, successor: bool) -> StackBinding {
+    /// The live binding. With `successors`, a supersession of `(j, i)` moves to generation 2.
+    /// A reactivated generation starts at state version 1 (the registry's transition epoch at
+    /// the commit that admitted it), which is the successor's own fence epoch.
+    pub fn binding(&self, authority: &Authority, successors: bool) -> StackBinding {
         let binding = StackBinding::with_moe(MoeBinding {
             moe: self.moe.clone(),
-            experts: self.tracked(epoch),
+            experts: self.tracked(authority),
         });
-        if successor {
+        if successors {
             binding.with_successors(BindingSuccessors {
                 adapters: Vec::new(),
                 experts: vec![ExpertSuccessor {
                     layer: J,
                     index: self.index,
                     generation: 2,
+                    fence_epoch: SUCCESSOR_FENCE_EPOCH,
                 }],
             })
         } else {
@@ -184,7 +170,7 @@ impl World {
 
     /// The router with expert `(j, i)` masked: what a restart re-resolves a revoked or fenced
     /// expert to.
-    pub fn masked(&self) -> StackBinding {
+    pub fn masked(&self, authority: &Authority) -> StackBinding {
         let moe = self
             .moe
             .clone()
@@ -192,12 +178,16 @@ impl World {
             .expect("the expert exists");
         StackBinding::with_moe(MoeBinding {
             moe,
-            experts: self.tracked(0),
+            experts: self.tracked(authority),
         })
     }
 
-    /// The binding of generation 2 of `(j, i)`.
-    pub fn successor(&self, backend: &ReferenceKvReuseBackend) -> StackBinding {
+    /// The binding of generation 2 of `(j, i)`, read after the supersession committed.
+    pub fn successor(
+        &self,
+        backend: &ReferenceKvReuseBackend,
+        authority: &Authority,
+    ) -> StackBinding {
         let moe = self
             .moe
             .clone()
@@ -205,12 +195,12 @@ impl World {
             .expect("the expert exists");
         StackBinding::with_moe(MoeBinding {
             moe,
-            experts: self.tracked(0),
+            experts: self.tracked(authority),
         })
     }
 
     /// The negative control: capacity-limited, batch-variant routing.
-    pub fn variant(&self) -> StackBinding {
+    pub fn variant(&self, authority: &Authority) -> StackBinding {
         let moe = self
             .moe
             .clone()
@@ -220,13 +210,13 @@ impl World {
             .expect("a non-zero capacity");
         StackBinding::with_moe(MoeBinding {
             moe,
-            experts: self.tracked(0),
+            experts: self.tracked(authority),
         })
     }
 }
 
 /// Birth every expert of every layer through the real admission path.
-fn birth_all(authority: &mut Authority) -> Res<()> {
+pub fn birth_all(authority: &mut Authority) -> Res<()> {
     for layer in 0..LAYERS {
         for index in 0..EXPERTS {
             experts::birth(&mut authority.runtime, layer, index)?;
@@ -291,8 +281,8 @@ pub fn deterministic_arm(tally: &mut Tally, world: &World) -> Res<()> {
     let backend = lab::backend()?;
     let mut authority = Authority::new(&[])?;
     birth_all(&mut authority)?;
-    let binding = world.binding(0, true);
-    let masked = world.masked();
+    let binding = world.binding(&authority, true);
+    let masked = world.masked(&authority);
     let (p, p72, p72b) = (prompt(), extended(1), extended(2));
 
     // Non-vacuity: masking the expert changes the output.
@@ -351,16 +341,12 @@ pub fn deterministic_arm(tally: &mut Tally, world: &World) -> Res<()> {
     );
     drop(reuse);
 
-    nondeterministic_control(tally, world, &backend, &p)?;
+    nondeterministic_control(tally, world, &authority, &backend, &p)?;
 
     // The revocation of expert (j, i): a committed Retire; the catalog learns of it.
+    let mark = authority.mark();
     experts::retire(&mut authority.runtime, J, world.index)?;
-    backend
-        .invalidate_inputs(&BTreeSet::from([(
-            experts::identity_of(J, world.index),
-            Generation(1),
-        )]))
-        .map_err(fail("revoking the expert"))?;
+    lab::apply_events(&backend, &authority.events_since(mark))?;
     tally.add("deterministic_revocation_attempts", 1);
     tally.add("expert_generation_revocations_performed", 1);
     let after = backend
@@ -435,6 +421,7 @@ pub fn deterministic_arm(tally: &mut Tally, world: &World) -> Res<()> {
         &out,
         &lab::cold(&backend, &recompute_request, &masked)?,
     );
+    lab::note_scope(tally, &backend)?;
     Ok(())
 }
 
@@ -443,10 +430,11 @@ pub fn deterministic_arm(tally: &mut Tally, world: &World) -> Res<()> {
 fn nondeterministic_control(
     tally: &mut Tally,
     world: &World,
+    authority: &Authority,
     backend: &ReferenceKvReuseBackend,
     tokens: &[u32],
 ) -> Res<()> {
-    let variant = world.variant();
+    let variant = world.variant(authority);
     let request = raw("nondet", tokens);
     let before = backend.catalog_stats().map_err(fail("catalog stats"))?;
     // Exact reuse is refused outright.
@@ -527,8 +515,8 @@ pub fn quarantine_arm(tally: &mut Tally, world: &World) -> Res<()> {
         return Err(format!("the expert is not freshly serving: {state:?}"));
     };
     // Entries record the epoch the expert's state record stood at.
-    let recorded = world.binding_recorded(&authority);
-    let masked = world.masked();
+    let recorded = world.binding(&authority, false);
+    let masked = world.masked(&authority);
     let (p, p72) = (prompt(), extended(1));
     let mut pre = begin(&backend, &raw("quar-pre", &p), &recorded, &authority)
         .map_err(fail("the pre-fence session"))?;
@@ -545,6 +533,7 @@ pub fn quarantine_arm(tally: &mut Tally, world: &World) -> Res<()> {
     tally.set("quarantine_control_hit_tokens", control_hit as i64);
 
     // The fence: a committed AuthorityQuarantine; the catalog's tombstoning follows it.
+    let mark = authority.mark();
     experts::fence(
         &mut authority.runtime,
         J,
@@ -552,12 +541,7 @@ pub fn quarantine_arm(tally: &mut Tally, world: &World) -> Res<()> {
         ExpertFenceCause::AuthorityQuarantine,
         None,
     )?;
-    backend
-        .invalidate_inputs(&BTreeSet::from([(
-            experts::identity_of(J, world.index),
-            Generation(1),
-        )]))
-        .map_err(fail("tombstoning the fenced expert's entries"))?;
+    lab::apply_events(&backend, &authority.events_since(mark))?;
     if !matches!(
         experts::state_of(&authority.runtime, J, world.index),
         Some((ExpertState::Fenced, 1, _))
@@ -600,7 +584,7 @@ pub fn quarantine_arm(tally: &mut Tally, world: &World) -> Res<()> {
         tally.add("kv_reuse_after_expert_fence", 1);
     }
     drop(stale);
-    let fresh_binding = world.binding_recorded(&authority);
+    let fresh_binding = world.binding(&authority, false);
     let mut fresh = begin(&backend, &request, &fresh_binding, &authority)
         .map_err(fail("the readmitted binding"))?;
     tally.add(
@@ -633,6 +617,7 @@ pub fn quarantine_arm(tally: &mut Tally, world: &World) -> Res<()> {
         i64::from(authority.is_live(&dependency)),
     );
     tally.add("fence_cause_cases", 1);
+    lab::note_scope(tally, &backend)?;
     Ok(())
 }
 
@@ -648,16 +633,16 @@ impl Rig for R010Rig {
         "expert_generation"
     }
 
-    fn binding(&self) -> StackBinding {
-        self.world.binding(0, true)
+    fn binding(&self, authority: &Authority) -> StackBinding {
+        self.world.binding(authority, true)
     }
 
-    fn resolved_binding(&self, ty: Invalidation) -> StackBinding {
+    fn resolved_binding(&self, ty: Invalidation, authority: &Authority) -> StackBinding {
         match ty {
-            Invalidation::Revocation | Invalidation::Fence => self.world.masked(),
+            Invalidation::Revocation | Invalidation::Fence => self.world.masked(authority),
             Invalidation::Supersession => {
                 let backend = lab::backend().expect("a backend");
-                self.world.successor(&backend)
+                self.world.successor(&backend, authority)
             }
         }
     }
@@ -868,7 +853,7 @@ pub fn empty_restart(tally: &mut Tally, world: &World) -> Res<()> {
     let first = lab::backend()?;
     let mut authority = Authority::new(&[])?;
     birth_all(&mut authority)?;
-    let binding = world.binding(0, false);
+    let binding = world.binding(&authority, false);
     let request = raw("restart-probe", &prompt());
     let warmed = lab::run_completed(&first, &request, &binding, &authority)?;
     drop(first);

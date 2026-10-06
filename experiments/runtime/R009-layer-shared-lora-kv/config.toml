@@ -95,3 +95,29 @@ max_model_pin_mismatches = 0
 # Preregistered choices for this experiment (no code default exists).
 declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "adapter"]
 dependency_list_narrowing_reason = "narrowed: the dense LoRA workload has no experts"
+
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "layer-shared-lora-kv"
+max_new_tokens = 8
+intermediate_size = 128
+rope_theta = "10000.0"
+rms_norm_eps = "1e-6"
+qk_norm = "disabled"
+lora_rank = 4
+lora_scale = "2.0"
+adapter_seed = 20240607
+adapter_layers = "every layer >= first adapted layer"
+alora_first_layer = 0
+alora_projections = "q, k, v"
+mlp_adapter_form = "residual-space correction of the MLP output"
+partial_hit_mode = "compute-then-adopt, checked"
+restart_resolution = "re-resolve to the live binding: supersession to the new generation, revocation to the base model"
+total_kv_rows_counts = "prompt rows of every layer"
+per_seed_role = "request order and race points"
+matrix_adapter_first_layer = 2
+corpus_selection_digest = "sha256:8093b0b8b9859c83a0a145a993e2158be39c31e2b80812a4f7da4ab0a6bb117e"
+preregistration_text = "experiments/runtime/R009-layer-shared-lora-kv/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/runtime/R009-layer-shared-lora-kv/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

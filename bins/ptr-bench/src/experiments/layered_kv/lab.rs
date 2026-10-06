@@ -61,6 +61,19 @@ impl KvLivenessOracle for Authority {
 }
 
 impl Authority {
+    /// How many events the ledger holds: the mark [`Self::events_since`] reads from.
+    pub fn mark(&self) -> usize {
+        self.runtime.committed_events().len()
+    }
+
+    /// The events committed since `mark`, in order: what the host's catalog hook is given.
+    pub fn events_since(&self, mark: usize) -> Vec<LedgerEvent> {
+        self.runtime.committed_events()[mark..]
+            .iter()
+            .map(|committed| committed.event.clone())
+            .collect()
+    }
+
     /// A runtime whose ledger commits the base model and every identity of `capsules` at
     /// generation 1.
     pub fn new(capsules: &[&str]) -> Res<Self> {
@@ -271,6 +284,31 @@ impl Steps<'_> {
         .map_err(fail("a session step"))?;
         Ok(matches!(step, KvSessionStep::Cancelled(_)))
     }
+}
+
+/// Hand every committed `event` to the backend's catalog hook
+/// (`ReferenceKvReuseBackend::apply_committed_event`): the affected entries are tombstoned and
+/// the backend's own liveness follows, exactly as the runtime's hook does for its catalog.
+/// Returns the backend prefixes retired.
+pub fn apply_events(backend: &ReferenceKvReuseBackend, events: &[LedgerEvent]) -> Res<usize> {
+    let mut retired = 0;
+    for event in events {
+        retired += backend
+            .apply_committed_event(event)
+            .map_err(fail("applying a committed event"))?;
+    }
+    Ok(retired)
+}
+
+/// Add the backend catalog's layered-scope mismatches (a restored per-layer entry whose key
+/// scope disagrees with its layer tag, tombstoned and counted by the catalog) to the tally.
+pub fn note_scope(tally: &mut Tally, backend: &ReferenceKvReuseBackend) -> Res<()> {
+    let stats = backend.catalog_stats().map_err(fail("catalog stats"))?;
+    tally.add(
+        "layered_scope_mismatches",
+        stats.layered_scope_mismatches as i64,
+    );
+    Ok(())
 }
 
 /// Lower-case hex SHA-256 over the sorted request ids of a set, the identity-set digests.

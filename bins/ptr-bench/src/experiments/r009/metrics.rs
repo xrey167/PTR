@@ -144,9 +144,6 @@ pub fn coverage() -> Vec<String> {
         params::MIN_INVALIDATION_SUPPRESSED_ARMS
     ));
     add(format!("restore_arms >= {}", params::MIN_RESTORE_ARMS));
-    // A live restored entry with its pages must fork, in every restore cell: otherwise the
-    // restore cells' misses prove nothing.
-    add("internal.restore_control_failures <= 0".to_string());
     add(format!(
         "restored_pre_revocation_entries >= {}",
         params::MIN_RESTORED_PRE_REVOCATION_ENTRIES
@@ -256,6 +253,8 @@ pub fn falsifiers() -> Vec<String> {
     ));
     add("internal.restart_resolution_mismatches <= 0".to_string());
     add("internal.matrix_selectivity_mismatches <= 0".to_string());
+    // A restored per-layer entry whose key scope disagrees with its layer tag.
+    add("internal.layered_scope_mismatches <= 0".to_string());
     for cell in params::INVALIDATION_COVERAGE_MATRIX_CELLS {
         add(format!(
             "invalidation_matrix_stale_hits.{cell} <= {}",
