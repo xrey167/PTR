@@ -13,6 +13,16 @@ anchor derived from its independently known fixture. It does not derive trust
 from the damaged file. Ordinary open rejects incomplete tails without rewriting.
 Old v1 recovery timings are not comparable to v2 integrity/anchor validation.
 
+## KV reuse smoke
+
+`cargo run --release -p ptr-bench -- kv-reuse-smoke [requests=8]` runs `requests` prompts
+that share a 64-token prefix on `ptr_runtime::ReferenceKvReuseBackend` (the seeded random
+R005 tiny model on the CPU, KV reused through the runtime prefix catalog), each once with
+reuse and once cold, and prints one JSON line `{requests, hit_tokens_total, cold_ms,
+warm_ms, bitwise_equal}`; it exits 1 if any pair differs. **This is not an R005 result**:
+it uses none of R005's preregistered parameters, writes no result record and measures
+nothing about a real model.
+
 ## S003 certified branches
 
 `cargo run --release -p ptr-bench -- certified-branches [cases=48] [seed=17]` runs the

@@ -56,6 +56,10 @@ fn main() {
                 "seed",
             )),
         ),
+        // Not an R005 result: an exactness smoke run of the CPU reference backend.
+        "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(
+            &args, 2, 8, "requests",
+        ))),
         #[cfg(feature = "postgres-experiments")]
         "fastmem-revocation" => {
             experiments::l003::run(parse_usize(&args, 2, 20), parse_u64(&args, 3, 17))
@@ -77,9 +81,10 @@ fn main() {
 /// The experiment subcommands: S003 always, and the PostgreSQL ones only when
 /// they are compiled in.
 #[cfg(feature = "postgres-experiments")]
-const EXPERIMENT_COMMANDS: &str = "|certified-branches|fastmem-revocation|projection-equivalence";
+const EXPERIMENT_COMMANDS: &str =
+    "|certified-branches|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "|certified-branches";
+const EXPERIMENT_COMMANDS: &str = "|certified-branches|kv-reuse-smoke";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)

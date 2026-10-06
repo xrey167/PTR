@@ -7,6 +7,7 @@
 // harness builds without the feature.
 #[cfg_attr(not(feature = "postgres-experiments"), allow(dead_code))]
 mod json;
+pub mod kv_reuse_smoke;
 #[cfg(feature = "postgres-experiments")]
 pub mod l003;
 #[cfg(feature = "postgres-experiments")]

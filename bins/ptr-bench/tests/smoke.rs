@@ -87,3 +87,37 @@ fn certified_branches_zero_cases_emits_an_empty_run_for_boundary_seeds() {
         }
     }
 }
+
+#[test]
+fn kv_reuse_smoke_is_bitwise_equal_and_reuses_the_shared_prefix() {
+    let exe = env!("CARGO_BIN_EXE_ptr-bench");
+    let output = Command::new(exe)
+        .args(["kv-reuse-smoke", "3"])
+        .output()
+        .expect("run the KV reuse smoke");
+    assert!(
+        output.status.success(),
+        "a warm run differed from its cold twin: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1, "exactly one JSON line on stdout");
+    assert!(
+        stdout.starts_with(r#"{"benchmark":"kv-reuse-smoke","requests":3,"hit_tokens_total":128,"#)
+    );
+    assert!(stdout.contains(r#""bitwise_equal":true"#));
+    assert!(stdout.contains("not an R005 result"));
+}
+
+#[test]
+fn kv_reuse_smoke_refuses_a_bad_request_count() {
+    let exe = env!("CARGO_BIN_EXE_ptr-bench");
+    for bad in ["0", "1000", "many"] {
+        let output = Command::new(exe)
+            .args(["kv-reuse-smoke", bad])
+            .output()
+            .expect("run the KV reuse smoke");
+        assert_eq!(output.status.code(), Some(2), "{bad}");
+        assert!(output.stdout.is_empty(), "{bad}");
+    }
+}
