@@ -1,0 +1,62 @@
+{
+  "experiment_id": "R010",
+  "status": "prepared",
+  "scope": "expert-scoped KV invalidation on the CPU reference path: per-layer catalog entries whose dependency sets carry the experts of the layers below, a seeded tiny MoE, the real expert admission and fence authority path in PtrRuntime as the liveness oracle; a KV-memory claim only",
+  "git_sha": "c68ea7de2fb5204885615f684a1404c2da9060e3",
+  "aggregated_at_git_sha": "b5d605a7067183a38541a7744506e0675698be12",
+  "recorded_at": "2026-10-06T18:13:32.321254+00:00",
+  "preregistration_sha256": "a5b5f8567668c74393e1c06bd9633793e6af68bbe6f39f6cf2e430775a0b15d3",
+  "preregistration_rules_sha256": "b9fe51876ee3ff871c854cdc41c722641e9feb514d62ac06bd5a1ae60d5f59ab",
+  "criteria_sha256": "1f06c177f0d15cb25b53cfe821b6e92792a5ff86a42ff87d6fbb4db950b04515",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- moe-expert-kv-revocation <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261006T180735.047429Z-seed-17.json",
+      "git_sha": "c68ea7de2fb5204885615f684a1404c2da9060e3",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261006T180842.856755Z-seed-29.json",
+      "git_sha": "25e0f2f47d4cc5c84111bc8f276b87819de589d5",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261006T180950.354833Z-seed-43.json",
+      "git_sha": "8e7f2a0b7d11db812f69f1fbb4e1a9a3aed85a11",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261006T181058.810970Z-seed-71.json",
+      "git_sha": "c79a1767b1e3e7e3d23a45feaa76be7c739d9745",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261006T181207.583617Z-seed-101.json",
+      "git_sha": "a87332550061414c9f992b8a8aac4ab239779e1f",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "17b5f6e9ab7930f36fde60ee8cd72f9a661ed8ff744e3acb4d34895ad8396eb2",
+    "29": "a3bdf794634670bf47a7686dae95075dc41183372c1559b90dddb0434e4b85f3",
+    "43": "b3adb61b48f092a641a64e7a03fd630f9656f3e31c32c688a801db91f292886d",
+    "71": "0d602b40467125ba8ee109da50244235ebb831a86f61304d71ee1e35a04374fb",
+    "101": "1fdb6622ea6820ecc20f110cf85df598f79f8ba6489e1eff8da838dc5e547be2"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "limitations": [
+    "the code under test is the CPU reference path with a tiny seeded model; no GPU, no large model",
+    "a KV-memory property only: no forward-compute claim",
+    "a request on a binding with a dead dependency (base model, expert) is refused at begin, so post-event lookups on stale-eligible entries come from the segment cells",
+    "the probed and cached page sets are derived from the request geometry and the run's insert counts (the backend lists no entries)",
+    "timings come from one shared cloud container; no capacity claim"
+  ],
+  "metrics_sha256": "94425d0a38c7195c0ffd83531da9b42b7ea1cd15291fc28a7081fac751d59f13"
+}

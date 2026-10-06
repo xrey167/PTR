@@ -1,0 +1,1258 @@
+{
+  "experiment_id": "R009",
+  "scope": "layer-shared KV pages for LoRA and aLoRA adapters on the CPU reference path: per-layer catalog entries, layer-scoped fork and checked adoption over the tiny seeded Qwen2 stack with seeded adapters, PtrRuntime as the ledger-anchored liveness oracle; a KV-memory claim only",
+  "verdict": "COMPLETED",
+  "decision": {
+    "verdict": "COMPLETED",
+    "vacuous_seeds": [],
+    "falsified_seeds": [],
+    "invalid_seeds": [],
+    "static_evidence_failed": [],
+    "problems": [],
+    "recommended_status": "completed"
+  },
+  "seeds": [
+    {
+      "seed": 17,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "shared_row_fraction": {
+          "qkv_lora_f2": {
+            "numerator": 128,
+            "denominator": 256,
+            "predicted_numerator": 128,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "qkv_lora_f0": {
+            "numerator": 0,
+            "denominator": 256,
+            "predicted_numerator": 0,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "q_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256,
+            "predicted_numerator": 192,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "q_only_lora_f0": {
+            "numerator": 64,
+            "denominator": 256,
+            "predicted_numerator": 64,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "mlp_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256,
+            "predicted_numerator": 192,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "alora_inv39": {
+            "numerator": 156,
+            "denominator": 256,
+            "predicted_numerator": 156,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          }
+        },
+        "predicted_shared_row_fraction": {
+          "qkv_lora_f2": {
+            "numerator": 128,
+            "denominator": 256
+          },
+          "qkv_lora_f0": {
+            "numerator": 0,
+            "denominator": 256
+          },
+          "q_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256
+          },
+          "q_only_lora_f0": {
+            "numerator": 64,
+            "denominator": 256
+          },
+          "mlp_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256
+          },
+          "alora_inv39": {
+            "numerator": 156,
+            "denominator": 256
+          }
+        },
+        "bitwise_mismatch_count": 0,
+        "base_pages_dropped_on_revoke": 0,
+        "alora_prefix_reuse_attempts": 1,
+        "adapter_revocations_performed_by_type": {
+          "alora": 1,
+          "mlp_only_lora": 1,
+          "q_only_lora": 2,
+          "qkv_lora": 2
+        },
+        "adapter_reuse_attempts_by_type": {
+          "alora": 1,
+          "mlp_only_lora": 1,
+          "q_only_lora": 2,
+          "qkv_lora": 2
+        },
+        "revoked_adapter_entry_hits": 0,
+        "post_revocation_lookups_on_adapter_entries": 6,
+        "alora_boundary_page_cases": 1,
+        "base_pages_before_revoke": 92,
+        "adapter_entries_before_revocation": 52,
+        "adapter_logits_bitwise_mismatch_count": 0,
+        "cross_adapter_attempts": 6,
+        "input_revocations_performed": 12,
+        "post_revocation_lookups_matching_tokens": 72,
+        "revoked_lineage_entry_hits": 0,
+        "same_tokens_different_generation_cases": 6,
+        "invalidation_suppressed_arms": 6,
+        "restore_arms": 6,
+        "post_event_lookups": 96,
+        "stale_hits": 0,
+        "stale_eligible_entries_before_event": 96,
+        "post_event_lookups_on_stale_eligible_entries": 96,
+        "shared_kv_rows": {
+          "alora_inv39": 156,
+          "mlp_only_lora_f2": 192,
+          "q_only_lora_f0": 64,
+          "q_only_lora_f2": 192,
+          "qkv_lora_f0": 0,
+          "qkv_lora_f2": 128
+        },
+        "total_kv_rows": {
+          "alora_inv39": 256,
+          "mlp_only_lora_f2": 256,
+          "q_only_lora_f0": 256,
+          "q_only_lora_f2": 256,
+          "qkv_lora_f0": 256,
+          "qkv_lora_f2": 256
+        },
+        "old_generation_as_new_attempts": 6,
+        "cross_adapter_hits": 0,
+        "old_generation_hits": 0,
+        "restored_pre_revocation_entries": 48,
+        "empty_restart_arm": {
+          "role": "reported_separate_arm",
+          "entries_before_lookup": 0,
+          "pre_restart_inserted_chunks": 4,
+          "hit_tokens": 0,
+          "catalog_hits": 0,
+          "equals_cold": true,
+          "counts_toward_restore_coverage": false
+        },
+        "inflight_adapter_revocation_race_cases": {
+          "revocation": 7,
+          "supersession": 1
+        },
+        "outputs_after_adapter_revocation": 0,
+        "inflight_input_race_cases": {
+          "revocation": 1,
+          "supersession": 1
+        },
+        "outputs_after_input_invalidation": 0,
+        "selection_digest_mismatches": 0,
+        "procedure_mismatches": 0,
+        "inflight_adapter_requests_cancelled": 8,
+        "inflight_adapter_requests_restarted_from_fresh_prefill": 8,
+        "adapter_restart_output_mismatches": 0,
+        "inflight_adapter_cancelled_request_id_set_digest": "sha256:ab2ffb3522bfbe4b90316b06e9a5169d33111ae519a292c2cc7ebfdb3fb2a3fe",
+        "inflight_adapter_restarted_request_id_set_digest": "sha256:ab2ffb3522bfbe4b90316b06e9a5169d33111ae519a292c2cc7ebfdb3fb2a3fe",
+        "invalidation_matrix_cases": {
+          "adapter_generation_inflight_revocation": 1,
+          "adapter_generation_inflight_supersession": 1,
+          "adapter_generation_lag_revocation": 1,
+          "adapter_generation_lag_supersession": 1,
+          "adapter_generation_normal_revocation": 1,
+          "adapter_generation_normal_supersession": 1,
+          "adapter_generation_restore_revocation": 1,
+          "adapter_generation_restore_supersession": 1,
+          "base_model_inflight_revocation": 1,
+          "base_model_inflight_supersession": 1,
+          "base_model_lag_revocation": 1,
+          "base_model_lag_supersession": 1,
+          "base_model_normal_revocation": 1,
+          "base_model_normal_supersession": 1,
+          "base_model_restore_revocation": 1,
+          "base_model_restore_supersession": 1,
+          "derived_input_inflight_revocation": 1,
+          "derived_input_inflight_supersession": 1,
+          "derived_input_lag_revocation": 1,
+          "derived_input_lag_supersession": 1,
+          "derived_input_normal_revocation": 1,
+          "derived_input_normal_supersession": 1,
+          "derived_input_restore_revocation": 1,
+          "derived_input_restore_supersession": 1,
+          "memory_input_inflight_revocation": 1,
+          "memory_input_inflight_supersession": 1,
+          "memory_input_lag_revocation": 1,
+          "memory_input_lag_supersession": 1,
+          "memory_input_normal_revocation": 1,
+          "memory_input_normal_supersession": 1,
+          "memory_input_restore_revocation": 1,
+          "memory_input_restore_supersession": 1,
+          "semantic_input_inflight_revocation": 1,
+          "semantic_input_inflight_supersession": 1,
+          "semantic_input_lag_revocation": 1,
+          "semantic_input_lag_supersession": 1,
+          "semantic_input_normal_revocation": 1,
+          "semantic_input_normal_supersession": 1,
+          "semantic_input_restore_revocation": 1,
+          "semantic_input_restore_supersession": 1
+        },
+        "invalidation_matrix_stale_hits": {
+          "adapter_generation_inflight_revocation": 0,
+          "adapter_generation_inflight_supersession": 0,
+          "adapter_generation_lag_revocation": 0,
+          "adapter_generation_lag_supersession": 0,
+          "adapter_generation_normal_revocation": 0,
+          "adapter_generation_normal_supersession": 0,
+          "adapter_generation_restore_revocation": 0,
+          "adapter_generation_restore_supersession": 0,
+          "base_model_inflight_revocation": 0,
+          "base_model_inflight_supersession": 0,
+          "base_model_lag_revocation": 0,
+          "base_model_lag_supersession": 0,
+          "base_model_normal_revocation": 0,
+          "base_model_normal_supersession": 0,
+          "base_model_restore_revocation": 0,
+          "base_model_restore_supersession": 0,
+          "derived_input_inflight_revocation": 0,
+          "derived_input_inflight_supersession": 0,
+          "derived_input_lag_revocation": 0,
+          "derived_input_lag_supersession": 0,
+          "derived_input_normal_revocation": 0,
+          "derived_input_normal_supersession": 0,
+          "derived_input_restore_revocation": 0,
+          "derived_input_restore_supersession": 0,
+          "memory_input_inflight_revocation": 0,
+          "memory_input_inflight_supersession": 0,
+          "memory_input_lag_revocation": 0,
+          "memory_input_lag_supersession": 0,
+          "memory_input_normal_revocation": 0,
+          "memory_input_normal_supersession": 0,
+          "memory_input_restore_revocation": 0,
+          "memory_input_restore_supersession": 0,
+          "semantic_input_inflight_revocation": 0,
+          "semantic_input_inflight_supersession": 0,
+          "semantic_input_lag_revocation": 0,
+          "semantic_input_lag_supersession": 0,
+          "semantic_input_normal_revocation": 0,
+          "semantic_input_normal_supersession": 0,
+          "semantic_input_restore_revocation": 0,
+          "semantic_input_restore_supersession": 0
+        },
+        "model_pin_mismatches": 0
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "coverage_unsupported": 0,
+        "falsifiers_tripped": 0,
+        "falsifiers_unsupported": 0
+      }
+    },
+    {
+      "seed": 29,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "shared_row_fraction": {
+          "qkv_lora_f2": {
+            "numerator": 128,
+            "denominator": 256,
+            "predicted_numerator": 128,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "qkv_lora_f0": {
+            "numerator": 0,
+            "denominator": 256,
+            "predicted_numerator": 0,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "q_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256,
+            "predicted_numerator": 192,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "q_only_lora_f0": {
+            "numerator": 64,
+            "denominator": 256,
+            "predicted_numerator": 64,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "mlp_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256,
+            "predicted_numerator": 192,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "alora_inv39": {
+            "numerator": 156,
+            "denominator": 256,
+            "predicted_numerator": 156,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          }
+        },
+        "predicted_shared_row_fraction": {
+          "qkv_lora_f2": {
+            "numerator": 128,
+            "denominator": 256
+          },
+          "qkv_lora_f0": {
+            "numerator": 0,
+            "denominator": 256
+          },
+          "q_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256
+          },
+          "q_only_lora_f0": {
+            "numerator": 64,
+            "denominator": 256
+          },
+          "mlp_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256
+          },
+          "alora_inv39": {
+            "numerator": 156,
+            "denominator": 256
+          }
+        },
+        "bitwise_mismatch_count": 0,
+        "base_pages_dropped_on_revoke": 0,
+        "alora_prefix_reuse_attempts": 1,
+        "adapter_revocations_performed_by_type": {
+          "alora": 1,
+          "mlp_only_lora": 1,
+          "q_only_lora": 2,
+          "qkv_lora": 2
+        },
+        "adapter_reuse_attempts_by_type": {
+          "alora": 1,
+          "mlp_only_lora": 1,
+          "q_only_lora": 2,
+          "qkv_lora": 2
+        },
+        "revoked_adapter_entry_hits": 0,
+        "post_revocation_lookups_on_adapter_entries": 6,
+        "alora_boundary_page_cases": 1,
+        "base_pages_before_revoke": 92,
+        "adapter_entries_before_revocation": 52,
+        "adapter_logits_bitwise_mismatch_count": 0,
+        "cross_adapter_attempts": 6,
+        "input_revocations_performed": 12,
+        "post_revocation_lookups_matching_tokens": 72,
+        "revoked_lineage_entry_hits": 0,
+        "same_tokens_different_generation_cases": 6,
+        "invalidation_suppressed_arms": 6,
+        "restore_arms": 6,
+        "post_event_lookups": 96,
+        "stale_hits": 0,
+        "stale_eligible_entries_before_event": 96,
+        "post_event_lookups_on_stale_eligible_entries": 96,
+        "shared_kv_rows": {
+          "alora_inv39": 156,
+          "mlp_only_lora_f2": 192,
+          "q_only_lora_f0": 64,
+          "q_only_lora_f2": 192,
+          "qkv_lora_f0": 0,
+          "qkv_lora_f2": 128
+        },
+        "total_kv_rows": {
+          "alora_inv39": 256,
+          "mlp_only_lora_f2": 256,
+          "q_only_lora_f0": 256,
+          "q_only_lora_f2": 256,
+          "qkv_lora_f0": 256,
+          "qkv_lora_f2": 256
+        },
+        "old_generation_as_new_attempts": 6,
+        "cross_adapter_hits": 0,
+        "old_generation_hits": 0,
+        "restored_pre_revocation_entries": 48,
+        "empty_restart_arm": {
+          "role": "reported_separate_arm",
+          "entries_before_lookup": 0,
+          "pre_restart_inserted_chunks": 4,
+          "hit_tokens": 0,
+          "catalog_hits": 0,
+          "equals_cold": true,
+          "counts_toward_restore_coverage": false
+        },
+        "inflight_adapter_revocation_race_cases": {
+          "revocation": 7,
+          "supersession": 1
+        },
+        "outputs_after_adapter_revocation": 0,
+        "inflight_input_race_cases": {
+          "revocation": 1,
+          "supersession": 1
+        },
+        "outputs_after_input_invalidation": 0,
+        "selection_digest_mismatches": 0,
+        "procedure_mismatches": 0,
+        "inflight_adapter_requests_cancelled": 8,
+        "inflight_adapter_requests_restarted_from_fresh_prefill": 8,
+        "adapter_restart_output_mismatches": 0,
+        "inflight_adapter_cancelled_request_id_set_digest": "sha256:ab2ffb3522bfbe4b90316b06e9a5169d33111ae519a292c2cc7ebfdb3fb2a3fe",
+        "inflight_adapter_restarted_request_id_set_digest": "sha256:ab2ffb3522bfbe4b90316b06e9a5169d33111ae519a292c2cc7ebfdb3fb2a3fe",
+        "invalidation_matrix_cases": {
+          "adapter_generation_inflight_revocation": 1,
+          "adapter_generation_inflight_supersession": 1,
+          "adapter_generation_lag_revocation": 1,
+          "adapter_generation_lag_supersession": 1,
+          "adapter_generation_normal_revocation": 1,
+          "adapter_generation_normal_supersession": 1,
+          "adapter_generation_restore_revocation": 1,
+          "adapter_generation_restore_supersession": 1,
+          "base_model_inflight_revocation": 1,
+          "base_model_inflight_supersession": 1,
+          "base_model_lag_revocation": 1,
+          "base_model_lag_supersession": 1,
+          "base_model_normal_revocation": 1,
+          "base_model_normal_supersession": 1,
+          "base_model_restore_revocation": 1,
+          "base_model_restore_supersession": 1,
+          "derived_input_inflight_revocation": 1,
+          "derived_input_inflight_supersession": 1,
+          "derived_input_lag_revocation": 1,
+          "derived_input_lag_supersession": 1,
+          "derived_input_normal_revocation": 1,
+          "derived_input_normal_supersession": 1,
+          "derived_input_restore_revocation": 1,
+          "derived_input_restore_supersession": 1,
+          "memory_input_inflight_revocation": 1,
+          "memory_input_inflight_supersession": 1,
+          "memory_input_lag_revocation": 1,
+          "memory_input_lag_supersession": 1,
+          "memory_input_normal_revocation": 1,
+          "memory_input_normal_supersession": 1,
+          "memory_input_restore_revocation": 1,
+          "memory_input_restore_supersession": 1,
+          "semantic_input_inflight_revocation": 1,
+          "semantic_input_inflight_supersession": 1,
+          "semantic_input_lag_revocation": 1,
+          "semantic_input_lag_supersession": 1,
+          "semantic_input_normal_revocation": 1,
+          "semantic_input_normal_supersession": 1,
+          "semantic_input_restore_revocation": 1,
+          "semantic_input_restore_supersession": 1
+        },
+        "invalidation_matrix_stale_hits": {
+          "adapter_generation_inflight_revocation": 0,
+          "adapter_generation_inflight_supersession": 0,
+          "adapter_generation_lag_revocation": 0,
+          "adapter_generation_lag_supersession": 0,
+          "adapter_generation_normal_revocation": 0,
+          "adapter_generation_normal_supersession": 0,
+          "adapter_generation_restore_revocation": 0,
+          "adapter_generation_restore_supersession": 0,
+          "base_model_inflight_revocation": 0,
+          "base_model_inflight_supersession": 0,
+          "base_model_lag_revocation": 0,
+          "base_model_lag_supersession": 0,
+          "base_model_normal_revocation": 0,
+          "base_model_normal_supersession": 0,
+          "base_model_restore_revocation": 0,
+          "base_model_restore_supersession": 0,
+          "derived_input_inflight_revocation": 0,
+          "derived_input_inflight_supersession": 0,
+          "derived_input_lag_revocation": 0,
+          "derived_input_lag_supersession": 0,
+          "derived_input_normal_revocation": 0,
+          "derived_input_normal_supersession": 0,
+          "derived_input_restore_revocation": 0,
+          "derived_input_restore_supersession": 0,
+          "memory_input_inflight_revocation": 0,
+          "memory_input_inflight_supersession": 0,
+          "memory_input_lag_revocation": 0,
+          "memory_input_lag_supersession": 0,
+          "memory_input_normal_revocation": 0,
+          "memory_input_normal_supersession": 0,
+          "memory_input_restore_revocation": 0,
+          "memory_input_restore_supersession": 0,
+          "semantic_input_inflight_revocation": 0,
+          "semantic_input_inflight_supersession": 0,
+          "semantic_input_lag_revocation": 0,
+          "semantic_input_lag_supersession": 0,
+          "semantic_input_normal_revocation": 0,
+          "semantic_input_normal_supersession": 0,
+          "semantic_input_restore_revocation": 0,
+          "semantic_input_restore_supersession": 0
+        },
+        "model_pin_mismatches": 0
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "coverage_unsupported": 0,
+        "falsifiers_tripped": 0,
+        "falsifiers_unsupported": 0
+      }
+    },
+    {
+      "seed": 43,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "shared_row_fraction": {
+          "qkv_lora_f2": {
+            "numerator": 128,
+            "denominator": 256,
+            "predicted_numerator": 128,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "qkv_lora_f0": {
+            "numerator": 0,
+            "denominator": 256,
+            "predicted_numerator": 0,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "q_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256,
+            "predicted_numerator": 192,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "q_only_lora_f0": {
+            "numerator": 64,
+            "denominator": 256,
+            "predicted_numerator": 64,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "mlp_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256,
+            "predicted_numerator": 192,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "alora_inv39": {
+            "numerator": 156,
+            "denominator": 256,
+            "predicted_numerator": 156,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          }
+        },
+        "predicted_shared_row_fraction": {
+          "qkv_lora_f2": {
+            "numerator": 128,
+            "denominator": 256
+          },
+          "qkv_lora_f0": {
+            "numerator": 0,
+            "denominator": 256
+          },
+          "q_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256
+          },
+          "q_only_lora_f0": {
+            "numerator": 64,
+            "denominator": 256
+          },
+          "mlp_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256
+          },
+          "alora_inv39": {
+            "numerator": 156,
+            "denominator": 256
+          }
+        },
+        "bitwise_mismatch_count": 0,
+        "base_pages_dropped_on_revoke": 0,
+        "alora_prefix_reuse_attempts": 1,
+        "adapter_revocations_performed_by_type": {
+          "alora": 1,
+          "mlp_only_lora": 1,
+          "q_only_lora": 2,
+          "qkv_lora": 2
+        },
+        "adapter_reuse_attempts_by_type": {
+          "alora": 1,
+          "mlp_only_lora": 1,
+          "q_only_lora": 2,
+          "qkv_lora": 2
+        },
+        "revoked_adapter_entry_hits": 0,
+        "post_revocation_lookups_on_adapter_entries": 6,
+        "alora_boundary_page_cases": 1,
+        "base_pages_before_revoke": 92,
+        "adapter_entries_before_revocation": 52,
+        "adapter_logits_bitwise_mismatch_count": 0,
+        "cross_adapter_attempts": 6,
+        "input_revocations_performed": 12,
+        "post_revocation_lookups_matching_tokens": 72,
+        "revoked_lineage_entry_hits": 0,
+        "same_tokens_different_generation_cases": 6,
+        "invalidation_suppressed_arms": 6,
+        "restore_arms": 6,
+        "post_event_lookups": 96,
+        "stale_hits": 0,
+        "stale_eligible_entries_before_event": 96,
+        "post_event_lookups_on_stale_eligible_entries": 96,
+        "shared_kv_rows": {
+          "alora_inv39": 156,
+          "mlp_only_lora_f2": 192,
+          "q_only_lora_f0": 64,
+          "q_only_lora_f2": 192,
+          "qkv_lora_f0": 0,
+          "qkv_lora_f2": 128
+        },
+        "total_kv_rows": {
+          "alora_inv39": 256,
+          "mlp_only_lora_f2": 256,
+          "q_only_lora_f0": 256,
+          "q_only_lora_f2": 256,
+          "qkv_lora_f0": 256,
+          "qkv_lora_f2": 256
+        },
+        "old_generation_as_new_attempts": 6,
+        "cross_adapter_hits": 0,
+        "old_generation_hits": 0,
+        "restored_pre_revocation_entries": 48,
+        "empty_restart_arm": {
+          "role": "reported_separate_arm",
+          "entries_before_lookup": 0,
+          "pre_restart_inserted_chunks": 4,
+          "hit_tokens": 0,
+          "catalog_hits": 0,
+          "equals_cold": true,
+          "counts_toward_restore_coverage": false
+        },
+        "inflight_adapter_revocation_race_cases": {
+          "revocation": 7,
+          "supersession": 1
+        },
+        "outputs_after_adapter_revocation": 0,
+        "inflight_input_race_cases": {
+          "revocation": 1,
+          "supersession": 1
+        },
+        "outputs_after_input_invalidation": 0,
+        "selection_digest_mismatches": 0,
+        "procedure_mismatches": 0,
+        "inflight_adapter_requests_cancelled": 8,
+        "inflight_adapter_requests_restarted_from_fresh_prefill": 8,
+        "adapter_restart_output_mismatches": 0,
+        "inflight_adapter_cancelled_request_id_set_digest": "sha256:ab2ffb3522bfbe4b90316b06e9a5169d33111ae519a292c2cc7ebfdb3fb2a3fe",
+        "inflight_adapter_restarted_request_id_set_digest": "sha256:ab2ffb3522bfbe4b90316b06e9a5169d33111ae519a292c2cc7ebfdb3fb2a3fe",
+        "invalidation_matrix_cases": {
+          "adapter_generation_inflight_revocation": 1,
+          "adapter_generation_inflight_supersession": 1,
+          "adapter_generation_lag_revocation": 1,
+          "adapter_generation_lag_supersession": 1,
+          "adapter_generation_normal_revocation": 1,
+          "adapter_generation_normal_supersession": 1,
+          "adapter_generation_restore_revocation": 1,
+          "adapter_generation_restore_supersession": 1,
+          "base_model_inflight_revocation": 1,
+          "base_model_inflight_supersession": 1,
+          "base_model_lag_revocation": 1,
+          "base_model_lag_supersession": 1,
+          "base_model_normal_revocation": 1,
+          "base_model_normal_supersession": 1,
+          "base_model_restore_revocation": 1,
+          "base_model_restore_supersession": 1,
+          "derived_input_inflight_revocation": 1,
+          "derived_input_inflight_supersession": 1,
+          "derived_input_lag_revocation": 1,
+          "derived_input_lag_supersession": 1,
+          "derived_input_normal_revocation": 1,
+          "derived_input_normal_supersession": 1,
+          "derived_input_restore_revocation": 1,
+          "derived_input_restore_supersession": 1,
+          "memory_input_inflight_revocation": 1,
+          "memory_input_inflight_supersession": 1,
+          "memory_input_lag_revocation": 1,
+          "memory_input_lag_supersession": 1,
+          "memory_input_normal_revocation": 1,
+          "memory_input_normal_supersession": 1,
+          "memory_input_restore_revocation": 1,
+          "memory_input_restore_supersession": 1,
+          "semantic_input_inflight_revocation": 1,
+          "semantic_input_inflight_supersession": 1,
+          "semantic_input_lag_revocation": 1,
+          "semantic_input_lag_supersession": 1,
+          "semantic_input_normal_revocation": 1,
+          "semantic_input_normal_supersession": 1,
+          "semantic_input_restore_revocation": 1,
+          "semantic_input_restore_supersession": 1
+        },
+        "invalidation_matrix_stale_hits": {
+          "adapter_generation_inflight_revocation": 0,
+          "adapter_generation_inflight_supersession": 0,
+          "adapter_generation_lag_revocation": 0,
+          "adapter_generation_lag_supersession": 0,
+          "adapter_generation_normal_revocation": 0,
+          "adapter_generation_normal_supersession": 0,
+          "adapter_generation_restore_revocation": 0,
+          "adapter_generation_restore_supersession": 0,
+          "base_model_inflight_revocation": 0,
+          "base_model_inflight_supersession": 0,
+          "base_model_lag_revocation": 0,
+          "base_model_lag_supersession": 0,
+          "base_model_normal_revocation": 0,
+          "base_model_normal_supersession": 0,
+          "base_model_restore_revocation": 0,
+          "base_model_restore_supersession": 0,
+          "derived_input_inflight_revocation": 0,
+          "derived_input_inflight_supersession": 0,
+          "derived_input_lag_revocation": 0,
+          "derived_input_lag_supersession": 0,
+          "derived_input_normal_revocation": 0,
+          "derived_input_normal_supersession": 0,
+          "derived_input_restore_revocation": 0,
+          "derived_input_restore_supersession": 0,
+          "memory_input_inflight_revocation": 0,
+          "memory_input_inflight_supersession": 0,
+          "memory_input_lag_revocation": 0,
+          "memory_input_lag_supersession": 0,
+          "memory_input_normal_revocation": 0,
+          "memory_input_normal_supersession": 0,
+          "memory_input_restore_revocation": 0,
+          "memory_input_restore_supersession": 0,
+          "semantic_input_inflight_revocation": 0,
+          "semantic_input_inflight_supersession": 0,
+          "semantic_input_lag_revocation": 0,
+          "semantic_input_lag_supersession": 0,
+          "semantic_input_normal_revocation": 0,
+          "semantic_input_normal_supersession": 0,
+          "semantic_input_restore_revocation": 0,
+          "semantic_input_restore_supersession": 0
+        },
+        "model_pin_mismatches": 0
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "coverage_unsupported": 0,
+        "falsifiers_tripped": 0,
+        "falsifiers_unsupported": 0
+      }
+    },
+    {
+      "seed": 71,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "shared_row_fraction": {
+          "qkv_lora_f2": {
+            "numerator": 128,
+            "denominator": 256,
+            "predicted_numerator": 128,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "qkv_lora_f0": {
+            "numerator": 0,
+            "denominator": 256,
+            "predicted_numerator": 0,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "q_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256,
+            "predicted_numerator": 192,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "q_only_lora_f0": {
+            "numerator": 64,
+            "denominator": 256,
+            "predicted_numerator": 64,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "mlp_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256,
+            "predicted_numerator": 192,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "alora_inv39": {
+            "numerator": 156,
+            "denominator": 256,
+            "predicted_numerator": 156,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          }
+        },
+        "predicted_shared_row_fraction": {
+          "qkv_lora_f2": {
+            "numerator": 128,
+            "denominator": 256
+          },
+          "qkv_lora_f0": {
+            "numerator": 0,
+            "denominator": 256
+          },
+          "q_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256
+          },
+          "q_only_lora_f0": {
+            "numerator": 64,
+            "denominator": 256
+          },
+          "mlp_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256
+          },
+          "alora_inv39": {
+            "numerator": 156,
+            "denominator": 256
+          }
+        },
+        "bitwise_mismatch_count": 0,
+        "base_pages_dropped_on_revoke": 0,
+        "alora_prefix_reuse_attempts": 1,
+        "adapter_revocations_performed_by_type": {
+          "alora": 1,
+          "mlp_only_lora": 1,
+          "q_only_lora": 2,
+          "qkv_lora": 2
+        },
+        "adapter_reuse_attempts_by_type": {
+          "alora": 1,
+          "mlp_only_lora": 1,
+          "q_only_lora": 2,
+          "qkv_lora": 2
+        },
+        "revoked_adapter_entry_hits": 0,
+        "post_revocation_lookups_on_adapter_entries": 6,
+        "alora_boundary_page_cases": 1,
+        "base_pages_before_revoke": 92,
+        "adapter_entries_before_revocation": 52,
+        "adapter_logits_bitwise_mismatch_count": 0,
+        "cross_adapter_attempts": 6,
+        "input_revocations_performed": 12,
+        "post_revocation_lookups_matching_tokens": 72,
+        "revoked_lineage_entry_hits": 0,
+        "same_tokens_different_generation_cases": 6,
+        "invalidation_suppressed_arms": 6,
+        "restore_arms": 6,
+        "post_event_lookups": 96,
+        "stale_hits": 0,
+        "stale_eligible_entries_before_event": 96,
+        "post_event_lookups_on_stale_eligible_entries": 96,
+        "shared_kv_rows": {
+          "alora_inv39": 156,
+          "mlp_only_lora_f2": 192,
+          "q_only_lora_f0": 64,
+          "q_only_lora_f2": 192,
+          "qkv_lora_f0": 0,
+          "qkv_lora_f2": 128
+        },
+        "total_kv_rows": {
+          "alora_inv39": 256,
+          "mlp_only_lora_f2": 256,
+          "q_only_lora_f0": 256,
+          "q_only_lora_f2": 256,
+          "qkv_lora_f0": 256,
+          "qkv_lora_f2": 256
+        },
+        "old_generation_as_new_attempts": 6,
+        "cross_adapter_hits": 0,
+        "old_generation_hits": 0,
+        "restored_pre_revocation_entries": 48,
+        "empty_restart_arm": {
+          "role": "reported_separate_arm",
+          "entries_before_lookup": 0,
+          "pre_restart_inserted_chunks": 4,
+          "hit_tokens": 0,
+          "catalog_hits": 0,
+          "equals_cold": true,
+          "counts_toward_restore_coverage": false
+        },
+        "inflight_adapter_revocation_race_cases": {
+          "revocation": 7,
+          "supersession": 1
+        },
+        "outputs_after_adapter_revocation": 0,
+        "inflight_input_race_cases": {
+          "revocation": 1,
+          "supersession": 1
+        },
+        "outputs_after_input_invalidation": 0,
+        "selection_digest_mismatches": 0,
+        "procedure_mismatches": 0,
+        "inflight_adapter_requests_cancelled": 8,
+        "inflight_adapter_requests_restarted_from_fresh_prefill": 8,
+        "adapter_restart_output_mismatches": 0,
+        "inflight_adapter_cancelled_request_id_set_digest": "sha256:ab2ffb3522bfbe4b90316b06e9a5169d33111ae519a292c2cc7ebfdb3fb2a3fe",
+        "inflight_adapter_restarted_request_id_set_digest": "sha256:ab2ffb3522bfbe4b90316b06e9a5169d33111ae519a292c2cc7ebfdb3fb2a3fe",
+        "invalidation_matrix_cases": {
+          "adapter_generation_inflight_revocation": 1,
+          "adapter_generation_inflight_supersession": 1,
+          "adapter_generation_lag_revocation": 1,
+          "adapter_generation_lag_supersession": 1,
+          "adapter_generation_normal_revocation": 1,
+          "adapter_generation_normal_supersession": 1,
+          "adapter_generation_restore_revocation": 1,
+          "adapter_generation_restore_supersession": 1,
+          "base_model_inflight_revocation": 1,
+          "base_model_inflight_supersession": 1,
+          "base_model_lag_revocation": 1,
+          "base_model_lag_supersession": 1,
+          "base_model_normal_revocation": 1,
+          "base_model_normal_supersession": 1,
+          "base_model_restore_revocation": 1,
+          "base_model_restore_supersession": 1,
+          "derived_input_inflight_revocation": 1,
+          "derived_input_inflight_supersession": 1,
+          "derived_input_lag_revocation": 1,
+          "derived_input_lag_supersession": 1,
+          "derived_input_normal_revocation": 1,
+          "derived_input_normal_supersession": 1,
+          "derived_input_restore_revocation": 1,
+          "derived_input_restore_supersession": 1,
+          "memory_input_inflight_revocation": 1,
+          "memory_input_inflight_supersession": 1,
+          "memory_input_lag_revocation": 1,
+          "memory_input_lag_supersession": 1,
+          "memory_input_normal_revocation": 1,
+          "memory_input_normal_supersession": 1,
+          "memory_input_restore_revocation": 1,
+          "memory_input_restore_supersession": 1,
+          "semantic_input_inflight_revocation": 1,
+          "semantic_input_inflight_supersession": 1,
+          "semantic_input_lag_revocation": 1,
+          "semantic_input_lag_supersession": 1,
+          "semantic_input_normal_revocation": 1,
+          "semantic_input_normal_supersession": 1,
+          "semantic_input_restore_revocation": 1,
+          "semantic_input_restore_supersession": 1
+        },
+        "invalidation_matrix_stale_hits": {
+          "adapter_generation_inflight_revocation": 0,
+          "adapter_generation_inflight_supersession": 0,
+          "adapter_generation_lag_revocation": 0,
+          "adapter_generation_lag_supersession": 0,
+          "adapter_generation_normal_revocation": 0,
+          "adapter_generation_normal_supersession": 0,
+          "adapter_generation_restore_revocation": 0,
+          "adapter_generation_restore_supersession": 0,
+          "base_model_inflight_revocation": 0,
+          "base_model_inflight_supersession": 0,
+          "base_model_lag_revocation": 0,
+          "base_model_lag_supersession": 0,
+          "base_model_normal_revocation": 0,
+          "base_model_normal_supersession": 0,
+          "base_model_restore_revocation": 0,
+          "base_model_restore_supersession": 0,
+          "derived_input_inflight_revocation": 0,
+          "derived_input_inflight_supersession": 0,
+          "derived_input_lag_revocation": 0,
+          "derived_input_lag_supersession": 0,
+          "derived_input_normal_revocation": 0,
+          "derived_input_normal_supersession": 0,
+          "derived_input_restore_revocation": 0,
+          "derived_input_restore_supersession": 0,
+          "memory_input_inflight_revocation": 0,
+          "memory_input_inflight_supersession": 0,
+          "memory_input_lag_revocation": 0,
+          "memory_input_lag_supersession": 0,
+          "memory_input_normal_revocation": 0,
+          "memory_input_normal_supersession": 0,
+          "memory_input_restore_revocation": 0,
+          "memory_input_restore_supersession": 0,
+          "semantic_input_inflight_revocation": 0,
+          "semantic_input_inflight_supersession": 0,
+          "semantic_input_lag_revocation": 0,
+          "semantic_input_lag_supersession": 0,
+          "semantic_input_normal_revocation": 0,
+          "semantic_input_normal_supersession": 0,
+          "semantic_input_restore_revocation": 0,
+          "semantic_input_restore_supersession": 0
+        },
+        "model_pin_mismatches": 0
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "coverage_unsupported": 0,
+        "falsifiers_tripped": 0,
+        "falsifiers_unsupported": 0
+      }
+    },
+    {
+      "seed": 101,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "shared_row_fraction": {
+          "qkv_lora_f2": {
+            "numerator": 128,
+            "denominator": 256,
+            "predicted_numerator": 128,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "qkv_lora_f0": {
+            "numerator": 0,
+            "denominator": 256,
+            "predicted_numerator": 0,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "q_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256,
+            "predicted_numerator": 192,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "q_only_lora_f0": {
+            "numerator": 64,
+            "denominator": 256,
+            "predicted_numerator": 64,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "mlp_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256,
+            "predicted_numerator": 192,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          },
+          "alora_inv39": {
+            "numerator": 156,
+            "denominator": 256,
+            "predicted_numerator": 156,
+            "predicted_denominator": 256,
+            "cross_difference": 0
+          }
+        },
+        "predicted_shared_row_fraction": {
+          "qkv_lora_f2": {
+            "numerator": 128,
+            "denominator": 256
+          },
+          "qkv_lora_f0": {
+            "numerator": 0,
+            "denominator": 256
+          },
+          "q_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256
+          },
+          "q_only_lora_f0": {
+            "numerator": 64,
+            "denominator": 256
+          },
+          "mlp_only_lora_f2": {
+            "numerator": 192,
+            "denominator": 256
+          },
+          "alora_inv39": {
+            "numerator": 156,
+            "denominator": 256
+          }
+        },
+        "bitwise_mismatch_count": 0,
+        "base_pages_dropped_on_revoke": 0,
+        "alora_prefix_reuse_attempts": 1,
+        "adapter_revocations_performed_by_type": {
+          "alora": 1,
+          "mlp_only_lora": 1,
+          "q_only_lora": 2,
+          "qkv_lora": 2
+        },
+        "adapter_reuse_attempts_by_type": {
+          "alora": 1,
+          "mlp_only_lora": 1,
+          "q_only_lora": 2,
+          "qkv_lora": 2
+        },
+        "revoked_adapter_entry_hits": 0,
+        "post_revocation_lookups_on_adapter_entries": 6,
+        "alora_boundary_page_cases": 1,
+        "base_pages_before_revoke": 92,
+        "adapter_entries_before_revocation": 52,
+        "adapter_logits_bitwise_mismatch_count": 0,
+        "cross_adapter_attempts": 6,
+        "input_revocations_performed": 12,
+        "post_revocation_lookups_matching_tokens": 72,
+        "revoked_lineage_entry_hits": 0,
+        "same_tokens_different_generation_cases": 6,
+        "invalidation_suppressed_arms": 6,
+        "restore_arms": 6,
+        "post_event_lookups": 96,
+        "stale_hits": 0,
+        "stale_eligible_entries_before_event": 96,
+        "post_event_lookups_on_stale_eligible_entries": 96,
+        "shared_kv_rows": {
+          "alora_inv39": 156,
+          "mlp_only_lora_f2": 192,
+          "q_only_lora_f0": 64,
+          "q_only_lora_f2": 192,
+          "qkv_lora_f0": 0,
+          "qkv_lora_f2": 128
+        },
+        "total_kv_rows": {
+          "alora_inv39": 256,
+          "mlp_only_lora_f2": 256,
+          "q_only_lora_f0": 256,
+          "q_only_lora_f2": 256,
+          "qkv_lora_f0": 256,
+          "qkv_lora_f2": 256
+        },
+        "old_generation_as_new_attempts": 6,
+        "cross_adapter_hits": 0,
+        "old_generation_hits": 0,
+        "restored_pre_revocation_entries": 48,
+        "empty_restart_arm": {
+          "role": "reported_separate_arm",
+          "entries_before_lookup": 0,
+          "pre_restart_inserted_chunks": 4,
+          "hit_tokens": 0,
+          "catalog_hits": 0,
+          "equals_cold": true,
+          "counts_toward_restore_coverage": false
+        },
+        "inflight_adapter_revocation_race_cases": {
+          "revocation": 7,
+          "supersession": 1
+        },
+        "outputs_after_adapter_revocation": 0,
+        "inflight_input_race_cases": {
+          "revocation": 1,
+          "supersession": 1
+        },
+        "outputs_after_input_invalidation": 0,
+        "selection_digest_mismatches": 0,
+        "procedure_mismatches": 0,
+        "inflight_adapter_requests_cancelled": 8,
+        "inflight_adapter_requests_restarted_from_fresh_prefill": 8,
+        "adapter_restart_output_mismatches": 0,
+        "inflight_adapter_cancelled_request_id_set_digest": "sha256:ab2ffb3522bfbe4b90316b06e9a5169d33111ae519a292c2cc7ebfdb3fb2a3fe",
+        "inflight_adapter_restarted_request_id_set_digest": "sha256:ab2ffb3522bfbe4b90316b06e9a5169d33111ae519a292c2cc7ebfdb3fb2a3fe",
+        "invalidation_matrix_cases": {
+          "adapter_generation_inflight_revocation": 1,
+          "adapter_generation_inflight_supersession": 1,
+          "adapter_generation_lag_revocation": 1,
+          "adapter_generation_lag_supersession": 1,
+          "adapter_generation_normal_revocation": 1,
+          "adapter_generation_normal_supersession": 1,
+          "adapter_generation_restore_revocation": 1,
+          "adapter_generation_restore_supersession": 1,
+          "base_model_inflight_revocation": 1,
+          "base_model_inflight_supersession": 1,
+          "base_model_lag_revocation": 1,
+          "base_model_lag_supersession": 1,
+          "base_model_normal_revocation": 1,
+          "base_model_normal_supersession": 1,
+          "base_model_restore_revocation": 1,
+          "base_model_restore_supersession": 1,
+          "derived_input_inflight_revocation": 1,
+          "derived_input_inflight_supersession": 1,
+          "derived_input_lag_revocation": 1,
+          "derived_input_lag_supersession": 1,
+          "derived_input_normal_revocation": 1,
+          "derived_input_normal_supersession": 1,
+          "derived_input_restore_revocation": 1,
+          "derived_input_restore_supersession": 1,
+          "memory_input_inflight_revocation": 1,
+          "memory_input_inflight_supersession": 1,
+          "memory_input_lag_revocation": 1,
+          "memory_input_lag_supersession": 1,
+          "memory_input_normal_revocation": 1,
+          "memory_input_normal_supersession": 1,
+          "memory_input_restore_revocation": 1,
+          "memory_input_restore_supersession": 1,
+          "semantic_input_inflight_revocation": 1,
+          "semantic_input_inflight_supersession": 1,
+          "semantic_input_lag_revocation": 1,
+          "semantic_input_lag_supersession": 1,
+          "semantic_input_normal_revocation": 1,
+          "semantic_input_normal_supersession": 1,
+          "semantic_input_restore_revocation": 1,
+          "semantic_input_restore_supersession": 1
+        },
+        "invalidation_matrix_stale_hits": {
+          "adapter_generation_inflight_revocation": 0,
+          "adapter_generation_inflight_supersession": 0,
+          "adapter_generation_lag_revocation": 0,
+          "adapter_generation_lag_supersession": 0,
+          "adapter_generation_normal_revocation": 0,
+          "adapter_generation_normal_supersession": 0,
+          "adapter_generation_restore_revocation": 0,
+          "adapter_generation_restore_supersession": 0,
+          "base_model_inflight_revocation": 0,
+          "base_model_inflight_supersession": 0,
+          "base_model_lag_revocation": 0,
+          "base_model_lag_supersession": 0,
+          "base_model_normal_revocation": 0,
+          "base_model_normal_supersession": 0,
+          "base_model_restore_revocation": 0,
+          "base_model_restore_supersession": 0,
+          "derived_input_inflight_revocation": 0,
+          "derived_input_inflight_supersession": 0,
+          "derived_input_lag_revocation": 0,
+          "derived_input_lag_supersession": 0,
+          "derived_input_normal_revocation": 0,
+          "derived_input_normal_supersession": 0,
+          "derived_input_restore_revocation": 0,
+          "derived_input_restore_supersession": 0,
+          "memory_input_inflight_revocation": 0,
+          "memory_input_inflight_supersession": 0,
+          "memory_input_lag_revocation": 0,
+          "memory_input_lag_supersession": 0,
+          "memory_input_normal_revocation": 0,
+          "memory_input_normal_supersession": 0,
+          "memory_input_restore_revocation": 0,
+          "memory_input_restore_supersession": 0,
+          "semantic_input_inflight_revocation": 0,
+          "semantic_input_inflight_supersession": 0,
+          "semantic_input_lag_revocation": 0,
+          "semantic_input_lag_supersession": 0,
+          "semantic_input_normal_revocation": 0,
+          "semantic_input_normal_supersession": 0,
+          "semantic_input_restore_revocation": 0,
+          "semantic_input_restore_supersession": 0
+        },
+        "model_pin_mismatches": 0
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "coverage_unsupported": 0,
+        "falsifiers_tripped": 0,
+        "falsifiers_unsupported": 0
+      }
+    }
+  ],
+  "static_evidence": [],
+  "report": "# R009 layer-shared-lora-kv: COMPLETED\n\nSeeds: 17, 29, 43, 71, 101. Every seed must hold every coverage and falsifier rule.\n\n- seed 17: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 29: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 43: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 71: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 101: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n\n\nLimitations: the code under test is the CPU reference path with a tiny seeded model; no GPU, no large model; a KV-memory saving only: partial hits are computed in full and adopted in checked mode, so no prefill-FLOPs claim is made; a request on a binding with a dead dependency (base model, adapter) is refused at begin, so post-event lookups on stale-eligible entries come from the segment cells; an aLoRA request whose whole prompt is already cached under the base key shares no rows (a measurement, not a rule); timings come from one shared cloud container; no capacity claim.\n"
+}

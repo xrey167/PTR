@@ -4461,6 +4461,7 @@ dependencies = [
  "ptr-exec",
  "ptr-fastmem",
  "ptr-ledger",
+ "ptr-lineage",
  "ptr-model-api",
  "ptr-pg",
  "ptr-pods",

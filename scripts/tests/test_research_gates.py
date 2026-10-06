@@ -5154,7 +5154,7 @@ RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","
 # Listed and held at `planned` until its freeze (its placeholders are pinned then, by the head
 # after the harness and the criteria are final); it is no part of the fixtures that move the six to
 # `prepared`. Once frozen it is a regular listed experiment the repository's own gate checks.
-LISTED_UNFROZEN=("R005",)
+LISTED_UNFROZEN=("R005","R009","R010")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture

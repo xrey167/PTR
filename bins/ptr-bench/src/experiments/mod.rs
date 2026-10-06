@@ -12,9 +12,12 @@ pub mod kv_reuse_smoke;
 pub mod l003;
 #[cfg(feature = "postgres-experiments")]
 pub mod l004;
+pub mod layered_kv;
 #[cfg(feature = "postgres-experiments")]
 mod pg;
 pub mod r005;
+pub mod r009;
+pub mod r010;
 #[cfg_attr(not(feature = "postgres-experiments"), allow(dead_code))]
 mod rng;
 pub mod s003;
