@@ -40,7 +40,7 @@ with a test that fails on the reviewed version:
 *Progress on Step 1 (2026-09-25, same branch).* Items 1.1 and 1.3–1.5 are done for
 A0's own mechanisms. Item 1.2 is done in part: as an A0-internal study on a
 synthetic set only (the two imported hash-verified bundles were not used), not as
-the matched baseline comparison, which still waits on 1.6 (owner decision O2):
+the matched baseline comparison, which still waits on 1.6 (owner decision O2, decided 2026-10-06, ADR-0021):
 
 | Item | What changed | Where |
 |---|---|---|
@@ -157,7 +157,7 @@ in this step runs on the CPU `flex` backend that A0 already uses.
 | 1.3 | Run the experiments through `scripts/run_experiment.py`, and add an aggregation step that turns per-seed records into `metrics.json`. | No committed evidence has come through the runner so far. Per-experiment scripts overwrite fixed file names (`experiments/lifecycle/L001-revocation-crash/aggregate.py:21,38`), and `required_artifacts` expects a `metrics.json` that the runner never produces (`scripts/run_experiment.py:241`). 20 of 21 manifests have `entrypoint = ""`, and the validator refuses any active experiment without one (`scripts/run_experiment.py:83-85`), so each of M001–M004 needs a real entrypoint first. |
 | 1.4 | Fill in `hardware/default.toml` with measured values, and record the profile *contents* in the evidence, not just its path. | 20 of 21 experiments point at a profile whose fields are all `unspecified`. |
 | 1.5 | Make one benchmark suite real, either `semantic-typing` or `operator-routing`: data, scorer, harness, and a reference from the experiment manifest. | All 10 suites under `benchmarks/` are metric-name lists that nothing references. |
-| 1.6 | Pin the plain-model baseline's backbone revision. | `research/baselines/plain_model` is unpinned. Until it is pinned, no M00x comparison against a plain model is valid. |
+| 1.6 | Pin the plain-model baseline's backbone revision. | `research/baselines/plain_model` is unpinned. Until it is pinned, no M00x comparison against a plain model is valid. (O2 decided 2026-10-06, ADR-0021: the A0-matched plain model is the A0-tier baseline.) |
 
 **Result of Step 1:** a statement such as "semantic slots improve operator-routing
 accuracy by X ± Y over the ablation across 5 seeds", or an honest negative result
@@ -295,7 +295,7 @@ one is working on.
 
 Each decision states my recommendation. They are numbered O1–O6 so they do not
 collide with the D1–D6 decisions in issue #23. Two of them gate earlier steps:
-- **O2 gates Step 1.** `check_research_gates.py:29-34` refuses to let M001–M005 be
+- **O2 gates Step 1** (decided 2026-10-06, ADR-0021). `check_research_gates.py:29-34` refuses to let M001–M005 be
   declared running until the plain-model backbone is pinned.
 - **O6 gates item 2.3.**
 
@@ -304,7 +304,7 @@ The others block nothing in Steps 1 to 4.
 | # | Decision | Recommendation |
 |---|---|---|
 | O1 | How should A0 grow after the M001–M004 run? It has no LM head, one layer and single-head attention. | If M001–M004 show an effect, test the mechanisms as an adapter on a small pretrained backbone rather than scaling A0 from scratch. If they do not, record the negative result before changing the design. |
-| O2 | Which backbone for the plain-model baseline and for continued pretraining (ADR-0015)? | Pick one small open model, pin its revision once, and use it for both. It unblocks E002, the M00x gates and R003 together. |
+| O2 | Which backbone for the plain-model baseline and for continued pretraining (ADR-0015)? | Pick one small open model, pin its revision once, and use it for both. It unblocks E002, the M00x gates and R003 together. (decided 2026-10-06, ADR-0021: option (c), hybrid; the pinned A0-matched plain model is the A0-tier baseline and the pretrained LM baseline is deferred to the GPU phase, so E002, R003 and ADR-0015 stay blocked.) |
 | O3 | Continued pretraining for a coding Pod (ADR-0015, Proposed) | Pause it until Step 1 has a result. The corpus `own_code_corpus_v0_1` does not exist, so the dry-run manifest cannot even be built (`training/configs/run-coding-pod-cpt.toml:16`). The R003 trust gate is procedural only, because `check_research_gates.py` has no R003 rule. |
 | O4 | Tier B items B1–B5 in the open-items plan, renumbered D1–D6 in issue #23 (runtime→net dependency, signed receipts, authenticated codebook, accept-loop location, admission-policy journaling, authenticated reconciliation) | Defer them all. They matter for a multi-host deployment, and no binary deploys the network crates yet. `IrohTransport` binds only `127.0.0.1` and gets a new key on every bind (`crates/ptr-net/src/lib.rs:49-52`). |
 | O5 | The eight unconsumed crates (Step 5) | Freeze, as described in Step 5. |

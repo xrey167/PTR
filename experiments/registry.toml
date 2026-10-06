@@ -369,3 +369,8 @@ status = "prepared"
 id = "M001-a0v2-cont-no-semantic-slots"
 path = "model/M001-a0v2-cont-no-semantic-slots"
 status = "prepared"
+
+[[experiment]]
+id = "R012"
+path = "runtime/R012-approximate-taint-containment"
+status = "planned"
