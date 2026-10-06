@@ -24,14 +24,25 @@
 //!   limited ([`CatalogLimits`]). [`KvPrefixCatalog::insert`] evicts unreferenced entries
 //!   in LRU order and returns [`KvCatalogError::CapacityExhausted`] when only pinned
 //!   entries remain; it never exceeds a bound and never evicts a pinned entry.
+//! * **Byte accounting per unique page.** [`KvPrefixCatalog::insert_paged`] charges the
+//!   page bytes once per unique page digest held by live entries (refcounted), so entries
+//!   that share pages do not pay twice and the byte bound binds as configured. The older
+//!   [`KvPrefixCatalog::insert`] charges its single `page_bytes` per entry.
+//! * **Dependency kinds.** A [`KvDependency`] is a segment, an expert (with the expert's
+//!   fence epoch), the base model or an adapter, each with its generation.
+//! * **Snapshot without pages.** [`KvPrefixCatalog::export_entries`] writes a canonical,
+//!   bounded snapshot of keys, lineage, dependencies and charges (never K/V bytes);
+//!   [`KvPrefixCatalog::restore_entries`] strictly decodes it and admits the entries
+//!   without a liveness check. The use-time check (and the backend, for pages that are
+//!   gone) decides at the first use, so a restored entry whose input was revoked, or whose
+//!   pages were lost, misses cleanly.
 //! * **Canonical positions only.** Only a request whose positions start at 0 without
 //!   explicit ids can hit, and only an entry published at `position_offset` 0 is admitted.
 //!
 //! # Not covered here
 //!
-//! The adapter, expert and base-model generation dependencies, per-layer chain keys beyond
-//! the opaque [`KvChainId`], RoPE (doc 36 defect 3) and per-layer pages (defect 5) belong
-//! to later phases. Invalidation reaches this catalog through
+//! Per-layer chain keys beyond the opaque [`KvChainId`], RoPE (doc 36 defect 3) and
+//! per-layer pages (defect 5) belong to later phases. Invalidation reaches this catalog through
 //! `PtrRuntime::apply_committed` for committed revocations, committed supersessions and
 //! committed semantic deltas, never for prepared ones.
 
@@ -45,7 +56,9 @@ use ptr_pods::{
     KvSharedPrefix, KvWitnessRevoker, PagedKvTensorBackend,
 };
 use ptr_semdb::PreparedDelta;
-use ptr_types::{Digest, Generation, ModelVersion, PodId, PrincipalId, ProjectId, Validity};
+use ptr_types::{
+    AdapterVersion, Digest, Generation, ModelVersion, PodId, PrincipalId, ProjectId, Validity,
+};
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -193,6 +206,21 @@ pub enum KvCapacityResource {
     MetadataBytes,
 }
 
+/// One entry on its way into the trie.
+struct Admission {
+    path: Vec<KvChunkKey>,
+    entry_key: EntryKey,
+    prefix: KvSharedPrefix,
+    dependencies: Vec<KvDependency>,
+    charge: PageCharge,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Eviction {
+    Lru,
+    Refuse,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KvCatalogError {
     /// Pinned entries leave no evictable capacity; the request proceeds as an uncached
@@ -212,6 +240,9 @@ pub enum KvCatalogError {
     /// reclaimed when its last pin is released; until then the slot is refused rather than
     /// overwritten, so accounting and pins stay symmetric.
     SlotDraining,
+    /// The per-page charges do not describe the prefix's pages, or one page digest is
+    /// charged with two different byte sizes.
+    PageChargeMismatch,
 }
 
 impl fmt::Display for KvCatalogError {
@@ -226,6 +257,7 @@ impl fmt::Display for KvCatalogError {
             Self::DependencyNotLive => write!(f, "a prefix dependency is no longer live"),
             Self::DuplicateEntry => write!(f, "a different prefix already holds this entry"),
             Self::SlotDraining => write!(f, "the slot is held by a cancelled, still pinned entry"),
+            Self::PageChargeMismatch => write!(f, "page charges do not match the prefix pages"),
         }
     }
 }
@@ -237,8 +269,13 @@ impl std::error::Error for KvCatalogError {}
 pub enum KvDependencyKind {
     /// A prompt segment of the given kind (never `Raw`).
     Segment(SegmentKind),
-    /// A pod-MoE expert whose weights shaped the cached K/V (doc 36 section D, P2c).
+    /// A pod-MoE expert whose weights shaped the cached K/V (doc 36 section D, P2c). Its
+    /// [`KvDependency::fence_epoch`] is the expert's transition epoch at insert.
     Expert,
+    /// The base model whose weights shaped the cached K/V.
+    BaseModel,
+    /// An adapter applied while the K/V was computed.
+    Adapter,
 }
 
 /// A generation-bearing input an entry's K/V was computed from.
@@ -250,9 +287,51 @@ pub struct KvDependency {
     pub identity: String,
     pub generation: Generation,
     pub content_digest: Digest,
+    /// For an [`KvDependencyKind::Expert`], the expert's fence (transition) epoch the
+    /// K/V was computed under; `0` means none was recorded. Any other kind carries `0`.
+    /// A fence at a higher epoch invalidates the entry
+    /// ([`KvPrefixCatalog::invalidate_expert_fences`]); an entry that recorded no epoch is
+    /// invalidated by every fence (fail closed).
+    pub fence_epoch: u64,
 }
 
 impl KvDependency {
+    /// A base-model dependency under the lifecycle identity `identity`.
+    pub fn base_model(identity: &str, generation: Generation, content_digest: Digest) -> Self {
+        Self {
+            kind: KvDependencyKind::BaseModel,
+            identity: identity.to_owned(),
+            generation,
+            content_digest,
+            fence_epoch: 0,
+        }
+    }
+
+    /// An adapter dependency under the lifecycle identity `identity`.
+    pub fn adapter(identity: &str, generation: Generation, content_digest: Digest) -> Self {
+        Self {
+            kind: KvDependencyKind::Adapter,
+            identity: identity.to_owned(),
+            generation,
+            content_digest,
+            fence_epoch: 0,
+        }
+    }
+
+    /// An expert dependency that also records the expert's fence epoch.
+    pub fn expert_fenced(
+        project: &ProjectId,
+        pod: &PodId,
+        generation: Generation,
+        content_digest: Digest,
+        fence_epoch: u64,
+    ) -> Self {
+        Self {
+            fence_epoch,
+            ..Self::expert(project, pod, generation, content_digest)
+        }
+    }
+
     /// An expert dependency, identified as `expert:{project}/{pod}`, the key under which
     /// the materialized state records the expert.
     pub fn expert(
@@ -266,6 +345,7 @@ impl KvDependency {
             identity: expert_identity(project, pod),
             generation,
             content_digest,
+            fence_epoch: 0,
         }
     }
 }
@@ -312,6 +392,34 @@ pub struct KvInsert<'a> {
     /// [`KvDependency::expert`]) whose weights shaped the pages. They are checked for
     /// liveness at insert and at every use, and can be invalidated by identity.
     pub extra_dependencies: Vec<KvDependency>,
+}
+
+/// Bytes of one backend page, charged once however many entries hold it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvPageCharge {
+    pub digest: Digest,
+    pub bytes: u64,
+}
+
+/// A finished prefill offered with per-page byte charges ([`KvPrefixCatalog::insert_paged`]).
+#[derive(Debug)]
+pub struct KvPagedInsert<'a> {
+    pub salt: &'a KvSalt,
+    pub chain: &'a KvChainId,
+    pub request: &'a SegmentedModelRequest,
+    pub prefix: KvSharedPrefix,
+    /// One charge per unique digest of `prefix.page_digests`, in first-occurrence order.
+    pub pages: Vec<KvPageCharge>,
+    pub extra_dependencies: Vec<KvDependency>,
+}
+
+/// How an entry's bytes are charged.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PageCharge {
+    /// One figure for the whole entry, never shared.
+    Lump(u64),
+    /// Per unique page digest, shared with every other entry holding the page.
+    Pages(Vec<KvPageCharge>),
 }
 
 type EntryKey = (KvChainId, Digest);
@@ -397,6 +505,10 @@ pub struct KvCatalogStats {
     pub misses: u64,
     pub evictions: u64,
     pub capacity_refusals: u64,
+    /// Entries admitted by [`KvPrefixCatalog::restore_entries`].
+    pub restored_entries: u64,
+    /// Entries dropped because the backend no longer holds their prefix at fork time.
+    pub backend_missing_rejections: u64,
     pub noncanonical_misses: u64,
     pub use_time_rejections: u64,
     pub cancelled_pins: u64,
@@ -406,7 +518,7 @@ pub struct KvCatalogStats {
 struct Entry {
     prefix: KvSharedPrefix,
     dependencies: Vec<KvDependency>,
-    page_bytes: u64,
+    charge: PageCharge,
     metadata_bytes: u64,
     refcount: u32,
     tombstoned: bool,
@@ -430,6 +542,8 @@ pub struct KvPrefixCatalog {
     nodes: BTreeMap<KvChunkKey, Node>,
     by_identity: BTreeMap<String, BTreeSet<(KvChunkKey, EntryKey)>>,
     live_key_refs: BTreeMap<KvPrefixKey, usize>,
+    /// Unique page digest to (bytes, live entries holding it).
+    page_refs: BTreeMap<Digest, (u64, usize)>,
     retire_queue: Vec<KvPrefixKey>,
     page_bytes: u64,
     metadata_bytes: u64,
@@ -464,6 +578,7 @@ impl KvPrefixCatalog {
             nodes: BTreeMap::new(),
             by_identity: BTreeMap::new(),
             live_key_refs: BTreeMap::new(),
+            page_refs: BTreeMap::new(),
             retire_queue: Vec::new(),
             page_bytes: 0,
             metadata_bytes: 0,
@@ -611,6 +726,12 @@ impl KvPrefixCatalog {
         match backend.fork_prefix_admitted(cache, &prefix, witness) {
             Ok(()) => Ok(pin),
             Err(error) => {
+                if matches!(error, KvBackendError::PrefixNotFound) {
+                    // A restored (or otherwise stale) entry whose pages are gone: drop it so
+                    // the next lookup misses without another failed fork.
+                    self.stats.backend_missing_rejections += 1;
+                    self.tombstone_entry(&pin.node, &pin.entry);
+                }
                 self.release(&pin);
                 Err(KvForkError::Backend(error))
             }
@@ -646,10 +767,11 @@ impl KvPrefixCatalog {
         true
     }
 
-    /// Offer a finished prefill. Evicts unreferenced entries in LRU order to make room and
-    /// returns [`KvCatalogError::CapacityExhausted`] when only pinned entries remain, so
-    /// the bounds are never exceeded. Prefixes made unreferenced by eviction are queued for
-    /// [`Self::take_retirements`].
+    /// Offer a finished prefill, charging `page_bytes` to this one entry (nothing is shared
+    /// across entries; prefer [`Self::insert_paged`]). Evicts unreferenced entries in LRU
+    /// order to make room and returns [`KvCatalogError::CapacityExhausted`] when only pinned
+    /// entries remain, so the bounds are never exceeded. Prefixes made unreferenced by
+    /// eviction are queued for [`Self::take_retirements`].
     pub fn insert(
         &mut self,
         insert: KvInsert<'_>,
@@ -663,12 +785,67 @@ impl KvPrefixCatalog {
             page_bytes,
             extra_dependencies,
         } = insert;
+        self.insert_charged(
+            (salt, chain, request),
+            prefix,
+            PageCharge::Lump(page_bytes),
+            extra_dependencies,
+            liveness,
+        )
+    }
+
+    /// Like [`Self::insert`], with per-page charges: each unique page digest is charged
+    /// once while any live entry holds it, so shared pages are not counted twice.
+    pub fn insert_paged(
+        &mut self,
+        insert: KvPagedInsert<'_>,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<(), KvCatalogError> {
+        let KvPagedInsert {
+            salt,
+            chain,
+            request,
+            prefix,
+            pages,
+            extra_dependencies,
+        } = insert;
+        let mut unique: Vec<Digest> = Vec::new();
+        for digest in &prefix.page_digests {
+            if !unique.contains(digest) {
+                unique.push(*digest);
+            }
+        }
+        if pages.len() != unique.len()
+            || pages
+                .iter()
+                .zip(&unique)
+                .any(|(page, digest)| page.digest != *digest)
+        {
+            return Err(KvCatalogError::PageChargeMismatch);
+        }
+        self.insert_charged(
+            (salt, chain, request),
+            prefix,
+            PageCharge::Pages(pages),
+            extra_dependencies,
+            liveness,
+        )
+    }
+
+    fn insert_charged(
+        &mut self,
+        (salt, chain, request): (&KvSalt, &KvChainId, &SegmentedModelRequest),
+        prefix: KvSharedPrefix,
+        charge: PageCharge,
+        extra_dependencies: Vec<KvDependency>,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<(), KvCatalogError> {
         if prefix.position_offset != 0 {
             return Err(KvCatalogError::NonCanonicalPosition);
         }
         let tokens = request.tokens();
         let covered = prefix.sequence_length;
-        if covered == 0 || covered % KV_CHUNK_TOKENS != 0 || covered > tokens.len() {
+        if covered == 0 || !covered.is_multiple_of(KV_CHUNK_TOKENS) || covered > tokens.len() {
             return Err(KvCatalogError::PrefixShape);
         }
         let (lineage, mut dependencies) = prefix_lineage(request, &tokens, covered);
@@ -684,8 +861,97 @@ impl KvPrefixCatalog {
             .into_iter()
             .take(covered / KV_CHUNK_TOKENS)
             .collect();
+        self.admit(
+            Admission {
+                path,
+                entry_key: (*chain, lineage),
+                prefix,
+                dependencies,
+                charge,
+            },
+            Eviction::Lru,
+        )
+    }
+
+    /// Bytes that admitting `charge` would add: the whole lump, or the pages no live entry
+    /// holds yet. A digest charged with two sizes is refused.
+    fn added_page_bytes(&self, charge: &PageCharge) -> Result<u64, KvCatalogError> {
+        match charge {
+            PageCharge::Lump(bytes) => Ok(*bytes),
+            PageCharge::Pages(pages) => {
+                let mut added = 0u64;
+                let mut seen: BTreeMap<Digest, u64> = BTreeMap::new();
+                for page in pages {
+                    if seen
+                        .insert(page.digest, page.bytes)
+                        .is_some_and(|b| b != page.bytes)
+                    {
+                        return Err(KvCatalogError::PageChargeMismatch);
+                    }
+                    match self.page_refs.get(&page.digest) {
+                        Some((bytes, _)) if *bytes != page.bytes => {
+                            return Err(KvCatalogError::PageChargeMismatch)
+                        }
+                        Some(_) => {}
+                        None => added = added.saturating_add(page.bytes),
+                    }
+                }
+                Ok(added)
+            }
+        }
+    }
+
+    fn acquire_pages(&mut self, charge: &PageCharge) {
+        match charge {
+            PageCharge::Lump(bytes) => self.page_bytes += bytes,
+            PageCharge::Pages(pages) => {
+                let mut counted: BTreeSet<Digest> = BTreeSet::new();
+                for page in pages {
+                    if !counted.insert(page.digest) {
+                        continue;
+                    }
+                    let slot = self.page_refs.entry(page.digest).or_insert_with(|| {
+                        self.page_bytes += page.bytes;
+                        (page.bytes, 0)
+                    });
+                    slot.1 += 1;
+                }
+            }
+        }
+    }
+
+    fn release_pages(&mut self, charge: &PageCharge) {
+        match charge {
+            PageCharge::Lump(bytes) => self.page_bytes -= bytes,
+            PageCharge::Pages(pages) => {
+                let mut counted: BTreeSet<Digest> = BTreeSet::new();
+                for page in pages {
+                    if !counted.insert(page.digest) {
+                        continue;
+                    }
+                    if let Some(slot) = self.page_refs.get_mut(&page.digest) {
+                        slot.1 -= 1;
+                        if slot.1 == 0 {
+                            self.page_bytes -= slot.0;
+                            self.page_refs.remove(&page.digest);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Admit one entry under the bounds. No liveness check: callers that need one (insert)
+    /// make it first; a restore deliberately does not.
+    fn admit(&mut self, admission: Admission, eviction: Eviction) -> Result<(), KvCatalogError> {
+        let Admission {
+            path,
+            entry_key,
+            prefix,
+            dependencies,
+            charge,
+        } = admission;
         let leaf = *path.last().ok_or(KvCatalogError::PrefixShape)?;
-        let entry_key = (*chain, lineage);
         if let Some(existing) = self.entry(&leaf, &entry_key) {
             if existing.tombstoned {
                 return Err(KvCatalogError::SlotDraining);
@@ -702,15 +968,20 @@ impl KvPrefixCatalog {
                 .iter()
                 .map(|dep| dep.identity.len() as u64)
                 .sum::<u64>()
-            + 32 * prefix.page_digests.len() as u64;
+            + 32 * prefix.page_digests.len() as u64
+            + match &charge {
+                PageCharge::Lump(_) => 0,
+                PageCharge::Pages(pages) => 8 * pages.len() as u64,
+            };
         loop {
             let missing = path
                 .iter()
                 .filter(|key| !self.nodes.contains_key(key))
                 .count();
+            let added = self.added_page_bytes(&charge)?;
             let refused = if self.nodes.len() + missing > self.limits.max_trie_nodes {
                 Some(KvCapacityResource::TrieNodes)
-            } else if self.page_bytes.saturating_add(page_bytes) > self.limits.max_kv_page_bytes {
+            } else if self.page_bytes.saturating_add(added) > self.limits.max_kv_page_bytes {
                 Some(KvCapacityResource::KvPageBytes)
             } else if self
                 .metadata_bytes
@@ -723,7 +994,7 @@ impl KvPrefixCatalog {
                 None
             };
             let Some(resource) = refused else { break };
-            if !self.evict_lru() {
+            if eviction == Eviction::Refuse || !self.evict_lru() {
                 self.stats.capacity_refusals += 1;
                 return Err(KvCatalogError::CapacityExhausted(resource));
             }
@@ -754,7 +1025,7 @@ impl KvPrefixCatalog {
                 .insert((leaf, entry_key));
         }
         *self.live_key_refs.entry(prefix.key.clone()).or_default() += 1;
-        self.page_bytes += page_bytes;
+        self.acquire_pages(&charge);
         self.metadata_bytes += metadata_bytes;
         let node = self.nodes.get_mut(&leaf).expect("leaf node was created");
         node.entries.insert(
@@ -762,7 +1033,7 @@ impl KvPrefixCatalog {
             Entry {
                 prefix,
                 dependencies,
-                page_bytes,
+                charge,
                 metadata_bytes,
                 refcount: 0,
                 tombstoned: false,
@@ -842,6 +1113,38 @@ impl KvPrefixCatalog {
         self.tombstone_matching(&wanted, |dep| {
             live.get(&dep.identity)
                 .is_some_and(|generation| dep.generation < *generation)
+        });
+        self.take_retirements()
+    }
+
+    /// Tombstone every expert dependency whose recorded fence epoch is below the epoch now
+    /// in force for its identity (an entry that recorded none, `0`, counts as below).
+    /// Other kinds and other identities are untouched.
+    pub fn invalidate_expert_fences(&mut self, fences: &BTreeMap<String, u64>) -> Vec<KvPrefixKey> {
+        let wanted: BTreeSet<&str> = fences.keys().map(String::as_str).collect();
+        self.tombstone_matching(&wanted, |dep| {
+            dep.kind == KvDependencyKind::Expert
+                && fences
+                    .get(&dep.identity)
+                    .is_some_and(|epoch| dep.fence_epoch < *epoch)
+        });
+        self.take_retirements()
+    }
+
+    /// Tombstone every `kind` dependency below the generation now live for its identity: a
+    /// base-model or adapter generation bump. Entries of other kinds are untouched even
+    /// when they share the identity string.
+    pub fn invalidate_kind_superseded(
+        &mut self,
+        kind: KvDependencyKind,
+        live: &BTreeMap<String, Generation>,
+    ) -> Vec<KvPrefixKey> {
+        let wanted: BTreeSet<&str> = live.keys().map(String::as_str).collect();
+        self.tombstone_matching(&wanted, |dep| {
+            dep.kind == kind
+                && live
+                    .get(&dep.identity)
+                    .is_some_and(|generation| dep.generation < *generation)
         });
         self.take_retirements()
     }
@@ -935,7 +1238,7 @@ impl KvPrefixCatalog {
         let Some(entry) = node.entries.remove(entry_key) else {
             return;
         };
-        self.page_bytes -= entry.page_bytes;
+        self.release_pages(&entry.charge);
         self.metadata_bytes -= entry.metadata_bytes;
         for dependency in &entry.dependencies {
             if let Some(set) = self.by_identity.get_mut(&dependency.identity) {
@@ -1023,6 +1326,7 @@ fn prefix_lineage(
                     identity,
                     generation,
                     content_digest,
+                    fence_epoch: 0,
                 };
                 if !dependencies.contains(&dependency) {
                     dependencies.push(dependency);
@@ -1043,6 +1347,446 @@ fn kind_tag(kind: SegmentKind) -> u8 {
     }
 }
 
+// Snapshot -------------------------------------------------------------------------------
+
+const SNAPSHOT_MAGIC: &[u8; 8] = b"PTRKVC01";
+const SNAPSHOT_DOMAIN: &[u8] = b"ptr.kv.catalog-snapshot.v1\0";
+/// Largest snapshot exported or accepted.
+pub const KV_SNAPSHOT_MAX_BYTES: usize = 64 * 1024 * 1024;
+const SNAPSHOT_MAX_DEPENDENCIES: usize = 1024;
+const SNAPSHOT_MAX_PAGES: usize = 1 << 16;
+const SNAPSHOT_MAX_TEXT: usize = 4096;
+
+/// Why a catalog snapshot could not be exported or restored.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum KvSnapshotError {
+    /// The snapshot exceeds [`KV_SNAPSHOT_MAX_BYTES`].
+    TooLarge,
+    /// Restore needs an empty catalog.
+    NotEmpty,
+    /// Wrong magic or version.
+    BadMagic,
+    /// The trailing digest does not match the body.
+    BadChecksum,
+    /// The bytes end inside a field.
+    Truncated,
+    /// A count or length exceeds its bound.
+    LimitExceeded(&'static str),
+    /// The bytes decode but are not the canonical encoding (order, duplicates, trailing
+    /// bytes, an unknown tag) or an entry is internally inconsistent.
+    NonCanonical(&'static str),
+    /// The entries do not fit this catalog's limits; nothing was admitted.
+    Admission(KvCatalogError),
+}
+
+impl fmt::Display for KvSnapshotError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge => write!(f, "KV catalog snapshot is too large"),
+            Self::NotEmpty => write!(f, "restore needs an empty KV prefix catalog"),
+            Self::BadMagic => write!(f, "not a KV catalog snapshot"),
+            Self::BadChecksum => write!(f, "KV catalog snapshot digest mismatch"),
+            Self::Truncated => write!(f, "KV catalog snapshot is truncated"),
+            Self::LimitExceeded(what) => write!(f, "KV catalog snapshot bound exceeded: {what}"),
+            Self::NonCanonical(what) => write!(f, "KV catalog snapshot is not canonical: {what}"),
+            Self::Admission(error) => write!(f, "snapshot entries were refused: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for KvSnapshotError {}
+
+/// What a restore admitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvRestoreReport {
+    pub entries: usize,
+}
+
+struct SnapshotEntry {
+    path: Vec<KvChunkKey>,
+    entry_key: EntryKey,
+    prefix: KvSharedPrefix,
+    dependencies: Vec<KvDependency>,
+    charge: PageCharge,
+}
+
+fn put_u32(out: &mut Vec<u8>, value: usize) {
+    out.extend_from_slice(&(value as u32).to_le_bytes());
+}
+
+fn put_str(out: &mut Vec<u8>, text: &str) {
+    put_u32(out, text.len());
+    out.extend_from_slice(text.as_bytes());
+}
+
+fn dependency_tag(kind: KvDependencyKind) -> (u8, u8) {
+    match kind {
+        KvDependencyKind::Segment(segment) => (0, kind_tag(segment)),
+        KvDependencyKind::Expert => (1, 0),
+        KvDependencyKind::BaseModel => (2, 0),
+        KvDependencyKind::Adapter => (3, 0),
+    }
+}
+
+fn dependency_from_tag(tag: u8, segment: u8) -> Option<KvDependencyKind> {
+    match (tag, segment) {
+        (0, 1) => Some(KvDependencyKind::Segment(SegmentKind::Semantic)),
+        (0, 2) => Some(KvDependencyKind::Segment(SegmentKind::Memory)),
+        (0, 3) => Some(KvDependencyKind::Segment(SegmentKind::Derived)),
+        (1, 0) => Some(KvDependencyKind::Expert),
+        (2, 0) => Some(KvDependencyKind::BaseModel),
+        (3, 0) => Some(KvDependencyKind::Adapter),
+        _ => None,
+    }
+}
+
+fn encode_snapshot(entries: &[SnapshotEntry]) -> Result<Vec<u8>, KvSnapshotError> {
+    let mut out = Vec::new();
+    out.extend_from_slice(SNAPSHOT_MAGIC);
+    put_u32(&mut out, entries.len());
+    for entry in entries {
+        put_u32(&mut out, entry.path.len());
+        for key in &entry.path {
+            out.extend_from_slice(&key.parent);
+            out.extend_from_slice(&key.chunk_digest);
+            out.extend_from_slice(&key.salt);
+        }
+        out.extend_from_slice(&entry.entry_key.0 .0);
+        out.extend_from_slice(&entry.entry_key.1);
+        let key = &entry.prefix.key;
+        put_str(&mut out, &key.principal.0);
+        out.extend_from_slice(&key.execution_manifest);
+        put_str(&mut out, &key.model.0);
+        put_str(&mut out, &key.adapter.0);
+        out.extend_from_slice(&key.generation.0.to_le_bytes());
+        out.extend_from_slice(&key.schema_digest);
+        out.extend_from_slice(&key.prefix_digest);
+        out.extend_from_slice(&(entry.prefix.sequence_length as u64).to_le_bytes());
+        put_u32(&mut out, entry.prefix.page_digests.len());
+        for digest in &entry.prefix.page_digests {
+            out.extend_from_slice(digest);
+        }
+        match &entry.charge {
+            PageCharge::Lump(bytes) => {
+                out.push(0);
+                out.extend_from_slice(&bytes.to_le_bytes());
+            }
+            PageCharge::Pages(pages) => {
+                out.push(1);
+                put_u32(&mut out, pages.len());
+                for page in pages {
+                    out.extend_from_slice(&page.digest);
+                    out.extend_from_slice(&page.bytes.to_le_bytes());
+                }
+            }
+        }
+        put_u32(&mut out, entry.dependencies.len());
+        for dependency in &entry.dependencies {
+            let (tag, segment) = dependency_tag(dependency.kind);
+            out.push(tag);
+            out.push(segment);
+            put_str(&mut out, &dependency.identity);
+            out.extend_from_slice(&dependency.generation.0.to_le_bytes());
+            out.extend_from_slice(&dependency.content_digest);
+            out.extend_from_slice(&dependency.fence_epoch.to_le_bytes());
+        }
+        if out.len() > KV_SNAPSHOT_MAX_BYTES {
+            return Err(KvSnapshotError::TooLarge);
+        }
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(SNAPSHOT_DOMAIN);
+    hasher.update(&out);
+    let trailer: [u8; 32] = hasher.finalize().into();
+    out.extend_from_slice(&trailer);
+    if out.len() > KV_SNAPSHOT_MAX_BYTES {
+        return Err(KvSnapshotError::TooLarge);
+    }
+    Ok(out)
+}
+
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, len: usize) -> Result<&'a [u8], KvSnapshotError> {
+        let end = self.at.checked_add(len).ok_or(KvSnapshotError::Truncated)?;
+        let slice = self
+            .bytes
+            .get(self.at..end)
+            .ok_or(KvSnapshotError::Truncated)?;
+        self.at = end;
+        Ok(slice)
+    }
+
+    fn u8(&mut self) -> Result<u8, KvSnapshotError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<usize, KvSnapshotError> {
+        let raw: [u8; 4] = self.take(4)?.try_into().expect("four bytes");
+        Ok(u32::from_le_bytes(raw) as usize)
+    }
+
+    fn u64(&mut self) -> Result<u64, KvSnapshotError> {
+        let raw: [u8; 8] = self.take(8)?.try_into().expect("eight bytes");
+        Ok(u64::from_le_bytes(raw))
+    }
+
+    fn digest(&mut self) -> Result<[u8; 32], KvSnapshotError> {
+        Ok(self.take(32)?.try_into().expect("32 bytes"))
+    }
+
+    fn text(&mut self) -> Result<String, KvSnapshotError> {
+        let len = self.u32()?;
+        if len > SNAPSHOT_MAX_TEXT {
+            return Err(KvSnapshotError::LimitExceeded("text length"));
+        }
+        String::from_utf8(self.take(len)?.to_vec())
+            .map_err(|_| KvSnapshotError::NonCanonical("text is not UTF-8"))
+    }
+}
+
+fn decode_snapshot(
+    bytes: &[u8],
+    limits: &CatalogLimits,
+) -> Result<Vec<SnapshotEntry>, KvSnapshotError> {
+    if bytes.len() > KV_SNAPSHOT_MAX_BYTES {
+        return Err(KvSnapshotError::TooLarge);
+    }
+    if bytes.len() < SNAPSHOT_MAGIC.len() + 4 + 32 {
+        return Err(if bytes.starts_with(SNAPSHOT_MAGIC) || bytes.len() >= 8 {
+            KvSnapshotError::Truncated
+        } else {
+            KvSnapshotError::BadMagic
+        });
+    }
+    if !bytes.starts_with(SNAPSHOT_MAGIC) {
+        return Err(KvSnapshotError::BadMagic);
+    }
+    let (body, trailer) = bytes.split_at(bytes.len() - 32);
+    let mut hasher = Sha256::new();
+    hasher.update(SNAPSHOT_DOMAIN);
+    hasher.update(body);
+    let expected: [u8; 32] = hasher.finalize().into();
+    if expected != trailer {
+        return Err(KvSnapshotError::BadChecksum);
+    }
+    let mut reader = Reader {
+        bytes: body,
+        at: SNAPSHOT_MAGIC.len(),
+    };
+    let count = reader.u32()?;
+    if count > limits.max_trie_nodes {
+        return Err(KvSnapshotError::LimitExceeded("entry count"));
+    }
+    let mut entries: Vec<SnapshotEntry> = Vec::new();
+    for _ in 0..count {
+        let depth = reader.u32()?;
+        if depth == 0 {
+            return Err(KvSnapshotError::NonCanonical("empty path"));
+        }
+        if depth > limits.max_trie_nodes {
+            return Err(KvSnapshotError::LimitExceeded("path depth"));
+        }
+        let mut path = Vec::new();
+        for _ in 0..depth {
+            path.push(KvChunkKey {
+                parent: reader.digest()?,
+                chunk_digest: reader.digest()?,
+                salt: reader.digest()?,
+            });
+        }
+        let salt = KvSalt(path[0].salt);
+        let mut parent = KvChunkKey::root_parent(&salt);
+        for key in &path {
+            if key.salt != salt.0 || key.parent != parent {
+                return Err(KvSnapshotError::NonCanonical("path is not a chain"));
+            }
+            parent = key.node_digest();
+        }
+        let chain = KvChainId(reader.digest()?);
+        let lineage = reader.digest()?;
+        let key = KvPrefixKey {
+            principal: PrincipalId::from(reader.text()?.as_str()),
+            execution_manifest: reader.digest()?,
+            model: ModelVersion::from(reader.text()?.as_str()),
+            adapter: AdapterVersion::from(reader.text()?.as_str()),
+            generation: Generation(reader.u64()?),
+            schema_digest: reader.digest()?,
+            prefix_digest: reader.digest()?,
+        };
+        let sequence_length = reader.u64()?;
+        if sequence_length != (depth * KV_CHUNK_TOKENS) as u64 {
+            return Err(KvSnapshotError::NonCanonical("length does not match path"));
+        }
+        let page_count = reader.u32()?;
+        if page_count > SNAPSHOT_MAX_PAGES {
+            return Err(KvSnapshotError::LimitExceeded("page digests"));
+        }
+        let mut page_digests = Vec::new();
+        for _ in 0..page_count {
+            page_digests.push(reader.digest()?);
+        }
+        let charge = match reader.u8()? {
+            0 => PageCharge::Lump(reader.u64()?),
+            1 => {
+                let charged = reader.u32()?;
+                if charged > SNAPSHOT_MAX_PAGES {
+                    return Err(KvSnapshotError::LimitExceeded("page charges"));
+                }
+                let mut pages = Vec::new();
+                for _ in 0..charged {
+                    pages.push(KvPageCharge {
+                        digest: reader.digest()?,
+                        bytes: reader.u64()?,
+                    });
+                }
+                let mut unique: Vec<Digest> = Vec::new();
+                for digest in &page_digests {
+                    if !unique.contains(digest) {
+                        unique.push(*digest);
+                    }
+                }
+                if pages.len() != unique.len()
+                    || pages
+                        .iter()
+                        .zip(&unique)
+                        .any(|(page, digest)| page.digest != *digest)
+                {
+                    return Err(KvSnapshotError::NonCanonical("charges do not match pages"));
+                }
+                PageCharge::Pages(pages)
+            }
+            _ => return Err(KvSnapshotError::NonCanonical("unknown charge tag")),
+        };
+        let dependency_count = reader.u32()?;
+        if dependency_count > SNAPSHOT_MAX_DEPENDENCIES {
+            return Err(KvSnapshotError::LimitExceeded("dependencies"));
+        }
+        let mut dependencies: Vec<KvDependency> = Vec::new();
+        for _ in 0..dependency_count {
+            let (tag, segment) = (reader.u8()?, reader.u8()?);
+            let kind = dependency_from_tag(tag, segment)
+                .ok_or(KvSnapshotError::NonCanonical("unknown dependency kind"))?;
+            let dependency = KvDependency {
+                kind,
+                identity: reader.text()?,
+                generation: Generation(reader.u64()?),
+                content_digest: reader.digest()?,
+                fence_epoch: reader.u64()?,
+            };
+            if dependencies.last().is_some_and(|last| *last >= dependency) {
+                return Err(KvSnapshotError::NonCanonical(
+                    "dependencies not strictly sorted",
+                ));
+            }
+            dependencies.push(dependency);
+        }
+        let entry = SnapshotEntry {
+            path,
+            entry_key: (chain, lineage),
+            prefix: KvSharedPrefix {
+                key,
+                sequence_length: sequence_length as usize,
+                position_offset: 0,
+                page_digests,
+            },
+            dependencies,
+            charge,
+        };
+        if entries.last().is_some_and(|last| {
+            (last.path.last(), last.entry_key) >= (entry.path.last(), entry.entry_key)
+        }) {
+            return Err(KvSnapshotError::NonCanonical("entries not strictly sorted"));
+        }
+        entries.push(entry);
+    }
+    if reader.at != body.len() {
+        return Err(KvSnapshotError::NonCanonical("trailing bytes"));
+    }
+    Ok(entries)
+}
+
+impl KvPrefixCatalog {
+    /// A canonical, bounded snapshot of the live entries: trie paths, lineage, backend
+    /// prefix keys, dependencies and byte charges, never K/V pages. Tombstoned entries are
+    /// not exported. The same catalog state always yields the same bytes. The trailing
+    /// digest detects corruption; it is not a signature, so the snapshot belongs in a
+    /// store the runtime trusts. Recency is not exported: a restored catalog orders its
+    /// entries by key for LRU purposes.
+    pub fn export_entries(&self) -> Result<Vec<u8>, KvSnapshotError> {
+        let mut entries = Vec::new();
+        for (node_key, node) in &self.nodes {
+            for (entry_key, entry) in &node.entries {
+                if entry.tombstoned {
+                    continue;
+                }
+                let mut path = vec![*node_key];
+                let mut at = node.parent;
+                while let Some(parent) = at {
+                    path.push(parent);
+                    at = self.nodes.get(&parent).and_then(|node| node.parent);
+                }
+                path.reverse();
+                let mut dependencies = entry.dependencies.clone();
+                dependencies.sort();
+                dependencies.dedup();
+                entries.push(SnapshotEntry {
+                    path,
+                    entry_key: *entry_key,
+                    prefix: entry.prefix.clone(),
+                    dependencies,
+                    charge: entry.charge.clone(),
+                });
+            }
+        }
+        encode_snapshot(&entries)
+    }
+
+    /// Admit the entries of an [`Self::export_entries`] snapshot into this empty catalog.
+    ///
+    /// The snapshot is decoded strictly and re-checked against this catalog's limits
+    /// before anything is admitted; on any error the catalog stays empty. Entries are
+    /// admitted **without a liveness check**: an input revoked or superseded while the
+    /// snapshot was at rest is rejected at the first lookup or fork by the use-time check
+    /// (doc 36), and an entry whose backend prefix is gone is dropped when its fork finds
+    /// the prefix missing. Both are clean misses.
+    pub fn restore_entries(&mut self, snapshot: &[u8]) -> Result<KvRestoreReport, KvSnapshotError> {
+        if !self.nodes.is_empty() {
+            return Err(KvSnapshotError::NotEmpty);
+        }
+        let entries = decode_snapshot(snapshot, &self.limits)?;
+        let count = entries.len();
+        for entry in entries {
+            let admitted = self.admit(
+                Admission {
+                    path: entry.path,
+                    entry_key: entry.entry_key,
+                    prefix: entry.prefix,
+                    dependencies: entry.dependencies,
+                    charge: entry.charge,
+                },
+                Eviction::Refuse,
+            );
+            if let Err(error) = admitted {
+                self.nodes.clear();
+                self.by_identity.clear();
+                self.live_key_refs.clear();
+                self.page_refs.clear();
+                self.retire_queue.clear();
+                self.page_bytes = 0;
+                self.metadata_bytes = 0;
+                return Err(KvSnapshotError::Admission(error));
+            }
+        }
+        self.stats.restored_entries += count as u64;
+        Ok(KvRestoreReport { entries: count })
+    }
+}
+
 // Runtime wiring -------------------------------------------------------------------------
 
 impl KvLivenessOracle for PtrRuntime {
@@ -1054,7 +1798,11 @@ impl KvLivenessOracle for PtrRuntime {
     /// request's, so a different content never matches the entry.
     fn is_live(&self, dependency: &KvDependency) -> bool {
         if dependency.kind == KvDependencyKind::Expert {
-            return self.expert_is_serving(&dependency.identity, dependency.generation);
+            return self.expert_is_serving(
+                &dependency.identity,
+                dependency.generation,
+                dependency.fence_epoch,
+            );
         }
         match self.generation_validity(&dependency.identity, dependency.generation) {
             Some(Validity::Live) => true,
@@ -1074,19 +1822,29 @@ impl PtrRuntime {
     /// Whether the materialized `expert:{project}/{pod}` value, written as
     /// `{generation}:{state}:{state_version}`, names `generation` in a serving or frozen
     /// state. An absent, malformed or other-state value is not live (fail closed).
-    fn expert_is_serving(&self, identity: &str, generation: Generation) -> bool {
+    fn expert_is_serving(&self, identity: &str, generation: Generation, fence_epoch: u64) -> bool {
         self.materialized_state()
             .values
             .get(identity)
-            .is_some_and(|value| expert_value_is_serving(value, generation))
+            .is_some_and(|value| expert_value_is_serving(value, generation, fence_epoch))
     }
 }
 
-fn expert_value_is_serving(value: &str, generation: Generation) -> bool {
+/// With a recorded `fence_epoch` (non-zero) the value's `state_version` must be exactly it:
+/// any later transition, a fence included, ends the dependency.
+fn expert_value_is_serving(value: &str, generation: Generation, fence_epoch: u64) -> bool {
     let mut parts = value.splitn(3, ':');
     let (Some(live), Some(state)) = (parts.next(), parts.next()) else {
         return false;
     };
+    if fence_epoch != 0
+        && !parts
+            .next()
+            .and_then(|version| version.parse::<u64>().ok())
+            .is_some_and(|version| version == fence_epoch)
+    {
+        return false;
+    }
     // The names come from the one mapping the materialized projection writes with.
     live.parse::<u64>().is_ok_and(|live| live == generation.0)
         && (state == ptr_state::expert_state_name(ExpertState::Serving)
@@ -1290,11 +2048,15 @@ mod tests {
     #[test]
     fn expert_value_is_live_only_for_the_same_generation_in_a_serving_state() {
         let g = Generation(2);
-        assert!(expert_value_is_serving("2:serving:5", g));
+        assert!(expert_value_is_serving("2:serving:5", g, 0));
         assert!(expert_value_is_serving(
             &ptr_state::expert_entry(2, ExpertState::Frozen, 5),
-            g
+            g,
+            0
         ));
+        assert!(expert_value_is_serving("2:serving:5", g, 5));
+        assert!(!expert_value_is_serving("2:serving:5", g, 4));
+        assert!(!expert_value_is_serving("2:serving:x", g, 4));
         for dead in [
             "1:serving:5",
             "3:serving:5",
@@ -1306,7 +2068,7 @@ mod tests {
             "x:serving:1",
             "",
         ] {
-            assert!(!expert_value_is_serving(dead, g), "{dead}");
+            assert!(!expert_value_is_serving(dead, g, 0), "{dead}");
         }
     }
 }
