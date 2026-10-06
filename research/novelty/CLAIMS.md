@@ -23,4 +23,6 @@ R006, R007, R008, M016, E006 and E007 are mechanism checks: they test published 
 
 - R005 (`experiments/runtime/R005-exact-prefix-reuse/`, completed 2026-10-06 over 5 seeds with all preregistered rules held; marked stale since by later code changes, rerun planned) supports only the **reference-path, dense-model, Exact** part of claim 14: token-keyed, salt-bound prefix reuse on the CPU reference stack never served revoked, superseded, cross-principal or cross-project state in the tested matrix and stayed bit-identical to full prefill. It does not cover adapters or MoE reuse (R009, R010), engine caches (E006) or Approximate taint containment (R012); claim 14 as a whole remains unproven.
 
+- R009 and R010 (completed 2026-10-06, 5 seeds each, all preregistered rules held) extend the reference-path evidence for claim 14 to LoRA/aLoRA adapters (per-layer sharing below the first adapted layer, no cross-adapter or revoked-generation reuse) and to deterministic MoE expert revocation and fencing (only layers above the expert's layer invalidated). Still CPU reference only, tiny seeded random model; engine caches (E006) and Approximate taint containment (R012) remain open, so claim 14 as a whole remains unproven.
+
 Each claim remains provisional until benchmarked and compared with relevant prior work.
