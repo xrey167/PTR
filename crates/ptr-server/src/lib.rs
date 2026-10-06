@@ -6,7 +6,10 @@ use axum::{
     Json, Router,
 };
 use ptr_ledger::{integrity, LedgerEvent};
-use ptr_model_api::{ModelEvent, ReferenceEchoBackend, ResumableInferenceBackend};
+use ptr_model_api::{
+    KvReuseHint, KvReusingBackend, ModelError, ModelEvent, ModelRun, PromptSegment,
+    ReferenceEchoBackend, ResumableInferenceBackend, SegmentedModelRequest, Tokenizer,
+};
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
 use ptr_router::{
@@ -16,7 +19,9 @@ use ptr_runtime::{
     execution::{ActionExecutor, ActionScope, ExecutionGrant, RequiredVerification},
     PodSampler, PtrRuntime, RuntimeError,
 };
-use ptr_types::{CapabilityId, Effect, ProjectId, RequestId, TypeId, VerificationLevel};
+use ptr_types::{
+    CapabilityId, Effect, ProjectId, RequestId, SemanticContext, TypeId, VerificationLevel,
+};
 use ptr_verifier::{
     ActionContract, ActionContractVerifier, Finding, PayloadEncoding, VerificationReport,
     VerificationStatus, Verifier,
@@ -194,10 +199,70 @@ pub struct HealthResponse {
     pub version: String,
 }
 
+/// A [`KvReusingBackend`] with the tokenizer and reuse hint the server calls it with.
+///
+/// The server encodes the request text as one `Raw` segment under `tokenizer`, so the
+/// backend sees caller-supplied text only; the runtime-side taint check is what keeps an
+/// Approximate run away from effects (see [`ServerBackend::KvReusing`]).
+#[derive(Clone)]
+pub struct KvBackend {
+    backend: Arc<dyn KvReusingBackend>,
+    tokenizer: Arc<dyn Tokenizer>,
+    hint: Option<KvReuseHint>,
+}
+
+impl KvBackend {
+    pub fn new(
+        backend: Arc<dyn KvReusingBackend>,
+        tokenizer: Arc<dyn Tokenizer>,
+        hint: Option<KvReuseHint>,
+    ) -> Self {
+        Self {
+            backend,
+            tokenizer,
+            hint,
+        }
+    }
+
+    fn infer(
+        &self,
+        request_id: &RequestId,
+        context: SemanticContext,
+        text: &str,
+    ) -> Result<ModelRun, ModelError> {
+        let contract = |error: ptr_model_api::TokenContractError| {
+            ModelError(format!("segmented request refused: {error}"))
+        };
+        let segment =
+            PromptSegment::raw_from_text(self.tokenizer.as_ref(), text).map_err(contract)?;
+        let request = SegmentedModelRequest::new(
+            request_id.clone(),
+            context,
+            self.tokenizer.identity().clone(),
+            vec![segment],
+        )
+        .map_err(contract)?;
+        self.backend.infer_segmented(&request, self.hint.as_ref())
+    }
+}
+
+/// The model backend of a [`ServerState`].
+#[derive(Clone)]
+pub enum ServerBackend {
+    /// A plain backend: events go through the resumable flow (Pods, verifier, rounds).
+    Resumable(Arc<dyn ResumableInferenceBackend>),
+    /// A KV-reusing backend. KV-INGEST-INVARIANT: every `ModelRun` it returns reaches the
+    /// request flow only through `PtrRuntime::ingest_model_run` (via
+    /// `run_model_run_resumable`), which records Approximate taint so that
+    /// `authorize_action` refuses the action. The server never builds a `ResumableRun`
+    /// from a `ModelRun` itself. This path does not resume Pods.
+    KvReusing(KvBackend),
+}
+
 #[derive(Clone)]
 pub struct ServerState {
     runtime: Arc<Mutex<PtrRuntime>>,
-    backend: Arc<dyn ResumableInferenceBackend>,
+    backend: ServerBackend,
     router: Arc<dyn PodSampler>,
     pods: Arc<PodRegistry>,
     verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
@@ -220,6 +285,25 @@ impl ServerState {
     pub fn with_dependencies(
         runtime: PtrRuntime,
         backend: Arc<dyn ResumableInferenceBackend>,
+        router: Arc<dyn PodSampler>,
+        pods: Arc<PodRegistry>,
+        verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
+        effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+    ) -> Self {
+        Self::with_backend(
+            runtime,
+            ServerBackend::Resumable(backend),
+            router,
+            pods,
+            verifier,
+            effect_grants,
+        )
+    }
+
+    /// Like [`ServerState::with_dependencies`] for either kind of [`ServerBackend`].
+    pub fn with_backend(
+        runtime: PtrRuntime,
+        backend: ServerBackend,
         router: Arc<dyn PodSampler>,
         pods: Arc<PodRegistry>,
         verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
@@ -290,6 +374,25 @@ pub fn router_with_dependencies(
     ))
 }
 
+/// Like [`router_with_dependencies`] for either kind of [`ServerBackend`].
+pub fn router_with_backend(
+    runtime: PtrRuntime,
+    backend: ServerBackend,
+    router: Arc<dyn PodSampler>,
+    pods: Arc<PodRegistry>,
+    verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
+    effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+) -> Router {
+    router_with_state(ServerState::with_backend(
+        runtime,
+        backend,
+        router,
+        pods,
+        verifier,
+        effect_grants,
+    ))
+}
+
 fn router_with_state(state: ServerState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -314,6 +417,23 @@ pub async fn serve_with_dependencies(
     axum::serve(
         listener,
         router_with_dependencies(runtime, backend, router, pods, verifier, effect_grants),
+    )
+    .await
+}
+
+/// Like [`serve_with_dependencies`] for either kind of [`ServerBackend`].
+pub async fn serve_with_backend(
+    listener: tokio::net::TcpListener,
+    runtime: PtrRuntime,
+    backend: ServerBackend,
+    router: Arc<dyn PodSampler>,
+    pods: Arc<PodRegistry>,
+    verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
+    effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+) -> std::io::Result<()> {
+    axum::serve(
+        listener,
+        router_with_backend(runtime, backend, router, pods, verifier, effect_grants),
     )
     .await
 }
@@ -371,18 +491,26 @@ fn process_request(state: &ServerState, input: ApiRequest) -> Result<Json<ApiRes
             ));
         }
     }
-    let run = runtime
-        .run_resumable_with_pods_using_router(
-            RequestId::from(input.id.as_str()),
+    let request_id = RequestId::from(input.id.as_str());
+    let run = match &state.backend {
+        ServerBackend::Resumable(backend) => runtime.run_resumable_with_pods_using_router(
+            request_id,
             &ProjectId::from("demo"),
-            input.text,
-            state.backend.as_ref(),
+            input.text.as_str(),
+            backend.as_ref(),
             state.pods.as_ref(),
             state.router.as_ref(),
             state.verifier.as_ref(),
             4,
-        )
-        .map_err(ApiError::Runtime)?;
+        ),
+        ServerBackend::KvReusing(kv) => {
+            let text = input.text.as_str();
+            let id = request_id.clone();
+            runtime
+                .run_model_run_resumable(request_id, text, |context| kv.infer(&id, context, text))
+        }
+    }
+    .map_err(ApiError::Runtime)?;
 
     let effect = if let Some(action) = run.action.as_ref() {
         if action.effect == Effect::Mutation
@@ -683,10 +811,21 @@ impl IntoResponse for ApiError {
                     .into_response();
             }
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            // 409, not 422: the refusal depends on the server's KV-reuse state, not on the
+            // request's content, so no edit of the request fixes it and an identical
+            // request may be answered exactly once the cache state differs.
             Self::Runtime(RuntimeError::StaleRevision { .. })
             | Self::Runtime(RuntimeError::StaleGeneration { .. })
-            | Self::Runtime(RuntimeError::ExecutionFenced) => {
+            | Self::Runtime(RuntimeError::ExecutionFenced)
+            | Self::Runtime(RuntimeError::ApproximateStateAtEffectBoundary { .. }) => {
                 (StatusCode::CONFLICT, format!("{self:?}"))
+            }
+            Self::Runtime(RuntimeError::KvTaintRegistryFull { .. }) => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({ "error": format!("{self:?}") })),
+                )
+                    .into_response();
             }
             Self::Runtime(error) => (StatusCode::UNPROCESSABLE_ENTITY, format!("{error:?}")),
             Self::Effect(message) => (StatusCode::UNPROCESSABLE_ENTITY, message),

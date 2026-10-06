@@ -1336,6 +1336,54 @@ impl PtrRuntime {
         }
     }
 
+    /// Run one request whose model output comes as a [`ptr_model_api::ModelRun`] (a KV-reusing
+    /// backend), continuing the resumable flow through [`PtrRuntime::ingest_model_run`].
+    ///
+    /// The request text is ingested first, exactly as in the plain resumable flow, and
+    /// `infer` receives the resulting semantic context. The run is never turned into a
+    /// [`ResumableRun`] except by `ingest_model_run`, so an Approximate run leaves its
+    /// action recorded as tainted and `authorize_action` refuses it. This path does not
+    /// resume Pods: a run that asks for one is refused with [`RuntimeError::Model`], and a
+    /// run that neither finishes nor yields an action is [`RuntimeError::ModelNoProgress`].
+    pub fn run_model_run_resumable<F>(
+        &mut self,
+        request_id: RequestId,
+        raw_text: impl Into<String>,
+        infer: F,
+    ) -> Result<ResumableRun, RuntimeError>
+    where
+        F: FnOnce(
+            ptr_types::SemanticContext,
+        ) -> Result<ptr_model_api::ModelRun, ptr_model_api::ModelError>,
+    {
+        let _revision = self.ingest_text(request_id.clone(), raw_text)?;
+        let model_run = infer(self.snapshot().semantic_context())
+            .map_err(|error| RuntimeError::Model(error.0))?;
+        // The only place a ModelRun becomes a ResumableRun (KV taint is recorded here).
+        let run = self.ingest_model_run(&model_run)?;
+        if model_run
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::PodRequested { .. }))
+        {
+            return Err(RuntimeError::Model(
+                "a segmented (KV-reusing) run cannot resume a Pod".into(),
+            ));
+        }
+        let finished = run
+            .model_events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::Finished));
+        if run.action.is_some() {
+            return Ok(run);
+        }
+        if !finished {
+            return Err(RuntimeError::ModelNoProgress);
+        }
+        self.emit(RuntimeEvent::RequestFinished(request_id));
+        Ok(run)
+    }
+
     pub fn run_model_once<B: InferenceBackend + ?Sized>(
         &mut self,
         request_id: RequestId,

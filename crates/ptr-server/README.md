@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-05  
-**Code footprint:** 1 Rust source files · 732 nonblank source lines · 4 integration-test files · 21 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-06  
+**Code footprint:** 1 Rust source files · 864 nonblank source lines · 5 integration-test files · 26 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- ServerBackend is either Resumable(Arc<dyn ResumableInferenceBackend>) (the existing path, unchanged: with_dependencies/router_with_dependencies/serve_with_dependencies delegate to it) or KvReusing(KvBackend), a KvReusingBackend with a Tokenizer and optional KvReuseHint (with_backend, router_with_backend, serve_with_backend). On the KV path the request text becomes one Raw PromptSegment of a SegmentedModelRequest and the ModelRun reaches the request flow only through PtrRuntime::run_model_run_resumable, i.e. ingest_model_run (invariant marked KV-INGEST-INVARIANT in lib.rs): an Approximate run's action is refused by authorize_action before any session or EffectAttempted, answered 409 Conflict (not 422: the refusal depends on the server's KV-reuse state, not the request content, and no edit of the request fixes it); a full taint registry is 503; Exact or no reuse gives responses identical to the plain ScenarioBackend path. The KV path does not resume Pods (a run that requests one is 422). Covered by tests/kv_taint.rs with a test double
 - Versioned JSON ApiRequest/ApiResponse and HealthResponse contracts
 - Axum router with GET /health and POST /v1/requests
 - Reference runtime/backend request path returns revisioned response
@@ -27,6 +28,7 @@
 
 ### Missing for the target architecture
 
+- ptrd has no KV backend name yet (wiring a reference KV backend is one ServerBackend::KvReusing(KvBackend::new(..)) line plus serve_with_backend); Pod resumption on the KV path; the taint registry is in memory and not rebuilt after a restart (see ptr-runtime)
 - Streaming ModelEvent/WebSocket or SSE API
 - Authentication/session/policy integration
 - Readiness/admin endpoints beyond basic health
