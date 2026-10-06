@@ -57,7 +57,8 @@ use ptr_pods::{
 };
 use ptr_semdb::PreparedDelta;
 use ptr_types::{
-    AdapterVersion, Digest, Generation, ModelVersion, PodId, PrincipalId, ProjectId, Validity,
+    AdapterVersion, Digest, Generation, ModelVersion, PodId, PrincipalId, ProjectId, Revision,
+    Validity,
 };
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1797,13 +1798,54 @@ impl KvPrefixCatalog {
 
 // Runtime wiring -------------------------------------------------------------------------
 
+/// The revision at which each semantic key was last affected by a committed delta (the
+/// written keys and the keys derived from them, the same set the catalog invalidates).
+///
+/// A semantic input has no lifecycle generation, so its segment's `generation` is read as
+/// the committed semantic revision at which the cited content was read. The segment is
+/// current iff no committed delta has affected the key after that revision. After a
+/// compacted restore the history is unknown: every key is only known to be unchanged
+/// since the snapshot's revision, so a segment citing an earlier revision is not live
+/// (fail closed).
+#[derive(Debug, Default)]
+pub(crate) struct SemanticEdits {
+    floor: Revision,
+    edited: BTreeMap<String, Revision>,
+}
+
+impl SemanticEdits {
+    pub(crate) fn restored_at(floor: Revision) -> Self {
+        Self {
+            floor,
+            edited: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn record(&mut self, affected: BTreeSet<String>, revision: Revision) {
+        for key in affected {
+            self.edited.insert(key, revision);
+        }
+    }
+
+    fn last_edit(&self, key: &str) -> Revision {
+        self.edited.get(key).copied().unwrap_or(self.floor)
+    }
+}
+
 impl KvLivenessOracle for PtrRuntime {
     /// Live means the lifecycle authority knows `identity` at `generation` and it is
-    /// neither revoked nor superseded. A semantic key carries no lifecycle generation, so
-    /// it is live while the committed snapshot still holds the key and no tombstone names
-    /// it; committed deltas also invalidate it through the catalog hook. The content digest
-    /// of a segment is not re-verified here: it is part of the entry's lineage and of the
-    /// request's, so a different content never matches the entry.
+    /// neither revoked nor superseded. A semantic key carries no lifecycle generation:
+    /// it is live iff the committed snapshot holds the key, no tombstone names it, and
+    /// the segment's generation (the committed semantic revision its content was read
+    /// at) is not older than the key's last committed edit nor newer than the current
+    /// revision. So a committed edit supersedes every entry built on the earlier content
+    /// even when the catalog's invalidation was delayed, lost or not restored.
+    ///
+    /// The segment's token-level `content_digest` cannot be compared with the committed
+    /// value here: it is a digest of the tokenizer's ids for the rendered text, and the
+    /// runtime holds neither the tokenizer nor the rendering. It stays part of the
+    /// entry's lineage, so different content never matches an entry; a caller that cites
+    /// the current generation for stale content is not caught by this check.
     fn is_live(&self, dependency: &KvDependency) -> bool {
         if dependency.kind == KvDependencyKind::Expert {
             return self.expert_is_serving(
@@ -1821,12 +1863,19 @@ impl KvLivenessOracle for PtrRuntime {
                         id == dependency.identity && generation == dependency.generation
                     })
                     && self.snapshot().get(&dependency.identity).is_some()
+                    && self.semantic_segment_is_current(&dependency.identity, dependency.generation)
             }
         }
     }
 }
 
 impl PtrRuntime {
+    /// Whether content of `key` read at semantic revision `generation` is unchanged since.
+    fn semantic_segment_is_current(&self, key: &str, generation: Generation) -> bool {
+        let read_at = generation.0;
+        self.semantic_edits.last_edit(key).0 <= read_at && read_at <= self.revision().0
+    }
+
     /// Whether the materialized `expert:{project}/{pod}` value, written as
     /// `{generation}:{state}:{state_version}`, names `generation` in a serving or frozen
     /// state. An absent, malformed or other-state value is not live (fail closed).
@@ -2052,6 +2101,24 @@ fn retire_keys(catalog: &mut KvPrefixCatalog, keys: Vec<KvPrefixKey>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semantic_edits_know_the_last_affecting_revision_and_fail_closed_after_a_restore() {
+        let mut edits = SemanticEdits::default();
+        assert_eq!(edits.last_edit("k"), Revision(0));
+        edits.record(BTreeSet::from(["k".to_owned()]), Revision(3));
+        edits.record(
+            BTreeSet::from(["k".to_owned(), "j".to_owned()]),
+            Revision(5),
+        );
+        assert_eq!(edits.last_edit("k"), Revision(5));
+        assert_eq!(edits.last_edit("j"), Revision(5));
+        assert_eq!(edits.last_edit("other"), Revision(0));
+        // After a compacted restore at revision 9 the history is unknown: every key is
+        // only known to be unchanged since 9.
+        let restored = SemanticEdits::restored_at(Revision(9));
+        assert_eq!(restored.last_edit("k"), Revision(9));
+    }
 
     #[test]
     fn expert_value_is_live_only_for_the_same_generation_in_a_serving_state() {

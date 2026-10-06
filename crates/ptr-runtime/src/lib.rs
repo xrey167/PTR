@@ -665,6 +665,9 @@ pub struct PtrRuntime {
     experts: expert::ExpertRegistryProjection,
     /// Exact KV prefix catalog; none until the host calls `enable_kv_prefix_catalog`.
     kv_catalog: Option<kv_prefix::KvPrefixCatalog>,
+    /// The revision at which each semantic key was last affected by a committed delta; the
+    /// use-time liveness check of a semantic KV dependency reads it.
+    semantic_edits: kv_prefix::SemanticEdits,
     /// Actions ingested from Approximate-reuse runs; refused by `authorize_action`.
     tainted_actions: kv_taint::TaintedActions,
 }
@@ -718,6 +721,7 @@ impl PtrRuntime {
             tier_journal: TierJournalProjection::default(),
             experts: expert::ExpertRegistryProjection::default(),
             kv_catalog: None,
+            semantic_edits: kv_prefix::SemanticEdits::default(),
             tainted_actions: kv_taint::TaintedActions::default(),
         })
     }
@@ -2964,11 +2968,13 @@ impl PtrRuntime {
         self.invalidate_kv_catalog(&committed.event, semantic.as_ref());
         match &committed.event {
             LedgerEvent::SemanticDeltaCommitted { .. } => {
+                let delta =
+                    semantic.ok_or(RuntimeError::Semantic(SemanticError::InvalidEncoding))?;
+                let affected = delta.affected().clone();
                 self.semdb
-                    .apply_prepared(
-                        semantic.ok_or(RuntimeError::Semantic(SemanticError::InvalidEncoding))?,
-                    )
+                    .apply_prepared(delta)
                     .map_err(RuntimeError::Semantic)?;
+                self.semantic_edits.record(affected, self.semdb.revision());
             }
             LedgerEvent::CapsuleCommitted {
                 project,

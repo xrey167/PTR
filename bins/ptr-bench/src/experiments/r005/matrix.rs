@@ -1254,7 +1254,6 @@ mod tests {
     /// content hits the old entry. Run it with `cargo test -p ptr-bench -- --ignored
     /// a_committed_edit_of_a_semantic_input`.
     #[test]
-    #[ignore = "known finding: the runtime's use-time check cannot see a committed edit of a semantic input"]
     fn a_committed_edit_of_a_semantic_input_is_seen_at_use_with_the_index_lost() {
         for path in [Path::Lag, Path::Restore] {
             let (stale, _) = stale_hits_of(

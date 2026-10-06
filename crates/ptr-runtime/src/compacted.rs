@@ -957,6 +957,9 @@ impl PtrRuntime {
 
         let mut runtime = Self::new(config)?;
         runtime.semdb = semdb;
+        // The edit history is not in the snapshot: every key is only known to be
+        // unchanged since the snapshot's revision.
+        runtime.semantic_edits = super::kv_prefix::SemanticEdits::restored_at(trusted.revision);
         // Before the fence and the at-most-once memory are reinstated, this
         // runtime would answer a spent key by executing the effect again.
         runtime
