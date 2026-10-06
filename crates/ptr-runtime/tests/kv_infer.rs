@@ -458,3 +458,82 @@ fn chain_id_is_stable_for_equal_weights_and_split_by_weights_and_limits_shape() 
             .unwrap();
     assert_ne!(a.chain_id(), seeded.chain_id());
 }
+
+/// Prompts that share a long prefix: `shared` tokens plus a distinct 16-token suffix.
+fn shared_prefix_prompts(count: usize) -> Vec<String> {
+    let shared = text(64, 21);
+    (0..count)
+        .map(|i| {
+            // A suffix that differs from every other prompt's from its first byte on.
+            let suffix: String = (0..16)
+                .map(|k| char::from(b'a' + ((k * 7 + i * 3 + 1) % 26) as u8))
+                .collect();
+            format!("{shared}{suffix}")
+        })
+        .collect()
+}
+
+fn one_page_bytes() -> u64 {
+    let backend = backend();
+    run(
+        &backend,
+        &scope("alice"),
+        &raw(&backend, "p", 1, &text(16, 3)),
+    );
+    let stats = backend.catalog_stats().unwrap();
+    assert_eq!(stats.entries, 1);
+    stats.page_bytes
+}
+
+#[test]
+fn catalog_page_bytes_count_each_unique_page_once_not_quadratically() {
+    let page = one_page_bytes();
+    assert!(page > 0);
+    let backend = backend();
+    for (i, prompt) in shared_prefix_prompts(6).iter().enumerate() {
+        run(
+            &backend,
+            &scope("alice"),
+            &raw(&backend, &format!("r{i}"), 1, prompt),
+        );
+    }
+    let stats = backend.catalog_stats().unwrap();
+    // 4 shared pages + one distinct suffix page per prompt = 10 unique pages. The former
+    // whole-cache `resident_bytes` lump charged 1+2+3+4+5 = 15 pages for the first prompt
+    // and 5 for each of the 5 hits: 40 pages, growing with every prompt and with prefix depth.
+    assert_eq!(stats.page_bytes, 10 * page);
+    assert!(stats.entries >= 6);
+}
+
+#[test]
+fn a_bytes_only_limit_evicts_as_configured_and_outputs_stay_equal_to_cold() {
+    let page = one_page_bytes();
+    let limits = ReferenceKvLimits {
+        catalog: CatalogLimits {
+            max_kv_page_bytes: 7 * page,
+            ..CatalogLimits::default()
+        },
+        ..ReferenceKvLimits::default()
+    };
+    let backend = backend_with(limits);
+    let reference = backend_with(ReferenceKvLimits::default());
+    for (i, prompt) in shared_prefix_prompts(6).iter().enumerate() {
+        let warm = run(
+            &backend,
+            &scope("alice"),
+            &raw(&backend, &format!("r{i}"), 1, prompt),
+        );
+        let cold = reference
+            .infer_cold(
+                &scope("alice"),
+                &raw(&reference, &format!("r{i}"), 1, prompt),
+            )
+            .unwrap();
+        assert_same_result(&cold, &warm);
+        assert!(backend.catalog_stats().unwrap().page_bytes <= 7 * page);
+    }
+    let stats = backend.catalog_stats().unwrap();
+    // 10 unique pages do not fit in 7: the byte limit, not the node limit, bound the catalog.
+    assert!(stats.evictions + stats.capacity_refusals >= 1);
+    assert!(stats.nodes < CatalogLimits::default().max_trie_nodes);
+}
