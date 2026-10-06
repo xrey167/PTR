@@ -108,6 +108,30 @@ pub struct HttpJwksRefresher {
     fetch: JwksFetchFn,
 }
 
+/// The workspace builds reqwest with `rustls-no-provider`, so no TLS crypto
+/// provider exists unless one is installed; building a client without one
+/// panics. Installing is idempotent and a provider another component already
+/// installed is kept.
+#[cfg(feature = "oidc-http")]
+pub(crate) fn ensure_rustls_provider() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+/// Client settings shared by the JWKS and policy fetchers: HTTPS only and no
+/// redirects, so a redirect to `http://` cannot bypass the scheme check done on
+/// the configured URL.
+#[cfg(feature = "oidc-http")]
+pub(crate) fn hardened_client_builder() -> reqwest::blocking::ClientBuilder {
+    ensure_rustls_provider();
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+}
+
 /// Production HTTPS JWKS fetcher. The injected `HttpJwksRefresher` remains
 /// available for deterministic tests; this adapter is opt-in so applications
 /// choose when a blocking HTTP client is acceptable at their identity boundary.
@@ -130,8 +154,7 @@ impl ReqwestJwksRefresher {
         if !url.starts_with("https://") {
             return Err(OidcError::InvalidEncoding);
         }
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+        let client = hardened_client_builder()
             .build()
             .map_err(|error| OidcError::RefreshFailed(error.to_string()))?;
         Ok(Self {
@@ -1016,5 +1039,55 @@ mod tests {
         let used = adapter.used_jti.lock().unwrap();
         let indexed: usize = used.ids_by_expiry.values().map(Vec::len).sum();
         assert_eq!(indexed, used.expiry_by_id.len());
+    }
+}
+
+#[cfg(all(test, feature = "oidc-http"))]
+mod oidc_http_tests {
+    use super::*;
+
+    #[test]
+    fn reqwest_refresher_builds_without_a_network_or_a_panic() {
+        ReqwestJwksRefresher::new("https://example.invalid/jwks", "issuer", "audience")
+            .expect("an HTTPS JWKS client must be constructible");
+    }
+
+    #[test]
+    fn hardened_client_neither_follows_redirects_nor_speaks_plain_http() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let mut hits = 0;
+            listener.set_nonblocking(false).unwrap();
+            // One connection is expected from the redirect-only client below.
+            if let Ok((mut stream, _)) = listener.accept() {
+                hits += 1;
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+            hits
+        });
+        let url = format!("http://127.0.0.1:{port}/jwks");
+        // https_only refuses the plain-HTTP request before any connection.
+        let hardened = hardened_client_builder().build().unwrap();
+        assert!(hardened.get(&url).send().is_err());
+        // The same redirect policy, without https_only, stops at the 302.
+        let redirect_only = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let response = redirect_only.get(&url).send().unwrap();
+        assert_eq!(response.status().as_u16(), 302);
+        assert_eq!(server.join().unwrap(), 1);
+    }
+
+    #[test]
+    fn reqwest_refresher_refuses_plain_http() {
+        let refused = ReqwestJwksRefresher::new("http://example.invalid/jwks", "i", "a");
+        assert!(matches!(refused, Err(OidcError::InvalidEncoding)));
     }
 }

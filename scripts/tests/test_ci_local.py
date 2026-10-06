@@ -24,6 +24,9 @@ TARGET = re.compile(r"^([A-Za-z0-9_.-]+):(?!=)(.*)$")
 
 # Steps the Makefile deliberately does not reproduce, each with its reason.
 NOT_REPRODUCED = {
+    "cargo +stable check -p ptr-net --features wintun-backend --locked": (
+        "Windows-only step of rust-stable; the wintun crate does not compile on Linux"
+    ),
     "python -m pip install -e training": (
         "installs into the contributor's environment; the targets set "
         "PYTHONPATH=training/src instead"

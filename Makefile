@@ -2,7 +2,7 @@
 	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke release-package \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
-	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers
+	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers ci-feature-gates
 
 # `model/burn-a0` is its own workspace, excluded from the root one, so every
 # `--workspace` target below reaches none of it. That is why `fmt` names it
@@ -140,14 +140,14 @@ tree:
 # check lists were a subset of CI (no vendor, notices, codebook or research-gate
 # checks, no feature backends), so passing every one of them still left CI red.
 # scripts/tests/test_ci_local.py fails when a CI step has no counterpart here.
-# Not reproduced: the Windows leg of rust-stable and the Python 3.11 leg of
+# Not reproduced: the Windows-only `cargo check -p ptr-net --features wintun-backend` step (wintun does not compile on Linux), the Windows leg of rust-stable and the Python 3.11 leg of
 # python-training (matrix legs of the same steps), `pip install -e training`
 # (PYTHONPATH is set instead, so nothing is installed into your environment),
 # and security.yml, which needs cargo-audit and cargo-deny. `make a0` is the
 # burn-a0 workflow, which runs only when A0 or what it depends on changes.
 ci-local: ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
-	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers
+	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers ci-feature-gates
 
 ci-quality:
 	cargo +stable fmt --all -- --check
@@ -246,6 +246,14 @@ ci-storage-tiers:
 	cargo +stable test -p ptr-storage --features tier-opendal-fs --test opendal_tier --locked
 	cargo +stable check -p ptr-storage --features tier-opendal-fs,tier-opendal-s3 --locked
 	cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3 --locked -- -D warnings
+
+# Feature gates no other job compiles. `candle-cuda` (ptr-pods / ptr-runtime) is
+# deliberately excluded: it needs the CUDA toolkit, so nothing here compiles it.
+ci-feature-gates:
+	cargo +stable clippy -p ptr-runtime --features oidc-http --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-runtime --features oidc-http --lib --locked
+	cargo +stable clippy -p ptr-net --features wireguard-uapi-backend --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-net --features wireguard-uapi-backend --lib --locked
 
 # Start a local PostgreSQL 16+ / pgvector service first. These defaults match CI's
 # disposable container; override them for your local disposable test database.
