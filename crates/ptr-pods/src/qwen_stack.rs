@@ -194,7 +194,41 @@ impl Qwen2PagedStack {
                 return Err(Qwen2StackError::InvalidWeights("qk norm weights"));
             }
         }
+        let finite = |values: &[f32]| values.iter().all(|value| value.is_finite());
+        let linear_finite = |linear: &Qwen2LinearWeights| {
+            finite(&linear.weight) && linear.bias.as_deref().is_none_or(finite)
+        };
+        let layers_finite = weights.layers.iter().all(|layer| {
+            let decoder = &layer.decoder;
+            finite(&decoder.input_layernorm)
+                && finite(&decoder.post_attention_layernorm)
+                && [
+                    &decoder.query,
+                    &decoder.key,
+                    &decoder.value,
+                    &decoder.output,
+                    &decoder.gate,
+                    &decoder.up,
+                    &decoder.down,
+                ]
+                .into_iter()
+                .all(linear_finite)
+                && layer.query_norm.as_deref().is_none_or(finite)
+                && layer.key_norm.as_deref().is_none_or(finite)
+        });
+        if !(finite(&weights.embedding)
+            && finite(&weights.final_norm)
+            && linear_finite(&weights.lm_head)
+            && layers_finite)
+        {
+            return Err(Qwen2StackError::InvalidWeights("non-finite weight"));
+        }
         Ok(Self { config, weights })
+    }
+
+    /// The weights, read-only (for canonical digests such as the KV chain).
+    pub fn weights(&self) -> &Qwen2StackWeights {
+        &self.weights
     }
 
     /// Deterministic seeded reference weights (splitmix64 stream, fixed tensor order), the
@@ -597,6 +631,12 @@ mod tests {
         assert_eq!(
             Qwen2PagedStack::new(stack.config.clone(), weights).unwrap_err(),
             Qwen2StackError::InvalidWeights("qk norm weights")
+        );
+        let mut weights = stack.weights.clone();
+        weights.layers[1].decoder.gate.weight[0] = f32::NAN;
+        assert_eq!(
+            Qwen2PagedStack::new(stack.config.clone(), weights).unwrap_err(),
+            Qwen2StackError::InvalidWeights("non-finite weight")
         );
     }
 }

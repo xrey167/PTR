@@ -14,6 +14,7 @@ mod evidence;
 mod expert;
 mod hypothesis;
 mod kv;
+mod kv_chain;
 mod manifest;
 mod native;
 mod neural;
@@ -56,6 +57,7 @@ pub use kv::{
     KvKeyEncoding, KvLayerSnapshot, KvPageTable, KvTensorBackend, KvTensorDType, KvTensorSchema,
     KvTensorSnapshot, TensorRef,
 };
+pub use kv_chain::{derive_kv_layer_chains, KvChainError, KvChainIdentity, KvLayerChains};
 pub use manifest::{
     ArtifactLifecycle, ExecutionManifest, LifecycleGate, LineageBinding,
     ManifestError as ExecutionManifestError,

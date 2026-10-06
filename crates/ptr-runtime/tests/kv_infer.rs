@@ -441,3 +441,20 @@ fn runs_are_deterministic_across_backends_and_depend_on_the_weights() {
     assert_ne!(ra.logits_digest, ro.logits_digest);
     assert_ne!(a.chain_id(), other.chain_id());
 }
+
+#[test]
+fn chain_id_is_stable_for_equal_weights_and_split_by_weights_and_limits_shape() {
+    let a = backend();
+    let b = backend();
+    assert_eq!(a.chain_id(), b.chain_id());
+    // A different context capacity changes no stored K/V byte, so the chain is unchanged.
+    let longer = backend_with(ReferenceKvLimits {
+        max_prompt_tokens: 512,
+        ..ReferenceKvLimits::default()
+    });
+    assert_eq!(a.chain_id(), longer.chain_id());
+    let seeded =
+        ReferenceKvReuseBackend::with_seed(ReferenceKvLimits::default(), scope("alice"), 2)
+            .unwrap();
+    assert_ne!(a.chain_id(), seeded.chain_id());
+}
