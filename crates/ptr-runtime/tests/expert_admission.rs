@@ -944,9 +944,10 @@ fn replay_refuses_every_event_field_that_disagrees_with_its_record() {
 fn replay_refuses_a_record_whose_evidence_digest_was_changed_in_the_record_itself() {
     let rt = full_history();
     let mut tampered = history(&rt);
-    // The record ends with the evidence digest and the 8-byte gate epoch.
+    // The first occurrence of the digest in the record is its own evidence digest field, ahead
+    // of the embedded report (whose last 32 bytes repeat it).
     tampered[0].event = rebuilt(&tampered[0].event, |f| {
-        let at = f.5.len() - 8 - 32;
+        let at = f.5.windows(32).position(|w| w == f.4).unwrap();
         f.5[at] ^= 0xFF;
     });
     assert_eq!(

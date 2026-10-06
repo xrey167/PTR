@@ -317,13 +317,17 @@ fn a_registry_section_that_disagrees_with_the_materialized_keys_is_refused() {
         Some(RuntimeError::Compacted(CompactedError::UnknownTag))
     );
     // An empty registry beside an `expert:` key.
+    // The registry entries are cut out; the evidence block that follows them stays.
+    let evidence = snapshot
+        .bytes()
+        .windows(8)
+        .rposition(|window| window == b"PTREV001")
+        .expect("evidence block");
     let mut emptied = snapshot.bytes()[..block + 8].to_vec();
     emptied.extend_from_slice(&0u32.to_le_bytes());
+    emptied.extend_from_slice(&snapshot.bytes()[evidence..]);
     let old_len = u64::from_le_bytes(snapshot.bytes()[64..72].try_into().unwrap()) as usize;
-    let lifecycle_end =
-        80 + u64::from_le_bytes(snapshot.bytes()[56..64].try_into().unwrap()) as usize + old_len;
-    emptied.extend_from_slice(&snapshot.bytes()[lifecycle_end..]);
-    let removed = lifecycle_end - (block + 12);
+    let removed = evidence - (block + 12);
     let new_len = old_len - removed;
     emptied[64..72].copy_from_slice(&(new_len as u64).to_le_bytes());
     let (bytes, anchor) = resealed(emptied, snapshot.anchor());

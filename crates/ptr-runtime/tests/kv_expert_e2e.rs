@@ -359,7 +359,7 @@ fn the_expert_check_survives_a_compacted_restore() {
     admit(&mut rt, op);
 
     let snapshot = rt.export_compacted_snapshot().unwrap();
-    assert_eq!(&snapshot.bytes()[..8], b"PTRCS005");
+    assert_eq!(&snapshot.bytes()[..8], b"PTRCS006");
     let mut restored = PtrRuntime::restore_compacted(
         PtrConfig::default(),
         snapshot.bytes(),

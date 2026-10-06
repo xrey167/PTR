@@ -336,6 +336,214 @@ impl BoundGateReport {
     }
 }
 
+/// Leading magic and version of a [`BoundGateReport`] encoding.
+const BOUND_REPORT_MAGIC: &[u8; 8] = b"PTRBGR01";
+
+/// The largest encoding [`BoundGateReport::decode_canonical`] reads (1 MiB, the same bound as an
+/// expert commit record, which embeds one).
+pub const MAX_BOUND_GATE_REPORT_BYTES: usize = 1 << 20;
+
+fn malformed<T>(message: &'static str) -> Result<T, LineageError> {
+    Err(LineageError::InvalidParameter {
+        field: "bound gate report",
+        message,
+    })
+}
+
+struct ReportReader<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> ReportReader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], LineageError> {
+        if self.bytes.len() < n {
+            return malformed("truncated");
+        }
+        let (head, tail) = self.bytes.split_at(n);
+        self.bytes = tail;
+        Ok(head)
+    }
+
+    fn u8(&mut self) -> Result<u8, LineageError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, LineageError> {
+        let raw = self.take(4)?;
+        Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+    }
+
+    fn u64(&mut self) -> Result<u64, LineageError> {
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(self.take(8)?);
+        Ok(u64::from_le_bytes(raw))
+    }
+
+    fn f64(&mut self) -> Result<f64, LineageError> {
+        Ok(f64::from_bits(self.u64()?))
+    }
+
+    fn array32(&mut self) -> Result<[u8; 32], LineageError> {
+        let mut raw = [0u8; 32];
+        raw.copy_from_slice(self.take(32)?);
+        Ok(raw)
+    }
+}
+
+impl BoundGateReport {
+    /// The canonical bytes of this report.
+    ///
+    /// All integers are little-endian. `report = magic "PTRBGR01" | proposal_id[32] |
+    /// operation_id[32] | artifact_digest[32] | base_model_digest[32] | eval_manifest_digest[32]
+    /// | gate_config_digest[32] | adapter (u32 length, UTF-8) | violation count u32 |
+    /// violations | passed u8 | digest[32]`. A violation is a tag byte (0 AverageForgetting,
+    /// 1 TaskForgetting, 2 BackwardTransfer, 3 PublicRegression), for TaskForgetting the task as
+    /// `u64`, then `observed` and `limit` as the little-endian bits of an `f64`, `-0.0` as
+    /// `0.0` and every NaN as one pattern (the bits [`BoundGateReport::digest`] hashes). `passed`
+    /// is 1 exactly when there is no violation, and `digest` is [`BoundGateReport::digest`].
+    pub fn encode_canonical(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(BOUND_REPORT_MAGIC);
+        for d in [
+            &self.subject.proposal_id,
+            &self.subject.operation_id,
+            &self.subject.artifact_digest,
+            &self.subject.base_model_digest,
+            &self.subject.eval_manifest_digest,
+            &self.gate_config_digest,
+        ] {
+            out.extend_from_slice(d);
+        }
+        let adapter = self.report.adapter.0.as_bytes();
+        out.extend_from_slice(&(adapter.len() as u32).to_le_bytes());
+        out.extend_from_slice(adapter);
+        out.extend_from_slice(&(self.report.violations.len() as u32).to_le_bytes());
+        for v in &self.report.violations {
+            match v {
+                GateViolation::AverageForgetting { observed, limit } => {
+                    out.push(0);
+                    out.extend_from_slice(&canonical_bits(*observed));
+                    out.extend_from_slice(&canonical_bits(*limit));
+                }
+                GateViolation::TaskForgetting {
+                    task,
+                    observed,
+                    limit,
+                } => {
+                    out.push(1);
+                    out.extend_from_slice(&(*task as u64).to_le_bytes());
+                    out.extend_from_slice(&canonical_bits(*observed));
+                    out.extend_from_slice(&canonical_bits(*limit));
+                }
+                GateViolation::BackwardTransfer { observed, limit } => {
+                    out.push(2);
+                    out.extend_from_slice(&canonical_bits(*observed));
+                    out.extend_from_slice(&canonical_bits(*limit));
+                }
+                GateViolation::PublicRegression { observed, limit } => {
+                    out.push(3);
+                    out.extend_from_slice(&canonical_bits(*observed));
+                    out.extend_from_slice(&canonical_bits(*limit));
+                }
+            }
+        }
+        out.push(u8::from(self.passed()));
+        out.extend_from_slice(&self.digest());
+        out
+    }
+
+    /// Decode a report and re-derive its digest.
+    ///
+    /// The result is the report the bytes describe, not proof that a trusted evaluator produced
+    /// it: the digest is an unkeyed hash. What it gives a replaying reader is that the evidence a
+    /// committed record embeds is exactly the evidence whose digest the record (and ledger event)
+    /// carry.
+    ///
+    /// # Errors
+    /// [`LineageError::InvalidParameter`] for input over [`MAX_BOUND_GATE_REPORT_BYTES`], a wrong
+    /// magic, truncated or trailing bytes, an unknown violation tag, a `passed` byte that is not
+    /// 1 exactly when there is no violation, a stored digest that is not the digest of the
+    /// decoded fields, and any byte string that does not re-encode to itself (for instance a
+    /// `-0.0` or a non-canonical NaN).
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, LineageError> {
+        if bytes.len() > MAX_BOUND_GATE_REPORT_BYTES {
+            return malformed("exceeds the size limit");
+        }
+        let mut r = ReportReader { bytes };
+        if r.take(BOUND_REPORT_MAGIC.len())? != BOUND_REPORT_MAGIC {
+            return malformed("unknown magic");
+        }
+        let subject = GateSubject::new(
+            r.array32()?,
+            r.array32()?,
+            r.array32()?,
+            r.array32()?,
+            r.array32()?,
+        );
+        let gate_config_digest = r.array32()?;
+        let adapter_len = r.u32()? as usize;
+        let adapter = match std::str::from_utf8(r.take(adapter_len)?) {
+            Ok(adapter) => adapter.to_owned(),
+            Err(_) => return malformed("adapter is not UTF-8"),
+        };
+        let count = r.u32()? as usize;
+        // Every violation takes at least 17 bytes, so a count the input cannot hold is refused
+        // before anything is allocated for it.
+        if count > r.bytes.len() / 17 {
+            return malformed("violation count exceeds the input");
+        }
+        let mut violations = Vec::with_capacity(count);
+        for _ in 0..count {
+            violations.push(match r.u8()? {
+                0 => GateViolation::AverageForgetting {
+                    observed: r.f64()?,
+                    limit: r.f64()?,
+                },
+                1 => {
+                    let Ok(task) = usize::try_from(r.u64()?) else {
+                        return malformed("task index does not fit");
+                    };
+                    GateViolation::TaskForgetting {
+                        task,
+                        observed: r.f64()?,
+                        limit: r.f64()?,
+                    }
+                }
+                2 => GateViolation::BackwardTransfer {
+                    observed: r.f64()?,
+                    limit: r.f64()?,
+                },
+                3 => GateViolation::PublicRegression {
+                    observed: r.f64()?,
+                    limit: r.f64()?,
+                },
+                _ => return malformed("unknown violation tag"),
+            });
+        }
+        let passed = r.u8()?;
+        let stored_digest = r.array32()?;
+        if !r.bytes.is_empty() {
+            return malformed("trailing bytes");
+        }
+        let report = GateReport {
+            adapter: AdapterId(adapter),
+            violations,
+            gate_config_digest,
+        }
+        .bind(subject);
+        if passed != u8::from(report.passed()) {
+            return malformed("passed flag disagrees with the violations");
+        }
+        if report.digest() != stored_digest {
+            return malformed("stored digest is not the digest of the fields");
+        }
+        if report.encode_canonical() != bytes {
+            return malformed("non-canonical encoding");
+        }
+        Ok(report)
+    }
+}
+
 impl GateReport {
     /// Bind this verdict to the subject it was measured on. The gate
     /// configuration digest is the one [`ForgettingGate::evaluate`] stored in
