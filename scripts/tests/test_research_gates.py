@@ -5198,7 +5198,11 @@ class EnrolledExperimentTests(unittest.TestCase):
 
     def test_the_list_enrolls_the_experiments_that_preregister(self):
         listed=mod.load(ROOT/"experiments/preregistration.toml")["experiment"]
-        self.assertEqual(sorted(listed),sorted((*ENROLLED,*RETIRED)))
+        # The A0 ablation study v2 lists one experiment per sweep, evaluation,
+        # rerun and contingency (scripts/a0_study.py); they are checked by
+        # scripts/tests/test_a0_study.py and by the gate itself.
+        a0_study_v2=[exp_id for exp_id in listed if re.fullmatch(r"M00[1-4]-a0v2-[a-z0-9-]+",exp_id)]
+        self.assertEqual(sorted(set(listed)-set(a0_study_v2)),sorted((*ENROLLED,*RETIRED)))
         # S003 lists every key its design preregisters (doc 35 design, section
         # 3.10), with the type of the design's value, low_cells included, in
         # the design's order.
