@@ -279,3 +279,93 @@ status = "planned"
 id = "E007"
 path = "system/E007-split-pod-kv"
 status = "planned"
+
+[[experiment]]
+id = "M002-a0v2-sweep-lr0p002"
+path = "model/M002-a0v2-sweep-lr0p002"
+status = "prepared"
+
+[[experiment]]
+id = "M002-a0v2-sweep-lr0p005"
+path = "model/M002-a0v2-sweep-lr0p005"
+status = "prepared"
+
+[[experiment]]
+id = "M002-a0v2-sweep-lr0p0125"
+path = "model/M002-a0v2-sweep-lr0p0125"
+status = "prepared"
+
+[[experiment]]
+id = "M003-a0v2-sweep-lr0p002"
+path = "model/M003-a0v2-sweep-lr0p002"
+status = "prepared"
+
+[[experiment]]
+id = "M003-a0v2-sweep-lr0p005"
+path = "model/M003-a0v2-sweep-lr0p005"
+status = "prepared"
+
+[[experiment]]
+id = "M003-a0v2-sweep-lr0p0125"
+path = "model/M003-a0v2-sweep-lr0p0125"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-sweep-lr0p002"
+path = "model/M001-a0v2-sweep-lr0p002"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-sweep-lr0p005"
+path = "model/M001-a0v2-sweep-lr0p005"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-sweep-lr0p0125"
+path = "model/M001-a0v2-sweep-lr0p0125"
+status = "prepared"
+
+[[experiment]]
+id = "M004-a0v2-sweep-lr0p002"
+path = "model/M004-a0v2-sweep-lr0p002"
+status = "prepared"
+
+[[experiment]]
+id = "M004-a0v2-sweep-lr0p005"
+path = "model/M004-a0v2-sweep-lr0p005"
+status = "prepared"
+
+[[experiment]]
+id = "M004-a0v2-sweep-lr0p0125"
+path = "model/M004-a0v2-sweep-lr0p0125"
+status = "prepared"
+
+[[experiment]]
+id = "M002-a0v2-eval"
+path = "model/M002-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M003-a0v2-eval"
+path = "model/M003-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-eval"
+path = "model/M001-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M004-a0v2-eval"
+path = "model/M004-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-rerun"
+path = "model/M001-a0v2-rerun"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-cont-no-semantic-slots"
+path = "model/M001-a0v2-cont-no-semantic-slots"
+status = "prepared"

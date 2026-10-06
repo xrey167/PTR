@@ -1,0 +1,14 @@
+version = 1
+id = "M001-a0v2-sweep-lr0p0125"
+status = "prepared"
+hypothesis = "Do typed semantic slots improve the A0 composite over content-free slots? (A0-ablations-v2, sweep)"
+metrics = "composite A; test_iid accuracy"
+baseline = "the full A0 arm of the same study; no external baseline"
+falsification = "Decided only by research/falsification/A0-ablations-v2/criteria.toml"
+hardware_profile = "hardware/a0-cpu-4core.toml"
+entrypoint = "cargo +1.95.0 run --release --locked --quiet --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase sweep --experiment M001 --arms <arms> --seed <seed> --steps <steps> --lr <lr> --data <data> --data-fnv64 <data_fnv64> --d-model <d_model>"
+seeds = [17]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+preregistration_sha256 = "c72aa439bccb3179fdaf93f5d276dd07f2413710266ef23c553399df886074e1"
+preregistration_rules_sha256 = "7616a47c0ce99069ffe2c2e51095395f69dc0e1edc6c821ba3c8f22102849db1"

@@ -1,0 +1,14 @@
+version = 1
+id = "M002-a0v2-eval"
+status = "prepared"
+hypothesis = "Does the typed attention bias contribute to A0's constraint retention? (A0-ablations-v2, eval)"
+metrics = "composite B; test_iid accuracy"
+baseline = "the full A0 arm of the same study; no external baseline"
+falsification = "Decided only by research/falsification/A0-ablations-v2/criteria.toml"
+hardware_profile = "hardware/a0-cpu-4core.toml"
+entrypoint = "cargo +1.95.0 run --release --locked --quiet --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase eval --experiment M002 --arms <arms> --seed <seed> --steps <steps> --lr-file <lr_file> --data <data> --data-fnv64 <data_fnv64> --d-model <d_model>"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+preregistration_sha256 = "2281f4058390633df7acfbbe3bc7116f0e0ea880a6cba5141254ad52cfbf9565"
+preregistration_rules_sha256 = "e867a4079ec47d8660c2dfd1a5f667cd3a5678244156213a899d6cf2671c7629"

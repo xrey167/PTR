@@ -1,0 +1,68 @@
+{
+  "checks": {
+    "aggregator_tests": {
+      "argv": [
+        "/usr/local/bin/python3",
+        "-m",
+        "unittest",
+        "scripts/tests/test_a0_ablation_aggregate.py",
+        "scripts/tests/test_a0_study.py",
+        "scripts/tests/test_run_a0_ablation_study.py"
+      ],
+      "exit_code": 0,
+      "log_sha256": "7bf846c87d7c7d902d0052660807914522b2f53b0b283698a1653da121378f75"
+    },
+    "benchmark_tests": {
+      "argv": [
+        "/usr/local/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "benchmarks/operator-routing/tests"
+      ],
+      "exit_code": 0,
+      "log_sha256": "be19b7c51a1f3cca33accbb0d698628337a6aa9d3b03b4956d10b20ba1be7584"
+    },
+    "cargo_test": {
+      "argv": [
+        "cargo",
+        "+1.95.0",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "model/burn-a0/Cargo.toml"
+      ],
+      "exit_code": 0,
+      "log_sha256": "e8701e037781a8a03048a26b5df1aae30c1260ebc34a64e36f74e47c5c7e2761"
+    },
+    "config_tests": {
+      "argv": [
+        "/usr/local/bin/python3",
+        "-m",
+        "unittest",
+        "scripts/tests/test_a0_ablation_config.py"
+      ],
+      "exit_code": 0,
+      "log_sha256": "cd5f287aaedb8d2e620f60cd8de9027577018dd2741d5e524b456a62cc23c9f8"
+    },
+    "self_test": {
+      "argv": [
+        "/tmp/a0-g6-0mcmfyju/bin/release/examples/a0_ablation",
+        "--phase",
+        "self-test",
+        "--data",
+        "datasets/generated/operator_routing_v1",
+        "--data-fnv64",
+        "0ad71688f09b0d0d"
+      ],
+      "exit_code": 0,
+      "log_sha256": "9c6dcff1ed2b4fac2e625e331607c61eb29f0ade183a96485e9f0f5aa996ab5a"
+    }
+  },
+  "git_dirty": false,
+  "git_dirty_after": false,
+  "git_sha": "94d9a9e0eb2c1a1dbee5196dbb0059744a78e96f",
+  "git_sha_after": "94d9a9e0eb2c1a1dbee5196dbb0059744a78e96f",
+  "schema_version": 1
+}
