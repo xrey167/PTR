@@ -223,12 +223,12 @@ status = "planned"
 [[experiment]]
 id = "R009"
 path = "runtime/R009-layer-shared-lora-kv"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "R010"
 path = "runtime/R010-moe-expert-kv-revocation"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "R011"
