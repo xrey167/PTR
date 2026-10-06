@@ -1,0 +1,320 @@
+
+running 20 tests
+test ablation_mechanism_tests::one_latent_step_adds_exactly_its_delta_with_or_without_the_gelu ... ok
+test ablation_mechanism_tests::with_every_metadata_read_off_a_role_only_shifts_the_logits ... ok
+test ablation_mechanism_tests::with_no_latent_step_the_logits_ignore_latent_refine ... ok
+test attention_tests::row_constant_bias_cancels_but_pair_bias_changes_attention_and_has_gradient ... ok
+test codebook_guard_tests::matching_versions_pass_through_the_guard ... ok
+test ablation_mechanism_tests::a_frozen_router_does_not_move_while_the_rest_learns ... ok
+test ablation_mechanism_tests::the_raw_to_slot_branch_gets_no_gradient_in_any_arm ... ok
+test codebook_guard_tests::epistemic_codes_from_another_version_are_refused - should panic ... ok
+test codebook_guard_tests::slot_codes_from_another_version_are_refused - should panic ... ok
+test codebook_guard_tests::slot_values_at_another_width_are_refused_by_name - should panic ... ok
+test codebook_guard_tests::slot_values_from_another_encoding_version_are_refused - should panic ... ok
+test factorized_attention_tests::factorized_gate_has_gradient_but_off_zeroing_has_none ... ok
+test factorized_attention_tests::factorized_pair_bias_is_bounded_and_the_gate_starts_near_zero ... ok
+test codebook_guard_tests::well_formed_slot_values_pass_through_the_guards ... ok
+test typed_attention_switch_tests::it_is_on_by_default ... ok
+test codebook_guard_tests::the_two_guards_do_not_share_a_message ... ok
+test factorized_attention_tests::factorized_and_off_have_exactly_the_same_parameter_count ... ok
+test typed_attention_switch_tests::switching_it_off_changes_what_a_trained_bias_does ... ok
+test typed_attention_switch_tests::switching_it_off_equals_a_zero_pair_bias_and_nothing_else ... ok
+test typed_attention_switch_tests::switched_off_the_bias_layer_gets_no_gradient_and_the_rest_still_learns ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+
+running 1 test
+test each_switch_changes_the_forward_pass_it_claims_to_and_no_other ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 2 tests
+test the_same_change_to_an_admitted_slot_does_reach_the_logits ... ok
+test an_excluded_slot_cannot_reach_the_logits_in_any_arm ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 15 tests
+test a_checkpoint_is_refused_by_a_model_with_another_provenance_width ... ok
+test a_checkpoint_missing_a_required_family_is_refused ... ok
+test a_checkpoint_for_a_different_architecture_is_refused_rather_than_partly_loaded ... ok
+test a_checkpoint_from_another_slot_encoding_is_refused_before_any_weight_is_read ... ok
+test a_format_three_checkpoint_cannot_claim_an_empty_architecture ... ok
+test a_format_two_checkpoint_requires_an_explicit_exact_legacy_opt_in ... ok
+test a_checkpoint_whose_assignment_moved_is_refused_before_any_weight_is_read ... ok
+test a_table_that_disagrees_with_the_codebook_is_refused ... ok
+test another_model_s_checkpoint_is_refused_by_name ... ok
+test the_default_provenance_width_is_the_one_the_artifact_publishes ... ok
+test every_non_shape_architecture_switch_is_bound_before_weights_are_read ... ok
+test a_checkpoint_restores_the_exact_model_it_was_taken_from ... ok
+test the_header_records_the_tables_the_weights_actually_have ... ok
+test the_header_verifies_without_consulting_the_provenance_width ... ok
+test every_prefix_of_a_checkpoint_is_refused ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 6 tests
+test an_empty_batch_is_refused_rather_than_shaped ... ok
+test every_member_of_an_embedded_family_has_a_row_in_its_table ... ok
+test a_ragged_batch_is_refused_and_says_where ... ok
+test every_typed_table_is_exactly_its_family_s_cardinality ... ok
+test a_code_is_the_codebook_s_index_and_carries_its_family_and_version ... ok
+test the_model_reports_the_codebook_its_tables_were_sized_by ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test forward_preserves_raw_and_slot_shapes ... ok
+test typed_metadata_and_latent_router_path_support_autodiff ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test the_default_forward_pass_is_unchanged ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 2 tests
+test self_asserted_digest_cannot_hide_a_different_runtime_or_checkpoint_contract ... ok
+test contract_constructs_and_roundtrips_only_the_bound_architecture ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 2 tests
+test plain_baseline_matches_a0_compute_budget ... ok
+test plain_baseline_matches_a0_parameter_budget ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 1 test
+test the_committed_runtime_fixture_still_loads ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test both_arms_of_one_seed_start_from_the_same_weights_whatever_they_read_first ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test every_arm_of_one_seed_starts_from_the_same_parameters ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+running 6 tests
+test a_model_and_its_inputs_name_the_same_encoding ... ok
+test a_ragged_or_mixed_batch_is_refused_rather_than_padded ... ok
+test a_payload_in_any_slot_reaches_the_router ... ok
+test a_one_byte_difference_is_enough ... ok
+test a_payload_reaches_the_router_and_an_unchanged_one_does_not_move_it ... ok
+test constant_slot_values_cannot_distinguish_anything_which_is_what_zeros_were ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test tiny_router_task_is_trainable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.71s
+
+
+running 4 tests
+test admission_bias_is_zero_and_negative_infinity_in_slot_order ... ok
+test a_batch_row_admitting_nothing_stays_finite ... ok
+test every_inadmissible_lifecycle_state_is_excluded_and_live_is_not ... ok
+test an_excluded_slot_cannot_change_anything_the_model_produces ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 4 tests
+test src/lib.rs - PtrA0::forward (line 999) - compile fail ... ok
+test src/lib.rs - CodeGrid<T>::new (line 145) ... ok
+test src/lib.rs - SlotValues::new (line 273) ... ok
+test src/lib.rs - PtrA0::forward (line 962) ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.5
+   Compiling serde_core v1.0.229
+   Compiling version_check v0.9.5
+   Compiling libm v0.2.16
+   Compiling serde v1.0.229
+   Compiling autocfg v1.5.1
+   Compiling syn v2.0.119
+   Compiling syn v3.0.6
+   Compiling num-traits v0.2.19
+   Compiling zerocopy v0.8.57
+   Compiling memchr v2.8.3
+   Compiling libc v0.2.189
+   Compiling once_cell v1.21.4
+   Compiling cpufeatures v0.3.1
+   Compiling rand_core v0.10.1
+   Compiling serde_derive v1.0.229
+   Compiling bytemuck_derive v1.12.1
+   Compiling scopeguard v1.2.0
+   Compiling crossbeam-utils v0.8.23
+   Compiling cfg_aliases v0.2.2
+   Compiling getrandom v0.4.3
+   Compiling pin-project-lite v0.2.17
+   Compiling parking v2.2.1
+   Compiling bytemuck v1.25.2
+   Compiling lock_api v0.4.14
+   Compiling ident_case v1.0.1
+   Compiling object v0.37.3
+   Compiling zmij v1.0.23
+   Compiling fnv v1.0.7
+   Compiling parking_lot_core v0.9.12
+   Compiling darling_core v0.21.3
+   Compiling event-listener v5.4.2
+   Compiling zerocopy-derive v0.8.57
+   Compiling chacha20 v0.10.2
+   Compiling pulp v0.22.3 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/vendor/pulp-0.22.3)
+   Compiling equivalent v1.0.2
+   Compiling foldhash v0.2.0
+   Compiling winnow v1.0.4
+   Compiling bitflags v2.13.2
+   Compiling smallvec v1.16.1
+   Compiling unicode-segmentation v1.13.3
+   Compiling gimli v0.32.3
+   Compiling adler2 v2.0.1
+   Compiling futures-core v0.3.34
+   Compiling allocator-api2 v0.2.21
+   Compiling serde_json v1.0.151
+   Compiling ciborium-io v0.2.2
+   Compiling darling_macro v0.21.3
+   Compiling miniz_oxide v0.8.9
+   Compiling convert_case v0.10.0
+   Compiling raw-cpuid v11.6.0
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling rand v0.10.2
+   Compiling addr2line v0.25.1
+   Compiling event-listener-strategy v0.5.4
+   Compiling derive-new v0.7.0
+   Compiling concurrent-queue v2.5.0
+   Compiling num-complex v0.4.6
+   Compiling cubecl-environment v0.11.0-pre.3
+   Compiling serde_spanned v1.1.1
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling futures-io v0.3.34
+   Compiling unicode-xid v0.2.6
+   Compiling dyn-stack-macros v0.1.3
+   Compiling half v2.7.1
+   Compiling rustc-demangle v0.1.28
+   Compiling itoa v1.0.18
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling ciborium-ll v0.2.2
+   Compiling pastey v0.2.3
+   Compiling pulp-wasm-simd-flag v0.1.1
+   Compiling fastrand v2.5.0
+   Compiling portable-atomic v1.15.0
+   Compiling reborrow v0.5.5
+   Compiling futures-lite v2.6.1
+   Compiling ciborium v0.2.2
+   Compiling toml v1.1.6+spec-1.1.0
+   Compiling backtrace v0.3.76
+   Compiling dyn-stack v0.13.2
+   Compiling derive_more-impl v2.1.1
+   Compiling async-channel v2.5.0
+   Compiling parking_lot v0.12.5
+   Compiling darling v0.21.3
+   Compiling hashbrown v0.17.1
+   Compiling spin v0.12.3
+   Compiling cubecl-common v0.11.0-pre.3
+   Compiling nom v8.0.0
+   Compiling serde_bytes v0.11.19
+   Compiling ahash v0.8.12
+   Compiling etcetera v0.11.0
+   Compiling thiserror v2.0.20
+   Compiling log v0.4.34
+   Compiling seq-macro v0.3.6
+   Compiling embassy-futures v0.1.2
+   Compiling oneshot v0.2.1
+   Compiling web-time v1.1.0
+   Compiling bytes v1.12.1
+   Compiling gemm-common v0.19.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/vendor/gemm-common-0.19.0)
+   Compiling derive_more v2.1.1
+   Compiling enumset_derive v0.15.0
+   Compiling float8 v0.7.0
+   Compiling thiserror-impl v2.0.20
+   Compiling enumset v1.1.14
+   Compiling spin v0.11.1
+   Compiling tynm v0.2.0
+   Compiling cubecl-zspace v0.11.0-pre.3
+   Compiling rand_distr v0.6.0
+   Compiling hashbrown v0.16.1
+   Compiling data-encoding v2.11.1
+   Compiling uuid v1.26.1
+   Compiling typenum v1.20.1
+   Compiling gemm-f32 v0.19.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/vendor/gemm-f32-0.19.0)
+   Compiling gemm-f64 v0.19.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/vendor/gemm-f64-0.19.0)
+   Compiling burn-std v0.22.0-pre.3
+   Compiling gemm-f16 v0.19.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/vendor/gemm-f16-0.19.0)
+   Compiling gemm-c32 v0.19.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/vendor/gemm-c32-0.19.0)
+   Compiling gemm-c64 v0.19.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/vendor/gemm-c64-0.19.0)
+   Compiling burn-dispatch v0.22.0-pre.3 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/vendor/burn-dispatch-0.22.0-pre.3)
+   Compiling aho-corasick v1.1.5
+   Compiling burn-backend v0.22.0-pre.3
+   Compiling gemm v0.19.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/vendor/gemm-0.19.0)
+   Compiling generic-array v0.14.7
+   Compiling regex-syntax v0.8.11
+   Compiling hybrid-array v0.4.15
+   Compiling burn-ir v0.22.0-pre.3
+   Compiling burn-autodiff v0.22.0-pre.3
+   Compiling colored v3.1.1
+   Compiling byteorder v1.5.0
+   Compiling burn-pack v0.22.0-pre.3
+   Compiling regex-automata v0.4.18
+   Compiling burn-derive v0.22.0-pre.3
+   Compiling burn-backend-extension v0.22.0-pre.3
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling const-oid v0.10.2
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling digest v0.10.7
+   Compiling cpufeatures v0.2.17
+   Compiling sha2 v0.10.9
+   Compiling burn-flex v0.22.0-pre.3
+   Compiling regex v1.13.1
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling ptr-types v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/crates/ptr-types)
+   Compiling burn-tensor v0.22.0-pre.3
+   Compiling burn-core v0.22.0-pre.3
+   Compiling burn-nn v0.22.0-pre.3
+   Compiling burn-optim v0.22.0-pre.3
+   Compiling burn v0.22.0-pre.3
+   Compiling ptr-burn-a0 v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-a0/model/burn-a0)
+    Finished `test` profile [unoptimized] target(s) in 51.92s
+     Running unittests src/lib.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/ptr_burn_a0-d24f9357466b8776)
+     Running tests/ablation_switches.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/ablation_switches-3ad045a6e9fd3a8c)
+     Running tests/admission_invariance.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/admission_invariance-842e40d13de1eceb)
+     Running tests/checkpoint.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/checkpoint-fc00e6d8fe1a4fd3)
+     Running tests/code_spaces.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/code_spaces-1cd0196f32101618)
+     Running tests/forward.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/forward-f41098fbe82706fb)
+     Running tests/golden_logits.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/golden_logits-b29df0f43e12bc4f)
+     Running tests/m002_v5_contract.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/m002_v5_contract-228b1bebbba2a9fc)
+     Running tests/plain_baseline.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/plain_baseline-f7ee53bbd7858511)
+     Running tests/runtime_fixture.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/runtime_fixture-a7d3378cadc026e3)
+     Running tests/seeded_init.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/seeded_init-663205c1d80d1fe4)
+     Running tests/seeded_init_arms.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/seeded_init_arms-81240e43a4f51fa3)
+     Running tests/semantic_payload.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/semantic_payload-533949f7a1f96aac)
+     Running tests/train_router.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/train_router-607676478bc4f32c)
+     Running tests/validity_mask.rs (/tmp/a0-g6-0mcmfyju/test/debug/deps/validity_mask-e7b582bea91aa9d0)
+   Doc-tests ptr_burn_a0
