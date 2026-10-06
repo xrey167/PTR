@@ -230,6 +230,11 @@ pub struct KvLayerPublishRequest {
 }
 
 /// Fork a cache from several layer-scoped prefixes that together cover every layer.
+///
+/// Layering is **caller-trusted**: the backend checks each part's witness, key and adapter
+/// layering against `layering`, but not that a part was the right entry for its layer in the
+/// caller's own catalog. The caller (the runtime) must choose each part by that layer's own
+/// chain; a part chosen by any other rule is not detected here.
 #[derive(Debug)]
 pub struct KvLayerForkRequest {
     /// One published prefix with its single-use witness per layer span.
@@ -240,6 +245,10 @@ pub struct KvLayerForkRequest {
 }
 
 /// Checked adoption of a layer-scoped prefix into a cache that already computed its rows.
+///
+/// Layering is **caller-trusted** as for [`KvLayerForkRequest`]: adoption compares every row
+/// bitwise, which catches a wrong prefix as a mismatch, but the choice of which layer's entry
+/// to offer is the caller's and must follow that layer's own chain.
 #[derive(Debug)]
 pub struct KvLayerAdoptRequest {
     pub prefix: KvSharedPrefix,

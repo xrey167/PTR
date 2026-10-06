@@ -190,8 +190,12 @@ struct Work {
     refusals: Vec<KvCatalogError>,
 }
 
-/// Always live: the oracle of a cold restart, which uses no cache and so depends on no
-/// cached state.
+/// Attempts [`KvSession::restart_with`] makes on a bound session (each re-resolves the
+/// binding) before it surfaces [`ReferenceKvError::RestartCancelled`].
+pub(crate) const MAX_RESTART_ATTEMPTS: usize = 3;
+
+/// Always live: the oracle of an unbound cold restart, which uses no cache and so depends
+/// on no cached state.
 struct NoCache;
 
 impl KvLivenessOracle for NoCache {
@@ -216,11 +220,14 @@ pub struct KvSession<'a> {
     cache: ReferenceCache,
     hit_tokens: usize,
     pin: Option<KvPin>,
-    /// Every segment dependency of the request's whole lineage, plus (bound sessions) the
-    /// base model, the adapter and every tracked live expert.
+    /// Every segment dependency of the request's whole lineage.
     dependencies: Vec<KvDependency>,
-    /// The lineage was live at begin, so a later failure cancels.
-    guarded: bool,
+    /// The lineage was live at begin, so a later failure cancels. A dead segment at begin
+    /// disables only this class.
+    lineage_guarded: bool,
+    /// The bound session's base model, adapter and tracked live experts that were live when
+    /// the session was guarded; each cancels on its own, independent of the lineage.
+    binding_guards: Vec<KvDependency>,
     position: usize,
     last_logits: Vec<f32>,
     generated: Vec<TokenId>,
@@ -388,21 +395,23 @@ impl<'a> KvSession<'a> {
             None => backend.new_cache(scope, &chain)?,
         };
         let ids: Vec<u32> = tokens.iter().map(|token| token.0).collect();
-        let mut dependencies = lineage_dependencies(request, total);
+        let dependencies = lineage_dependencies(request, total);
+        let mut binding_guards = Vec::new();
         if let Some(layered) = &layered {
             for dependency in layered.session_dependencies() {
-                if catalog_requested && !liveness.is_live(&dependency) {
+                let live = liveness.is_live(&dependency);
+                if catalog_requested && !live {
                     return Err(BindingError::NotLive {
                         identity: dependency.identity,
                     }
                     .into());
                 }
-                if !dependencies.contains(&dependency) {
-                    dependencies.push(dependency);
+                if cache_use == CacheUse::Enabled && live {
+                    binding_guards.push(dependency);
                 }
             }
         }
-        let guarded = cache_use == CacheUse::Enabled
+        let lineage_guarded = cache_use == CacheUse::Enabled
             && dependencies
                 .iter()
                 .all(|dependency| liveness.is_live(dependency));
@@ -513,7 +522,8 @@ impl<'a> KvSession<'a> {
             hit_tokens,
             pin,
             dependencies,
-            guarded,
+            lineage_guarded,
+            binding_guards,
             position: hit_tokens,
             last_logits: Vec::new(),
             generated: Vec::new(),
@@ -757,60 +767,43 @@ impl<'a> KvSession<'a> {
         self.finish(liveness)
     }
 
-    /// Re-run a cancelled session's request cold: no lookup, no insert, nothing carried
-    /// over from the cancelled attempt. The outcome is bitwise equal (generated tokens,
-    /// logits digest, run) to a fresh cold run of the same request and carries
-    /// `restarted_after_cancel`. The request id is recorded in
+    /// Re-run a cancelled **default-binding** session's request cold: no lookup, no insert,
+    /// nothing carried over from the cancelled attempt. The outcome is bitwise equal
+    /// (generated tokens, logits digest, run) to a fresh cold run of the same request and
+    /// carries `restarted_after_cancel`. The request id is recorded in
     /// [`KvSessionStats::restarted_requests`].
     ///
-    /// A bound session first **re-resolves its binding** against the backend's own liveness
-    /// ([`Self::restart_with`] takes another oracle): see
-    /// [`crate::kv_infer_layered`].
+    /// A **bound** session is refused with [`BindingError::RestartNeedsOracle`] and stays
+    /// cancelled: its restart re-resolves the binding and is guarded, so it needs the oracle
+    /// the session was driven with, which the session deliberately does not hold (holding a
+    /// borrow across steps would pin the caller's oracle for the session's lifetime). Use
+    /// [`Self::restart_with`].
     pub fn restart(&mut self) -> Result<ReferenceKvOutcome, ReferenceKvError> {
+        self.require(KvSessionPhase::Cancelled, "restart")?;
+        if self.layered.is_some() {
+            return Err(BindingError::RestartNeedsOracle.into());
+        }
         let liveness = self.backend.own_liveness();
         self.restart_with(&liveness)
     }
 
-    /// Like [`Self::restart`], re-resolving a bound session's binding against `liveness`: a
-    /// superseded adapter moves to its newest live successor, a revoked one to the base
-    /// model, a revoked tracked expert is masked and a superseded one moves to its live
-    /// successor generation. The run is cold on that binding and its outcome records it
-    /// ([`ReferenceKvOutcome::binding`]).
+    /// Re-run a cancelled session cold. A bound session re-resolves its binding against
+    /// `liveness` (a superseded adapter moves to its newest live successor, a revoked one to
+    /// the base model, a revoked tracked expert is masked and a superseded one moves to its
+    /// live successor generation) and runs cold on it, **guarded by the same oracle**: before
+    /// every prefill chunk, every token and at finish the resolved binding's base model,
+    /// adapter and tracked experts are re-checked. A revocation or fence during the restart
+    /// cancels that attempt (nothing it produced is returned), the binding is re-resolved
+    /// and the run restarted, up to `MAX_RESTART_ATTEMPTS` (3) attempts in total; then
+    /// [`ReferenceKvError::RestartCancelled`] is returned. The outcome records the binding
+    /// ([`ReferenceKvOutcome::binding`]). Segment dependencies are not re-checked by a
+    /// restart. A default-binding session restarts exactly as [`Self::restart`].
     pub fn restart_with(
         &mut self,
         liveness: &dyn KvLivenessOracle,
     ) -> Result<ReferenceKvOutcome, ReferenceKvError> {
         self.require(KvSessionPhase::Cancelled, "restart")?;
         self.release_pin()?;
-        if self.layered.is_some() {
-            let (binding, record) =
-                resolve_binding(&self.binding, self.backend.stack.config(), liveness)?;
-            let layered = LayeredState::prepare(self.backend, &binding, &self.regime)?;
-            self.cache = layered.fresh_cache(self.backend, &self.scope)?;
-            self.chain = layered.chain;
-            let mut dependencies = lineage_dependencies(&self.request, self.ids.len());
-            for dependency in layered.session_dependencies() {
-                if !dependencies.contains(&dependency) {
-                    dependencies.push(dependency);
-                }
-            }
-            self.dependencies = dependencies;
-            self.binding = binding;
-            self.record = record;
-            self.layered = Some(layered);
-        } else {
-            self.cache = self.backend.new_cache(&self.scope, &self.chain)?;
-        }
-        self.cache_use = CacheUse::Disabled;
-        self.guarded = false;
-        self.hit_tokens = 0;
-        self.position = 0;
-        self.last_logits = Vec::new();
-        self.generated = Vec::new();
-        self.hasher = new_hasher();
-        self.work = Work::default();
-        self.restarted = true;
-        self.phase = KvSessionPhase::Prefilling;
         {
             let mut state = self.backend.lock()?;
             state.stats.sessions_restarted += 1;
@@ -819,13 +812,60 @@ impl<'a> KvSession<'a> {
                 .restarted_requests
                 .insert(self.request.request_id().clone());
         }
-        match self.run_to_end(&NoCache)? {
-            KvSessionFinish::Completed(outcome) => Ok(*outcome),
-            KvSessionFinish::Cancelled(_) => Err(ReferenceKvError::SessionPhase {
+        if self.layered.is_none() {
+            self.cache = self.backend.new_cache(&self.scope, &self.chain)?;
+            self.reset_for_restart(Vec::new());
+            return match self.run_to_end(&NoCache)? {
+                KvSessionFinish::Completed(outcome) => Ok(*outcome),
+                KvSessionFinish::Cancelled(_) => Err(ReferenceKvError::SessionPhase {
+                    operation: "restart",
+                    phase: KvSessionPhase::Cancelled,
+                }),
+            };
+        }
+        let mut last = None;
+        for _ in 0..MAX_RESTART_ATTEMPTS {
+            let (binding, record) =
+                resolve_binding(&self.binding, self.backend.stack.config(), liveness)?;
+            let layered = LayeredState::prepare(self.backend, &binding, &self.regime)?;
+            self.cache = layered.fresh_cache(self.backend, &self.scope)?;
+            self.chain = layered.chain;
+            let guards = layered.session_dependencies();
+            self.binding = binding;
+            self.record = record;
+            self.layered = Some(layered);
+            self.reset_for_restart(guards);
+            match self.run_to_end(liveness)? {
+                KvSessionFinish::Completed(outcome) => return Ok(*outcome),
+                KvSessionFinish::Cancelled(cancelled) => last = Some(cancelled),
+            }
+        }
+        match last {
+            Some(last) => Err(ReferenceKvError::RestartCancelled {
+                attempts: MAX_RESTART_ATTEMPTS,
+                last,
+            }),
+            None => Err(ReferenceKvError::SessionPhase {
                 operation: "restart",
                 phase: KvSessionPhase::Cancelled,
             }),
         }
+    }
+
+    /// Clear the run state for a cold attempt guarded by `guards` (and by nothing else: the
+    /// lineage is not re-checked by a restart).
+    fn reset_for_restart(&mut self, guards: Vec<KvDependency>) {
+        self.cache_use = CacheUse::Disabled;
+        self.lineage_guarded = false;
+        self.binding_guards = guards;
+        self.hit_tokens = 0;
+        self.position = 0;
+        self.last_logits = Vec::new();
+        self.generated = Vec::new();
+        self.hasher = new_hasher();
+        self.work = Work::default();
+        self.restarted = true;
+        self.phase = KvSessionPhase::Prefilling;
     }
 
     /// Ask the oracle about the lineage (outside any lock) and the catalog about the pin;
@@ -834,12 +874,16 @@ impl<'a> KvSession<'a> {
         &mut self,
         liveness: &dyn KvLivenessOracle,
     ) -> Result<Option<KvCancellation>, ReferenceKvError> {
-        let reason = if self.guarded
+        let lineage_dead = self.lineage_guarded
             && !self
                 .dependencies
                 .iter()
-                .all(|dependency| liveness.is_live(dependency))
-        {
+                .all(|dependency| liveness.is_live(dependency));
+        let binding_dead = self
+            .binding_guards
+            .iter()
+            .any(|dependency| !liveness.is_live(dependency));
+        let reason = if lineage_dead || binding_dead {
             Some(KvCancelReason::InputNotLive)
         } else {
             let mut pins: Vec<KvPin> = self.pin.iter().cloned().collect();
