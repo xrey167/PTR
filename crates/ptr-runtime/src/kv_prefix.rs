@@ -862,6 +862,16 @@ impl KvPrefixCatalog {
         }
     }
 
+    /// Drop the entry behind `pin` because the backend no longer holds its pages (a layered
+    /// fork or adoption answered `PrefixNotFound`), the per-layer counterpart of what
+    /// [`Self::fork`] does for a whole-stack hit: the entry is tombstoned so the next lookup
+    /// misses, and the pin is released.
+    pub fn reject_missing_backend_pin(&mut self, pin: &KvPin) {
+        self.stats.backend_missing_rejections += 1;
+        self.tombstone_entry(&pin.node, &pin.entry);
+        self.release(pin);
+    }
+
     /// Whether the entry behind `pin` is still reachable. `false` means a dependency
     /// invalidation cancelled the fork: the run must restart from a fresh prefill and no
     /// result produced after the invalidation may escape.
