@@ -1,0 +1,15 @@
+version = 1
+kind = "workspace-area"
+name = "M003-a0v2-eval"
+path = "experiments/model/M003-a0v2-eval"
+tests_dir = "tests"
+
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+steps = 1500
+arms = "latent-0,latent-1,latent-linear,latent-4"
+data = "datasets/generated/operator_routing_v1"
+data_fnv64 = "0ad71688f09b0d0d"
+d_model = 32
+lr_file = "research/falsification/A0-ablations-v2/lr_selection.tsv"
+lr_file_sha256 = "3a0e71828f2a5ad213bc74856a9e7c6e016135fe64cbc1375fec67804d9f8639"

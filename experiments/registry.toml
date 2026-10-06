@@ -339,3 +339,28 @@ status = "prepared"
 id = "M004-a0v2-sweep-lr0p0125"
 path = "model/M004-a0v2-sweep-lr0p0125"
 status = "prepared"
+
+[[experiment]]
+id = "M002-a0v2-eval"
+path = "model/M002-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M003-a0v2-eval"
+path = "model/M003-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-eval"
+path = "model/M001-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M004-a0v2-eval"
+path = "model/M004-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-rerun"
+path = "model/M001-a0v2-rerun"
+status = "prepared"
