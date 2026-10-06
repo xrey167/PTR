@@ -22,6 +22,8 @@ mod output;
 mod paged_kv;
 mod protocol;
 mod qwen;
+mod qwen_lora;
+mod qwen_moe;
 mod qwen_stack;
 mod runtime;
 mod semantic;
@@ -58,8 +60,9 @@ pub use kv::{
     KvTensorSnapshot, TensorRef,
 };
 pub use kv_chain::{
-    derive_kv_layer_chains, derive_kv_layer_chains_in_regime, KvChainError, KvChainIdentity,
-    KvLayerChains,
+    derive_adapted_kv_layer_chains, derive_adapted_kv_layer_chains_in_regime,
+    derive_kv_layer_chains, derive_kv_layer_chains_in_regime, KvAdaptedChains, KvChainError,
+    KvChainIdentity, KvLayerChains,
 };
 pub use manifest::{
     ArtifactLifecycle, ExecutionManifest, LifecycleGate, LineageBinding,
@@ -87,9 +90,17 @@ pub use qwen::{
     Qwen2Activation, Qwen2DecoderInput, Qwen2DecoderOutput, Qwen2DecoderWeights, Qwen2LayerConfig,
     Qwen2LinearWeights, Qwen2PagedDecoder, Qwen2RopeRegime, Qwen2RopeScaling,
 };
+pub use qwen_lora::{
+    Qwen2Adapter, Qwen2AdapterError, Qwen2AdapterKind, Qwen2AdapterLayer, Qwen2AdapterProjection,
+    Qwen2AdapterSpec, Qwen2LoraPair, QWEN2_ADAPTER_PINNED_RANK, QWEN2_ADAPTER_PINNED_SCALE,
+};
+pub use qwen_moe::{
+    Qwen2Expert, Qwen2Moe, Qwen2MoeError, Qwen2MoeLayer, Qwen2MoeSpec, Qwen2RoutingMode,
+    RoutingCounts, RoutingDeterminism,
+};
 pub use qwen_stack::{
-    Qwen2PagedStack, Qwen2QkNorm, Qwen2StackConfig, Qwen2StackError, Qwen2StackInput,
-    Qwen2StackLayerWeights, Qwen2StackOutput, Qwen2StackWeights,
+    Qwen2Binding, Qwen2CobatchedOutput, Qwen2PagedStack, Qwen2QkNorm, Qwen2StackConfig,
+    Qwen2StackError, Qwen2StackInput, Qwen2StackLayerWeights, Qwen2StackOutput, Qwen2StackWeights,
 };
 pub use runtime::{
     ArtifactCatalog, ArtifactError, ExecutorError, ExecutorFactory, HealthStatus,

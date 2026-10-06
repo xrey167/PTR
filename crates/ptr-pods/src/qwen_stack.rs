@@ -16,11 +16,14 @@ use crate::qwen::{
     add, apply_rope, grouped_causal_attention, rms_norm, silu, Qwen2DecoderWeights,
     Qwen2LayerConfig, Qwen2LinearWeights, Qwen2RopeRegime, Qwen2RopeScaling,
 };
+use crate::qwen_lora::{Qwen2Adapter, Qwen2AdapterError};
+use crate::qwen_moe::{ExpertLoads, Qwen2Moe, Qwen2MoeError, RoutingCounts, RoutingDeterminism};
 use crate::{
     KvBackendError, KvContinuationExecutor, KvKeyEncoding, KvTensorDType, KvTensorSchema,
     PagedKvTensorBackend, TensorRef,
 };
 use ptr_types::{AdapterVersion, DeviceId, ModelVersion};
+use sha2::{Digest as _, Sha256};
 
 /// Optional per-head RMS normalisation of queries and keys, applied before RoPE.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,6 +85,25 @@ pub enum Qwen2StackError {
         admitted: usize,
     },
     Kv(KvBackendError),
+    /// The bound adapter does not fit this stack.
+    Adapter(Qwen2AdapterError),
+    /// The MoE does not fit this stack, or routing found no live expert.
+    Moe(Qwen2MoeError),
+    /// A co-batched run needs one input per cache and an `order` that is a permutation of
+    /// the request indices.
+    InvalidBatch,
+}
+
+impl From<Qwen2AdapterError> for Qwen2StackError {
+    fn from(error: Qwen2AdapterError) -> Self {
+        Self::Adapter(error)
+    }
+}
+
+impl From<Qwen2MoeError> for Qwen2StackError {
+    fn from(error: Qwen2MoeError) -> Self {
+        Self::Moe(error)
+    }
 }
 
 impl From<KvBackendError> for Qwen2StackError {
@@ -152,10 +174,34 @@ pub struct Qwen2StackOutput {
     pub next_position: usize,
 }
 
+/// What a request binds on top of the base stack: an optional adapter. The per-layer MLP
+/// kind (Dense or MoE) is a property of the stack itself ([`Qwen2PagedStack::with_moe`]).
+/// The default binding is the plain base model and takes exactly the unbound code path.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Qwen2Binding<'a> {
+    pub adapter: Option<&'a Qwen2Adapter>,
+}
+
+/// Per-run state threaded through the forward pass.
+struct ForwardContext<'a, 'b> {
+    adapter: Option<&'a Qwen2Adapter>,
+    loads: Option<&'b mut ExpertLoads>,
+    trace: Option<&'b mut RoutingCounts>,
+}
+
+/// The logits of the requests of a co-batched run, in request-index order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Qwen2CobatchedOutput {
+    pub outputs: Vec<Qwen2StackOutput>,
+    /// Selections dropped by the capacity rule, over the whole batch.
+    pub routing: RoutingCounts,
+}
+
 #[derive(Clone, Debug)]
 pub struct Qwen2PagedStack {
     config: Qwen2StackConfig,
     weights: Qwen2StackWeights,
+    moe: Option<Qwen2Moe>,
 }
 
 impl Qwen2PagedStack {
@@ -235,7 +281,30 @@ impl Qwen2PagedStack {
         {
             return Err(Qwen2StackError::InvalidWeights("non-finite weight"));
         }
-        Ok(Self { config, weights })
+        Ok(Self {
+            config,
+            weights,
+            moe: None,
+        })
+    }
+
+    /// Replace the dense MLP of the layers the MoE names by routed experts. The dense
+    /// weights stay in the stack unchanged (unused by those layers).
+    pub fn with_moe(mut self, moe: Qwen2Moe) -> Result<Self, Qwen2StackError> {
+        moe.validate_for(&self.config)?;
+        self.moe = Some(moe);
+        Ok(self)
+    }
+
+    pub fn moe(&self) -> Option<&Qwen2Moe> {
+        self.moe.as_ref()
+    }
+
+    /// Whether outputs can depend on what else runs in the same batch.
+    pub fn routing_determinism(&self) -> RoutingDeterminism {
+        self.moe
+            .as_ref()
+            .map_or(RoutingDeterminism::NotRouted, Qwen2Moe::routing_determinism)
     }
 
     /// The weights, read-only (for canonical digests such as the KV chain).
@@ -352,7 +421,15 @@ impl Qwen2PagedStack {
         input: Qwen2StackInput,
         regime: &Qwen2RopeRegime,
     ) -> Result<Qwen2StackOutput, Qwen2StackError> {
-        self.run(backend, cache, input, false, regime)
+        self.run(
+            backend,
+            cache,
+            input,
+            false,
+            regime,
+            &Qwen2Binding::default(),
+            None,
+        )
     }
 
     /// Decode one token under the regime fixed at admission. Never recomputes the regime.
@@ -363,17 +440,31 @@ impl Qwen2PagedStack {
         input: Qwen2StackInput,
         regime: &Qwen2RopeRegime,
     ) -> Result<Qwen2StackOutput, Qwen2StackError> {
-        self.run(backend, cache, input, true, regime)
+        self.run(
+            backend,
+            cache,
+            input,
+            true,
+            regime,
+            &Qwen2Binding::default(),
+            None,
+        )
     }
 
-    fn run<B: PagedKvTensorBackend>(
+    /// Validate one request against its cache and the admitted regime; returns the position
+    /// of its first token.
+    fn admit_request<B: PagedKvTensorBackend>(
         &self,
         backend: &B,
-        cache: &mut B::Cache,
-        input: Qwen2StackInput,
+        cache: &B::Cache,
+        input: &Qwen2StackInput,
         require_single_token: bool,
         regime: &Qwen2RopeRegime,
-    ) -> Result<Qwen2StackOutput, Qwen2StackError> {
+        binding: &Qwen2Binding<'_>,
+    ) -> Result<usize, Qwen2StackError> {
+        if let Some(adapter) = binding.adapter {
+            adapter.validate_for(&self.config)?;
+        }
         if !self.config.layer.accepts_regime(regime) {
             return Err(Qwen2StackError::RopeRegimeMismatch);
         }
@@ -430,14 +521,173 @@ impl Qwen2PagedStack {
                 admitted: regime.admitted_sequence_length(),
             });
         }
+        Ok(first_position)
+    }
+
+    fn run<B: PagedKvTensorBackend>(
+        &self,
+        backend: &B,
+        cache: &mut B::Cache,
+        input: Qwen2StackInput,
+        require_single_token: bool,
+        regime: &Qwen2RopeRegime,
+        binding: &Qwen2Binding<'_>,
+        trace: Option<&mut RoutingCounts>,
+    ) -> Result<Qwen2StackOutput, Qwen2StackError> {
+        let first_position = self.admit_request(
+            backend,
+            cache,
+            &input,
+            require_single_token,
+            regime,
+            binding,
+        )?;
+        let mut context = ForwardContext {
+            adapter: binding.adapter,
+            loads: None,
+            trace,
+        };
         let mut logits = Vec::with_capacity(input.tokens.len());
         for token in input.tokens {
-            logits.push(self.forward_token(backend, cache, token, regime.effective_base())?);
+            logits.push(self.forward_token(
+                backend,
+                cache,
+                token,
+                regime.effective_base(),
+                &mut context,
+            )?);
         }
         Ok(Qwen2StackOutput {
             next_position: first_position + logits.len(),
             first_position,
             logits,
+        })
+    }
+
+    /// Prefill under a regime and a binding (adapter). `Qwen2Binding::default()` is the
+    /// plain base path.
+    pub fn prefill_bound_in_regime<B: PagedKvTensorBackend>(
+        &self,
+        backend: &B,
+        cache: &mut B::Cache,
+        input: Qwen2StackInput,
+        regime: &Qwen2RopeRegime,
+        binding: &Qwen2Binding<'_>,
+    ) -> Result<Qwen2StackOutput, Qwen2StackError> {
+        self.run(backend, cache, input, false, regime, binding, None)
+    }
+
+    /// Decode one token under a regime and a binding.
+    pub fn decode_bound_in_regime<B: PagedKvTensorBackend>(
+        &self,
+        backend: &B,
+        cache: &mut B::Cache,
+        input: Qwen2StackInput,
+        regime: &Qwen2RopeRegime,
+        binding: &Qwen2Binding<'_>,
+    ) -> Result<Qwen2StackOutput, Qwen2StackError> {
+        self.run(backend, cache, input, true, regime, binding, None)
+    }
+
+    /// Prefill and report how often each expert was selected on this input, per layer.
+    /// Use it to pick the most-routed expert of a layer on a probe prompt.
+    pub fn prefill_traced_in_regime<B: PagedKvTensorBackend>(
+        &self,
+        backend: &B,
+        cache: &mut B::Cache,
+        input: Qwen2StackInput,
+        regime: &Qwen2RopeRegime,
+        binding: &Qwen2Binding<'_>,
+    ) -> Result<(Qwen2StackOutput, RoutingCounts), Qwen2StackError> {
+        let mut counts = self
+            .moe
+            .as_ref()
+            .map(RoutingCounts::new)
+            .unwrap_or_default();
+        let output = self.run(
+            backend,
+            cache,
+            input,
+            false,
+            regime,
+            binding,
+            Some(&mut counts),
+        )?;
+        Ok((output, counts))
+    }
+
+    /// Prefill several requests **co-batched**: step `t` runs token `t` of every request
+    /// that still has one, in the order given by `order` (a permutation of the request
+    /// indices), and the experts' per-step loads are shared by the whole step. With
+    /// [`crate::Qwen2RoutingMode::Dropless`] the result is independent of `order`; with
+    /// [`crate::Qwen2RoutingMode::BatchVariantCapacity`] it is not.
+    pub fn prefill_cobatched_in_regime<B: PagedKvTensorBackend>(
+        &self,
+        backend: &B,
+        caches: &mut [B::Cache],
+        inputs: Vec<Qwen2StackInput>,
+        order: &[usize],
+        regime: &Qwen2RopeRegime,
+        binding: &Qwen2Binding<'_>,
+    ) -> Result<Qwen2CobatchedOutput, Qwen2StackError> {
+        let count = caches.len();
+        let mut seen = vec![false; count];
+        if inputs.len() != count
+            || order.len() != count
+            || order
+                .iter()
+                .any(|index| *index >= count || std::mem::replace(&mut seen[*index], true))
+        {
+            return Err(Qwen2StackError::InvalidBatch);
+        }
+        let mut firsts = Vec::with_capacity(count);
+        for (cache, input) in caches.iter().zip(&inputs) {
+            firsts.push(self.admit_request(backend, cache, input, false, regime, binding)?);
+        }
+        let mut counts = self
+            .moe
+            .as_ref()
+            .map(RoutingCounts::new)
+            .unwrap_or_default();
+        let mut logits: Vec<Vec<Vec<f32>>> = vec![Vec::new(); count];
+        let steps = inputs
+            .iter()
+            .map(|input| input.tokens.len())
+            .max()
+            .unwrap_or(0);
+        for step in 0..steps {
+            let mut loads = self.moe.as_ref().map(ExpertLoads::new);
+            for request in order {
+                let Some(token) = inputs[*request].tokens.get(step) else {
+                    continue;
+                };
+                let mut context = ForwardContext {
+                    adapter: binding.adapter,
+                    loads: loads.as_mut(),
+                    trace: Some(&mut counts),
+                };
+                let row = self.forward_token(
+                    backend,
+                    &mut caches[*request],
+                    *token,
+                    regime.effective_base(),
+                    &mut context,
+                )?;
+                logits[*request].push(row);
+            }
+        }
+        let outputs = logits
+            .into_iter()
+            .zip(firsts)
+            .map(|(logits, first_position)| Qwen2StackOutput {
+                next_position: first_position + logits.len(),
+                first_position,
+                logits,
+            })
+            .collect();
+        Ok(Qwen2CobatchedOutput {
+            outputs,
+            routing: counts,
         })
     }
 
@@ -447,6 +697,7 @@ impl Qwen2PagedStack {
         cache: &mut B::Cache,
         token: u32,
         theta: f32,
+        context: &mut ForwardContext<'_, '_>,
     ) -> Result<Vec<f32>, Qwen2StackError> {
         let layer_config = &self.config.layer;
         let heads = layer_config.num_attention_heads;
@@ -470,7 +721,23 @@ impl Qwen2PagedStack {
             let normalized = rms_norm(&residual, &decoder.input_layernorm, eps)?;
             let mut query = decoder.query.apply(&normalized)?;
             let mut key = decoder.key.apply(&normalized)?;
-            let value = decoder.value.apply(&normalized)?;
+            let mut value = decoder.value.apply(&normalized)?;
+            // Unmerged adapter deltas, y = W x + s B (A x); an aLoRA acts from its
+            // invocation position on, earlier positions take the base path untouched.
+            let adapter = context
+                .adapter
+                .filter(|adapter| adapter.active_at(position));
+            let adapter_layer = adapter.and_then(|adapter| adapter.layer(index));
+            let adapter_scale = adapter.map_or(0.0, Qwen2Adapter::scale);
+            if let Some(pair) = adapter_layer.and_then(|layer| layer.q.as_ref()) {
+                query = add(&query, &pair.delta(&normalized, adapter_scale)?)?;
+            }
+            if let Some(pair) = adapter_layer.and_then(|layer| layer.k.as_ref()) {
+                key = add(&key, &pair.delta(&normalized, adapter_scale)?)?;
+            }
+            if let Some(pair) = adapter_layer.and_then(|layer| layer.v.as_ref()) {
+                value = add(&value, &pair.delta(&normalized, adapter_scale)?)?;
+            }
             if let (Some(query_norm), Some(key_norm)) = (&weights.query_norm, &weights.key_norm) {
                 per_head_norm(&mut query, head_dim, query_norm, eps)?;
                 per_head_norm(&mut key, head_dim, key_norm, eps)?;
@@ -532,14 +799,27 @@ impl Qwen2PagedStack {
             let after_attention = add(&residual, &attention_output)?;
             let post_attention =
                 rms_norm(&after_attention, &decoder.post_attention_layernorm, eps)?;
-            let gate = decoder.gate.apply(&post_attention)?;
-            let up = decoder.up.apply(&post_attention)?;
-            let activated: Vec<f32> = gate
-                .into_iter()
-                .zip(up)
-                .map(|(gate, up)| silu(gate) * up)
-                .collect();
-            let mlp = decoder.down.apply(&activated)?;
+            let mut mlp = match self.moe.as_ref().filter(|moe| moe.is_moe_layer(index)) {
+                Some(moe) => moe.apply(
+                    index,
+                    &post_attention,
+                    context.loads.as_deref_mut(),
+                    context.trace.as_deref_mut(),
+                )?,
+                None => {
+                    let gate = decoder.gate.apply(&post_attention)?;
+                    let up = decoder.up.apply(&post_attention)?;
+                    let activated: Vec<f32> = gate
+                        .into_iter()
+                        .zip(up)
+                        .map(|(gate, up)| silu(gate) * up)
+                        .collect();
+                    decoder.down.apply(&activated)?
+                }
+            };
+            if let Some(pair) = adapter_layer.and_then(|layer| layer.mlp.as_ref()) {
+                mlp = add(&mlp, &pair.delta(&post_attention, adapter_scale)?)?;
+            }
             residual = add(&after_attention, &mlp)?;
 
             stored_keys.push(TensorRef {
@@ -575,7 +855,15 @@ impl<B: PagedKvTensorBackend> KvContinuationExecutor<B> for Qwen2PagedStack {
         input: Self::Input,
     ) -> Result<Self::Output, Self::Error> {
         let regime = self.static_regime()?;
-        self.run(backend, cache, input, false, &regime)
+        self.run(
+            backend,
+            cache,
+            input,
+            false,
+            &regime,
+            &Qwen2Binding::default(),
+            None,
+        )
     }
 
     fn decode(
@@ -585,7 +873,15 @@ impl<B: PagedKvTensorBackend> KvContinuationExecutor<B> for Qwen2PagedStack {
         input: Self::Input,
     ) -> Result<Self::Output, Self::Error> {
         let regime = self.static_regime()?;
-        self.run(backend, cache, input, true, &regime)
+        self.run(
+            backend,
+            cache,
+            input,
+            true,
+            &regime,
+            &Qwen2Binding::default(),
+            None,
+        )
     }
 }
 
@@ -602,13 +898,28 @@ fn per_head_norm(
     Ok(())
 }
 
+/// A stream seed for a named domain: SHA-256 over the domain and the length-prefixed parts,
+/// first 8 bytes. Keeps independent seeded tensors (adapters, experts) apart from the dense
+/// reference stream.
+pub(crate) fn domain_seed(domain: &str, parts: &[&[u8]]) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update((domain.len() as u64).to_le_bytes());
+    hasher.update(domain.as_bytes());
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("a digest has 32 bytes"))
+}
+
 /// splitmix64 stream mapped to `f32` in `[-1, 1)`; the only randomness in the reference.
-struct SeededStream {
+pub(crate) struct SeededStream {
     state: u64,
 }
 
 impl SeededStream {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self { state: seed }
     }
 
@@ -622,7 +933,7 @@ impl SeededStream {
         ((z >> 40) as f32 / 16_777_216.0) * 2.0 - 1.0
     }
 
-    fn matrix(&mut self, len: usize, scale: f32) -> Vec<f32> {
+    pub(crate) fn matrix(&mut self, len: usize, scale: f32) -> Vec<f32> {
         (0..len).map(|_| self.next_unit() * scale).collect()
     }
 
@@ -630,7 +941,7 @@ impl SeededStream {
         (0..len).map(|_| 1.0 + self.next_unit() * 0.1).collect()
     }
 
-    fn linear(&mut self, output: usize, input: usize, bias: bool) -> Qwen2LinearWeights {
+    pub(crate) fn linear(&mut self, output: usize, input: usize, bias: bool) -> Qwen2LinearWeights {
         let scale = (input as f32).sqrt().recip();
         let weight = self.matrix(output * input, scale);
         let bias = bias.then(|| self.matrix(output, 0.1));

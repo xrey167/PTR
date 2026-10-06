@@ -41,12 +41,30 @@
 //!   no stored K/V byte.
 //!
 //! The catalog id of a whole stack is the last chain, [`KvLayerChains::final_id`].
+//!
+//! Adapters ([`derive_adapted_kv_layer_chains`]) follow the same placement rules, and a
+//! stack without adapter and without MoE hashes exactly the bytes it always did:
+//!
+//! * a K/V delta (QKV, aLoRA) of layer `l` enters `chain(l)` (adapter identity, generation,
+//!   kind, rank, scale, layer and the exact A/B bits of the K and V pairs), so
+//!   `chain(l' < first_layer)` equals the base chain;
+//! * Q and MLP deltas never touch a stored K/V row of their own layer, so they enter only
+//!   `chain(l + 1)`, through the "all of layer l" term, which also carries every pair of the
+//!   layer (QOnly and MLP-only: `chain(l <= first_layer)` equals the base chain);
+//! * an aLoRA's adapted chain additionally binds the invocation position (inside the kind),
+//!   and pages wholly before the invocation use the base chain
+//!   ([`KvAdaptedChains::effective_layer`]);
+//! * a MoE layer `j` enters the "all of layer j" term with its router, every expert's weights,
+//!   generation and live flag, the top-k and the routing mode, so it reaches `chain(l)` for
+//!   `l > j` only. Expert (j, i) never changes `chain(l <= j)`.
 
 use crate::{
-    KvKeyEncoding, Qwen2Activation, Qwen2LinearWeights, Qwen2PagedStack, Qwen2QkNorm,
-    Qwen2RopeRegime, Qwen2RopeScaling, Qwen2StackLayerWeights,
+    KvKeyEncoding, Qwen2Activation, Qwen2Adapter, Qwen2AdapterKind, Qwen2AdapterLayer,
+    Qwen2LinearWeights, Qwen2LoraPair, Qwen2MoeLayer, Qwen2PagedStack, Qwen2QkNorm,
+    Qwen2RopeRegime, Qwen2RopeScaling, Qwen2RoutingMode, Qwen2StackLayerWeights,
 };
 use sha2::{Digest as _, Sha256};
+use std::ops::Range;
 
 const DOMAIN: &[u8] = b"ptr.kv.chain.v2\0";
 
@@ -131,6 +149,84 @@ pub fn derive_kv_layer_chains_in_regime(
     identity: &KvChainIdentity,
     regime: &Qwen2RopeRegime,
 ) -> Result<KvLayerChains, KvChainError> {
+    derive_chains(stack, identity, regime, None)
+}
+
+/// The base chains of a stack and the chains of the same stack under an adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KvAdaptedChains {
+    base: KvLayerChains,
+    adapted: KvLayerChains,
+    /// First position at which the adapter acts (0 unless aLoRA).
+    activation_position: usize,
+}
+
+impl KvAdaptedChains {
+    pub fn base(&self) -> &KvLayerChains {
+        &self.base
+    }
+
+    pub fn adapted(&self) -> &KvLayerChains {
+        &self.adapted
+    }
+
+    pub fn activation_position(&self) -> usize {
+        self.activation_position
+    }
+
+    /// The chain under which rows of `layer` at `positions` are stored. A range wholly
+    /// before the aLoRA invocation position uses the base chain; a range that contains any
+    /// position at or after it (including one that straddles it) uses the adapted chain,
+    /// which binds the invocation. For QKV, Q-only and MLP-only adapters the adapted chain is
+    /// returned throughout (it equals the base chain below the adapted layers). `None` for
+    /// a layer out of range or an empty range.
+    pub fn effective_layer(&self, layer: usize, positions: Range<usize>) -> Option<[u8; 32]> {
+        if positions.is_empty() {
+            return None;
+        }
+        if positions.end <= self.activation_position {
+            self.base.layer(layer)
+        } else {
+            self.adapted.layer(layer)
+        }
+    }
+}
+
+/// Derive base and adapted chains for a stack without length-dependent RoPE scaling.
+pub fn derive_adapted_kv_layer_chains(
+    stack: &Qwen2PagedStack,
+    identity: &KvChainIdentity,
+    adapter: &Qwen2Adapter,
+) -> Result<KvAdaptedChains, KvChainError> {
+    match stack.config().layer.rope_scaling {
+        Qwen2RopeScaling::None => {
+            let regime = stack.config().layer.static_rope_regime();
+            derive_adapted_kv_layer_chains_in_regime(stack, identity, adapter, &regime)
+        }
+        _ => Err(KvChainError::RopeRegimeRequired),
+    }
+}
+
+/// Derive base and adapted chains under the effective RoPE regime fixed at admission.
+pub fn derive_adapted_kv_layer_chains_in_regime(
+    stack: &Qwen2PagedStack,
+    identity: &KvChainIdentity,
+    adapter: &Qwen2Adapter,
+    regime: &Qwen2RopeRegime,
+) -> Result<KvAdaptedChains, KvChainError> {
+    Ok(KvAdaptedChains {
+        base: derive_chains(stack, identity, regime, None)?,
+        adapted: derive_chains(stack, identity, regime, Some(adapter))?,
+        activation_position: adapter.activation_position(),
+    })
+}
+
+fn derive_chains(
+    stack: &Qwen2PagedStack,
+    identity: &KvChainIdentity,
+    regime: &Qwen2RopeRegime,
+    adapter: Option<&Qwen2Adapter>,
+) -> Result<KvLayerChains, KvChainError> {
     if !stack.config().layer.accepts_regime(regime) {
         return Err(KvChainError::RopeRegimeMismatch);
     }
@@ -179,7 +275,14 @@ pub fn derive_kv_layer_chains_in_regime(
         hasher.update((index as u64).to_le_bytes());
         hasher.update(previous);
         if index >= 1 {
-            hasher.update(full_layer_digest(stack, &weights.layers[index - 1]));
+            hasher.update(full_layer_digest(
+                stack,
+                index - 1,
+                &weights.layers[index - 1],
+            ));
+            if let Some((adapter, layer)) = adapter.and_then(|a| Some((a, a.layer(index - 1)?))) {
+                adapter_term(&mut hasher, adapter, index - 1, layer, AdapterPart::All);
+            }
         }
         // Everything applied to the residual before the K/V projections.
         floats(&mut hasher, &layer.decoder.input_layernorm);
@@ -193,6 +296,11 @@ pub fn derive_kv_layer_chains_in_regime(
                 hasher.update(config.layer.rms_norm_eps.to_bits().to_le_bytes());
             }
             _ => text(&mut hasher, "key-norm:disabled"),
+        }
+        if let Some((adapter, layer)) = adapter.and_then(|a| Some((a, a.layer(index)?))) {
+            if adapter.adapts_kv() {
+                adapter_term(&mut hasher, adapter, index, layer, AdapterPart::KeyValue);
+            }
         }
         if index >= 1 || post_rope {
             rope(&mut hasher, stack, regime);
@@ -270,7 +378,11 @@ fn embedding_digest(embedding: &[f32]) -> [u8; 32] {
 
 /// Canonical digest of ALL of one layer: both norms, Q/K/V/O, QK-norms, MLP and the
 /// attention and numerics configuration that shapes its output.
-fn full_layer_digest(stack: &Qwen2PagedStack, layer: &Qwen2StackLayerWeights) -> [u8; 32] {
+fn full_layer_digest(
+    stack: &Qwen2PagedStack,
+    index: usize,
+    layer: &Qwen2StackLayerWeights,
+) -> [u8; 32] {
     let config = &stack.config().layer;
     let decoder = &layer.decoder;
     let mut hasher = start("full-layer");
@@ -312,5 +424,91 @@ fn full_layer_digest(stack: &Qwen2PagedStack, layer: &Qwen2StackLayerWeights) ->
             text(&mut hasher, name);
         }
     }
+    if let Some((moe, moe_layer)) = stack.moe().and_then(|moe| Some((moe, moe.layer(index)?))) {
+        moe_term(&mut hasher, moe.top_k(), moe.mode(), moe_layer);
+    }
     hasher.finalize().into()
+}
+
+/// Router, every expert (weights, generation, live flag), top-k and routing mode of one MoE
+/// layer. Appended only for MoE layers, so dense layers hash as before.
+fn moe_term(hasher: &mut Sha256, top_k: usize, mode: Qwen2RoutingMode, layer: &Qwen2MoeLayer) {
+    text(hasher, "moe");
+    hasher.update((top_k as u64).to_le_bytes());
+    match mode {
+        Qwen2RoutingMode::Dropless => text(hasher, "routing:dropless"),
+        Qwen2RoutingMode::BatchVariantCapacity { capacity } => {
+            text(hasher, "routing:batch-variant-capacity");
+            hasher.update((capacity as u64).to_le_bytes());
+        }
+    }
+    linear(hasher, &layer.router);
+    hasher.update((layer.experts.len() as u64).to_le_bytes());
+    for expert in &layer.experts {
+        hasher.update(expert.generation.to_le_bytes());
+        hasher.update([u8::from(expert.live)]);
+        linear(hasher, &expert.gate);
+        linear(hasher, &expert.up);
+        linear(hasher, &expert.down);
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum AdapterPart {
+    /// The K and V pairs only (what a stored K/V row of the layer depends on).
+    KeyValue,
+    /// Every pair of the layer (what the layer's output depends on).
+    All,
+}
+
+/// Adapter identity, generation, kind (with the aLoRA invocation position), rank, scale,
+/// layer index and the exact bits of the selected pairs of one layer.
+fn adapter_term(
+    hasher: &mut Sha256,
+    adapter: &Qwen2Adapter,
+    index: usize,
+    layer: &Qwen2AdapterLayer,
+    part: AdapterPart,
+) {
+    text(
+        hasher,
+        match part {
+            AdapterPart::KeyValue => "adapter:kv",
+            AdapterPart::All => "adapter:layer",
+        },
+    );
+    text(hasher, adapter.identity());
+    hasher.update(adapter.generation().to_le_bytes());
+    match adapter.kind() {
+        Qwen2AdapterKind::Qkv => text(hasher, "kind:qkv"),
+        Qwen2AdapterKind::QOnly => text(hasher, "kind:q-only"),
+        Qwen2AdapterKind::MlpOnly => text(hasher, "kind:mlp-only"),
+        Qwen2AdapterKind::Activated { invocation } => {
+            text(hasher, "kind:activated");
+            hasher.update((invocation as u64).to_le_bytes());
+        }
+    }
+    hasher.update((adapter.rank() as u64).to_le_bytes());
+    hasher.update(adapter.scale().to_bits().to_le_bytes());
+    hasher.update((index as u64).to_le_bytes());
+    let pairs: [(&str, &Option<Qwen2LoraPair>, bool); 4] = [
+        ("q", &layer.q, part == AdapterPart::All),
+        ("k", &layer.k, true),
+        ("v", &layer.v, true),
+        ("mlp", &layer.mlp, part == AdapterPart::All),
+    ];
+    for (name, pair, selected) in pairs {
+        if !selected {
+            continue;
+        }
+        text(hasher, name);
+        match pair {
+            Some(pair) => {
+                hasher.update([1u8]);
+                floats(hasher, &pair.a);
+                floats(hasher, &pair.b);
+            }
+            None => hasher.update([0u8]),
+        }
+    }
 }
