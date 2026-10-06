@@ -478,7 +478,9 @@ struct HostPageBundle {
     valid_tokens: u16,
     state: KvPageState,
     digest: Option<Digest>,
-    layers: Vec<KvLayerSnapshot>,
+    /// One independently shared allocation per layer: cloning a bundle is shallow and a write
+    /// to layer `l` copies only layer `l` (`Arc::make_mut`), never the other layers.
+    layers: Vec<Arc<KvLayerSnapshot>>,
 }
 
 impl HostPageBundle {
@@ -551,7 +553,7 @@ impl InMemoryPagedKvBackend {
         let mut layers = Vec::with_capacity(schema.layer_count);
         for layer in 0..schema.layer_count {
             let range = start * width..(start + count) * width;
-            layers.push(KvLayerSnapshot {
+            layers.push(Arc::new(KvLayerSnapshot {
                 keys: TensorRef {
                     layer,
                     shape: vec![count, width],
@@ -562,7 +564,7 @@ impl InMemoryPagedKvBackend {
                     shape: vec![count, width],
                     values: values[layer].values[range].to_vec(),
                 },
-            });
+            }));
         }
         Ok(HostPageBundle {
             page_id: self.next_page_id()?,
@@ -584,10 +586,58 @@ impl InMemoryPagedKvBackend {
         ) {
             return Err(KvBackendError::InvalidPageState);
         }
-        let digest = page_digest(binding, ordinal, page.valid_tokens, &page.layers);
+        let digest = page_digest_from_layer_digests(
+            binding,
+            ordinal,
+            page.valid_tokens,
+            page.layers
+                .iter()
+                .enumerate()
+                .map(|(index, layer)| layer_digest(index, layer)),
+        );
         page.digest = Some(digest);
         page.state = KvPageState::Sealed;
         Ok(())
+    }
+
+    /// Returns the cache's tail page for writing. A shared or sealed tail is first replaced by
+    /// a shallow copy (new page id, writable, digest cleared) whose layers are still the same
+    /// `Arc`s; each layer is copied only when it is itself written (`extend_layer`).
+    fn writable_tail<'a>(
+        &self,
+        cache: &'a mut InMemoryPagedKvCache,
+    ) -> Result<&'a mut HostPageBundle, KvBackendError> {
+        let ordinal = cache
+            .pages
+            .len()
+            .checked_sub(1)
+            .ok_or(KvBackendError::InvalidPageState)?;
+        let page = &cache.pages[ordinal];
+        if Arc::strong_count(page) > 1 || page.state == KvPageState::Sealed {
+            let mut copied = (**page).clone();
+            copied.page_id = self.next_page_id()?;
+            copied.state = KvPageState::Writable;
+            copied.digest = None;
+            cache.pages[ordinal] = Arc::new(copied);
+            cache.cow_copies = cache.cow_copies.saturating_add(1);
+        }
+        Arc::get_mut(&mut cache.pages[ordinal]).ok_or(KvBackendError::InvalidPageState)
+    }
+
+    /// Copy-on-write append of `count` tokens to one layer of a page: only that layer's
+    /// allocation is cloned (and only when it is still shared); sibling layers stay shared.
+    fn extend_layer(
+        page: &mut HostPageBundle,
+        layer: usize,
+        keys: &[f32],
+        values: &[f32],
+        count: usize,
+    ) {
+        let target = Arc::make_mut(&mut page.layers[layer]);
+        target.keys.values.extend_from_slice(keys);
+        target.values.values.extend_from_slice(values);
+        target.keys.shape[0] += count;
+        target.values.shape[0] += count;
     }
 
     fn validate_append(
@@ -633,7 +683,7 @@ impl InMemoryPagedKvBackend {
             pages.push(KvPageSnapshot {
                 ordinal,
                 valid_tokens: page.valid_tokens,
-                layers: page.layers.clone(),
+                layers: page.layers.iter().map(|layer| (**layer).clone()).collect(),
                 digest,
             });
         }
@@ -714,34 +764,19 @@ impl KvTensorBackend for InMemoryPagedKvBackend {
                 )?));
                 consumed += count;
             } else {
-                let ordinal = cache.pages.len() - 1;
-                let page = &cache.pages[ordinal];
-                let was_shared_or_sealed =
-                    Arc::strong_count(page) > 1 || page.state == KvPageState::Sealed;
-                if was_shared_or_sealed {
-                    let mut copied = (**page).clone();
-                    copied.page_id = self.next_page_id()?;
-                    copied.state = KvPageState::Writable;
-                    copied.digest = None;
-                    cache.pages[ordinal] = Arc::new(copied);
-                    cache.cow_copies = cache.cow_copies.saturating_add(1);
-                }
-                let page = Arc::get_mut(&mut cache.pages[ordinal])
-                    .ok_or(KvBackendError::InvalidPageState)?;
+                let layer_count = cache.schema.layer_count;
+                let page = self.writable_tail(cache)?;
                 let available = page_tokens - usize::from(page.valid_tokens);
                 let count = (token_count - consumed).min(available);
-                for layer in 0..cache.schema.layer_count {
+                for layer in 0..layer_count {
                     let range = consumed * width..(consumed + count) * width;
-                    page.layers[layer]
-                        .keys
-                        .values
-                        .extend_from_slice(&keys[layer].values[range.clone()]);
-                    page.layers[layer]
-                        .values
-                        .values
-                        .extend_from_slice(&values[layer].values[range]);
-                    page.layers[layer].keys.shape[0] += count;
-                    page.layers[layer].values.shape[0] += count;
+                    Self::extend_layer(
+                        page,
+                        layer,
+                        &keys[layer].values[range.clone()],
+                        &values[layer].values[range],
+                        count,
+                    );
                 }
                 page.valid_tokens = page
                     .valid_tokens
@@ -779,6 +814,7 @@ impl KvTensorBackend for InMemoryPagedKvBackend {
                 page.digest = None;
                 let width = cache.schema.key_value_heads * cache.schema.head_dim;
                 for layer in &mut page.layers {
+                    let layer = Arc::make_mut(layer);
                     layer.keys.values.truncate(keep * width);
                     layer.values.values.truncate(keep * width);
                     layer.keys.shape[0] = keep;
@@ -1191,19 +1227,49 @@ pub(crate) fn page_digest(
     valid_tokens: u16,
     layers: &[KvLayerSnapshot],
 ) -> Digest {
-    let mut bytes = b"ptr-paged-kv-page-v1\0".to_vec();
+    page_digest_from_layer_digests(
+        binding,
+        ordinal,
+        valid_tokens,
+        layers
+            .iter()
+            .enumerate()
+            .map(|(index, layer)| layer_digest(index, layer)),
+    )
+}
+
+/// Page digest v2: domain-separated digest over the binding, position and the ordered
+/// per-layer digests, so a page's identity is the composition of its layers' identities.
+pub(crate) fn page_digest_from_layer_digests(
+    binding: &KvPageBinding,
+    ordinal: usize,
+    valid_tokens: u16,
+    layer_digests: impl ExactSizeIterator<Item = Digest>,
+) -> Digest {
+    let mut bytes = b"ptr-paged-kv-page-v2\0".to_vec();
     put_binding(&mut bytes, binding);
     bytes.extend_from_slice(&(ordinal as u64).to_le_bytes());
     bytes.extend_from_slice(&valid_tokens.to_le_bytes());
-    for layer in layers {
-        for tensor in [&layer.keys, &layer.values] {
-            bytes.extend_from_slice(&(tensor.layer as u64).to_le_bytes());
-            for dimension in &tensor.shape {
-                bytes.extend_from_slice(&(*dimension as u64).to_le_bytes());
-            }
-            for value in &tensor.values {
-                bytes.extend_from_slice(&value.to_bits().to_le_bytes());
-            }
+    bytes.extend_from_slice(&(layer_digests.len() as u64).to_le_bytes());
+    for digest in layer_digests {
+        bytes.extend_from_slice(&digest);
+    }
+    Sha256::digest(bytes).into()
+}
+
+/// Digest of one layer's keys and values within a page (layer index included).
+pub(crate) fn layer_digest(index: usize, layer: &KvLayerSnapshot) -> Digest {
+    let mut bytes = b"ptr-paged-kv-layer-v1\0".to_vec();
+    bytes.extend_from_slice(&(index as u64).to_le_bytes());
+    for tensor in [&layer.keys, &layer.values] {
+        bytes.extend_from_slice(&(tensor.layer as u64).to_le_bytes());
+        bytes.extend_from_slice(&(tensor.shape.len() as u64).to_le_bytes());
+        for dimension in &tensor.shape {
+            bytes.extend_from_slice(&(*dimension as u64).to_le_bytes());
+        }
+        bytes.extend_from_slice(&(tensor.values.len() as u64).to_le_bytes());
+        for value in &tensor.values {
+            bytes.extend_from_slice(&value.to_bits().to_le_bytes());
         }
     }
     Sha256::digest(bytes).into()
@@ -1272,6 +1338,149 @@ pub(crate) fn digest_list(domain: &[u8], digests: &[Digest]) -> Digest {
         bytes.extend_from_slice(digest);
     }
     Sha256::digest(bytes).into()
+}
+
+#[cfg(test)]
+mod per_layer_page_tests {
+    use super::*;
+
+    const LAYERS: usize = 3;
+    const WIDTH: usize = 4;
+
+    fn schema() -> KvTensorSchema {
+        KvTensorSchema {
+            model: ModelVersion::from("m"),
+            adapter: AdapterVersion::from("a"),
+            device: DeviceId::from("cpu"),
+            layer_count: LAYERS,
+            attention_heads: 2,
+            key_value_heads: 2,
+            head_dim: 2,
+            batch_size: 1,
+            dtype: KvTensorDType::F32,
+        }
+    }
+
+    fn rows(layer: usize, tokens: usize, seed: f32) -> TensorRef {
+        TensorRef {
+            layer,
+            shape: vec![tokens, WIDTH],
+            values: (0..tokens * WIDTH)
+                .map(|i| seed + (layer * 100 + i) as f32)
+                .collect(),
+        }
+    }
+
+    /// Cache with one sealed full page (4 tokens) and a writable partial tail (2 tokens).
+    fn partial_cache(backend: &InMemoryPagedKvBackend) -> InMemoryPagedKvCache {
+        let mut cache = backend.allocate(schema(), 16).unwrap();
+        let keys: Vec<_> = (0..LAYERS).map(|l| rows(l, 6, 1.0)).collect();
+        let values: Vec<_> = (0..LAYERS).map(|l| rows(l, 6, 9.0)).collect();
+        backend.append(&mut cache, &keys, &values).unwrap();
+        cache
+    }
+
+    fn unique_layer_bytes(caches: &[&InMemoryPagedKvCache]) -> usize {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut bytes = 0;
+        for cache in caches {
+            for page in &cache.pages {
+                for layer in &page.layers {
+                    if seen.insert(Arc::as_ptr(layer) as usize) {
+                        bytes += (layer.keys.values.len() + layer.values.values.len()) * 4;
+                    }
+                }
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn writing_one_layer_of_a_forked_tail_copies_only_that_layer() {
+        let backend = InMemoryPagedKvBackend::new(KvPageSize::new(4).unwrap());
+        let mut source = partial_cache(&backend);
+        backend.seal_snapshot(&mut source).unwrap();
+        let before = InMemoryPagedKvBackend::paged_snapshot(&source).unwrap();
+        let mut fork = source.clone();
+        let bytes_before = unique_layer_bytes(&[&source, &fork]);
+        assert_eq!(bytes_before, unique_layer_bytes(&[&source]));
+
+        let page = backend.writable_tail(&mut fork).unwrap();
+        InMemoryPagedKvBackend::extend_layer(page, 1, &[7.0; WIDTH], &[8.0; WIDTH], 1);
+
+        let tail = source.pages.len() - 1;
+        for layer in 0..LAYERS {
+            let same = Arc::ptr_eq(
+                &source.pages[tail].layers[layer],
+                &fork.pages[tail].layers[layer],
+            );
+            assert_eq!(same, layer != 1, "layer {layer}");
+            // Fully sealed head page is untouched and still shared whole.
+            assert!(Arc::ptr_eq(&source.pages[0], &fork.pages[0]));
+        }
+        // The source is bitwise unchanged.
+        assert_eq!(
+            InMemoryPagedKvBackend::paged_snapshot(&source).unwrap(),
+            before
+        );
+        // Resident growth is exactly the modified layer's page bytes (keys + values, 2 tokens).
+        let modified_layer_bytes = 2 * (2 * WIDTH) * 4;
+        assert_eq!(
+            unique_layer_bytes(&[&source, &fork]) - bytes_before,
+            modified_layer_bytes + (2 * WIDTH) * 4 // the 1 appended token in that layer
+        );
+        assert_eq!(fork.cow_copies, 1);
+    }
+
+    #[test]
+    fn full_append_after_fork_shares_every_sealed_page_and_leaves_source_intact() {
+        let backend = InMemoryPagedKvBackend::new(KvPageSize::new(4).unwrap());
+        let mut source = partial_cache(&backend);
+        backend.seal_snapshot(&mut source).unwrap();
+        let before = InMemoryPagedKvBackend::paged_snapshot(&source).unwrap();
+        let mut fork = source.clone();
+        let keys: Vec<_> = (0..LAYERS).map(|l| rows(l, 1, 5.0)).collect();
+        let values: Vec<_> = (0..LAYERS).map(|l| rows(l, 1, 6.0)).collect();
+        backend.append(&mut fork, &keys, &values).unwrap();
+        assert!(Arc::ptr_eq(&source.pages[0], &fork.pages[0]));
+        assert_eq!(
+            InMemoryPagedKvBackend::paged_snapshot(&source).unwrap(),
+            before
+        );
+        assert_eq!(fork.sequence_length, 7);
+    }
+
+    #[test]
+    fn page_digest_is_deterministic_and_sensitive_to_every_single_layer() {
+        let backend = InMemoryPagedKvBackend::new(KvPageSize::new(4).unwrap());
+        let a = InMemoryPagedKvBackend::paged_snapshot(&{
+            let mut c = partial_cache(&backend);
+            backend.seal_snapshot(&mut c).unwrap();
+            c
+        })
+        .unwrap();
+        let b = InMemoryPagedKvBackend::paged_snapshot(&{
+            let mut c = partial_cache(&backend);
+            backend.seal_snapshot(&mut c).unwrap();
+            c
+        })
+        .unwrap();
+        assert_eq!(a.pages[0].digest, b.pages[0].digest);
+        assert!(a.verify_digest());
+        for layer in 0..LAYERS {
+            let mut changed = a.pages[0].layers.clone();
+            changed[layer].values.values[0] += 1.0;
+            let digest = page_digest(&a.binding, 0, a.pages[0].valid_tokens, &changed);
+            assert_ne!(digest, a.pages[0].digest, "layer {layer}");
+        }
+        // A tampered layer is refused by snapshot validation.
+        let mut tampered = a.clone();
+        tampered.pages[0].layers[2].keys.values[0] += 1.0;
+        assert_eq!(
+            tampered.validate(),
+            Err(KvBackendError::SnapshotDigestMismatch)
+        );
+    }
 }
 
 #[cfg(test)]
