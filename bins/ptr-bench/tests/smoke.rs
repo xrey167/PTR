@@ -121,3 +121,43 @@ fn kv_reuse_smoke_refuses_a_bad_request_count() {
         assert!(output.stdout.is_empty(), "{bad}");
     }
 }
+
+#[test]
+fn exact_prefix_reuse_needs_one_numeric_seed_and_prints_nothing_otherwise() {
+    let exe = env!("CARGO_BIN_EXE_ptr-bench");
+    // No seed, a typo and a negative seed stop the run before it starts: R005 has no default
+    // seed, and a typo must not run another seed than the one asked for.
+    for args in [
+        vec!["exact-prefix-reuse"],
+        vec!["exact-prefix-reuse", "1O1"],
+        vec!["exact-prefix-reuse", "-1"],
+        vec!["exact-prefix-reuse", ""],
+    ] {
+        let output = Command::new(exe)
+            .args(&args)
+            .output()
+            .expect("run the R005 harness");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("seed"),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn the_usage_lists_the_r005_harness_without_freezing_anything() {
+    let exe = env!("CARGO_BIN_EXE_ptr-bench");
+    let output = Command::new(exe)
+        .arg("no-such-command")
+        .output()
+        .expect("run ptr-bench");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exact-prefix-reuse"));
+    // R005 stays planned: the manifest names no entrypoint and the run writes no record.
+    let manifest =
+        include_str!("../../../experiments/runtime/R005-exact-prefix-reuse/experiment.toml");
+    assert!(manifest.contains("status = \"planned\""));
+    assert!(manifest.contains("entrypoint = \"\""));
+}

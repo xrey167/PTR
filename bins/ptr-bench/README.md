@@ -23,6 +23,29 @@ warm_ms, bitwise_equal}`; it exits 1 if any pair differs. **This is not an R005 
 it uses none of R005's preregistered parameters, writes no result record and measures
 nothing about a real model.
 
+## R005 exact prefix reuse (planned)
+
+`cargo run --release --locked -p ptr-bench -- exact-prefix-reuse <seed>` runs the harness of
+[R005](../../experiments/runtime/R005-exact-prefix-reuse/README.md), Exact half, for one seed
+and prints exactly one JSON object. R005 is `planned`: nothing is frozen, no record is written
+and a run is a **dry run, not a result**. The seed is required (there is no default and a typo
+stops the run). A run takes about two minutes in a release build.
+
+It drives `ReferenceKvReuseBackend` and `KvSession` over the seeded tiny Qwen2 stack, with
+`PtrRuntime` as the ledger-anchored liveness oracle wherever the configuration asks for
+committed-ledger liveness, and a bare `KvPrefixCatalog` for the dependency kinds the stack
+backend does not carry (base model, adapter, expert), the forged witnesses and the positions.
+The object holds every metric of the manifest (a number, an object, a digest, or `null` with
+its reason under `unsupported`), the procedure, the model pins (checked from outside by
+reproducing the backend's chain id and a cold run), the producer environment, the corpus
+selection digests, the 52-cell invalidation matrix with the layer (`session` or `catalog`)
+that carried each cell, and two judgements: `coverage` (a prerequisite below its minimum makes
+the run vacuous) and `falsifiers` (a tripped one falsifies R005 on that seed). The exit status
+is 1 when a prerequisite is unmet, a falsifier is tripped or a metric has neither a value nor a
+reason, and 2 when the harness cannot run a case. The constants of `r005/params.rs` mirror
+`config.toml` (a drift test fails on any difference); the values the file leaves open are listed
+in `r005/params.rs` under "chosen" and in the draft preregistration.
+
 ## S003 certified branches
 
 `cargo run --release -p ptr-bench -- certified-branches [cases=48] [seed=17]` runs the

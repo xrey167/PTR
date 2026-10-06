@@ -56,6 +56,18 @@ fn main() {
                 "seed",
             )),
         ),
+        // The harness of R005 (Exact half), which is `planned`: one seed per run, no default
+        // seed, and a typo in it stops the run. A run is a dry run until the experiment is
+        // frozen; it writes nothing.
+        "exact-prefix-reuse" => experiments::r005::run(strict_or_exit(
+            args.get(2)
+                .ok_or_else(|| "seed is required: exact-prefix-reuse <seed>".to_string())
+                .and_then(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("seed must be a non-negative integer, got {value:?}"))
+                }),
+        )),
         // Not an R005 result: an exactness smoke run of the CPU reference backend.
         "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(
             &args, 2, 8, "requests",
@@ -78,13 +90,13 @@ fn main() {
     }
 }
 
-/// The experiment subcommands: S003 always, and the PostgreSQL ones only when
-/// they are compiled in.
+/// The experiment subcommands: S003, R005 and the smoke run always, and the PostgreSQL ones
+/// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
 const EXPERIMENT_COMMANDS: &str =
-    "|certified-branches|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
+    "|certified-branches|exact-prefix-reuse|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "|certified-branches|kv-reuse-smoke";
+const EXPERIMENT_COMMANDS: &str = "|certified-branches|exact-prefix-reuse|kv-reuse-smoke";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)
