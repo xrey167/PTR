@@ -47,7 +47,7 @@ pub use kv_prefix::{
     KvCatalogHit, KvCatalogStats, KvCatalogWiringError, KvChainId, KvChunkKey, KvDependency,
     KvDependencyKind, KvForkError, KvInsert, KvLivenessOracle, KvLookup, KvPageCharge,
     KvPagedInsert, KvPin, KvPrefixCatalog, KvPrefixRetirer, KvRequestPositions, KvRestoreReport,
-    KvSalt, KvSnapshotError, KV_CHUNK_TOKENS, KV_SNAPSHOT_MAX_BYTES,
+    KvSalt, KvSnapshotError, SemanticSegmentError, KV_CHUNK_TOKENS, KV_SNAPSHOT_MAX_BYTES,
 };
 pub use manifest::{
     validate_and_build, validate_authority, ExecutionManifestRegistry, ManifestAuthorityRegistry,
@@ -665,6 +665,9 @@ pub struct PtrRuntime {
     experts: expert::ExpertRegistryProjection,
     /// Exact KV prefix catalog; none until the host calls `enable_kv_prefix_catalog`.
     kv_catalog: Option<kv_prefix::KvPrefixCatalog>,
+    /// The revision at which each semantic key was last affected by a committed delta; the
+    /// use-time liveness check of a semantic KV dependency reads it.
+    semantic_edits: kv_prefix::SemanticEdits,
     /// Actions ingested from Approximate-reuse runs; refused by `authorize_action`.
     tainted_actions: kv_taint::TaintedActions,
 }
@@ -718,6 +721,7 @@ impl PtrRuntime {
             tier_journal: TierJournalProjection::default(),
             experts: expert::ExpertRegistryProjection::default(),
             kv_catalog: None,
+            semantic_edits: kv_prefix::SemanticEdits::default(),
             tainted_actions: kv_taint::TaintedActions::default(),
         })
     }
@@ -2964,11 +2968,18 @@ impl PtrRuntime {
         self.invalidate_kv_catalog(&committed.event, semantic.as_ref());
         match &committed.event {
             LedgerEvent::SemanticDeltaCommitted { .. } => {
+                let delta =
+                    semantic.ok_or(RuntimeError::Semantic(SemanticError::InvalidEncoding))?;
+                let affected = delta.affected().clone();
                 self.semdb
-                    .apply_prepared(
-                        semantic.ok_or(RuntimeError::Semantic(SemanticError::InvalidEncoding))?,
-                    )
+                    .apply_prepared(delta)
                     .map_err(RuntimeError::Semantic)?;
+                let snapshot = self.semdb.snapshot();
+                self.semantic_edits.record(
+                    &affected,
+                    |key| snapshot.value(key).is_some(),
+                    self.semdb.revision(),
+                );
             }
             LedgerEvent::CapsuleCommitted {
                 project,
@@ -2988,6 +2999,10 @@ impl PtrRuntime {
             } => {
                 self.revoked_generations
                     .insert((subject.clone(), *generation));
+                // A revocation of a semantic key is a floor over every citation of it.
+                let held = self.semdb.snapshot().value(subject).is_some();
+                self.semantic_edits
+                    .record_revocation(subject, held, self.semdb.revision());
             }
             LedgerEvent::HardConstraintCommitted { key, generation } => {
                 self.set_live_generation(format!("constraint:{key}"), *generation);

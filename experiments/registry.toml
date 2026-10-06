@@ -203,7 +203,7 @@ status = "planned"
 [[experiment]]
 id = "R005"
 path = "runtime/R005-exact-prefix-reuse"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "R006"

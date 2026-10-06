@@ -49,15 +49,17 @@
 use crate::PtrRuntime;
 use ptr_ledger::LedgerEvent;
 use ptr_model_api::{
-    LineageContribution, SegmentKind, SegmentedModelRequest, TokenId, TokenizerIdentity,
+    LineageContribution, PromptSegment, SegmentKind, SegmentSource, SegmentedModelRequest,
+    TokenContractError, TokenId, Tokenizer, TokenizerIdentity,
 };
 use ptr_pods::{
     ExpertCommitRecord, ExpertState, KvBackendError, KvForkAuthority, KvForkWitness, KvPrefixKey,
     KvSharedPrefix, KvWitnessRevoker, PagedKvTensorBackend,
 };
-use ptr_semdb::PreparedDelta;
+use ptr_semdb::{PreparedDelta, SemanticValue};
 use ptr_types::{
-    AdapterVersion, Digest, Generation, ModelVersion, PodId, PrincipalId, ProjectId, Validity,
+    AdapterVersion, Digest, Generation, ModelVersion, PodId, PrincipalId, ProjectId, Revision,
+    Validity,
 };
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1097,6 +1099,17 @@ impl KvPrefixCatalog {
         self.take_retirements()
     }
 
+    /// Like [`Self::invalidate_identities`] restricted to dependencies of `kind`.
+    pub fn invalidate_kind_identities(
+        &mut self,
+        kind: KvDependencyKind,
+        identities: &BTreeSet<String>,
+    ) -> Vec<KvPrefixKey> {
+        let wanted: BTreeSet<&str> = identities.iter().map(String::as_str).collect();
+        self.tombstone_matching(&wanted, |dep| dep.kind == kind);
+        self.take_retirements()
+    }
+
     /// Tombstone every entry with an expert dependency. Used when an expert structural
     /// record cannot be decoded and its operands are therefore unknown (fail closed).
     pub fn invalidate_all_experts(&mut self) -> Vec<KvPrefixKey> {
@@ -1797,36 +1810,228 @@ impl KvPrefixCatalog {
 
 // Runtime wiring -------------------------------------------------------------------------
 
+/// Most keys whose last-edit revision [`SemanticEdits`] tracks individually. Past it the
+/// per-key history is dropped and the floor rises to the current revision (fail closed).
+pub(crate) const MAX_TRACKED_SEMANTIC_KEYS: usize = 1 << 16;
+
+/// Per semantic key, the revision of its last committed edit and the revision at which a
+/// committed revocation named it.
+///
+/// A semantic input has no lifecycle generation, so its segment's `generation` is read as
+/// the committed semantic revision at which the cited content was read. The segment is
+/// current iff no committed delta has affected the key after that revision (the written
+/// keys and the keys derived from them, the same set the catalog invalidates) and the key
+/// is not revoked.
+///
+/// * **Revocation is a floor, not a pair.** A committed `Revoked { subject: K, .. }` for a
+///   key the snapshot holds kills every citation of `K` at every generation, not only the
+///   cited pair: a caller could otherwise re-cite the same content at another generation
+///   inside `[last_edit, current]`. The key stays dead until a later committed edit of
+///   `K` writes a new value; a citation at or after that edit names the new value, which
+///   the revocation did not cover. (The exact revoked `(K, g)` pair stays dead for ever.)
+/// * **Bounded.** An entry for a key the post-apply snapshot no longer holds is pruned (a
+///   re-creation records a fresh edit, and the revocation of a key that does not exist
+///   cannot outlive its absence). More than [`MAX_TRACKED_SEMANTIC_KEYS`] edited keys
+///   drop the per-key history and raise the floor to the current revision. Revocation
+///   markers are only kept for keys the snapshot holds and are never dropped by the cap.
+/// * **Restore.** After a compacted restore the history is unknown: every key is only
+///   known to be unchanged since the snapshot's revision, and every key with a recorded
+///   revocation is dead until it is edited again. Replay above the floor re-derives the
+///   same answers as the live runtime through the same record calls.
+#[derive(Debug)]
+pub(crate) struct SemanticEdits {
+    floor: Revision,
+    edited: BTreeMap<String, Revision>,
+    revoked: BTreeMap<String, Revision>,
+    cap: usize,
+}
+
+impl Default for SemanticEdits {
+    fn default() -> Self {
+        Self::with_cap(Revision::default(), MAX_TRACKED_SEMANTIC_KEYS)
+    }
+}
+
+impl SemanticEdits {
+    fn with_cap(floor: Revision, cap: usize) -> Self {
+        Self {
+            floor,
+            edited: BTreeMap::new(),
+            revoked: BTreeMap::new(),
+            cap,
+        }
+    }
+
+    /// The state of a runtime restored at `floor` whose lifecycle holds revocations for
+    /// `revoked` (the keys among them that the snapshot holds are dead until edited).
+    pub(crate) fn restored_at(floor: Revision, revoked: impl IntoIterator<Item = String>) -> Self {
+        let mut edits = Self::with_cap(floor, MAX_TRACKED_SEMANTIC_KEYS);
+        edits.revoked = revoked.into_iter().map(|key| (key, floor)).collect();
+        edits
+    }
+
+    /// Record a committed delta at `revision`. `held` says whether the post-apply
+    /// snapshot holds a key.
+    pub(crate) fn record(
+        &mut self,
+        affected: &BTreeSet<String>,
+        held: impl Fn(&str) -> bool,
+        revision: Revision,
+    ) {
+        for key in affected {
+            if held(key) {
+                self.edited.insert(key.clone(), revision);
+            } else {
+                self.edited.remove(key);
+                self.revoked.remove(key);
+            }
+        }
+        if self.edited.len() > self.cap {
+            self.edited.clear();
+            self.floor = revision;
+        }
+    }
+
+    /// Record a committed revocation naming `key` at `revision`; a key the snapshot does
+    /// not hold records nothing (it has no content to re-cite and a later creation is a
+    /// fresh edit).
+    pub(crate) fn record_revocation(&mut self, key: &str, held: bool, revision: Revision) {
+        if held {
+            let at = self.revoked.entry(key.to_owned()).or_insert(revision);
+            *at = (*at).max(revision);
+        }
+    }
+
+    fn last_edit(&self, key: &str) -> Revision {
+        self.edited
+            .get(key)
+            .copied()
+            .unwrap_or(self.floor)
+            .max(self.floor)
+    }
+
+    /// Whether the key was revoked and no edit of it was committed since.
+    fn is_revoked(&self, key: &str) -> bool {
+        self.revoked
+            .get(key)
+            .is_some_and(|at| self.edited.get(key).is_none_or(|edit| edit <= at))
+    }
+
+    fn is_current(&self, key: &str, read_at: Revision, current: Revision) -> bool {
+        !self.is_revoked(key) && self.last_edit(key) <= read_at && read_at <= current
+    }
+}
+
 impl KvLivenessOracle for PtrRuntime {
-    /// Live means the lifecycle authority knows `identity` at `generation` and it is
-    /// neither revoked nor superseded. A semantic key carries no lifecycle generation, so
-    /// it is live while the committed snapshot still holds the key and no tombstone names
-    /// it; committed deltas also invalidate it through the catalog hook. The content digest
-    /// of a segment is not re-verified here: it is part of the entry's lineage and of the
-    /// request's, so a different content never matches the entry.
+    /// A semantic key carries no lifecycle generation and the lifecycle tables are never
+    /// consulted for it (a key that happens to be named like a capsule, constraint or
+    /// procedure identity must not borrow that identity's liveness): it is live iff the
+    /// committed snapshot holds the key, no committed revocation floor covers it (see
+    /// [`SemanticEdits`]), no tombstone names the exact pair, and the segment's
+    /// generation (the committed semantic revision its content was read at) is not older
+    /// than the key's last committed edit nor newer than the current revision. So a
+    /// committed edit or revocation supersedes every entry built on the earlier content
+    /// even when the catalog's invalidation was delayed, lost or not restored.
+    ///
+    /// Every other dependency is live iff the lifecycle authority knows `identity` at
+    /// `generation` and it is neither revoked nor superseded.
+    ///
+    /// The segment's token-level `content_digest` cannot be compared with the committed
+    /// value here: it is a digest of the tokenizer's ids for the rendered text, and the
+    /// runtime holds neither the tokenizer nor the rendering. It stays part of the
+    /// entry's lineage, so different content never matches an entry. A generic
+    /// `PromptSegment::from_text` Semantic segment is therefore caller-asserted; a
+    /// production path builds it with [`PtrRuntime::semantic_prompt_segment`].
     fn is_live(&self, dependency: &KvDependency) -> bool {
-        if dependency.kind == KvDependencyKind::Expert {
-            return self.expert_is_serving(
+        match dependency.kind {
+            KvDependencyKind::Expert => self.expert_is_serving(
                 &dependency.identity,
                 dependency.generation,
                 dependency.fence_epoch,
-            );
-        }
-        match self.generation_validity(&dependency.identity, dependency.generation) {
-            Some(Validity::Live) => true,
-            Some(_) => false,
-            None => {
-                dependency.kind == KvDependencyKind::Segment(SegmentKind::Semantic)
-                    && !self.revoked_generations().any(|(id, generation)| {
-                        id == dependency.identity && generation == dependency.generation
-                    })
-                    && self.snapshot().get(&dependency.identity).is_some()
+            ),
+            KvDependencyKind::Segment(SegmentKind::Semantic) => {
+                !self.revoked_generations().any(|(id, generation)| {
+                    id == dependency.identity && generation == dependency.generation
+                }) && self.snapshot().value(&dependency.identity).is_some()
+                    && self.semantic_segment_is_current(&dependency.identity, dependency.generation)
             }
+            _ => matches!(
+                self.generation_validity(&dependency.identity, dependency.generation),
+                Some(Validity::Live)
+            ),
         }
     }
 }
 
+/// Why [`PtrRuntime::semantic_prompt_segment`] built no segment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SemanticSegmentError {
+    /// The committed snapshot holds no value at the key.
+    MissingKey,
+    /// The key is revoked and not edited since.
+    Revoked,
+    /// The value is a typed payload, which has no canonical text rendering.
+    NotText,
+    /// The token contract refused the segment (an empty value, an empty key).
+    Contract(TokenContractError),
+}
+
+impl fmt::Display for SemanticSegmentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingKey => write!(f, "the committed snapshot holds no value at the key"),
+            Self::Revoked => write!(f, "the semantic key is revoked and not edited since"),
+            Self::NotText => write!(f, "the value is a payload and has no canonical rendering"),
+            Self::Contract(error) => write!(f, "token contract: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for SemanticSegmentError {}
+
 impl PtrRuntime {
+    /// Whether content of `key` read at semantic revision `generation` is unchanged since.
+    fn semantic_segment_is_current(&self, key: &str, generation: Generation) -> bool {
+        self.semantic_edits
+            .is_current(key, Revision(generation.0), self.revision())
+    }
+
+    /// Build the Semantic prompt segment for `key` from the committed snapshot, the only
+    /// path whose content the runtime vouches for (a `PromptSegment::from_text` Semantic
+    /// segment is caller-asserted: the runtime cannot compare its tokens with the value).
+    ///
+    /// The canonical rendering is the committed value's text, byte for byte, with no key,
+    /// framing or normalisation; a typed payload has none and is refused. It is encoded
+    /// with `tokenizer`. The segment's generation is the revision of the key's last
+    /// committed edit, the revision the current content was read at: it is live now, it
+    /// does not change under unrelated commits (so the same content keeps one lineage
+    /// instead of fragmenting per cited generation) and it is dead after the next edit.
+    pub fn semantic_prompt_segment(
+        &self,
+        tokenizer: &dyn Tokenizer,
+        key: &str,
+    ) -> Result<PromptSegment, SemanticSegmentError> {
+        let snapshot = self.snapshot();
+        let text = match snapshot.value(key) {
+            None => return Err(SemanticSegmentError::MissingKey),
+            Some(SemanticValue::Text(text)) => text,
+            Some(SemanticValue::Payload(_)) => return Err(SemanticSegmentError::NotText),
+        };
+        if self.semantic_edits.is_revoked(key) {
+            return Err(SemanticSegmentError::Revoked);
+        }
+        let generation = Generation(self.semantic_edits.last_edit(key).0);
+        PromptSegment::from_text(
+            tokenizer,
+            SegmentSource::Semantic {
+                key: key.to_owned(),
+                generation,
+            },
+            text,
+        )
+        .map_err(SemanticSegmentError::Contract)
+    }
+
     /// Whether the materialized `expert:{project}/{pod}` value, written as
     /// `{generation}:{state}:{state_version}`, names `generation` in a serving or frozen
     /// state. An absent, malformed or other-state value is not live (fail closed).
@@ -1990,7 +2195,17 @@ impl PtrRuntime {
             LedgerEvent::Revoked {
                 subject,
                 generation,
-            } => catalog.invalidate_inputs(&BTreeSet::from([(subject.clone(), *generation)])),
+            } => {
+                // The exact pair for every kind, and every generation of a semantic key
+                // of that name (the oracle treats a revocation as a floor for it).
+                let mut retire =
+                    catalog.invalidate_inputs(&BTreeSet::from([(subject.clone(), *generation)]));
+                retire.extend(catalog.invalidate_kind_identities(
+                    KvDependencyKind::Segment(SegmentKind::Semantic),
+                    &BTreeSet::from([subject.clone()]),
+                ));
+                retire
+            }
             LedgerEvent::ProcedureRevoked { id, generation } => catalog
                 .invalidate_inputs(&BTreeSet::from([(format!("procedure:{id}"), *generation)])),
             LedgerEvent::CapsuleCommitted {
@@ -2052,6 +2267,71 @@ fn retire_keys(catalog: &mut KvPrefixCatalog, keys: Vec<KvPrefixKey>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn held_all(_: &str) -> bool {
+        true
+    }
+
+    fn keys(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn semantic_edits_know_the_last_affecting_revision_and_fail_closed_after_a_restore() {
+        let mut edits = SemanticEdits::default();
+        assert_eq!(edits.last_edit("k"), Revision(0));
+        edits.record(&keys(&["k"]), held_all, Revision(3));
+        edits.record(&keys(&["k", "j"]), held_all, Revision(5));
+        assert_eq!(edits.last_edit("k"), Revision(5));
+        assert_eq!(edits.last_edit("j"), Revision(5));
+        assert_eq!(edits.last_edit("other"), Revision(0));
+        // After a compacted restore at revision 9 the history is unknown: every key is
+        // only known to be unchanged since 9.
+        let restored = SemanticEdits::restored_at(Revision(9), []);
+        assert_eq!(restored.last_edit("k"), Revision(9));
+    }
+
+    #[test]
+    fn a_revocation_is_a_floor_until_a_later_edit_and_a_missing_key_prunes_its_history() {
+        let mut edits = SemanticEdits::default();
+        edits.record(&keys(&["k"]), held_all, Revision(2));
+        edits.record_revocation("k", true, Revision(4));
+        for read_at in 0..=6 {
+            assert!(!edits.is_current("k", Revision(read_at), Revision(6)));
+        }
+        // A key the snapshot does not hold records no revocation.
+        edits.record_revocation("absent", false, Revision(4));
+        assert!(edits.is_current("absent", Revision(0), Revision(6)));
+        edits.record(&keys(&["k"]), held_all, Revision(5));
+        assert!(!edits.is_current("k", Revision(4), Revision(6)));
+        assert!(edits.is_current("k", Revision(5), Revision(6)));
+        assert!(!edits.is_current("k", Revision(7), Revision(6)));
+        // A key removed by a delta loses both its edit and its revocation.
+        edits.record_revocation("k", true, Revision(6));
+        edits.record(&keys(&["k"]), |_| false, Revision(7));
+        assert!(edits.edited.is_empty() && edits.revoked.is_empty());
+    }
+
+    #[test]
+    fn the_history_is_capped_and_overflow_raises_the_floor_without_reviving_a_revoked_key() {
+        let mut edits = SemanticEdits::with_cap(Revision(0), 3);
+        edits.record_revocation("r", true, Revision(1));
+        edits.record(&keys(&["a", "b", "c"]), held_all, Revision(2));
+        assert_eq!(edits.edited.len(), 3);
+        assert_eq!(edits.floor, Revision(0));
+        edits.record(&keys(&["d"]), held_all, Revision(3));
+        assert!(
+            edits.edited.is_empty(),
+            "overflow drops the per-key history"
+        );
+        assert_eq!(edits.floor, Revision(3));
+        // Citations below the floor are dead for every key; the floor itself is live.
+        assert!(!edits.is_current("a", Revision(2), Revision(3)));
+        assert!(edits.is_current("a", Revision(3), Revision(3)));
+        // The revoked key is still dead at the floor.
+        assert!(!edits.is_current("r", Revision(3), Revision(3)));
+        assert_eq!(edits.revoked.len(), 1);
+    }
 
     #[test]
     fn expert_value_is_live_only_for_the_same_generation_in_a_serving_state() {

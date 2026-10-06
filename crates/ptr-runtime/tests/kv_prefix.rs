@@ -1131,3 +1131,181 @@ fn the_runtime_oracle_treats_an_expert_with_no_serving_record_as_not_live() {
         .unwrap();
     assert_eq!(refused, Err(KvCatalogError::DependencyNotLive));
 }
+
+// ---- semantic supersession by a committed edit is seen at use time ---------------------------
+
+fn edit(runtime: &mut PtrRuntime, key: &str, value: &str) {
+    let mut delta = SemanticDelta::default();
+    delta.upserts.insert(key.into(), value.into());
+    semantic_common::host_write_now(runtime, delta).unwrap();
+}
+
+fn permissive_runtime() -> PtrRuntime {
+    let mut runtime = PtrRuntime::new(ptr_config::PtrConfig::default()).unwrap();
+    runtime
+        .install_semantic_grant(
+            ptr_runtime::SemanticGrant::new(RequiredVerification::Deterministic)
+                .with_verifier(semantic_common::AcceptAll)
+                .allow_host_writes(),
+        )
+        .unwrap();
+    runtime
+}
+
+fn doc_request(generation: u64, label: char) -> SegmentedModelRequest {
+    request(vec![
+        raw(&block('a')),
+        semantic("doc:a", generation, &block(label)),
+        raw(&block('t')),
+    ])
+}
+
+#[test]
+fn a_committed_edit_supersedes_a_semantic_entry_with_the_catalog_index_lost() {
+    // The catalog is driven directly with the runtime as the oracle, so no committed
+    // event reaches `invalidate_identities`: the lag arm.
+    let mut runtime = permissive_runtime();
+    edit(&mut runtime, "doc:a", "v1");
+    let s = salt("alice", "p1");
+    let old = doc_request(1, 'o');
+    let mut h = harness(CatalogLimits::default());
+    h.insert(&s, &old, &runtime).unwrap();
+    let hit = h
+        .lookup(&s, &old, &runtime)
+        .expect("unchanged content hits");
+    h.catalog.release(hit.pin());
+
+    // A committed edit of an unrelated key leaves the entry live.
+    edit(&mut runtime, "doc:other", "x");
+    let hit = h
+        .lookup(&s, &old, &runtime)
+        .expect("an unrelated edit is not a supersession");
+    h.catalog.release(hit.pin());
+
+    edit(&mut runtime, "doc:a", "v2");
+    assert!(h.lookup(&s, &old, &runtime).is_none(), "stale hit");
+    assert_eq!(h.catalog.stats().use_time_rejections, 1);
+    assert_eq!(h.catalog.stats().entries, 0);
+    // The stale lineage is not re-inserted either.
+    assert_eq!(
+        h.insert(&s, &old, &runtime).unwrap_err(),
+        KvCatalogError::DependencyNotLive
+    );
+    assert_eq!(h.catalog.stats().entries, 0);
+    // A citation of a revision that does not exist yet is refused too.
+    assert_eq!(
+        h.insert(&s, &doc_request(99, 'n'), &runtime).unwrap_err(),
+        KvCatalogError::DependencyNotLive
+    );
+    // Content read at the edit's revision is the new content: it caches and hits.
+    let fresh_req = doc_request(runtime.revision().0, 'n');
+    h.insert(&s, &fresh_req, &runtime).unwrap();
+    let hit = h
+        .lookup(&s, &fresh_req, &runtime)
+        .expect("the new content hits");
+    h.catalog.release(hit.pin());
+    assert!(h.lookup(&s, &old, &runtime).is_none());
+}
+
+#[test]
+fn a_committed_edit_supersedes_a_semantic_entry_on_the_normal_path() {
+    let (mut runtime, backend) = lifecycle_runtime();
+    runtime
+        .install_semantic_grant(
+            ptr_runtime::SemanticGrant::new(RequiredVerification::Deterministic)
+                .with_verifier(semantic_common::AcceptAll)
+                .allow_host_writes(),
+        )
+        .unwrap();
+    edit(&mut runtime, "doc:a", "v1");
+    let s = salt("alice", "p1");
+    let old = doc_request(1, 'o');
+    runtime_insert(&mut runtime, &backend, &s, &old);
+    let hit = runtime_lookup(&mut runtime, &s, &old).expect("unchanged content hits");
+    runtime.kv_prefix_release(hit.pin());
+
+    edit(&mut runtime, "doc:a", "v2");
+    assert!(
+        runtime_lookup(&mut runtime, &s, &old).is_none(),
+        "stale hit"
+    );
+    // The stale lineage is refused at insert, not re-admitted.
+    let tokens = old.tokens();
+    let (prefix, page_bytes) = prefill_and_publish(&backend, &tokens[..tokens.len() / 16 * 16]);
+    let refused = runtime
+        .kv_prefix_insert(KvInsert {
+            salt: &s,
+            chain: &CHAIN,
+            request: &old,
+            prefix,
+            page_bytes,
+            extra_dependencies: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(refused, Err(KvCatalogError::DependencyNotLive));
+    assert_eq!(runtime.kv_prefix_catalog().unwrap().stats().entries, 0);
+    assert!(runtime_lookup(&mut runtime, &s, &old).is_none());
+}
+
+#[test]
+fn a_restored_semantic_entry_is_refused_after_a_committed_edit_and_hits_when_unchanged() {
+    let mut runtime = permissive_runtime();
+    edit(&mut runtime, "doc:a", "v1");
+    let s = salt("alice", "p1");
+    let old = doc_request(1, 'o');
+    let mut source = harness(CatalogLimits::default());
+    source.insert(&s, &old, &runtime).unwrap();
+    let snapshot = source.catalog.export_entries().unwrap();
+
+    // Unchanged: the restored entry hits (the backend recomputes the same pages).
+    let mut same = harness(CatalogLimits::default());
+    same.catalog.restore_entries(&snapshot).unwrap();
+    let tokens = old.tokens();
+    prefill_and_publish(&same.backend, &tokens[..tokens.len() / 16 * 16]);
+    let hit = same
+        .lookup(&s, &old, &runtime)
+        .expect("unchanged content hits");
+    same.catalog.release(hit.pin());
+
+    // Edited while the snapshot was at rest: restore admits, the use-time check refuses.
+    edit(&mut runtime, "doc:a", "v2");
+    let mut edited = harness(CatalogLimits::default());
+    edited.catalog.restore_entries(&snapshot).unwrap();
+    prefill_and_publish(&edited.backend, &tokens[..tokens.len() / 16 * 16]);
+    assert_eq!(edited.catalog.stats().entries, 1);
+    assert!(edited.lookup(&s, &old, &runtime).is_none(), "stale hit");
+    assert_eq!(edited.catalog.stats().use_time_rejections, 1);
+    assert_eq!(
+        edited.insert(&s, &old, &runtime).unwrap_err(),
+        KvCatalogError::DependencyNotLive
+    );
+}
+
+#[test]
+fn a_revoked_semantic_input_is_still_refused_and_a_removed_key_is_not_live() {
+    let mut runtime = permissive_runtime();
+    edit(&mut runtime, "doc:a", "v1");
+    let s = salt("alice", "p1");
+    let req = doc_request(1, 'o');
+    let mut h = harness(CatalogLimits::default());
+    h.insert(&s, &req, &runtime).unwrap();
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: "doc:a".into(),
+            generation: Generation(1),
+        })
+        .unwrap();
+    assert!(h.lookup(&s, &req, &runtime).is_none());
+    // A key the committed snapshot never held is not live at any generation.
+    for generation in [0, 1, 2] {
+        assert_eq!(
+            h.insert(
+                &s,
+                &request(vec![semantic("doc:none", generation, &block('z'))]),
+                &runtime
+            )
+            .unwrap_err(),
+            KvCatalogError::DependencyNotLive
+        );
+    }
+}

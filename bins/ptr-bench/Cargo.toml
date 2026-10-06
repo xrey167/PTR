@@ -31,6 +31,10 @@ ptr-semdb = { workspace = true }
 ptr-exec = { workspace = true }
 ptr-ledger = { workspace = true }
 ptr-runtime = { workspace = true }
+# R005 builds segmented requests (PromptSegment) and drives the catalog, the paged KV
+# backend and the chain derivation directly for the cases the backend does not carry.
+ptr-model-api = { workspace = true }
+ptr-pods = { workspace = true }
 # The two verifiers of S003's grant judge a runtime's semantic changes.
 ptr-verifier = { workspace = true }
 ptr-pg = { workspace = true, optional = true }
@@ -43,3 +47,7 @@ tokio = { workspace = true, optional = true }
 # A raw session for the harnesses' crash injection (terminating the
 # substrate's backend) and cleanup; the same pin ptr-pg uses.
 tokio-postgres = { version = "=0.7.18", default-features = false, features = ["runtime"], optional = true }
+
+[dev-dependencies]
+# The R005 drift test parses the experiment's config.toml and manifest.
+toml = { workspace = true }

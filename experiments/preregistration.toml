@@ -127,6 +127,32 @@ path = "research/baselines/strong_rag/config.toml"
 keys = ["dense.revision", "reranker.revision", "answer.generator", "answer.revision"]
 status_key = "status"
 
+# The harness (bins/ptr-bench, r005) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text.
+[experiment.R005.required]
+seeds = "int-list"
+harness = "str"
+max_new_tokens = "int"
+intermediate_size = "int"
+rope_theta = "str"
+rms_norm_eps = "str"
+qk_norm_main = "str"
+qk_norm_transform_arm = "str"
+ntk_factor = "str"
+ntk_original_max_positions = "int"
+over_capacity_prompt_tokens = "int"
+over_capacity_fill_prompts = "int"
+over_capacity_extra_prompts = "int"
+saturation_max_sessions = "int"
+saturation_excess_requests = "int"
+corpus_selection_digest_main = "str"
+corpus_selection_digest_nodes_only = "str"
+corpus_selection_digest_bytes_only = "str"
+semantic_liveness_model = "str"
+preregistration_text = "file"
+criteria = "file"
+static_evidence = "str-list"
+
 [experiment.R004.required]
 seeds = "int-list"
 public_regression_gate_permille = "int"

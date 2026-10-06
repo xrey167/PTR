@@ -4461,7 +4461,9 @@ dependencies = [
  "ptr-exec",
  "ptr-fastmem",
  "ptr-ledger",
+ "ptr-model-api",
  "ptr-pg",
+ "ptr-pods",
  "ptr-runtime",
  "ptr-semdb",
  "ptr-state",
@@ -4469,6 +4471,7 @@ dependencies = [
  "ptr-verifier",
  "tokio",
  "tokio-postgres",
+ "toml",
 ]
 
 [[package]]

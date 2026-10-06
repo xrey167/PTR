@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 5 Rust source files · 790 nonblank source lines · 4 integration-test files · 26 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 799 nonblank source lines · 4 integration-test files · 26 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -25,6 +25,7 @@
 - ReferenceEchoBackend also implements ResumableInferenceBackend (resume yields Finished)
 - ScenarioBackend: a deterministic demonstrator backend named scenario that echoes the raw text as a Token and emits one Mutation ActionIr (create demo-note, capability demo.local-note.create, type ptr.demo-note.v1) at the request's revision; resume yields Finished. Its own doc comment calls it plumbing evidence for the local HTTP/effect path, not a model-quality baseline
 - KV-reuse P1 token contract (doc 36, contract only, no backend implements it): TokenId, Tokenizer trait with TokenizerIdentity, ByteTokenizer (ptr.byte v1, one token per UTF-8 byte), SegmentSource (Raw, Semantic, Memory, Derived), PromptSegment with SHA-256 content_digest and lineage_contribution (Raw carries kind and content digest only), SegmentedModelRequest with tokens() and order-dependent lineage_digest() (covers semantic revision, tokenizer identity and segments), KvReuseMode, KvReusePolicy, KvReuseHint, KvReuseReport (hit_tokens bounded by total, Approximate rejected under ExactOnly), ModelRun and the KvReusingBackend trait; ModelRequest is unchanged. Approximate reuse must never reach an effect path is documented on the types and not enforced yet
+- PromptSegment::from_text/from_tokens Semantic, Memory and Derived segments are caller-asserted (documented on the constructors): the crate cannot check that the text is the committed value of its source at its generation; a production path builds Semantic segments with ptr-runtime PtrRuntime::semantic_prompt_segment, and lineages fragment per cited generation
 
 ### Missing for the target architecture
 
