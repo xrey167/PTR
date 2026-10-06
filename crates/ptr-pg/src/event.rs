@@ -93,7 +93,8 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::TierObjectCommitted { .. }
         | LedgerEvent::TierReplicaLifecycle { .. }
         // The projection holds no expert catalog yet; structural records stay in the ledger.
-        | LedgerEvent::ExpertStructuralCommitted { .. } => LifecycleChange::None,
+        | LedgerEvent::ExpertStructuralCommitted { .. }
+        | LedgerEvent::ExpertFenceCommitted { .. } => LifecycleChange::None,
     }
 }
 
@@ -127,6 +128,7 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::TierObjectCommitted { .. } => "storage.tier_object_committed",
         LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
         LedgerEvent::ExpertStructuralCommitted { .. } => "expert.structural_committed",
+        LedgerEvent::ExpertFenceCommitted { .. } => "expert.fence_committed",
     }
 }
 
@@ -199,7 +201,8 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             backend_id,
             ..
         } => format!("tier-replica:{}:{backend_id}", hex_digest(root_digest)),
-        LedgerEvent::ExpertStructuralCommitted { project, .. } => format!("project:{project}"),
+        LedgerEvent::ExpertStructuralCommitted { project, .. }
+        | LedgerEvent::ExpertFenceCommitted { project, .. } => format!("project:{project}"),
     }
 }
 
@@ -273,6 +276,35 @@ mod tests {
         assert_eq!(payload["expert"]["op_kind"], 5);
         assert_eq!(payload["expert"]["proposal_id"], "01".repeat(32));
         assert_eq!(payload["expert"]["evidence_digest"], "03".repeat(32));
+    }
+
+    #[test]
+    fn expert_fence_events_have_a_topic_subject_and_project_the_fenced_entry() {
+        let event = committed(
+            4,
+            LedgerEvent::ExpertFenceCommitted {
+                project: ProjectId::from("p"),
+                pod: ptr_types::PodId::from("a"),
+                action: ptr_ledger::ExpertFenceAction::Fence,
+                cause: ptr_ledger::ExpertFenceCause::InputRevoked,
+                resume: ptr_ledger::ExpertFenceResume::Serving,
+                generation: Generation(2),
+                expected_state_version: 1,
+                epoch: 2,
+                revocation: Some(ptr_ledger::ExpertFenceRevocation {
+                    subject: "k".to_owned(),
+                    generation: Generation(1),
+                }),
+                evidence: None,
+            },
+        );
+        assert_eq!(event_topic(&event.event), "expert.fence_committed");
+        assert_eq!(event_subject(&event), "project:p");
+        assert_eq!(lifecycle_change(&event), LifecycleChange::None);
+        assert_eq!(
+            event_payload(&event)["entries"],
+            serde_json::json!({"expert:p/a": "2:fenced:2"})
+        );
     }
 
     #[test]

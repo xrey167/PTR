@@ -537,7 +537,9 @@ pub enum RuntimeError {
     /// the public `commit`. Such a record may only be written by
     /// [`PtrRuntime::admit_expert_proposal`], which checks the proposer, the gate evidence and the
     /// compare-and-set and derives the event's ids from the record. Replay does not use this
-    /// error: it re-checks the record and reports [`RuntimeError::Expert`].
+    /// error: it re-checks the record and reports [`RuntimeError::Expert`]. An expert fence
+    /// record ([`LedgerEvent::ExpertFenceCommitted`]) is refused the same way: it may only be
+    /// written by [`PtrRuntime::fence_expert`] and [`PtrRuntime::readmit_expert`].
     StructuralRecordOutsideAdmissionPath,
     /// A semantic record written before origins existed, replayed after a
     /// record with an attributed origin (rule R1).
@@ -2956,6 +2958,8 @@ impl PtrRuntime {
             // Replay re-derives the ids from the record and repeats the compare-and-set against
             // the registry as of this point of the history (see the `expert` module).
             LedgerEvent::ExpertStructuralCommitted { .. } => self.validate_expert_event(event),
+            // Replay repeats the fence's compare-and-set against the registry as of this point.
+            LedgerEvent::ExpertFenceCommitted { .. } => self.validate_expert_fence_event(event),
             // Revocation tombstones are monotone and may precede activation.
             // Verifier/snapshot records do not confer permissions or load state.
             LedgerEvent::SemanticDeltaCommitted { .. }
@@ -3081,6 +3085,9 @@ impl PtrRuntime {
             | LedgerEvent::PodOutputAdmitted { .. } => {}
             LedgerEvent::ExpertStructuralCommitted { .. } => {
                 self.apply_expert_event(&committed.event)?;
+            }
+            LedgerEvent::ExpertFenceCommitted { .. } => {
+                self.apply_expert_fence_event(&committed.event)?;
             }
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }
@@ -3273,9 +3280,12 @@ impl PtrRuntime {
 ///
 /// An expert structural record is refused the same way
 /// ([`RuntimeError::StructuralRecordOutsideAdmissionPath`]): only the expert admission path may
-/// build one.
+/// build one. So is an expert fence record: only `fence_expert` and `readmit_expert` may.
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
-    if matches!(event, LedgerEvent::ExpertStructuralCommitted { .. }) {
+    if matches!(
+        event,
+        LedgerEvent::ExpertStructuralCommitted { .. } | LedgerEvent::ExpertFenceCommitted { .. }
+    ) {
         return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
     }
     if matches!(event, LedgerEvent::SemanticDeltaCommitted { .. }) {
