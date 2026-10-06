@@ -108,6 +108,18 @@ pub struct HttpJwksRefresher {
     fetch: JwksFetchFn,
 }
 
+/// The workspace builds reqwest with `rustls-no-provider`, so no TLS crypto
+/// provider exists unless one is installed; building a client without one
+/// panics. Installing is idempotent and a provider another component already
+/// installed is kept.
+#[cfg(feature = "oidc-http")]
+pub(crate) fn ensure_rustls_provider() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Production HTTPS JWKS fetcher. The injected `HttpJwksRefresher` remains
 /// available for deterministic tests; this adapter is opt-in so applications
 /// choose when a blocking HTTP client is acceptable at their identity boundary.
@@ -130,6 +142,7 @@ impl ReqwestJwksRefresher {
         if !url.starts_with("https://") {
             return Err(OidcError::InvalidEncoding);
         }
+        ensure_rustls_provider();
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
@@ -1016,5 +1029,22 @@ mod tests {
         let used = adapter.used_jti.lock().unwrap();
         let indexed: usize = used.ids_by_expiry.values().map(Vec::len).sum();
         assert_eq!(indexed, used.expiry_by_id.len());
+    }
+}
+
+#[cfg(all(test, feature = "oidc-http"))]
+mod oidc_http_tests {
+    use super::*;
+
+    #[test]
+    fn reqwest_refresher_builds_without_a_network_or_a_panic() {
+        ReqwestJwksRefresher::new("https://example.invalid/jwks", "issuer", "audience")
+            .expect("an HTTPS JWKS client must be constructible");
+    }
+
+    #[test]
+    fn reqwest_refresher_refuses_plain_http() {
+        let refused = ReqwestJwksRefresher::new("http://example.invalid/jwks", "i", "a");
+        assert!(matches!(refused, Err(OidcError::InvalidEncoding)));
     }
 }

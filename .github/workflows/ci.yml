@@ -43,6 +43,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable check --workspace --all-targets --locked
       - run: cargo +stable test --workspace --locked
+      # wintun is the Windows tunnel backend; it is compiled only on Windows.
+      - if: runner.os == 'Windows'
+        run: cargo +stable check -p ptr-net --features wintun-backend --locked
   rust-msrv:
     runs-on: ubuntu-latest
     steps:
@@ -233,3 +236,19 @@ jobs:
       - run: cargo +stable test -p ptr-storage --features tier-opendal-fs --test opendal_tier --locked
       - run: cargo +stable check -p ptr-storage --features tier-opendal-fs,tier-opendal-s3 --locked
       - run: cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3 --locked -- -D warnings
+
+  # Feature gates that no other job compiles. Not covered: `candle-cuda`
+  # (ptr-pods / ptr-runtime) needs the CUDA toolkit, which these runners do not
+  # have, so that path is never compiled in CI. `wintun-backend` is checked in
+  # the Windows leg of rust-stable.
+  feature-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo +stable clippy -p ptr-runtime --features oidc-http --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-runtime --features oidc-http --lib --locked
+      - run: cargo +stable clippy -p ptr-net --features wireguard-uapi-backend --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-net --features wireguard-uapi-backend --lib --locked

@@ -5,14 +5,14 @@
 
 **Component count:** 33  
 **Maturity distribution:** `foundation`: 1, `prototype`: 21, `research-scaffold`: 1, `scaffold`: 10  
-**Rust footprint:** 190 source files · 73634 nonblank source lines · 165 integration-test files · 1816 test markers (`#[test]`, `#[tokio::test]`)
+**Rust footprint:** 190 source files · 73830 nonblank source lines · 166 integration-test files · 1827 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
 | [ptr-analytics](../../crates/ptr-analytics/README.md) | `prototype` | 8 | 1303 | 1 | 48 | 8 | 2 | F002:planned, F003:planned | analytics-mirror:open |
 | [ptr-branch](../../crates/ptr-branch/README.md) | `prototype` | 7 | 3799 | 3 | 112 | 26 | 7 | S003:planned, F003:planned | — |
 | [ptr-cluster](../../crates/ptr-cluster/README.md) | `prototype` | 3 | 726 | 1 | 15 | 13 | 5 | — | — |
-| [ptr-config](../../crates/ptr-config/README.md) | `prototype` | 1 | 324 | 4 | 9 | 9 | 3 | E001:planned | — |
+| [ptr-config](../../crates/ptr-config/README.md) | `prototype` | 1 | 455 | 5 | 15 | 10 | 4 | E001:planned | — |
 | [ptr-core](../../crates/ptr-core/README.md) | `research-scaffold` | 13 | 200 | 1 | 1 | 9 | 6 | M001:planned, M002:planned, M003:planned, M004:planned, M005:planned, M006:planned, M007:planned, E001:planned, E003:planned, E004:planned | model-framework:open, inference-serving:open |
 | [ptr-events](../../crates/ptr-events/README.md) | `scaffold` | 2 | 258 | 2 | 8 | 6 | 4 | E001:planned, F001:planned | event-streaming:open |
 | [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 1 | 46 | 1 | 1 | 4 | 5 | R001:planned, E001:planned, E003:planned | execution-runtime:open |
@@ -26,14 +26,14 @@
 | [ptr-lineage](../../crates/ptr-lineage/README.md) | `prototype` | 9 | 4377 | 6 | 118 | 11 | 6 | R004:planned | adapter-serving:open |
 | [ptr-memory](../../crates/ptr-memory/README.md) | `scaffold` | 6 | 1256 | 2 | 22 | 14 | 6 | Q002:planned, E002:planned, E004:planned | — |
 | [ptr-model-api](../../crates/ptr-model-api/README.md) | `scaffold` | 5 | 663 | 3 | 20 | 10 | 7 | M007:planned, E001:planned, E003:planned | inference-serving:open |
-| [ptr-net](../../crates/ptr-net/README.md) | `prototype` | 4 | 1369 | 5 | 46 | 22 | 7 | L002:planned, E001:planned | network:open |
+| [ptr-net](../../crates/ptr-net/README.md) | `prototype` | 4 | 1394 | 5 | 48 | 22 | 7 | L002:planned, E001:planned | network:open |
 | [ptr-observe](../../crates/ptr-observe/README.md) | `scaffold` | 7 | 351 | 5 | 12 | 9 | 5 | F001:planned, E003:planned | observability:open |
 | [ptr-pg](../../crates/ptr-pg/README.md) | `prototype` | 17 | 6510 | 2 | 157 | 43 | 12 | L004:completed, Q003:planned | relational-substrate:open, materialized-state:open, lexical-search:open, local-vector-search:open, event-streaming:open |
 | [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 21 | 9834 | 14 | 151 | 39 | 6 | R002:planned, E001:planned | environment-runtime:open |
 | [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 4 | 3385 | 3 | 46 | 29 | 8 | — | — |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 2 | 121 | 2 | 19 | 6 | 4 | R002:planned, E001:planned | network-codec:open, local-serialization:open |
 | [ptr-router](../../crates/ptr-router/README.md) | `scaffold` | 4 | 1111 | 2 | 53 | 11 | 9 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
-| [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 24 | 16901 | 53 | 479 | 95 | 20 | E001:planned, E003:planned, E004:planned | — |
+| [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 24 | 16941 | 53 | 482 | 96 | 20 | E001:planned, E003:planned, E004:planned | — |
 | [ptr-search](../../crates/ptr-search/README.md) | `prototype` | 2 | 652 | 3 | 24 | 8 | 5 | Q001:planned, Q002:planned, E002:planned, E003:planned | lexical-search:open, local-vector-search:open, gpu-vector-search:open, distributed-search:open, structural-code-search:open |
 | [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 1 | 126 | 2 | 8 | 6 | 4 | L001:running, E001:planned | security-context:open |
 | [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 2 | 864 | 4 | 37 | 20 | 5 | S001:planned, S002:planned, E004:planned | semantic-db:open |

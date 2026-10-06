@@ -174,6 +174,7 @@ impl PtrConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.check_supported_settings().map_err(|e| e.to_string())?;
         if self.server.bind.trim().is_empty() {
             return Err("server.bind must not be empty".into());
         }
@@ -187,6 +188,57 @@ impl PtrConfig {
             "standalone" | "cluster" => Ok(()),
             other => Err(format!("unsupported runtime.mode: {other}")),
         }
+    }
+
+    /// Refuses every setting the system cannot honour. A field that no code
+    /// reads must not be silently accepted with a non-default value, so each
+    /// one is either refused here or listed as consumed in
+    /// [`FIELD_DISPOSITIONS`].
+    pub fn check_supported_settings(&self) -> Result<(), UnsupportedSetting> {
+        let defaults = Self::default();
+        if !self.semantic.retain_raw_evidence {
+            return Err(UnsupportedSetting {
+                field: "semantic.retain_raw_evidence",
+                reason: "must be true: raw evidence is never replaced by typed state (Invariant)",
+            });
+        }
+        let not_supported_yet = [
+            (
+                "semantic.cancel_stale_revisions",
+                self.semantic.cancel_stale_revisions == defaults.semantic.cancel_stale_revisions,
+            ),
+            (
+                "observability.structured_tracing",
+                self.observability.structured_tracing == defaults.observability.structured_tracing,
+            ),
+            (
+                "observability.async_backtrace",
+                self.observability.async_backtrace == defaults.observability.async_backtrace,
+            ),
+            (
+                "research.allow_unlocked_components",
+                self.research.allow_unlocked_components
+                    == defaults.research.allow_unlocked_components,
+            ),
+            (
+                "research.require_experiment_manifest",
+                self.research.require_experiment_manifest
+                    == defaults.research.require_experiment_manifest,
+            ),
+            (
+                "runtime.max_parallel_candidates",
+                self.runtime.max_parallel_candidates == defaults.runtime.max_parallel_candidates,
+            ),
+        ];
+        for (field, is_default) in not_supported_yet {
+            if !is_default {
+                return Err(UnsupportedSetting {
+                    field,
+                    reason: "only the default value is supported; changing it is not supported yet (no component reads this setting)",
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Validation for the standalone daemon boundary. Library defaults remain
@@ -215,6 +267,91 @@ impl PtrConfig {
         Ok(())
     }
 }
+
+/// A configuration value the system cannot honour, refused at load time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnsupportedSetting {
+    pub field: &'static str,
+    pub reason: &'static str,
+}
+
+impl std::fmt::Display for UnsupportedSetting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unsupported setting {}: {}", self.field, self.reason)
+    }
+}
+
+impl std::error::Error for UnsupportedSetting {}
+
+/// What happens to a configuration field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FieldDisposition {
+    /// Read by the named component; any value valid per `validate` is honoured.
+    Consumed(&'static str),
+    /// Nothing reads it; any non-default value is refused by
+    /// `check_supported_settings`.
+    RefusedUnlessDefault,
+}
+
+/// Every leaf configuration field and its disposition. A test compares this
+/// table against the serialized default configuration, so a new field without
+/// a consumer or a validation rule fails the build.
+pub const FIELD_DISPOSITIONS: &[(&str, FieldDisposition)] = &[
+    (
+        "server.bind",
+        FieldDisposition::Consumed("ptrd, ptr-server"),
+    ),
+    ("server.data_dir", FieldDisposition::Consumed("ptrd")),
+    ("model.backend", FieldDisposition::Consumed("ptrd")),
+    (
+        "runtime.mode",
+        FieldDisposition::Consumed("ptrd (validate_daemon)"),
+    ),
+    (
+        "runtime.mailbox_capacity",
+        FieldDisposition::Consumed("ptr-server RequestAdmission"),
+    ),
+    (
+        "runtime.max_parallel_candidates",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "semantic.cancel_stale_revisions",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "semantic.retain_raw_evidence",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "action_boundary.require_capability",
+        FieldDisposition::Consumed("ptr-runtime"),
+    ),
+    (
+        "action_boundary.require_live_generation",
+        FieldDisposition::Consumed("ptr-runtime"),
+    ),
+    (
+        "action_boundary.require_current_revision",
+        FieldDisposition::Consumed("ptr-runtime"),
+    ),
+    (
+        "observability.structured_tracing",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "observability.async_backtrace",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "research.allow_unlocked_components",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "research.require_experiment_manifest",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+];
 
 fn is_loopback_bind(bind: &str) -> bool {
     let Ok(address) = bind.parse::<std::net::SocketAddr>() else {

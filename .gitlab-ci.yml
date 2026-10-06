@@ -264,6 +264,13 @@ storage-tiers:
     - make ci-storage-tiers
   rules: *rules-heavy
 
+feature-gates:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-feature-gates
+  rules: *rules-heavy
+
 # ---------------------------------------------------------------------------
 # extra
 # ---------------------------------------------------------------------------
