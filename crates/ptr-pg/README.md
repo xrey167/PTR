@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-05  
-**Code footprint:** 17 Rust source files · 6536 nonblank source lines · 2 integration-test files · 158 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 17 Rust source files · 6541 nonblank source lines · 2 integration-test files · 158 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -57,7 +57,7 @@
 - One server per substrate: a connection string naming more than one host or more than one hostaddr is refused with MultipleHosts before any session opens, so the migration lock's session connects to the loopback address or Unix socket the substrate's session reached, not to another server the driver could try
 - Rebuild drops the instance's own projection and derived schemas and replays; working state survives. drop_all, for tests and decommissioning, drops all three without the migration lock, which its caller must serialize
 - ExpertStructuralCommitted maps to no lifecycle change, topic expert.structural_committed, subject project:<project> and an event payload that adds an expert object with the op code and the proposal, operation and evidence digests in hex; its record bytes are not stored
-- ExpertFenceCommitted maps to no lifecycle change, topic expert.fence_committed, subject project:<project> and the entry the shared ptr-state projection yields (expert:<project>/<pod> = <generation>:fenced|serving:<epoch>); the projection still holds no expert catalog
+- ExpertFenceCommitted maps to no lifecycle change, topic expert.fence_committed, subject project:<project> and the entry the shared ptr-state projection yields (expert:<project>/<pod> = <generation>:fenced|serving|frozen:<epoch>); the projection still holds no expert catalog
 
 ### Missing for the target architecture
 

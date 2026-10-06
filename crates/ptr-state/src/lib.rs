@@ -1,4 +1,4 @@
-use ptr_ledger::{CommittedEvent, ExpertFenceAction, LedgerEvent};
+use ptr_ledger::{CommittedEvent, ExpertFenceAction, ExpertFenceResume, LedgerEvent};
 use ptr_pods::{ExpertCommitRecord, ExpertState, RetiredReason};
 use std::collections::BTreeMap;
 
@@ -258,13 +258,16 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             project,
             pod,
             action,
+            resume,
             generation,
             epoch,
             ..
         } => {
-            let state = match action {
-                ExpertFenceAction::Fence => ExpertState::Fenced,
-                ExpertFenceAction::Readmit => ExpertState::Serving,
+            // A readmission restores the state the fence left, which the event records.
+            let state = match (action, resume) {
+                (ExpertFenceAction::Fence | ExpertFenceAction::Escalate, _) => ExpertState::Fenced,
+                (ExpertFenceAction::Readmit, ExpertFenceResume::Serving) => ExpertState::Serving,
+                (ExpertFenceAction::Readmit, ExpertFenceResume::Frozen) => ExpertState::Frozen,
             };
             vec![(
                 expert_key(&project.0, &pod.0),
@@ -463,7 +466,7 @@ impl TursoMaterializedState {
 mod tests {
     #[test]
     fn a_fence_event_projects_fenced_at_its_epoch_and_a_readmission_serving_at_the_next() {
-        use ptr_ledger::ExpertFenceCause;
+        use ptr_ledger::{ExpertFenceCause, ExpertFenceRevocation};
         use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
         let project_event = |event| {
             projection_entries(&CommittedEvent {
@@ -471,23 +474,65 @@ mod tests {
                 event,
             })
         };
-        let event = |action, expected, epoch| LedgerEvent::ExpertFenceCommitted {
+        let event = |action, resume, expected, epoch| LedgerEvent::ExpertFenceCommitted {
             project: ProjectId::from("p"),
             pod: PodId::from("a"),
             action,
             cause: ExpertFenceCause::AuthorityQuarantine,
+            resume,
             generation: Generation(2),
             expected_state_version: expected,
             epoch,
+            revocation: None,
             evidence: None,
         };
         assert_eq!(
-            project_event(event(ExpertFenceAction::Fence, 1, 2)),
+            project_event(event(
+                ExpertFenceAction::Fence,
+                ExpertFenceResume::Serving,
+                1,
+                2
+            )),
             vec![("expert:p/a".to_owned(), "2:fenced:2".to_owned())]
         );
         assert_eq!(
-            project_event(event(ExpertFenceAction::Readmit, 2, 3)),
+            project_event(event(
+                ExpertFenceAction::Readmit,
+                ExpertFenceResume::Serving,
+                2,
+                3
+            )),
             vec![("expert:p/a".to_owned(), "2:serving:3".to_owned())]
+        );
+        // A readmission restores the state the fence left: a frozen expert stays frozen.
+        assert_eq!(
+            project_event(event(
+                ExpertFenceAction::Readmit,
+                ExpertFenceResume::Frozen,
+                2,
+                3
+            )),
+            vec![("expert:p/a".to_owned(), "2:frozen:3".to_owned())]
+        );
+        // An escalation is a fence: fenced at the new epoch.
+        let escalation = LedgerEvent::ExpertFenceCommitted {
+            project: ProjectId::from("p"),
+            pod: PodId::from("a"),
+            action: ExpertFenceAction::Escalate,
+            cause: ExpertFenceCause::InputRevoked,
+            resume: ExpertFenceResume::Frozen,
+            generation: Generation(2),
+            expected_state_version: 2,
+            epoch: 3,
+            revocation: Some(ExpertFenceRevocation {
+                subject: "k".to_owned(),
+                generation: Generation(1),
+            }),
+            evidence: None,
+        };
+        assert_eq!(
+            project_event(escalation),
+            vec![("expert:p/a".to_owned(), "2:fenced:3".to_owned())]
         );
     }
 

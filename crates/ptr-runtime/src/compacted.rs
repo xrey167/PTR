@@ -18,11 +18,15 @@
 //! permissions, sessions, permits, registrations, external-effect outcomes or
 //! neural/KV state. Those are not history and cannot be replayed.
 use super::execution::{ActionIdentity, SettledOutcome, UnsettledEffect};
-use super::expert::{fenced_at_current_epoch, ExpertEntry, ExpertRegistryProjection};
+use super::expert::{
+    fenced_at_current_epoch, ExpertEntry, ExpertRegistryProjection, FenceStanding,
+};
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_config::PtrConfig;
 use ptr_ledger::integrity::{self, LogAnchor};
-use ptr_ledger::{CommittedEvent, ExpertFenceCause, InMemoryLedger, MAX_RETAINED_RESPONSE};
+use ptr_ledger::{
+    CommittedEvent, ExpertFenceCause, ExpertFenceResume, InMemoryLedger, MAX_RETAINED_RESPONSE,
+};
 use ptr_pods::{
     BaseModelDigest, BaseModelId, BaseModelRef, ExpertLevel, ExpertState, ManifestDigest,
     RetiredReason,
@@ -34,9 +38,21 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// PTRCS007 is written only when the registry holds a fence cause or a fence memo: it is
 /// PTRCS006 with lifecycle section PTRLC005, PTRLC004 followed by the fence block
-/// ([`FENCE_MAGIC`]): the cause of each fenced expert's fence, which decides whether it may be
-/// readmitted, and the highest epoch each expert was ever fenced at, which keeps a KV dependency
-/// recorded before a fence dead after a readmission. A snapshot with neither is written as
+/// ([`FENCE_MAGIC`]): the cause of each fenced expert's fence and the state it returns to on
+/// readmission (`Serving` or `Frozen`), which decide whether and how it may be readmitted, the
+/// highest epoch each expert was ever fenced at, which keeps a KV dependency recorded before a
+/// fence dead after a readmission, and the highest gate epoch any readmission was admitted
+/// under. PTRCS007 and PTRFC001 were introduced with the fence event and never written by a
+/// released build, so this layout is changed in place rather than versioned.
+///
+/// The memo cannot be re-derived from a snapshot: a readmitted expert's state version looks like
+/// that of an expert that went through other transitions. Restore therefore checks what is
+/// derivable and fails closed on the rest: a `Fenced` expert must have a memo equal to its state
+/// version, a readmitted one a memo strictly below it, a recorded readmission gate epoch needs
+/// a memo, and an older snapshot holding a `Fenced` expert gets a memo of its current epoch. A
+/// memo dropped for an expert that was fenced and readmitted is not detectable here; the
+/// snapshot is trusted to the extent its digest and the ledger anchor are. A snapshot with
+/// neither a cause, a memo nor a readmission gate epoch is written as
 /// PTRCS006, byte for byte as before, so a build from before this layout stops at the magic
 /// exactly when it would otherwise restore a fenced or readmitted expert without that memory. A
 /// PTRCS006 or older snapshot holding a `Fenced` expert restores it with no cause (never
@@ -393,10 +409,12 @@ impl LifecycleState {
     /// Encode lifecycle maps and sets in deterministic key order.
     fn encode(&self) -> Result<Vec<u8>, RuntimeError> {
         let mut out = Writer(Vec::new());
-        let fence_causes: Vec<(&str, &str, ExpertFenceCause)> =
+        let fence_causes: Vec<(&str, &str, FenceStanding)> =
             self.experts.fence_cause_entries().collect();
         let fenced_epochs: Vec<(&str, &str, u64)> = self.experts.fenced_epoch_entries().collect();
-        let has_fence_block = !fence_causes.is_empty() || !fenced_epochs.is_empty();
+        let has_fence_block = !fence_causes.is_empty()
+            || !fenced_epochs.is_empty()
+            || self.experts.readmit_gate_epoch() != 0;
         out.raw(if !has_fence_block {
             EVIDENCE_LIFECYCLE_MAGIC
         } else {
@@ -459,10 +477,11 @@ impl LifecycleState {
         if has_fence_block {
             out.raw(FENCE_MAGIC)?;
             out.count(fence_causes.len())?;
-            for (project, pod, cause) in fence_causes {
+            for (project, pod, standing) in fence_causes {
                 out.text(project)?;
                 out.text(pod)?;
-                out.number(u64::from(cause.code()))?;
+                out.number(u64::from(standing.cause.code()))?;
+                out.number(u64::from(standing.resume.code()))?;
             }
             out.count(fenced_epochs.len())?;
             for (project, pod, epoch) in fenced_epochs {
@@ -470,6 +489,7 @@ impl LifecycleState {
                 out.text(pod)?;
                 out.number(epoch)?;
             }
+            out.number(self.experts.readmit_gate_epoch())?;
         }
         Ok(out.0)
     }
@@ -691,11 +711,11 @@ fn decode_evidence(
         previous = Some(epoch);
         memo.insert(epoch, digest);
     }
-    let (fence_causes, fenced_epochs) = if with_fence_causes {
+    let (fence_causes, fenced_epochs, readmit_gate_epoch) = if with_fence_causes {
         decode_fence_block(reader, &entries)?
     } else {
         let memo = fenced_at_current_epoch(&entries);
-        (BTreeMap::new(), memo)
+        (BTreeMap::new(), memo, 0)
     };
     Ok(ExpertRegistryProjection::from_parts(
         entries,
@@ -703,12 +723,14 @@ fn decode_evidence(
         memo,
         fence_causes,
         fenced_epochs,
+        readmit_gate_epoch,
     ))
 }
 
 type FenceBlock = (
-    BTreeMap<(String, String), ExpertFenceCause>,
+    BTreeMap<(String, String), FenceStanding>,
     BTreeMap<(String, String), u64>,
+    u64,
 );
 
 /// Read the fence block of a PTRCS007 snapshot: causes, then the fence memo. Each list is in
@@ -732,22 +754,31 @@ fn decode_fence_block(
             .ok()
             .and_then(ExpertFenceCause::from_code)
             .ok_or_else(|| invalid(CompactedError::UnknownTag))?;
+        let resume = u8::try_from(reader.number()?)
+            .ok()
+            .and_then(ExpertFenceResume::from_code)
+            .ok_or_else(|| invalid(CompactedError::UnknownTag))?;
         let fenced = find(&key).is_some_and(|(_, entry)| entry.state == ExpertState::Fenced);
         if previous.as_ref().is_some_and(|last| *last >= key) || !fenced {
             return Err(invalid(CompactedError::NoncanonicalSection));
         }
         previous = Some(key.clone());
-        causes.insert(key, cause);
+        causes.insert(key, FenceStanding { cause, resume });
     }
     let mut memo = BTreeMap::new();
     let mut previous: Option<(String, String)> = None;
     for _ in 0..reader.count()? {
         let key = (reader.text()?, reader.text()?);
         let epoch = reader.number()?;
+        // A fenced expert stands at exactly its fence epoch. One that is not fenced was
+        // readmitted, which moved its state version past the fence: the memo is strictly below.
         let in_range = find(&key).is_some_and(|(_, entry)| {
             epoch >= 1
-                && epoch <= entry.state_version
-                && (entry.state != ExpertState::Fenced || epoch == entry.state_version)
+                && if entry.state == ExpertState::Fenced {
+                    epoch == entry.state_version
+                } else {
+                    epoch < entry.state_version
+                }
         });
         if previous.as_ref().is_some_and(|last| *last >= key) || !in_range {
             return Err(invalid(CompactedError::NoncanonicalSection));
@@ -759,10 +790,15 @@ fn decode_fence_block(
         .iter()
         .filter(|(_, entry)| entry.state == ExpertState::Fenced)
         .all(|(key, _)| memo.contains_key(key));
-    if (causes.is_empty() && memo.is_empty()) || !covers_fenced {
+    let readmit_gate_epoch = reader.number()?;
+    if (causes.is_empty() && memo.is_empty() && readmit_gate_epoch == 0) || !covers_fenced {
         return Err(invalid(CompactedError::NoncanonicalSection));
     }
-    Ok((causes, memo))
+    // A readmission needs an earlier fence, so a recorded readmission gate epoch needs a memo.
+    if readmit_gate_epoch != 0 && memo.is_empty() {
+        return Err(invalid(CompactedError::NoncanonicalSection));
+    }
+    Ok((causes, memo, readmit_gate_epoch))
 }
 
 impl LifecycleState {
@@ -1210,7 +1246,7 @@ fn compacted_sections(
 mod fence_cause_tests {
     use super::*;
 
-    fn fenced_state(causes: BTreeMap<(String, String), ExpertFenceCause>) -> LifecycleState {
+    fn fenced_state(causes: BTreeMap<(String, String), FenceStanding>) -> LifecycleState {
         let entry = ExpertEntry {
             state: ExpertState::Fenced,
             state_version: 2,
@@ -1236,13 +1272,20 @@ mod fence_cause_tests {
                 BTreeMap::new(),
                 causes,
                 BTreeMap::from([(("p".to_owned(), "a".to_owned()), 2)]),
+                0,
             ),
             ..LifecycleState::default()
         }
     }
 
-    fn causes(cause: ExpertFenceCause) -> BTreeMap<(String, String), ExpertFenceCause> {
-        BTreeMap::from([(("p".to_owned(), "a".to_owned()), cause)])
+    fn causes(cause: ExpertFenceCause) -> BTreeMap<(String, String), FenceStanding> {
+        BTreeMap::from([(
+            ("p".to_owned(), "a".to_owned()),
+            FenceStanding {
+                cause,
+                resume: ExpertFenceResume::Frozen,
+            },
+        )])
     }
 
     #[test]
@@ -1277,6 +1320,71 @@ mod fence_cause_tests {
     }
 
     #[test]
+    fn a_tampered_fence_memo_is_refused() {
+        let good = fenced_state(causes(ExpertFenceCause::AuthorityQuarantine));
+        let bytes = good.encode().unwrap();
+        assert_eq!(
+            LifecycleState::decode(&bytes, Layout::FenceCause).unwrap(),
+            good
+        );
+        let memo_at = bytes.len() - 16;
+        // A memo lowered below the fenced expert's epoch (here 1 for epoch 2) is refused.
+        let mut lowered = bytes.clone();
+        lowered[memo_at..memo_at + 8].copy_from_slice(&1u64.to_le_bytes());
+        assert!(LifecycleState::decode(&lowered, Layout::FenceCause).is_err());
+        // So is one raised above it.
+        let mut raised = bytes.clone();
+        raised[memo_at..memo_at + 8].copy_from_slice(&3u64.to_le_bytes());
+        assert!(LifecycleState::decode(&raised, Layout::FenceCause).is_err());
+        // A memo dropped for a fenced expert is refused: the fenced expert is not covered.
+        let mut dropped = fenced_state(causes(ExpertFenceCause::AuthorityQuarantine));
+        let entries: Vec<_> = dropped
+            .experts
+            .iter()
+            .map(|(p, d, e)| ((p.to_owned(), d.to_owned()), e.clone()))
+            .collect();
+        dropped.experts = ExpertRegistryProjection::from_parts(
+            entries,
+            BTreeSet::new(),
+            BTreeMap::new(),
+            causes(ExpertFenceCause::AuthorityQuarantine),
+            BTreeMap::new(),
+            0,
+        );
+        assert!(LifecycleState::decode(&dropped.encode().unwrap(), Layout::FenceCause).is_err());
+        // A readmitted expert (serving at epoch 3) whose memo claims epoch 3 was never fenced
+        // below its current version: refused. Epoch 2 is the readmitted shape and restores.
+        let readmitted = |memo: u64, gate_epoch: u64| {
+            let mut state = fenced_state(BTreeMap::new());
+            let mut entries: Vec<_> = state
+                .experts
+                .iter()
+                .map(|(p, d, e)| ((p.to_owned(), d.to_owned()), e.clone()))
+                .collect();
+            entries[0].1.state = ExpertState::Serving;
+            entries[0].1.state_version = 3;
+            state.materialized = BTreeMap::from([(
+                ptr_state::expert_key("p", "a"),
+                ptr_state::expert_entry(1, ExpertState::Serving, 3),
+            )]);
+            state.experts = ExpertRegistryProjection::from_parts(
+                entries,
+                BTreeSet::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::from([(("p".to_owned(), "a".to_owned()), memo)]),
+                gate_epoch,
+            );
+            state.encode().unwrap()
+        };
+        let restored = LifecycleState::decode(&readmitted(2, 7), Layout::FenceCause).unwrap();
+        assert_eq!(restored.experts.highest_fenced_epoch("expert:p/a"), Some(2));
+        assert_eq!(restored.experts.readmit_gate_epoch(), 7);
+        assert!(LifecycleState::decode(&readmitted(3, 7), Layout::FenceCause).is_err());
+        assert!(LifecycleState::decode(&readmitted(0, 7), Layout::FenceCause).is_err());
+    }
+
+    #[test]
     fn a_registry_that_was_never_fenced_keeps_the_earlier_section() {
         let bytes = LifecycleState::default().encode().unwrap();
         assert!(bytes.starts_with(EVIDENCE_LIFECYCLE_MAGIC));
@@ -1301,7 +1409,7 @@ mod fence_cause_tests {
         // A memo epoch of zero is refused.
         let mut zero = good.clone();
         let end = zero.len();
-        zero[end - 8..].copy_from_slice(&0u64.to_le_bytes());
+        zero[end - 16..end - 8].copy_from_slice(&0u64.to_le_bytes());
         assert!(LifecycleState::decode(&zero, Layout::FenceCause).is_err());
         // A fence block with neither a cause nor a memo entry is not the encoding of any state:
         // such a snapshot is PTRCS006.
@@ -1310,6 +1418,7 @@ mod fence_cause_tests {
         empty.extend_from_slice(FENCE_MAGIC);
         empty.extend_from_slice(&0u32.to_le_bytes());
         empty.extend_from_slice(&0u32.to_le_bytes());
+        empty.extend_from_slice(&0u64.to_le_bytes());
         assert!(LifecycleState::decode(&empty, Layout::FenceCause).is_err());
         // A fenced expert the memo does not cover is refused.
         let mut uncovered = fenced_state(causes(ExpertFenceCause::InputRevoked));
@@ -1324,6 +1433,7 @@ mod fence_cause_tests {
             BTreeMap::new(),
             causes(ExpertFenceCause::InputRevoked),
             BTreeMap::new(),
+            0,
         );
         assert!(LifecycleState::decode(&uncovered.encode().unwrap(), Layout::FenceCause).is_err());
         // A cause for an expert that is not fenced is refused.
@@ -1344,6 +1454,7 @@ mod fence_cause_tests {
             BTreeMap::new(),
             causes(ExpertFenceCause::InputRevoked),
             BTreeMap::from([(("p".to_owned(), "a".to_owned()), 2)]),
+            0,
         );
         assert!(LifecycleState::decode(&serving.encode().unwrap(), Layout::FenceCause).is_err());
     }

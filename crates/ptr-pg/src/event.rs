@@ -287,9 +287,14 @@ mod tests {
                 pod: ptr_types::PodId::from("a"),
                 action: ptr_ledger::ExpertFenceAction::Fence,
                 cause: ptr_ledger::ExpertFenceCause::InputRevoked,
+                resume: ptr_ledger::ExpertFenceResume::Serving,
                 generation: Generation(2),
                 expected_state_version: 1,
                 epoch: 2,
+                revocation: Some(ptr_ledger::ExpertFenceRevocation {
+                    subject: "k".to_owned(),
+                    generation: Generation(1),
+                }),
                 evidence: None,
             },
         );

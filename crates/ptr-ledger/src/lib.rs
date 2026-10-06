@@ -256,8 +256,9 @@ pub enum LedgerEvent {
     },
     /// An authority fence of one expert, or its readmission, committed by the runtime's expert
     /// fence path. A fence withdraws the expert from serving without changing its generation
-    /// (`Serving` or `Frozen` to `Fenced`); a readmission returns a fenced expert to `Serving`
-    /// at the same generation. Either moves the expert's state version, which is its fence
+    /// (`Serving` or `Frozen` to `Fenced`); a readmission returns a fenced expert to the state it
+    /// left (`resume`) at the same generation; an escalation keeps it fenced and tightens the
+    /// cause. Either moves the expert's state version, which is its fence
     /// epoch, to `epoch`, so a cache entry recorded under an earlier epoch is never revived.
     /// `expected_state_version` is the compare-and-set operand and `epoch` must be exactly
     /// `expected_state_version + 1`: the codec refuses any other pair. The record is written
@@ -267,13 +268,55 @@ pub enum LedgerEvent {
         pod: PodId,
         action: ExpertFenceAction,
         cause: ExpertFenceCause,
+        /// The state the expert was in before the fence and returns to on readmission. A fence
+        /// names the state it leaves (`Serving` or `Frozen`); an escalation and a readmission
+        /// repeat the one recorded at the fence. Replay checks each against the registry.
+        resume: ExpertFenceResume,
         generation: Generation,
         expected_state_version: u64,
         epoch: u64,
+        /// The committed revocation an `InputRevoked` fence or escalation rests on; `None` for
+        /// every other record. The codec requires `Some` for exactly those two.
+        revocation: Option<ExpertFenceRevocation>,
         /// The gate evidence a readmission rests on; `None` for a fence, which never waits for
         /// a gate. The codec requires `Some` for exactly a readmission.
         evidence: Option<ExpertFenceEvidence>,
     },
+}
+
+/// The committed [`LedgerEvent::Revoked`] (or `ProcedureRevoked`) record an `InputRevoked` fence
+/// names: its subject and generation. The runtime checks it against the revocations committed
+/// at or before the fence, at commit and on replay; a fence that names none is refused.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertFenceRevocation {
+    pub subject: String,
+    pub generation: Generation,
+}
+
+/// The state a fenced expert returns to on readmission. The codes are pinned data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertFenceResume {
+    Serving,
+    Frozen,
+}
+
+impl ExpertFenceResume {
+    /// The stored code: Serving 0, Frozen 1.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Serving => 0,
+            Self::Frozen => 1,
+        }
+    }
+
+    /// The member for a stored code, or `None` for an unknown one.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Serving),
+            1 => Some(Self::Frozen),
+            _ => None,
+        }
+    }
 }
 
 /// The gate evidence embedded in a readmission: the canonical bytes of the bound gate report
@@ -293,14 +336,18 @@ pub struct ExpertFenceEvidence {
 pub enum ExpertFenceAction {
     Fence,
     Readmit,
+    /// A `Fenced` expert whose cause is `AuthorityQuarantine` is re-fenced for `InputRevoked`:
+    /// the cause only ever tightens, and the epoch moves like for any fence.
+    Escalate,
 }
 
 impl ExpertFenceAction {
-    /// The stored code: Fence 0, Readmit 1.
+    /// The stored code: Fence 0, Readmit 1, Escalate 2.
     pub fn code(self) -> u8 {
         match self {
             Self::Fence => 0,
             Self::Readmit => 1,
+            Self::Escalate => 2,
         }
     }
 
@@ -309,6 +356,7 @@ impl ExpertFenceAction {
         match code {
             0 => Some(Self::Fence),
             1 => Some(Self::Readmit),
+            2 => Some(Self::Escalate),
             _ => None,
         }
     }
@@ -771,9 +819,11 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             pod,
             action,
             cause,
+            resume,
             generation,
             expected_state_version,
             epoch,
+            revocation,
             evidence,
         } => {
             out.push(28);
@@ -781,9 +831,18 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_string(&mut out, &pod.0);
             out.push(action.code());
             out.push(cause.code());
+            out.push(resume.code());
             put_u64(&mut out, generation.0);
             put_u64(&mut out, *expected_state_version);
             put_u64(&mut out, *epoch);
+            match revocation {
+                None => out.push(0),
+                Some(revocation) => {
+                    out.push(1);
+                    put_string(&mut out, &revocation.subject);
+                    put_u64(&mut out, revocation.generation.0);
+                }
+            }
             match evidence {
                 None => out.push(0),
                 Some(evidence) => {
@@ -1246,9 +1305,29 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
                     format!("unknown expert fence cause code {cause_code}"),
                 )
             })?;
+            let resume_code = cursor.u8()?;
+            let resume = ExpertFenceResume::from_code(resume_code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown expert fence resume code {resume_code}"),
+                )
+            })?;
             let generation = Generation(cursor.u64()?);
             let expected_state_version = cursor.u64()?;
             let epoch = cursor.u64()?;
+            let revocation = match cursor.u8()? {
+                0 => None,
+                1 => Some(ExpertFenceRevocation {
+                    subject: cursor.string()?,
+                    generation: Generation(cursor.u64()?),
+                }),
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown expert fence revocation flag {other}"),
+                    ))
+                }
+            };
             let evidence = match cursor.u8()? {
                 0 => None,
                 1 => Some(ExpertFenceEvidence {
@@ -1268,9 +1347,11 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
                 pod,
                 action,
                 cause,
+                resume,
                 generation,
                 expected_state_version,
                 epoch,
+                revocation,
                 evidence,
             };
             check_expert_fence(&event)?;
@@ -1424,21 +1505,36 @@ fn check_expert_fence(event: &LedgerEvent) -> Result<(), io::Error> {
         expected_state_version,
         epoch,
         action,
+        cause,
+        revocation,
         evidence,
         ..
     } = event
     else {
         return Ok(());
     };
+    // An InputRevoked fence or escalation names its revocation; nothing else does, and an
+    // escalation is only ever to InputRevoked.
+    let revocation_ok = match (action, cause, revocation) {
+        (
+            ExpertFenceAction::Fence | ExpertFenceAction::Escalate,
+            ExpertFenceCause::InputRevoked,
+            Some(revocation),
+        ) => !revocation.subject.is_empty(),
+        (ExpertFenceAction::Fence, ExpertFenceCause::AuthorityQuarantine, None) => true,
+        (ExpertFenceAction::Readmit, _, None) => true,
+        _ => false,
+    };
     // A readmission carries a non-empty, bounded report; a fence carries none.
     let evidence_ok = match (action, evidence) {
-        (ExpertFenceAction::Fence, None) => true,
+        (ExpertFenceAction::Fence | ExpertFenceAction::Escalate, None) => true,
         (ExpertFenceAction::Readmit, Some(evidence)) => {
             !evidence.report.is_empty() && evidence.report.len() <= MAX_EXPERT_RECORD_BYTES
         }
         _ => false,
     };
     if !evidence_ok
+        || !revocation_ok
         || pod.0.is_empty()
         || generation.0 == 0
         || expected_state_version.checked_add(1) != Some(*epoch)
@@ -2406,11 +2502,13 @@ mod effect_record_tests {
             pod: PodId::from("pod-a"),
             action,
             cause: ExpertFenceCause::AuthorityQuarantine,
+            resume: ExpertFenceResume::Frozen,
             generation: Generation(3),
             expected_state_version: 4,
             epoch: 5,
+            revocation: None,
             evidence: match action {
-                ExpertFenceAction::Fence => None,
+                ExpertFenceAction::Fence | ExpertFenceAction::Escalate => None,
                 ExpertFenceAction::Readmit => Some(ExpertFenceEvidence {
                     gate_epoch: 7,
                     required_gate_config_digest: [6; 32],
@@ -2425,6 +2523,7 @@ mod effect_record_tests {
         for (action, code) in [
             (ExpertFenceAction::Fence, 0),
             (ExpertFenceAction::Readmit, 1),
+            (ExpertFenceAction::Escalate, 2),
         ] {
             assert_eq!(action.code(), code);
             assert_eq!(ExpertFenceAction::from_code(code), Some(action));
@@ -2436,7 +2535,9 @@ mod effect_record_tests {
             assert_eq!(cause.code(), code);
             assert_eq!(ExpertFenceCause::from_code(code), Some(cause));
         }
-        assert_eq!(ExpertFenceAction::from_code(2), None);
+        assert_eq!(ExpertFenceAction::from_code(3), None);
+        assert_eq!(ExpertFenceResume::from_code(2), None);
+        assert_eq!(ExpertFenceResume::Frozen.code(), 1);
         assert_eq!(ExpertFenceCause::from_code(2), None);
         for action in [ExpertFenceAction::Fence, ExpertFenceAction::Readmit] {
             let event = fence_event(action);
@@ -2457,11 +2558,11 @@ mod effect_record_tests {
         // tag, project (4 + 1), pod (4 + 5), then action and cause.
         let action_at = 1 + 5 + 9;
         let mut unknown_action = encoded.clone();
-        unknown_action[action_at] = 2;
+        unknown_action[action_at] = 3;
         assert!(decode_event(&unknown_action)
             .unwrap_err()
             .to_string()
-            .contains("unknown expert fence action code 2"));
+            .contains("unknown expert fence action code 3"));
         let mut unknown_cause = encoded.clone();
         unknown_cause[action_at + 1] = 9;
         assert!(decode_event(&unknown_cause)
@@ -2474,9 +2575,14 @@ mod effect_record_tests {
                 pod: PodId::from(pod),
                 action: ExpertFenceAction::Fence,
                 cause: ExpertFenceCause::InputRevoked,
+                resume: ExpertFenceResume::Serving,
                 generation: Generation(generation),
                 expected_state_version: expected,
                 epoch,
+                revocation: Some(ExpertFenceRevocation {
+                    subject: "s".to_owned(),
+                    generation: Generation(1),
+                }),
                 evidence: None,
             }
         };
@@ -2520,6 +2626,55 @@ mod effect_record_tests {
         let mut bad_flag = encode_event(&fence_event(ExpertFenceAction::Fence));
         *bad_flag.last_mut().unwrap() = 2;
         assert!(decode_event(&bad_flag).is_err());
+    }
+
+    #[test]
+    fn expert_fence_revocation_is_present_exactly_for_an_input_revoked_fence_or_escalation() {
+        let event = |action, cause, revocation: Option<&str>| {
+            let mut event = fence_event(action);
+            if let LedgerEvent::ExpertFenceCommitted {
+                cause: c,
+                revocation: r,
+                ..
+            } = &mut event
+            {
+                *c = cause;
+                *r = revocation.map(|subject| ExpertFenceRevocation {
+                    subject: subject.to_owned(),
+                    generation: Generation(2),
+                });
+            }
+            event
+        };
+        use ExpertFenceAction::{Escalate, Fence, Readmit};
+        use ExpertFenceCause::{AuthorityQuarantine, InputRevoked};
+        for good in [
+            event(Fence, InputRevoked, Some("k")),
+            event(Escalate, InputRevoked, Some("k")),
+            event(Fence, AuthorityQuarantine, None),
+            event(Readmit, AuthorityQuarantine, None),
+        ] {
+            check_encodable(&good).unwrap();
+            assert_eq!(decode_event(&encode_event(&good)).unwrap(), good);
+        }
+        for bad in [
+            event(Fence, InputRevoked, None),
+            event(Escalate, InputRevoked, None),
+            event(Escalate, AuthorityQuarantine, None),
+            event(Fence, InputRevoked, Some("")),
+            event(Fence, AuthorityQuarantine, Some("k")),
+            event(Readmit, AuthorityQuarantine, Some("k")),
+            event(Readmit, InputRevoked, Some("k")),
+        ] {
+            assert!(check_encodable(&bad).is_err(), "{bad:?}");
+            assert!(decode_event(&encode_event(&bad)).is_err(), "{bad:?}");
+        }
+        let mut unknown_resume = encode_event(&fence_event(ExpertFenceAction::Fence));
+        unknown_resume[1 + 5 + 9 + 2] = 5;
+        assert!(decode_event(&unknown_resume)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown expert fence resume code 5"));
     }
 
     #[test]

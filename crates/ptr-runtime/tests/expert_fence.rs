@@ -6,7 +6,10 @@
 use std::sync::Arc;
 
 use ptr_config::PtrConfig;
-use ptr_ledger::{ExpertFenceAction, ExpertFenceCause, ExpertFenceEvidence, LedgerEvent};
+use ptr_ledger::{
+    ExpertFenceAction, ExpertFenceCause, ExpertFenceEvidence, ExpertFenceResume,
+    ExpertFenceRevocation, LedgerEvent,
+};
 use ptr_lineage::{
     AccuracyMatrix, AdapterId, BoundGateReport, ForgettingGate, GateSubject, PublicSuite,
 };
@@ -143,6 +146,15 @@ fn request(pod: &str, version: u64, cause: ExpertFenceCause) -> ExpertFenceReque
         generation: Generation(1),
         expected_state_version: version,
         cause,
+        // Every runtime of this file has committed the revocation of ("k", 1).
+        revocation: (cause == ExpertFenceCause::InputRevoked).then(committed_revocation),
+    }
+}
+
+fn committed_revocation() -> ExpertFenceRevocation {
+    ExpertFenceRevocation {
+        subject: "k".to_owned(),
+        generation: Generation(1),
     }
 }
 
@@ -287,7 +299,14 @@ fn hits(rt: &mut PtrRuntime) -> bool {
 }
 
 fn runtime() -> PtrRuntime {
-    PtrRuntime::new(PtrConfig::default()).unwrap()
+    let mut rt = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let revocation = committed_revocation();
+    rt.commit(LedgerEvent::Revoked {
+        subject: revocation.subject,
+        generation: revocation.generation,
+    })
+    .unwrap();
+    rt
 }
 
 fn expert_error(result: Result<CommitIndex, RuntimeError>) -> ExpertAdmissionError {
@@ -374,9 +393,11 @@ fn the_fence_event_cannot_be_appended_directly() {
         pod: PodId::from("x"),
         action: ExpertFenceAction::Fence,
         cause: QUARANTINE,
+        resume: ExpertFenceResume::Serving,
         generation: Generation(1),
         expected_state_version: 1,
         epoch: 2,
+        revocation: None,
         evidence: None,
     };
     assert!(matches!(
@@ -660,7 +681,12 @@ fn readmit(
     request: &ExpertFenceRequest,
     grant: &ExpertFenceGrant,
 ) -> Result<CommitIndex, RuntimeError> {
-    rt.readmit_expert(request, &report_for(request, &gate(), true), grant)
+    // A readmission names no revocation, whatever the cause it names.
+    let request = ExpertFenceRequest {
+        revocation: None,
+        ..request.clone()
+    };
+    rt.readmit_expert(&request, &report_for(&request, &gate(), true), grant)
 }
 
 fn history(rt: &PtrRuntime) -> Vec<ptr_ledger::CommittedEvent> {
@@ -734,8 +760,12 @@ fn replay_reproduces_the_fence_state_cause_and_readmission_rules() {
         })
         .unwrap();
     for committed in &mut revoked[..at] {
-        if let LedgerEvent::ExpertFenceCommitted { cause, .. } = &mut committed.event {
+        if let LedgerEvent::ExpertFenceCommitted {
+            cause, revocation, ..
+        } = &mut committed.event
+        {
             *cause = ExpertFenceCause::InputRevoked;
+            *revocation = Some(committed_revocation());
         }
     }
     assert!(matches!(
@@ -1126,4 +1156,383 @@ fn replay_reverifies_the_readmission_evidence() {
         )),
         ExpertAdmissionError::EpochGateConfigConflict { epoch: 7 }
     );
+}
+
+fn fences_of(rt: &PtrRuntime) -> Vec<usize> {
+    history(rt)
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| matches!(c.event, LedgerEvent::ExpertFenceCommitted { .. }))
+        .map(|(at, _)| at)
+        .collect()
+}
+
+#[test]
+fn a_quarantine_fence_escalates_to_input_revoked_but_never_back() {
+    let mut rt = runtime();
+    let rig = Rig::new(&mut rt);
+    birth(&mut rt, "x");
+    birth(&mut rt, "y");
+    rig.insert(&mut rt, vec![dep("x", 1)]).unwrap();
+    rt.fence_expert(&request("x", 1, QUARANTINE), &revocation())
+        .unwrap();
+    rt.fence_expert(
+        &request("y", 1, ExpertFenceCause::InputRevoked),
+        &revocation(),
+    )
+    .unwrap();
+    let before = applied(&rt);
+
+    // The reverse is refused: an InputRevoked fence is final, and re-fencing a fenced expert is
+    // not a fence.
+    let backwards = ExpertFenceRequest {
+        revocation: None,
+        ..request("y", 2, QUARANTINE)
+    };
+    assert_eq!(
+        expert_error(rt.escalate_expert_fence(&backwards, &revocation())),
+        ExpertAdmissionError::NotEscalatable { pod: "y".into() }
+    );
+    assert_eq!(
+        expert_error(rt.escalate_expert_fence(
+            &request("y", 2, ExpertFenceCause::InputRevoked),
+            &revocation()
+        )),
+        ExpertAdmissionError::NotEscalatable { pod: "y".into() }
+    );
+    assert_eq!(
+        expert_error(rt.fence_expert(&request("x", 2, QUARANTINE), &revocation())),
+        ExpertAdmissionError::NotFenceable {
+            pod: "x".into(),
+            state: ExpertState::Fenced,
+        }
+    );
+    // Escalation needs the revocation authority, a named cause and a revocation.
+    assert_eq!(
+        expert_error(rt.escalate_expert_fence(
+            &request("x", 2, ExpertFenceCause::InputRevoked),
+            &gate_grant()
+        )),
+        ExpertAdmissionError::FenceAuthorityMismatch {
+            action: ExpertFenceAction::Escalate,
+            required: ExpertFenceAuthority::RuntimeRevocation,
+        }
+    );
+    assert_eq!(
+        expert_error(rt.escalate_expert_fence(
+            &ExpertFenceRequest {
+                revocation: None,
+                ..request("x", 2, ExpertFenceCause::InputRevoked)
+            },
+            &revocation()
+        )),
+        ExpertAdmissionError::FenceRevocationNotCommitted { pod: "x".into() }
+    );
+    assert_eq!(
+        expert_error(rt.escalate_expert_fence(&request("x", 2, QUARANTINE), &revocation())),
+        ExpertAdmissionError::NotEscalatable { pod: "x".into() }
+    );
+    assert_eq!(applied(&rt), before, "nothing was appended");
+
+    // The escalation: still Fenced at the same generation, the epoch moves, the cause is final.
+    rt.escalate_expert_fence(
+        &request("x", 2, ExpertFenceCause::InputRevoked),
+        &revocation(),
+    )
+    .unwrap();
+    assert_eq!(entry_state(&rt, "x"), (ExpertState::Fenced, 3));
+    assert_eq!(
+        rt.expert_registry()
+            .fence_cause(&project(), &PodId::from("x")),
+        Some(ExpertFenceCause::InputRevoked)
+    );
+    assert_eq!(
+        rt.expert_registry().highest_fenced_epoch("expert:proj/x"),
+        Some(3)
+    );
+    assert_eq!(
+        rt.materialized_state().values.get("expert:proj/x"),
+        Some(&ptr_state::expert_entry(1, ExpertState::Fenced, 3))
+    );
+    let escalation = rt.committed_events().last().unwrap().event.clone();
+    assert_eq!(
+        expert_fence_epochs(&escalation),
+        std::collections::BTreeMap::from([("expert:proj/x".to_owned(), 3)])
+    );
+    for epoch in [0, 1, 2, 3] {
+        assert_eq!(
+            rig.insert(&mut rt, vec![dep("x", epoch)]),
+            Err(KvCatalogError::DependencyNotLive),
+            "epoch {epoch}"
+        );
+    }
+    // Readmission is refused after the revocation, whatever cause it names.
+    for cause in [ExpertFenceCause::InputRevoked, QUARANTINE] {
+        assert_eq!(
+            expert_error(readmit(&mut rt, &request("x", 3, cause), &gate_grant())),
+            ExpertAdmissionError::NotReadmittable { pod: "x".into() }
+        );
+    }
+
+    // Replay and a compacted restore reproduce the escalated state.
+    let replayed = PtrRuntime::replay(PtrConfig::default(), &history(&rt)).unwrap();
+    assert_eq!(replayed.expert_registry(), rt.expert_registry());
+    let snapshot = rt.export_compacted_snapshot().unwrap();
+    let restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(restored.expert_registry(), rt.expert_registry());
+
+    // A history that escalates a fence already of the final cause does not replay.
+    let mut backwards = history(&rt);
+    let at = fences_of(&rt)[0];
+    if let LedgerEvent::ExpertFenceCommitted {
+        cause, revocation, ..
+    } = &mut backwards[at].event
+    {
+        *cause = ExpertFenceCause::InputRevoked;
+        *revocation = Some(committed_revocation());
+    }
+    assert!(matches!(
+        PtrRuntime::replay(PtrConfig::default(), &backwards),
+        Err(RuntimeError::Expert(
+            ExpertAdmissionError::NotEscalatable { .. }
+        ))
+    ));
+}
+
+#[test]
+fn an_input_revoked_fence_without_a_committed_revocation_is_refused_at_commit_and_on_replay() {
+    let mut rt = runtime();
+    birth(&mut rt, "x");
+    birth(&mut rt, "y");
+    let before = applied(&rt);
+    let uncommitted = |subject: &str, generation: u64| ExpertFenceRequest {
+        revocation: Some(ExpertFenceRevocation {
+            subject: subject.to_owned(),
+            generation: Generation(generation),
+        }),
+        ..request("x", 1, ExpertFenceCause::InputRevoked)
+    };
+    // Neither another subject nor another generation of a committed one is a revocation.
+    for (subject, generation) in [("other", 1), ("k", 2)] {
+        assert_eq!(
+            expert_error(rt.fence_expert(&uncommitted(subject, generation), &revocation())),
+            ExpertAdmissionError::FenceRevocationNotCommitted { pod: "x".into() }
+        );
+    }
+    assert_eq!(applied(&rt), before);
+    assert_eq!(entry_state(&rt, "x"), (ExpertState::Serving, 1));
+    // A cause that is not InputRevoked names no revocation.
+    assert_eq!(
+        expert_error(rt.fence_expert(
+            &ExpertFenceRequest {
+                revocation: Some(committed_revocation()),
+                ..request("x", 1, QUARANTINE)
+            },
+            &revocation()
+        )),
+        ExpertAdmissionError::FenceRevocationNotCommitted { pod: "x".into() }
+    );
+    // A committed revocation is accepted; a procedure revocation counts too.
+    rt.fence_expert(
+        &request("x", 1, ExpertFenceCause::InputRevoked),
+        &revocation(),
+    )
+    .unwrap();
+    rt.commit(LedgerEvent::ProcedureRevoked {
+        id: "proc".to_owned(),
+        generation: Generation(4),
+    })
+    .unwrap();
+    rt.fence_expert(
+        &ExpertFenceRequest {
+            revocation: Some(ExpertFenceRevocation {
+                subject: "procedure:proc".to_owned(),
+                generation: Generation(4),
+            }),
+            ..request("y", 1, ExpertFenceCause::InputRevoked)
+        },
+        &revocation(),
+    )
+    .unwrap();
+
+    // Replay: a fence naming a revocation the history does not hold fails, also when the
+    // revocation is committed only after the fence.
+    let good = history(&rt);
+    PtrRuntime::replay(PtrConfig::default(), &good).unwrap();
+    let mut renamed = good.clone();
+    let at = fences_of(&rt)[0];
+    if let LedgerEvent::ExpertFenceCommitted { revocation, .. } = &mut renamed[at].event {
+        *revocation = Some(ExpertFenceRevocation {
+            subject: "other".to_owned(),
+            generation: Generation(1),
+        });
+    }
+    assert!(matches!(
+        PtrRuntime::replay(PtrConfig::default(), &renamed),
+        Err(RuntimeError::Expert(
+            ExpertAdmissionError::FenceRevocationNotCommitted { .. }
+        ))
+    ));
+    let mut late = good.clone();
+    let revoked_at = late
+        .iter()
+        .position(|c| matches!(c.event, LedgerEvent::Revoked { .. }))
+        .unwrap();
+    late.swap(revoked_at, at);
+    assert!(PtrRuntime::replay(PtrConfig::default(), &late).is_err());
+    let mut without = good.clone();
+    without.remove(revoked_at);
+    assert!(PtrRuntime::replay(PtrConfig::default(), &without).is_err());
+}
+
+#[test]
+fn a_frozen_expert_is_readmitted_frozen_and_replay_and_restore_agree() {
+    let mut rt = runtime();
+    birth(&mut rt, "x");
+    birth(&mut rt, "y");
+    let op = StructuralOp::Freeze {
+        target: target(&rt, "x"),
+    };
+    admit(&mut rt, op);
+    assert_eq!(entry_state(&rt, "x"), (ExpertState::Frozen, 2));
+    rt.fence_expert(&request("x", 2, QUARANTINE), &revocation())
+        .unwrap();
+    rt.fence_expert(&request("y", 1, QUARANTINE), &revocation())
+        .unwrap();
+    assert_eq!(
+        rt.expert_registry()
+            .fence_resume(&project(), &PodId::from("x")),
+        Some(ExpertFenceResume::Frozen)
+    );
+
+    // The resume state survives a compacted restore taken while fenced.
+    let snapshot = rt.export_compacted_snapshot().unwrap();
+    let mut restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(restored.expert_registry(), rt.expert_registry());
+    readmit(&mut restored, &request("x", 3, QUARANTINE), &gate_grant()).unwrap();
+    assert_eq!(entry_state(&restored, "x"), (ExpertState::Frozen, 4));
+
+    readmit(&mut rt, &request("x", 3, QUARANTINE), &gate_grant()).unwrap();
+    readmit(&mut rt, &request("y", 2, QUARANTINE), &gate_grant()).unwrap();
+    assert_eq!(entry_state(&rt, "x"), (ExpertState::Frozen, 4));
+    assert_eq!(entry_state(&rt, "y"), (ExpertState::Serving, 3));
+    assert_eq!(
+        rt.materialized_state().values.get("expert:proj/x"),
+        Some(&ptr_state::expert_entry(1, ExpertState::Frozen, 4))
+    );
+    let replayed = PtrRuntime::replay(PtrConfig::default(), &history(&rt)).unwrap();
+    assert_eq!(replayed.expert_registry(), rt.expert_registry());
+    assert_eq!(entry_state(&replayed, "x"), (ExpertState::Frozen, 4));
+
+    // A history whose readmission (or fence) records the other resume state does not replay.
+    for at in fences_of(&rt) {
+        let mut tampered = history(&rt);
+        if let LedgerEvent::ExpertFenceCommitted { resume, .. } = &mut tampered[at].event {
+            *resume = match resume {
+                ExpertFenceResume::Serving => ExpertFenceResume::Frozen,
+                ExpertFenceResume::Frozen => ExpertFenceResume::Serving,
+            };
+        }
+        assert!(
+            matches!(
+                PtrRuntime::replay(PtrConfig::default(), &tampered),
+                Err(RuntimeError::Expert(
+                    ExpertAdmissionError::FenceResumeMismatch { .. }
+                ))
+            ),
+            "event {at}"
+        );
+    }
+}
+
+#[test]
+fn a_readmission_may_not_stand_at_an_older_gate_epoch_than_an_earlier_one() {
+    let mut rt = runtime();
+    birth(&mut rt, "x");
+    let digest = gate().config_digest().unwrap();
+    let at_epoch = |epoch| ExpertFenceGrant::gate(project(), epoch, digest);
+    let try_readmit = |rt: &mut PtrRuntime, version, epoch| {
+        let req = request("x", version, QUARANTINE);
+        rt.readmit_expert(&req, &report_for(&req, &gate(), true), &at_epoch(epoch))
+    };
+    rt.fence_expert(&request("x", 1, QUARANTINE), &revocation())
+        .unwrap();
+    try_readmit(&mut rt, 2, 9).unwrap();
+    rt.fence_expert(&request("x", 3, QUARANTINE), &revocation())
+        .unwrap();
+    let before = applied(&rt);
+    assert_eq!(
+        expert_error(try_readmit(&mut rt, 4, 8)),
+        ExpertAdmissionError::GateEpochRegressed {
+            pod: "x".into(),
+            seen: 9,
+            found: 8,
+        }
+    );
+    assert_eq!(applied(&rt), before, "nothing was appended");
+    assert_eq!(entry_state(&rt, "x"), (ExpertState::Fenced, 4));
+    // The same or a later epoch is accepted.
+    try_readmit(&mut rt, 4, 9).unwrap();
+    rt.fence_expert(&request("x", 5, QUARANTINE), &revocation())
+        .unwrap();
+    try_readmit(&mut rt, 6, 10).unwrap();
+
+    // The bound survives a compacted restore.
+    rt.fence_expert(&request("x", 7, QUARANTINE), &revocation())
+        .unwrap();
+    let snapshot = rt.export_compacted_snapshot().unwrap();
+    let mut restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+    )
+    .unwrap();
+    assert!(matches!(
+        expert_error(try_readmit(&mut restored, 8, 9)),
+        ExpertAdmissionError::GateEpochRegressed { seen: 10, .. }
+    ));
+
+    // Replay enforces the same: a history whose later readmission names an older gate epoch
+    // fails.
+    let mut tampered = history(&rt);
+    let readmits: Vec<usize> = tampered
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            matches!(
+                c.event,
+                LedgerEvent::ExpertFenceCommitted {
+                    action: ExpertFenceAction::Readmit,
+                    ..
+                }
+            )
+        })
+        .map(|(at, _)| at)
+        .collect();
+    if let LedgerEvent::ExpertFenceCommitted {
+        evidence: Some(evidence),
+        ..
+    } = &mut tampered[*readmits.last().unwrap()].event
+    {
+        evidence.gate_epoch = 3;
+    }
+    assert!(matches!(
+        PtrRuntime::replay(PtrConfig::default(), &tampered),
+        Err(RuntimeError::Expert(
+            ExpertAdmissionError::GateEpochRegressed { .. }
+        ))
+    ));
 }
