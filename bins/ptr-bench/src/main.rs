@@ -67,6 +67,15 @@ fn main() {
                         .map_err(|_| format!("seed must be a non-negative integer, got {value:?}"))
                 }),
         )),
+        // The harnesses of R009 and R010: one seed per run, no default seed.
+        "layer-shared-lora-kv" => experiments::r009::run(strict_or_exit(seed_arg(
+            &args,
+            "layer-shared-lora-kv",
+        ))),
+        "moe-expert-kv-revocation" => experiments::r010::run(strict_or_exit(seed_arg(
+            &args,
+            "moe-expert-kv-revocation",
+        ))),
         // Not an R005 result: an exactness smoke run of the CPU reference backend.
         "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(
             &args, 2, 8, "requests",
@@ -93,9 +102,9 @@ fn main() {
 /// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
 const EXPERIMENT_COMMANDS: &str =
-    "|certified-branches|exact-prefix-reuse|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
+    "|certified-branches|exact-prefix-reuse|layer-shared-lora-kv|moe-expert-kv-revocation|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "|certified-branches|exact-prefix-reuse|kv-reuse-smoke";
+const EXPERIMENT_COMMANDS: &str = "|certified-branches|exact-prefix-reuse|layer-shared-lora-kv|moe-expert-kv-revocation|kv-reuse-smoke";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)
@@ -141,6 +150,17 @@ fn parse_strict_u64(
     name: &str,
 ) -> Result<u64, String> {
     parse_strict(args, index, default, name)
+}
+
+/// The mandatory seed of a harness subcommand.
+fn seed_arg(args: &[String], command: &str) -> Result<u64, String> {
+    args.get(2)
+        .ok_or_else(|| format!("seed is required: {command} <seed>"))
+        .and_then(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("seed must be a non-negative integer, got {value:?}"))
+        })
 }
 
 /// The value, or the error on stderr and exit status 2, as for a usage error.

@@ -30,6 +30,9 @@ ptr-core = { workspace = true }
 ptr-semdb = { workspace = true }
 ptr-exec = { workspace = true }
 ptr-ledger = { workspace = true }
+# R010 admits, retires, supersedes and fences MoE experts through the runtime's real path and
+# builds the gate reports that path requires.
+ptr-lineage = { workspace = true }
 ptr-runtime = { workspace = true }
 # R005 builds segmented requests (PromptSegment) and drives the catalog, the paged KV
 # backend and the chain derivation directly for the cases the backend does not carry.
