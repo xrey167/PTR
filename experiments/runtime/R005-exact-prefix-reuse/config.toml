@@ -181,3 +181,32 @@ cross_environment_simulation = "a changed build-identity field"
 # experiments/runtime/R012-approximate-taint-containment/config.toml. R005 keeps the Exact half.
 derived_state_carriers = { ptr_catalog_key = ["mode"] }
 approximate_family_successor = "R012-approximate-taint-containment"
+
+# Frozen at the freeze (scripts/check_research_gates.py): the digest of this table is the
+# manifest's preregistration_sha256. Choices and their reasons: PREREGISTRATION.md. The two
+# `_sha256` keys are written at the freeze, after the files they name are final.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "exact-prefix-reuse"
+max_new_tokens = 8
+intermediate_size = 128
+rope_theta = "10000.0"
+rms_norm_eps = "1e-6"
+qk_norm_main = "disabled"
+qk_norm_transform_arm = "enabled"
+ntk_factor = "4.0"
+ntk_original_max_positions = 30
+over_capacity_prompt_tokens = 128
+over_capacity_fill_prompts = 512
+over_capacity_extra_prompts = 64
+saturation_max_sessions = 520
+saturation_excess_requests = 8
+corpus_selection_digest_main = "sha256:d06fd633832bb4bdb7b50e21473dcde2882ff234855aa9e32da6a97f67a7968d"
+corpus_selection_digest_nodes_only = "sha256:38b1b1da0c23c6a6fea31aa53b52bb92bce2e82df3674f928d87387fc2251b63"
+corpus_selection_digest_bytes_only = "sha256:4f5a40e2b33245b3a99deda30331571c563a986438ea17d4ece9c592856465f9"
+semantic_liveness_model = "committed-edit-revision"
+preregistration_text = "experiments/runtime/R005-exact-prefix-reuse/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/runtime/R005-exact-prefix-reuse/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"
+static_evidence = ["cargo test -p ptr-pods --locked --doc KvForkWitness", "cargo test -p ptr-pods --locked witness_tests::second_consume_of_the_same_witness_state_is_refused"]

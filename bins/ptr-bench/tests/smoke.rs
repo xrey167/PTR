@@ -147,7 +147,7 @@ fn exact_prefix_reuse_needs_one_numeric_seed_and_prints_nothing_otherwise() {
 }
 
 #[test]
-fn the_usage_lists_the_r005_harness_without_freezing_anything() {
+fn the_usage_lists_the_r005_harness_the_manifest_names() {
     let exe = env!("CARGO_BIN_EXE_ptr-bench");
     let output = Command::new(exe)
         .arg("no-such-command")
@@ -155,9 +155,10 @@ fn the_usage_lists_the_r005_harness_without_freezing_anything() {
         .expect("run ptr-bench");
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("exact-prefix-reuse"));
-    // R005 stays planned: the manifest names no entrypoint and the run writes no record.
+    // The manifest names this harness as its entrypoint; the run writes no record itself.
     let manifest =
         include_str!("../../../experiments/runtime/R005-exact-prefix-reuse/experiment.toml");
-    assert!(manifest.contains("status = \"planned\""));
-    assert!(manifest.contains("entrypoint = \"\""));
+    assert!(manifest.contains(
+        "entrypoint = \"cargo run --release --locked -p ptr-bench -- exact-prefix-reuse <seed>\""
+    ));
 }

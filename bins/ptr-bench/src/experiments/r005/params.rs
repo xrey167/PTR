@@ -1102,7 +1102,10 @@ mod tests {
         let changed = CONFIG_TOML.replace("max_trie_nodes = 4096\n", "max_trie_nodes = 4097\n");
         assert_ne!(changed, CONFIG_TOML);
         assert_eq!(drift(&changed), ["max_trie_nodes: drifted"]);
-        let added = format!("{CONFIG_TOML}\nbrand_new_threshold = 1\n");
+        let added = CONFIG_TOML.replace(
+            "[pinned_thresholds]\n",
+            "[pinned_thresholds]\nbrand_new_threshold = 1\n",
+        );
         assert_eq!(drift(&added), ["brand_new_threshold: no constant"]);
         let removed = CONFIG_TOML.replace("min_cancelled_forks = 1\n", "");
         assert_ne!(removed, CONFIG_TOML);
@@ -1235,9 +1238,64 @@ mod tests {
     }
 
     #[test]
-    fn the_experiment_is_still_planned_and_unfrozen() {
+    fn the_manifest_names_this_harness_as_its_entrypoint() {
         let manifest: toml::Table = EXPERIMENT_TOML.parse().expect("experiment.toml parses");
-        assert_eq!(manifest["status"].as_str(), Some("planned"));
-        assert_eq!(manifest["entrypoint"].as_str(), Some(""));
+        assert_eq!(
+            manifest["entrypoint"].as_str(),
+            Some("cargo run --release --locked -p ptr-bench -- exact-prefix-reuse <seed>")
+        );
+    }
+
+    #[test]
+    fn the_preregistered_table_is_the_compiled_choices() {
+        let config: toml::Table = CONFIG_TOML.parse().expect("config.toml parses");
+        let table = config["preregistration"]
+            .as_table()
+            .expect("[preregistration]");
+        let int = |key: &str| table[key].as_integer().expect(key);
+        let text = |key: &str| table[key].as_str().expect(key);
+        assert_eq!(int("max_new_tokens"), MAX_NEW_TOKENS as i64);
+        assert_eq!(int("intermediate_size"), INTERMEDIATE_SIZE as i64);
+        assert_eq!(text("rope_theta").parse::<f32>(), Ok(ROPE_THETA));
+        assert_eq!(text("rms_norm_eps").parse::<f32>(), Ok(RMS_NORM_EPS));
+        assert_eq!(text("qk_norm_main"), QK_NORM_MAIN);
+        assert_eq!(text("qk_norm_transform_arm"), QK_NORM_TRANSFORM_ARM);
+        assert_eq!(text("ntk_factor").parse::<f32>(), Ok(NTK_FACTOR));
+        assert_eq!(
+            int("ntk_original_max_positions"),
+            NTK_ORIGINAL_MAX_POSITIONS as i64
+        );
+        assert_eq!(
+            int("over_capacity_prompt_tokens"),
+            OVER_CAPACITY_PROMPT_TOKENS as i64
+        );
+        assert_eq!(
+            int("over_capacity_fill_prompts"),
+            OVER_CAPACITY_FILL_PROMPTS as i64
+        );
+        assert_eq!(
+            int("over_capacity_extra_prompts"),
+            OVER_CAPACITY_EXTRA_PROMPTS as i64
+        );
+        assert_eq!(
+            int("saturation_max_sessions"),
+            SATURATION_MAX_SESSIONS as i64
+        );
+        assert_eq!(
+            int("saturation_excess_requests"),
+            SATURATION_EXCESS_REQUESTS as i64
+        );
+        assert_eq!(text("corpus_selection_digest_main"), SELECTION_DIGEST_MAIN);
+        assert_eq!(
+            text("corpus_selection_digest_nodes_only"),
+            SELECTION_DIGEST_NODES_ONLY
+        );
+        assert_eq!(
+            text("corpus_selection_digest_bytes_only"),
+            SELECTION_DIGEST_BYTES_ONLY
+        );
+        assert_eq!(text("harness"), "exact-prefix-reuse");
+        let manifest: toml::Table = EXPERIMENT_TOML.parse().expect("experiment.toml parses");
+        assert_eq!(table["seeds"], manifest["seeds"]);
     }
 }

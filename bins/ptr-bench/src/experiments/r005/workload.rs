@@ -178,11 +178,17 @@ pub enum Part {
         generation: u64,
         tokens: Vec<u32>,
     },
+    /// A segment built elsewhere, such as by `PtrRuntime::semantic_prompt_segment`.
+    Built(PromptSegment),
 }
 
 impl Part {
     pub fn raw(tokens: Vec<u32>) -> Self {
         Self::Raw(tokens)
+    }
+
+    pub fn built(segment: PromptSegment) -> Self {
+        Self::Built(segment)
     }
 
     pub fn bound(kind: SegmentKind, identity: &str, generation: u64, tokens: Vec<u32>) -> Self {
@@ -206,6 +212,7 @@ impl Part {
             Self::Raw(tokens) => {
                 PromptSegment::raw_from_tokens(tokenizer.identity().clone(), ids(tokens))
             }
+            Self::Built(segment) => Ok(segment.clone()),
             Self::Bound {
                 kind,
                 identity,

@@ -666,6 +666,9 @@ pub fn coverage(tally: &Tally) -> Vec<Check> {
             params::MIN_SUPERSEDED_LOOKUP_CASES_PER_CELL as i64,
         );
     }
+    judge.at_least("semantic_runtime_segment_cases", 1);
+    judge.at_least("semantic_runtime_segment_live_hits", 1);
+    judge.at_least("semantic_lifecycle_identity_cases", 1);
     judge.at_least(
         "current_layer_kv_transform_change_cases",
         params::MIN_CURRENT_LAYER_KV_TRANSFORM_CHANGE_CASES,
@@ -851,6 +854,8 @@ pub fn falsifiers(tally: &Tally) -> Vec<Check> {
             params::MAX_SUPERSEDED_STALE_HITS as i64,
         );
     }
+    judge.at_most("semantic_runtime_segment_stale_hits", 0);
+    judge.at_most("semantic_lifecycle_identity_live_hits", 0);
     judge.at_most("stale_exact_hits", params::MAX_STALE_EXACT_HITS);
     judge.at_most(
         "stale_or_reused_witness_forks_admitted",

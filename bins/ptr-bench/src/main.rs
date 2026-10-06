@@ -56,9 +56,8 @@ fn main() {
                 "seed",
             )),
         ),
-        // The harness of R005 (Exact half), which is `planned`: one seed per run, no default
-        // seed, and a typo in it stops the run. A run is a dry run until the experiment is
-        // frozen; it writes nothing.
+        // The harness of R005 (Exact half), the manifest's entrypoint: one seed per run, no default
+        // seed, and a typo in it stops the run. It writes nothing; the runner records it.
         "exact-prefix-reuse" => experiments::r005::run(strict_or_exit(
             args.get(2)
                 .ok_or_else(|| "seed is required: exact-prefix-reuse <seed>".to_string())

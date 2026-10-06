@@ -70,14 +70,10 @@ impl Invalidation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Model {
     /// As the runtime really holds it: a semantic input is a key of the committed semantic
-    /// state with no lifecycle generation (its supersession is a committed edit), and a
-    /// memory or derived input is a lifecycle target (a committed capsule, superseded by a
-    /// committed successor).
+    /// state (its supersession is a committed edit, its generation is never a lifecycle
+    /// generation), and a memory or derived input is a lifecycle target (a committed capsule,
+    /// superseded by a committed successor).
     Committed,
-    /// Every input is a lifecycle target. For a semantic key this is not how the runtime
-    /// holds it; it runs as a control that separates "the use-time check cannot see a
-    /// supersession" from "the check is broken".
-    Lifecycle,
 }
 
 impl Model {
@@ -1074,6 +1070,132 @@ pub fn catalog_cell(
     Ok(())
 }
 
+/// The committed value the runtime-built semantic segment of [`semantic_cases`] renders:
+/// 32 ASCII bytes, so two 16-token chunks, distinct per `variant`.
+fn semantic_text(variant: u8) -> String {
+    (0..32u8)
+        .map(|index| char::from(b'a' + (index.wrapping_mul(7).wrapping_add(variant)) % 26))
+        .collect()
+}
+
+/// The two semantic cases outside the matrix cells. Counters: `semantic_runtime_segment_*`
+/// (a segment built by `PtrRuntime::semantic_prompt_segment` is stamped with its last-edit
+/// revision, is live and reused while the key is unedited, is refused at use once the key is
+/// edited with the catalog's invalidation lost, and cannot be built once the key is revoked)
+/// and `semantic_lifecycle_identity_*` (a semantic dependency whose key has no committed
+/// semantic value is not live because a lifecycle target of the same name is: a semantic
+/// dependency never consults lifecycle generations).
+fn semantic_cases(tally: &mut Tally) -> Res<()> {
+    use ptr_model_api::ByteTokenizer;
+    let key = "doc:r005";
+    let tokenizer = ByteTokenizer::new();
+    let backend = lab::main_backend()?;
+    let mut runtime = semantic_runtime(key)?;
+    write_semantic(&mut runtime, key, &semantic_text(1))?;
+    let request = |id: &str, segment: ptr_model_api::PromptSegment| {
+        workload::request(
+            id,
+            &[Part::built(segment), Part::raw(workload::sequence(41, 4))],
+        )
+    };
+    let old = runtime
+        .semantic_prompt_segment(&tokenizer, key)
+        .map_err(|error| format!("semantic segment: {error:?}"))?;
+    let warm = lab::run_completed(
+        &backend,
+        &scope(),
+        &request("sem-warm", old.clone()),
+        &runtime,
+    )?;
+    if warm.inserted_chunks != 2 {
+        return Err(format!(
+            "the runtime-built semantic segment cached {} chunks, not 2",
+            warm.inserted_chunks
+        ));
+    }
+    // Live and unedited: the same honest segment is reused.
+    let again = backend
+        .begin_session(&scope(), &request("sem-again", old.clone()), None, &runtime)
+        .map_err(fail("the live reuse"))?;
+    let live_hit = again.hit_tokens() as i64;
+    drop(again);
+    tally.add(
+        "semantic_runtime_segment_live_hits",
+        i64::from(live_hit >= 32),
+    );
+    // The edit commits while the catalog is never told: only the use-time check protects.
+    backend
+        .set_faults(ReferenceKvFaults {
+            index_update: IndexUpdate::Suppressed,
+        })
+        .map_err(fail("the dropped invalidation"))?;
+    write_semantic(&mut runtime, key, &semantic_text(2))?;
+    let stale = backend
+        .begin_session(&scope(), &request("sem-stale", old.clone()), None, &runtime)
+        .map_err(fail("the stale probe"))?;
+    let mut stale_hits = i64::from(stale.hit_tokens() > 0);
+    drop(stale);
+    // The segment built after the edit has other content and another generation.
+    let fresh = runtime
+        .semantic_prompt_segment(&tokenizer, key)
+        .map_err(|error| format!("semantic segment: {error:?}"))?;
+    if fresh == old {
+        return Err("an edit left the semantic segment unchanged".to_string());
+    }
+    let after = backend
+        .begin_session(&scope(), &request("sem-fresh", fresh), None, &runtime)
+        .map_err(fail("the fresh probe"))?;
+    stale_hits += i64::from(after.hit_tokens() > 0);
+    drop(after);
+    // A revoked key builds no segment, and the old one is dead too.
+    commit_revocation(&mut runtime, key, 1)?;
+    if !matches!(
+        runtime.semantic_prompt_segment(&tokenizer, key),
+        Err(ptr_runtime::SemanticSegmentError::Revoked)
+    ) {
+        return Err("a revoked semantic key built a segment".to_string());
+    }
+    let revoked = backend
+        .begin_session(&scope(), &request("sem-revoked", old), None, &runtime)
+        .map_err(fail("the revoked probe"))?;
+    stale_hits += i64::from(revoked.hit_tokens() > 0);
+    drop(revoked);
+    tally.add("semantic_runtime_segment_cases", 1);
+    tally.add("semantic_runtime_segment_stale_hits", stale_hits);
+
+    // A lifecycle target named like the semantic key does not make the key live.
+    let lifecycle = runtime_with(&[key])?;
+    let backend = lab::main_backend()?;
+    let spec = &SEGMENT_KINDS[0];
+    let cited = lineage_request(
+        spec,
+        "sem-lifecycle",
+        1,
+        workload::sequence(spec.label + 7, 4),
+    );
+    let attempt = lab::run_completed(&backend, &scope(), &cited, &lifecycle)?;
+    let reuse = backend
+        .begin_session(&scope(), &cited, None, &lifecycle)
+        .map_err(fail("the lifecycle-named probe"))?;
+    let live = attempt.inserted_chunks as i64 + i64::from(reuse.hit_tokens() > 0);
+    drop(reuse);
+    // Control: the same lifecycle target is live for a memory dependency of that name.
+    let backend = lab::main_backend()?;
+    let memory = lineage_request(
+        &SEGMENT_KINDS[1],
+        "sem-control",
+        1,
+        workload::sequence(9, 4),
+    );
+    let control = lab::run_completed(&backend, &scope(), &memory, &runtime_with(&["mem:r005"])?)?;
+    if control.inserted_chunks != 2 {
+        return Err("the lifecycle control did not cache".to_string());
+    }
+    tally.add("semantic_lifecycle_identity_cases", 1);
+    tally.add("semantic_lifecycle_identity_live_hits", live);
+    Ok(())
+}
+
 /// Run every cell of the matrix for one seed.
 pub fn run_all(tally: &mut Tally, ids: &mut Ids, seed: u64) -> Res<Vec<CellInfo>> {
     tally.seed_group("invalidation_matrix_cases", &params::MATRIX_CELLS);
@@ -1107,29 +1229,7 @@ pub fn run_all(tally: &mut Tally, ids: &mut Ids, seed: u64) -> Res<Vec<CellInfo>
             }
         }
     }
-    // Control: the semantic supersession cells whose catalog invalidation is lost, with the
-    // semantic key held as a lifecycle target. A difference from the cells above says the
-    // use-time check can see a supersession when the input has a lifecycle generation.
-    for path in [Path::Lag, Path::Restore] {
-        let mut control = Tally::default();
-        let mut scratch = Ids::default();
-        let mut discarded = Vec::new();
-        segment_cell(
-            &mut control,
-            &mut scratch,
-            &mut discarded,
-            seed,
-            &SEGMENT_KINDS[0],
-            Invalidation::Supersession,
-            path,
-            Model::Lifecycle,
-        )?;
-        tally.add("semantic_lifecycle_control_cells", 1);
-        tally.add(
-            "semantic_lifecycle_control_stale_hits",
-            control.get("stale_hits"),
-        );
-    }
+    semantic_cases(tally)?;
     for kind in CatKind::ALL {
         for path in Path::ALL {
             for ty in kind.types() {
@@ -1227,32 +1327,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_semantic_key_with_a_lifecycle_generation_is_seen_superseded_with_the_index_lost() {
-        // The control of the run: held as a lifecycle target, the supersession is seen. What
-        // the committed-state model shows for the same cells is the finding of the run.
-        for path in [Path::Lag, Path::Restore] {
-            let (stale, tally) = stale_hits_of(
-                &SEGMENT_KINDS[0],
-                Invalidation::Supersession,
-                path,
-                Model::Lifecycle,
-            );
-            assert_eq!(stale, 0, "{path:?}");
-            assert!(
-                tally.get("lag_use_time_rejections") + tally.get("restore_use_time_rejections")
-                    >= 1
-            );
-        }
-    }
-
-    /// The finding of the first dry run, kept as a test that fails until it is fixed: a
-    /// semantic input held as the runtime holds it (a key of the committed semantic state)
-    /// and then edited by a committed write is still "live" to `PtrRuntime::is_live`, which
-    /// ignores the content digest of the dependency (`kv_prefix.rs`, `impl KvLivenessOracle
-    /// for PtrRuntime`), so with the catalog's invalidation lost a request citing the old
-    /// content hits the old entry. Run it with `cargo test -p ptr-bench -- --ignored
-    /// a_committed_edit_of_a_semantic_input`.
+    /// A semantic input held as the runtime holds it (a key of the committed semantic state)
+    /// and then edited by a committed write is refused at use time, with the catalog's
+    /// invalidation lost and after a restore.
     #[test]
     fn a_committed_edit_of_a_semantic_input_is_seen_at_use_with_the_index_lost() {
         for path in [Path::Lag, Path::Restore] {

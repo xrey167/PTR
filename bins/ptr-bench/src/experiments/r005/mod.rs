@@ -2,9 +2,9 @@
 //! exact-prefix-reuse <seed>` runs every case, arm and workload of the experiment's
 //! `config.toml` once for one seed and prints exactly one JSON object on stdout.
 //!
-//! R005 is `planned`. Nothing here is frozen, no record is written, and a run of this harness
-//! is not a result: it is the harness the preregistration will name, and the dry run that
-//! measures it. The code under test is the CPU reference path: `ReferenceKvReuseBackend`
+//! The harness the R005 preregistration names (`PREREGISTRATION.md`, `criteria.toml`): one
+//! run of it is one seed's evidence, judged mechanically by the experiment's `aggregate.py`
+//! under `criteria.toml`; a run at a reduced scale (the smoke test) is no evidence. The code under test is the CPU reference path: `ReferenceKvReuseBackend`
 //! and `KvSession` over the tiny seeded Qwen2 stack, with `PtrRuntime` as the
 //! ledger-anchored liveness oracle wherever the configuration asks for committed-ledger
 //! liveness, and a bare `KvPrefixCatalog` for the dependency kinds, the forged witnesses and
@@ -25,6 +25,9 @@ pub mod metrics;
 pub mod params;
 pub mod pin;
 pub mod workload;
+
+#[cfg(test)]
+mod criteria;
 
 use arms::CapacityPlan;
 use matrix::Ids;
@@ -345,6 +348,9 @@ fn members_json(tally: &Tally) -> Json {
 /// What a run produced, before it is printed.
 pub struct Report {
     pub line: String,
+    /// The same object as `line`, before it is rendered (read by the criteria tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub json: Json,
     pub coverage: Vec<Check>,
     pub falsifiers: Vec<Check>,
     pub gaps: Vec<String>,
@@ -465,7 +471,7 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
         ("experiment".to_string(), Json::str("R005")),
         (
             "status_note".to_string(),
-            Json::str("R005 is planned: this is the harness, not a result; nothing here is frozen or recorded"),
+            Json::str("one seed of the R005 harness: evidence only when run at the pinned scale from the frozen commit and judged by aggregate.py under criteria.toml; the exit status and the coverage and falsifiers lists below are the harness's own reading of the same rules"),
         ),
         ("seed".to_string(), Json::Int(seed as i64)),
         ("scale".to_string(), Json::str(scale.name())),
@@ -569,8 +575,10 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
         Json::Arr(gaps.iter().map(|gap| Json::str(gap.clone())).collect()),
     ));
     pairs.push(("internal".to_string(), tally.internal()));
+    let json = Json::Obj(pairs);
     Ok(Report {
-        line: Json::Obj(pairs).render(),
+        line: json.render(),
+        json,
         coverage,
         falsifiers,
         gaps,
@@ -633,12 +641,16 @@ mod tests {
         }
     }
 
+    /// One reduced run shared by the tests that read it (it takes the better part of a minute
+    /// in a debug build).
+    pub(super) fn reduced_report() -> &'static Report {
+        static REPORT: std::sync::OnceLock<Report> = std::sync::OnceLock::new();
+        REPORT.get_or_init(|| execute(17, Scale::Reduced).expect("a reduced run"))
+    }
+
     #[test]
     fn a_reduced_run_assembles_one_json_object_with_every_metric_and_judgement() {
-        let report = execute(17, Scale::Reduced).expect("a reduced run");
-        if let Some(at) = report.line.find("\"phases\"") {
-            eprintln!("PHASES {}", &report.line[at..at + 220]);
-        }
+        let report = reduced_report();
         assert!(!report.line.contains('\n'));
         assert!(report
             .line
@@ -647,26 +659,13 @@ mod tests {
             assert!(report.line.contains(&format!("\"{name}\":")), "{name}");
         }
         assert!(report.gaps.is_empty(), "{:?}", report.gaps);
-        // No falsifier trips on the reduced workload but the ones of the known finding: a
-        // semantic input superseded by a committed edit is not seen by the runtime's use-time
-        // liveness check when the catalog's invalidation is lost (`PtrRuntime::is_live`, see
-        // the draft preregistration). A fix of it may only shrink this set.
-        const KNOWN_FINDING: [&str; 8] = [
-            "stale_hits",
-            "unreachable_revoked_page_bytes_unreclaimed",
-            "invalidation_matrix_stale_hits.semantic_input_normal_supersession",
-            "invalidation_matrix_stale_hits.semantic_input_lag_supersession",
-            "invalidation_matrix_stale_hits.semantic_input_restore_supersession",
-            "superseded_stale_hits.semantic_normal",
-            "superseded_stale_hits.semantic_lag",
-            "superseded_stale_hits.semantic_restore",
-        ];
+        // No falsifier trips on the reduced workload (the supersession gap of a semantic input,
+        // found by a pre-freeze dry run, is fixed in the runtime's use-time liveness check).
         let tripped: Vec<&str> = report
             .falsifiers
             .iter()
             .filter(|check| check.status == Status::Fail)
             .map(|check| check.name.as_str())
-            .filter(|name| !KNOWN_FINDING.contains(name))
             .collect();
         assert!(tripped.is_empty(), "{tripped:?}");
         // The only unmet prerequisites of a reduced run are the ones that scale defines:

@@ -23,12 +23,13 @@ warm_ms, bitwise_equal}`; it exits 1 if any pair differs. **This is not an R005 
 it uses none of R005's preregistered parameters, writes no result record and measures
 nothing about a real model.
 
-## R005 exact prefix reuse (planned)
+## R005 exact prefix reuse
 
 `cargo run --release --locked -p ptr-bench -- exact-prefix-reuse <seed>` runs the harness of
 [R005](../../experiments/runtime/R005-exact-prefix-reuse/README.md), Exact half, for one seed
-and prints exactly one JSON object. R005 is `planned`: nothing is frozen, no record is written
-and a run is a **dry run, not a result**. The seed is required (there is no default and a typo
+and prints exactly one JSON object. It is the experiment's entrypoint: a run is one seed's
+evidence only when `scripts/run_experiment.py` runs it from the frozen commit and `aggregate.py`
+judges it under `criteria.toml`; a direct run writes no record and is a **dry run, not a result**. The seed is required (there is no default and a typo
 stops the run). A run takes about two minutes in a release build.
 
 It drives `ReferenceKvReuseBackend` and `KvSession` over the seeded tiny Qwen2 stack, with

@@ -5151,6 +5151,11 @@ ENROLLED=("S003","F003","Q003","R004","M008","E005")
 # part of the six this fixture moves to `prepared`.
 RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9")
 
+# Listed and held at `planned` until its freeze (its placeholders are pinned then, by the head
+# after the harness and the criteria are final); it is no part of the fixtures that move the six to
+# `prepared`. Once frozen it is a regular listed experiment the repository's own gate checks.
+LISTED_UNFROZEN=("R005",)
+
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture
     tree with every listed experiment moved to `prepared`."""
@@ -5202,7 +5207,7 @@ class EnrolledExperimentTests(unittest.TestCase):
         # rerun and contingency (scripts/a0_study.py); they are checked by
         # scripts/tests/test_a0_study.py and by the gate itself.
         a0_study_v2=[exp_id for exp_id in listed if re.fullmatch(r"M00[1-4]-a0v2-[a-z0-9-]+",exp_id)]
-        self.assertEqual(sorted(set(listed)-set(a0_study_v2)),sorted((*ENROLLED,*RETIRED)))
+        self.assertEqual(sorted(set(listed)-set(a0_study_v2)),sorted((*ENROLLED,*RETIRED,*LISTED_UNFROZEN)))
         # S003 lists every key its design preregisters (doc 35 design, section
         # 3.10), with the type of the design's value, low_cells included, in
         # the design's order.
