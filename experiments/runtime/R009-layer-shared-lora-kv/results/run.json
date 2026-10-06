@@ -1,0 +1,62 @@
+{
+  "experiment_id": "R009",
+  "status": "prepared",
+  "scope": "layer-shared KV pages for LoRA and aLoRA adapters on the CPU reference path: per-layer catalog entries, layer-scoped fork and checked adoption over the tiny seeded Qwen2 stack with seeded adapters, PtrRuntime as the ledger-anchored liveness oracle; a KV-memory claim only",
+  "git_sha": "f8cbef98d11a3e36eea35275d610b2190c1915f9",
+  "aggregated_at_git_sha": "24efb20ee66b058ad15f733f51022170e154762d",
+  "recorded_at": "2026-10-06T18:14:31.502602+00:00",
+  "preregistration_sha256": "3585030e5f6655b2cb952f4d3d7f7ae642cadd78d606a5a552d2a2b8e75e4512",
+  "preregistration_rules_sha256": "09696d84aa393cdc4b24b2cf1d081ea7dea613b8640019929069e5acfeb3c808",
+  "criteria_sha256": "a8f310eb6939c21e4aad464bd0ca7033d2bde41be5cb6f1a1b64755173011ad2",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- layer-shared-lora-kv <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261006T180144.696543Z-seed-17.json",
+      "git_sha": "f8cbef98d11a3e36eea35275d610b2190c1915f9",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261006T180251.158278Z-seed-29.json",
+      "git_sha": "86a4060a20c2ebe3387cbf540c9e471dd343b793",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261006T180359.181450Z-seed-43.json",
+      "git_sha": "5612d948322957f4e1008df452a142c3a01da135",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261006T180508.021137Z-seed-71.json",
+      "git_sha": "7ecaa0c11a3ab8f0e11db1056f5b2632d863ac5e",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261006T180618.656430Z-seed-101.json",
+      "git_sha": "761decb72b594ae413ac2d38d65c094c46375571",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "fc2b926c52567732202766968c2685de169e8e086d11e90dc4213c9814910e77",
+    "29": "4b7e8f9f53c4559c83c3b826e82be70d96f16fddc362e4b4ea972afe4cae7f11",
+    "43": "fecdb4ab74130bfd255df1497325648411f5dca568f3fb2c1898d9241535f15b",
+    "71": "faaec448962f523d2b43bc340ff06d54f92711d8a424c1b22a8d352d0d20ca95",
+    "101": "315defeae192ea565b9276d7293b5c22da35c7aa41c8568a5eba03fe23501ce1"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "limitations": [
+    "the code under test is the CPU reference path with a tiny seeded model; no GPU, no large model",
+    "a KV-memory saving only: partial hits are computed in full and adopted in checked mode, so no prefill-FLOPs claim is made",
+    "a request on a binding with a dead dependency (base model, adapter) is refused at begin, so post-event lookups on stale-eligible entries come from the segment cells",
+    "an aLoRA request whose whole prompt is already cached under the base key shares no rows (a measurement, not a rule)",
+    "timings come from one shared cloud container; no capacity claim"
+  ],
+  "metrics_sha256": "d78a2f04874fadb50bf2549c1037fca0ae2dec33821b35951176751a59bb6c91"
+}
