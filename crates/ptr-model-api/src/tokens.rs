@@ -346,6 +346,15 @@ impl PromptSegment {
     }
 
     /// Encode `text` as a `Semantic`, `Memory` or `Derived` segment. Rejects `Raw`.
+    ///
+    /// The source, its generation and the text are **caller-asserted**: this crate cannot
+    /// check that a `Semantic` segment's text is the committed value of its key at its
+    /// generation, and neither can the catalog's use-time check (it compares the
+    /// generation, not the content). A production path builds Semantic segments with
+    /// `PtrRuntime::semantic_prompt_segment`, which renders the committed value itself,
+    /// and uses this constructor for tests and for the other kinds. Lineages fragment per
+    /// cited generation; the runtime constructor stamps the key's last-edit revision so
+    /// unchanged content keeps one lineage.
     pub fn from_text<T: Tokenizer + ?Sized>(
         tokenizer: &T,
         source: SegmentSource,
@@ -355,7 +364,7 @@ impl PromptSegment {
     }
 
     /// Build a `Semantic`, `Memory` or `Derived` segment from ids already encoded under
-    /// `tokenizer`. Rejects `Raw`.
+    /// `tokenizer`. Rejects `Raw`. Caller-asserted like [`PromptSegment::from_text`].
     pub fn from_tokens(
         tokenizer: TokenizerIdentity,
         source: SegmentSource,

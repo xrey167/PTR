@@ -957,9 +957,6 @@ impl PtrRuntime {
 
         let mut runtime = Self::new(config)?;
         runtime.semdb = semdb;
-        // The edit history is not in the snapshot: every key is only known to be
-        // unchanged since the snapshot's revision.
-        runtime.semantic_edits = super::kv_prefix::SemanticEdits::restored_at(trusted.revision);
         // Before the fence and the at-most-once memory are reinstated, this
         // runtime would answer a spent key by executing the effect again.
         runtime
@@ -972,6 +969,18 @@ impl PtrRuntime {
         runtime.live_generations = lifecycle.live_generations;
         runtime.capsule_projects = lifecycle.capsule_projects;
         runtime.revoked_generations = lifecycle.revoked_generations;
+        // The edit history is not in the snapshot: every key is only known to be
+        // unchanged since the snapshot's revision, and a key a revocation names is dead
+        // until it is edited again.
+        let snapshot = runtime.semdb.snapshot();
+        runtime.semantic_edits = super::kv_prefix::SemanticEdits::restored_at(
+            trusted.revision,
+            runtime
+                .revoked_generations
+                .iter()
+                .filter(|(subject, _)| snapshot.value(subject).is_some())
+                .map(|(subject, _)| subject.clone()),
+        );
         runtime.experts = lifecycle.experts;
         // The retained records keep the indices they were committed at; a ledger
         // that renumbered them from 1 would contradict the snapshot's floor.

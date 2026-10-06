@@ -47,7 +47,7 @@ pub use kv_prefix::{
     KvCatalogHit, KvCatalogStats, KvCatalogWiringError, KvChainId, KvChunkKey, KvDependency,
     KvDependencyKind, KvForkError, KvInsert, KvLivenessOracle, KvLookup, KvPageCharge,
     KvPagedInsert, KvPin, KvPrefixCatalog, KvPrefixRetirer, KvRequestPositions, KvRestoreReport,
-    KvSalt, KvSnapshotError, KV_CHUNK_TOKENS, KV_SNAPSHOT_MAX_BYTES,
+    KvSalt, KvSnapshotError, SemanticSegmentError, KV_CHUNK_TOKENS, KV_SNAPSHOT_MAX_BYTES,
 };
 pub use manifest::{
     validate_and_build, validate_authority, ExecutionManifestRegistry, ManifestAuthorityRegistry,
@@ -2974,7 +2974,12 @@ impl PtrRuntime {
                 self.semdb
                     .apply_prepared(delta)
                     .map_err(RuntimeError::Semantic)?;
-                self.semantic_edits.record(affected, self.semdb.revision());
+                let snapshot = self.semdb.snapshot();
+                self.semantic_edits.record(
+                    &affected,
+                    |key| snapshot.value(key).is_some(),
+                    self.semdb.revision(),
+                );
             }
             LedgerEvent::CapsuleCommitted {
                 project,
@@ -2994,6 +2999,10 @@ impl PtrRuntime {
             } => {
                 self.revoked_generations
                     .insert((subject.clone(), *generation));
+                // A revocation of a semantic key is a floor over every citation of it.
+                let held = self.semdb.snapshot().value(subject).is_some();
+                self.semantic_edits
+                    .record_revocation(subject, held, self.semdb.revision());
             }
             LedgerEvent::HardConstraintCommitted { key, generation } => {
                 self.set_live_generation(format!("constraint:{key}"), *generation);
