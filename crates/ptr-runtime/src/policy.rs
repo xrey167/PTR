@@ -228,9 +228,7 @@ impl ReqwestPolicyBundleLoader {
         if !url.starts_with("https://") {
             return Err(PolicyError::InvalidUrl);
         }
-        crate::identity::ensure_rustls_provider();
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+        let client = crate::identity::hardened_client_builder()
             .build()
             .map_err(|error| PolicyError::FetchFailed(error.to_string()))?;
         Ok(Self { url, client })
