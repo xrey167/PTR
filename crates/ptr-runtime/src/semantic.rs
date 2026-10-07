@@ -2,6 +2,7 @@
 //! No acknowledgments, observations or model continuation precede a successful
 //! append. This reconstructs semantic state, not neural or execution checkpoints.
 use super::{PtrRuntime, RuntimeError};
+use crate::kv_taint::SemanticTaintBoundary;
 use crate::merge::{self, ChangeOrigin, SemanticChange};
 use ptr_events::RuntimeEvent;
 use ptr_ledger::{Attestation, LedgerEvent, MergeAuthorityRecord, SemanticOrigin};
@@ -65,6 +66,14 @@ impl PtrRuntime {
     where
         V: Verifier<TypedPayload> + ?Sized,
     {
+        // Approximate-KV taint: refused before the verifier runs, nothing appended. The request
+        // subject covers every output of a request whose model run was Approximate; the content
+        // subject covers stored tainted candidates and hypotheses presented again.
+        self.check_semantic_taint(
+            SemanticTaintBoundary::PromoteVerifiedPodOutput,
+            Some(request),
+            &[&output.bytes],
+        )?;
         if manifest
             .effects
             .iter()
@@ -241,6 +250,18 @@ impl PtrRuntime {
                 key: key.to_owned(),
             });
         }
+        // Host-write laundering: tainted content (a Pod candidate or hypothesis payload, a
+        // tainted generation) written by a host is still that content. Exact whole-value
+        // digests only; a paraphrase is not detected.
+        let written: Vec<&[u8]> = delta
+            .upserts
+            .values()
+            .map(|value| match value {
+                SemanticValue::Text(text) => text.as_bytes(),
+                SemanticValue::Payload(payload) => payload.bytes.as_slice(),
+            })
+            .collect();
+        self.check_semantic_taint(SemanticTaintBoundary::HostWrite, None, &written)?;
         let encoded_delta = delta.encode().map_err(RuntimeError::Semantic)?;
         let prepared = self
             .semdb

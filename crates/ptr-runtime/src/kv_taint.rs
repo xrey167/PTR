@@ -293,7 +293,6 @@ pub(crate) fn derivation_subject(recipe_digest: &Digest) -> TaintSubject {
 
 /// The PodOutput subject of a Pod output: SHA-256 over a domain tag and the length-prefixed
 /// output identity bytes the Pod admission path names it by.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn pod_output_subject(output_identity: &[u8]) -> TaintSubject {
     let mut material = Vec::from(POD_OUTPUT_DOMAIN);
     put_len_prefixed(&mut material, output_identity);
@@ -325,6 +324,35 @@ pub(crate) fn run_action(run: &ModelRun) -> Result<Option<ActionIr>, RuntimeErro
         });
     }
     Ok(actions.first().map(|action| (*action).clone()))
+}
+
+const POD_SUPPLIED_REPORT_DOMAIN: &[u8] = b"ptr.kv.taint.report.pod-supplied-approximate.v1\0";
+const POD_OUTPUT_RECIPE_DOMAIN: &[u8] = b"ptr.kv.taint.recipe.pod-output.v1\0";
+
+/// The report digest of a Pod-side taint record whose caller supplied Approximate without a
+/// report (an all-zero digest): `SHA-256("ptr.kv.taint.report.pod-supplied-approximate.v1\0")`.
+fn pod_supplied_report() -> Digest {
+    integrity::sha256(POD_SUPPLIED_REPORT_DOMAIN)
+}
+
+/// The fixed recipe of every Pod-side taint record:
+/// `SHA-256("ptr.kv.taint.recipe.pod-output.v1\0")`. No cold recomputation of a Pod output
+/// exists, so no clearing rule can ever reproduce it: a Pod-side record is permanent (a stated
+/// limit).
+fn pod_output_recipe() -> Digest {
+    integrity::sha256(POD_OUTPUT_RECIPE_DOMAIN)
+}
+
+/// The boundary a SemDB write was refused at because its content is tainted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticTaintBoundary {
+    /// `promote_verified_pod_output`: the request or the output content is tainted.
+    PromoteVerifiedPodOutput,
+    /// `apply_verified_semantic_delta`: a written value is tainted content (host-write
+    /// laundering).
+    HostWrite,
+    /// `merge_branch` / `preview_merge`: the branch holds a tainted hypothesis or value.
+    BranchMerge,
 }
 
 /// Sorted, de-duplicated subjects in the canonical ledger order.
@@ -413,6 +441,92 @@ impl PtrRuntime {
         digest: [u8; 32],
     ) -> Option<TaintEntry> {
         self.taint.get(&(kind, digest)).copied()
+    }
+
+    /// The join of the live entries among `subjects`: Approximate (smallest report digest) if
+    /// any is live, Exact otherwise.
+    pub(crate) fn live_taint(&self, subjects: &[TaintSubject]) -> KvReuseTaint {
+        subjects
+            .iter()
+            .filter_map(|subject| self.taint.get(subject))
+            .fold(KvReuseTaint::Exact, |taint, entry| {
+                taint.join(KvReuseTaint::Approximate {
+                    report_digest: entry.report_digest,
+                })
+            })
+    }
+
+    /// The taint of a Pod output: what the caller `supplied` joined with every live entry the
+    /// runtime holds for the request id, the output's own PodOutput subject and payload Content
+    /// subject, and each dependency (as a PodOutput subject and as a Content subject over its
+    /// digest bytes). Enforcement never rests on the caller: a caller's Exact adds nothing, and
+    /// a recorded entry is found regardless. An Approximate `supplied` with an all-zero report
+    /// digest (no known report) is recorded under a fixed pod-supplied digest.
+    pub(crate) fn pod_output_kv_taint(
+        &self,
+        request_id: &RequestId,
+        supplied: KvReuseTaint,
+        output_digest: &Digest,
+        dependencies: &[Digest],
+        payload: &[u8],
+    ) -> KvReuseTaint {
+        let mut subjects = vec![
+            request_subject(request_id),
+            pod_output_subject(output_digest),
+            content_subject(payload),
+        ];
+        for dependency in dependencies {
+            subjects.push(pod_output_subject(dependency));
+            subjects.push(content_subject(dependency));
+        }
+        let supplied = match supplied {
+            KvReuseTaint::Approximate { report_digest } if report_digest == [0; 32] => {
+                KvReuseTaint::Approximate {
+                    report_digest: pod_supplied_report(),
+                }
+            }
+            other => other,
+        };
+        self.live_taint(&subjects).join(supplied)
+    }
+
+    /// Refuse a SemDB write at `boundary` when `request` (if any) or any of `contents` is a live
+    /// tainted subject. Nothing is appended by the caller before this returns.
+    pub(crate) fn check_semantic_taint(
+        &self,
+        boundary: SemanticTaintBoundary,
+        request: Option<&RequestId>,
+        contents: &[&[u8]],
+    ) -> Result<(), RuntimeError> {
+        let subjects: Vec<TaintSubject> = request
+            .map(request_subject)
+            .into_iter()
+            .chain(contents.iter().map(|bytes| content_subject(bytes)))
+            .collect();
+        match self.live_taint(&subjects) {
+            KvReuseTaint::Exact => Ok(()),
+            KvReuseTaint::Approximate { report_digest } => {
+                Err(RuntimeError::ApproximateSemanticContent {
+                    boundary,
+                    report_digest,
+                })
+            }
+        }
+    }
+
+    /// Record a tainted Pod output (its PodOutput subject and the Content subject of its
+    /// payload) taint-first under the fixed Pod recipe; subjects already live are skipped.
+    pub(crate) fn record_pod_output_taint(
+        &mut self,
+        output_digest: &Digest,
+        payload: &[u8],
+        report: Digest,
+    ) -> Result<(), RuntimeError> {
+        self.record_taint(
+            &[pod_output_subject(output_digest), content_subject(payload)],
+            report,
+            pod_output_recipe(),
+        )
     }
 
     /// Record `subjects` as tainted by `report` under `recipe`: bound check for the whole batch
@@ -901,5 +1015,58 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a.0, KvTaintSubjectKind::Request);
         assert_ne!(unspecified_recipe(), [0; 32]);
+    }
+
+    #[test]
+    fn pod_output_taint_joins_registry_and_caller_and_finds_dependencies() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let request = RequestId::from("r");
+        let lookup = |runtime: &PtrRuntime, supplied, deps: &[Digest]| {
+            runtime.pod_output_kv_taint(&request, supplied, &[1; 32], deps, b"payload")
+        };
+        assert_eq!(
+            lookup(&runtime, KvReuseTaint::Exact, &[]),
+            KvReuseTaint::Exact
+        );
+        // A caller-supplied Approximate with no known (all-zero) report gets the fixed digest.
+        assert_eq!(
+            lookup(
+                &runtime,
+                KvReuseTaint::Approximate {
+                    report_digest: [0; 32]
+                },
+                &[]
+            ),
+            KvReuseTaint::Approximate {
+                report_digest: pod_supplied_report()
+            }
+        );
+        // A tainted earlier Pod output named as a dependency taints the new output.
+        runtime
+            .record_pod_output_taint(&[5; 32], b"earlier", REPORT)
+            .unwrap();
+        assert_eq!(
+            lookup(&runtime, KvReuseTaint::Exact, &[[5; 32]]),
+            KvReuseTaint::Approximate {
+                report_digest: REPORT
+            }
+        );
+        assert_eq!(
+            lookup(&runtime, KvReuseTaint::Exact, &[[6; 32]]),
+            KvReuseTaint::Exact
+        );
+        // Identical payload bytes are tainted whatever the caller says.
+        assert!(runtime
+            .pod_output_kv_taint(&request, KvReuseTaint::Exact, &[2; 32], &[], b"earlier")
+            .is_approximate());
+        // Pod-side records use the fixed recipe, which a request recipe never equals.
+        let entry = runtime
+            .subject_taint(
+                KvTaintSubjectKind::PodOutput,
+                pod_output_subject(&[5; 32]).1,
+            )
+            .unwrap();
+        assert_eq!(entry.recipe_digest, pod_output_recipe());
+        assert_ne!(pod_output_recipe(), unspecified_recipe());
     }
 }

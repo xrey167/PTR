@@ -123,6 +123,7 @@ fn request(kind: PodOutputKind) -> PodOutputAdmissionRequest {
         scope_id: ScopeId::from("scope"),
         placement_epoch: ptr_runtime::PlacementEpoch(1),
         fencing_token: ptr_runtime::FencingToken(1),
+        kv_taint: ptr_model_api::KvReuseTaint::Exact,
     }
 }
 
