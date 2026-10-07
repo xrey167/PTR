@@ -1,0 +1,67 @@
+{
+  "experiment_id": "R012",
+  "status": "prepared",
+  "scope": "containment of Approximate-KV taint on the CPU reference path: a harness-only stub Approximate producer over a genuine cold prefill of the R005 tiny model, and PtrRuntime's persistent taint registry, derivation hops, Raw admission rule, Pod, SemDB and merge containment over a durable FileLedger; a taint-containment claim only",
+  "git_sha": "96224932a2346e1ba65fb3cfff665cac25035965",
+  "aggregated_at_git_sha": "e6d81a64e325cba97759a99c5c02e4b7dff70f55",
+  "recorded_at": "2026-10-07T15:37:03.377402+00:00",
+  "preregistration_sha256": "733fb59907d390651dab3ed85c92dfd09d1093be93c18ca1e37cc7116a7c3f93",
+  "preregistration_rules_sha256": "9dd570a1a56e19fbe40e36ba41c3cf14fd41668b783c04322b08fda2a187f2e6",
+  "criteria_sha256": "7fd3f6c6ebe32d39c9945863edb49eaafe96bb2c60b74c2d758f69bf71128256",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- approximate-taint-containment <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261007T153100.880889Z-seed-17.json",
+      "git_sha": "96224932a2346e1ba65fb3cfff665cac25035965",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261007T153210.184564Z-seed-29.json",
+      "git_sha": "028bbb12a3a63ea36e7fe300bf65a4d1be15f816",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261007T153320.807327Z-seed-43.json",
+      "git_sha": "ea6b5b3d7f6fc2be5cb3ca4bde09925f3f2e5489",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261007T153432.368236Z-seed-71.json",
+      "git_sha": "9682d12ea87f26a6f37fd204693a084099e8aa03",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261007T153545.366069Z-seed-101.json",
+      "git_sha": "44908d728cab72886c6e5f5b9b1d1c7ebab6248b",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "b43344f144c5ed312b9fa568f7bdb5023910dd10a8769f39a85ca16c7c6c79bb",
+    "29": "2c6472919945d887cebef5a78fcc15282631f1166d06675a44c3f16f2a41d396",
+    "43": "51f299114c12fd3d8d415a8bd76c9282e4c30d8ffa35b0c60dd13325cbe306de",
+    "71": "539ba31820e9356a0421ec4cea8f38abd9f5337220ad2513bf58845ee4c52515",
+    "101": "c3a1c1bf60ccd985152109d4472c478eccf115c13e170048dd332e5ab0ecb606"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "limitations": [
+    "the Approximate producer is a pinned stub: the label is the stub's, not a measurement, and no real Approximate producer is tested",
+    "the content index matches only the exact digest of a whole segment: a paraphrase, substring, re-tokenisation or whitespace edit of tainted text is not detected",
+    "honest text identical to tainted text is tainted too (a false positive, accepted: the runtime fails closed)",
+    "the runtime trusts the backend's KV-reuse report; a backend that mislabels an Approximate run as Exact is outside the claim",
+    "the Exact-only KV catalog guard is structural (Approximate sessions never look up or insert), not a check inside the catalog",
+    "cleared taint leaves tombstones in materialized state; a ledger writer who knows a recipe could forge a Clear (trusted-ledger model, the recompute digest is not verifiable on replay)",
+    "the Request subject is never cleared and Pod-side taint records are permanent",
+    "model_pin_mismatches and taint_lost are weak metrics (constants and the harness's own record, as the preregistration says)",
+    "the code under test is the CPU reference path with a tiny seeded model; no GPU, no large model",
+    "timings come from one shared cloud container; no capacity claim"
+  ],
+  "metrics_sha256": "edd02fb399c324a151746fb98902a5fc12a4bf9ffcfdc3ce722c535b108e34a5"
+}
