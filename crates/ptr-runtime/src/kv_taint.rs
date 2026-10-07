@@ -64,7 +64,7 @@ const TAINT_IDENTITY_DOMAIN: &[u8] = b"ptr.kv.taint.action-identity.v1\0";
 /// produced; a different payload is a different, separately derived action, and leaving it
 /// out would refuse every action on the same target and capability. Domain-separated from
 /// `action_digest`, so the two digests of one action never collide.
-fn taint_identity(action: &ActionIr) -> [u8; 32] {
+pub(crate) fn taint_identity(action: &ActionIr) -> [u8; 32] {
     let mut material = Vec::from(TAINT_IDENTITY_DOMAIN);
     for field in [
         action.target.as_str(),
@@ -119,6 +119,10 @@ pub enum KvTaintError {
 pub(crate) struct TaintRegistry {
     live: BTreeMap<TaintSubject, TaintEntry>,
     limit: usize,
+    /// Derivations minted by this process (`ingest_derived_run`), by Derivation subject digest,
+    /// with the content digest of the segment minted. Memory only: not history, empty after a
+    /// restart. Bounded by `limit` like `live`.
+    minted: BTreeMap<[u8; 32], Digest>,
 }
 
 impl Default for TaintRegistry {
@@ -126,6 +130,7 @@ impl Default for TaintRegistry {
         Self {
             live: BTreeMap::new(),
             limit: MAX_LIVE_TAINT_SUBJECTS,
+            minted: BTreeMap::new(),
         }
     }
 }
@@ -133,6 +138,24 @@ impl Default for TaintRegistry {
 impl TaintRegistry {
     fn get(&self, subject: &TaintSubject) -> Option<&TaintEntry> {
         self.live.get(subject)
+    }
+
+    /// The content digest of the segment minted under `derivation`, if this process minted it.
+    pub(crate) fn minted_segment(&self, derivation: &[u8; 32]) -> Option<&Digest> {
+        self.minted.get(derivation)
+    }
+
+    /// Whether one more derivation can be remembered (a re-mint of a known one always can).
+    pub(crate) fn mint_room(&self, derivation: &[u8; 32]) -> Result<(), RuntimeError> {
+        if self.minted.contains_key(derivation) || self.minted.len() < self.limit {
+            return Ok(());
+        }
+        Err(RuntimeError::KvTaintRegistryFull { limit: self.limit })
+    }
+
+    /// Remember a minted derivation; the caller has checked [`TaintRegistry::mint_room`].
+    pub(crate) fn remember_minted(&mut self, derivation: [u8; 32], segment: Digest) {
+        self.minted.insert(derivation, segment);
     }
 
     /// Subjects of `subjects` not yet live, if adding them stays within the bound.
@@ -159,6 +182,7 @@ impl TaintRegistry {
         let mut registry = Self {
             live: BTreeMap::new(),
             limit,
+            minted: BTreeMap::new(),
         };
         let malformed =
             |reason| RuntimeError::KvTaint(KvTaintError::MalformedStateEntry { reason });
@@ -220,12 +244,12 @@ pub struct KvTaintRequest<'a> {
     pub generation_parameters: &'a [u8],
 }
 
-fn put_len_prefixed(material: &mut Vec<u8>, bytes: &[u8]) {
+pub(crate) fn put_len_prefixed(material: &mut Vec<u8>, bytes: &[u8]) {
     material.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
     material.extend_from_slice(bytes);
 }
 
-fn request_subject(request_id: &RequestId) -> TaintSubject {
+pub(crate) fn request_subject(request_id: &RequestId) -> TaintSubject {
     let mut material = Vec::from(REQUEST_DOMAIN);
     put_len_prefixed(&mut material, request_id.0.as_bytes());
     (KvTaintSubjectKind::Request, integrity::sha256(&material))
@@ -235,7 +259,7 @@ fn unspecified_recipe() -> Digest {
     integrity::sha256(UNSPECIFIED_RECIPE_DOMAIN)
 }
 
-fn request_recipe(request: &KvTaintRequest<'_>) -> Digest {
+pub(crate) fn request_recipe(request: &KvTaintRequest<'_>) -> Digest {
     let mut material = Vec::from(RECIPE_DOMAIN);
     put_len_prefixed(&mut material, MODEL_RUN_OPERATION.as_bytes());
     material.extend_from_slice(&request.request.lineage_digest());
@@ -252,7 +276,6 @@ const POD_OUTPUT_DOMAIN: &[u8] = b"ptr.kv.taint.pod-output.v1\0";
 /// value's text, a Pod payload): SHA-256 over a domain tag and the length-prefixed bytes.
 /// Every taint check that matches content uses this one definition, so the derivation,
 /// segment-admission, Pod and SemDB paths cannot disagree on what "the same content" is.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn content_subject(bytes: &[u8]) -> TaintSubject {
     let mut material = Vec::from(CONTENT_DOMAIN);
     put_len_prefixed(&mut material, bytes);
@@ -262,7 +285,6 @@ pub(crate) fn content_subject(bytes: &[u8]) -> TaintSubject {
 /// The Derivation subject of a derived value: SHA-256 over a domain tag and its recipe digest.
 /// A derived value is identified by how it was made, so a cold recomputation of the same
 /// recipe names the same Derivation subject.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn derivation_subject(recipe_digest: &Digest) -> TaintSubject {
     let mut material = Vec::from(DERIVATION_DOMAIN);
     material.extend_from_slice(recipe_digest);
@@ -276,6 +298,33 @@ pub(crate) fn pod_output_subject(output_identity: &[u8]) -> TaintSubject {
     let mut material = Vec::from(POD_OUTPUT_DOMAIN);
     put_len_prefixed(&mut material, output_identity);
     (KvTaintSubjectKind::PodOutput, integrity::sha256(&material))
+}
+
+/// The single action a run carries, if any. A run with several control events (an action beside
+/// a Pod request, or more than one) is refused before anything is recorded.
+pub(crate) fn run_action(run: &ModelRun) -> Result<Option<ActionIr>, RuntimeError> {
+    let actions: Vec<&ActionIr> = run
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ModelEvent::ActionReady(action) => Some(action),
+            _ => None,
+        })
+        .collect();
+    let pod_requests = run
+        .events
+        .iter()
+        .filter(|event| matches!(event, ModelEvent::PodRequested { .. }))
+        .count();
+    if !actions.is_empty() && pod_requests > 0 {
+        return Err(RuntimeError::MixedControlEvents);
+    }
+    if actions.len() + pod_requests > 1 {
+        return Err(RuntimeError::MultipleControlEvents {
+            count: actions.len() + pod_requests,
+        });
+    }
+    Ok(actions.first().map(|action| (*action).clone()))
 }
 
 /// Sorted, de-duplicated subjects in the canonical ledger order.
@@ -300,7 +349,7 @@ impl PtrRuntime {
     /// [`RuntimeError::KvTaintRegistryFull`] when recording would exceed
     /// [`MAX_LIVE_TAINT_SUBJECTS`] (nothing is appended), or a ledger error.
     pub fn ingest_model_run(&mut self, run: &ModelRun) -> Result<ResumableRun, RuntimeError> {
-        self.ingest_run(run, &[], unspecified_recipe())
+        self.ingest_run(run, KvReuseTaint::Exact, &[], unspecified_recipe())
     }
 
     /// Like [`PtrRuntime::ingest_model_run`], additionally recording the request (a Request
@@ -316,38 +365,32 @@ impl PtrRuntime {
         run: &ModelRun,
     ) -> Result<ResumableRun, RuntimeError> {
         let extra = [request_subject(request.request.request_id())];
-        self.ingest_run(run, &extra, request_recipe(request))
+        self.ingest_run(run, KvReuseTaint::Exact, &extra, request_recipe(request))
+    }
+
+    /// Like [`PtrRuntime::ingest_model_run`] for a run whose input carried `input` taint (the
+    /// request's raw text matched a live tainted content subject): the run's taint is joined
+    /// with it, so an Exact run over laundered input records its action as Approximate. The
+    /// request is recorded with it when the joined taint is Approximate.
+    pub(crate) fn ingest_model_run_with_input(
+        &mut self,
+        request_id: &RequestId,
+        input: KvReuseTaint,
+        run: &ModelRun,
+    ) -> Result<ResumableRun, RuntimeError> {
+        let extra = [request_subject(request_id)];
+        self.ingest_run(run, input, &extra, unspecified_recipe())
     }
 
     fn ingest_run(
         &mut self,
         run: &ModelRun,
+        input: KvReuseTaint,
         extra: &[TaintSubject],
         recipe: Digest,
     ) -> Result<ResumableRun, RuntimeError> {
-        let taint = run.taint();
-        let actions: Vec<&ActionIr> = run
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                ModelEvent::ActionReady(action) => Some(action),
-                _ => None,
-            })
-            .collect();
-        let pod_requests = run
-            .events
-            .iter()
-            .filter(|event| matches!(event, ModelEvent::PodRequested { .. }))
-            .count();
-        if !actions.is_empty() && pod_requests > 0 {
-            return Err(RuntimeError::MixedControlEvents);
-        }
-        if actions.len() + pod_requests > 1 {
-            return Err(RuntimeError::MultipleControlEvents {
-                count: actions.len() + pod_requests,
-            });
-        }
-        let action = actions.first().map(|action| (*action).clone());
+        let taint = run.taint().join(input);
+        let action = run_action(run)?;
         if let KvReuseTaint::Approximate { report_digest } = taint {
             let mut subjects = extra.to_vec();
             if let Some(action) = action.as_ref() {
@@ -406,9 +449,6 @@ impl PtrRuntime {
     /// of the clean recomputation that justifies it. Checks the whole batch before appending.
     /// This is the checked mechanism only: deciding WHEN a recomputation may clear is the
     /// caller's rule.
-    // The clearing rule (work package 3) is the only production caller; until it lands only
-    // the tests exercise the mechanism.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn clear_taint(
         &mut self,
         subjects: &[TaintSubject],
