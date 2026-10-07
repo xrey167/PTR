@@ -293,10 +293,6 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
     ));
     pairs.push(("cases".to_string(), Json::Obj(cx.cases.clone())));
     pairs.push(("subcases".to_string(), cx.subcases_json()));
-    pairs.push((
-        "wp4b_dependent_subcases".to_string(),
-        Json::strs(&cases::WP4B_SUBCASES),
-    ));
     pairs.push(("unsupported".to_string(), cx.tally.unsupported_json()));
     pairs.push((
         "measurement_notes".to_string(),
@@ -577,11 +573,10 @@ mod tests {
         ));
     }
 
-    /// The reduced run holds every coverage rule, trips no falsifier except in the sub-cases
-    /// that depend on WP4b of the runtime (`cases::WP4B_SUBCASES`; once the runtime has
-    /// that behaviour the list is emptied and this test demands a clean pass, exit status 0).
+    /// The reduced run holds every coverage rule and trips no falsifier: a clean pass, exit
+    /// status 0, with no violation in any sub-case.
     #[test]
-    fn a_reduced_run_holds_every_coverage_rule_and_trips_no_falsifier_outside_the_wp4b_subcases() {
+    fn a_reduced_run_holds_every_coverage_rule_and_trips_no_falsifier() {
         let report = reduced_report();
         let unmet: Vec<&str> = report
             .coverage
@@ -607,19 +602,16 @@ mod tests {
         let Some(Json::Obj(subcases)) = emit::resolve(&report.json, "subcases") else {
             panic!("subcases");
         };
-        let outside: Vec<String> = subcases
+        let violating: Vec<String> = subcases
             .iter()
-            .filter(|(label, _)| !cases::WP4B_SUBCASES.contains(&label.as_str()))
             .filter(|(_, value)| int(value, "violations") > 0)
             .map(|(label, _)| label.clone())
             .collect();
         assert!(
-            outside.is_empty(),
-            "violations outside the WP4b sub-cases: {outside:?}"
+            violating.is_empty(),
+            "violations in sub-cases: {violating:?}"
         );
-        if cases::WP4B_SUBCASES.is_empty() {
-            assert!(report.clean(), "{}", report.line);
-        }
+        assert!(report.clean(), "{}", report.line);
     }
 
     #[test]

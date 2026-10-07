@@ -73,8 +73,8 @@ pub fn c8_raw_laundering(cx: &mut Cx) -> Res<()> {
         cx.count("laundered_exact_admissions", 1);
     }
 
-    // The output of a plain Approximate run (ingest_model_run_for): its text is recorded as
-    // tainted content by WP4b of the runtime.
+    // The output of a plain Approximate run (ingest_model_run_for): the runtime records its text
+    // as tainted content.
     cx.sub("C8 plain-run output as Raw");
     let prompt = cx.prompt(1);
     let id = cx.rid("plain");

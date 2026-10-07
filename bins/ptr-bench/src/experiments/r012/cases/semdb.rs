@@ -259,8 +259,8 @@ pub fn c4_semdb_promotion(cx: &mut Cx) -> Res<()> {
     cx.sub("C4 derived text");
     semdb_round(cx, &mut rt, &request, base.text(), "c4")?;
 
-    // The plain Approximate run's text (ingest_model_run_for): the Content subject of a plain
-    // run's generated text is recorded by WP4b of the runtime.
+    // The plain Approximate run's text (ingest_model_run_for): the runtime records the Content
+    // subject of a plain run's generated text.
     cx.sub("C4 plain-run text host write");
     let prompt = cx.prompt(3);
     let id = cx.rid("plain");

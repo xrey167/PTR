@@ -10,8 +10,8 @@
 //!   draft. An attempt made outside that window is executed but counted under
 //!   `attempts_outside_window` (internal), never as an attempt.
 //! * A **violation** counter (`*_admitted`, `*_promotions`, `taint_lost`, ...) counts what the
-//!   runtime did wrong; the sub-case that produced it is recorded under `subcases`, together
-//!   with whether that sub-case measures behaviour WP4b of the runtime is expected to change.
+//!   runtime did wrong; the sub-case that produced it is recorded under `subcases` with its
+//!   violation count.
 //! * A refusal that is not the expected typed error, or a fixture that does not build, is a
 //!   harness error (`Err`, exit status 2), never a pass.
 
@@ -47,18 +47,6 @@ pub const VIOLATIONS: [&str; 8] = [
     "taint_cleared_by_echo",
 ];
 
-/// Sub-cases whose outcome depends on behaviour WP4b of the runtime adds (the Content subject
-/// of a plain Approximate run, taint through a Pod output's bindings, taint through a reused
-/// request id). They measure the runtime as it is; they are listed so a reader can tell which
-/// counters a change of the runtime moves.
-pub const WP4B_SUBCASES: [&str; 5] = [
-    "C1 request id reuse",
-    "C4 plain-run text host write",
-    "C5 binding to a tainted stored candidate",
-    "C8 plain-run output as Raw",
-    "C8 plain-run output as Raw (server path)",
-];
-
 /// The state of a run: the backend, the tally, the corpus and the case being counted.
 pub struct Cx {
     pub backend: ReferenceKvReuseBackend,
@@ -71,7 +59,7 @@ pub struct Cx {
     case_index: usize,
     counts: BTreeMap<String, i64>,
     sub: String,
-    subs: BTreeMap<String, (bool, i64)>,
+    subs: BTreeMap<String, i64>,
     /// A cold exact recomputation of the case's recipe has completed: later attempts are not
     /// counted.
     pub recomputed: bool,
@@ -162,9 +150,7 @@ impl Cx {
     /// Name the sub-case whose violations the next counts belong to.
     pub fn sub(&mut self, label: &str) {
         self.sub = label.to_string();
-        self.subs
-            .entry(label.to_string())
-            .or_insert((WP4B_SUBCASES.contains(&label), 0));
+        self.subs.entry(label.to_string()).or_insert(0);
     }
 
     pub fn end(&mut self) {
@@ -186,10 +172,7 @@ impl Cx {
         *self.counts.entry(name.to_string()).or_insert(0) += amount;
         if amount > 0 && VIOLATIONS.contains(&name) {
             let sub = self.sub.clone();
-            self.subs
-                .entry(sub.clone())
-                .or_insert((WP4B_SUBCASES.contains(&sub.as_str()), 0))
-                .1 += amount;
+            *self.subs.entry(sub).or_insert(0) += amount;
         }
     }
 
@@ -272,13 +255,10 @@ impl Cx {
         Json::Obj(
             self.subs
                 .iter()
-                .map(|(label, (wp4b, violations))| {
+                .map(|(label, violations)| {
                     (
                         label.clone(),
-                        Json::obj([
-                            ("wp4b_dependent", Json::Bool(*wp4b)),
-                            ("violations", Json::Int(*violations)),
-                        ]),
+                        Json::obj([("violations", Json::Int(*violations))]),
                     )
                 })
                 .collect(),
