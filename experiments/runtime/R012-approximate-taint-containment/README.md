@@ -15,8 +15,8 @@ The run is invalid (vacuous) and counts as falsified if any coverage prerequisit
 ## Origin (2026-10-06)
 Split out of [R005-exact-prefix-reuse](../R005-exact-prefix-reuse/README.md) by owner decision of 2026-10-06 (see [docs/architecture/36-kv-reuse.md](../../../docs/architecture/36-kv-reuse.md), phase P2a). The hypothesis, metrics, falsifiers and pinned thresholds are R005's Approximate-family text copied unchanged; the tiny seeded model and corpus generator pins are shared with R005. The Exact half stays in R005.
 
-## Owner decisions (2026-10-07) and draft preregistration
-Binding decisions on clearing (cold exact recomputation only), the Raw rule (exact whole-segment digest; paraphrase and substring evasion NOT detected), the 65,536-subject bound, the `KvTaintCommitted` (tag 29) design and the harness-only stub are recorded verbatim in [DRAFT_PREREGISTRATION.md](DRAFT_PREREGISTRATION.md), together with the definitions of a hop and of an attempt after persistence and before recompute, and the cases C1 to C9. The draft is not frozen; the entrypoint stays empty until the freeze.
+## Owner decisions (2026-10-07) and preregistration
+Binding decisions on clearing (cold exact recomputation only), the Raw rule (exact whole-segment digest; paraphrase and substring evasion NOT detected), the 65,536-subject bound, the `KvTaintCommitted` (tag 29) design and the harness-only stub are recorded verbatim in [PREREGISTRATION.md](PREREGISTRATION.md), together with the definitions of a hop and of an attempt after persistence and before recompute, the cases C1 to C9, how each metric is measured and the stated limits. The decision rule is [criteria.toml](criteria.toml), applied by [aggregate.py](aggregate.py).
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

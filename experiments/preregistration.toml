@@ -345,3 +345,24 @@ required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data
 
 [experiment.M001-a0v2-cont-no-semantic-slots]
 required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr_file = "file" }
+
+[experiment.R012.required]
+seeds = "int-list"
+harness = "str"
+max_new_tokens = "int"
+intermediate_size = "int"
+rope_theta = "str"
+rms_norm_eps = "str"
+qk_norm_main = "str"
+base_checkpoint = "str"
+prompt_tokens = "int"
+segment_tokens = "int"
+hops_per_chain = "int"
+corpus_generator_seed = "int"
+selection_sequences = "int"
+corpus_selection_digest = "str"
+stub_producer = "str"
+generation_parameters = "str"
+per_seed_role = "str"
+preregistration_text = "file"
+criteria = "file"

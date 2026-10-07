@@ -60,7 +60,7 @@ cache_namespace_partition = "Exact-only catalog guard: no Approximate-produced e
 production_modes = ["Exact", "Approximate"]
 procedure_parameters_recorded_per_cell = ["seeds", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed"]
 
-# Owner decisions of 2026-10-07 (binding; verbatim text in DRAFT_PREREGISTRATION.md section 3).
+# Owner decisions of 2026-10-07 (binding; verbatim text in PREREGISTRATION.md section 4).
 taint_clearing_rule_2026_10_07 = "only a cold exact recomputation (kv_report == None) with the same recipe and clean inputs; always clears the Derivation subject; clears Content and Action subjects only on byte-identical recomputed digests; an echo never clears"
 raw_admission_rule_2026_10_07 = "Raw is admitted only when it equals the request's own ingress record, otherwise MisclassifiedRawSegment; tainted content resubmitted as Raw keeps its taint (fail closed, false positives accepted); exact whole-segment digest only"
 raw_laundering_not_detected = ["paraphrase", "substring", "whitespace edit"]
@@ -74,8 +74,7 @@ approximate_producer_location = "harness-only (bins/ptr-bench/src/experiments/r0
 hop_definition = "one derivation step: a run whose input includes a segment derived from a previous run's output; candidate_taint_hops counts the longest such chain"
 attempt_definition = "an attempt counts only if it is made after the taint record is persisted (ledger append returned) and before any cold exact recomputation of the same recipe"
 
-# Frozen at the freeze (scripts/check_research_gates.py); the entrypoint, the corpus selection digest,
-# the two _sha256 keys and the preregistration_text/criteria keys are written at the freeze.
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
 [preregistration]
 seeds = [17, 29, 43, 71, 101]
 harness = "approximate-taint-containment"
@@ -89,3 +88,12 @@ prompt_tokens = 64
 segment_tokens = 16
 hops_per_chain = 3
 corpus_generator_seed = 20240607
+selection_sequences = 48
+corpus_selection_digest = "sha256:9f48b499e6ec8735a762d8c746fbf6972d02c86c0b17f351a6680856350e3eef"
+stub_producer = "r012-stub-approximate-producer/1"
+generation_parameters = "max_new_tokens=8;prompt_tokens=64;greedy;byte-tokenizer"
+per_seed_role = "the seed orders the cases and assigns corpus prompts to them; the corpus is fixed by corpus_generator_seed"
+preregistration_text = "experiments/runtime/R012-approximate-taint-containment/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/runtime/R012-approximate-taint-containment/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"
