@@ -1,0 +1,3 @@
+results_git_sha = "96224932a2346e1ba65fb3cfff665cac25035965"
+stale_since = "b34cc2640e42ca11b66d5101bc0d30463f61a555"
+reason = "No code under test changed after R012's seed records. b34cc264 records the completed result in STATUS.md, research/novelty/CLAIMS.md, docs/architecture/36-kv-reuse.md and the ptr-runtime component metadata (experiments list) with its regenerated README, which the repository-wide provenance counts as a change. R012 was preregistered at r012-prereg (2b108667)."
