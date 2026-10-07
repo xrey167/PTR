@@ -94,7 +94,9 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::TierReplicaLifecycle { .. }
         // The projection holds no expert catalog yet; structural records stay in the ledger.
         | LedgerEvent::ExpertStructuralCommitted { .. }
-        | LedgerEvent::ExpertFenceCommitted { .. } => LifecycleChange::None,
+        | LedgerEvent::ExpertFenceCommitted { .. }
+        // The projection holds no taint table; taint records stay in the ledger.
+        | LedgerEvent::KvTaintCommitted { .. } => LifecycleChange::None,
     }
 }
 
@@ -129,6 +131,7 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
         LedgerEvent::ExpertStructuralCommitted { .. } => "expert.structural_committed",
         LedgerEvent::ExpertFenceCommitted { .. } => "expert.fence_committed",
+        LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
     }
 }
 
@@ -203,6 +206,11 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
         } => format!("tier-replica:{}:{backend_id}", hex_digest(root_digest)),
         LedgerEvent::ExpertStructuralCommitted { project, .. }
         | LedgerEvent::ExpertFenceCommitted { project, .. } => format!("project:{project}"),
+        // The first subject (the lowest in canonical order) partitions the record.
+        LedgerEvent::KvTaintCommitted { subjects, .. } => match subjects.first() {
+            Some((kind, digest)) => format!("kv-taint:{}:{}", kind.name(), hex_digest(digest)),
+            None => "kv-taint:none".to_owned(),
+        },
     }
 }
 
@@ -276,6 +284,37 @@ mod tests {
         assert_eq!(payload["expert"]["op_kind"], 5);
         assert_eq!(payload["expert"]["proposal_id"], "01".repeat(32));
         assert_eq!(payload["expert"]["evidence_digest"], "03".repeat(32));
+    }
+
+    #[test]
+    fn kv_taint_events_have_a_topic_subject_and_project_taint_entries() {
+        let event = committed(
+            6,
+            LedgerEvent::KvTaintCommitted {
+                subjects: vec![
+                    (ptr_ledger::KvTaintSubjectKind::Action, [1; 32]),
+                    (ptr_ledger::KvTaintSubjectKind::Content, [2; 32]),
+                ],
+                change: ptr_ledger::KvTaintChange::Record {
+                    report_digest: [3; 32],
+                    recipe_digest: [4; 32],
+                },
+            },
+        );
+        assert_eq!(event_topic(&event.event), "kv.taint_committed");
+        assert_eq!(
+            event_subject(&event),
+            format!("kv-taint:action:{}", "01".repeat(32))
+        );
+        assert_eq!(lifecycle_change(&event), LifecycleChange::None);
+        let approx = format!("approx:{}:{}", "03".repeat(32), "04".repeat(32));
+        assert_eq!(
+            event_payload(&event)["entries"],
+            serde_json::json!({
+                format!("kv-taint:action:{}", "01".repeat(32)): approx,
+                format!("kv-taint:content:{}", "02".repeat(32)): approx,
+            })
+        );
     }
 
     #[test]

@@ -282,7 +282,86 @@ pub enum LedgerEvent {
         /// a gate. The codec requires `Some` for exactly a readmission.
         evidence: Option<ExpertFenceEvidence>,
     },
+    /// A change to the approximate-KV taint registry, committed by the runtime's taint path
+    /// before any result that rests on it is returned (taint first, so a crash leaves at most a
+    /// stray taint record, which only refuses more). `subjects` lists one to
+    /// [`MAX_KV_TAINT_SUBJECTS`] `(kind, digest)` pairs in strictly ascending canonical order
+    /// (kind code, then digest bytes), without duplicates; the codec refuses any other form.
+    /// The record is written only by the runtime's taint path; this crate cannot check that,
+    /// nor that a `Clear` names a live `Record` (replay does).
+    KvTaintCommitted {
+        subjects: Vec<(KvTaintSubjectKind, [u8; 32])>,
+        change: KvTaintChange,
+    },
 }
+
+/// What a [`LedgerEvent::KvTaintCommitted`] subject digest identifies. The codes are pinned data.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum KvTaintSubjectKind {
+    /// An action identity.
+    Action,
+    /// A derivation (a minted derived segment).
+    Derivation,
+    /// A content digest.
+    Content,
+    /// A Pod output.
+    PodOutput,
+    /// A request.
+    Request,
+}
+
+impl KvTaintSubjectKind {
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Action => 0,
+            Self::Derivation => 1,
+            Self::Content => 2,
+            Self::PodOutput => 3,
+            Self::Request => 4,
+        }
+    }
+
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Action),
+            1 => Some(Self::Derivation),
+            2 => Some(Self::Content),
+            3 => Some(Self::PodOutput),
+            4 => Some(Self::Request),
+            _ => None,
+        }
+    }
+
+    /// The stable lowercase name used in projection keys.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Action => "action",
+            Self::Derivation => "derivation",
+            Self::Content => "content",
+            Self::PodOutput => "pod-output",
+            Self::Request => "request",
+        }
+    }
+}
+
+/// The change a [`LedgerEvent::KvTaintCommitted`] makes to every one of its subjects. All
+/// digests are non-zero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KvTaintChange {
+    /// The subjects are tainted by an approximate run: the reuse report and the recipe it ran.
+    Record {
+        report_digest: [u8; 32],
+        recipe_digest: [u8; 32],
+    },
+    /// A cold exact recomputation of the same recipe cleared the subjects.
+    Clear {
+        recipe_digest: [u8; 32],
+        recompute_digest: [u8; 32],
+    },
+}
+
+/// A taint record names at most this many subjects.
+pub const MAX_KV_TAINT_SUBJECTS: usize = 16;
 
 /// The committed [`LedgerEvent::Revoked`] (or `ProcedureRevoked`) record an `InputRevoked` fence
 /// names: its subject and generation. The runtime checks it against the revocations committed
@@ -853,6 +932,32 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
                 }
             }
         }
+        LedgerEvent::KvTaintCommitted { subjects, change } => {
+            out.push(29);
+            out.push(subjects.len().min(usize::from(u8::MAX)) as u8);
+            for (kind, digest) in subjects {
+                out.push(kind.code());
+                out.extend_from_slice(digest);
+            }
+            match change {
+                KvTaintChange::Record {
+                    report_digest,
+                    recipe_digest,
+                } => {
+                    out.push(0);
+                    out.extend_from_slice(report_digest);
+                    out.extend_from_slice(recipe_digest);
+                }
+                KvTaintChange::Clear {
+                    recipe_digest,
+                    recompute_digest,
+                } => {
+                    out.push(1);
+                    out.extend_from_slice(recipe_digest);
+                    out.extend_from_slice(recompute_digest);
+                }
+            }
+        }
         LedgerEvent::ExecutionManifestRevoked {
             manifest_digest,
             generation,
@@ -1357,6 +1462,43 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             check_expert_fence(&event)?;
             event
         }
+        29 => {
+            let count = usize::from(cursor.u8()?);
+            if count == 0 || count > MAX_KV_TAINT_SUBJECTS {
+                return Err(integrity::invalid("PTR_LEDGER_KV_TAINT_SUBJECT_LIMIT"));
+            }
+            let mut subjects = Vec::with_capacity(count);
+            for _ in 0..count {
+                let code = cursor.u8()?;
+                let kind = KvTaintSubjectKind::from_code(code).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown kv taint subject code {code}"),
+                    )
+                })?;
+                subjects.push((kind, cursor.digest()?));
+            }
+            let change_code = cursor.u8()?;
+            let change = match change_code {
+                0 => KvTaintChange::Record {
+                    report_digest: cursor.digest()?,
+                    recipe_digest: cursor.digest()?,
+                },
+                1 => KvTaintChange::Clear {
+                    recipe_digest: cursor.digest()?,
+                    recompute_digest: cursor.digest()?,
+                },
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown kv taint change code {other}"),
+                    ))
+                }
+            };
+            let event = LedgerEvent::KvTaintCommitted { subjects, change };
+            check_kv_taint(&event)?;
+            event
+        }
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1475,6 +1617,7 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
         }
         LedgerEvent::ExpertStructuralCommitted { record, .. } => check_expert_record(record)?,
         LedgerEvent::ExpertFenceCommitted { .. } => check_expert_fence(event)?,
+        LedgerEvent::KvTaintCommitted { .. } => check_kv_taint(event)?,
         LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
             endpoint: Some(endpoint),
             ..
@@ -1482,6 +1625,40 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
         _ => {}
+    }
+    Ok(())
+}
+
+/// A taint record names one to [`MAX_KV_TAINT_SUBJECTS`] subjects in strictly ascending
+/// canonical order (kind code, then digest), so without duplicates, and every digest it carries
+/// is non-zero: the one canonical form. The decoder and the append paths both call this.
+fn check_kv_taint(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::KvTaintCommitted { subjects, change } = event else {
+        return Ok(());
+    };
+    const ZERO: [u8; 32] = [0; 32];
+    if subjects.is_empty() || subjects.len() > MAX_KV_TAINT_SUBJECTS {
+        return Err(integrity::invalid("PTR_LEDGER_KV_TAINT_SUBJECT_LIMIT"));
+    }
+    let ordered = subjects
+        .windows(2)
+        .all(|pair| (pair[0].0.code(), pair[0].1) < (pair[1].0.code(), pair[1].1));
+    if !ordered {
+        return Err(integrity::invalid("PTR_LEDGER_KV_TAINT_ORDER"));
+    }
+    let digests_ok = subjects.iter().all(|(_, digest)| *digest != ZERO)
+        && match change {
+            KvTaintChange::Record {
+                report_digest,
+                recipe_digest,
+            } => *report_digest != ZERO && *recipe_digest != ZERO,
+            KvTaintChange::Clear {
+                recipe_digest,
+                recompute_digest,
+            } => *recipe_digest != ZERO && *recompute_digest != ZERO,
+        };
+    if !digests_ok {
+        return Err(integrity::invalid("PTR_LEDGER_KV_TAINT_ZERO_DIGEST"));
     }
     Ok(())
 }
@@ -2405,6 +2582,127 @@ mod effect_record_tests {
             // framing does not pin its own length.
             assert!(decode_event(&encoded[..encoded.len() - 1]).is_err());
         }
+    }
+
+    fn taint_event(subjects: Vec<(KvTaintSubjectKind, [u8; 32])>) -> LedgerEvent {
+        LedgerEvent::KvTaintCommitted {
+            subjects,
+            change: KvTaintChange::Record {
+                report_digest: [7; 32],
+                recipe_digest: [8; 32],
+            },
+        }
+    }
+
+    const ALL_TAINT_KINDS: [KvTaintSubjectKind; 5] = [
+        KvTaintSubjectKind::Action,
+        KvTaintSubjectKind::Derivation,
+        KvTaintSubjectKind::Content,
+        KvTaintSubjectKind::PodOutput,
+        KvTaintSubjectKind::Request,
+    ];
+
+    #[test]
+    fn kv_taint_round_trips_every_kind_and_change() {
+        let subjects: Vec<_> = ALL_TAINT_KINDS
+            .iter()
+            .map(|kind| (*kind, [kind.code() + 1; 32]))
+            .collect();
+        let changes = [
+            KvTaintChange::Record {
+                report_digest: [7; 32],
+                recipe_digest: [8; 32],
+            },
+            KvTaintChange::Clear {
+                recipe_digest: [8; 32],
+                recompute_digest: [9; 32],
+            },
+        ];
+        for change in changes {
+            let event = LedgerEvent::KvTaintCommitted {
+                subjects: subjects.clone(),
+                change,
+            };
+            check_encodable(&event).unwrap();
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 29);
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            assert!(decode_event(&encoded[..encoded.len() - 1]).is_err());
+            let mut trailing = encoded.clone();
+            trailing.push(0);
+            assert!(decode_event(&trailing).is_err());
+        }
+        for (kind, code) in ALL_TAINT_KINDS.iter().zip(0u8..) {
+            assert_eq!(kind.code(), code);
+            assert_eq!(KvTaintSubjectKind::from_code(code), Some(*kind));
+        }
+        assert_eq!(KvTaintSubjectKind::from_code(5), None);
+        let single = taint_event(vec![(KvTaintSubjectKind::Request, [1; 32])]);
+        assert_eq!(decode_event(&encode_event(&single)).unwrap(), single);
+        let full: Vec<_> = (1..=MAX_KV_TAINT_SUBJECTS as u8)
+            .map(|n| (KvTaintSubjectKind::Content, [n; 32]))
+            .collect();
+        let full = taint_event(full);
+        check_encodable(&full).unwrap();
+        assert_eq!(decode_event(&encode_event(&full)).unwrap(), full);
+    }
+
+    #[test]
+    fn kv_taint_refuses_malformed_records_on_encode_and_decode() {
+        let a = (KvTaintSubjectKind::Action, [1; 32]);
+        let b = (KvTaintSubjectKind::Action, [2; 32]);
+        let c = (KvTaintSubjectKind::Content, [1; 32]);
+        let over: Vec<_> = (1..=(MAX_KV_TAINT_SUBJECTS as u8 + 1))
+            .map(|n| (KvTaintSubjectKind::Content, [n; 32]))
+            .collect();
+        let bad = [
+            taint_event(Vec::new()),
+            taint_event(over),
+            taint_event(vec![b, a]),
+            taint_event(vec![c, a]),
+            taint_event(vec![a, a]),
+            taint_event(vec![(KvTaintSubjectKind::Action, [0; 32])]),
+            LedgerEvent::KvTaintCommitted {
+                subjects: vec![a],
+                change: KvTaintChange::Record {
+                    report_digest: [0; 32],
+                    recipe_digest: [8; 32],
+                },
+            },
+            LedgerEvent::KvTaintCommitted {
+                subjects: vec![a],
+                change: KvTaintChange::Record {
+                    report_digest: [7; 32],
+                    recipe_digest: [0; 32],
+                },
+            },
+            LedgerEvent::KvTaintCommitted {
+                subjects: vec![a],
+                change: KvTaintChange::Clear {
+                    recipe_digest: [0; 32],
+                    recompute_digest: [9; 32],
+                },
+            },
+            LedgerEvent::KvTaintCommitted {
+                subjects: vec![a],
+                change: KvTaintChange::Clear {
+                    recipe_digest: [8; 32],
+                    recompute_digest: [0; 32],
+                },
+            },
+        ];
+        for event in bad {
+            assert!(check_encodable(&event).is_err(), "{event:?}");
+            assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
+        }
+        // Unknown subject kind and unknown change code, on an otherwise valid record.
+        let good = encode_event(&taint_event(vec![a]));
+        let mut unknown_kind = good.clone();
+        unknown_kind[2] = 5;
+        assert!(decode_event(&unknown_kind).is_err());
+        let mut unknown_change = good.clone();
+        unknown_change[2 + 32 + 1] = 2;
+        assert!(decode_event(&unknown_change).is_err());
     }
 
     fn expert_event() -> LedgerEvent {

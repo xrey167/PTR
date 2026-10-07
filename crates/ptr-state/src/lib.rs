@@ -1,4 +1,6 @@
-use ptr_ledger::{CommittedEvent, ExpertFenceAction, ExpertFenceResume, LedgerEvent};
+use ptr_ledger::{
+    CommittedEvent, ExpertFenceAction, ExpertFenceResume, KvTaintChange, LedgerEvent,
+};
 use ptr_pods::{ExpertCommitRecord, ExpertState, RetiredReason};
 use std::collections::BTreeMap;
 
@@ -274,6 +276,32 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
                 expert_entry(generation.0, state, *epoch),
             )]
         }
+        // One entry per subject: `kv-taint:<kind>:<hex>` is `approx:<report>:<recipe>` while
+        // tainted and `cleared:<recompute>` once a cold exact recomputation cleared it.
+        LedgerEvent::KvTaintCommitted { subjects, change } => {
+            let value = match change {
+                KvTaintChange::Record {
+                    report_digest,
+                    recipe_digest,
+                } => format!(
+                    "approx:{}:{}",
+                    hex_digest(report_digest),
+                    hex_digest(recipe_digest)
+                ),
+                KvTaintChange::Clear {
+                    recompute_digest, ..
+                } => format!("cleared:{}", hex_digest(recompute_digest)),
+            };
+            subjects
+                .iter()
+                .map(|(kind, digest)| {
+                    (
+                        format!("{KV_TAINT_PREFIX}{}:{}", kind.name(), hex_digest(digest)),
+                        value.clone(),
+                    )
+                })
+                .collect()
+        }
         LedgerEvent::PodEvidenceCommitted { .. }
         | LedgerEvent::PodOutputAdmitted { .. }
         | LedgerEvent::PodHypothesisCommitted { .. }
@@ -285,6 +313,9 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         | LedgerEvent::TierReplicaLifecycle { .. } => Vec::new(),
     }
 }
+
+/// The prefix of every approximate-KV taint key: `kv-taint:<kind>:<hex digest>`.
+pub const KV_TAINT_PREFIX: &str = "kv-taint:";
 
 /// The prefix of every expert key ([`expert_key`]).
 pub const EXPERT_PREFIX: &str = "expert:";
@@ -464,6 +495,54 @@ impl TursoMaterializedState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_kv_taint_event_projects_one_entry_per_subject() {
+        use ptr_ledger::KvTaintSubjectKind;
+        use ptr_types::CommitIndex;
+        let project = |change| {
+            projection_entries(&CommittedEvent {
+                index: CommitIndex(1),
+                event: LedgerEvent::KvTaintCommitted {
+                    subjects: vec![
+                        (KvTaintSubjectKind::Action, [1; 32]),
+                        (KvTaintSubjectKind::Request, [2; 32]),
+                    ],
+                    change,
+                },
+            })
+        };
+        let record = project(KvTaintChange::Record {
+            report_digest: [3; 32],
+            recipe_digest: [4; 32],
+        });
+        let approx = format!("approx:{}:{}", "03".repeat(32), "04".repeat(32));
+        assert_eq!(
+            record,
+            vec![
+                (
+                    format!("kv-taint:action:{}", "01".repeat(32)),
+                    approx.clone()
+                ),
+                (format!("kv-taint:request:{}", "02".repeat(32)), approx),
+            ]
+        );
+        let clear = project(KvTaintChange::Clear {
+            recipe_digest: [4; 32],
+            recompute_digest: [5; 32],
+        });
+        let cleared = format!("cleared:{}", "05".repeat(32));
+        assert_eq!(
+            clear,
+            vec![
+                (
+                    format!("kv-taint:action:{}", "01".repeat(32)),
+                    cleared.clone()
+                ),
+                (format!("kv-taint:request:{}", "02".repeat(32)), cleared),
+            ]
+        );
+    }
+
     #[test]
     fn a_fence_event_projects_fenced_at_its_epoch_and_a_readmission_serving_at_the_next() {
         use ptr_ledger::{ExpertFenceCause, ExpertFenceRevocation};

@@ -20,6 +20,7 @@ implemented = [
   "ScopeLifecycle, PodEvidenceCommitted, PodOutputAdmitted, PodHypothesisCommitted, PolicyBundleActivated/Revoked and SessionRevoked deliberately project no entries (they advance last_applied only); the match over LedgerEvent stays exhaustive",
   "ExpertStructuralCommitted projects one entry per expert the operation leaves in a new state: expert:<project>/<pod> = <generation>:<state>:<state_version> (state names from expert_state_name, retirement reasons joined with '-'), derived from the record through ptr_pods StructuralOp::outcomes so the projection and the runtime registry share one state table; a record that does not decode projects nothing (the runtime refuses it before commit)",
   "ExpertFenceCommitted projects the one expert it names: Fence and Escalate as <generation>:fenced:<epoch> and Readmit as <generation>:serving|frozen:<epoch> per the event's resume state, where the epoch is the event's new state version (the expert's fence epoch), so the materialized value an oracle reads no longer carries an earlier epoch (a_fence_event_projects_fenced_at_its_epoch_and_a_readmission_serving_at_the_next)",
+  "KvTaintCommitted projects one entry per subject: kv-taint:<kind>:<hex digest> = approx:<report hex>:<recipe hex> for a Record and cleared:<recompute hex> for a Clear (a_kv_taint_event_projects_one_entry_per_subject); the runtime registry that rebuilds from these entries is not built yet",
 ]
 
 missing = [
