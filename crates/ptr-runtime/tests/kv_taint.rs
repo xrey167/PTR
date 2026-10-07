@@ -80,7 +80,12 @@ fn approximate_action_is_denied_and_nothing_is_attempted() {
         Err(RuntimeError::ApproximateStateAtEffectBoundary { .. })
     ));
     assert_eq!(effect_attempts(&runtime), 0);
-    assert_eq!(runtime.committed_events().len(), before);
+    // The only record the ingest appended is its taint record, written before it returned.
+    assert_eq!(runtime.committed_events().len(), before + 1);
+    assert!(matches!(
+        runtime.committed_events().last().unwrap().event,
+        LedgerEvent::KvTaintCommitted { .. }
+    ));
     // The explicit-taint entry point refuses too, even for a never-ingested action.
     let (runtime2, action2) = ready_runtime(b"y");
     assert!(runtime2.authorize_action(&action2).is_ok());
@@ -170,7 +175,7 @@ fn malformed_runs_are_refused_before_recording() {
 #[test]
 fn tainted_registry_is_bounded_and_fails_closed() {
     let (mut runtime, base) = ready_runtime(b"0");
-    for i in 0..ptr_runtime::kv_taint::MAX_TAINTED_ACTIONS {
+    for i in 0..ptr_runtime::kv_taint::MAX_LIVE_TAINT_SUBJECTS {
         let a = ActionIr {
             payload: i.to_le_bytes().to_vec(),
             ..base.clone()
@@ -236,10 +241,20 @@ fn admit_effect_refuses_an_action_tainted_after_its_permit_was_prepared() {
         .unwrap();
     let committed = runtime.committed_events().len();
 
+    // The taint record is a ledger commit, so it also stales the outstanding permit: the old
+    // permit is refused (as StalePermit, before the taint check is reached) and nothing runs.
     let denied = runtime.execute_prepared(&session, permit).unwrap_err();
-    assert!(is_approximate_denial(&denied), "{denied:?}");
+    assert_eq!(denied, ExecutionError::StalePermit, "{denied:?}");
     assert_eq!(effect_attempts(&runtime), 0);
     assert_eq!(runtime.committed_events().len(), committed);
+    assert_eq!(probe.executions(), 0);
+
+    // A fresh permit for the tainted action cannot be obtained: the taint check refuses it.
+    let denied = runtime
+        .prepare_execution_once(&session, &ProjectId::from("p"), &action, PREPARE_TTL, "k2b")
+        .unwrap_err();
+    assert!(is_approximate_denial(&denied), "{denied:?}");
+    assert_eq!(effect_attempts(&runtime), 0);
     assert_eq!(probe.executions(), 0);
 }
 

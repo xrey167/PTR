@@ -1122,6 +1122,9 @@ impl PtrRuntime {
         runtime
             .execution
             .restore_obligations(execution.unsettled, execution.settled);
+        // The taint registry is a projection of the `kv-taint:` entries; a malformed one fails
+        // closed rather than restoring a registry that forgets a taint.
+        runtime.taint = super::kv_taint::TaintRegistry::from_materialized(&lifecycle.materialized)?;
         runtime.state = MaterializedState {
             values: lifecycle.materialized,
             last_applied: trusted.floor.index.0,
