@@ -56,10 +56,34 @@ pub fn pod_candidate_key(request: &RequestId, pod: &PodId, output_digest: &[u8; 
 impl PtrRuntime {
     /// Shared output-admission boundary for in-process and memory-controller
     /// callers. Effects never pass through this pure/read promotion path.
+    ///
+    /// Taint: the request subject and the output content are checked before the verifier runs.
+    /// The Pod's knowledge/artifact/reader/adapter bindings are NOT: the in-process Pod handle
+    /// ([`ptr_pods::DynPod`]) exposes only a [`PodManifest`], which carries no bindings, so the
+    /// binding join that [`PtrRuntime::admit_pod_output`] applies is unreachable here and a Pod
+    /// bound to tainted stored content is only caught when its output equals that content (a
+    /// stated limit). A caller that holds an execution manifest uses `admit_pod_output`.
     pub fn promote_verified_pod_output<V>(
         &mut self,
         request: &RequestId,
         manifest: &PodManifest,
+        output: &TypedPayload,
+        verifier: &V,
+    ) -> Result<Revision, RuntimeError>
+    where
+        V: Verifier<TypedPayload> + ?Sized,
+    {
+        self.promote_verified_pod_output_bound(request, manifest, &[], output, verifier)
+    }
+
+    /// [`PtrRuntime::promote_verified_pod_output`] for a caller that knows the Pod's
+    /// bindings: a tainted binding (see `binding_kv_taint`) refuses the promotion with the same
+    /// typed error, before the verifier runs, nothing appended.
+    pub(crate) fn promote_verified_pod_output_bound<V>(
+        &mut self,
+        request: &RequestId,
+        manifest: &PodManifest,
+        bindings: &[&ptr_pods::LineageBinding],
         output: &TypedPayload,
         verifier: &V,
     ) -> Result<Revision, RuntimeError>
@@ -74,6 +98,14 @@ impl PtrRuntime {
             Some(request),
             &[&output.bytes],
         )?;
+        if let ptr_model_api::KvReuseTaint::Approximate { report_digest } =
+            self.binding_kv_taint(bindings)
+        {
+            return Err(RuntimeError::ApproximateSemanticContent {
+                boundary: SemanticTaintBoundary::PromoteVerifiedPodOutput,
+                report_digest,
+            });
+        }
         if manifest
             .effects
             .iter()

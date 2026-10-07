@@ -1429,9 +1429,7 @@ impl PtrRuntime {
         // Raw text that is exactly a live tainted content subject (tainted output re-presented
         // as request text) keeps its taint: the run's action is recorded as Approximate. So does
         // a request id that is already a live Request subject (a reused id of an Approximate run).
-        let raw_taint = self
-            .text_kv_taint(raw_text.as_bytes())
-            .join(self.request_kv_taint(&request_id));
+        let raw_taint = self.input_kv_taint(&request_id, &raw_text);
         let _revision = self.ingest_text(request_id.clone(), raw_text)?;
         let model_run = infer(self.snapshot().semantic_context())
             .map_err(|error| RuntimeError::Model(error.0))?;
@@ -1460,6 +1458,18 @@ impl PtrRuntime {
         Ok(run)
     }
 
+    /// Run one request through a plain backend and return its events.
+    ///
+    /// Input taint (the raw text equals a live tainted content subject, or the request id is a
+    /// live Request subject) is computed before the backend runs, as in
+    /// [`PtrRuntime::run_model_run_resumable`]. If it is Approximate, the Request subject, the
+    /// generated text and every action of the events are recorded taint-first before they are
+    /// returned, so `authorize_action` refuses those actions. A backend cannot report KV reuse
+    /// here, so input taint is the only taint this path sees. Exact input appends nothing.
+    ///
+    /// # Errors
+    /// [`RuntimeError::KvTaintRegistryFull`] when recording would exceed the taint bound (the
+    /// events are not returned), or any ingress, backend or ledger error.
     pub fn run_model_once<B: InferenceBackend + ?Sized>(
         &mut self,
         request_id: RequestId,
@@ -1467,6 +1477,8 @@ impl PtrRuntime {
         backend: &B,
     ) -> Result<Vec<ModelEvent>, RuntimeError> {
         let raw_text = raw_text.into();
+        // Same input taint as `run_model_run_resumable`, computed before the backend runs.
+        let input_taint = self.input_kv_taint(&request_id, &raw_text);
         let _revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
         let events = backend
             .infer(&ModelRequest {
@@ -1475,6 +1487,10 @@ impl PtrRuntime {
                 raw_text,
             })
             .map_err(|error| RuntimeError::Model(error.0))?;
+        // Approximate input: the request, the generated text and every action are recorded
+        // taint-first before the events are returned (and so before any Pod output of the
+        // request can be promoted). Exact input appends nothing.
+        self.record_input_taint(&request_id, input_taint, &events)?;
         if events
             .iter()
             .any(|event| matches!(event, ModelEvent::Finished))
@@ -1484,6 +1500,10 @@ impl PtrRuntime {
         Ok(events)
     }
 
+    /// [`PtrRuntime::run_model_once`], then invoke and promote each requested Pod. Taint of the
+    /// input is recorded by `run_model_once` before any Pod output is promoted, so a request
+    /// with Approximate input has every Pod output refused with
+    /// [`RuntimeError::ApproximateSemanticContent`].
     pub fn run_model_with_pods<B, V>(
         &mut self,
         request_id: RequestId,
@@ -1626,6 +1646,8 @@ impl PtrRuntime {
         V: Verifier<TypedPayload> + ?Sized,
     {
         let raw_text = raw_text.into();
+        // Same input taint as `run_model_run_resumable`, computed before the backend runs.
+        let input_taint = self.input_kv_taint(&request_id, &raw_text);
         let _revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
         let mut request = ModelRequest {
             request_id: request_id.clone(),
@@ -1636,7 +1658,10 @@ impl PtrRuntime {
             .infer(&request)
             .map_err(|error| RuntimeError::Model(error.0))?;
 
-        let mut run = ResumableRun::default();
+        let mut run = ResumableRun {
+            kv_taint: input_taint,
+            ..ResumableRun::default()
+        };
 
         for round in 0..=max_rounds {
             let finished = pending
@@ -1674,12 +1699,16 @@ impl PtrRuntime {
             }
 
             if finished && control_count == 0 {
+                // Approximate input: request, generated text and actions are recorded
+                // taint-first before the run is returned. Exact input appends nothing.
+                self.record_input_taint(&request_id, run.kv_taint, &run.model_events)?;
                 self.emit(RuntimeEvent::RequestFinished(request_id));
                 return Ok(run);
             }
 
             if let Some(action) = actions.into_iter().next() {
                 run.action = Some(action);
+                self.record_input_taint(&request_id, run.kv_taint, &run.model_events)?;
                 return Ok(run);
             }
 
@@ -1715,6 +1744,9 @@ impl PtrRuntime {
                 });
             }
 
+            // Approximate input: the Request subject is recorded before any Pod output of this
+            // request is promoted, so promotion (which checks the request subject) refuses it.
+            self.record_input_request_taint(&request_id, run.kv_taint)?;
             self.emit(RuntimeEvent::PodInvoked(pod.manifest().id.to_string()));
             let output = pod
                 .invoke(TypedPayload {
@@ -1725,6 +1757,12 @@ impl PtrRuntime {
 
             let revision =
                 self.promote_verified_pod_output(&request_id, pod.manifest(), &output, verifier)?;
+            // A promoted output is clean (promotion refuses a tainted request or content), but
+            // the action it feeds carries the join of everything it consumed.
+            run.kv_taint = run
+                .kv_taint
+                .join(self.text_kv_taint(&output.bytes))
+                .join(self.request_kv_taint(&request_id));
 
             let observation = ModelObservation {
                 revision,

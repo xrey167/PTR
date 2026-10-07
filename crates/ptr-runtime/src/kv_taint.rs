@@ -55,7 +55,10 @@
 //! `run_model_run_resumable`) records the Content subject of its generated text beside its
 //! Action and Request subjects, in the same batch, so that text fed back as `raw_text` is not
 //! laundered. `run_model_run_resumable` also treats a live Request subject of the same request id
-//! as Approximate. A Pod output is tainted if any manifest binding resolves to tainted stored
+//! as Approximate. The resumable entry points (`run_resumable_with_pods`, `run_model_once`,
+//! `run_model_with_pods`) apply the same input rule and record through the same helper
+//! (`record_approximate_run`); a backend there cannot report KV reuse, so only input taint
+//! exists on them, and clean input appends nothing. A Pod output is tainted if any manifest binding resolves to tainted stored
 //! content ([`PtrRuntime::binding_kv_taint`]).
 
 use crate::kv_derivation::generated_text;
@@ -478,17 +481,13 @@ impl PtrRuntime {
         let taint = run.taint().join(input);
         let action = run_action(run)?;
         if let KvReuseTaint::Approximate { report_digest } = taint {
-            let mut subjects = extra.to_vec();
-            // The generated text is tainted content too: fed back as `raw_text` or as a Pod
-            // payload it must not launder the taint (same text definition as the derived path).
-            let text = generated_text(run);
-            if !text.is_empty() {
-                subjects.push(content_subject(text.as_bytes()));
-            }
-            if let Some(action) = action.as_ref() {
-                subjects.push((KvTaintSubjectKind::Action, taint_identity(action)));
-            }
-            self.record_taint(&subjects, report_digest, recipe)?;
+            self.record_approximate_run(
+                report_digest,
+                extra,
+                &generated_text(run),
+                action.as_slice(),
+                recipe,
+            )?;
         }
         Ok(ResumableRun {
             model_events: run.events.clone(),
@@ -496,6 +495,90 @@ impl PtrRuntime {
             action,
             kv_taint: taint,
         })
+    }
+
+    /// Record the subjects of an Approximate run taint-first, in one batch: `extra` (the Request
+    /// subject), the Content subject of the generated `text` (when not empty: fed back as
+    /// `raw_text` or as a Pod payload it must not launder the taint; same text definition as the
+    /// derived path) and the Action subject of each action. The one recording path of
+    /// `ingest_run` and of the resumable entry points ([`PtrRuntime::record_input_taint`]).
+    fn record_approximate_run(
+        &mut self,
+        report_digest: Digest,
+        extra: &[TaintSubject],
+        text: &str,
+        actions: &[ActionIr],
+        recipe: Digest,
+    ) -> Result<(), RuntimeError> {
+        let mut subjects = extra.to_vec();
+        if !text.is_empty() {
+            subjects.push(content_subject(text.as_bytes()));
+        }
+        subjects.extend(
+            actions
+                .iter()
+                .map(|action| (KvTaintSubjectKind::Action, taint_identity(action))),
+        );
+        self.record_taint(&subjects, report_digest, recipe)
+    }
+
+    /// The taint the input of a request carries: its raw text matched against live tainted
+    /// content joined with a live Request subject of the same id. Both are exact whole-value
+    /// digests (a paraphrase is not detected).
+    pub(crate) fn input_kv_taint(&self, request_id: &RequestId, raw_text: &str) -> KvReuseTaint {
+        self.text_kv_taint(raw_text.as_bytes())
+            .join(self.request_kv_taint(request_id))
+    }
+
+    /// Record the Request subject of a request whose `input` is Approximate, taint-first and
+    /// before any Pod output of the request is promoted. Exact input appends nothing.
+    pub(crate) fn record_input_request_taint(
+        &mut self,
+        request_id: &RequestId,
+        input: KvReuseTaint,
+    ) -> Result<(), RuntimeError> {
+        match input {
+            KvReuseTaint::Exact => Ok(()),
+            KvReuseTaint::Approximate { report_digest } => self.record_taint(
+                &[request_subject(request_id)],
+                report_digest,
+                unspecified_recipe(),
+            ),
+        }
+    }
+
+    /// Record the outcome of a resumable request whose `taint` is Approximate: the Request
+    /// subject, the Content subject of the generated text (the `Token` events of `events`) and
+    /// the Action subject of each `ActionReady`, through the same path as `ingest_run`. Exact `taint` appends nothing, so Exact
+    /// input behaves exactly as before. A full registry refuses here, before the outcome is
+    /// handed back.
+    pub(crate) fn record_input_taint(
+        &mut self,
+        request_id: &RequestId,
+        taint: KvReuseTaint,
+        events: &[ModelEvent],
+    ) -> Result<(), RuntimeError> {
+        let KvReuseTaint::Approximate { report_digest } = taint else {
+            return Ok(());
+        };
+        let actions: Vec<ActionIr> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ActionReady(action) => Some(action.clone()),
+                _ => None,
+            })
+            .collect();
+        let text = generated_text(&ModelRun {
+            events: events.to_vec(),
+            kv_report: None,
+        });
+        self.record_approximate_run(
+            report_digest,
+            &[request_subject(request_id)],
+            &text,
+            &actions,
+            unspecified_recipe(),
+        )
     }
 
     /// The live entry of a subject, if tainted.
@@ -1237,5 +1320,64 @@ mod tests {
             .unwrap();
         assert_eq!(entry.recipe_digest, pod_output_recipe());
         assert_ne!(pod_output_recipe(), unspecified_recipe());
+    }
+
+    /// Verifier that must never be asked: the taint check precedes it.
+    struct NeverAsked;
+
+    impl ptr_verifier::Verifier<ptr_protocol::TypedPayload> for NeverAsked {
+        fn verify(&self, _: &ptr_protocol::TypedPayload) -> ptr_verifier::VerificationReport {
+            panic!("a tainted binding must be refused before the verifier runs");
+        }
+    }
+
+    #[test]
+    fn a_tainted_binding_refuses_the_bound_promotion_and_a_clean_one_does_not() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let request = RequestId::from("source");
+        runtime
+            .ingest_text(request.clone(), "tainted stored")
+            .unwrap();
+        let key = crate::semantic::request_raw_key(&request);
+        let manifest = ptr_pods::PodManifest {
+            project: "p".into(),
+            id: "pod".into(),
+            capabilities: vec!["Echo<Text>".into()],
+            accepts: vec!["Text".into()],
+            produces: vec!["Text".into()],
+            effects: vec![ptr_types::Effect::Pure],
+            protocol_version: 1,
+        };
+        let output = ptr_protocol::TypedPayload {
+            type_id: "Text".into(),
+            bytes: b"clean output".to_vec(),
+        };
+        let binding = LineageBinding {
+            key,
+            generation: ptr_types::Generation(1),
+            digest: [3; 32],
+        };
+        // Clean store: the binding adds nothing, so the verifier is reached (and panics here,
+        // which proves the taint check let it through).
+        assert_eq!(runtime.binding_kv_taint(&[&binding]), KvReuseTaint::Exact);
+        runtime
+            .record_taint(&[content_subject(b"tainted stored")], REPORT, RECIPE)
+            .unwrap();
+        let before = runtime.committed_events().len();
+        let refused = runtime.promote_verified_pod_output_bound(
+            &RequestId::from("later"),
+            &manifest,
+            &[&binding],
+            &output,
+            &NeverAsked,
+        );
+        assert!(matches!(
+            refused,
+            Err(RuntimeError::ApproximateSemanticContent {
+                boundary: SemanticTaintBoundary::PromoteVerifiedPodOutput,
+                report_digest: REPORT,
+            })
+        ));
+        assert_eq!(runtime.committed_events().len(), before);
     }
 }
