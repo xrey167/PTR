@@ -5,6 +5,7 @@ pub mod execution;
 pub mod expert;
 pub mod identity;
 pub mod kv;
+mod kv_derivation;
 pub mod kv_infer;
 pub mod kv_infer_layered;
 pub mod kv_infer_session;
@@ -35,6 +36,7 @@ pub use identity::{
     JwksRefresher, JwksStore, OidcAlgorithm, OidcError, OidcIdentityAdapter,
 };
 pub use kv::{KvUseError, KvUseRequest, KvUseTicket, RuntimeKvAuthority};
+pub use kv_derivation::{AdmittedSegments, DerivedRun, DerivedRunRequest};
 pub use kv_infer::{
     IndexUpdate, ReferenceKvError, ReferenceKvFaults, ReferenceKvLimits, ReferenceKvLiveness,
     ReferenceKvOutcome, ReferenceKvReuseBackend, ReferenceKvScope, REFERENCE_KV_WEIGHT_SEED,
@@ -610,6 +612,21 @@ pub enum RuntimeError {
     /// for one about to be written; `reason` names the rule.
     InvalidSemanticOrigin {
         index: Option<CommitIndex>,
+        reason: &'static str,
+    },
+    /// A segment presented as `Raw` is not the request's own ingress text, or cannot be
+    /// checked against it (fail closed). `segment` is its index in the request.
+    MisclassifiedRawSegment {
+        segment: usize,
+        reason: &'static str,
+    },
+    /// A `Derived` segment names no derivation this runtime minted (a forged, foreign or, after
+    /// a restart, clean-and-forgotten id), or carries other content than was minted under it.
+    UnknownDerivedSegment {
+        segment: usize,
+    },
+    /// A derived run cannot be turned into a derived segment, so nothing was recorded.
+    DerivedRunUnavailable {
         reason: &'static str,
     },
 }
@@ -1372,6 +1389,12 @@ impl PtrRuntime {
     /// action recorded as tainted and `authorize_action` refuses it. This path does not
     /// resume Pods: a run that asks for one is refused with [`RuntimeError::Model`], and a
     /// run that neither finishes nor yields an action is [`RuntimeError::ModelNoProgress`].
+    ///
+    /// If the request text is byte-identical to a live tainted content subject (tainted model
+    /// output re-presented as request text), the run carries that Approximate taint although
+    /// its own reuse was Exact: its action is recorded and refused at `authorize_action`. Only
+    /// the exact digest of the whole text is matched; a paraphrase, substring or whitespace
+    /// edit is not detected, and honest identical text is tainted too (fail closed).
     pub fn run_model_run_resumable<F>(
         &mut self,
         request_id: RequestId,
@@ -1383,11 +1406,15 @@ impl PtrRuntime {
             ptr_types::SemanticContext,
         ) -> Result<ptr_model_api::ModelRun, ptr_model_api::ModelError>,
     {
+        let raw_text = raw_text.into();
+        // Raw text that is exactly a live tainted content subject (tainted output re-presented
+        // as request text) keeps its taint: the run's action is recorded as Approximate.
+        let raw_taint = self.text_kv_taint(raw_text.as_bytes());
         let _revision = self.ingest_text(request_id.clone(), raw_text)?;
         let model_run = infer(self.snapshot().semantic_context())
             .map_err(|error| RuntimeError::Model(error.0))?;
         // The only place a ModelRun becomes a ResumableRun (KV taint is recorded here).
-        let run = self.ingest_model_run(&model_run)?;
+        let run = self.ingest_model_run_with_input(&request_id, raw_taint, &model_run)?;
         if model_run
             .events
             .iter()
