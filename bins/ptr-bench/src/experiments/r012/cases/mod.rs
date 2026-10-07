@@ -368,6 +368,17 @@ pub fn classify<T: std::fmt::Debug>(
     }
 }
 
+/// Whether the effect boundary lets `action` through now: `Ok` is authorized, the typed
+/// Approximate refusal is not, any other error is a harness error.
+pub fn is_authorized(runtime: &PtrRuntime, action: &ActionIr) -> Res<bool> {
+    let stamped = fixture::stamped(runtime, action);
+    Ok(classify(
+        "authorize_action",
+        runtime.authorize_action(&stamped),
+        is_effect_boundary,
+    )? == Verdict::Admitted)
+}
+
 pub fn is_effect_boundary(error: &RuntimeError) -> bool {
     matches!(error, RuntimeError::ApproximateStateAtEffectBoundary { .. })
 }

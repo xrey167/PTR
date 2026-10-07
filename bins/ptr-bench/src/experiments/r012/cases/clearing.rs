@@ -2,7 +2,7 @@
 //! positive control, with its negative controls).
 
 use super::fixture::{exec_session, stamped, Probe, Rt, PROJECT, TTL};
-use super::{derive, derive_as, hop_request, own_request, tainted_base, Base, Cx};
+use super::{derive, derive_as, hop_request, is_authorized, own_request, tainted_base, Base, Cx};
 use crate::experiments::layered_kv::lab::{fail, Res};
 use crate::experiments::r012::stub::{self, Reuse};
 use ptr_model_api::{KvReuseTaint, ModelRun};
@@ -15,11 +15,7 @@ fn looks_cleared(cx: &mut Cx, rt: &mut Rt, base: &Base, clears_before: usize) ->
     if rt.clear_records() > clears_before {
         return Ok(true);
     }
-    if rt
-        .runtime
-        .authorize_action(&stamped(&rt.runtime, base.action()))
-        .is_ok()
-    {
+    if is_authorized(&rt.runtime, base.action())? {
         return Ok(true);
     }
     let id = cx.rid("probe");
@@ -98,6 +94,7 @@ fn recompute(
 ) -> Res<Recomputed> {
     let id = cx.rid("recompute");
     let request = own_request(&mut rt.runtime, &id, prompt)?;
+    cx.check_prompt(&request);
     let run = stub::produce(&cx.backend, &request, reuse)?;
     cx.check_run(&run);
     let clears_before = rt.clear_records();
@@ -121,6 +118,7 @@ pub fn c7_fresh_cold_recompute(cx: &mut Cx) -> Res<()> {
 
     let id = cx.rid("recompute");
     let request = own_request(&mut rt.runtime, &id, &base.prompt)?;
+    cx.check_prompt(&request);
     let cold = stub::produce(&cx.backend, &request, Reuse::Cold)?;
     cx.check_run(&cold);
     let clears_before = rt.clear_records();
@@ -132,10 +130,7 @@ pub fn c7_fresh_cold_recompute(cx: &mut Cx) -> Res<()> {
         && derived.recipe_digest == base.derived.recipe_digest
         && derived.segment == base.derived.segment
         && rt.runtime.action_kv_taint(base.action()) == KvReuseTaint::Exact
-        && rt
-            .runtime
-            .authorize_action(&stamped(&rt.runtime, base.action()))
-            .is_ok();
+        && is_authorized(&rt.runtime, base.action())?;
     // The effect boundary lets the cleared action through all the way to the executor.
     let probe = Probe::default();
     let session = exec_session(&mut rt.runtime, &probe)?;
@@ -154,16 +149,11 @@ pub fn c7_fresh_cold_recompute(cx: &mut Cx) -> Res<()> {
     control = control && executed.is_ok() && probe.executions() == 1 && rt.effect_attempts() == 1;
     // The Clear is replayed: after a restart the action is still authorized.
     rt.reopen()?;
-    control = control
-        && rt
-            .runtime
-            .authorize_action(&stamped(&rt.runtime, base.action()))
-            .is_ok();
-    if control {
-        cx.count("fresh_exact_recomputation_controls", 1);
-    } else {
-        cx.note("positive_control_failed");
+    control = control && is_authorized(&rt.runtime, base.action())?;
+    if !control {
+        return Err("the positive control failed: a cold exact recompute of the same recipe did not clear and re-authorize the action".to_string());
     }
+    cx.count("fresh_exact_recomputation_controls", 1);
 
     // Negative controls, each on a fresh tainted base of its own.
     type Variant = (&'static str, fn(&mut Cx, &mut Rt, &Base) -> Res<Recomputed>);

@@ -2,8 +2,8 @@
 
 use super::fixture::{stamped, Rt, TTL};
 use super::{
-    classify, derive, hop_request, is_effect_boundary, own_request, session, tainted_base, Base,
-    Cx, Verdict,
+    classify, derive, hop_request, is_authorized, is_effect_boundary, own_request, session,
+    tainted_base, Base, Cx, Verdict,
 };
 use crate::experiments::layered_kv::lab::{fail, Res};
 use crate::experiments::r012::stub::{self, Reuse};
@@ -79,6 +79,7 @@ pub fn c1_action_admission(cx: &mut Cx) -> Res<()> {
     let prompt = cx.prompt(1);
     let id = cx.rid("plain");
     let request = own_request(&mut rt.runtime, &id, &prompt)?;
+    cx.check_prompt(&request);
     let run = stub::produce(&cx.backend, &request, Reuse::Approximate)?;
     cx.check_run(&run);
     let ingested = rt
@@ -102,7 +103,9 @@ pub fn c1_action_admission(cx: &mut Cx) -> Res<()> {
     let prompt = cx.prompt(2);
     let id = cx.rid("server");
     let request = segmented_for_server(&prompt, &id)?;
+    cx.check_prompt(&request);
     let run = stub::produce(&cx.backend, &request, Reuse::Approximate)?;
+    cx.check_run(&run);
     let model_run = run.run.clone();
     let resumed = rt
         .runtime
@@ -119,7 +122,9 @@ pub fn c1_action_admission(cx: &mut Cx) -> Res<()> {
     let prompt = cx.prompt(3);
     let reused = base.request.request_id().clone();
     let request = segmented_for_server(&prompt, &reused)?;
+    cx.check_prompt(&request);
     let run = stub::produce(&cx.backend, &request, Reuse::Cold)?;
+    cx.check_run(&run);
     let model_run = run.run.clone();
     rt.runtime
         .run_model_run_resumable(reused, prompt, |_| Ok::<_, ModelError>(model_run))
@@ -153,9 +158,9 @@ fn reload_checks(cx: &mut Cx, rt: &mut Rt, base: &Base, label: &str) -> Res<()> 
     let id = cx.rid("reload");
     let prompt = cx.prompt(1);
     let request = hop_request(&mut rt.runtime, &id, &prompt, &base.derived.segment)?;
-    cx.attempt("tainted_candidate_reload_attempts", rt);
     match rt.runtime.admit_segments(&id, &request) {
         Ok(admitted) => {
+            cx.attempt("tainted_candidate_reload_attempts", rt);
             if !admitted
                 .segments
                 .get(1)
@@ -165,7 +170,11 @@ fn reload_checks(cx: &mut Cx, rt: &mut Rt, base: &Base, label: &str) -> Res<()> 
                 cx.note(&format!("lost_candidate_{label}"));
             }
         }
-        Err(RuntimeError::UnknownDerivedSegment { .. }) => cx.note("reload_refused_unknown"),
+        Err(RuntimeError::UnknownDerivedSegment { .. }) => {
+            return Err(format!(
+                "after {label} the registry-held tainted candidate was refused as an unknown Derived segment"
+            ))
+        }
         Err(other) => return Err(format!("admit_segments after {label}: {other:?}")),
     }
     // Its text, resubmitted as the request's own Raw text, is still tainted.
@@ -229,20 +238,10 @@ pub fn c3_candidate_path(cx: &mut Cx) -> Res<()> {
         };
         let run = stub::produce(&cx.backend, &request, reuse)?;
         cx.check_run(&run);
+        let derived = derive(&mut rt.runtime, &request, &run.run)
+            .map_err(|error| format!("hop {hop}: refused by the runtime: {error:?}"))?;
         cx.attempt("approximate_candidate_path_attempts", &rt);
-        let derived = match derive(&mut rt.runtime, &request, &run.run) {
-            Ok(derived) => derived,
-            Err(RuntimeError::UnknownDerivedSegment { .. }) => {
-                // Failing closed is not an Exact admission; the chain just ends here.
-                cx.note("hop_refused_unknown");
-                break;
-            }
-            Err(other) => return Err(format!("hop {hop}: {other:?}")),
-        };
-        let authorized = rt
-            .runtime
-            .authorize_action(&stamped(&rt.runtime, &run.action))
-            .is_ok();
+        let authorized = is_authorized(&rt.runtime, &run.action)?;
         if !derived.taint.is_approximate() || authorized {
             cx.count("approximate_candidate_exact_admissions", 1);
             break;
@@ -258,12 +257,9 @@ pub fn c3_candidate_path(cx: &mut Cx) -> Res<()> {
     let best = cx.tally.get("candidate_taint_hops").max(reached as i64);
     cx.tally.set("candidate_taint_hops", best);
     cx.count("chain_hops_reached", reached as i64);
-    // The chain must be able to reach the preregistered hop count unless it was broken by a
-    // measured violation; a chain that stopped for another reason is a harness error.
-    if reached < hops
-        && cx.tally.get("approximate_candidate_exact_admissions") == 0
-        && cx.tally.get("hop_refused_unknown") == 0
-    {
+    // The chain must reach the preregistered hop count unless a measured violation broke it;
+    // a chain that stopped for another reason is a harness error.
+    if reached < hops && cx.tally.get("approximate_candidate_exact_admissions") == 0 {
         return Err(format!("the chain stopped at hop {reached} of {hops}"));
     }
     Ok(())

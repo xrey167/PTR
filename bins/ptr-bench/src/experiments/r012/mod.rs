@@ -220,7 +220,6 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
     if scale == Scale::Pinned
         && (cx.tally.get("candidate_taint_hops") as u64) < params::HOPS_PER_CHAIN
         && cx.tally.get("approximate_candidate_exact_admissions") == 0
-        && cx.tally.get("hop_refused_unknown") == 0
     {
         return Err(format!(
             "candidate_taint_hops {} is below hops_per_chain {}",

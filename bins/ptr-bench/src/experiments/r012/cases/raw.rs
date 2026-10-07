@@ -1,8 +1,10 @@
 //! C8 (tainted output resubmitted as Raw, over hops) and C9 (content presented as Raw that is
 //! not the request's own ingress record, and forged Derived segments).
 
-use super::fixture::{install_grant, stamped, Rt};
-use super::{classify, derive, own_request, raw_segment, segmented, tainted_base, Cx, Verdict};
+use super::fixture::{install_grant, Rt};
+use super::{
+    classify, derive, is_authorized, own_request, raw_segment, segmented, tainted_base, Cx, Verdict,
+};
 use crate::experiments::layered_kv::lab::{fail, Res};
 use crate::experiments::r012::stub::{self, Reuse};
 use ptr_model_api::{ByteTokenizer, KvReuseTaint, ModelError, PromptSegment, SegmentSource};
@@ -38,12 +40,10 @@ pub fn c8_raw_laundering(cx: &mut Cx) -> Res<()> {
         cx.attempt("approximate_output_reintroduced_as_raw_attempts", &rt);
         let mut escaped = !admitted.taint.is_approximate();
         let run = stub::produce(&cx.backend, &request, Reuse::Cold)?;
+        cx.check_run(&run);
         let derived =
             derive(&mut rt.runtime, &request, &run.run).map_err(fail("a laundering hop"))?;
-        let authorized = rt
-            .runtime
-            .authorize_action(&stamped(&rt.runtime, &run.action))
-            .is_ok();
+        let authorized = is_authorized(&rt.runtime, &run.action)?;
         escaped |= laundered(derived.taint, authorized);
         if escaped {
             cx.count("laundered_exact_admissions", 1);
@@ -59,16 +59,14 @@ pub fn c8_raw_laundering(cx: &mut Cx) -> Res<()> {
     let id = cx.rid("server");
     let request = segmented(&id, vec![raw_segment(base.text())?])?;
     let run = stub::produce(&cx.backend, &request, Reuse::Cold)?;
+    cx.check_run(&run);
     let model_run = run.run.clone();
     let resumed = rt
         .runtime
         .run_model_run_resumable(id, base.text(), |_| Ok::<_, ModelError>(model_run))
         .map_err(fail("run_model_run_resumable"))?;
     cx.attempt("approximate_output_reintroduced_as_raw_attempts", &rt);
-    let authorized = rt
-        .runtime
-        .authorize_action(&stamped(&rt.runtime, &run.action))
-        .is_ok();
+    let authorized = is_authorized(&rt.runtime, &run.action)?;
     if laundered(resumed.kv_taint, authorized) {
         cx.count("laundered_exact_admissions", 1);
     }
@@ -80,6 +78,7 @@ pub fn c8_raw_laundering(cx: &mut Cx) -> Res<()> {
     let id = cx.rid("plain");
     let plain_request = own_request(&mut rt.runtime, &id, &prompt)?;
     let plain = stub::produce(&cx.backend, &plain_request, Reuse::Approximate)?;
+    cx.check_run(&plain);
     rt.runtime
         .ingest_model_run_for(
             &KvTaintRequest {
@@ -98,12 +97,10 @@ pub fn c8_raw_laundering(cx: &mut Cx) -> Res<()> {
         .map_err(fail("admit_segments of a plain run's output as Raw"))?;
     cx.attempt("approximate_output_reintroduced_as_raw_attempts", &rt);
     let run = stub::produce(&cx.backend, &request, Reuse::Cold)?;
+    cx.check_run(&run);
     let derived = derive(&mut rt.runtime, &request, &run.run)
         .map_err(fail("the hop over a plain run's output"))?;
-    let authorized = rt
-        .runtime
-        .authorize_action(&stamped(&rt.runtime, &run.action))
-        .is_ok();
+    let authorized = is_authorized(&rt.runtime, &run.action)?;
     if !admitted.taint.is_approximate() || laundered(derived.taint, authorized) {
         cx.count("laundered_exact_admissions", 1);
     }
@@ -112,16 +109,14 @@ pub fn c8_raw_laundering(cx: &mut Cx) -> Res<()> {
     let id = cx.rid("plain-server");
     let request = segmented(&id, vec![raw_segment(&plain.text)?])?;
     let run = stub::produce(&cx.backend, &request, Reuse::Cold)?;
+    cx.check_run(&run);
     let model_run = run.run.clone();
     let resumed = rt
         .runtime
         .run_model_run_resumable(id, plain.text.as_str(), |_| Ok::<_, ModelError>(model_run))
         .map_err(fail("run_model_run_resumable on a plain run's output"))?;
     cx.attempt("approximate_output_reintroduced_as_raw_attempts", &rt);
-    let authorized = rt
-        .runtime
-        .authorize_action(&stamped(&rt.runtime, &run.action))
-        .is_ok();
+    let authorized = is_authorized(&rt.runtime, &run.action)?;
     if laundered(resumed.kv_taint, authorized) {
         cx.count("laundered_exact_admissions", 1);
     }
@@ -198,6 +193,10 @@ pub fn c9_misclassified_raw(cx: &mut Cx) -> Res<()> {
     ];
     for (what, id, text) in cases {
         let request = segmented(&id, vec![raw_segment(&text)?])?;
+        if what != "a model output" {
+            // A model output is shorter than a prompt by construction; the rest are prompts.
+            cx.check_prompt(&request);
+        }
         let before = rt.events();
         let verdict = classify(
             &format!("Raw misclassification ({what})"),
@@ -210,6 +209,7 @@ pub fn c9_misclassified_raw(cx: &mut Cx) -> Res<()> {
         }
         // The same request through the derived path: refused as well, and nothing appended.
         let run = stub::produce(&cx.backend, &request, Reuse::Cold)?;
+        cx.check_run(&run);
         let derived = derive(&mut rt.runtime, &request, &run.run);
         cx.attempt("misclassified_revocable_as_raw_attempts", &rt);
         match derived {
@@ -271,6 +271,7 @@ pub fn c9_misclassified_raw(cx: &mut Cx) -> Res<()> {
             return Err(format!("a forged Derived segment ({index}) was admitted"));
         }
         let run = stub::produce(&cx.backend, &request, Reuse::Cold)?;
+        cx.check_run(&run);
         match derive(&mut rt.runtime, &request, &run.run) {
             Err(RuntimeError::UnknownDerivedSegment { segment: 1 }) => {}
             other => {

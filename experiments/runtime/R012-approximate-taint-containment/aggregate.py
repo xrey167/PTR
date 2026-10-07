@@ -66,7 +66,8 @@ SCOPE = (
 )
 LIMITATIONS = [
     "the Approximate producer is a pinned stub: the label is the stub's, not a measurement, and no real Approximate producer is tested",
-    "the content index matches only the exact digest of a whole segment: a paraphrase, substring, re-tokenisation or whitespace edit of tainted text is not detected, and honest identical text is tainted (fail closed)",
+    "the content index matches only the exact digest of a whole segment: a paraphrase, substring, re-tokenisation or whitespace edit of tainted text is not detected",
+    "honest text identical to tainted text is tainted too (a false positive, accepted: the runtime fails closed)",
     "the runtime trusts the backend's KV-reuse report; a backend that mislabels an Approximate run as Exact is outside the claim",
     "the Exact-only KV catalog guard is structural (Approximate sessions never look up or insert), not a check inside the catalog",
     "cleared taint leaves tombstones in materialized state; a ledger writer who knows a recipe could forge a Clear (trusted-ledger model, the recompute digest is not verifiable on replay)",

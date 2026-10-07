@@ -292,13 +292,24 @@ pub fn c4_semdb_promotion(cx: &mut Cx) -> Res<()> {
 
     // Clean controls: the same paths accept untainted content, so a refusal above is the taint's.
     cx.sub("C4 clean controls");
-    clean_controls(cx, &mut rt)?;
+    let mut clean_branches = clean_controls(cx, &mut rt, "c4", true, &[])?;
+    // One clean hypothesis is merged before the restart, the other after it.
+    let merged_before = clean_branches.remove(0);
+    rt.runtime
+        .merge_pod_hypothesis(
+            &merged_before,
+            MergeAuthority::Triage {
+                score: Probability::new(1.0).expect("a bounded score"),
+            },
+        )
+        .map_err(fail("a clean hypothesis before the restart"))?;
 
     // After a restart the same attempts are refused (the record is replayed).
     cx.sub("C4 after restart");
     rt.reopen()?;
     install_grant(&mut rt.runtime)?;
     semdb_round(cx, &mut rt, &request, base.text(), "c4r")?;
+    clean_controls(cx, &mut rt, "c4r", false, &clean_branches)?;
     let verdict = classify(
         "merge_pod_hypothesis after a restart",
         rt.runtime.merge_pod_hypothesis(
@@ -334,34 +345,71 @@ fn merge_hypothesis(cx: &mut Cx, rt: &mut Rt, branch: &str) -> Res<()> {
 }
 
 /// The controls: untainted content is accepted on every path the tainted content was refused
-/// on. A control that fails means the refusals above prove nothing, so it is a harness error.
-fn clean_controls(cx: &mut Cx, rt: &mut Rt) -> Res<()> {
-    let id = cx.rid("clean");
+/// on (promote by request and by content, the host write as text and as payload, `merge_branch`
+/// under Triage 1.0, `preview_merge`, and `merge_pod_hypothesis`). A control that fails means
+/// the refusals prove nothing, so it is a harness error. `pod_paths` also admits clean
+/// StateDelta, VerifiedResult and Hypothesis outputs (it needs a Pod scope, which a restart
+/// leaves in recovery) and returns the clean hypothesis branch ids; `merge_branches` are clean
+/// hypotheses stored earlier, merged now.
+fn clean_controls(
+    cx: &mut Cx,
+    rt: &mut Rt,
+    tag: &str,
+    pod_paths: bool,
+    merge_branches: &[String],
+) -> Res<Vec<String>> {
+    let id = RequestId::from(format!("r012-{tag}-control-request").as_str());
     rt.runtime
         .ingest_text(id.clone(), "a clean control request")
         .map_err(fail("a clean request"))?;
     let verifier = CountingPodVerifier::default();
+    let control_text = format!("a clean control payload {tag}");
+    // promote_verified_pod_output: by the clean request, and by clean content.
     rt.runtime
         .promote_verified_pod_output(
             &id,
             &pod_manifest(),
-            &text_payload(b"a clean control payload"),
+            &text_payload(control_text.as_bytes()),
             &verifier,
         )
         .map_err(fail("promote_verified_pod_output of clean content"))?;
+    // The host write, as text and as payload.
     host_write(
         &mut rt.runtime,
-        "note:c4-clean-host",
-        "a clean host value".into(),
+        &format!("note:{tag}-clean-host-text"),
+        format!("a clean host value {tag}").as_str().into(),
     )
-    .map_err(fail("a clean host write"))?;
-    let sealed = text_branch(&rt.runtime, "r012-c4-clean-branch", "price:sku-1", "11")?;
-    match rt.runtime.merge_branch(
-        &sealed,
-        MergeAuthority::Triage {
-            score: Probability::new(1.0).expect("a bounded score"),
-        },
-    ) {
+    .map_err(fail("a clean host write (text)"))?;
+    host_write(
+        &mut rt.runtime,
+        &format!("note:{tag}-clean-host-payload"),
+        SemanticValue::Payload(SemanticPayload {
+            type_id: TypeId::from("text"),
+            source: "r012-operator".into(),
+            bytes: format!("a clean host payload {tag}").into_bytes(),
+        }),
+    )
+    .map_err(fail("a clean host write (payload)"))?;
+    // preview_merge and merge_branch under Triage 1.0.
+    let preview = text_branch(
+        &rt.runtime,
+        &format!("r012-{tag}-clean-preview"),
+        &format!("price:{tag}-preview"),
+        "7",
+    )?;
+    rt.runtime
+        .preview_merge(&preview)
+        .map_err(fail("preview_merge of a clean branch"))?;
+    let sealed = text_branch(
+        &rt.runtime,
+        &format!("r012-{tag}-clean-branch"),
+        &format!("price:{tag}-sku"),
+        "11",
+    )?;
+    let triage = || MergeAuthority::Triage {
+        score: Probability::new(1.0).expect("a bounded score"),
+    };
+    match rt.runtime.merge_branch(&sealed, triage()) {
         Ok(MergeOutcome::Committed(_)) => {}
         other => {
             return Err(format!(
@@ -369,24 +417,63 @@ fn clean_controls(cx: &mut Cx, rt: &mut Rt) -> Res<()> {
             ))
         }
     }
-    let pod_id = rt
-        .runtime
-        .admit_pod_output(
-            pod_request(
-                &id.0,
-                "c4-clean-pod",
-                PodOutputKind::StateDelta,
-                b"a clean state delta",
-                manifest(Vec::new())?,
-            ),
-            &verifier,
-        )
-        .map_err(fail("admit_pod_output of a clean StateDelta"))?;
-    if !matches!(pod_id, PodOutputAdmission::StateDelta { .. }) {
-        return Err(format!("a clean StateDelta was not promoted: {pod_id:?}"));
+    for branch in merge_branches {
+        match rt.runtime.merge_pod_hypothesis(branch, triage()) {
+            Ok(MergeOutcome::Committed(_)) => {}
+            other => {
+                return Err(format!(
+                    "a clean hypothesis was not merged under Triage 1.0: {other:?}"
+                ))
+            }
+        }
+    }
+    let mut stored = Vec::new();
+    if pod_paths {
+        for kind in [
+            PodOutputKind::StateDelta,
+            PodOutputKind::VerifiedResult,
+            PodOutputKind::Hypothesis,
+        ] {
+            let pod_request_id = RequestId::from(format!("r012-{tag}-clean-{kind:?}").as_str());
+            rt.runtime
+                .ingest_text(pod_request_id.clone(), "a clean Pod request")
+                .map_err(fail("a clean Pod request"))?;
+            // Two hypotheses: one merged before the restart, one after.
+            let copies = if kind == PodOutputKind::Hypothesis {
+                2
+            } else {
+                1
+            };
+            for copy in 0..copies {
+                let outcome = rt
+                    .runtime
+                    .admit_pod_output(
+                        pod_request(
+                            &pod_request_id.0,
+                            &format!("c4-clean-pod-{kind:?}-{copy}"),
+                            kind,
+                            format!("a clean {kind:?} {tag} {copy}").as_bytes(),
+                            manifest(Vec::new())?,
+                        ),
+                        &verifier,
+                    )
+                    .map_err(fail("admit_pod_output of clean content"))?;
+                match (kind, outcome) {
+                    (PodOutputKind::StateDelta, PodOutputAdmission::StateDelta { .. })
+                    | (PodOutputKind::VerifiedResult, PodOutputAdmission::VerifiedResult { .. }) => {
+                    }
+                    (PodOutputKind::Hypothesis, PodOutputAdmission::Hypothesis { branch_id }) => {
+                        stored.push(branch_id);
+                    }
+                    (kind, other) => {
+                        return Err(format!("a clean {kind:?} was not stored: {other:?}"))
+                    }
+                }
+            }
+        }
     }
     cx.note("clean_controls_accepted");
-    Ok(())
+    Ok(stored)
 }
 
 /// The Pod output kinds and what the owner decision does with a tainted one.
