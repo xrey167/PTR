@@ -656,3 +656,151 @@ fn a_run_with_two_control_events_is_refused_before_anything_is_recorded() {
     ));
     assert_eq!(len(&runtime), before);
 }
+
+/// Run `text` through `run_model_run_resumable` as request `id`, answering with `answer` and
+/// asking for `wanted` (stamped to the context revision).
+fn resumable(
+    runtime: &mut PtrRuntime,
+    id: &str,
+    text: &str,
+    answer: &str,
+    wanted: &ActionIr,
+    report: Option<KvReuseMode>,
+) -> Result<ptr_runtime::ResumableRun, RuntimeError> {
+    runtime.run_model_run_resumable(RequestId::from(id), text, |context| {
+        let stamped = ActionIr {
+            revision: context.revision,
+            ..wanted.clone()
+        };
+        Ok(run(answer, Some(&stamped), report))
+    })
+}
+
+#[test]
+fn text_generated_by_an_approximate_plain_run_cannot_launder_through_a_second_plain_run() {
+    let mut runtime = new_runtime(None);
+    let first_action = action(b"first");
+    let first = resumable(
+        &mut runtime,
+        "r-a",
+        "seed",
+        "generated words",
+        &first_action,
+        Some(KvReuseMode::Approximate),
+    )
+    .unwrap();
+    assert!(first.kv_taint.is_approximate());
+    assert!(is_denied(&runtime, &first_action));
+
+    // The generated text comes back as raw text; the backend of the second run is Exact.
+    let second_action = action(b"second");
+    let second = resumable(
+        &mut runtime,
+        "r-b",
+        "generated words",
+        "anything",
+        &second_action,
+        Some(KvReuseMode::Exact),
+    )
+    .unwrap();
+    assert!(second.kv_taint.is_approximate(), "{:?}", second.kv_taint);
+    assert!(is_denied(&runtime, &second_action));
+    // The same holds after the log is replayed.
+    let replayed = PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+    assert!(is_denied(&replayed, &second_action));
+
+    // Exact runs record nothing: an Exact run over untainted text appends no taint record.
+    let taint_records = |runtime: &PtrRuntime| {
+        runtime
+            .committed_events()
+            .iter()
+            .filter(|committed| matches!(committed.event, LedgerEvent::KvTaintCommitted { .. }))
+            .count()
+    };
+    let before = taint_records(&runtime);
+    let honest_action = action(b"honest");
+    let honest = resumable(
+        &mut runtime,
+        "r-c",
+        "plain",
+        "plain output",
+        &honest_action,
+        Some(KvReuseMode::Exact),
+    )
+    .unwrap();
+    assert_eq!(honest.kv_taint, KvReuseTaint::Exact);
+    assert!(is_authorized(&runtime, &honest_action));
+    assert_eq!(taint_records(&runtime), before);
+}
+
+#[test]
+fn an_approximate_plain_run_without_text_records_no_content_subject() {
+    let mut runtime = new_runtime(None);
+    let wanted = action(b"w");
+    let no_text = ModelRun {
+        events: vec![ModelEvent::ActionReady(stamped(&runtime, &wanted))],
+        kv_report: Some(
+            KvReuseReport::new(
+                16,
+                KvReuseMode::Approximate,
+                64,
+                KvReusePolicy::AllowApproximate,
+            )
+            .unwrap(),
+        ),
+    };
+    runtime.ingest_model_run(&no_text).unwrap();
+    let subjects: usize = runtime
+        .committed_events()
+        .iter()
+        .map(|committed| match &committed.event {
+            LedgerEvent::KvTaintCommitted { subjects, .. } => subjects.len(),
+            _ => 0,
+        })
+        .sum();
+    assert_eq!(subjects, 1, "only the Action subject");
+}
+
+#[test]
+fn a_reused_request_id_of_an_approximate_run_stays_approximate() {
+    let mut runtime = new_runtime(None);
+    let first_action = action(b"one");
+    let first = resumable(
+        &mut runtime,
+        "r-reuse",
+        "seed",
+        "out",
+        &first_action,
+        Some(KvReuseMode::Approximate),
+    )
+    .unwrap();
+    assert!(first.kv_taint.is_approximate());
+
+    // The same request id comes back with an Exact backend and clean raw text.
+    let second_action = action(b"two");
+    let second = resumable(
+        &mut runtime,
+        "r-reuse",
+        "seed",
+        "other",
+        &second_action,
+        Some(KvReuseMode::Exact),
+    )
+    .unwrap();
+    assert!(second.kv_taint.is_approximate(), "{:?}", second.kv_taint);
+    assert!(is_denied(&runtime, &second_action));
+
+    // A fresh request id over the same clean text is unaffected.
+    let third_action = action(b"three");
+    let third = resumable(
+        &mut runtime,
+        "r-fresh",
+        "seed",
+        "other",
+        &third_action,
+        Some(KvReuseMode::Exact),
+    )
+    .unwrap();
+    assert_eq!(third.kv_taint, KvReuseTaint::Exact);
+    assert!(is_authorized(&runtime, &third_action));
+}

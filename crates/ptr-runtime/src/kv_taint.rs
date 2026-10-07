@@ -17,8 +17,12 @@
 //! replay uses ([`PtrRuntime::apply_kv_taint_event`]), so live and replayed state cannot
 //! diverge. Replay is fail closed: a `Record` must keep the live set within
 //! [`MAX_LIVE_TAINT_SUBJECTS`]; a `Clear` must name only live subjects of the same recipe
-//! digest. A forged `Record` therefore applies (taint only refuses more); a forged `Clear`
-//! makes the log unopenable. The compacted snapshot carries the registry through the
+//! digest, and a `Record` must name no subject that is already live
+//! ([`KvTaintError::RecordSubjectAlreadyLive`]: the compacted projection overwrites its
+//! `kv-taint:` entry on every Record while the registry keeps the first one, so a duplicate
+//! would make a compacted restore differ from live and replayed state). A forged `Record` of a
+//! subject that is not live therefore applies (taint only refuses more); a forged `Clear` or a
+//! duplicate `Record` makes the log unopenable. The compacted snapshot carries the registry through the
 //! `kv-taint:` entries of its materialized state and `restore_compacted` rebuilds it.
 //!
 //! # Bound
@@ -41,15 +45,28 @@
 //!   [`KvTaintRequest`]. [`PtrRuntime::ingest_model_run`] uses the fixed recipe
 //!   `SHA-256("ptr.kv.taint.recipe.unspecified-request.v1\0")`.
 //!
-//! Open: one live entry per subject. A second Approximate ingest of an already-live subject is
-//! not recorded, so the entry (and the recipe a clear must reproduce) is the first one.
+//! One live entry per subject. A second Approximate ingest of an already-live subject is not
+//! recorded (the runtime filters live subjects before it appends), so the entry (and the recipe
+//! a clear must reproduce) is the first one.
+//!
+//! # Generated text and Pod bindings
+//!
+//! An Approximate plain run (`ingest_model_run`, `ingest_model_run_for`,
+//! `run_model_run_resumable`) records the Content subject of its generated text beside its
+//! Action and Request subjects, in the same batch, so that text fed back as `raw_text` is not
+//! laundered. `run_model_run_resumable` also treats a live Request subject of the same request id
+//! as Approximate. A Pod output is tainted if any manifest binding resolves to tainted stored
+//! content ([`PtrRuntime::binding_kv_taint`]).
 
+use crate::kv_derivation::generated_text;
 use crate::{PtrRuntime, ResumableRun, RuntimeError};
 use ptr_ledger::{
     check_encodable, effect_code, integrity, KvTaintChange, KvTaintSubjectKind, LedgerEvent,
     MAX_KV_TAINT_SUBJECTS,
 };
 use ptr_model_api::{KvReuseTaint, ModelEvent, ModelRun, SegmentedModelRequest};
+use ptr_pods::LineageBinding;
+use ptr_semdb::SemanticValue;
 use ptr_types::{ActionIr, Digest, RequestId};
 use std::collections::BTreeMap;
 
@@ -110,6 +127,10 @@ pub enum KvTaintError {
     ClearSubjectNotLive,
     /// A clear names a live subject whose recorded recipe differs.
     ClearRecipeMismatch,
+    /// A `Record` names a subject that is already live. The runtime never writes one (it skips
+    /// live subjects), and the compacted projection would keep the later recipe while live and
+    /// replayed state keep the first, so such a record is refused (fail closed).
+    RecordSubjectAlreadyLive,
     /// A `kv-taint:` entry of a restored state is malformed.
     MalformedStateEntry { reason: &'static str },
 }
@@ -119,11 +140,20 @@ pub enum KvTaintError {
 pub(crate) struct TaintRegistry {
     live: BTreeMap<TaintSubject, TaintEntry>,
     limit: usize,
-    /// Derivations minted by this process (`ingest_derived_run`), by Derivation subject digest,
-    /// with the content digest of the segment minted. Memory only: not history, empty after a
-    /// restart. Bounded by `limit` like `live`.
-    minted: BTreeMap<[u8; 32], Digest>,
+    /// Clean derivations minted by this process (`ingest_derived_run`), by Derivation subject
+    /// digest, with the insertion sequence and the content digest of the segment minted. Memory
+    /// only: not history, empty after a restart. A bounded FIFO (at most `mint_limit`, oldest
+    /// evicted first): forgetting a clean mint only makes its id `UnknownDerivedSegment`
+    /// (fail closed, as after a restart) and never touches the live taint set above.
+    minted: BTreeMap<[u8; 32], (u64, Digest)>,
+    /// Insertion order of `minted`: sequence number to Derivation subject digest.
+    minted_order: BTreeMap<u64, [u8; 32]>,
+    next_mint: u64,
+    mint_limit: usize,
 }
+
+/// Most clean minted derivations remembered at once (separate from the live taint bound).
+pub(crate) const MAX_MINTED_DERIVATIONS: usize = 65_536;
 
 impl Default for TaintRegistry {
     fn default() -> Self {
@@ -131,6 +161,9 @@ impl Default for TaintRegistry {
             live: BTreeMap::new(),
             limit: MAX_LIVE_TAINT_SUBJECTS,
             minted: BTreeMap::new(),
+            minted_order: BTreeMap::new(),
+            next_mint: 0,
+            mint_limit: MAX_MINTED_DERIVATIONS,
         }
     }
 }
@@ -140,22 +173,34 @@ impl TaintRegistry {
         self.live.get(subject)
     }
 
-    /// The content digest of the segment minted under `derivation`, if this process minted it.
+    /// The content digest of the segment minted under `derivation`, if this process minted it
+    /// (clean) and has not forgotten it.
     pub(crate) fn minted_segment(&self, derivation: &[u8; 32]) -> Option<&Digest> {
-        self.minted.get(derivation)
+        self.minted.get(derivation).map(|(_, digest)| digest)
     }
 
-    /// Whether one more derivation can be remembered (a re-mint of a known one always can).
-    pub(crate) fn mint_room(&self, derivation: &[u8; 32]) -> Result<(), RuntimeError> {
-        if self.minted.contains_key(derivation) || self.minted.len() < self.limit {
-            return Ok(());
-        }
-        Err(RuntimeError::KvTaintRegistryFull { limit: self.limit })
-    }
-
-    /// Remember a minted derivation; the caller has checked [`TaintRegistry::mint_room`].
+    /// Remember a clean minted derivation, evicting the oldest clean mint when the bound is
+    /// reached. Never fails and never touches the live taint set.
     pub(crate) fn remember_minted(&mut self, derivation: [u8; 32], segment: Digest) {
-        self.minted.insert(derivation, segment);
+        if let Some((sequence, _)) = self.minted.remove(&derivation) {
+            self.minted_order.remove(&sequence);
+        }
+        while self.minted.len() >= self.mint_limit.max(1) {
+            let Some((_, oldest)) = self.minted_order.pop_first() else {
+                break;
+            };
+            self.minted.remove(&oldest);
+        }
+        let sequence = self.next_mint;
+        self.next_mint = self.next_mint.saturating_add(1);
+        self.minted.insert(derivation, (sequence, segment));
+        self.minted_order.insert(sequence, derivation);
+    }
+
+    /// Lower the clean-mint bound (tests only).
+    #[cfg(test)]
+    pub(crate) fn set_mint_limit(&mut self, limit: usize) {
+        self.mint_limit = limit;
     }
 
     /// Subjects of `subjects` not yet live, if adding them stays within the bound.
@@ -183,6 +228,9 @@ impl TaintRegistry {
             live: BTreeMap::new(),
             limit,
             minted: BTreeMap::new(),
+            minted_order: BTreeMap::new(),
+            next_mint: 0,
+            mint_limit: MAX_MINTED_DERIVATIONS,
         };
         let malformed =
             |reason| RuntimeError::KvTaint(KvTaintError::MalformedStateEntry { reason });
@@ -343,6 +391,16 @@ fn pod_output_recipe() -> Digest {
     integrity::sha256(POD_OUTPUT_RECIPE_DOMAIN)
 }
 
+/// The output digest a Pod candidate key (`pod-candidate:...:<hex>`) or hypothesis branch id
+/// (`pod-branch:...:<hex>`) ends in; `None` for any other key.
+fn named_pod_output(key: &str) -> Option<Digest> {
+    let (head, hex) = key.rsplit_once(':')?;
+    if !(head.starts_with("pod-candidate:") || head.starts_with("pod-branch:")) {
+        return None;
+    }
+    parse_digest(hex)
+}
+
 /// The boundary a SemDB write was refused at because its content is tainted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SemanticTaintBoundary {
@@ -421,6 +479,12 @@ impl PtrRuntime {
         let action = run_action(run)?;
         if let KvReuseTaint::Approximate { report_digest } = taint {
             let mut subjects = extra.to_vec();
+            // The generated text is tainted content too: fed back as `raw_text` or as a Pod
+            // payload it must not launder the taint (same text definition as the derived path).
+            let text = generated_text(run);
+            if !text.is_empty() {
+                subjects.push(content_subject(text.as_bytes()));
+            }
             if let Some(action) = action.as_ref() {
                 subjects.push((KvTaintSubjectKind::Action, taint_identity(action)));
             }
@@ -458,10 +522,12 @@ impl PtrRuntime {
 
     /// The taint of a Pod output: what the caller `supplied` joined with every live entry the
     /// runtime holds for the request id, the output's own PodOutput subject and payload Content
-    /// subject, and each dependency (as a PodOutput subject and as a Content subject over its
-    /// digest bytes). Enforcement never rests on the caller: a caller's Exact adds nothing, and
-    /// a recorded entry is found regardless. An Approximate `supplied` with an all-zero report
-    /// digest (no known report) is recorded under a fixed pod-supplied digest.
+    /// subject, each dependency as a PodOutput subject (a dependency is the digest of an earlier
+    /// output, never content), and every manifest binding (see
+    /// [`PtrRuntime::binding_kv_taint`]). Enforcement never rests on the caller: a caller's
+    /// Exact adds nothing, and a recorded entry is found regardless. An Approximate `supplied`
+    /// with an all-zero report digest (no known report) is recorded under a fixed pod-supplied
+    /// digest.
     pub(crate) fn pod_output_kv_taint(
         &self,
         request_id: &RequestId,
@@ -469,16 +535,14 @@ impl PtrRuntime {
         output_digest: &Digest,
         dependencies: &[Digest],
         payload: &[u8],
+        bindings: &[&LineageBinding],
     ) -> KvReuseTaint {
         let mut subjects = vec![
             request_subject(request_id),
             pod_output_subject(output_digest),
             content_subject(payload),
         ];
-        for dependency in dependencies {
-            subjects.push(pod_output_subject(dependency));
-            subjects.push(content_subject(dependency));
-        }
+        subjects.extend(dependencies.iter().map(|dep| pod_output_subject(dep)));
         let supplied = match supplied {
             KvReuseTaint::Approximate { report_digest } if report_digest == [0; 32] => {
                 KvReuseTaint::Approximate {
@@ -487,7 +551,42 @@ impl PtrRuntime {
             }
             other => other,
         };
-        self.live_taint(&subjects).join(supplied)
+        self.live_taint(&subjects)
+            .join(self.binding_kv_taint(bindings))
+            .join(supplied)
+    }
+
+    /// The taint of the stored content a Pod was bound to. For every manifest binding
+    /// `(key, generation, digest)`:
+    ///
+    /// * the value stored under `key` in the current snapshot, if any, by its Content subject
+    ///   (Text bytes or Payload bytes, exactly as the host-write check hashes a written value);
+    /// * a `key` in the Pod candidate (`pod-candidate:...:<output digest hex>`) or hypothesis
+    ///   (`pod-branch:...:<output digest hex>`) namespace by the PodOutput subject of the output
+    ///   digest it names, which also covers a hypothesis that lives in a branch, not the snapshot;
+    /// * the binding `digest` as a PodOutput subject, so a binding that names a tainted output
+    ///   by digest is tainted.
+    ///
+    /// Findings: a binding `digest` is the lineage digest of a Knowledge object or an artifact,
+    /// not the digest of a SemDB value, and `key` is the Knowledge or artifact id, so only a key
+    /// that happens to name a SemDB value (or a candidate or hypothesis key) resolves. Exact
+    /// whole-value digests only; a paraphrase is not detected.
+    pub(crate) fn binding_kv_taint(&self, bindings: &[&LineageBinding]) -> KvReuseTaint {
+        let snapshot = self.snapshot();
+        let mut subjects = Vec::new();
+        for binding in bindings {
+            subjects.push(pod_output_subject(&binding.digest));
+            if let Some(value) = snapshot.value(&binding.key) {
+                subjects.push(content_subject(match value {
+                    SemanticValue::Text(text) => text.as_bytes(),
+                    SemanticValue::Payload(payload) => payload.bytes.as_slice(),
+                }));
+            }
+            if let Some(output) = named_pod_output(&binding.key) {
+                subjects.push(pod_output_subject(&output));
+            }
+        }
+        self.live_taint(&subjects)
     }
 
     /// Refuse a SemDB write at `boundary` when `request` (if any) or any of `contents` is a live
@@ -612,11 +711,15 @@ impl PtrRuntime {
         check_encodable(event).map_err(|_| RuntimeError::KvTaint(KvTaintError::Unencodable))?;
         match change {
             KvTaintChange::Record { .. } => {
-                let fresh = subjects
+                if subjects
                     .iter()
-                    .filter(|subject| self.taint.get(subject).is_none())
-                    .count();
-                self.taint.room_for(fresh)
+                    .any(|subject| self.taint.get(subject).is_some())
+                {
+                    return Err(RuntimeError::KvTaint(
+                        KvTaintError::RecordSubjectAlreadyLive,
+                    ));
+                }
+                self.taint.room_for(subjects.len())
             }
             KvTaintChange::Clear { recipe_digest, .. } => subjects
                 .iter()
@@ -1018,11 +1121,70 @@ mod tests {
     }
 
     #[test]
+    fn a_pod_candidate_or_branch_key_names_the_output_digest_it_ends_in() {
+        let hex = "ab".repeat(32);
+        assert_eq!(
+            named_pod_output(&format!("pod-candidate:1:r:3:pod:{hex}")),
+            Some([0xab; 32])
+        );
+        assert_eq!(
+            named_pod_output(&format!("pod-branch:r:pod:{hex}")),
+            Some([0xab; 32])
+        );
+        assert_eq!(named_pod_output(&format!("other:{hex}")), None);
+        assert_eq!(named_pod_output("pod-candidate:1:r:3:pod:short"), None);
+        assert_eq!(
+            named_pod_output(&format!("pod-candidate:{}", "00".repeat(32))),
+            None,
+            "an all-zero digest names nothing"
+        );
+    }
+
+    #[test]
+    fn a_binding_is_tainted_by_its_stored_value_its_namespace_key_or_its_digest() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        runtime
+            .ingest_text(RequestId::from("r"), "tainted words")
+            .unwrap();
+        let bind = |key: &str, digest: Digest| LineageBinding {
+            key: key.into(),
+            generation: ptr_types::Generation(1),
+            digest,
+        };
+        let taint =
+            |runtime: &PtrRuntime, binding: &LineageBinding| runtime.binding_kv_taint(&[binding]);
+        let by_value = bind("request:r:raw", [1; 32]);
+        let by_branch = bind(&format!("pod-branch:r:pod:{}", "05".repeat(32)), [1; 32]);
+        let by_digest = bind("knowledge:x", [6; 32]);
+        for binding in [&by_value, &by_branch, &by_digest] {
+            assert_eq!(taint(&runtime, binding), KvReuseTaint::Exact);
+        }
+        runtime
+            .record_taint(
+                &[
+                    content_subject(b"tainted words"),
+                    pod_output_subject(&[5; 32]),
+                    pod_output_subject(&[6; 32]),
+                ],
+                REPORT,
+                RECIPE,
+            )
+            .unwrap();
+        for binding in [&by_value, &by_branch, &by_digest] {
+            assert!(taint(&runtime, binding).is_approximate(), "{binding:?}");
+        }
+        assert_eq!(
+            taint(&runtime, &bind("knowledge:y", [9; 32])),
+            KvReuseTaint::Exact
+        );
+    }
+
+    #[test]
     fn pod_output_taint_joins_registry_and_caller_and_finds_dependencies() {
         let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
         let request = RequestId::from("r");
         let lookup = |runtime: &PtrRuntime, supplied, deps: &[Digest]| {
-            runtime.pod_output_kv_taint(&request, supplied, &[1; 32], deps, b"payload")
+            runtime.pod_output_kv_taint(&request, supplied, &[1; 32], deps, b"payload", &[])
         };
         assert_eq!(
             lookup(&runtime, KvReuseTaint::Exact, &[]),
@@ -1057,7 +1219,14 @@ mod tests {
         );
         // Identical payload bytes are tainted whatever the caller says.
         assert!(runtime
-            .pod_output_kv_taint(&request, KvReuseTaint::Exact, &[2; 32], &[], b"earlier")
+            .pod_output_kv_taint(
+                &request,
+                KvReuseTaint::Exact,
+                &[2; 32],
+                &[],
+                b"earlier",
+                &[]
+            )
             .is_approximate());
         // Pod-side records use the fixed recipe, which a request recipe never equals.
         let entry = runtime

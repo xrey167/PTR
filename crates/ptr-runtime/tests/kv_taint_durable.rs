@@ -256,9 +256,51 @@ fn a_forged_clear_with_another_recipe_makes_reopen_fail() {
 }
 
 #[test]
+fn a_forged_duplicate_record_of_a_live_subject_makes_reopen_fail() {
+    // The compacted projection overwrites `kv-taint:<kind>:<hex>` on every Record while the
+    // registry keeps the first live entry, so a second Record of a live subject with another
+    // recipe would make a compacted restore differ from live and replayed state. It is refused.
+    let temp = Temp::new();
+    forged_log(
+        &temp,
+        vec![
+            taint_event([1; 32], record([2; 32])),
+            taint_event([1; 32], record([5; 32])),
+        ],
+    );
+    assert_eq!(
+        PtrRuntime::open_durable(PtrConfig::default(), temp.log()).err(),
+        Some(RuntimeError::KvTaint(
+            KvTaintError::RecordSubjectAlreadyLive
+        ))
+    );
+    let ledger = FileLedger::open(temp.log()).unwrap();
+    assert_eq!(
+        PtrRuntime::replay(PtrConfig::default(), ledger.events()).err(),
+        Some(RuntimeError::KvTaint(
+            KvTaintError::RecordSubjectAlreadyLive
+        ))
+    );
+}
+
+#[test]
+fn a_record_after_a_clear_of_the_same_subject_is_not_a_duplicate() {
+    let temp = Temp::new();
+    forged_log(
+        &temp,
+        vec![
+            taint_event([1; 32], record([2; 32])),
+            taint_event([1; 32], clear([2; 32])),
+            taint_event([1; 32], record([5; 32])),
+        ],
+    );
+    assert!(PtrRuntime::open_durable(PtrConfig::default(), temp.log()).is_ok());
+}
+
+#[test]
 fn a_forged_record_is_applied_and_a_matching_clear_is_honoured() {
-    // A Record written straight into the log applies: taint only ever refuses more, so
-    // replay has no reason to reject it. A Clear is different (it lifts a refusal), so it
+    // A Record of a subject that is not live, written straight into the log, applies: taint
+    // only ever refuses more, so replay has no reason to reject it. A Clear is different (it lifts a refusal), so it
     // must match a live Record with the same recipe, as here.
     let temp = Temp::new();
     let tainted = action(b"forged");

@@ -1427,8 +1427,11 @@ impl PtrRuntime {
     {
         let raw_text = raw_text.into();
         // Raw text that is exactly a live tainted content subject (tainted output re-presented
-        // as request text) keeps its taint: the run's action is recorded as Approximate.
-        let raw_taint = self.text_kv_taint(raw_text.as_bytes());
+        // as request text) keeps its taint: the run's action is recorded as Approximate. So does
+        // a request id that is already a live Request subject (a reused id of an Approximate run).
+        let raw_taint = self
+            .text_kv_taint(raw_text.as_bytes())
+            .join(self.request_kv_taint(&request_id));
         let _revision = self.ingest_text(request_id.clone(), raw_text)?;
         let model_run = infer(self.snapshot().semantic_context())
             .map_err(|error| RuntimeError::Model(error.0))?;
@@ -2149,12 +2152,21 @@ impl PtrRuntime {
         // Approximate-KV taint is decided before the verifier runs: a tainted output of a
         // promoting or acting kind must not even be judged, and nothing is appended.
         let output_digest = request.output.digest();
+        let bindings: Vec<&ptr_pods::LineageBinding> = request
+            .manifest
+            .knowledge
+            .iter()
+            .chain(request.manifest.artifacts.iter())
+            .chain(request.manifest.reader.iter())
+            .chain(request.manifest.adapter.iter())
+            .collect();
         let kv_taint = self.pod_output_kv_taint(
             &request.request_id,
             request.kv_taint,
             &output_digest,
             &request.output.dependencies,
             &request.output.payload.bytes,
+            &bindings,
         );
         if let ptr_model_api::KvReuseTaint::Approximate { report_digest } = kv_taint {
             match request.output.kind {
