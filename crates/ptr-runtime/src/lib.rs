@@ -436,10 +436,13 @@ pub enum RuntimeError {
     ApproximateStateAtEffectBoundary {
         report_digest: ptr_types::Digest,
     },
-    /// The bounded registry of tainted actions is full; the run is refused.
+    /// The bounded registry of live taint subjects is full; the run is refused before anything
+    /// is appended.
     KvTaintRegistryFull {
         limit: usize,
     },
+    /// The taint registry refused a change, a replayed record or a restored state (fail closed).
+    KvTaint(kv_taint::KvTaintError),
     PodUnavailable {
         capability: String,
         input_type: String,
@@ -676,8 +679,9 @@ pub struct PtrRuntime {
     /// The revision at which each semantic key was last affected by a committed delta; the
     /// use-time liveness check of a semantic KV dependency reads it.
     semantic_edits: kv_prefix::SemanticEdits,
-    /// Actions ingested from Approximate-reuse runs; refused by `authorize_action`.
-    tainted_actions: kv_taint::TaintedActions,
+    /// Live approximate-KV taint subjects, projected from the committed `KvTaintCommitted`
+    /// records; actions in it are refused by `authorize_action`.
+    taint: kv_taint::TaintRegistry,
 }
 
 impl PtrRuntime {
@@ -730,7 +734,7 @@ impl PtrRuntime {
             experts: expert::ExpertRegistryProjection::default(),
             kv_catalog: None,
             semantic_edits: kv_prefix::SemanticEdits::default(),
-            tainted_actions: kv_taint::TaintedActions::default(),
+            taint: kv_taint::TaintRegistry::default(),
         })
     }
 
@@ -2967,10 +2971,11 @@ impl PtrRuntime {
             | LedgerEvent::ProcedureRevoked { .. }
             | LedgerEvent::VerifierAttested { .. }
             | LedgerEvent::SnapshotCommitted { .. } => Ok(()),
-            // The taint registry is not built yet (work package 2): a taint record replays as a
-            // no-op. The codec has already checked its shape; a runtime-written record is
-            // never refused here, only a directly committed one ([`validate_new_record`]).
-            LedgerEvent::KvTaintCommitted { .. } => Ok(()),
+            // A Record must stay within the live bound, a Clear must name live subjects of the
+            // same recipe; otherwise the log is refused (fail closed). A forged Record applies
+            // (taint only refuses more). Only a directly committed record is refused earlier
+            // ([`validate_new_record`]).
+            LedgerEvent::KvTaintCommitted { .. } => self.validate_kv_taint_event(event),
         }
     }
 
@@ -3086,9 +3091,8 @@ impl PtrRuntime {
             }
             LedgerEvent::MeshTunnelLifecycle(_)
             | LedgerEvent::PodEvidenceCommitted { .. }
-            | LedgerEvent::PodOutputAdmitted { .. }
-            // The taint registry arrives with work package 2; applying a taint record is a no-op.
-            | LedgerEvent::KvTaintCommitted { .. } => {}
+            | LedgerEvent::PodOutputAdmitted { .. } => {}
+            LedgerEvent::KvTaintCommitted { .. } => self.apply_kv_taint_event(&committed.event),
             LedgerEvent::ExpertStructuralCommitted { .. } => {
                 self.apply_expert_event(&committed.event)?;
             }
