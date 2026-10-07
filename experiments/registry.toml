@@ -373,4 +373,4 @@ status = "prepared"
 [[experiment]]
 id = "R012"
 path = "runtime/R012-approximate-taint-containment"
-status = "planned"
+status = "prepared"
