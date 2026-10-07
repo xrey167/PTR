@@ -73,10 +73,15 @@ impl<'a> NamedVerifier<SemanticChange<'a>> for MergePass {
 }
 
 fn manifest() -> ExecutionManifest {
+    manifest_bound_to("knowledge:fact")
+}
+
+/// A manifest whose one knowledge binding names `key` (the digest stays `[3; 32]`).
+fn manifest_bound_to(key: &str) -> ExecutionManifest {
     ExecutionManifest::build(
         Generation(1),
         vec![LineageBinding {
-            key: "knowledge:fact".into(),
+            key: key.into(),
             generation: Generation(1),
             digest: [3; 32],
         }],
@@ -125,7 +130,14 @@ fn approximate() -> KvReuseTaint {
 }
 
 fn request(kind: PodOutputKind, kv_taint: KvReuseTaint) -> PodOutputAdmissionRequest {
-    let manifest = manifest();
+    request_with(manifest(), kind, kv_taint)
+}
+
+fn request_with(
+    manifest: ExecutionManifest,
+    kind: PodOutputKind,
+    kv_taint: KvReuseTaint,
+) -> PodOutputAdmissionRequest {
     let manifest_digest = manifest.manifest_digest;
     PodOutputAdmissionRequest {
         request_id: RequestId::from("request"),
@@ -606,4 +618,113 @@ fn a_host_write_of_tainted_content_is_refused_and_other_values_are_accepted() {
     ));
     assert_eq!(runtime.committed_events().len(), before);
     assert!(write(&mut runtime, "a different value".into()).is_ok());
+}
+
+/// A later Pod request (other request id, other payload, Exact from the caller's view) bound to
+/// `key` as its knowledge binding.
+fn bound_request(key: &str, kind: PodOutputKind) -> PodOutputAdmissionRequest {
+    let mut later = request_with(manifest_bound_to(key), kind, KvReuseTaint::Exact);
+    later.request_id = RequestId::from("later-request");
+    later.output.payload.bytes = b"a different payload".to_vec();
+    later
+}
+
+/// A tainted candidate stored by an earlier Pod; returns its semantic key and output digest.
+fn store_tainted_candidate(runtime: &mut PtrRuntime) -> (String, ptr_types::Digest) {
+    let earlier = request(PodOutputKind::Observation, approximate());
+    let digest = earlier.output.digest();
+    match runtime
+        .admit_pod_output(earlier, &Counting::default())
+        .unwrap()
+    {
+        PodOutputAdmission::ObservationCandidate { semantic_key, .. } => (semantic_key, digest),
+        other => panic!("unexpected admission {other:?}"),
+    }
+}
+
+#[test]
+fn a_pod_bound_to_a_tainted_stored_candidate_cannot_promote_or_act() {
+    for kind in [
+        PodOutputKind::StateDelta,
+        PodOutputKind::VerifiedResult,
+        PodOutputKind::ActionProposal,
+    ] {
+        let mut runtime = runtime_with_scope();
+        let (key, _) = store_tainted_candidate(&mut runtime);
+        let before = runtime.committed_events().len();
+        let verifier = Counting::default();
+        let result = runtime.admit_pod_output(bound_request(&key, kind), &verifier);
+        assert!(
+            matches!(
+                &result,
+                Err(RuntimeError::ApproximatePodOutput { kind: refused, report_digest })
+                    if *refused == kind && *report_digest == REPORT
+            ),
+            "{kind:?}: {result:?}"
+        );
+        assert_eq!(verifier.calls(), 0, "{kind:?}: the verifier must not run");
+        assert_eq!(
+            runtime.committed_events().len(),
+            before,
+            "{kind:?}: appended"
+        );
+    }
+}
+
+#[test]
+fn a_binding_to_a_tainted_hypothesis_by_branch_id_taints_the_output() {
+    let mut runtime = runtime_with_scope();
+    let hypothesis = request(PodOutputKind::Hypothesis, approximate());
+    let digest = hypothesis.output.digest();
+    runtime
+        .admit_pod_output(hypothesis, &Counting::default())
+        .unwrap();
+    // A hypothesis lives in a branch, not in the snapshot: the binding names it by branch id.
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let key = format!("pod-branch:request:pod:{hex}");
+    let before = runtime.committed_events().len();
+    let verifier = Counting::default();
+    let result =
+        runtime.admit_pod_output(bound_request(&key, PodOutputKind::StateDelta), &verifier);
+    assert!(
+        matches!(&result, Err(RuntimeError::ApproximatePodOutput { .. })),
+        "{result:?}"
+    );
+    assert_eq!(verifier.calls(), 0);
+    assert_eq!(runtime.committed_events().len(), before);
+}
+
+#[test]
+fn a_candidate_output_bound_to_tainted_content_is_stored_as_a_tainted_candidate() {
+    let mut runtime = runtime_with_scope();
+    let (key, _) = store_tainted_candidate(&mut runtime);
+    runtime
+        .ingest_text(RequestId::from("later-request"), "later input")
+        .unwrap();
+    let before = taint_record_count(&runtime);
+    runtime
+        .admit_pod_output(
+            bound_request(&key, PodOutputKind::Observation),
+            &Counting::default(),
+        )
+        .unwrap();
+    assert_eq!(taint_record_count(&runtime), before + 1);
+}
+
+#[test]
+fn an_untainted_binding_does_not_refuse_the_output() {
+    let mut runtime = runtime_with_scope();
+    store_tainted_candidate(&mut runtime);
+    // A binding to ordinary stored content (the request's own ingress record) and to a key
+    // that names nothing stored are both unaffected.
+    for key in ["request:request:raw", "knowledge:fact"] {
+        let verifier = Counting::default();
+        let result =
+            runtime.admit_pod_output(bound_request(key, PodOutputKind::StateDelta), &verifier);
+        assert!(
+            !matches!(&result, Err(RuntimeError::ApproximatePodOutput { .. })),
+            "{key}: {result:?}"
+        );
+        assert_eq!(verifier.calls(), 1, "{key}: the verifier ran");
+    }
 }

@@ -36,8 +36,9 @@
 //! first, before the result is returned. The returned [`DerivedRun`] carries a `Derived`
 //! segment (id `kv-derived:<hex of the Derivation subject digest>`, generation 0) holding the
 //! generated text, which the next hop feeds back in; its taint is read from the registry.
-//! Minted derivations are remembered in memory (bounded like the registry) so a clean one is
-//! recognised until a restart. A run that generated no text cannot mint a segment and is
+//! Clean minted derivations are remembered in memory, in a bounded FIFO of 65,536 (the oldest is
+//! forgotten first, which only makes its id `UnknownDerivedSegment`, like after a restart; the live
+//! taint registry is never evicted), so a clean one is recognised until a restart or eviction. A run that generated no text cannot mint a segment and is
 //! refused with [`RuntimeError::DerivedRunUnavailable`] before anything is recorded.
 //!
 //! # Clearing
@@ -141,7 +142,9 @@ fn parse_derived_id(id: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
-fn generated_text(run: &ModelRun) -> String {
+/// The generated text of a run: its `Token` events in order. The Content subject of a run's
+/// output is `content_subject` over these bytes, on the plain and the derived path alike.
+pub(crate) fn generated_text(run: &ModelRun) -> String {
     run.events
         .iter()
         .filter_map(|event| match event {
@@ -166,6 +169,11 @@ impl PtrRuntime {
             .map_or(KvReuseTaint::Exact, |entry| KvReuseTaint::Approximate {
                 report_digest: entry.report_digest,
             })
+    }
+
+    /// The taint of a request id by its Request subject (never cleared once recorded).
+    pub(crate) fn request_kv_taint(&self, request_id: &RequestId) -> KvReuseTaint {
+        self.subject_kv_taint(&request_subject(request_id))
     }
 
     /// The taint of a text by its exact whole-text Content digest.
@@ -247,7 +255,7 @@ impl PtrRuntime {
     /// Those of [`PtrRuntime::admit_segments`]; [`RuntimeError::MixedControlEvents`] and
     /// [`RuntimeError::MultipleControlEvents`] as for [`PtrRuntime::ingest_model_run`];
     /// [`RuntimeError::DerivedRunUnavailable`] when the run generated no text;
-    /// [`RuntimeError::KvTaintRegistryFull`]; or a ledger error.
+    /// [`RuntimeError::KvTaintRegistryFull`] (live taint registry only); or a ledger error.
     pub fn ingest_derived_run(
         &mut self,
         request: &DerivedRunRequest<'_>,
@@ -280,7 +288,6 @@ impl PtrRuntime {
         .map_err(|_| RuntimeError::DerivedRunUnavailable {
             reason: "the generated text is no valid segment",
         })?;
-        self.taint.mint_room(&derivation.1)?;
         let content = content_subject(text.as_bytes());
         let action_subject = action
             .as_ref()
@@ -302,8 +309,12 @@ impl PtrRuntime {
             }
             KvReuseTaint::Exact => {}
         }
-        self.taint
-            .remember_minted(derivation.1, *segment.content_digest());
+        // Only a clean mint needs remembering: a tainted derivation is recognised from the
+        // persistent registry, so it must not use up the bounded clean-mint memory.
+        if !taint.is_approximate() {
+            self.taint
+                .remember_minted(derivation.1, *segment.content_digest());
+        }
         Ok(DerivedRun {
             segment,
             taint,
@@ -350,6 +361,95 @@ impl PtrRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ptr_config::PtrConfig;
+    use ptr_model_api::{KvReuseMode, KvReusePolicy, KvReuseReport};
+    use ptr_types::{Revision, SemanticContext};
+
+    fn raw_request(runtime: &mut PtrRuntime, id: &str, text: &str) -> SegmentedModelRequest {
+        runtime.ingest_text(RequestId::from(id), text).unwrap();
+        let tokenizer = ByteTokenizer::new();
+        SegmentedModelRequest::new(
+            RequestId::from(id),
+            SemanticContext {
+                revision: Revision(0),
+                entries: Vec::new(),
+            },
+            tokenizer.identity().clone(),
+            vec![PromptSegment::raw_from_text(&tokenizer, text).unwrap()],
+        )
+        .unwrap()
+    }
+
+    fn clean_run(text: &str) -> ModelRun {
+        ModelRun {
+            events: vec![ModelEvent::Token(text.into()), ModelEvent::Finished],
+            kv_report: Some(
+                KvReuseReport::new(0, KvReuseMode::Exact, 0, KvReusePolicy::ExactOnly).unwrap(),
+            ),
+        }
+    }
+
+    fn hop_clean(runtime: &mut PtrRuntime, id: &str, text: &str) -> DerivedRun {
+        let request = raw_request(runtime, id, text);
+        runtime
+            .ingest_derived_run(
+                &DerivedRunRequest {
+                    request_id: request.request_id(),
+                    request: &request,
+                    producer: "p",
+                    generation_parameters: b"",
+                },
+                &clean_run("out"),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn the_clean_mint_memory_is_a_fifo_that_never_fills_up_or_touches_the_taint_registry() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        runtime.taint.set_mint_limit(2);
+        let first = hop_clean(&mut runtime, "r1", "one");
+        let second = hop_clean(&mut runtime, "r2", "two");
+        // The third mint evicts the oldest instead of refusing with KvTaintRegistryFull.
+        let third = hop_clean(&mut runtime, "r3", "three");
+        let next = |runtime: &mut PtrRuntime, id: &str, segment: &PromptSegment| {
+            runtime.ingest_text(RequestId::from(id), "x").unwrap();
+            let request = SegmentedModelRequest::new(
+                RequestId::from(id),
+                SemanticContext {
+                    revision: Revision(0),
+                    entries: Vec::new(),
+                },
+                ByteTokenizer::new().identity().clone(),
+                vec![
+                    PromptSegment::raw_from_text(&ByteTokenizer::new(), "x").unwrap(),
+                    segment.clone(),
+                ],
+            )
+            .unwrap();
+            runtime.admit_segments(request.request_id(), &request)
+        };
+        assert_eq!(
+            next(&mut runtime, "q1", &first.segment),
+            Err(RuntimeError::UnknownDerivedSegment { segment: 1 })
+        );
+        assert!(next(&mut runtime, "q2", &second.segment).is_ok());
+        assert!(next(&mut runtime, "q3", &third.segment).is_ok());
+        // A re-mint refreshes its place: after it, the other one is the oldest.
+        let again = hop_clean(&mut runtime, "r2", "two");
+        let fourth = hop_clean(&mut runtime, "r4", "four");
+        assert!(next(&mut runtime, "q4", &again.segment).is_ok());
+        assert!(next(&mut runtime, "q5", &fourth.segment).is_ok());
+        assert_eq!(
+            next(&mut runtime, "q6", &third.segment),
+            Err(RuntimeError::UnknownDerivedSegment { segment: 1 })
+        );
+        // Clean mints never appended a taint record.
+        assert!(runtime.committed_events().iter().all(|committed| !matches!(
+            committed.event,
+            ptr_ledger::LedgerEvent::KvTaintCommitted { .. }
+        )));
+    }
 
     #[test]
     fn a_derived_id_round_trips_and_malformed_ids_are_refused() {
