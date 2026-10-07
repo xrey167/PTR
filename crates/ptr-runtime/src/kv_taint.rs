@@ -244,6 +244,40 @@ fn request_recipe(request: &KvTaintRequest<'_>) -> Digest {
     integrity::sha256(&material)
 }
 
+const CONTENT_DOMAIN: &[u8] = b"ptr.kv.taint.content.v1\0";
+const DERIVATION_DOMAIN: &[u8] = b"ptr.kv.taint.derivation.v1\0";
+const POD_OUTPUT_DOMAIN: &[u8] = b"ptr.kv.taint.pod-output.v1\0";
+
+/// The Content subject of some bytes (generated text, a segment's UTF-8 text, a semantic
+/// value's text, a Pod payload): SHA-256 over a domain tag and the length-prefixed bytes.
+/// Every taint check that matches content uses this one definition, so the derivation,
+/// segment-admission, Pod and SemDB paths cannot disagree on what "the same content" is.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn content_subject(bytes: &[u8]) -> TaintSubject {
+    let mut material = Vec::from(CONTENT_DOMAIN);
+    put_len_prefixed(&mut material, bytes);
+    (KvTaintSubjectKind::Content, integrity::sha256(&material))
+}
+
+/// The Derivation subject of a derived value: SHA-256 over a domain tag and its recipe digest.
+/// A derived value is identified by how it was made, so a cold recomputation of the same
+/// recipe names the same Derivation subject.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn derivation_subject(recipe_digest: &Digest) -> TaintSubject {
+    let mut material = Vec::from(DERIVATION_DOMAIN);
+    material.extend_from_slice(recipe_digest);
+    (KvTaintSubjectKind::Derivation, integrity::sha256(&material))
+}
+
+/// The PodOutput subject of a Pod output: SHA-256 over a domain tag and the length-prefixed
+/// output identity bytes the Pod admission path names it by.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn pod_output_subject(output_identity: &[u8]) -> TaintSubject {
+    let mut material = Vec::from(POD_OUTPUT_DOMAIN);
+    put_len_prefixed(&mut material, output_identity);
+    (KvTaintSubjectKind::PodOutput, integrity::sha256(&material))
+}
+
 /// Sorted, de-duplicated subjects in the canonical ledger order.
 fn canonical(subjects: &[TaintSubject]) -> Vec<TaintSubject> {
     let mut subjects = subjects.to_vec();
@@ -801,6 +835,23 @@ mod tests {
             TaintRegistry::from_materialized_within(&entries, 2).err(),
             Some(RuntimeError::KvTaintRegistryFull { limit: 2 })
         );
+    }
+
+    #[test]
+    fn shared_subject_digests_are_kind_tagged_domain_separated_and_input_bound() {
+        let content = content_subject(b"abc");
+        assert_eq!(content.0, KvTaintSubjectKind::Content);
+        assert_eq!(content, content_subject(b"abc"));
+        assert_ne!(content.1, content_subject(b"abd").1);
+        assert_ne!(content.1, integrity::sha256(b"abc"));
+        let pod = pod_output_subject(b"abc");
+        assert_eq!(pod.0, KvTaintSubjectKind::PodOutput);
+        assert_ne!(pod.1, content.1);
+        let derivation = derivation_subject(&[7; 32]);
+        assert_eq!(derivation.0, KvTaintSubjectKind::Derivation);
+        assert_eq!(derivation, derivation_subject(&[7; 32]));
+        assert_ne!(derivation.1, derivation_subject(&[8; 32]).1);
+        assert_ne!(derivation.1, [7; 32]);
     }
 
     #[test]
