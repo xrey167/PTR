@@ -26,16 +26,18 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use ptr_branch::{
-    calibration_draw, certify, BranchId, Certification, CertificationKind, MergePlan, PolicyRecord,
-    SealedBranch, TriageDecision, TriageOutcome, TriageOutcomeParts,
+    calibration_draw, certify, BranchId, BranchOp, Certification, CertificationKind, MergePlan,
+    PolicyRecord, SealedBranch, TriageDecision, TriageOutcome, TriageOutcomeParts,
 };
 use ptr_events::RuntimeEvent;
 use ptr_ledger::{Attestation, LedgerEvent, MergeAuthorityRecord, MergeRecord, SemanticOrigin};
-use ptr_semdb::{PreparedDelta, PreparedView, SemanticDelta};
+use ptr_model_api::KvReuseTaint;
+use ptr_semdb::{PreparedDelta, PreparedView, SemanticDelta, SemanticValue};
 use ptr_types::{CommitIndex, PrincipalId, Probability, Revision, VerificationLevel};
 use ptr_verifier::{NamedVerifier, VerificationReport, VerificationStatus};
 
 use crate::execution::{self, RequiredVerification};
+use crate::kv_taint::{content_subject, pod_output_subject, SemanticTaintBoundary, TaintSubject};
 use crate::semantic::{evicted_ingress_key, written_ingress_key, SemanticCommit};
 use crate::{PtrRuntime, RuntimeError};
 
@@ -779,6 +781,7 @@ impl PtrRuntime {
             .semantic_grant
             .as_ref()
             .ok_or(RuntimeError::NoSemanticGrant)?;
+        self.check_branch_taint(sealed)?;
         let certified = self.certify_merge(sealed)?;
         self.judge_merge(grant, sealed, certified)?
             .merge
@@ -791,6 +794,12 @@ impl PtrRuntime {
     /// the sealed branch, the plan, the verifiers and `authority`, only if
     /// they admit it and the authority allows it. This is the only way a
     /// branch reaches semantic state, and a branch id is merged at most once.
+    ///
+    /// Before every step below, a branch holding Approximate-tainted content (a tainted
+    /// Pod hypothesis, or a value whose Content subject is live in the taint registry) is
+    /// refused with [`RuntimeError::ApproximateSemanticContent`] under every
+    /// [`MergeAuthority`], a Triage score of 1.0 included; [`Self::preview_merge`] refuses it
+    /// the same way.
     ///
     /// In order, it refuses:
     /// 1. a fenced runtime ([`RuntimeError::ExecutionFenced`]);
@@ -858,6 +867,9 @@ impl PtrRuntime {
             .semantic_grant
             .as_ref()
             .ok_or(RuntimeError::NoSemanticGrant)?;
+        // Before any authority is weighed: no Triage score and no reviewer's approval turns a
+        // branch holding Approximate-tainted content into a merge.
+        self.check_branch_taint(sealed)?;
         let authorized = match authority {
             MergeAuthority::Triage { score } => {
                 let (policy, seed) = grant.merge_policy().ok_or(RuntimeError::NoMergePolicy)?;
@@ -993,6 +1005,48 @@ impl PtrRuntime {
             triage,
             policy_version,
         }))
+    }
+
+    /// Refuse a branch that holds Approximate-tainted content, whatever authority would
+    /// merge it (a learned score never overrides a deterministic refusal). A branch holds
+    /// tainted content when
+    /// * it is the branch of a persisted Pod hypothesis whose PodOutput subject or payload
+    ///   Content subject is live in the taint registry, or
+    /// * any value it puts has a live Content subject (exact whole-value digest).
+    ///
+    /// Nothing is appended and the runtime stays unfenced.
+    fn check_branch_taint(&self, sealed: &SealedBranch) -> Result<(), RuntimeError> {
+        let mut subjects: Vec<TaintSubject> = Vec::new();
+        for op in sealed.ops() {
+            if let BranchOp::Put { value, .. } = op {
+                subjects.push(match value {
+                    SemanticValue::Text(text) => content_subject(text.as_bytes()),
+                    SemanticValue::Payload(payload) => content_subject(&payload.bytes),
+                });
+            }
+        }
+        if let Some(hypothesis) = self.hypothesis(&sealed.id().0) {
+            subjects.push(content_subject(&hypothesis.output.bytes));
+            subjects.extend(self.committed_events().iter().filter_map(|committed| {
+                match &committed.event {
+                    LedgerEvent::PodHypothesisCommitted {
+                        branch_id,
+                        output_digest,
+                        ..
+                    } if *branch_id == sealed.id().0 => Some(pod_output_subject(output_digest)),
+                    _ => None,
+                }
+            }));
+        }
+        match self.live_taint(&subjects) {
+            KvReuseTaint::Exact => Ok(()),
+            KvReuseTaint::Approximate { report_digest } => {
+                Err(RuntimeError::ApproximateSemanticContent {
+                    boundary: SemanticTaintBoundary::BranchMerge,
+                    report_digest,
+                })
+            }
+        }
     }
 
     /// Steps 4 to 6 of [`Self::merge_branch`], and the plan's digest, whose

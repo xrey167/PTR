@@ -114,6 +114,12 @@ pub struct PodOutputAdmissionRequest {
     pub scope_id: ScopeId,
     pub placement_epoch: PlacementEpoch,
     pub fencing_token: FencingToken,
+    /// What the caller knows of the output's KV-reuse provenance. The runtime joins it with
+    /// its own registry (the request id, the output identity, its payload and its
+    /// dependencies), so an Exact here never un-taints what the runtime recorded.
+    /// `StateDelta`, `VerifiedResult` and `ActionProposal` outputs are refused when the join is
+    /// Approximate; the other kinds are stored as tainted candidates or hypotheses.
+    pub kv_taint: ptr_model_api::KvReuseTaint,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -611,6 +617,19 @@ pub enum RuntimeError {
     InvalidSemanticOrigin {
         index: Option<CommitIndex>,
         reason: &'static str,
+    },
+    /// A Pod output of a promoting or acting kind (`StateDelta`, `VerifiedResult`,
+    /// `ActionProposal`) whose KV-reuse taint is Approximate was refused before the verifier ran
+    /// and before anything was appended.
+    ApproximatePodOutput {
+        kind: PodOutputKind,
+        report_digest: ptr_types::Digest,
+    },
+    /// A SemDB write (`boundary`) was refused because its request or content is tainted by
+    /// Approximate KV reuse; nothing was appended.
+    ApproximateSemanticContent {
+        boundary: kv_taint::SemanticTaintBoundary,
+        report_digest: ptr_types::Digest,
     },
 }
 
@@ -2100,6 +2119,33 @@ impl PtrRuntime {
                 current: request.manifest.snapshot_revision,
             });
         }
+        // Approximate-KV taint is decided before the verifier runs: a tainted output of a
+        // promoting or acting kind must not even be judged, and nothing is appended.
+        let output_digest = request.output.digest();
+        let kv_taint = self.pod_output_kv_taint(
+            &request.request_id,
+            request.kv_taint,
+            &output_digest,
+            &request.output.dependencies,
+            &request.output.payload.bytes,
+        );
+        if let ptr_model_api::KvReuseTaint::Approximate { report_digest } = kv_taint {
+            match request.output.kind {
+                PodOutputKind::StateDelta
+                | PodOutputKind::VerifiedResult
+                | PodOutputKind::ActionProposal => {
+                    return Err(RuntimeError::ApproximatePodOutput {
+                        kind: request.output.kind,
+                        report_digest,
+                    });
+                }
+                PodOutputKind::Observation
+                | PodOutputKind::Candidate
+                | PodOutputKind::ToolResult
+                | PodOutputKind::EnvironmentObservation
+                | PodOutputKind::Hypothesis => {}
+            }
+        }
         let report = verifier.verify(&request.output.payload);
         let passed = report.status == VerificationStatus::Pass
             && !report.findings.iter().any(|finding| finding.hard);
@@ -2112,7 +2158,6 @@ impl PtrRuntime {
                 pod: request.pod_id.to_string(),
             });
         }
-        let output_digest = request.output.digest();
         let action = if request.output.kind == PodOutputKind::ActionProposal {
             let action = decode_action_payload(&request.output.payload.bytes)
                 .map_err(RuntimeError::PodOutputAdmission)?;
@@ -2129,6 +2174,18 @@ impl PtrRuntime {
             None
         };
 
+        // Taint first: the registry record precedes the admission, the candidate and the
+        // hypothesis record, so a crash in between leaves a stray taint record (which only
+        // refuses more), never an untainted candidate. It also precedes the retry lookup below,
+        // so a retry of an earlier admission is contained too. A full registry refuses here,
+        // before anything of this admission is appended.
+        if let ptr_model_api::KvReuseTaint::Approximate { report_digest } = kv_taint {
+            self.record_pod_output_taint(
+                &output_digest,
+                &request.output.payload.bytes,
+                report_digest,
+            )?;
+        }
         // A retry finds the admission record of an earlier attempt. The record
         // says the output was admitted, not that what follows it was applied:
         // promotion is a separate commit that can fail after it. So the earlier
