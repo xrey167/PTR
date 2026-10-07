@@ -2967,6 +2967,10 @@ impl PtrRuntime {
             | LedgerEvent::ProcedureRevoked { .. }
             | LedgerEvent::VerifierAttested { .. }
             | LedgerEvent::SnapshotCommitted { .. } => Ok(()),
+            // The taint registry is not built yet (work package 2): a taint record replays as a
+            // no-op. The codec has already checked its shape; a runtime-written record is
+            // never refused here, only a directly committed one ([`validate_new_record`]).
+            LedgerEvent::KvTaintCommitted { .. } => Ok(()),
         }
     }
 
@@ -3082,7 +3086,9 @@ impl PtrRuntime {
             }
             LedgerEvent::MeshTunnelLifecycle(_)
             | LedgerEvent::PodEvidenceCommitted { .. }
-            | LedgerEvent::PodOutputAdmitted { .. } => {}
+            | LedgerEvent::PodOutputAdmitted { .. }
+            // The taint registry arrives with work package 2; applying a taint record is a no-op.
+            | LedgerEvent::KvTaintCommitted { .. } => {}
             LedgerEvent::ExpertStructuralCommitted { .. } => {
                 self.apply_expert_event(&committed.event)?;
             }
@@ -3280,11 +3286,15 @@ impl PtrRuntime {
 ///
 /// An expert structural record is refused the same way
 /// ([`RuntimeError::StructuralRecordOutsideAdmissionPath`]): only the expert admission path may
-/// build one. So is an expert fence record: only `fence_expert` and `readmit_expert` may.
+/// build one. So is an expert fence record: only `fence_expert` and `readmit_expert` may. A taint
+/// record ([`LedgerEvent::KvTaintCommitted`]) is refused the same way: only the runtime's taint
+/// path may write one.
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
     if matches!(
         event,
-        LedgerEvent::ExpertStructuralCommitted { .. } | LedgerEvent::ExpertFenceCommitted { .. }
+        LedgerEvent::ExpertStructuralCommitted { .. }
+            | LedgerEvent::ExpertFenceCommitted { .. }
+            | LedgerEvent::KvTaintCommitted { .. }
     ) {
         return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
     }

@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-05  
-**Code footprint:** 17 Rust source files · 6541 nonblank source lines · 2 integration-test files · 158 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 17 Rust source files · 6579 nonblank source lines · 2 integration-test files · 159 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -58,6 +58,7 @@
 - Rebuild drops the instance's own projection and derived schemas and replays; working state survives. drop_all, for tests and decommissioning, drops all three without the migration lock, which its caller must serialize
 - ExpertStructuralCommitted maps to no lifecycle change, topic expert.structural_committed, subject project:<project> and an event payload that adds an expert object with the op code and the proposal, operation and evidence digests in hex; its record bytes are not stored
 - ExpertFenceCommitted maps to no lifecycle change, topic expert.fence_committed, subject project:<project> and the entry the shared ptr-state projection yields (expert:<project>/<pod> = <generation>:fenced|serving|frozen:<epoch>); the projection still holds no expert catalog
+- KvTaintCommitted maps to no lifecycle change, topic kv.taint_committed, subject kv-taint:<kind>:<hex> of its first subject and the kv-taint entries of the shared ptr-state projection; there is no taint table
 
 ### Missing for the target architecture
 

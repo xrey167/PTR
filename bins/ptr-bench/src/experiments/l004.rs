@@ -1090,6 +1090,7 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
         LedgerEvent::ExpertStructuralCommitted { .. } => "expert.structural_committed",
         LedgerEvent::ExpertFenceCommitted { .. } => "expert.fence_committed",
+        LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
     }
 }
 
@@ -1167,6 +1168,10 @@ fn expected_subject(record: &CommittedEvent) -> String {
         } => format!("tier-replica:{}:{backend_id}", hex_of(root_digest)),
         LedgerEvent::ExpertStructuralCommitted { project, .. }
         | LedgerEvent::ExpertFenceCommitted { project, .. } => format!("project:{project}"),
+        LedgerEvent::KvTaintCommitted { subjects, .. } => match subjects.first() {
+            Some((kind, digest)) => format!("kv-taint:{}:{}", kind.name(), hex_of(digest)),
+            None => "kv-taint:none".to_owned(),
+        },
     }
 }
 
