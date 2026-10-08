@@ -74,7 +74,7 @@ use crate::{
     KvLivenessOracle, KvPin, KvPrefixCatalog, KvRestoreReport, KvSalt, KvSnapshotError,
     KV_CHUNK_TOKENS,
 };
-use ptr_ledger::LedgerEvent;
+use ptr_ledger::{InputInvalidationKind, LedgerEvent};
 use ptr_model_api::{
     ByteTokenizer, InferenceBackend, KvReuseHint, KvReusePolicy, KvReusingBackend, ModelError,
     ModelEvent, ModelRequest, ModelRun, PromptSegment, SegmentedModelRequest, TokenContractError,
@@ -199,6 +199,13 @@ pub enum ReferenceKvError {
         attempts: usize,
         last: crate::kv_infer_session::KvCancellation,
     },
+    /// [`ReferenceKvReuseBackend::apply_input_invalidation`] was handed an event that is not an
+    /// `InputInvalidated`.
+    NotAnInputInvalidation,
+    /// [`ReferenceKvReuseBackend::apply_committed_event`] was handed an `InputInvalidated`,
+    /// which names no experts: the fence set is not in the event, so applying it without the
+    /// fences would leave the fenced experts' entries live. Use `apply_input_invalidation`.
+    InputInvalidationNeedsFences,
 }
 
 impl fmt::Display for ReferenceKvError {
@@ -236,6 +243,13 @@ impl fmt::Display for ReferenceKvError {
                 f,
                 "restart cancelled on all {attempts} attempts (last: {:?})",
                 last.reason
+            ),
+            Self::NotAnInputInvalidation => {
+                write!(f, "the event is not an input invalidation")
+            }
+            Self::InputInvalidationNeedsFences => write!(
+                f,
+                "an input invalidation names no experts; apply it with its fence epochs"
             ),
         }
     }
@@ -364,12 +378,32 @@ impl RevokedInputs {
                 }
             }
             LedgerEvent::ExpertFenceCommitted { .. } => {
-                for (identity, epoch) in crate::expert::expert_fence_epochs(event) {
-                    let known = self.fences.entry(identity).or_insert(epoch);
-                    *known = (*known).max(epoch);
-                }
+                self.note_fences(crate::expert::expert_fence_epochs(event));
             }
+            // The input half of a compound invalidation; the experts it fences are not in the
+            // event and arrive through `note_fences` (see `apply_input_invalidation`).
+            LedgerEvent::InputInvalidated {
+                input,
+                generation,
+                kind: InputInvalidationKind::Revoked,
+                ..
+            } => {
+                self.revoked.insert((input.clone(), *generation));
+            }
+            LedgerEvent::InputInvalidated {
+                input,
+                kind: InputInvalidationKind::Superseded { new_generation, .. },
+                ..
+            } => self.raise_floor(input.clone(), *new_generation),
             _ => {}
+        }
+    }
+
+    /// Record the fence epoch now in force per expert identity.
+    fn note_fences(&mut self, epochs: BTreeMap<String, u64>) {
+        for (identity, epoch) in epochs {
+            let known = self.fences.entry(identity).or_insert(epoch);
+            *known = (*known).max(epoch);
         }
     }
 
@@ -880,7 +914,9 @@ impl ReferenceKvReuseBackend {
     /// Apply one committed ledger event to this backend's own catalog through the same
     /// mapping the runtime's `apply_committed` hook uses (`Revoked`, `ProcedureRevoked`,
     /// capsule and constraint supersession, `ExpertFenceCommitted`,
-    /// `ExpertStructuralCommitted`): the affected entries are tombstoned, their witnesses
+    /// `ExpertStructuralCommitted`; a compound `InputInvalidated` is refused here and goes
+    /// through [`Self::apply_input_invalidation`]): the affected entries are tombstoned, their
+    /// witnesses
     /// revoked and the backend prefixes they held retired. The backend's own liveness set
     /// follows (revoked pairs, supersession floors, fence epochs, structurally named
     /// experts), so use-time checks agree with the index. Returns how many backend prefixes
@@ -892,6 +928,9 @@ impl ReferenceKvReuseBackend {
     /// replacement for the runtime's. [`IndexUpdate::Suppressed`] applies as for
     /// [`Self::invalidate_inputs`].
     pub fn apply_committed_event(&self, event: &LedgerEvent) -> Result<usize, ReferenceKvError> {
+        if matches!(event, LedgerEvent::InputInvalidated { .. }) {
+            return Err(ReferenceKvError::InputInvalidationNeedsFences);
+        }
         let mut state = self.lock()?;
         {
             let mut inputs = self
@@ -910,6 +949,50 @@ impl ReferenceKvReuseBackend {
         else {
             return Ok(0);
         };
+        let retired = keys.len();
+        for key in &keys {
+            self.retire(&mut state, key)?;
+        }
+        self.drain_retirements(&mut state)?;
+        Ok(retired)
+    }
+
+    /// Apply one committed compound [`LedgerEvent::InputInvalidated`] to this backend: the input
+    /// half through the same mapping the runtime's hook uses (a revocation like `Revoked`, a
+    /// supersession like a generation bump), and the experts the event fenced through `fences`,
+    /// the fence epochs the runtime derived (`InputInvalidationOutcome::fence_epochs`). The event
+    /// carries only the count and digest of that set, so a standalone backend cannot derive it
+    /// and must be handed it. An event of another kind is refused. Returns how many backend
+    /// prefixes were retired.
+    ///
+    /// # Errors
+    /// [`ReferenceKvError::NotAnInputInvalidation`] for any other event; a poisoned backend.
+    pub fn apply_input_invalidation(
+        &self,
+        event: &LedgerEvent,
+        fences: &BTreeMap<String, u64>,
+    ) -> Result<usize, ReferenceKvError> {
+        if !matches!(event, LedgerEvent::InputInvalidated { .. }) {
+            return Err(ReferenceKvError::NotAnInputInvalidation);
+        }
+        let mut state = self.lock()?;
+        {
+            let mut inputs = self
+                .liveness
+                .inner
+                .lock()
+                .map_err(|_| ReferenceKvError::Poisoned)?;
+            inputs.note_event(event);
+            inputs.note_fences(fences.clone());
+        }
+        if state.faults.index_update == IndexUpdate::Suppressed {
+            state.stats.suppressed_index_updates += 1;
+            return Ok(0);
+        }
+        let mut keys =
+            crate::kv_prefix::invalidate_catalog_for_event(&mut state.catalog, event, None)
+                .unwrap_or_default();
+        keys.extend(state.catalog.invalidate_expert_fences(fences));
         let retired = keys.len();
         for key in &keys {
             self.retire(&mut state, key)?;

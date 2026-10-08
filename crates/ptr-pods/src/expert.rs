@@ -165,6 +165,23 @@
 //! complete field list as [`ProposalParts`], so a reviewer (and the test in `tests/expert.rs`)
 //! can see that adding a field is a visible, breaking change.
 //!
+//! # Recorded inputs (record version 3)
+//!
+//! A version 3 [`ExpertCommitRecord`] carries a typed dependency block, [`ExpertInputs`]: the
+//! training inputs and the evaluation inputs the produced expert(s) rest on, each an
+//! [`ExpertInputRef`] `(identity, generation, digest)`. The identity is the lifecycle identity
+//! of the input (the `subject` a `Revoked` record names, for example a capsule id or
+//! `procedure:{id}`), the generation the one the expert was built from, and the digest the
+//! content digest the producer saw. Each list is strictly ascending by `(identity, generation)`,
+//! holds at most [`MAX_EXPERT_INPUTS_PER_ROLE`] items and every identity is 1 to
+//! [`MAX_EXPERT_INPUT_IDENTITY_BYTES`] bytes without control characters; the digest is
+//! non-zero. The base model an expert is on is already in its spec, so it is a dependency
+//! without a new field ([`ExpertInputRef::from_base_model`] gives its input form), and the source
+//! experts of a `Merge`, `Split` or `Reactivate` are the operation's own sources. This crate only
+//! carries and validates the shape: whether an input is still live, and which digest is the
+//! first one committed for an `(identity, generation)`, is decided by `ptr-runtime`.
+//! Version 1 and 2 records decode exactly as before and name no inputs.
+//!
 //! # Two-stage identity
 //!
 //! [`ExpertOperationRequest::operation_id`] exists before training: it identifies the requested
@@ -2010,6 +2027,239 @@ fn check_result(
     Ok(())
 }
 
+/// The longest identity of a recorded input, in bytes.
+pub const MAX_EXPERT_INPUT_IDENTITY_BYTES: usize = 256;
+
+/// A record names at most this many training inputs and at most this many evaluation inputs.
+pub const MAX_EXPERT_INPUTS_PER_ROLE: usize = 256;
+
+/// Domain separator of [`ExpertInputs::canonical_digest`].
+const INPUTS_DIGEST_DOMAIN: &[u8] = b"ptr.pods.expert-inputs.v1";
+
+/// Prefix of the input identity of a base model, see [`ExpertInputRef::from_base_model`].
+const BASE_MODEL_INPUT_PREFIX: &str = "base-model:";
+
+/// Why an input reference or an input block was refused.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ExpertInputError {
+    /// The identity is empty.
+    BlankIdentity,
+    /// The identity is longer than [`MAX_EXPERT_INPUT_IDENTITY_BYTES`].
+    IdentityTooLong,
+    /// The identity holds a control character.
+    ControlCharacterInIdentity,
+    /// The input generation is zero, which is never a committed generation.
+    ZeroGeneration,
+    /// The input digest is all zero.
+    ZeroDigest,
+    /// A list holds more than [`MAX_EXPERT_INPUTS_PER_ROLE`] inputs.
+    TooManyInputs { found: usize },
+    /// One list names the same `(identity, generation)` twice.
+    DuplicateInput {
+        identity: String,
+        generation: Generation,
+    },
+    /// The block names one `(identity, generation)` with two different digests.
+    DigestConflict {
+        identity: String,
+        generation: Generation,
+    },
+}
+
+impl fmt::Display for ExpertInputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BlankIdentity => f.write_str("input identity is empty"),
+            Self::IdentityTooLong => write!(
+                f,
+                "input identity is longer than {MAX_EXPERT_INPUT_IDENTITY_BYTES} bytes"
+            ),
+            Self::ControlCharacterInIdentity => {
+                f.write_str("input identity holds a control character")
+            }
+            Self::ZeroGeneration => f.write_str("input generation is zero"),
+            Self::ZeroDigest => f.write_str("input digest is all zero"),
+            Self::TooManyInputs { found } => write!(
+                f,
+                "{found} inputs in one list, at most {MAX_EXPERT_INPUTS_PER_ROLE} are allowed"
+            ),
+            Self::DuplicateInput {
+                identity,
+                generation,
+            } => write!(
+                f,
+                "input {identity} at generation {} is named twice in one list",
+                generation.0
+            ),
+            Self::DigestConflict {
+                identity,
+                generation,
+            } => write!(
+                f,
+                "input {identity} at generation {} is named with two different digests",
+                generation.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExpertInputError {}
+
+/// One input an expert rests on: the lifecycle identity, the generation it was used at and the
+/// content digest the producer saw.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExpertInputRef {
+    identity: String,
+    generation: Generation,
+    digest: Digest,
+}
+
+impl ExpertInputRef {
+    /// Build an input reference.
+    ///
+    /// # Errors
+    /// Rejects an empty, over-long (more than [`MAX_EXPERT_INPUT_IDENTITY_BYTES`]) or
+    /// control-character identity, generation zero and an all-zero digest.
+    pub fn new(
+        identity: impl Into<String>,
+        generation: Generation,
+        digest: Digest,
+    ) -> Result<Self, ExpertInputError> {
+        let identity = identity.into();
+        if identity.is_empty() {
+            return Err(ExpertInputError::BlankIdentity);
+        }
+        if identity.len() > MAX_EXPERT_INPUT_IDENTITY_BYTES {
+            return Err(ExpertInputError::IdentityTooLong);
+        }
+        if identity.chars().any(char::is_control) {
+            return Err(ExpertInputError::ControlCharacterInIdentity);
+        }
+        if generation == Generation::default() {
+            return Err(ExpertInputError::ZeroGeneration);
+        }
+        if digest == ZERO_DIGEST {
+            return Err(ExpertInputError::ZeroDigest);
+        }
+        Ok(Self {
+            identity,
+            generation,
+            digest,
+        })
+    }
+
+    /// The input form of a base model: identity `base-model:{id}`, the base model's generation
+    /// and its digest. `ptr-runtime` derives this dependency from every version 3 record, so a
+    /// base model is invalidated the way any other input is.
+    pub fn from_base_model(base: &BaseModelRef) -> Self {
+        Self {
+            identity: format!("{BASE_MODEL_INPUT_PREFIX}{}", base.id()),
+            generation: Generation(base.generation()),
+            digest: *base.digest().as_bytes(),
+        }
+    }
+
+    pub fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+
+    pub fn digest(&self) -> &Digest {
+        &self.digest
+    }
+}
+
+/// The typed dependency block of a version 3 [`ExpertCommitRecord`]: training inputs and
+/// evaluation inputs, each list strictly ascending by `(identity, generation)`, bounded by
+/// [`MAX_EXPERT_INPUTS_PER_ROLE`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ExpertInputs {
+    training: Vec<ExpertInputRef>,
+    evaluation: Vec<ExpertInputRef>,
+}
+
+fn sort_inputs(mut inputs: Vec<ExpertInputRef>) -> Result<Vec<ExpertInputRef>, ExpertInputError> {
+    if inputs.len() > MAX_EXPERT_INPUTS_PER_ROLE {
+        return Err(ExpertInputError::TooManyInputs {
+            found: inputs.len(),
+        });
+    }
+    inputs.sort_by(|a, b| (&a.identity, a.generation).cmp(&(&b.identity, b.generation)));
+    for pair in inputs.windows(2) {
+        if pair[0].identity == pair[1].identity && pair[0].generation == pair[1].generation {
+            return Err(ExpertInputError::DuplicateInput {
+                identity: pair[0].identity.clone(),
+                generation: pair[0].generation,
+            });
+        }
+    }
+    Ok(inputs)
+}
+
+impl ExpertInputs {
+    /// Build a block; each list is put in canonical (ascending) order.
+    ///
+    /// # Errors
+    /// Rejects a list over [`MAX_EXPERT_INPUTS_PER_ROLE`], a duplicate `(identity, generation)`
+    /// within one list and one `(identity, generation)` named with two digests across the lists.
+    pub fn new(
+        training: Vec<ExpertInputRef>,
+        evaluation: Vec<ExpertInputRef>,
+    ) -> Result<Self, ExpertInputError> {
+        let training = sort_inputs(training)?;
+        let evaluation = sort_inputs(evaluation)?;
+        let mut seen: BTreeMap<(&str, Generation), &Digest> = BTreeMap::new();
+        for input in training.iter().chain(&evaluation) {
+            let known = seen
+                .entry((input.identity.as_str(), input.generation))
+                .or_insert(&input.digest);
+            if **known != input.digest {
+                return Err(ExpertInputError::DigestConflict {
+                    identity: input.identity.clone(),
+                    generation: input.generation,
+                });
+            }
+        }
+        Ok(Self {
+            training,
+            evaluation,
+        })
+    }
+
+    /// The training inputs, ascending.
+    pub fn training(&self) -> &[ExpertInputRef] {
+        &self.training
+    }
+
+    /// The evaluation inputs, ascending.
+    pub fn evaluation(&self) -> &[ExpertInputRef] {
+        &self.evaluation
+    }
+
+    /// Whether the block names no input at all.
+    pub fn is_empty(&self) -> bool {
+        self.training.is_empty() && self.evaluation.is_empty()
+    }
+
+    /// The number of inputs, counting an input named in both lists twice.
+    pub fn len(&self) -> usize {
+        self.training.len() + self.evaluation.len()
+    }
+
+    /// SHA-256 over the domain `ptr.pods.expert-inputs.v1` and the canonical encoding of the
+    /// block. Used as the block's commitment in projections.
+    pub fn canonical_digest(&self) -> [u8; 32] {
+        let mut w = Writer::default();
+        w.bytes.extend_from_slice(INPUTS_DIGEST_DOMAIN);
+        w.inputs(self);
+        Sha256::digest(&w.bytes).into()
+    }
+}
+
 /// Leading magic and version of a version 1 [`ExpertCommitRecord`] encoding, which carries only
 /// the evidence digest. A change to the layout below needs a new magic, so an old reader refuses
 /// new bytes instead of misreading them.
@@ -2018,6 +2268,10 @@ const RECORD_MAGIC_V1: &[u8; 8] = b"PTREXR01";
 /// Leading magic of a version 2 record, which also embeds the evidence and the gate
 /// configuration digest the host required for its epoch.
 const RECORD_MAGIC_V2: &[u8; 8] = b"PTREXR02";
+
+/// Leading magic of a version 3 record: a version 2 record followed by the typed dependency
+/// block ([`ExpertInputs`]).
+const RECORD_MAGIC_V3: &[u8; 8] = b"PTREXR03";
 
 /// The largest encoded [`ExpertCommitRecord`] [`ExpertCommitRecord::decode_canonical`] reads.
 /// It equals the ledger's `MAX_EXPERT_RECORD_BYTES` (1 MiB), the most a structural event may
@@ -2056,7 +2310,12 @@ impl ExpertEvidence {
 ///
 /// # Versions
 ///
-/// A version 2 record ([`ExpertCommitRecord::new_with_evidence`], the only kind admission
+/// A version 3 record ([`ExpertCommitRecord::new_with_inputs`]) is a version 2 record followed by
+/// the typed dependency block ([`ExpertInputs`], see "Recorded inputs" in the module
+/// documentation); only an admission that names inputs writes it. Versions 1 and 2 decode
+/// exactly as before and name no inputs.
+///
+/// A version 2 record ([`ExpertCommitRecord::new_with_evidence`], the usual kind admission
 /// writes) embeds the gate report and the required gate configuration digest, so replay can
 /// re-derive the report digest, check that it passed, is bound to this proposal and operation and
 /// was produced under the configuration the host required. A version 1 record
@@ -2069,7 +2328,11 @@ impl ExpertEvidence {
 ///
 /// All integers are little-endian. `record_v1 = magic "PTREXR01" | proposal | evidence_digest[32]
 /// | gate_epoch u64`; `record_v2 = magic "PTREXR02" | proposal | evidence_digest[32] |
-/// gate_epoch u64 | required_gate_config_digest[32] | report (u32 length, bytes)`. A string is a
+/// gate_epoch u64 | required_gate_config_digest[32] | report (u32 length, bytes)`;
+/// `record_v3 = magic "PTREXR03" | proposal | evidence_digest[32] | gate_epoch u64 |
+/// required_gate_config_digest[32] | report (u32 length, bytes) | training inputs | evaluation
+/// inputs`, each list a `u32` count and per input `identity (string) | generation u64 |
+/// digest[32]`. A string is a
 /// `u32` byte length and its UTF-8 bytes, a list a `u32` count and
 /// its items, an option a `0`/`1` byte. The proposal is its project, proposer (project, pod,
 /// generation), `observed_at`, rationale digest and a one-byte operation tag (0 Birth, 1 Merge,
@@ -2083,6 +2346,7 @@ pub struct ExpertCommitRecord {
     evidence_digest: [u8; 32],
     gate_epoch: u64,
     evidence: Option<ExpertEvidence>,
+    inputs: Option<ExpertInputs>,
 }
 
 impl ExpertCommitRecord {
@@ -2104,6 +2368,7 @@ impl ExpertCommitRecord {
             evidence_digest,
             gate_epoch,
             evidence: None,
+            inputs: None,
         })
     }
 
@@ -2138,6 +2403,36 @@ impl ExpertCommitRecord {
         Ok(record)
     }
 
+    /// A version 3 record: a version 2 record plus the typed dependency block `inputs`.
+    ///
+    /// # Errors
+    /// Everything [`ExpertCommitRecord::new_with_evidence`] rejects, and a proposal whose
+    /// operation produces no result expert (`Freeze`, a `Reactivate` that unfreezes, `Prune`,
+    /// `Retire`): inputs are a property of the experts an operation creates.
+    pub fn new_with_inputs(
+        proposal: ExpertProposal,
+        evidence_digest: [u8; 32],
+        gate_epoch: u64,
+        required_gate_config_digest: [u8; 32],
+        report: Vec<u8>,
+        inputs: ExpertInputs,
+    ) -> Result<Self, ExpertProposalError> {
+        if proposal.op().results().is_empty() {
+            return Err(ExpertProposalError::MalformedRecord(
+                "inputs on an operation without a result",
+            ));
+        }
+        let mut record = Self::new_with_evidence(
+            proposal,
+            evidence_digest,
+            gate_epoch,
+            required_gate_config_digest,
+            report,
+        )?;
+        record.inputs = Some(inputs);
+        Ok(record)
+    }
+
     pub fn proposal(&self) -> &ExpertProposal {
         &self.proposal
     }
@@ -2150,18 +2445,25 @@ impl ExpertCommitRecord {
         self.gate_epoch
     }
 
-    /// The embedded evidence of a version 2 record; `None` for a legacy version 1 record.
+    /// The embedded evidence of a version 2 or 3 record; `None` for a legacy version 1 record.
     pub fn evidence(&self) -> Option<&ExpertEvidence> {
         self.evidence.as_ref()
+    }
+
+    /// The dependency block of a version 3 record; `None` for version 1 and 2.
+    pub fn inputs(&self) -> Option<&ExpertInputs> {
+        self.inputs.as_ref()
     }
 
     /// The canonical bytes; see the type documentation for the layout.
     pub fn encode_canonical(&self) -> Vec<u8> {
         let mut w = Writer::default();
-        w.bytes.extend_from_slice(match self.evidence {
-            None => RECORD_MAGIC_V1,
-            Some(_) => RECORD_MAGIC_V2,
-        });
+        w.bytes
+            .extend_from_slice(match (&self.evidence, &self.inputs) {
+                (None, _) => RECORD_MAGIC_V1,
+                (Some(_), None) => RECORD_MAGIC_V2,
+                (Some(_), Some(_)) => RECORD_MAGIC_V3,
+            });
         w.proposal(&self.proposal);
         w.bytes.extend_from_slice(&self.evidence_digest);
         w.u64(self.gate_epoch);
@@ -2170,6 +2472,9 @@ impl ExpertCommitRecord {
                 .extend_from_slice(&evidence.required_gate_config_digest);
             w.count(evidence.report.len());
             w.bytes.extend_from_slice(&evidence.report);
+        }
+        if let Some(inputs) = &self.inputs {
+            w.inputs(inputs);
         }
         w.bytes
     }
@@ -2189,10 +2494,12 @@ impl ExpertCommitRecord {
         }
         let mut r = Reader { bytes };
         let magic = r.take(RECORD_MAGIC_V1.len())?;
-        let embeds_evidence = if magic == RECORD_MAGIC_V1 {
-            false
+        let (embeds_evidence, embeds_inputs) = if magic == RECORD_MAGIC_V1 {
+            (false, false)
         } else if magic == RECORD_MAGIC_V2 {
-            true
+            (true, false)
+        } else if magic == RECORD_MAGIC_V3 {
+            (true, true)
         } else {
             return Err(ExpertProposalError::MalformedRecord("unknown magic"));
         };
@@ -2203,7 +2510,19 @@ impl ExpertCommitRecord {
             let required = r.array32()?;
             let len = r.count()?;
             let report = r.take(len)?.to_vec();
-            Self::new_with_evidence(proposal, evidence_digest, gate_epoch, required, report)?
+            if embeds_inputs {
+                let inputs = r.inputs()?;
+                Self::new_with_inputs(
+                    proposal,
+                    evidence_digest,
+                    gate_epoch,
+                    required,
+                    report,
+                    inputs,
+                )?
+            } else {
+                Self::new_with_evidence(proposal, evidence_digest, gate_epoch, required, report)?
+            }
         } else {
             Self::new(proposal, evidence_digest, gate_epoch)?
         };
@@ -2285,6 +2604,20 @@ impl Writer {
                 self.reason(reason);
             }
         }
+    }
+
+    fn input_list(&mut self, list: &[ExpertInputRef]) {
+        self.count(list.len());
+        for input in list {
+            self.str(&input.identity);
+            self.u64(input.generation.0);
+            self.digest(&input.digest);
+        }
+    }
+
+    fn inputs(&mut self, inputs: &ExpertInputs) {
+        self.input_list(&inputs.training);
+        self.input_list(&inputs.evaluation);
     }
 
     fn base_model(&mut self, base: &BaseModelRef) {
@@ -2474,6 +2807,31 @@ impl<'a> Reader<'a> {
             6 => Ok(ExpertState::Retired(self.reason()?)),
             _ => malformed("unknown state tag"),
         }
+    }
+
+    fn input_list(&mut self) -> Result<Vec<ExpertInputRef>, ExpertProposalError> {
+        let n = self.count()?;
+        if n > MAX_EXPERT_INPUTS_PER_ROLE {
+            return malformed("too many inputs in one list");
+        }
+        let mut list = Vec::with_capacity(n);
+        for _ in 0..n {
+            let identity = self.string()?;
+            let generation = Generation(self.u64()?);
+            let digest = self.array32()?;
+            list.push(
+                ExpertInputRef::new(identity, generation, digest)
+                    .map_err(|_| ExpertProposalError::MalformedRecord("invalid input reference"))?,
+            );
+        }
+        Ok(list)
+    }
+
+    fn inputs(&mut self) -> Result<ExpertInputs, ExpertProposalError> {
+        let training = self.input_list()?;
+        let evaluation = self.input_list()?;
+        ExpertInputs::new(training, evaluation)
+            .map_err(|_| ExpertProposalError::MalformedRecord("invalid input block"))
     }
 
     fn manifest_digest(&mut self) -> Result<ManifestDigest, ExpertProposalError> {

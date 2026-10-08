@@ -47,7 +47,7 @@
 //! committed semantic deltas, never for prepared ones.
 
 use crate::PtrRuntime;
-use ptr_ledger::LedgerEvent;
+use ptr_ledger::{InputInvalidationKind, LedgerEvent};
 use ptr_model_api::{
     LineageContribution, PromptSegment, SegmentKind, SegmentSource, SegmentedModelRequest,
     TokenContractError, TokenId, Tokenizer, TokenizerIdentity,
@@ -2616,6 +2616,18 @@ impl PtrRuntime {
             .is_some_and(|catalog| catalog.release(pin))
     }
 
+    /// Tombstone and retire every expert dependency recorded below the fence epochs in `epochs`
+    /// (identity `expert:{project}/{pod}` to the epoch now in force): the catalog side of a
+    /// compound input invalidation, whose event names no experts and so has no event-only
+    /// mapping. A host without a catalog has nothing to do.
+    pub(crate) fn invalidate_kv_expert_fences(&mut self, epochs: &BTreeMap<String, u64>) {
+        let Some(catalog) = self.kv_catalog.as_mut() else {
+            return;
+        };
+        let retire = catalog.invalidate_expert_fences(epochs);
+        retire_keys(catalog, retire);
+    }
+
     /// Called from `apply_committed` for every committed event, before the event's own
     /// state change. Only committed events reach it, never a prepared or discarded
     /// overlay: `semantic` is the delta that the same commit is about to publish.
@@ -2649,17 +2661,24 @@ pub(crate) fn invalidate_catalog_for_event(
         LedgerEvent::Revoked {
             subject,
             generation,
-        } => {
-            // The exact pair for every kind, and every generation of a semantic key
-            // of that name (the oracle treats a revocation as a floor for it).
-            let mut retire =
-                catalog.invalidate_inputs(&BTreeSet::from([(subject.clone(), *generation)]));
-            retire.extend(catalog.invalidate_kind_identities(
-                KvDependencyKind::Segment(SegmentKind::Semantic),
-                &BTreeSet::from([subject.clone()]),
-            ));
-            retire
-        }
+        } => invalidate_revoked_pair(catalog, subject, *generation),
+        // The input half of a compound invalidation maps like the plain records: a revocation
+        // like `Revoked`, a supersession like a generation bump to the new generation. Which
+        // experts the event fences is not in the event; the runtime's apply path invalidates
+        // those through `invalidate_kv_expert_fences` with the epochs of the set it derived, and
+        // a standalone backend is handed them (see
+        // `ReferenceKvReuseBackend::apply_input_invalidation`).
+        LedgerEvent::InputInvalidated {
+            input,
+            generation,
+            kind: InputInvalidationKind::Revoked,
+            ..
+        } => invalidate_revoked_pair(catalog, input, *generation),
+        LedgerEvent::InputInvalidated {
+            input,
+            kind: InputInvalidationKind::Superseded { new_generation, .. },
+            ..
+        } => catalog.invalidate_superseded(&BTreeMap::from([(input.clone(), *new_generation)])),
         LedgerEvent::ProcedureRevoked { id, generation } => {
             catalog.invalidate_inputs(&BTreeSet::from([(format!("procedure:{id}"), *generation)]))
         }
@@ -2696,6 +2715,22 @@ pub(crate) fn invalidate_catalog_for_event(
         _ => return None,
     };
     Some(retire)
+}
+
+/// The catalog invalidation of a revocation of `subject` at `generation`: the exact pair for
+/// every kind, and every generation of a semantic key of that name (the oracle treats a
+/// revocation as a floor for it).
+fn invalidate_revoked_pair(
+    catalog: &mut KvPrefixCatalog,
+    subject: &str,
+    generation: Generation,
+) -> Vec<KvPrefixKey> {
+    let mut retire = catalog.invalidate_inputs(&BTreeSet::from([(subject.to_owned(), generation)]));
+    retire.extend(catalog.invalidate_kind_identities(
+        KvDependencyKind::Segment(SegmentKind::Semantic),
+        &BTreeSet::from([subject.to_owned()]),
+    ));
+    retire
 }
 
 /// Retire every queued prefix on the catalog's registered backend.

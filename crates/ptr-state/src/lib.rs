@@ -1,7 +1,8 @@
 use ptr_ledger::{
-    CommittedEvent, ExpertFenceAction, ExpertFenceResume, KvTaintChange, LedgerEvent,
+    CommittedEvent, ExpertFenceAction, ExpertFenceResume, InputInvalidationKind, KvTaintChange,
+    LedgerEvent,
 };
-use ptr_pods::{ExpertCommitRecord, ExpertState, RetiredReason};
+use ptr_pods::{ExpertCommitRecord, ExpertState, OutcomeKind, RetiredReason};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -278,6 +279,39 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
                 expert_entry(generation.0, state, *epoch),
             )]
         }
+        // The compound invalidation of one input. The event names the input and commits to the
+        // fenced set by count and digest only, so this stateless projection cannot say which
+        // `expert:` keys moved: the runtime, which owns the dependency index that derives the
+        // set, writes those. Here the input itself is recorded under `expert-input:` and a
+        // revocation also under `revoked:`, as a `Revoked` record does.
+        LedgerEvent::InputInvalidated {
+            input,
+            generation,
+            kind,
+            fence_count,
+            fence_digest,
+            ..
+        } => {
+            let mut entries = Vec::new();
+            let value = match kind {
+                InputInvalidationKind::Revoked => {
+                    entries.push((format!("revoked:{input}"), generation.0.to_string()));
+                    expert_input_entry_revoked(*fence_count, fence_digest)
+                }
+                InputInvalidationKind::Superseded {
+                    new_generation,
+                    new_digest,
+                    ..
+                } => expert_input_entry_superseded(
+                    new_generation.0,
+                    new_digest,
+                    *fence_count,
+                    fence_digest,
+                ),
+            };
+            entries.push((expert_input_key(input, generation.0), value));
+            entries
+        }
         // One entry per subject: `kv-taint:<kind>:<hex>` is `approx:<report>:<recipe>` while
         // tainted and `cleared:<recompute>` once a cold exact recomputation cleared it.
         LedgerEvent::KvTaintCommitted { subjects, change } => {
@@ -351,6 +385,138 @@ pub fn expert_state_name(state: ExpertState) -> &'static str {
     }
 }
 
+/// The prefix of every expert input key ([`expert_input_key`]).
+pub const EXPERT_INPUT_PREFIX: &str = "expert-input:";
+
+/// The prefix of every expert dependency commitment key ([`expert_inputs_key`]).
+pub const EXPERT_INPUTS_PREFIX: &str = "expert-inputs:";
+
+/// The materialized key of one invalidated input generation:
+/// `expert-input:<identity byte length>:<identity>:<generation>`. The length is part of the key
+/// so that no identity, whatever bytes it holds, names another input's key.
+pub fn expert_input_key(identity: &str, generation: u64) -> String {
+    format!(
+        "{EXPERT_INPUT_PREFIX}{}:{identity}:{generation}",
+        identity.len()
+    )
+}
+
+/// The value of a revoked input key: `revoked:<fence count>:<hex fence digest>`.
+pub fn expert_input_entry_revoked(fence_count: u32, fence_digest: &[u8; 32]) -> String {
+    format!("revoked:{fence_count}:{}", hex_digest(fence_digest))
+}
+
+/// The value of a superseded input key:
+/// `superseded:<new generation>:<hex new digest>:<fence count>:<hex fence digest>`.
+pub fn expert_input_entry_superseded(
+    new_generation: u64,
+    new_digest: &[u8; 32],
+    fence_count: u32,
+    fence_digest: &[u8; 32],
+) -> String {
+    format!(
+        "superseded:{new_generation}:{}:{fence_count}:{}",
+        hex_digest(new_digest),
+        hex_digest(fence_digest)
+    )
+}
+
+/// The identity and generation an [`expert_input_key`] names, or `None` for a key that is not
+/// exactly one: the prefix, a decimal byte length without a leading zero, `:`, an identity of
+/// exactly that many bytes, `:` and a decimal generation without a sign or a leading zero.
+pub fn parse_expert_input_key(key: &str) -> Option<(&str, u64)> {
+    let rest = key.strip_prefix(EXPERT_INPUT_PREFIX)?;
+    let (length, rest) = rest.split_once(':')?;
+    let canonical = |digits: &str| {
+        !digits.is_empty()
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+            && (digits == "0" || !digits.starts_with('0'))
+    };
+    if !canonical(length) {
+        return None;
+    }
+    let length: usize = length.parse().ok()?;
+    let identity = rest.get(..length)?;
+    let generation = rest.get(length..)?.strip_prefix(':')?;
+    if !canonical(generation) {
+        return None;
+    }
+    Some((identity, generation.parse().ok()?))
+}
+
+/// What an [`expert_input_key`] value says happened to the input generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertInputEntry {
+    /// `revoked:...`: the generation was revoked.
+    Revoked,
+    /// `superseded:...`: the identity moved to `new_generation`.
+    Superseded { new_generation: u64 },
+}
+
+/// Parse a value written by [`expert_input_entry_revoked`] or [`expert_input_entry_superseded`],
+/// or `None` for anything else.
+pub fn parse_expert_input_entry(value: &str) -> Option<ExpertInputEntry> {
+    let mut fields = value.split(':');
+    match fields.next()? {
+        "revoked" => {
+            let count = fields.next()?;
+            let digest = fields.next()?;
+            (fields.next().is_none()
+                && count.parse::<u32>().is_ok()
+                && digest.len() == 64
+                && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then_some(ExpertInputEntry::Revoked)
+        }
+        "superseded" => {
+            let new_generation = fields.next()?.parse().ok()?;
+            let new_digest = fields.next()?;
+            let count = fields.next()?;
+            let digest = fields.next()?;
+            (fields.next().is_none()
+                && new_digest.len() == 64
+                && count.parse::<u32>().is_ok()
+                && digest.len() == 64)
+                .then_some(ExpertInputEntry::Superseded { new_generation })
+        }
+        _ => None,
+    }
+}
+
+/// The generation an [`expert_inputs_entry`] value names, or `None` for a value that is not
+/// `<generation>:<training>:<evaluation>:<64 hex digits>`.
+pub fn parse_expert_inputs_generation(value: &str) -> Option<u64> {
+    let mut fields = value.split(':');
+    let generation = fields.next()?.parse().ok()?;
+    let training = fields.next()?;
+    let evaluation = fields.next()?;
+    let digest = fields.next()?;
+    (fields.next().is_none()
+        && training.parse::<usize>().is_ok()
+        && evaluation.parse::<usize>().is_ok()
+        && digest.len() == 64
+        && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    .then_some(generation)
+}
+
+/// The materialized key of the dependency commitment of one expert: `expert-inputs:<project>/<pod>`.
+pub fn expert_inputs_key(project: &str, pod: &str) -> String {
+    format!("{EXPERT_INPUTS_PREFIX}{project}/{pod}")
+}
+
+/// The value of a dependency commitment key:
+/// `<generation>:<training count>:<evaluation count>:<hex block digest>`.
+pub fn expert_inputs_entry(
+    generation: u64,
+    training: usize,
+    evaluation: usize,
+    block_digest: &[u8; 32],
+) -> String {
+    format!(
+        "{generation}:{training}:{evaluation}:{}",
+        hex_digest(block_digest)
+    )
+}
+
 /// The entries an expert structural record projects: one per expert the operation leaves in a
 /// new state, derived from the record by [`ptr_pods::StructuralOp::outcomes`] so the projection
 /// and the runtime registry cannot disagree. A record that does not decode projects nothing: the
@@ -359,18 +525,26 @@ fn expert_entries(project: &ptr_types::ProjectId, record: &[u8]) -> Vec<(String,
     let Ok(record) = ExpertCommitRecord::decode_canonical(record) else {
         return Vec::new();
     };
-    record
-        .proposal()
-        .op()
-        .outcomes()
-        .into_iter()
-        .map(|outcome| {
-            (
-                expert_key(&project.0, &outcome.pod.0),
-                expert_entry(outcome.generation.0, outcome.state, outcome.state_version),
-            )
-        })
-        .collect()
+    let mut entries = Vec::new();
+    for outcome in record.proposal().op().outcomes() {
+        entries.push((
+            expert_key(&project.0, &outcome.pod.0),
+            expert_entry(outcome.generation.0, outcome.state, outcome.state_version),
+        ));
+        // A version 3 record commits to the dependency block of every expert it creates.
+        if let (OutcomeKind::Result, Some(inputs)) = (outcome.kind, record.inputs()) {
+            entries.push((
+                expert_inputs_key(&project.0, &outcome.pod.0),
+                expert_inputs_entry(
+                    outcome.generation.0,
+                    inputs.training().len(),
+                    inputs.evaluation().len(),
+                    &inputs.canonical_digest(),
+                ),
+            ));
+        }
+    }
+    entries
 }
 
 fn hex_digest(digest: &[u8; 32]) -> String {
@@ -683,5 +857,193 @@ mod tests {
             classify_next(u64::MAX, u64::MAX),
             Some(ApplyOutcome::Duplicate)
         );
+    }
+
+    #[test]
+    fn an_input_invalidation_projects_the_input_and_never_guesses_the_fenced_experts() {
+        use ptr_ledger::InputInvalidationKind;
+        use ptr_types::{CommitIndex, Generation};
+        let project = |kind| {
+            projection_entries(&CommittedEvent {
+                index: CommitIndex(4),
+                event: LedgerEvent::InputInvalidated {
+                    input: "dataset:a:b".to_owned(),
+                    generation: Generation(3),
+                    binding_digest: [1; 32],
+                    kind,
+                    fence_count: 12,
+                    fence_digest: [2; 32],
+                },
+            })
+        };
+        // A revocation also lands under `revoked:`, as a `Revoked` record does.
+        let revoked = project(InputInvalidationKind::Revoked);
+        let value = format!("revoked:12:{}", "02".repeat(32));
+        assert_eq!(
+            revoked,
+            vec![
+                ("revoked:dataset:a:b".to_owned(), "3".to_owned()),
+                ("expert-input:11:dataset:a:b:3".to_owned(), value.clone()),
+            ]
+        );
+        assert_eq!(
+            parse_expert_input_key("expert-input:11:dataset:a:b:3"),
+            Some(("dataset:a:b", 3))
+        );
+        assert_eq!(
+            parse_expert_input_entry(&value),
+            Some(ExpertInputEntry::Revoked)
+        );
+        // A supersession records the move and no revocation.
+        let superseded = project(InputInvalidationKind::Superseded {
+            old_generation: Generation(3),
+            new_generation: Generation(4),
+            new_digest: [5; 32],
+            replacement_ref: [6; 32],
+        });
+        assert_eq!(superseded.len(), 1);
+        assert_eq!(
+            superseded[0].1,
+            format!("superseded:4:{}:12:{}", "05".repeat(32), "02".repeat(32))
+        );
+        assert_eq!(
+            parse_expert_input_entry(&superseded[0].1),
+            Some(ExpertInputEntry::Superseded { new_generation: 4 })
+        );
+        // The projection names no `expert:` key: the set is derived from the runtime's index.
+        assert!(revoked
+            .iter()
+            .chain(&superseded)
+            .all(|(key, _)| !key.starts_with(EXPERT_PREFIX)));
+    }
+
+    #[test]
+    fn the_input_key_and_value_parsers_accept_exactly_what_the_writers_write() {
+        for identity in ["a", "x:y", "with space", "multi\u{e9}byte", "7:3"] {
+            for generation in [1u64, 10, u64::MAX] {
+                let key = expert_input_key(identity, generation);
+                assert_eq!(parse_expert_input_key(&key), Some((identity, generation)));
+            }
+        }
+        for bad in [
+            "expert-input:",
+            "expert-input:1:a",
+            "expert-input:1:a:",
+            "expert-input:01:a:1",
+            "expert-input:2:a:1",
+            "expert-input:1:a:01",
+            "expert-input:1:a:-1",
+            "expert-input:x:a:1",
+            "expert:1:a:1",
+        ] {
+            assert_eq!(parse_expert_input_key(bad), None, "{bad}");
+        }
+        for bad in [
+            "",
+            "revoked",
+            "revoked:1",
+            "revoked:1:abc",
+            "revoked:x:00",
+            "superseded:1",
+            "unknown:1:2",
+        ] {
+            assert_eq!(parse_expert_input_entry(bad), None, "{bad}");
+        }
+        let digest = "ab".repeat(32);
+        assert_eq!(
+            parse_expert_input_entry(&format!("revoked:0:{digest}:extra")),
+            None
+        );
+        assert_eq!(
+            parse_expert_inputs_generation(&expert_inputs_entry(3, 2, 1, &[0xab; 32])),
+            Some(3)
+        );
+        assert_eq!(parse_expert_inputs_generation("3:2:1:zz"), None);
+        assert_eq!(parse_expert_inputs_generation("3:2:1"), None);
+    }
+
+    #[test]
+    fn a_version_3_record_commits_to_its_dependency_block_per_created_expert() {
+        use ptr_pods::{
+            BaseModelDigest, BaseModelId, BaseModelRef, ExpertInputRef, ExpertInputs, ExpertLevel,
+            ExpertPodSpec, ExpertProposal, ManifestDigest, ProposerRef, RationaleDigest,
+            StructuralOp,
+        };
+        use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
+        let project = ProjectId::from("p");
+        let base = BaseModelRef::new(
+            BaseModelId::new("b").unwrap(),
+            BaseModelDigest::new([2; 32]).unwrap(),
+            1,
+        )
+        .unwrap();
+        let spec = ExpertPodSpec::new(
+            project.clone(),
+            PodId::from("a"),
+            ManifestDigest::new([1; 32]).unwrap(),
+            ExpertLevel::Segment,
+            base,
+            Generation(1),
+        )
+        .unwrap();
+        let proposal = ExpertProposal::new(
+            project.clone(),
+            ProposerRef::new(project.clone(), PodId::from("meta"), Generation(1)).unwrap(),
+            CommitIndex(1),
+            StructuralOp::Birth { result: spec },
+            RationaleDigest::new([3; 32]).unwrap(),
+        )
+        .unwrap();
+        let block = ExpertInputs::new(
+            vec![ExpertInputRef::new("d", Generation(1), [4; 32]).unwrap()],
+            vec![ExpertInputRef::new("e", Generation(2), [5; 32]).unwrap()],
+        )
+        .unwrap();
+        let project_record = |record: ExpertCommitRecord| {
+            projection_entries(&CommittedEvent {
+                index: CommitIndex(2),
+                event: LedgerEvent::ExpertStructuralCommitted {
+                    project: project.clone(),
+                    op_kind: ptr_ledger::ExpertOpKind::Birth,
+                    proposal_id: [0; 32],
+                    operation_id: [0; 32],
+                    evidence_digest: [7; 32],
+                    record: record.encode_canonical(),
+                },
+            })
+        };
+        let v3 = ExpertCommitRecord::new_with_inputs(
+            proposal.clone(),
+            [7; 32],
+            1,
+            [8; 32],
+            b"report".to_vec(),
+            block.clone(),
+        )
+        .unwrap();
+        let entries = project_record(v3);
+        assert_eq!(
+            entries,
+            vec![
+                (
+                    "expert:p/a".to_owned(),
+                    expert_entry(1, ExpertState::Serving, 1)
+                ),
+                (
+                    "expert-inputs:p/a".to_owned(),
+                    expert_inputs_entry(1, 1, 1, &block.canonical_digest())
+                ),
+            ]
+        );
+        // Versions 1 and 2 project exactly what they always did.
+        let v2 = ExpertCommitRecord::new_with_evidence(
+            proposal,
+            [7; 32],
+            1,
+            [8; 32],
+            b"report".to_vec(),
+        )
+        .unwrap();
+        assert_eq!(project_record(v2).len(), 1);
     }
 }
