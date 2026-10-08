@@ -173,7 +173,7 @@ status = "completed"
 [[experiment]]
 id = "S003"
 path = "semdb/S003-certified-branches"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "F002"

@@ -1589,7 +1589,7 @@ holds that freeze, every frozen input a regular file the commit holds, so the ga
 commit its record names (`test_a_launch_names_a_commit_that_holds_the_experiment_frozen`,
 `test_a_listed_experiment_runs_only_from_a_commit_that_holds_what_froze_it`). A value still to be chosen and an owner decision still to be
 taken, such as whether F003's adjudicators see a branch's intent, are placeholder strings that pass as no type.
-S003 has no `[preregistration]` table yet and the other five hold such placeholders, so none of the six can
+S003 has since been frozen and completed (2026-10-08, `s003-prereg`; result in `STATUS.md`); the other five hold such placeholders, so none of them can
 leave `planned` yet (`test_the_enrolled_experiments_are_held_until_their_placeholders_are_pinned`).
 
 L004 and L003 are completed for PostgreSQL 18 (2026-09-28, on T1-2's final code at 039beff): over five seeds
