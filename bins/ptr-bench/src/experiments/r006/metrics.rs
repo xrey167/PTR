@@ -110,6 +110,8 @@ pub const CASE_MAP: [(&str, &[&str]); 11] = [
             "bitwise_mismatch_count",
             "secondary_index_lookups",
             "exact_shifted_parity_cases",
+            "tainted_exact_results",
+            "non_bit_exact_exact_results",
         ],
     ),
     (
@@ -124,6 +126,8 @@ pub const CASE_MAP: [(&str, &[&str]); 11] = [
             "fresh_prefill_output_mismatches",
             "invalidated_case_id_set_digest",
             "fresh_prefill_completed_case_id_set_digest",
+            "tainted_exact_results",
+            "non_bit_exact_exact_results",
         ],
     ),
     (
@@ -134,6 +138,8 @@ pub const CASE_MAP: [(&str, &[&str]); 11] = [
             "post_supersession_secondary_lookups_matching_content",
             "invalidated_case_id_set_digest",
             "fresh_prefill_completed_case_id_set_digest",
+            "tainted_exact_results",
+            "non_bit_exact_exact_results",
         ],
     ),
     (
@@ -141,6 +147,8 @@ pub const CASE_MAP: [(&str, &[&str]); 11] = [
         &[
             "dead_original_upstream_shift_attempts",
             "shift_hits_with_dead_original_upstream",
+            "tainted_exact_results",
+            "non_bit_exact_exact_results",
         ],
     ),
     (
@@ -148,6 +156,8 @@ pub const CASE_MAP: [(&str, &[&str]); 11] = [
         &[
             "omitted_upstream_segment_cases",
             "omitted_upstream_admissions",
+            "tainted_exact_results",
+            "non_bit_exact_exact_results",
         ],
     ),
     (
@@ -156,6 +166,8 @@ pub const CASE_MAP: [(&str, &[&str]); 11] = [
             "source_generation_mismatch_cases",
             "source_digest_mismatch_cases",
             "source_lineage_mismatch_admissions",
+            "tainted_exact_results",
+            "non_bit_exact_exact_results",
         ],
     ),
     (
@@ -163,6 +175,8 @@ pub const CASE_MAP: [(&str, &[&str]); 11] = [
         &[
             "raw_ancestor_omission_cases",
             "reuse_after_raw_ancestor_removed",
+            "tainted_exact_results",
+            "non_bit_exact_exact_results",
         ],
     ),
     (
@@ -175,6 +189,8 @@ pub const CASE_MAP: [(&str, &[&str]); 11] = [
             "shifted_reuse_inflight_cache_inserts",
             "invalidated_case_id_set_digest",
             "fresh_prefill_completed_case_id_set_digest",
+            "tainted_exact_results",
+            "non_bit_exact_exact_results",
         ],
     ),
     ("C10", &[]),
@@ -186,6 +202,26 @@ pub const CASE_MAP: [(&str, &[&str]); 11] = [
             "selection_digest_mismatches",
         ],
     ),
+];
+
+/// The counters that belong to no manifest metric and that the harness-added rules read (under
+/// `internal`). Each is printed at 0 from the start, so a rule about one never meets a missing
+/// value. They are by construction facts of the harness's own bookkeeping, and the rules over
+/// them can only make a seed vacuous or falsified, never turn a failing seed into a pass:
+///
+/// * `live_control_failures`: positive controls whose premise failed (a live control that did
+///   not reuse the whole segment, an origin the index did not take, a lag cell that never
+///   returned the page, an over-refusing reorder control).
+/// * `source_kind_mismatch_cases`, `source_identity_mismatch_cases`: the typed refusals of C7
+///   whose manifest metrics name only the generation and the digest.
+/// * `bystander_reuse_cases`, `bystander_reuse_losses`: an unrelated live run that is still
+///   reused (or no longer reused) after the invalidation of another.
+pub const INTERNAL_COUNTERS: [&str; 5] = [
+    "live_control_failures",
+    "source_kind_mismatch_cases",
+    "source_identity_mismatch_cases",
+    "bystander_reuse_cases",
+    "bystander_reuse_losses",
 ];
 
 /// One rule per pinned shift of the per-shift metric `name`: `<name>.shift_<s> <op> <bound>`.
@@ -312,7 +348,28 @@ pub fn coverage() -> Vec<String> {
         "model_pin_mismatches <= {}",
         params::MAX_MODEL_PIN_MISMATCHES
     ));
+    // Harness-added vacuity checks over internal counters (see `INTERNAL_COUNTERS`): they
+    // follow the manifest's rules and are not among its sentences.
+    rules.extend(EXTRA_COVERAGE.iter().map(|rule| (*rule).to_string()));
     rules
+}
+
+/// The coverage rules the harness adds to the manifest's: no positive control failed, and the
+/// typed kind and identity refusals of C7 and the bystander of C3 and C4 were each exercised.
+pub const EXTRA_COVERAGE: [&str; 4] = [
+    "internal.live_control_failures <= 0",
+    "internal.source_kind_mismatch_cases >= 1",
+    "internal.source_identity_mismatch_cases >= 1",
+    "internal.bystander_reuse_cases >= 1",
+];
+
+/// The falsifier the harness adds to the manifest's: an unrelated live run lost after the
+/// invalidation of another (a runtime that flushes more than the event names).
+pub const EXTRA_FALSIFIERS: [&str; 1] = ["internal.bystander_reuse_losses <= 0"];
+
+/// Whether `rule` is one of the harness-added rules (its left side is an internal counter).
+pub fn is_harness_added(rule: &str) -> bool {
+    EXTRA_COVERAGE.contains(&rule) || EXTRA_FALSIFIERS.contains(&rule)
 }
 
 /// The falsifiers of the manifest: each tripped one falsifies R006 on this seed, in the order
@@ -373,6 +430,7 @@ pub fn falsifiers() -> Vec<String> {
         "reuse_after_raw_ancestor_removed <= {}",
         params::MAX_REUSE_AFTER_RAW_ANCESTOR_REMOVED
     ));
+    rules.extend(EXTRA_FALSIFIERS.iter().map(|rule| (*rule).to_string()));
     rules
 }
 
@@ -507,11 +565,15 @@ mod tests {
         let shifts = params::POSITION_SHIFT_TOKENS.len();
         let cells = params::INVALIDATION_COVERAGE_MATRIX_CELLS.len();
         assert_eq!((shifts, cells), (5, 52));
-        // Coverage: 3 per-shift metrics, 2 insertion sizes, 52 cells, 6 in-flight members and
-        // 18 single rules (including the two comparing two printed values).
-        assert_eq!(coverage().len(), 3 * shifts + 2 + cells + 6 + 18);
-        // Falsifiers: bitwise per shift, 52 stale-hit cells and 11 single rules.
-        assert_eq!(falsifiers().len(), shifts + cells + 11);
+        // Coverage: 3 per-shift metrics, 2 insertion sizes, 52 cells, 6 in-flight members,
+        // 18 single rules (including the two comparing two printed values) and the 4
+        // harness-added rules over internal counters.
+        assert_eq!(coverage().len(), 3 * shifts + 2 + cells + 6 + 18 + 4);
+        assert_eq!(coverage().len(), 97);
+        // Falsifiers: bitwise per shift, 52 stale-hit cells, 11 single rules and the 1
+        // harness-added rule.
+        assert_eq!(falsifiers().len(), shifts + cells + 11 + 1);
+        assert_eq!(falsifiers().len(), 69);
         for list in [coverage(), falsifiers()] {
             let unique: BTreeSet<&String> = list.iter().collect();
             assert_eq!(unique.len(), list.len());
@@ -685,6 +747,12 @@ mod tests {
             })
         };
         for rule in coverage().iter().chain(&falsifiers()) {
+            if is_harness_added(rule) {
+                // Not a sentence of the manifest: a vacuity check over an internal counter.
+                let (left, _, _) = tokens(rule);
+                assert!(left.starts_with("internal."), "{rule}");
+                continue;
+            }
             let (left, op, right) = tokens(rule);
             let metric = base(&left);
             let snippet = match (metric.as_str(), op.as_str()) {

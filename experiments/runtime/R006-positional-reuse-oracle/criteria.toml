@@ -1,7 +1,7 @@
 # R006 decision criteria. DRAFT: proposed with the draft preregistration and frozen with it (config.toml names this file and
 # its SHA-256 at the freeze); no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
-# r006/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order. The harness that fills
-# the counters is not built yet; until it is, no counter resolves in any real result.
+# r006/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order, and every path below
+# is resolved against the JSON a (reduced) run of that harness emits.
 #
 # Rule grammar (one string per rule, exactly three tokens separated by single spaces):
 #     <left> <op> <right>
@@ -24,6 +24,14 @@
 # Staleness is structural (owner decision 5): a stale hit is a lookup that returned or admitted a dead run, an escaped
 # output is tokens emitted or cache inserts after the event step; in a one-layer model no output comparison can show it.
 # reuse_latency_ms is timing only and no rule reads it.
+# Five rules read a counter under "internal" (the harness's own bookkeeping, not a metric of experiment.toml) and are
+# harness-added: they can only make a seed vacuous (coverage) or falsified (the bystander falsifier), never turn a failing
+# seed into a pass. internal.live_control_failures counts positive controls whose premise failed (a live control that did not
+# reuse the whole segment, an origin the index did not take, a lag cell that never returned the page, an over-refusing
+# reorder control): such a case or cell is not counted and the seed FALSIFIES (vacuous), it is never an exit status 2.
+# internal.source_kind_mismatch_cases and internal.source_identity_mismatch_cases require the typed kind and identity
+# refusals of C7 to have been returned. internal.bystander_reuse_cases / _losses: after an upstream invalidation an
+# unrelated live run must still be reused (a runtime that flushes more than the event names loses it).
 # coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
 # falsifiers: a rule that does not hold falsifies R006 on that seed.
 # Decision: every seed must hold every coverage rule and every falsifier rule; COMPLETED iff so,
@@ -127,6 +135,10 @@ coverage = [
   "exact_shifted_parity_cases >= 1",
   "raw_ancestor_omission_cases >= 1",
   "model_pin_mismatches <= 0",
+  "internal.live_control_failures <= 0",
+  "internal.source_kind_mismatch_cases >= 1",
+  "internal.source_identity_mismatch_cases >= 1",
+  "internal.bystander_reuse_cases >= 1",
 ]
 
 falsifiers = [
@@ -198,4 +210,5 @@ falsifiers = [
   "tainted_exact_results <= 0",
   "non_bit_exact_exact_results <= 0",
   "reuse_after_raw_ancestor_removed <= 0",
+  "internal.bystander_reuse_losses <= 0",
 ]

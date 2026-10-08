@@ -548,6 +548,112 @@ fn committed_revocation_and_supersession_reach_the_index_through_the_runtime() {
     assert!(runtime_live(&runtime, unrelated));
 }
 
+fn expert_fence_event() -> LedgerEvent {
+    LedgerEvent::ExpertFenceCommitted {
+        project: ProjectId::from("p"),
+        pod: PodId::from("e1"),
+        action: ptr_ledger::ExpertFenceAction::Fence,
+        cause: ptr_ledger::ExpertFenceCause::AuthorityQuarantine,
+        resume: ptr_ledger::ExpertFenceResume::Serving,
+        generation: Generation(1),
+        expected_state_version: 0,
+        epoch: 4,
+        revocation: None,
+        evidence: None,
+    }
+}
+
+#[test]
+fn apply_committed_event_is_the_runtime_hooks_mapping_on_a_catalog_the_host_owns() {
+    let events = [
+        LedgerEvent::Revoked {
+            subject: "capsule:a".into(),
+            generation: Generation(1),
+        },
+        LedgerEvent::CapsuleSuperseded {
+            capsule: CapsuleId::from("capsule:a"),
+            old: Generation(1),
+            new: Generation(2),
+        },
+    ];
+    for event in events {
+        let build = || {
+            let mut c = catalog();
+            let victim = put(&mut c, &request(vec![memory("capsule:a", 1, TEXT_A)]));
+            let bystander = put(&mut c, &request(vec![memory("capsule:z", 1, TEXT_C)]));
+            (c, victim, bystander)
+        };
+        // A standalone catalog, through the public wrapper.
+        let (mut owned, victim, bystander) = build();
+        owned.apply_committed_event(&event);
+        assert!(!live(&owned, victim), "{event:?}: the run survived");
+        assert!(
+            live(&owned, bystander),
+            "{event:?}: a bystander was flushed"
+        );
+        // The runtime's own hook reaches the same state for the same event.
+        let (hosted, hosted_victim, hosted_bystander) = build();
+        let mut runtime = runtime_with(hosted);
+        runtime
+            .commit(LedgerEvent::CapsuleCommitted {
+                project: ProjectId::from("p1"),
+                capsule: CapsuleId::from("capsule:a"),
+                generation: Generation(1),
+            })
+            .unwrap();
+        runtime.commit(event.clone()).unwrap();
+        assert_eq!(
+            runtime_live(&runtime, hosted_victim),
+            live(&owned, victim),
+            "{event:?}: the hook and the wrapper disagree"
+        );
+        assert_eq!(
+            runtime_live(&runtime, hosted_bystander),
+            live(&owned, bystander),
+            "{event:?}"
+        );
+    }
+}
+
+#[test]
+fn apply_committed_event_spares_other_experts_and_ignores_events_that_invalidate_nothing() {
+    let mut c = catalog();
+    let below = put_with(
+        &mut c,
+        &request(vec![raw(TEXT_A)]),
+        0,
+        vec![expert("p", "e1", 1, 1)],
+    );
+    let other = put_with(
+        &mut c,
+        &request(vec![raw(TEXT_B)]),
+        0,
+        vec![expert("p", "e2", 1, 0)],
+    );
+    let plain = put(&mut c, &request(vec![memory("capsule:z", 1, TEXT_C)]));
+    // An event that invalidates nothing is a no-op.
+    let noop = LedgerEvent::VerifierAttested {
+        subject: "capsule:z".into(),
+        passed: true,
+    };
+    assert_eq!(c.apply_committed_event(&noop), 0);
+    assert!([below, other, plain].iter().all(|run| live(&c, *run)));
+    // A semantic delta event carries no delta: it changes nothing here.
+    let semantic_event = LedgerEvent::SemanticDeltaCommitted {
+        base_revision: Revision(0),
+        revision: Revision(1),
+        encoded_delta: Vec::new(),
+        origin: ptr_ledger::SemanticOrigin::Legacy,
+    };
+    assert_eq!(c.apply_committed_event(&semantic_event), 0);
+    assert!([below, other, plain].iter().all(|run| live(&c, *run)));
+    // A fence of e1 kills the e1 run below the new epoch and nothing else.
+    c.apply_committed_event(&expert_fence_event());
+    assert!(!live(&c, below));
+    assert!(live(&c, other), "another expert is untouched");
+    assert!(live(&c, plain), "an unrelated run is untouched");
+}
+
 #[test]
 fn a_committed_revocation_kills_the_trie_entry_and_the_run_together() {
     let (mut c, backend) = new_catalog(CatalogLimits::default());

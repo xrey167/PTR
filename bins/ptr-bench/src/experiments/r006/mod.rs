@@ -17,9 +17,14 @@
 //! selection digest, the per-case records, the two judgements (`coverage` and `falsifiers`),
 //! and the counters that belong to no metric (`internal`). The exit status is 1 when a
 //! coverage prerequisite is unmet, a falsifier is tripped or a metric has no value and no
-//! declared reason, and 2 when the harness itself cannot run a case (a refusal of the wrong
-//! type, a fixture that does not build, an accounting that does not add up, a live control that
-//! reuses nothing, a negative control that does not trip).
+//! declared reason, and 2 when the harness itself cannot run a case: a refusal of the wrong
+//! type, a cold baseline that differs from the independent stack, an outcome accounting that
+//! does not add up, a leaked pin, a result whose `kv_report` is missing, a cancellation with
+//! the wrong reason, a negative control that does not trip (INVALID, evidence about nothing).
+//! A positive control that fails (a live control that does not reuse the whole segment, an
+//! origin the index did not take) is not an exit status 2: it is recorded
+//! (`internal.live_control_failures`, `cases.control_failures`), its case is not counted and the
+//! seed FALSIFIES (vacuous).
 
 // The configuration constants echo pinned strings that no code reads (the drift test compares
 // them with `config.toml`), so some of them are used only by the tests.
@@ -164,11 +169,19 @@ fn procedure(lab: &Lab<'_>, scale: Scale) -> Res<Procedure> {
     let observed: &Observed = &lab.observed;
     let mut procedure = Procedure::default();
     procedure.ints("seeds", &params::declared_seeds(), &[17, 29, 43, 71, 101]);
-    procedure.ints("position_shift_tokens", &observed.shifts, &shape.shifts);
+    // The expected side of every shape parameter is the pin in `params` (config.toml), never
+    // the shape the run was given: at a reduced scale the observed value is the run's own and
+    // the pin is still the pinned one, so the mismatch shows (and `aggregate.py` also refuses a
+    // `scale` other than `pinned`).
+    procedure.ints(
+        "position_shift_tokens",
+        &observed.shifts,
+        &params::POSITION_SHIFT_TOKENS,
+    );
     procedure.ints(
         "nonaligned_insertion_tokens",
         &observed.inserted,
-        &shape.inserted,
+        &params::NONALIGNED_INSERTION_TOKENS,
     );
     procedure.int(
         "test_model_layers",
@@ -244,22 +257,22 @@ fn procedure(lab: &Lab<'_>, scale: Scale) -> Res<Procedure> {
     procedure.int(
         "reused_segment_tokens",
         observed.segment_tokens.unwrap_or(0),
-        shape.segment as u64,
+        params::REUSED_SEGMENT_TOKENS,
     );
     procedure.int(
         "tail_tokens",
         observed.tail_tokens.unwrap_or(0),
-        shape.tail as u64,
+        params::TAIL_TOKENS,
     );
     procedure.int(
         "nonaligned_origin_prefix_tokens",
         observed.origin_prefix_tokens.unwrap_or(0),
-        shape.origin_prefix as u64,
+        params::NONALIGNED_ORIGIN_PREFIX_TOKENS,
     );
     procedure.int(
         "harness_max_prompt_tokens",
         backend.limits().max_prompt_tokens as u64,
-        shape.max_prompt_tokens as u64,
+        params::HARNESS_MAX_PROMPT_TOKENS,
     );
     procedure.int(
         "harness_max_new_tokens",
@@ -292,6 +305,10 @@ fn seed_counters(tally: &mut Tally, shape: Shape) {
     let cells = params::INVALIDATION_COVERAGE_MATRIX_CELLS;
     let inflight = params::inflight_members();
     let _ = shape;
+    // The internal counters the harness-added rules read start at zero as well.
+    for name in metrics::INTERNAL_COUNTERS {
+        tally.set(name, 0);
+    }
     for name in metrics::METRIC_NAMES {
         if metrics::GROUPED.contains(&name) {
             match name {
@@ -384,12 +401,15 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
         ids: CaseIds::default(),
         observed: Observed::default(),
         cases: Vec::new(),
+        failed_controls: Vec::new(),
     };
     cases::run_all(&mut lab)?;
     phase("cases", &mut lap);
     matrix::run_all(&mut lab)?;
     phase("matrix", &mut lap);
     let procedure = procedure(&lab, scale)?;
+    let failures = lab.failed_controls_json();
+    lab.cases.push(("control_failures".to_string(), failures));
     let Lab {
         timings,
         ids,
@@ -460,11 +480,11 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
             ),
             (
                 "evidence_labels",
-                note("semantic, memory and derived segments: session_lookup; base model: session_recorded_dependency (every positional session records it); adapter and expert: declared_dependency, runs inserted directly into a standalone catalog under a real ledger and a real expert registry; their in-flight cells exercise the index's pin protocol, not a session, and are not in shifted_reuse_inflight_*"),
+                note("normal, lag and restore cells of the semantic, memory and derived segments: session_lookup; their in-flight cells: session_lineage_guard (a positional session stops because one of its own lineage inputs died, InputNotLive asserted; by the omission rule the secondary-index guards are a subset of the lineage, so for segment kinds they are not independently exercised); base model: session_recorded_dependency (every positional session records it; SecondaryDependencyNotLive asserted in flight); adapter and expert: declared_dependency (normal, lag, restore) and declared_pin_protocol (in-flight), runs inserted directly into a standalone catalog under a real ledger and a real expert registry, the events reaching the catalog through KvPrefixCatalog::apply_committed_event; their in-flight cells exercise the index's pin protocol, not a session, and are not in shifted_reuse_inflight_*; the semantic supersession is applied by identity from the harness (the event carries no delta)"),
             ),
             (
                 "weak_metrics",
-                note("model_pin_mismatches and procedure_mismatches are weak (checkpoint, topology and generator seed are constants here); fresh_prefill_after_revocation records that a fresh prefill followed the revocation, in one layer there are no layers above 0 to drop; raw_ancestor_omission_cases covers direct Raw segments only; the omission, own-lineage, raw-ancestor and superseded-reachability criteria have no fault-injection control, only the cases that would admit"),
+                note("model_pin_mismatches and procedure_mismatches are weak (checkpoint, topology and generator seed are constants here); fresh_prefill_after_revocation records that a fresh prefill followed the revocation, in one layer there are no layers above 0 to drop; raw_ancestor_omission_cases covers direct Raw segments only; the omission, own-lineage, raw-ancestor and superseded-reachability criteria have no fault-injection control in the runtime (their counters are shown to trip only by feeding a really admitted report, cases.C10.controls.admission_wiring, and every admission counts the last segment's skip too); the reuse_attempts_per_shift, secondary_index_lookups, old_upstream_pages_seeded_before_revocation, post_*_matching_content and invalidation_matrix_cases counters hold by construction whenever the harness completes, the informative coverage rules being reused_tokens_per_shift, secondary_index_reuse_cases_per_shift (the whole segment reused), the typed refusal counts and the set-identity rule"),
             ),
             (
                 "limits",
@@ -670,8 +690,8 @@ mod tests {
         };
         assert_eq!(rules("coverage"), metrics::coverage());
         assert_eq!(rules("falsifiers"), metrics::falsifiers());
-        assert_eq!(rules("coverage").len(), 93);
-        assert_eq!(rules("falsifiers").len(), 68);
+        assert_eq!(rules("coverage").len(), 97);
+        assert_eq!(rules("falsifiers").len(), 69);
     }
 
     /// Every path a criterion names resolves to an integer (or a digest string, for the one
@@ -705,8 +725,8 @@ mod tests {
                 }
             }
         }
-        // 93 + 68 rules: 161 left sides and the two right-hand references.
-        assert_eq!(checked, 161 + 2);
+        // 97 + 69 rules: 166 left sides and the two right-hand references.
+        assert_eq!(checked, 166 + 2);
     }
 
     /// Every falsifier (and coverage) rule can fail: mutate the emitted metric it reads so
@@ -812,10 +832,12 @@ mod tests {
         }
     }
 
-    /// The reduced run holds every coverage rule and trips no falsifier except the ones the
-    /// reduced scale itself marks (a clean pass: exit status 0).
+    /// The reduced run holds every coverage rule and trips no falsifier except the one the
+    /// reduced scale itself marks: the procedure parameters are compared with the pins of
+    /// `params` (config.toml), not with the shape the run was given, so a reduced run is not a
+    /// clean pass (`procedure_mismatches`), whatever `shape_is_pinned` says.
     #[test]
-    fn a_reduced_run_holds_every_coverage_rule_and_trips_no_falsifier() {
+    fn a_reduced_run_holds_every_coverage_rule_but_the_procedure_pin_and_trips_no_falsifier() {
         let report = reduced_report();
         let unmet: Vec<&str> = report
             .coverage
@@ -823,7 +845,16 @@ mod tests {
             .filter(|check| check.status == Status::Fail)
             .map(|check| check.rule.as_str())
             .collect();
-        assert!(unmet.is_empty(), "{unmet:?}");
+        assert_eq!(unmet, ["procedure_mismatches <= 0"]);
+        assert!(!report.clean());
+        assert_eq!(int(&report.json, "procedure_mismatches"), 2);
+        assert!(matches!(
+            emit::resolve(&report.json, "procedure.differing"),
+            Some(Json::Arr(items)) if items == &[
+                Json::str("position_shift_tokens"),
+                Json::str("harness_max_prompt_tokens"),
+            ]
+        ));
         let tripped: Vec<&str> = report
             .falsifiers
             .iter()
@@ -831,9 +862,7 @@ mod tests {
             .map(|check| check.rule.as_str())
             .collect();
         assert!(tripped.is_empty(), "{tripped:?}");
-        assert!(report.clean(), "{}", report.line);
         assert_eq!(int(&report.json, "bitwise_mismatch_count.shift_7"), 0);
-        assert_eq!(int(&report.json, "procedure_mismatches"), 0);
         assert_eq!(int(&report.json, "model_pin_mismatches"), 0);
         assert_eq!(int(&report.json, "selection_digest_mismatches"), 0);
         assert!(int(&report.json, "internal.negative_control_bypass_admissions") > 0);
@@ -871,9 +900,14 @@ mod tests {
             };
             *labels.entry(evidence.clone()).or_default() += 1;
         }
-        assert_eq!(labels["session_lookup"], 24);
+        // 3 segment kinds x 2 types x (normal, lag, restore); their 6 in-flight cells; the
+        // 8 cells of the base model; the 15 non-in-flight and the 5 in-flight declared cells.
+        assert_eq!(labels["session_lookup"], 18);
+        assert_eq!(labels["session_lineage_guard"], 6);
         assert_eq!(labels["session_recorded_dependency"], 8);
-        assert_eq!(labels["declared_dependency"], 20);
+        assert_eq!(labels["declared_dependency"], 15);
+        assert_eq!(labels["declared_pin_protocol"], 5);
+        assert_eq!(labels.values().sum::<usize>(), 52);
     }
 
     #[test]
@@ -882,9 +916,10 @@ mod tests {
         for name in params::PROCEDURE_PARAMETERS_RECORDED_PER_CELL {
             assert!(emit::resolve(procedure, name).is_some(), "{name}");
         }
+        // At the reduced scale exactly the two shape parameters differ from their pins.
         assert!(matches!(
             emit::resolve(procedure, "differing"),
-            Some(Json::Arr(items)) if items.is_empty()
+            Some(Json::Arr(items)) if items.len() == 2
         ));
     }
 
@@ -924,5 +959,53 @@ mod tests {
         let report = execute(17, Scale::Pinned).expect("a pinned run");
         assert!(report.clean(), "{}", report.line);
         assert_eq!(int(&report.json, "reused_tokens_per_shift.shift_4096"), 48);
+    }
+
+    /// P1-5: a runtime whose index takes nothing is not an exit status 2: the run completes,
+    /// every case and cell is recorded as a failed control and not counted, and the seed
+    /// FALSIFIES by its coverage rules (vacuous).
+    #[test]
+    fn a_runtime_that_reuses_nothing_everywhere_falsifies_the_seed_and_is_not_invalid() {
+        let _limits = lab::TestLimits::refusing_every_insert();
+        let report = execute(17, Scale::Reduced).expect("not an exit status 2");
+        assert!(!report.clean());
+        assert!(report.coverage_unmet() > 0);
+        let unmet: Vec<&str> = report
+            .coverage
+            .iter()
+            .filter(|check| check.status == Status::Fail)
+            .map(|check| check.rule.as_str())
+            .collect();
+        for rule in [
+            "internal.live_control_failures <= 0",
+            "reused_tokens_per_shift.shift_1 >= 1",
+            "secondary_index_reuse_cases_per_shift.shift_1 >= 1",
+            "upstream_revocation_cases >= 1",
+            "invalidation_matrix_cases.memory_lineage_segment_normal_revocation >= 1",
+            "invalidation_matrix_cases.expert_generation_inflight_fence >= 1",
+            "shifted_reuse_inflight_race_cases.base_model_revocation >= 1",
+        ] {
+            assert!(
+                unmet.contains(&rule),
+                "{rule} holds in a run that reused nothing"
+            );
+        }
+        // No cell was counted, and a run that reuses nothing trips no falsifier by luck.
+        assert_eq!(
+            int(
+                &report.json,
+                "invalidation_matrix_cases.base_model_lag_revocation"
+            ),
+            0
+        );
+        assert!(int(&report.json, "internal.live_control_failures") >= 60);
+        let Some(Json::Arr(failures)) = emit::resolve(&report.json, "cases.control_failures")
+        else {
+            panic!("no control_failures record");
+        };
+        assert_eq!(
+            failures.len() as i64,
+            int(&report.json, "internal.live_control_failures")
+        );
     }
 }

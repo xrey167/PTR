@@ -24,6 +24,46 @@ use ptr_runtime::{
 use std::collections::BTreeSet;
 use std::time::Instant;
 
+/// Why a case could not be completed, and who is to blame.
+///
+/// * [`Failure::Invalid`] is a failure of the harness itself (a refusal of the wrong type, a
+///   cold baseline that differs from the independent stack, an accounting that does not add up,
+///   a leaked pin, a negative control that does not trip): the run is INVALID (exit status 2)
+///   and says nothing about the hypothesis.
+/// * [`Failure::Control`] is a failed positive control (a live control that reuses less than
+///   the whole segment, an origin the index did not take, a control that cannot show its
+///   premise): the runtime does not do the positional reuse the experiment measures. The case
+///   is recorded as failed, its post-event assertions are skipped and its case counters are
+///   not incremented, so a coverage rule fails and the seed FALSIFIES (vacuous); it is never
+///   a pass and never an exit status 2.
+#[derive(Debug)]
+pub enum Failure {
+    Invalid(String),
+    Control(String),
+}
+
+impl Failure {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Invalid(message) | Self::Control(message) => message,
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self::Invalid(message)
+    }
+}
+
+/// A result that may be a failed control.
+pub type Run<T> = Result<T, Failure>;
+
+/// A failed positive control.
+pub fn control<T>(message: impl Into<String>) -> Run<T> {
+    Err(Failure::Control(message.into()))
+}
+
 /// The scale of a run: only the pinned one is the experiment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Scale {
@@ -109,10 +149,50 @@ pub fn limits(shape: Shape) -> ReferenceKvLimits {
     }
 }
 
-fn secondary_config() -> SecondaryConfig {
-    SecondaryConfig {
+#[cfg(test)]
+thread_local! {
+    /// A test-only replacement of the index's limits, to show a runtime whose index takes
+    /// nothing is a falsified seed and not an exit status 2.
+    pub(crate) static LIMITS_OVERRIDE: std::cell::Cell<Option<ptr_runtime::SecondaryLimits>> =
+        const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn secondary_config() -> SecondaryConfig {
+    #[allow(unused_mut)]
+    let mut config = SecondaryConfig {
         window_tokens: params::ROLLING_WINDOW_TOKENS as usize,
         ..SecondaryConfig::default()
+    };
+    #[cfg(test)]
+    if let Some(limits) = LIMITS_OVERRIDE.with(std::cell::Cell::get) {
+        config.limits = limits;
+    }
+    config
+}
+
+/// Test-only: while alive, the secondary index of every backend the harness builds on this
+/// thread refuses every segment longer than the rolling window (a runtime whose index takes
+/// nothing), restored on drop.
+#[cfg(test)]
+pub(crate) struct TestLimits;
+
+#[cfg(test)]
+impl TestLimits {
+    pub(crate) fn refusing_every_insert() -> Self {
+        LIMITS_OVERRIDE.with(|limits| {
+            limits.set(Some(ptr_runtime::SecondaryLimits {
+                max_tokens_per_run: params::ROLLING_WINDOW_TOKENS as usize,
+                ..ptr_runtime::SecondaryLimits::default()
+            }));
+        });
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestLimits {
+    fn drop(&mut self) {
+        LIMITS_OVERRIDE.with(|limits| limits.set(None));
     }
 }
 
@@ -280,6 +360,10 @@ pub const SHORT_FILLER_TOKENS: usize = 24;
 /// The lifecycle identity of the reused segment `C` (a memory input, live in every cell).
 pub const C_IDENTITY: &str = "mem:r006-c";
 
+/// The lifecycle identity of the bystander of C3 and C4 (a memory input that is never
+/// invalidated).
+pub const BYSTANDER_IDENTITY: &str = "mem:r006-bystander";
+
 pub fn c_part(material: &Material, shape: Shape) -> Part {
     Part::bound(SegmentKind::Memory, C_IDENTITY, 1, material.segment(shape))
 }
@@ -301,6 +385,17 @@ pub fn u_part(material: &Material, generation: u64) -> Part {
 /// The tokens of a request as `u32`.
 pub fn tokens_of(request: &SegmentedModelRequest) -> Vec<u32> {
     request.tokens().iter().map(|token| token.0).collect()
+}
+
+/// The tokens of a live-control request `[filler][parts...][tail]` a positional lookup can
+/// serve: every segment but the leading filler (new content) and the last, whose last token
+/// the stack must compute itself.
+pub fn reusable_tokens(request: &SegmentedModelRequest) -> usize {
+    let segments = request.segments();
+    segments[1..segments.len().saturating_sub(1)]
+        .iter()
+        .map(|segment| segment.tokens().len())
+        .sum()
 }
 
 /// The offset of the first token of segment `index`.
@@ -432,32 +527,37 @@ fn accounted(name: &str, probe: &ReferenceKvProbe) -> Res<()> {
     Ok(())
 }
 
-/// The shifted result is labelled Exact and carries no taint (`KvReuseReport`).
-pub fn exact_and_untainted(probe: &ReferenceKvProbe) -> (bool, bool) {
-    probe
-        .outcome
-        .run
-        .kv_report
-        .as_ref()
-        .map_or((false, false), |report| {
-            (
-                report.mode() == KvReuseMode::Exact,
-                report.taint() == KvReuseTaint::Exact,
-            )
-        })
+/// The result is labelled Exact and carries no taint (`KvReuseReport`). A run without a
+/// `kv_report` is not a tainted result: it is a result the harness cannot read, so the run is
+/// INVALID (exit status 2) rather than a runtime falsification.
+pub fn exact_and_untainted(probe: &ReferenceKvProbe) -> Res<(bool, bool)> {
+    let report = probe.outcome.run.kv_report.as_ref().ok_or_else(|| {
+        "a positional run without a kv_report: its taint cannot be read".to_string()
+    })?;
+    Ok((
+        report.mode() == KvReuseMode::Exact,
+        report.taint() == KvReuseTaint::Exact,
+    ))
 }
 
 // ---- structural measurements ------------------------------------------------------------------
 
-/// Spans a positional lookup admitted.
+/// Spans a positional lookup admitted in a case that must admit nothing: the spliced spans plus
+/// the segments whose only admitted run covered the last prompt token. The runtime never
+/// splices the last token (the stack needs its logits), so such an admission is counted in
+/// `last_token_skips` and not in `admitted_splices`; a runtime that stops enforcing a check for
+/// the final segment would otherwise be invisible. In every negative case the tail run is
+/// refused, so a correct runtime gives 0. Not for the positive cases (C1, C2, the reorder
+/// control), where `admitted_splices` alone is the measure.
 pub fn admitted(report: &PositionalReport) -> i64 {
-    report.admitted_splices as i64
+    report.admitted_splices as i64 + report.last_token_skips as i64
 }
 
-/// Candidates a lookup returned, whether it admitted them or refused them with a typed reason
-/// (`reachability_definition`). After an applied invalidation neither may happen.
+/// Candidates a lookup returned in a case that must reach nothing, whether it admitted them
+/// (spliced or skipped as the last segment) or refused them with a typed reason
+/// (`reachability_definition`). After an applied invalidation none may happen.
 pub fn reachable(report: &PositionalReport) -> i64 {
-    report.admitted_splices as i64 + report.refusals.total() as i64
+    admitted(report) + report.refusals.total() as i64
 }
 
 // ---- bitwise comparisons ----------------------------------------------------------------------
@@ -712,9 +812,48 @@ pub struct Lab<'a> {
     pub observed: Observed,
     /// The per-case records printed under `cases`.
     pub cases: Vec<(String, Json)>,
+    /// The cases and cells whose positive control failed: `(name, why)`.
+    pub failed_controls: Vec<(String, String)>,
 }
 
 impl Lab<'_> {
+    /// Record a failed positive control (see [`Failure::Control`]): an internal counter the
+    /// coverage rule `internal.live_control_failures <= 0` reads. The caller skips the
+    /// case's post-event assertions and does not increment its case counters.
+    pub fn control_failed(&mut self, name: &str, why: &str) {
+        self.tally.add("live_control_failures", 1);
+        self.failed_controls
+            .push((name.to_string(), why.to_string()));
+    }
+
+    /// The outcome of case `name`: a failed control is recorded and the run goes on, a harness
+    /// failure ends the run (exit status 2).
+    pub fn settle(&mut self, name: &str, outcome: Run<()>) -> Res<()> {
+        match outcome {
+            Ok(()) => Ok(()),
+            Err(Failure::Control(why)) => {
+                self.control_failed(name, &why);
+                Ok(())
+            }
+            Err(Failure::Invalid(why)) => Err(why),
+        }
+    }
+
+    /// The failed controls as printed under `cases.control_failures`.
+    pub fn failed_controls_json(&self) -> Json {
+        Json::Arr(
+            self.failed_controls
+                .iter()
+                .map(|(name, why)| {
+                    Json::obj([
+                        ("case", Json::str(name.clone())),
+                        ("why", Json::str(why.clone())),
+                    ])
+                })
+                .collect(),
+        )
+    }
+
     /// Count the mismatches of a fresh prefill after an invalidation.
     pub fn note_fresh(&mut self, case: &str, fresh: Fresh) {
         self.tally
@@ -746,6 +885,7 @@ pub(crate) mod test_support {
             ids: CaseIds::default(),
             observed: Observed::default(),
             cases: Vec::new(),
+            failed_controls: Vec::new(),
         };
         body(&mut lab)
     }
@@ -793,7 +933,7 @@ mod tests {
         let windows = |tokens: Vec<u32>| -> BTreeSet<Vec<u32>> {
             tokens.windows(window).map(<[u32]>::to_vec).collect()
         };
-        let slots: Vec<BTreeSet<Vec<u32>>> = (0..13)
+        let slots: Vec<BTreeSet<Vec<u32>>> = (0..18)
             .map(|slot| windows(material.spare(slot, SHORT_FILLER_TOKENS)))
             .collect();
         for (a, left) in slots.iter().enumerate() {
@@ -895,6 +1035,65 @@ mod tests {
         positional.admitted_splices = 0;
         positional.refusals.original_upstream_dead = 0;
         assert_eq!(reachable(&positional), 0);
+    }
+
+    #[test]
+    fn a_last_segment_skip_is_an_admission_and_a_reachable_candidate_in_a_negative_case() {
+        let mut positional = PositionalReport {
+            last_token_skips: 1,
+            ..PositionalReport::default()
+        };
+        assert_eq!(admitted(&positional), 1);
+        assert_eq!(reachable(&positional), 1);
+        positional.refusals.original_upstream_omitted = 2;
+        assert_eq!(reachable(&positional), 3);
+        assert_eq!(positional.admitted_splices, 0, "and not a spliced span");
+    }
+
+    #[test]
+    fn the_reusable_tokens_of_a_live_control_request_skip_the_filler_and_the_last_segment() {
+        let request = corpus::request(
+            "r",
+            &[
+                Part::raw(vec![1; 24]),
+                Part::raw(vec![2; 20]),
+                Part::raw(vec![3; 48]),
+                Part::raw(vec![4; 16]),
+            ],
+        );
+        assert_eq!(reusable_tokens(&request), 68);
+    }
+
+    #[test]
+    fn a_run_without_a_kv_report_cannot_be_read() {
+        with_lab(|lab| {
+            let backend = positional_backend(lab.shape, PositionalControl::None).unwrap();
+            let request = raw_request(lab, "r", 3);
+            let mut timings = Timings::default();
+            let mut probe = run_cold(&mut timings, "r", &backend, &request).unwrap();
+            assert!(exact_and_untainted(&probe).is_ok());
+            probe.outcome.run.kv_report = None;
+            let error = exact_and_untainted(&probe).unwrap_err();
+            assert!(error.contains("kv_report"), "{error}");
+        });
+    }
+
+    #[test]
+    fn a_failed_control_is_recorded_and_a_harness_failure_ends_the_run() {
+        with_lab(|lab| {
+            assert!(lab.settle("C1", Ok(())).is_ok());
+            assert_eq!(lab.tally.get("live_control_failures"), 0);
+            assert!(lab
+                .settle("C2", control::<()>("the live control reused nothing"))
+                .is_ok());
+            assert_eq!(lab.tally.get("live_control_failures"), 1);
+            assert_eq!(lab.failed_controls[0].0, "C2");
+            let ended = lab.settle("C3", Err(Failure::Invalid("wrong type".into())));
+            assert_eq!(ended, Err("wrong type".to_string()));
+            assert_eq!(lab.tally.get("live_control_failures"), 1);
+            let json = lab.failed_controls_json().render();
+            assert!(json.contains("the live control reused nothing"), "{json}");
+        });
     }
 
     #[test]
