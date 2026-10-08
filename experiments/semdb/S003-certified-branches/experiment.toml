@@ -1,6 +1,6 @@
 version = 1
 id = "S003"
-status = "prepared"
+status = "completed"
 hypothesis = "Do dependency-certified agent branches avoid lost updates and phantoms while merging more concurrent work than serial execution?"
 metrics = "lost updates; undetected phantoms; certified merge rate; conflict rate; merge latency"
 baseline = "serial execution; last-writer-wins branches; key-level optimistic locking without range digests"
