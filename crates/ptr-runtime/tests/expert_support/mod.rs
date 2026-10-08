@@ -77,5 +77,17 @@ pub fn requirement(gate_epoch: u64, config_digest: [u8; 32]) -> ExpertGateRequir
         gate_epoch,
         config_digest,
         eval_manifest_digest: EVAL_MANIFEST,
+        require_inputs: false,
+    }
+}
+
+/// The same requirement with the dependency block made mandatory.
+pub fn requirement_requiring_inputs(
+    gate_epoch: u64,
+    config_digest: [u8; 32],
+) -> ExpertGateRequirement {
+    ExpertGateRequirement {
+        require_inputs: true,
+        ..requirement(gate_epoch, config_digest)
     }
 }

@@ -9,16 +9,21 @@
 //!
 //! # What it holds
 //!
-//! * `by_expert`: for every expert generation created by a version 3 record, the
-//!   `(identity, generation)` pairs it rests on (training inputs, evaluation inputs and the base
-//!   model, de-duplicated and ascending). Experts created by version 1 and 2 records name no
-//!   inputs and have no entry.
+//! * `by_expert`: for every expert generation created by a version 3 record, the inputs it rests
+//!   on: its training list, its evaluation list and its base model, each as `(identity,
+//!   generation)` (the content digests live in `digests`), and the canonical digest of the
+//!   record's [`ptr_pods::ExpertInputs`] block as the record committed it. The union of the three
+//!   parts, de-duplicated and ascending, is the expert's dependency set. Experts created by
+//!   version 1 and 2 records name no inputs and have no entry. A snapshot restore recomputes the
+//!   block digest from the lists and the registered digests and refuses a disagreement.
 //! * `by_input`: the same relation inverted, input generation to experts. Derived, never stored.
 //! * `children`: source expert generation to the result generations of a `Merge`, `Split` or
 //!   `Reactivate` that consumed it. An edge is recorded only when its source is tracked (it has
 //!   a dependency block or is itself a recorded descendant), because only a tracked expert can be
 //!   reached from an invalidated input; an operation over untracked experts therefore adds
-//!   nothing and a history without version 3 records keeps an empty index.
+//!   nothing and a history without version 3 records keeps an empty index. `parents` is the same
+//!   relation inverted (derived, never stored): an expert's liveness is judged over its own
+//!   inputs and those of every ancestor (see [`ExpertDependencyIndex::first_dead_input`]).
 //! * `digests`: the content digest fixed for an `(identity, generation)`. The first committed use
 //!   (a version 3 record naming it) fixes it; only a committed `Superseded` invalidation moves a
 //!   generation's digest forward, by fixing the digest of its new generation.
@@ -42,6 +47,17 @@ pub(crate) struct RecordedInput {
     pub(crate) digest: [u8; 32],
 }
 
+/// The dependency block of a version 3 record as the index takes it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RecordedBlock {
+    pub(crate) training: Vec<RecordedInput>,
+    pub(crate) evaluation: Vec<RecordedInput>,
+    /// The base model, derived from the record's operation.
+    pub(crate) base: RecordedInput,
+    /// `ExpertInputs::canonical_digest` of the block the record carried.
+    pub(crate) commitment: [u8; 32],
+}
+
 /// What applying one structural record changes in the index.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DependencyUpdate {
@@ -50,7 +66,57 @@ pub(crate) struct DependencyUpdate {
     /// The expert generations the record consumes (only meaningful when it creates results).
     pub(crate) sources: Vec<ExpertRef>,
     /// The inputs of a version 3 record; `None` for version 1 and 2.
-    pub(crate) inputs: Option<Vec<RecordedInput>>,
+    pub(crate) inputs: Option<RecordedBlock>,
+}
+
+/// What an expert generation rests on, as its version 3 record named it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExpertInputSet {
+    pub(crate) training: Vec<InputKey>,
+    pub(crate) evaluation: Vec<InputKey>,
+    pub(crate) base: InputKey,
+    pub(crate) commitment: [u8; 32],
+    /// The union of the three parts, ascending and de-duplicated. Derived.
+    pairs: Vec<InputKey>,
+}
+
+impl ExpertInputSet {
+    pub(crate) fn new(
+        training: Vec<InputKey>,
+        evaluation: Vec<InputKey>,
+        base: InputKey,
+        commitment: [u8; 32],
+    ) -> Self {
+        let mut pairs: Vec<InputKey> = training
+            .iter()
+            .chain(&evaluation)
+            .chain(std::iter::once(&base))
+            .cloned()
+            .collect();
+        pairs.sort();
+        pairs.dedup();
+        Self {
+            training,
+            evaluation,
+            base,
+            commitment,
+            pairs,
+        }
+    }
+
+    pub(crate) fn pairs(&self) -> &[InputKey] {
+        &self.pairs
+    }
+}
+
+/// Why an input of an expert or of one of its ancestors is not live: the input, why, and whether
+/// the expert itself or an ancestor named it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DeadInput {
+    pub(crate) identity: String,
+    pub(crate) generation: Generation,
+    pub(crate) status: InputStatus,
+    pub(crate) inherited: bool,
 }
 
 /// Why an input generation is not live, as the index knows it.
@@ -66,9 +132,10 @@ pub(crate) enum InputStatus {
 /// The dependency index. See the module documentation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExpertDependencyIndex {
-    by_expert: BTreeMap<ExpertRef, Vec<InputKey>>,
+    by_expert: BTreeMap<ExpertRef, ExpertInputSet>,
     by_input: BTreeMap<InputKey, BTreeSet<ExpertRef>>,
     children: BTreeMap<ExpertRef, BTreeSet<ExpertRef>>,
+    parents: BTreeMap<ExpertRef, BTreeSet<ExpertRef>>,
     descendants: BTreeSet<ExpertRef>,
     digests: BTreeMap<InputKey, [u8; 32]>,
     revoked: BTreeSet<InputKey>,
@@ -95,11 +162,36 @@ impl ExpertDependencyIndex {
     ) -> Option<impl Iterator<Item = (&str, Generation)>> {
         self.by_expert
             .get(&(project.to_owned(), pod.to_owned(), generation))
-            .map(|inputs| {
-                inputs
+            .map(|set| {
+                set.pairs()
                     .iter()
                     .map(|(id, generation)| (id.as_str(), *generation))
             })
+    }
+
+    /// Every `(identity, generation)` the expert generation `node` or any ancestor (through the
+    /// source edges of `Merge`, `Split` and `Reactivate`) rests on, ascending. Empty when neither
+    /// it nor an ancestor is tracked.
+    pub fn lineage_inputs(
+        &self,
+        project: &str,
+        pod: &str,
+        generation: Generation,
+    ) -> BTreeSet<(String, Generation)> {
+        let start = (project.to_owned(), pod.to_owned(), generation);
+        let mut seen: BTreeSet<ExpertRef> = BTreeSet::new();
+        let mut queue = VecDeque::from([start]);
+        let mut inputs = BTreeSet::new();
+        while let Some(node) = queue.pop_front() {
+            if !seen.insert(node.clone()) {
+                continue;
+            }
+            if let Some(set) = self.by_expert.get(&node) {
+                inputs.extend(set.pairs().iter().cloned());
+            }
+            queue.extend(self.parents.get(&node).into_iter().flatten().cloned());
+        }
+        inputs
     }
 
     /// The experts whose own dependency block names `identity` at exactly `generation`, in
@@ -167,29 +259,41 @@ impl ExpertDependencyIndex {
                     .entry(source.clone())
                     .or_default()
                     .extend(update.results.iter().cloned());
+                for result in &update.results {
+                    self.parents
+                        .entry(result.clone())
+                        .or_default()
+                        .insert(source.clone());
+                }
                 self.descendants.extend(update.results.iter().cloned());
             }
         }
-        let Some(inputs) = &update.inputs else {
+        let Some(block) = &update.inputs else {
             return;
         };
-        let mut pairs: Vec<InputKey> = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            self.digests
-                .entry((input.identity.clone(), input.generation))
-                .or_insert(input.digest);
-            pairs.push((input.identity.clone(), input.generation));
+        let key = |input: &RecordedInput| (input.identity.clone(), input.generation);
+        for input in block
+            .training
+            .iter()
+            .chain(&block.evaluation)
+            .chain(std::iter::once(&block.base))
+        {
+            self.digests.entry(key(input)).or_insert(input.digest);
         }
-        pairs.sort();
-        pairs.dedup();
+        let set = ExpertInputSet::new(
+            block.training.iter().map(key).collect(),
+            block.evaluation.iter().map(key).collect(),
+            key(&block.base),
+            block.commitment,
+        );
         for result in &update.results {
-            for pair in &pairs {
+            for pair in set.pairs() {
                 self.by_input
                     .entry(pair.clone())
                     .or_default()
                     .insert(result.clone());
             }
-            self.by_expert.insert(result.clone(), pairs.clone());
+            self.by_expert.insert(result.clone(), set.clone());
         }
     }
 
@@ -240,8 +344,8 @@ impl ExpertDependencyIndex {
         };
         let retrained = |node: &ExpertRef| {
             superseded_by.is_some_and(|new_generation| {
-                self.by_expert.get(node).is_some_and(|inputs| {
-                    inputs
+                self.by_expert.get(node).is_some_and(|set| {
+                    set.pairs()
                         .iter()
                         .any(|(id, g)| id == identity && *g >= new_generation)
                 })
@@ -261,12 +365,133 @@ impl ExpertDependencyIndex {
         affected
     }
 
+    /// The first input that is not live among those of an expert and of its ancestors.
+    ///
+    /// The expert is described by its own dependency `own` and its direct `sources` (the experts
+    /// a `Merge`, `Split` or `Reactivate` consumed), so an expert that is about to be created can
+    /// be judged the same way as one that exists. `status` says why an `(identity, generation)`
+    /// is not live, or `None` when it is.
+    ///
+    /// A revoked input anywhere in the ancestry is dead, with no exception: revoked data is not
+    /// laundered by a retraining. A superseded input is dead unless every path from the expert
+    /// that named it down to the judged expert crosses an expert whose own dependency names the
+    /// same identity at the supersession floor or above (it was retrained on the replacement),
+    /// which is the exemption `affected` applies when it derives a fence set, so the probe and
+    /// the fence set agree. The first dead input in breadth-first order (own inputs first, each
+    /// node's inputs ascending) is returned.
+    pub(crate) fn first_dead_input(
+        &self,
+        own: &[InputKey],
+        sources: &[ExpertRef],
+        status: &dyn Fn(&str, Generation) -> Option<InputStatus>,
+    ) -> Option<DeadInput> {
+        let mut order: Vec<&[InputKey]> = vec![own];
+        let mut seen: BTreeSet<&ExpertRef> = BTreeSet::new();
+        let mut queue: VecDeque<&ExpertRef> = sources.iter().collect();
+        while let Some(node) = queue.pop_front() {
+            if !seen.insert(node) {
+                continue;
+            }
+            order.push(self.node_pairs(node));
+            queue.extend(self.parents.get(node).into_iter().flatten());
+        }
+        for (position, inputs) in order.iter().enumerate() {
+            for (identity, generation) in *inputs {
+                let found = |status| DeadInput {
+                    identity: identity.clone(),
+                    generation: *generation,
+                    status,
+                    inherited: position > 0,
+                };
+                match status(identity, *generation) {
+                    None => {}
+                    Some(InputStatus::Revoked) => return Some(found(InputStatus::Revoked)),
+                    Some(InputStatus::Superseded { floor })
+                        if self.superseded_reaches(own, sources, identity, floor, status) =>
+                    {
+                        return Some(found(InputStatus::Superseded { floor }));
+                    }
+                    Some(InputStatus::Superseded { .. }) => {}
+                }
+            }
+        }
+        None
+    }
+
+    fn node_pairs(&self, node: &ExpertRef) -> &[InputKey] {
+        self.by_expert.get(node).map_or(&[], |set| set.pairs())
+    }
+
+    /// Whether some expert in the ancestry (or the described expert itself) names `identity`
+    /// below `floor` and a path from it down to the described expert crosses no expert that
+    /// names `identity` at `floor` or above.
+    fn superseded_reaches(
+        &self,
+        own: &[InputKey],
+        sources: &[ExpertRef],
+        identity: &str,
+        floor: Generation,
+        status: &dyn Fn(&str, Generation) -> Option<InputStatus>,
+    ) -> bool {
+        // Walk from the described expert towards its ancestors; a node that names the identity
+        // at the floor or above is a retrained successor and blocks the path through it.
+        let classify = |pairs: &[InputKey]| {
+            let seed = pairs.iter().any(|(id, generation)| {
+                id == identity
+                    && matches!(
+                        status(id, *generation),
+                        Some(InputStatus::Superseded { .. })
+                    )
+            });
+            let retrained = pairs
+                .iter()
+                .any(|(id, generation)| id == identity && *generation >= floor);
+            (seed, retrained)
+        };
+        let (seed, retrained) = classify(own);
+        if seed {
+            return true;
+        }
+        if retrained {
+            return false;
+        }
+        let mut seen: BTreeSet<&ExpertRef> = BTreeSet::new();
+        let mut queue: VecDeque<&ExpertRef> = sources.iter().collect();
+        while let Some(node) = queue.pop_front() {
+            if !seen.insert(node) {
+                continue;
+            }
+            let (seed, retrained) = classify(self.node_pairs(node));
+            if seed {
+                return true;
+            }
+            if !retrained {
+                queue.extend(self.parents.get(node).into_iter().flatten());
+            }
+        }
+        false
+    }
+
+    /// [`ExpertDependencyIndex::first_dead_input`] for the recorded expert generation `node`.
+    pub(crate) fn first_dead_input_of(
+        &self,
+        node: &ExpertRef,
+        status: &dyn Fn(&str, Generation) -> Option<InputStatus>,
+    ) -> Option<DeadInput> {
+        let sources: Vec<ExpertRef> = self
+            .parents
+            .get(node)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        self.first_dead_input(self.node_pairs(node), &sources, status)
+    }
+
     // ---- snapshot support -------------------------------------------------------------------
 
-    pub(crate) fn expert_entries(&self) -> impl Iterator<Item = (&ExpertRef, &[InputKey])> {
-        self.by_expert
-            .iter()
-            .map(|(key, inputs)| (key, inputs.as_slice()))
+    pub(crate) fn expert_entries(&self) -> impl Iterator<Item = (&ExpertRef, &ExpertInputSet)> {
+        self.by_expert.iter()
     }
 
     pub(crate) fn edge_entries(&self) -> impl Iterator<Item = (&ExpertRef, &ExpertRef)> {
@@ -289,18 +514,18 @@ impl ExpertDependencyIndex {
             .map(|(identity, floor)| (identity.as_str(), *floor))
     }
 
-    /// Rebuild an index from snapshot parts; the derived relations (`by_input`, `descendants`)
+    /// Rebuild an index from snapshot parts; the derived relations (`by_input`, `parents`, `descendants`)
     /// are recomputed, so a snapshot cannot carry them inconsistently.
     pub(crate) fn from_parts(
-        by_expert: BTreeMap<ExpertRef, Vec<InputKey>>,
+        by_expert: BTreeMap<ExpertRef, ExpertInputSet>,
         edges: Vec<(ExpertRef, ExpertRef)>,
         digests: BTreeMap<InputKey, [u8; 32]>,
         revoked: BTreeSet<InputKey>,
         floors: BTreeMap<String, Generation>,
     ) -> Self {
         let mut by_input: BTreeMap<InputKey, BTreeSet<ExpertRef>> = BTreeMap::new();
-        for (expert, inputs) in &by_expert {
-            for input in inputs {
+        for (expert, set) in &by_expert {
+            for input in set.pairs() {
                 by_input
                     .entry(input.clone())
                     .or_default()
@@ -308,19 +533,154 @@ impl ExpertDependencyIndex {
             }
         }
         let mut children: BTreeMap<ExpertRef, BTreeSet<ExpertRef>> = BTreeMap::new();
+        let mut parents: BTreeMap<ExpertRef, BTreeSet<ExpertRef>> = BTreeMap::new();
         let mut descendants = BTreeSet::new();
         for (source, result) in edges {
             descendants.insert(result.clone());
+            parents
+                .entry(result.clone())
+                .or_default()
+                .insert(source.clone());
             children.entry(source).or_default().insert(result);
         }
         Self {
             by_expert,
             by_input,
             children,
+            parents,
             descendants,
             digests,
             revoked,
             floors,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(pod: &str) -> ExpertRef {
+        ("p".to_owned(), pod.to_owned(), Generation(1))
+    }
+
+    fn pair(identity: &str, generation: u64) -> InputKey {
+        (identity.to_owned(), Generation(generation))
+    }
+
+    fn recorded(identity: &str, generation: u64) -> RecordedInput {
+        RecordedInput {
+            identity: identity.to_owned(),
+            generation: Generation(generation),
+            digest: [generation as u8 + 1; 32],
+        }
+    }
+
+    /// Register `pod` as a version 3 record resting on `inputs`, consuming `sources`.
+    fn register(
+        index: &mut ExpertDependencyIndex,
+        pod: &str,
+        sources: &[&str],
+        inputs: &[(&str, u64)],
+    ) {
+        index.register(&DependencyUpdate {
+            results: vec![node(pod)],
+            sources: sources.iter().map(|s| node(s)).collect(),
+            inputs: Some(RecordedBlock {
+                training: inputs.iter().map(|(i, g)| recorded(i, *g)).collect(),
+                evaluation: vec![],
+                base: recorded("base-model:b", 1),
+                commitment: [1; 32],
+            }),
+        });
+    }
+
+    fn superseded_below(floor: u64) -> impl Fn(&str, Generation) -> Option<InputStatus> {
+        move |identity, generation| {
+            (identity == "data" && generation.0 < floor).then_some(InputStatus::Superseded {
+                floor: Generation(floor),
+            })
+        }
+    }
+
+    #[test]
+    fn a_revoked_input_anywhere_in_the_ancestry_is_dead_without_exemption() {
+        let mut index = ExpertDependencyIndex::default();
+        register(&mut index, "a", &[], &[("data", 1)]);
+        register(&mut index, "b", &["a"], &[("data", 2)]);
+        let revoked = |identity: &str, generation: Generation| {
+            (identity == "data" && generation.0 == 1).then_some(InputStatus::Revoked)
+        };
+        // b names the newer generation itself, which does not launder the ancestor's revoked one.
+        let dead = index.first_dead_input_of(&node("b"), &revoked).unwrap();
+        assert_eq!(
+            (dead.identity.as_str(), dead.generation, dead.inherited),
+            ("data", Generation(1), true)
+        );
+        assert_eq!(dead.status, InputStatus::Revoked);
+        // The ancestor itself judges its own input as not inherited.
+        assert!(
+            !index
+                .first_dead_input_of(&node("a"), &revoked)
+                .unwrap()
+                .inherited
+        );
+    }
+
+    #[test]
+    fn a_retrained_successor_is_exempt_from_a_superseded_ancestor_input_only_on_its_own_path() {
+        let mut index = ExpertDependencyIndex::default();
+        register(&mut index, "a", &[], &[("data", 1)]);
+        // b retrained on data@2, c did not.
+        register(&mut index, "b", &["a"], &[("data", 2)]);
+        register(&mut index, "c", &["a"], &[("other", 1)]);
+        let status = superseded_below(2);
+        assert_eq!(index.first_dead_input_of(&node("b"), &status), None);
+        let dead = index.first_dead_input_of(&node("c"), &status).unwrap();
+        assert_eq!((dead.identity.as_str(), dead.inherited), ("data", true));
+        // d merges both: the path through c is not retrained, so d is dead.
+        register(&mut index, "d", &["b", "c"], &[("third", 1)]);
+        assert!(index.first_dead_input_of(&node("d"), &status).is_some());
+        // e descends only from b: the retrained successor blocks the path to a.
+        register(&mut index, "e", &["b"], &[("third", 1)]);
+        assert_eq!(index.first_dead_input_of(&node("e"), &status), None);
+        // The fence-set derivation agrees: superseding data@1 by data@2 reaches a, c and d, not
+        // b or e.
+        let affected = index.affected("data", Generation(1), Some(Generation(2)));
+        assert_eq!(affected, BTreeSet::from([node("a"), node("c"), node("d")]));
+    }
+
+    #[test]
+    fn an_expert_about_to_be_created_is_judged_like_one_that_exists() {
+        let mut index = ExpertDependencyIndex::default();
+        register(&mut index, "a", &[], &[("data", 1)]);
+        let status = superseded_below(2);
+        // Without its own block it inherits the dead input; naming the replacement exempts it.
+        let own: Vec<InputKey> = vec![];
+        assert!(index
+            .first_dead_input(&own, &[node("a")], &status)
+            .is_some());
+        let retrained = vec![pair("data", 2)];
+        assert_eq!(
+            index.first_dead_input(&retrained, &[node("a")], &status),
+            None
+        );
+        // An untracked source brings nothing.
+        assert_eq!(
+            index.first_dead_input(&own, &[node("ghost")], &status),
+            None
+        );
+    }
+
+    #[test]
+    fn lineage_inputs_are_the_union_over_the_ancestry() {
+        let mut index = ExpertDependencyIndex::default();
+        register(&mut index, "a", &[], &[("data", 1)]);
+        register(&mut index, "b", &["a"], &[("other", 1)]);
+        let inputs = index.lineage_inputs("p", "b", Generation(1));
+        assert!(inputs.contains(&pair("data", 1)));
+        assert!(inputs.contains(&pair("other", 1)));
+        assert!(inputs.contains(&pair("base-model:b", 1)));
+        assert!(index.lineage_inputs("p", "ghost", Generation(1)).is_empty());
     }
 }

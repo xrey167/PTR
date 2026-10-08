@@ -63,6 +63,7 @@
 
 ### Missing for the target architecture
 
+- The expert: rows a ptr-pg projection holds are NOT authoritative after a tag-30 (InputInvalidated) or tag-31 (ExpertAuthorityChanged) fence (R011 WP3b): the event names the fenced experts by count and digest only and ptr-pg applies the shared ptr-state projection_entries, so a fenced expert still reads as serving there; only the ptr-runtime materialized state marks it. Do not wire a router, or any serving decision, to the PostgreSQL projection
 - TLS connector, role separation and row-level security
 - Connection strings naming several servers (failover or load balancing across hosts): a substrate connects to one host or hostaddr, and localhost without a hostaddr only at 127.0.0.1
 - Connection pooling and a logical-replication change feed

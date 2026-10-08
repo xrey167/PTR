@@ -22,8 +22,8 @@ use ptr_runtime::compacted::CompactedError;
 use ptr_runtime::expert::{
     expert_authority_fence_set_digest, expert_evidence_artifact_digest,
     expert_evidence_base_model_digest, expert_readmission_subject_ids, ExpertAdmissionError,
-    ExpertAdmissionGrant, ExpertAuthorityChange, ExpertAuthorityOutcome, ExpertFenceGrant,
-    ExpertFenceRequest, ExpertFenceSetMember, RouteRefusal, StaleEvidenceReason,
+    ExpertAdmissionGrant, ExpertAuthorityChange, ExpertAuthorityOutcome, ExpertFenceAuthority,
+    ExpertFenceGrant, ExpertFenceRequest, ExpertFenceSetMember, RouteRefusal, StaleEvidenceReason,
 };
 use ptr_runtime::{
     CatalogLimits, KvCatalogError, KvChainId, KvDependency, KvInsert, KvLivenessOracle, KvLookup,
@@ -233,6 +233,11 @@ fn revocation_grant() -> ExpertFenceGrant {
     ExpertFenceGrant::revocation(project(), binding())
 }
 
+/// The runtime-wide revocation authority an authority change needs.
+fn global_grant() -> ExpertFenceGrant {
+    ExpertFenceGrant::global_revocation(binding())
+}
+
 fn change(
     rt: &mut PtrRuntime,
     kind: ExpertAuthorityKind,
@@ -244,7 +249,7 @@ fn change(
         EVALUATOR => evaluator(epoch as u8),
     };
     rt.change_expert_authority(
-        &revocation_grant(),
+        &global_grant(),
         ExpertAuthorityChange::new(kind, id, epoch, class),
     )
 }
@@ -868,7 +873,7 @@ fn epochs_must_strictly_increase_per_kind_and_a_revoked_identity_cannot_stay_cur
     // A revocation that keeps the revoked identity current is refused; a rotation may keep it.
     assert_eq!(
         expert_error(rt.change_expert_authority(
-            &revocation_grant(),
+            &global_grant(),
             ExpertAuthorityChange::new(GATE, cfg(5), 6, REVOKE)
         )),
         ExpertAdmissionError::AuthorityIdentityUnchanged { kind: GATE }
@@ -881,13 +886,13 @@ fn epochs_must_strictly_increase_per_kind_and_a_revoked_identity_cannot_stay_cur
     // Epoch zero and an all-zero identity are not events at all.
     assert!(rt
         .change_expert_authority(
-            &revocation_grant(),
+            &global_grant(),
             ExpertAuthorityChange::new(EVALUATOR, evaluator(3), 0, LOOSE)
         )
         .is_err());
     assert!(rt
         .change_expert_authority(
-            &revocation_grant(),
+            &global_grant(),
             ExpertAuthorityChange::new(EVALUATOR, [0; 32], 9, LOOSE)
         )
         .is_err());
@@ -942,11 +947,38 @@ fn a_gate_grant_cannot_issue_an_authority_change_and_the_public_commit_refuses_t
 }
 
 #[test]
-fn a_superseded_fence_grant_cannot_issue_an_authority_change() {
+fn a_project_scoped_revocation_grant_cannot_issue_an_authority_change() {
+    // An authority change fences the experts of every project, so the project-scoped revocation
+    // grant (the one that fences a single project's experts) is refused with a typed error and
+    // nothing is appended; only the runtime-wide grant passes.
+    let mut rt = regime();
+    let before = (applied(&rt), rt.expert_registry().clone());
+    assert_eq!(
+        expert_error(rt.change_expert_authority(
+            &revocation_grant(),
+            ExpertAuthorityChange::new(GATE, cfg(3), 3, TIGHTEN)
+        )),
+        ExpertAdmissionError::FenceAuthorityMismatch {
+            action: ptr_ledger::ExpertFenceAction::Fence,
+            required: ExpertFenceAuthority::GlobalRevocation,
+        }
+    );
+    assert_eq!((applied(&rt), rt.expert_registry().clone()), before);
+    // A global grant may not fence one expert either.
+    assert!(matches!(
+        expert_error(rt.fence_expert(&quarantine_request("a", 1), &global_grant())),
+        ExpertAdmissionError::FenceAuthorityMismatch { .. }
+    ));
+    change(&mut rt, GATE, 3, TIGHTEN).unwrap();
+}
+
+#[test]
+fn a_superseded_global_grant_cannot_issue_an_authority_change() {
     use ptr_runtime::expert::ExpertGrantKind;
     let mut rt = regime();
-    let stale = revocation_grant();
-    rt.supersede_expert_grant(ExpertGrantKind::Fence).unwrap();
+    let stale = global_grant();
+    rt.supersede_expert_grant(ExpertGrantKind::GlobalRevocation)
+        .unwrap();
     let before = applied(&rt);
     assert!(matches!(
         expert_error(
