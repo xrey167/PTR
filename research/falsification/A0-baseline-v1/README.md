@@ -16,5 +16,6 @@ flowchart LR
 | [`DESIGN.md`](DESIGN.md) | why, arms, contrasts, gates, rules, budget, threats |
 | [`PREREGISTRATION.md`](PREREGISTRATION.md) | the frozen text |
 | [`criteria.toml`](criteria.toml) | the single source of every threshold, pin and contrast; read by the decider |
+| [`DEVIATIONS.md`](DEVIATIONS.md) | what happened after the freeze and was not foreseen (interrupted runs, successors); append-only |
 
 Decider: `scripts/aggregate_a0_baseline.py`, tests `scripts/tests/test_aggregate_a0_baseline.py`; runner: `model/burn-a0/examples/a0_ablation` (`--phase baseline-v1`, `baseline-v1-sweep`, `baseline-v1-select`). Claims stay A0/synthetic (ADR-0021). Results are added here as `RESULTS.md` when the experiments have run.

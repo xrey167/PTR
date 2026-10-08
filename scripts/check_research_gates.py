@@ -3292,6 +3292,19 @@ def m002_v9_successor_freeze_errors(root: Path, experiment: Path, manifest: dict
 
 A0_BASELINE_V1_CRITERIA="research/falsification/A0-baseline-v1/criteria.toml"
 A0_BASELINE_V1_IDS=("M001-v5","M002-v10","M003-v2")
+# A study's sweep is `<study>-sweep`; a sweep whose only seed was spent without
+# an outcome is superseded by `<study>-sweep-r2`, that by `-r3`, ...
+# (research/falsification/A0-baseline-v1/DEVIATIONS.md).
+A0_BASELINE_V1_ID=re.compile(r"(?P<study>M\d{3}-v\d+)(?P<sweep>-sweep(?:-r(?P<revision>[2-9]|[1-9]\d+))?)?")
+
+def a0_baseline_v1_parts(exp_id: str) -> tuple[str, bool, int] | None:
+    """(study, is a sweep, revision) of an experiment id of the A0 baseline
+    study v1 (revision 1 for the first sweep and the confirmatory experiment,
+    n for `-sweep-r<n>`), or None when it is none of the study's."""
+    match=A0_BASELINE_V1_ID.fullmatch(exp_id)
+    if match is None or match["study"] not in A0_BASELINE_V1_IDS:
+        return None
+    return match["study"],match["sweep"] is not None,int(match["revision"] or 1)
 A0_BASELINE_V1_FLAGS=(
     ("--study","<study>"),("--arms","<arms>"),("--seed","<seed>"),("--steps","<steps>"),("--data","<data>"),
     ("--folds","<folds>"),("--d-model","<d_model>"),("--rank","<rank>"),("--bias-limit","<bias_limit>"),
@@ -3316,10 +3329,11 @@ def a0_baseline_v1_freeze_errors(root: Path, experiment: Path, manifest: dict, e
         return [error.named(root)]
     if not isinstance(config,dict):
         return [f"{exp_id}: config.toml has no preregistration table"]
-    sweep=exp_id.endswith("-sweep")
-    study=next((item for item in criteria.get("study",[]) if item.get("id")==exp_id.removesuffix("-sweep")),None)
-    if study is None:
+    parts=a0_baseline_v1_parts(exp_id)
+    study=None if parts is None else next((item for item in criteria.get("study",[]) if item.get("id")==parts[0]),None)
+    if parts is None or study is None:
         return [f"{exp_id}: {A0_BASELINE_V1_CRITERIA} names no such study"]
+    sweep,revision=parts[1],parts[2]
     protocol=criteria["protocol"]
     expected={
         "seeds":[protocol["sweep_seed"]] if sweep else criteria["seeds"],
@@ -3332,6 +3346,22 @@ def a0_baseline_v1_freeze_errors(root: Path, experiment: Path, manifest: dict, e
         "decision_core":criteria["decision"]["core"],"implementation_tree":"model/burn-a0",
     }
     errors=[]
+    if revision>1:
+        # A successor sweep replaces the sweep before it, which must be
+        # superseded (its interrupted record kept), and differs from it in
+        # nothing the study pins: the protocol keys above are the study's.
+        predecessor=f"{study['id']}-sweep" if revision==2 else f"{study['id']}-sweep-r{revision-1}"
+        expected["supersedes"]=predecessor
+        if "supersedes" not in config:
+            errors.append(f"{exp_id}: preregistration key supersedes must name {predecessor!r}")
+        try:
+            before=status_of(load(experiment.parent/predecessor/"experiment.toml"))
+        except Unreadable:
+            before=None
+        if before!="superseded":
+            errors.append(f"{exp_id}: {predecessor}, which it supersedes, is {before!r}, not superseded")
+    elif "supersedes" in config:
+        errors.append(f"{exp_id}: preregistration key supersedes is only for a successor sweep")
     for key,value in expected.items():
         if key in config and not is_unset(config[key]) and not same_value(config[key],value):
             errors.append(f"{exp_id}: preregistration key {key} {config[key]!r} is not {value!r}, the value criteria.toml fixes")
@@ -3696,8 +3726,8 @@ def gate_errors(root: Path) -> list[str]:
         errors.extend(m002_v8_successor_freeze_errors(root,directories["M002-v8"],experiments["M002-v8"]))
     if "M002-v9" in experiments and "M002-v9" in directories:
         errors.extend(m002_v9_successor_freeze_errors(root,directories["M002-v9"],experiments["M002-v9"]))
-    for exp_id in (*A0_BASELINE_V1_IDS,*(f"{item}-sweep" for item in A0_BASELINE_V1_IDS)):
-        if exp_id in experiments and exp_id in directories:
+    for exp_id in sorted(experiments):
+        if a0_baseline_v1_parts(exp_id) is not None and exp_id in directories:
             errors.extend(a0_baseline_v1_freeze_errors(root,directories[exp_id],experiments[exp_id],exp_id))
     errors.extend(m009_lock_errors(root,experiments,directories))
     errors.extend(preregistration_errors(root,experiments,directories))

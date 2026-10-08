@@ -20,6 +20,14 @@ it, never typed twice. It
   `prepared` (`freeze`). The freeze is a separate, explicit step of the head
   (see scratchpad `m-freeze-plan.md`); nothing here runs on import.
 
+A sweep whose only seed was spent without an outcome (a run killed by a container
+restart, record status `started`, no output) is superseded by a successor sweep
+`<study>-sweep-r<n>` listed in `SWEEP_SUCCESSORS`: the same protocol, grid, arms,
+seed and selection rule, a new id, the predecessor named in its `supersedes` key
+(`research/falsification/A0-baseline-v1/DEVIATIONS.md` has the procedure). The
+learning-rate file stays `lr_<study>.tsv`, and only the study's current sweep
+may feed it.
+
 Values that can only be known at the freeze stay `must-be-pinned-before-prepared`
 in a planned configuration (`pending_keys`): the digest of a learning-rate file
 before its sweep ran, and the digests that depend on the final `model/burn-a0`
@@ -57,6 +65,10 @@ RUNNER_SOURCES = {
 }
 SEEDS = [17, 29, 43, 71, 101]
 SWEEP_SEEDS = [17]
+# Successor sweeps, oldest first, per study: a sweep that spent its only seed
+# without an outcome is superseded by `<study>-sweep-r2`, that by `-r3`, ...
+SWEEP_SUCCESSORS = {"M002-v10": ("M002-v10-sweep-r2",)}
+SWEEP_ID = re.compile(r"(?P<study>M\d{3}-v\d+)-sweep(?:-r(?P<revision>[2-9]|[1-9]\d+))?")
 PENDING = "must-be-pinned-before-prepared"
 COMMAND_HEAD = (
     "cargo +1.95.0 run --release --locked --quiet --manifest-path model/burn-a0/Cargo.toml "
@@ -150,6 +162,36 @@ class RegistrationError(ValueError):
     """A registration, render or freeze that cannot proceed."""
 
 
+def sweep_chain(study_id: str) -> tuple[str, ...]:
+    """The sweep experiments of `study_id`, the first and its successors in
+    order; the last is the one whose learning-rate file the study uses."""
+    chain = (f"{study_id}-sweep", *SWEEP_SUCCESSORS.get(study_id, ()))
+    for position, exp_id in enumerate(chain):
+        match = SWEEP_ID.fullmatch(exp_id)
+        wanted = None if position == 0 else str(position + 1)
+        if match is None or match["study"] != study_id or match["revision"] != wanted:
+            raise RegistrationError(f"{exp_id} is not the sweep {study_id}-sweep{'' if wanted is None else '-r' + wanted}")
+    return chain
+
+
+def current_sweep(study_id: str) -> str:
+    """The sweep experiment that produces `study_id`'s learning-rate file."""
+    return sweep_chain(study_id)[-1]
+
+
+def superseded_by(exp_id: str) -> str | None:
+    """The successor of the sweep `exp_id`, or None for the current sweep or
+    an id that is no sweep."""
+    match = SWEEP_ID.fullmatch(exp_id)
+    if match is None:
+        return None
+    chain = sweep_chain(match["study"])
+    if exp_id not in chain:
+        return None
+    position = chain.index(exp_id) + 1
+    return chain[position] if position < len(chain) else None
+
+
 @dataclass(frozen=True)
 class Registration:
     """One experiment of the study: its directory, manifest, configuration
@@ -163,6 +205,7 @@ class Registration:
     table: dict
     required: dict
     pending: tuple[str, ...]
+    supersedes: str | None = None  # the interrupted sweep a successor sweep replaces
 
     @property
     def listed(self) -> bool:
@@ -251,7 +294,6 @@ def registrations(criteria: dict) -> list[Registration]:
         study_id = study["id"]
         text = TEXTS[study_id]
         arms = ",".join(study["arms"])
-        sweep_id = f"{study_id}-sweep"
         primary = next(c for c in study["contrast"] if c["role"] == "primary")
         pins = {
             "study": study["runner_study"],
@@ -277,36 +319,49 @@ def registrations(criteria: dict) -> list[Registration]:
             "implementation_tree_git_digest": PENDING,
         }
         pending_runner = ("runner_main_sha256", "runner_baseline_sha256", "implementation_tree_git_digest")
-        # Sweep: validation only, seed 17, one record per study.
-        sweep_table = {
-            "seeds": SWEEP_SEEDS, **pins, "lr_file_target": lr_file_path(study_id), **tail_pins,
-        }
-        sweep_required = {**common_required, "lr_file_target": "str"}
-        out.append(Registration(
-            exp_id=sweep_id,
-            path=f"model/{sweep_id}",
-            kind="sweep",
-            study_id=study_id,
-            manifest={
-                "hypothesis": (
-                    f"Which learning rate of the fixed grid {grid_text(protocol['lr_grid'])} trains each arm of "
-                    f"{study_id}, the plain baseline included, best on validation data (seed "
-                    f"{protocol['sweep_seed']}, validation only)? Sweep of the A0 baseline study v1."
-                ),
-                "metrics": "validation accuracy, validation NLL and divergence per fold, arm and learning rate",
-                "baseline": "no external baseline: the plain baseline is swept as an arm with its own rate",
-                "falsification": SWEEP_FALSIFICATION,
-                "entrypoint": SWEEP_COMMAND,
-                "seeds": SWEEP_SEEDS,
-            },
-            table=sweep_table,
-            required=sweep_required,
-            pending=pending_runner,
-        ))
+        # Sweep: validation only, seed 17, one record per study. A successor
+        # sweep (SWEEP_SUCCESSORS) is the identical experiment under a new id.
+        chain = sweep_chain(study_id)
+        for position, sweep_id in enumerate(chain):
+            predecessor = chain[position - 1] if position else None
+            sweep_table = {
+                "seeds": SWEEP_SEEDS, **pins, "lr_file_target": lr_file_path(study_id), **tail_pins,
+            }
+            sweep_required = {**common_required, "lr_file_target": "str"}
+            hypothesis = (
+                f"Which learning rate of the fixed grid {grid_text(protocol['lr_grid'])} trains each arm of "
+                f"{study_id}, the plain baseline included, best on validation data (seed "
+                f"{protocol['sweep_seed']}, validation only)? Sweep of the A0 baseline study v1."
+            )
+            if predecessor is not None:
+                sweep_table["supersedes"] = predecessor
+                sweep_required["supersedes"] = "str"
+                hypothesis += (
+                    f" Successor of {predecessor}, whose only seed was spent by a run killed before any output "
+                    "(no sweep result was observed): same protocol, grid, arms, seed and selection rule."
+                )
+            out.append(Registration(
+                exp_id=sweep_id,
+                path=f"model/{sweep_id}",
+                kind="sweep",
+                study_id=study_id,
+                manifest={
+                    "hypothesis": hypothesis,
+                    "metrics": "validation accuracy, validation NLL and divergence per fold, arm and learning rate",
+                    "baseline": "no external baseline: the plain baseline is swept as an arm with its own rate",
+                    "falsification": SWEEP_FALSIFICATION,
+                    "entrypoint": SWEEP_COMMAND,
+                    "seeds": SWEEP_SEEDS,
+                },
+                table=sweep_table,
+                required=sweep_required,
+                pending=pending_runner,
+                supersedes=predecessor,
+            ))
         confirmatory_table = {
             "seeds": SEEDS, **pins,
             "lr_file": lr_file_path(study_id),
-            "sweep_experiment": sweep_id,
+            "sweep_experiment": chain[-1],
             "primary_contrast": primary["id"],
             "delta_min": f"{thresholds['delta_min']:g}",
             "ood_nll_ci_upper_le": f"{thresholds['ood_nll_ci_upper_le']:g}",
@@ -452,6 +507,15 @@ def readme_text(reg: Registration) -> str:
         f"the hardened runner. Design and frozen text: `{STUDY_DIR}/`. Its records are A0-internal, "
         "synthetic-data evidence only (ADR-0021).\n\nStatus `planned` until the freeze: placeholders "
         f"(`{PENDING}`) in `config.toml` are the values only known then.\n"
+        + (
+            f"\n## Successor of {reg.supersedes}\n\n`{reg.supersedes}` is superseded: its only seed (17) was "
+            "spent by a run that a container restart killed before any output, so its record has status "
+            "`started`, no output and no exit code, and no sweep result of the study was observed by anyone. "
+            "This experiment is the identical sweep (protocol, grid, arms, seed 17, selection rule, command) under "
+            f"a new id, the only one whose record may feed `{lr_file_path(reg.study_id)}`. The interrupted "
+            f"record is kept as it was written. Account and procedure: `{STUDY_DIR}/DEVIATIONS.md`.\n"
+            if reg.supersedes else ""
+        )
     )
 
 
@@ -485,12 +549,19 @@ def render_files(reg: Registration, root: Path) -> dict[str, str]:
     }
 
 
-def render(root: Path = ROOT) -> list[str]:
-    """Create every experiment of the study below `root`, register it
-    (planned) in registry.toml and list it in preregistration.toml. Refuses an
-    id or directory that exists; nothing is written then."""
+def render(root: Path = ROOT, ids: list[str] | None = None) -> list[str]:
+    """Create the experiments of the study below `root` (all of them, or only
+    `ids`, such as a successor sweep registered after the first render),
+    register each (planned) in registry.toml and list it in
+    preregistration.toml. Refuses an unknown id, an id or directory that
+    exists; nothing is written then."""
     criteria = load_toml(root / CRITERIA)
     regs = registrations(criteria)
+    if ids is not None:
+        unknown = sorted(set(ids) - {reg.exp_id for reg in regs})
+        if unknown:
+            raise RegistrationError(f"{', '.join(unknown)} is not an experiment of the study")
+        regs = [reg for reg in regs if reg.exp_id in ids]
     registry = root / "experiments/registry.toml"
     prereg = root / "experiments/preregistration.toml"
     known = {item["id"] for item in load_toml(registry).get("experiment", [])}
@@ -499,6 +570,10 @@ def render(root: Path = ROOT) -> list[str]:
             raise RegistrationError(f"{reg.exp_id} is already registered")
         if (root / "experiments" / reg.path).exists():
             raise RegistrationError(f"experiments/{reg.path} already exists")
+        if reg.supersedes is not None:
+            predecessor = next(r for r in registrations(criteria) if r.exp_id == reg.supersedes)
+            if load_toml(root / "experiments" / predecessor.path / "experiment.toml").get("status") != "superseded":
+                raise RegistrationError(f"{reg.supersedes} must be superseded before its successor {reg.exp_id} is registered")
     rendered = {reg.exp_id: render_files(reg, root) for reg in regs}
     for reg in regs:
         target = root / "experiments" / reg.path
@@ -547,19 +622,30 @@ def freeze(root: Path, exp_id: str, *, write: bool) -> dict:
         raise RegistrationError(f"{exp_id} is {manifest.get('status')!r}; only a planned experiment freezes")
     if reg.kind == "confirmatory" and not (root / reg.table["lr_file"]).is_file():
         raise RegistrationError(f"{reg.table['lr_file']} does not exist: run and commit the sweep first")
+    if reg.supersedes is not None:
+        predecessor = next(r for r in registrations(criteria) if r.exp_id == reg.supersedes)
+        status = load_toml(root / "experiments" / predecessor.path / "experiment.toml").get("status")
+        if status != "superseded":
+            raise RegistrationError(f"{reg.supersedes} is {status!r}; it must be superseded before {exp_id} freezes")
+    result, text = frozen_form(root, reg)
+    if write:
+        (directory / "config.toml").write_text(config_text(reg, result["table"]), encoding="utf-8", newline="\n")
+        (directory / "experiment.toml").write_text(text, encoding="utf-8", newline="\n")
+        set_registry_status(root, exp_id, "prepared")
+    return result
+
+
+def frozen_form(root: Path, reg: Registration) -> tuple[dict, str]:
+    """What `freeze` writes for `reg` below `root`: the result (table and
+    digests) and the manifest text at status `prepared`."""
     table = pinned_table(reg, root, pending=False)
-    entry = load_toml(root / "experiments/preregistration.toml")["experiment"][exp_id]
+    entry = load_toml(root / "experiments/preregistration.toml")["experiment"][reg.exp_id]
     digest = experiment_records.preregistration_digest(table)
     rules = experiment_records.canonical_digest(entry)
     text = manifest_text(reg, {"preregistration_sha256": digest, "preregistration_rules_sha256": rules}).replace(
         'status = "planned"', 'status = "prepared"', 1
     )
-    result = {"exp_id": exp_id, "table": table, "preregistration_sha256": digest, "rules_sha256": rules}
-    if write:
-        (directory / "config.toml").write_text(config_text(reg, table), encoding="utf-8", newline="\n")
-        (directory / "experiment.toml").write_text(text, encoding="utf-8", newline="\n")
-        set_registry_status(root, exp_id, "prepared")
-    return result
+    return {"exp_id": reg.exp_id, "table": table, "preregistration_sha256": digest, "rules_sha256": rules}, text
 
 
 # ---------------------------------------------------------------- sweep rows
@@ -576,15 +662,23 @@ def extract_sweep(records: list[Path], out: Path) -> int:
     """Write the stdout rows of the committed sweep run records `records` to
     `out` (created exclusively), the file the runner's select phase reads
     (`--sweep`). Refuses a record that did not complete with exit code 0, a
-    record that holds no sweep row and a record of another experiment kind than
-    a sweep. Returns the row count."""
+    record that holds no sweep row, a record of another experiment kind than a
+    sweep and a record of a superseded sweep (only the study's current sweep,
+    `current_sweep`, feeds its learning-rate file). Returns the row count."""
     lines = []
     for path in records:
         record = json.loads(path.read_text(encoding="utf-8"))
         if record.get("status") != "completed" or record.get("exit_code") != 0:
             raise RegistrationError(f"{path}: not a completed run with exit code 0")
-        if not str(record.get("experiment_id", "")).endswith("-sweep"):
+        match = SWEEP_ID.fullmatch(str(record.get("experiment_id", "")))
+        if match is None:
             raise RegistrationError(f"{path}: not a record of a sweep experiment")
+        current = current_sweep(match["study"])
+        if record["experiment_id"] != current:
+            raise RegistrationError(
+                f"{path}: a record of {record['experiment_id']}, which is superseded; the learning rates of "
+                f"{match['study']} come from {current}"
+            )
         rows = record_rows(record, str(path))
         if not any('"row":"sweep-baseline-v1"' in row.replace(" ", "") for row in rows):
             raise RegistrationError(f"{path}: holds no sweep-baseline-v1 row")
@@ -597,7 +691,8 @@ def extract_sweep(records: list[Path], out: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("render", help="create the planned experiments (refuses existing ones)")
+    rendering = sub.add_parser("render", help="create the planned experiments (refuses existing ones)")
+    rendering.add_argument("ids", nargs="*", help="only these experiments (a successor sweep); default: all")
     plan = sub.add_parser("freeze", help="pin and move one planned experiment to prepared")
     plan.add_argument("exp_id")
     plan.add_argument("--write", action="store_true", help="write the files (default: print the frozen digests)")
@@ -607,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "render":
-            for exp_id in render():
+            for exp_id in render(ids=args.ids or None):
                 print(exp_id)
         elif args.command == "freeze":
             result = freeze(ROOT, args.exp_id, write=args.write)

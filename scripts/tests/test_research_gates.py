@@ -5157,7 +5157,9 @@ RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","
 # The A0 baseline study v1 (scripts/a0_baseline_study.py) lists its six experiments at `planned`
 # the same way; its freeze is checked by scripts/tests/test_a0_baseline_study.py.
 LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007",
-    "M001-v5","M002-v10","M003-v2","M001-v5-sweep","M002-v10-sweep","M003-v2-sweep")
+    "M001-v5","M002-v10","M003-v2","M001-v5-sweep","M002-v10-sweep","M003-v2-sweep",
+    # The successor of the interrupted M002-v10-sweep (DEVIATIONS.md of the study).
+    "M002-v10-sweep-r2")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture

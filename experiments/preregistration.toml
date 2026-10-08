@@ -460,3 +460,12 @@ name = "plain_model"
 path = "research/baselines/plain_model/config.toml"
 keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
 status_key = "status"
+
+[experiment.M002-v10-sweep-r2]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str", supersedes = "str" }
+
+[[experiment.M002-v10-sweep-r2.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"

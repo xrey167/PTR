@@ -1,6 +1,6 @@
 version = 1
 id = "M002-v10-sweep"
-status = "prepared"
+status = "superseded"
 hypothesis = "Which learning rate of the fixed grid 0.0025,0.005,0.0125,0.025 trains each arm of M002-v10, the plain baseline included, best on validation data (seed 17, validation only)? Sweep of the A0 baseline study v1."
 metrics = "validation accuracy, validation NLL and divergence per fold, arm and learning rate"
 baseline = "no external baseline: the plain baseline is swept as an arm with its own rate"
