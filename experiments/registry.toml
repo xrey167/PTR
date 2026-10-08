@@ -233,7 +233,7 @@ status = "completed"
 [[experiment]]
 id = "R011"
 path = "runtime/R011-self-modification-safety"
-status = "prepared"
+status = "completed"
 
 [[experiment]]
 id = "M016"
