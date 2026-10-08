@@ -5146,7 +5146,7 @@ class PreregistrationGateTests(unittest.TestCase):
         )
         self.assertEqual(gate(pinned),(0,[]))
 
-ENROLLED=("S003","F003","Q003","R004","M008","E005")
+ENROLLED=("F003","Q003","R004","M008","E005")
 # The list also holds the experiments that ran or were superseded; they are no
 # part of the six this fixture moves to `prepared`.
 RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9")
@@ -5154,7 +5154,7 @@ RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","
 # Listed and held at `planned` until its freeze (its placeholders are pinned then, by the head
 # after the harness and the criteria are final); it is no part of the fixtures that move the six to
 # `prepared`. Once frozen it is a regular listed experiment the repository's own gate checks.
-LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007")
+LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture
@@ -5248,9 +5248,6 @@ class EnrolledExperimentTests(unittest.TestCase):
         pinned="'must-be-pinned-before-prepared'"
         signed="'must-be-signed-by-owner'"
         expected=[
-            "S003: preregistration key low_cells is an empty list",
-            "S003: experiment.toml names no preregistration_sha256",
-            "S003: experiment.toml names no preregistration_rules_sha256",
             f"F003: preregistration key uncalibrated_threshold_permille is a placeholder ({pinned})",
             f"F003: preregistration key calibration_set_rule is a placeholder ({signed})",
             f"F003: preregistration key adjudicators_see_intent is a placeholder ({signed})",
