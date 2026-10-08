@@ -1343,6 +1343,30 @@ impl KvPrefixCatalog {
         self.take_retirements()
     }
 
+    /// Apply one committed ledger event to this catalog through the mapping the runtime's own
+    /// hook uses (`PtrRuntime::enable_kv_prefix_catalog`): the trie entries and the secondary
+    /// index runs the event invalidates are tombstoned, and the backend prefixes that retires
+    /// are retired on the registered backend (see [`Self::with_retirer`]). Returns how many
+    /// prefix keys were retired; secondary index runs hold copies and are never counted.
+    ///
+    /// This is the host's hook for a catalog it owns outside a runtime. Only committed events
+    /// may be passed, never a prepared or discarded one. An event that invalidates nothing is
+    /// a no-op returning `0`. A [`LedgerEvent::SemanticDeltaCommitted`] carries no delta, so it
+    /// changes nothing here: apply the affected keys with [`Self::invalidate_identities`]. The
+    /// input half of a [`LedgerEvent::InputInvalidated`] is applied like the plain records,
+    /// the experts it fenced are not in the event and are applied with
+    /// [`Self::invalidate_expert_fences`].
+    pub fn apply_committed_event(&mut self, event: &LedgerEvent) -> usize {
+        match invalidate_catalog_for_event(self, event, None) {
+            Some(retire) => {
+                let retired = retire.len();
+                retire_keys(self, retire);
+                retired
+            }
+            None => 0,
+        }
+    }
+
     /// Tombstone every `kind` dependency below the generation now live for its identity: a
     /// base-model or adapter generation bump. Entries of other kinds are untouched even
     /// when they share the identity string.

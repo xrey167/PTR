@@ -146,8 +146,8 @@ class CriteriaFileTests(unittest.TestCase):
                 self.assertIn(f"shifted_reuse_inflight_race_cases.{kind}_{ty} >= 1", rules)
         self.assertIn("fresh_prefills_completed_after_revocation >= upstream_revocation_cases", rules)
         self.assertIn("invalidated_case_id_set_digest == fresh_prefill_completed_case_id_set_digest", rules)
-        self.assertEqual(len(CRITERIA["coverage"]), 93)
-        self.assertEqual(len(CRITERIA["falsifiers"]), 68)
+        self.assertEqual(len(CRITERIA["coverage"]), 97)
+        self.assertEqual(len(CRITERIA["falsifiers"]), 69)
 
     def test_no_rule_reads_the_timing_metric(self):
         for rule in CRITERIA["coverage"] + CRITERIA["falsifiers"]:

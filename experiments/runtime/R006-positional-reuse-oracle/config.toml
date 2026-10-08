@@ -141,6 +141,8 @@ refusal_reasons_in_check_order = ["SourceKindMismatch", "SourceIdentityMismatch"
 raw_ancestor_scope = "direct Raw segments of the requesting prefix (kind Raw, content digest) as a multiset; a Derived segment carries no ancestor list, so ancestors reached only through a derivation hop are not covered"
 # Evidence labels per matrix dependency kind (owner decision 8); adapter and expert cells are declared dependencies, not model influence.
 evidence_labels = { semantic_lineage_segment = "session_lookup", memory_lineage_segment = "session_lookup", derived_lineage_segment = "session_lookup", base_model = "session_recorded_dependency", adapter_generation = "declared_dependency", expert_generation = "declared_dependency" }
+# The label of the in-flight cells, which measure less than the label above says for segment kinds: a semantic, memory or derived segment stops a positional session through the request's own lineage (the secondary-index guards are a subset of it by the omission rule and are not independently exercised); the base model isolates the recorded-dependency guard; the adapter and expert exercise the index's pin protocol without a session. The normal, lag and restore cells keep the label above.
+inflight_evidence_labels = { semantic_lineage_segment = "session_lineage_guard", memory_lineage_segment = "session_lineage_guard", derived_lineage_segment = "session_lineage_guard", base_model = "session_recorded_dependency", adapter_generation = "declared_pin_protocol", expert_generation = "declared_pin_protocol" }
 declared_dependency_rule = "adapter and expert dependencies are declared by the caller with real liveness oracles (an adapter capsule; real expert records including the fence epoch); the dense one-layer model has no adapter or expert influence"
 # In-flight race (S4): the members the manifest requires, and the two variants each runs.
 inflight_race_required_kinds = ["semantic_lineage_segment", "memory_lineage_segment", "base_model"]
@@ -161,3 +163,26 @@ owner_decision_2026_10_08_6_multiset = "Multiset presence of original-prefix seg
 owner_decision_2026_10_08_7_reuse_unit = "Reuse unit = a whole admitted segment, located at any offset by the rolling hash (W pinned in config); an edit inside a segment gives zero reuse and a typed refusal."
 owner_decision_2026_10_08_8_declared_and_snapshot = "Adapter and expert cells run as declared dependencies with real liveness oracles (adapter capsule; real expert records incl. fence), labelled evidence = declared_dependency. KV snapshots carry no rows; restore re-attaches rows by idempotent re-insert with a rows-digest check."
 owner_decision_2026_10_08_9_config = "(head) config.toml additions before the freeze are allowed (R006 is planned): rolling_window_tokens = 8, the shift construction (Raw filler of s tokens upstream), harness limits, evidence labels. Positional reuse is opt-in per backend and off by default so frozen R005/R007 outputs do not change."
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "positional-reuse-oracle"
+corpus_selection_digest = "sha256:3bcd8736b20516454cae2f5007f24201c92756c9a2643e7f126adab6144ab066"
+selection_domain = "ptr.r006.corpus-selection.v1"
+selection_sequences = 8
+selection_sequence_tokens = 4096
+role_order_label = 60
+per_seed_role = "the seed picks which corpus sequence fills the filler, reused segment, tail, inserted and upstream roles; the corpus and the weights are fixed by their pinned seeds"
+tiny_model_config_digest = "sha256:a77e017c8ee3b56bb06a0b22512aae3a70a1b65d4ae283bf2d8bb02353029c2e"
+position_shift_tokens = [1, 7, 64, 513, 4096]
+rolling_window_tokens = 8
+reused_segment_tokens = 48
+tail_tokens = 16
+harness_max_prompt_tokens = 4352
+harness_max_new_tokens = 8
+invalidation_matrix_cell_count = 52
+preregistration_text = "experiments/runtime/R006-positional-reuse-oracle/PREREGISTRATION.md"
+preregistration_text_sha256 = "12f25b591147103f01fd0e108b2410a9375e53a8e8cb34ebde884c53a6a1486a"
+criteria = "experiments/runtime/R006-positional-reuse-oracle/criteria.toml"
+criteria_sha256 = "41d1225c8678ca69febc8037aa1cd648d3ad4287101547f545feff3000a0b06e"

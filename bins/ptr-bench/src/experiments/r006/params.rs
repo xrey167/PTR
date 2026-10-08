@@ -253,6 +253,12 @@ pub const EVIDENCE_LABELS_DERIVED_LINEAGE_SEGMENT: &str = "session_lookup";
 pub const EVIDENCE_LABELS_BASE_MODEL: &str = "session_recorded_dependency";
 pub const EVIDENCE_LABELS_ADAPTER_GENERATION: &str = "declared_dependency";
 pub const EVIDENCE_LABELS_EXPERT_GENERATION: &str = "declared_dependency";
+pub const INFLIGHT_EVIDENCE_LABELS_SEMANTIC_LINEAGE_SEGMENT: &str = "session_lineage_guard";
+pub const INFLIGHT_EVIDENCE_LABELS_MEMORY_LINEAGE_SEGMENT: &str = "session_lineage_guard";
+pub const INFLIGHT_EVIDENCE_LABELS_DERIVED_LINEAGE_SEGMENT: &str = "session_lineage_guard";
+pub const INFLIGHT_EVIDENCE_LABELS_BASE_MODEL: &str = "session_recorded_dependency";
+pub const INFLIGHT_EVIDENCE_LABELS_ADAPTER_GENERATION: &str = "declared_pin_protocol";
+pub const INFLIGHT_EVIDENCE_LABELS_EXPERT_GENERATION: &str = "declared_pin_protocol";
 pub const DECLARED_DEPENDENCY_RULE: &str = "adapter and expert dependencies are declared by the caller with real liveness oracles (an adapter capsule; real expert records including the fence epoch); the dense one-layer model has no adapter or expert influence";
 pub const INFLIGHT_RACE_REQUIRED_KINDS: [&str; 3] = [
     "semantic_lineage_segment",
@@ -716,6 +722,30 @@ fn compiled() -> Vec<(&'static str, Leaf)> {
         (
             "evidence_labels.expert_generation",
             text(EVIDENCE_LABELS_EXPERT_GENERATION),
+        ),
+        (
+            "inflight_evidence_labels.semantic_lineage_segment",
+            text(INFLIGHT_EVIDENCE_LABELS_SEMANTIC_LINEAGE_SEGMENT),
+        ),
+        (
+            "inflight_evidence_labels.memory_lineage_segment",
+            text(INFLIGHT_EVIDENCE_LABELS_MEMORY_LINEAGE_SEGMENT),
+        ),
+        (
+            "inflight_evidence_labels.derived_lineage_segment",
+            text(INFLIGHT_EVIDENCE_LABELS_DERIVED_LINEAGE_SEGMENT),
+        ),
+        (
+            "inflight_evidence_labels.base_model",
+            text(INFLIGHT_EVIDENCE_LABELS_BASE_MODEL),
+        ),
+        (
+            "inflight_evidence_labels.adapter_generation",
+            text(INFLIGHT_EVIDENCE_LABELS_ADAPTER_GENERATION),
+        ),
+        (
+            "inflight_evidence_labels.expert_generation",
+            text(INFLIGHT_EVIDENCE_LABELS_EXPERT_GENERATION),
         ),
         ("declared_dependency_rule", text(DECLARED_DEPENDENCY_RULE)),
         (

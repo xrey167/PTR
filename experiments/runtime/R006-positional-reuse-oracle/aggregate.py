@@ -25,8 +25,11 @@ rule grammar, which `evaluate` below implements):
 
 This experiment has no static evidence (criteria.toml names none), so the verdict rests on the seeds alone.
 
-The harness that prints the results is not built yet (the secondary index and the positional session of ptr-runtime do not exist
-in this tree), and R006 is not frozen: until both hold, `load_frozen` refuses to aggregate.
+The harness that prints the results is `bins/ptr-bench/src/experiments/r006/` (subcommand `positional-reuse-oracle <seed>`); R006 is
+not frozen (no `[preregistration]` table, no registry entry), so until the freeze `load_frozen` refuses to aggregate. This script
+is the only guard against a reduced-scale record: it rejects a `scale` other than `pinned` and a `procedure.shape_is_pinned`
+other than true; the harness also compares its procedure parameters with the pins of config.toml, not with the shape it was
+given, so `procedure_mismatches` is nonzero at a reduced scale too.
 
 metrics.json and run.json are published as one aggregate
 (`experiment_records.publish_aggregate`). `--report PATH` also writes the
@@ -69,12 +72,23 @@ SCOPE = (
     "needs the page's own lineage equal to the request's segment, every upstream input of its original prefix live, every "
     "original-prefix segment and raw ancestor present in the whole request as a multiset; staleness is measured structurally "
     "(a lookup that returned a dead run, tokens or cache inserts after the event step), because in one layer a stale page is "
-    "numerically identical to a fresh one"
+    "numerically identical to a fresh one; the in-flight cells carry their own evidence label: for the semantic, memory and derived "
+    "segments (session_lineage_guard) shifted_reuse_inflight_race_cases counts races in which a positional session lost an input of "
+    "its own lineage (the cancel reason InputNotLive is asserted), and the secondary-index guards are not independently exercised for "
+    "segment kinds, because by the omission rule they are a subset of the lineage; the base model isolates the recorded-dependency "
+    "guard (session_recorded_dependency, SecondaryDependencyNotLive asserted); the adapter and expert in-flight cells exercise the "
+    "index's pin protocol without a session (declared_pin_protocol)"
 )
 LIMITATIONS = [
     "one layer only: the stored pre-RoPE K and V rows of a token are a pure function of the token, so a stale page cannot be told from a fresh one by any output; every revocation, supersession and omission result is a structural counter (a lookup that returned or admitted a dead run, tokens or cache inserts after the event step), and only the negative controls (a PostRope stack, a liveness-bypass fault mode, a primary-only run) show the criteria can fail",
     "multi-layer positional reuse is Approximate and belongs to M016; nothing here is claimed about layers above 0, taint or the effect boundary",
-    "the adapter and expert matrix cells are declared dependencies with real liveness oracles (evidence = declared_dependency), not model influence: the dense one-layer model has no adapter or expert",
+    "the adapter and expert matrix cells are declared dependencies with real liveness oracles (evidence = declared_dependency for the normal, lag and restore paths, declared_pin_protocol in flight), not model influence: the dense one-layer model has no adapter or expert; their events reach a standalone catalog through KvPrefixCatalog::apply_committed_event (the runtime's own event mapping), and their two in-flight variants differ only by a lag flag (the index was or was not told), not by a position before or after a splice",
+    "the in-flight cells of the semantic, memory and derived segments measure the request's own lineage guard (InputNotLive), not the secondary-index guards, which by the omission rule are a subset of the lineage and are not independently exercised for segment kinds; only the base model isolates a secondary guard (SecondaryDependencyNotLive); the semantic supersession is applied by identity from the harness (a backend has no prepared semantic delta, the event carries none)",
+    "the harness exits 2 (INVALID, evidence about nothing) only for harness-integrity failures: a refusal of the wrong type, a cold baseline that differs from the independent stack, an outcome accounting that does not add up, a leaked pin, a result without a kv_report, a cancellation with the wrong reason, a negative control that runs and does not trip; a positive control that fails (a live control that does not reuse the whole segment, an origin the index did not take, an over-refusing reorder control) is recorded in internal.live_control_failures, its case is not counted and the seed FALSIFIES (vacuous)",
+    "negative controls and their reach: a PostRope stack (bitwise), the liveness bypass (revoked and superseded reachability, dead-original admissions, in-flight outputs), a harness-composed in-flight race whose event closure also performs a live run (cache inserts: the measure is shown to move, not a defect of the runtime), a really admitted report fed to the four admission counters, and a primary-only run; the omission, own-lineage and raw-ancestor checks have no run-time fault control (they are guarded by the admission counters, which also count the last segment's skip, and by the typed-refusal coverage rules)",
+    "tainted_exact_results and non_bit_exact_exact_results count every Exact-labelled positional run the harness compares with a cold run, not only shifted results: C1 and C2, the live controls, the fresh prefills of C3 and C4, the refused runs of C5 to C8 and the matrix post-event runs; the controls of C10 are excluded; no Approximate producer exists",
+    "reuse_attempts_per_shift, secondary_index_lookups, old_upstream_pages_seeded_before_revocation, post_revocation_secondary_lookups_matching_content, post_supersession_secondary_lookups_matching_content and invalidation_matrix_cases hold by construction whenever the harness completes; the informative coverage rules are reused_tokens_per_shift, secondary_index_reuse_cases_per_shift (the whole segment reused, nothing under-reused), the typed refusal counts, internal.live_control_failures and the set-identity rule",
+    "single thread: the event lands between two steps of a session, never inside one; there is no cross-salt isolation test; the restore rows-digest mismatch error is not exercised in the run",
     "the reuse unit is a whole admitted segment located at any offset by the rolling hash; an edit inside a segment gives zero reuse and a typed refusal, so there is no sub-segment reuse claim",
     "raw ancestors are the direct Raw segments of the requesting prefix as a multiset; a Derived segment carries no ancestor list, so ancestors reached only through a derivation hop are not covered",
     "tiny seeded random model, CPU reference path, one machine profile: nothing about a trained model, a GPU kernel or a non-deterministic reduction order; model_pin_mismatches and procedure_mismatches are weak (checkpoint and topology are constants)",

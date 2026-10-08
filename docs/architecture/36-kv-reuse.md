@@ -175,7 +175,8 @@ struct KvReusePolicy { allow_approximate: bool } // default: false
 - **Exact** means the logits are bitwise equal to a full prefill of the same
   tokens under the same numerics. Only Exact reuse is admitted by default.
   The one **proven** Exact case is positional reuse with pre-RoPE keys in a
-  **single-layer** model, and only once R006 has passed.
+  **single-layer** model; R006 passed on 2026-10-08 (`r006-prereg`, 5 seeds, CPU reference path,
+  tiny seeded random model).
 - **Approximate** reuse is admitted only when `allow_approximate` is set, and a run
   that used it may only produce **candidates**. Approximate are: positional
   re-encoding in multi-layer models, selective recompute, lossy tiers and
