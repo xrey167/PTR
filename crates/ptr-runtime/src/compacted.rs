@@ -19,7 +19,8 @@
 //! neural/KV state. Those are not history and cannot be replayed.
 use super::execution::{ActionIdentity, SettledOutcome, UnsettledEffect};
 use super::expert::{
-    fenced_at_current_epoch, ExpertDependencyIndex, ExpertEntry, ExpertRegistryProjection,
+    fenced_at_current_epoch, AuthorityState, ExpertAdmissionEpochs, ExpertAuthorityKind,
+    ExpertAuthorityStanding, ExpertDependencyIndex, ExpertEntry, ExpertRegistryProjection,
     FenceStanding,
 };
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
@@ -36,6 +37,30 @@ use ptr_semdb::{SemanticDelta, SemanticHost};
 use ptr_state::MaterializedState;
 use ptr_types::{CommitIndex, Effect, Generation, ProjectId, Revision};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// PTRCS009 is written only when an evidence authority has a standing, that is, a committed
+/// `ExpertAuthorityChanged` event was applied: it is PTRCS008 with lifecycle section PTRLC007.
+/// PTRLC007 is PTRLC006 with the one-number flag before the fence block widened to two (whether
+/// the fence block follows, whether the dependency block follows) and the authority block
+/// ([`AUTHORITY_BLOCK_MAGIC`]) at the end: the standing of the gate configuration and of the
+/// evaluator (epoch and identity digest, each optional) and, per expert, the epoch of each kind
+/// it was admitted or last readmitted under (an expert absent from the list stands at `0` for
+/// both). A snapshot of a history without such an event is written as PTRCS008 or earlier, byte
+/// for byte as before, so a build from before this layout stops at the magic exactly when it
+/// would otherwise restore a quarantine regime without its epochs. A PTRCS008 or older snapshot
+/// is read with no standing and every admission epoch `0`, but only when its materialized state
+/// holds no `expert-authority:` key (the mark an authority change projects); one that does is
+/// refused by version.
+///
+/// Restore checks what is derivable: the standings are non-zero epochs with non-zero identities
+/// and match the materialized `expert-authority:` keys, entry for entry; the admission list is in
+/// strictly ascending order, names registered experts, holds no all-zero entry and no epoch above
+/// the current standing of its kind.
+const AUTHORITY_MAGIC: &[u8; 8] = b"PTRCS009";
+/// The lifecycle section of a PTRCS009 snapshot.
+const AUTHORITY_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC007";
+/// Opens the authority block at the end of a PTRLC007 section.
+const AUTHORITY_BLOCK_MAGIC: &[u8; 8] = b"PTRAU001";
 
 /// PTRCS008 is written only when the expert dependency index holds anything (a version 3
 /// structural record or a compound `InputInvalidated` was applied, or a source edge below one):
@@ -138,6 +163,8 @@ const PRE_ATTESTATION_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
 /// says. The lifecycle section must be the one that layout pairs with.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Layout {
+    /// PTRCS009 with PTRLC007.
+    Authority,
     /// PTRCS008 with PTRLC006.
     Dependency,
     /// PTRCS007 with PTRLC005.
@@ -443,7 +470,10 @@ impl LifecycleState {
             || !fenced_epochs.is_empty()
             || self.experts.readmit_gate_epoch() != 0;
         let has_dependency_block = !self.experts.dependencies().is_empty();
-        out.raw(if has_dependency_block {
+        let has_authority_block = !self.experts.authority_state().is_default();
+        out.raw(if has_authority_block {
+            AUTHORITY_LIFECYCLE_MAGIC
+        } else if has_dependency_block {
             DEPENDENCY_LIFECYCLE_MAGIC
         } else if has_fence_block {
             FENCE_LIFECYCLE_MAGIC
@@ -504,7 +534,10 @@ impl LifecycleState {
             out.number(epoch)?;
             out.raw(&digest)?;
         }
-        if has_dependency_block {
+        if has_authority_block {
+            out.number(u64::from(has_fence_block))?;
+            out.number(u64::from(has_dependency_block))?;
+        } else if has_dependency_block {
             out.number(u64::from(has_fence_block))?;
         }
         if has_fence_block {
@@ -527,6 +560,9 @@ impl LifecycleState {
         if has_dependency_block {
             encode_dependency_block(&mut out, self.experts.dependencies())?;
         }
+        if has_authority_block {
+            encode_authority_block(&mut out, self.experts.authority_state())?;
+        }
         Ok(out.0)
     }
 
@@ -547,6 +583,7 @@ impl LifecycleState {
         }
         let mut reader = Reader { bytes, offset: 0 };
         let magic = match layout {
+            Layout::Authority => AUTHORITY_LIFECYCLE_MAGIC,
             Layout::Dependency => DEPENDENCY_LIFECYCLE_MAGIC,
             Layout::FenceCause => FENCE_LIFECYCLE_MAGIC,
             Layout::Evidence => EVIDENCE_LIFECYCLE_MAGIC,
@@ -604,11 +641,15 @@ impl LifecycleState {
         }
         if matches!(
             layout,
-            Layout::Dependency | Layout::FenceCause | Layout::Evidence | Layout::Registry
+            Layout::Authority
+                | Layout::Dependency
+                | Layout::FenceCause
+                | Layout::Evidence
+                | Layout::Registry
         ) {
             let entries = decode_registry(&mut reader)?;
             state.experts = match layout {
-                Layout::Dependency | Layout::FenceCause | Layout::Evidence => {
+                Layout::Authority | Layout::Dependency | Layout::FenceCause | Layout::Evidence => {
                     decode_evidence(&mut reader, entries, layout)?
                 }
                 _ => ExpertRegistryProjection::from_entries_all_legacy(entries),
@@ -750,18 +791,27 @@ fn decode_evidence(
     }
     // PTRLC006 says whether its fence block is present; PTRLC005 always has one and PTRLC004
     // none.
+    let flag = |reader: &mut Reader<'_>| -> Result<bool, RuntimeError> {
+        match reader.number()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(invalid(CompactedError::NoncanonicalSection)),
+        }
+    };
     let with_fence_causes = match layout {
         Layout::FenceCause => true,
-        Layout::Dependency => match reader.number()? {
-            0 => false,
-            1 => true,
-            _ => return Err(invalid(CompactedError::NoncanonicalSection)),
-        },
+        Layout::Authority | Layout::Dependency => flag(reader)?,
+        _ => false,
+    };
+    // PTRLC007 says whether its dependency block is present; PTRLC006 always has one.
+    let with_dependencies = match layout {
+        Layout::Dependency => true,
+        Layout::Authority => flag(reader)?,
         _ => false,
     };
     let (fence_causes, fenced_epochs, readmit_gate_epoch) = if with_fence_causes {
         decode_fence_block(reader, &entries)?
-    } else if layout == Layout::Dependency {
+    } else if matches!(layout, Layout::Authority | Layout::Dependency) {
         // The writer sets the flag whenever a fenced expert exists, so none may be here.
         if entries
             .iter()
@@ -774,7 +824,7 @@ fn decode_evidence(
         let memo = fenced_at_current_epoch(&entries);
         (BTreeMap::new(), memo, 0)
     };
-    let deps = if layout == Layout::Dependency {
+    let deps = if with_dependencies {
         let deps = decode_dependency_block(reader, &entries)?;
         if deps.is_empty() {
             // The writer emits the block only for a non-empty index.
@@ -784,6 +834,11 @@ fn decode_evidence(
     } else {
         ExpertDependencyIndex::default()
     };
+    let authority = if layout == Layout::Authority {
+        decode_authority_block(reader, &entries)?
+    } else {
+        AuthorityState::default()
+    };
     Ok(ExpertRegistryProjection::from_parts(
         entries,
         legacy,
@@ -792,6 +847,98 @@ fn decode_evidence(
         fenced_epochs,
         readmit_gate_epoch,
         deps,
+    )
+    .with_authority(authority))
+}
+
+/// Write the authority block: the standing of each kind (gate configuration first), then the
+/// admission epochs per expert in ascending key order, so each state has exactly one encoding.
+fn encode_authority_block(
+    out: &mut Writer,
+    authority: &AuthorityState,
+) -> Result<(), RuntimeError> {
+    out.raw(AUTHORITY_BLOCK_MAGIC)?;
+    for kind in [
+        ExpertAuthorityKind::GateConfig,
+        ExpertAuthorityKind::Evaluator,
+    ] {
+        match authority.standing(kind) {
+            Some(standing) => {
+                out.number(1)?;
+                out.number(standing.epoch())?;
+                out.raw(standing.id_digest())?;
+            }
+            None => out.number(0)?,
+        }
+    }
+    let admissions: Vec<_> = authority.admission_entries().collect();
+    out.count(admissions.len())?;
+    for (project, pod, epochs) in admissions {
+        out.text(project)?;
+        out.text(pod)?;
+        out.number(epochs.epoch(ExpertAuthorityKind::GateConfig))?;
+        out.number(epochs.epoch(ExpertAuthorityKind::Evaluator))?;
+    }
+    Ok(())
+}
+
+/// Read the authority block. At least one kind has a standing (the writer emits the block only
+/// then), a standing is a non-zero epoch with a non-zero identity, and the admission list is
+/// strictly ascending, names registered experts, holds no all-zero entry and no epoch above the
+/// current standing of its kind (an admission takes the standing in force when it happened, and
+/// standings only rise).
+fn decode_authority_block(
+    reader: &mut Reader<'_>,
+    entries: &RegistryEntries,
+) -> Result<AuthorityState, RuntimeError> {
+    if reader.take(8)? != AUTHORITY_BLOCK_MAGIC {
+        return Err(invalid(CompactedError::UnsupportedVersion));
+    }
+    let canonical = |ok: bool| {
+        if ok {
+            Ok(())
+        } else {
+            Err(invalid(CompactedError::NoncanonicalSection))
+        }
+    };
+    let mut standings = [None, None];
+    for slot in &mut standings {
+        match reader.number()? {
+            0 => {}
+            1 => {
+                let epoch = reader.number()?;
+                let id: [u8; 32] = reader.take(DIGEST_BYTES)?.try_into().expect("fixed digest");
+                canonical(epoch != 0 && id != [0; 32])?;
+                *slot = Some(ExpertAuthorityStanding::new(epoch, id));
+            }
+            _ => return Err(invalid(CompactedError::NoncanonicalSection)),
+        }
+    }
+    let [gate_config, evaluator] = standings;
+    canonical(gate_config.is_some() || evaluator.is_some())?;
+    let ceiling = |standing: Option<ExpertAuthorityStanding>| standing.map_or(0, |s| s.epoch());
+    let (gate_ceiling, evaluator_ceiling) = (ceiling(gate_config), ceiling(evaluator));
+    let mut admissions = BTreeMap::new();
+    let mut previous: Option<(String, String)> = None;
+    for _ in 0..reader.count()? {
+        let key = (reader.text()?, reader.text()?);
+        let gate = reader.number()?;
+        let evaluator_epoch = reader.number()?;
+        let epochs = ExpertAdmissionEpochs::new(gate, evaluator_epoch);
+        canonical(
+            previous.as_ref().is_none_or(|last| *last < key)
+                && entries.iter().any(|(known, _)| *known == key)
+                && !epochs.is_default()
+                && gate <= gate_ceiling
+                && evaluator_epoch <= evaluator_ceiling,
+        )?;
+        previous = Some(key.clone());
+        admissions.insert(key, epochs);
+    }
+    Ok(AuthorityState::from_parts(
+        gate_config,
+        evaluator,
+        admissions,
     ))
 }
 
@@ -1040,7 +1187,17 @@ impl LifecycleState {
             key.starts_with(ptr_state::EXPERT_INPUT_PREFIX)
                 || key.starts_with(ptr_state::EXPERT_INPUTS_PREFIX)
         });
-        if layout != Layout::Dependency && input_marks {
+        if !matches!(layout, Layout::Authority | Layout::Dependency) && input_marks {
+            return Err(invalid(CompactedError::UnsupportedVersion));
+        }
+        // The mark an authority change projects exists only in a history whose snapshot carries
+        // the authority block.
+        if layout != Layout::Authority
+            && self
+                .materialized
+                .keys()
+                .any(|key| key.starts_with(ptr_state::EXPERT_AUTHORITY_PREFIX))
+        {
             return Err(invalid(CompactedError::UnsupportedVersion));
         }
         let keys = self
@@ -1050,7 +1207,11 @@ impl LifecycleState {
             .count();
         if !matches!(
             layout,
-            Layout::Dependency | Layout::FenceCause | Layout::Evidence | Layout::Registry
+            Layout::Authority
+                | Layout::Dependency
+                | Layout::FenceCause
+                | Layout::Evidence
+                | Layout::Registry
         ) {
             return if keys == 0 {
                 Ok(())
@@ -1068,8 +1229,50 @@ impl LifecycleState {
                 return Err(invalid(CompactedError::StateMismatch));
             }
         }
-        if layout == Layout::Dependency {
+        if matches!(layout, Layout::Authority | Layout::Dependency) {
             self.check_dependencies()?;
+        }
+        if layout == Layout::Authority {
+            self.check_authority_marks()?;
+        }
+        Ok(())
+    }
+
+    /// The authority state and the materialized `expert-authority:` keys describe the same
+    /// history: one key per kind that has a standing, none for a kind that has not, and each
+    /// key's epoch and identity are the standing's.
+    fn check_authority_marks(&self) -> Result<(), RuntimeError> {
+        let mismatch = || invalid(CompactedError::StateMismatch);
+        let authority = self.experts.authority_state();
+        let marks = self
+            .materialized
+            .keys()
+            .filter(|key| key.starts_with(ptr_state::EXPERT_AUTHORITY_PREFIX))
+            .count();
+        let mut standings = 0;
+        for kind in [
+            ExpertAuthorityKind::GateConfig,
+            ExpertAuthorityKind::Evaluator,
+        ] {
+            let Some(standing) = authority.standing(kind) else {
+                continue;
+            };
+            standings += 1;
+            let value = self
+                .materialized
+                .get(&ptr_state::expert_authority_key(kind))
+                .ok_or_else(mismatch)?;
+            let id: String = standing
+                .id_digest()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            if ptr_state::parse_expert_authority_entry(value) != Some((standing.epoch(), &id)) {
+                return Err(mismatch());
+            }
+        }
+        if marks != standings {
+            return Err(mismatch());
         }
         Ok(())
     }
@@ -1374,7 +1577,9 @@ impl PtrRuntime {
         let mut bytes = Vec::with_capacity(
             HEADER + semantic.len() + lifecycle.len() + execution.len() + DIGEST_BYTES,
         );
-        bytes.extend_from_slice(if lifecycle.starts_with(DEPENDENCY_LIFECYCLE_MAGIC) {
+        bytes.extend_from_slice(if lifecycle.starts_with(AUTHORITY_LIFECYCLE_MAGIC) {
+            AUTHORITY_MAGIC
+        } else if lifecycle.starts_with(DEPENDENCY_LIFECYCLE_MAGIC) {
             DEPENDENCY_MAGIC
         } else if lifecycle.starts_with(FENCE_LIFECYCLE_MAGIC) {
             FENCE_CAUSE_MAGIC
@@ -1507,6 +1712,7 @@ fn compacted_sections(
         return Err(invalid(CompactedError::SizeLimit));
     }
     let layout = match &bytes[..8] {
+        magic if magic == AUTHORITY_MAGIC => Layout::Authority,
         magic if magic == DEPENDENCY_MAGIC => Layout::Dependency,
         magic if magic == FENCE_CAUSE_MAGIC => Layout::FenceCause,
         magic if magic == MAGIC => Layout::Evidence,
@@ -2097,5 +2303,281 @@ mod fence_cause_tests {
         // different index.
         let decoded = LifecycleState::decode(&swapped, Layout::Dependency).unwrap();
         assert_ne!(decoded, dependency_state());
+    }
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+
+    fn entry(state: ExpertState, state_version: u64) -> ExpertEntry {
+        ExpertEntry {
+            state,
+            state_version,
+            generation: Generation(1),
+            manifest_digest: ManifestDigest::new([1; 32]).unwrap(),
+            level: ExpertLevel::Segment,
+            base_model: BaseModelRef::new(
+                BaseModelId::new("b").unwrap(),
+                BaseModelDigest::new([2; 32]).unwrap(),
+                1,
+            )
+            .unwrap(),
+        }
+    }
+
+    fn key(pod: &str) -> (String, String) {
+        ("p".to_owned(), pod.to_owned())
+    }
+
+    fn standing(epoch: u64, id: u8) -> Option<ExpertAuthorityStanding> {
+        Some(ExpertAuthorityStanding::new(epoch, [id; 32]))
+    }
+
+    fn mark(kind: ExpertAuthorityKind, epoch: u64, id: u8) -> (String, String) {
+        (
+            ptr_state::expert_authority_key(kind),
+            ptr_state::expert_authority_entry(
+                epoch,
+                &[id; 32],
+                ptr_ledger::ExpertAuthorityClass::NonTightening,
+                0,
+                &[9; 32],
+            ),
+        )
+    }
+
+    /// Two serving experts `a` and `b`, a gate standing at epoch 3 and an evaluator standing at
+    /// epoch 2, `a` admitted under (3, 2) and `b` under (2, 0), with the materialized marks.
+    fn state() -> LifecycleState {
+        let admissions = BTreeMap::from([
+            (key("a"), ExpertAdmissionEpochs::new(3, 2)),
+            (key("b"), ExpertAdmissionEpochs::new(2, 0)),
+        ]);
+        let mut state = authority_state(standing(3, 1), standing(2, 2), admissions);
+        for (kind, epoch, id) in [
+            (ExpertAuthorityKind::GateConfig, 3, 1),
+            (ExpertAuthorityKind::Evaluator, 2, 2),
+        ] {
+            let (k, v) = mark(kind, epoch, id);
+            state.materialized.insert(k, v);
+        }
+        state
+    }
+
+    fn authority_state(
+        gate: Option<ExpertAuthorityStanding>,
+        evaluator: Option<ExpertAuthorityStanding>,
+        admissions: BTreeMap<(String, String), ExpertAdmissionEpochs>,
+    ) -> LifecycleState {
+        let entries = vec![
+            (key("a"), entry(ExpertState::Serving, 1)),
+            (key("b"), entry(ExpertState::Serving, 1)),
+        ];
+        let materialized = ["a", "b"]
+            .into_iter()
+            .map(|pod| {
+                (
+                    ptr_state::expert_key("p", pod),
+                    ptr_state::expert_entry(1, ExpertState::Serving, 1),
+                )
+            })
+            .collect();
+        LifecycleState {
+            materialized,
+            experts: ExpertRegistryProjection::from_parts(
+                entries,
+                BTreeSet::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                0,
+                ExpertDependencyIndex::default(),
+            )
+            .with_authority(AuthorityState::from_parts(gate, evaluator, admissions)),
+            ..LifecycleState::default()
+        }
+    }
+
+    fn with_admissions(
+        admissions: BTreeMap<(String, String), ExpertAdmissionEpochs>,
+    ) -> LifecycleState {
+        let mut broken = state();
+        broken.experts = broken.experts.with_authority(AuthorityState::from_parts(
+            standing(3, 1),
+            standing(2, 2),
+            admissions,
+        ));
+        broken
+    }
+
+    #[test]
+    fn the_authority_block_round_trips_in_its_own_section_and_is_canonical() {
+        let state = state();
+        let bytes = state.encode().unwrap();
+        assert!(bytes.starts_with(AUTHORITY_LIFECYCLE_MAGIC));
+        let decoded = LifecycleState::decode(&bytes, Layout::Authority).unwrap();
+        assert_eq!(decoded, state);
+        assert_eq!(decoded.encode().unwrap(), bytes);
+        // Every earlier layout refuses it by its section magic.
+        for older in [
+            Layout::Dependency,
+            Layout::FenceCause,
+            Layout::Evidence,
+            Layout::Registry,
+        ] {
+            assert!(LifecycleState::decode(&bytes, older).is_err());
+        }
+        // One standing alone is enough, and an empty admission list is canonical.
+        let mut gate_only = authority_state(standing(4, 5), None, BTreeMap::new());
+        let (k, v) = mark(ExpertAuthorityKind::GateConfig, 4, 5);
+        gate_only.materialized.insert(k, v);
+        let bytes = gate_only.encode().unwrap();
+        assert_eq!(
+            LifecycleState::decode(&bytes, Layout::Authority).unwrap(),
+            gate_only
+        );
+    }
+
+    #[test]
+    fn a_history_without_a_standing_is_written_as_an_earlier_layout() {
+        let plain = authority_state(None, None, BTreeMap::new());
+        let bytes = plain.encode().unwrap();
+        assert!(bytes.starts_with(EVIDENCE_LIFECYCLE_MAGIC));
+        assert!(LifecycleState::decode(&bytes, Layout::Authority).is_err());
+    }
+
+    #[test]
+    fn an_older_layout_holding_an_authority_mark_is_refused_by_version() {
+        let mut older = authority_state(None, None, BTreeMap::new());
+        let (k, v) = mark(ExpertAuthorityKind::GateConfig, 3, 1);
+        older.materialized.insert(k, v);
+        let bytes = older.encode().unwrap();
+        assert!(matches!(
+            LifecycleState::decode(&bytes, Layout::Evidence),
+            Err(RuntimeError::Compacted(CompactedError::UnsupportedVersion))
+        ));
+    }
+
+    #[test]
+    fn a_marks_disagreeing_with_the_standings_are_refused() {
+        let mismatch = |state: LifecycleState| {
+            let bytes = state.encode().unwrap();
+            matches!(
+                LifecycleState::decode(&bytes, Layout::Authority),
+                Err(RuntimeError::Compacted(CompactedError::StateMismatch))
+            )
+        };
+        // A missing mark, a stale epoch, another identity, a mark for a kind with no standing.
+        let mut missing = state();
+        missing
+            .materialized
+            .remove(&ptr_state::expert_authority_key(
+                ExpertAuthorityKind::Evaluator,
+            ));
+        assert!(mismatch(missing));
+        let mut stale = state();
+        let (k, v) = mark(ExpertAuthorityKind::GateConfig, 2, 1);
+        stale.materialized.insert(k, v);
+        assert!(mismatch(stale));
+        let mut other = state();
+        let (k, v) = mark(ExpertAuthorityKind::GateConfig, 3, 7);
+        other.materialized.insert(k, v);
+        assert!(mismatch(other));
+        let mut extra = authority_state(standing(3, 1), None, BTreeMap::new());
+        for (kind, epoch, id) in [
+            (ExpertAuthorityKind::GateConfig, 3, 1),
+            (ExpertAuthorityKind::Evaluator, 1, 1),
+        ] {
+            let (k, v) = mark(kind, epoch, id);
+            extra.materialized.insert(k, v);
+        }
+        assert!(mismatch(extra));
+        let mut garbage = state();
+        garbage.materialized.insert(
+            ptr_state::expert_authority_key(ExpertAuthorityKind::GateConfig),
+            "3:zz".to_owned(),
+        );
+        assert!(mismatch(garbage));
+    }
+
+    #[test]
+    fn a_non_canonical_authority_block_is_refused() {
+        let noncanonical = |state: LifecycleState| {
+            let bytes = state.encode().unwrap();
+            matches!(
+                LifecycleState::decode(&bytes, Layout::Authority),
+                Err(RuntimeError::Compacted(CompactedError::NoncanonicalSection))
+            )
+        };
+        // An epoch above the standing of its kind (a standing only rises).
+        assert!(noncanonical(with_admissions(BTreeMap::from([(
+            key("a"),
+            ExpertAdmissionEpochs::new(4, 0)
+        )]))));
+        assert!(noncanonical(with_admissions(BTreeMap::from([(
+            key("a"),
+            ExpertAdmissionEpochs::new(0, 3)
+        )]))));
+        // An all-zero entry (the default is not stored).
+        assert!(noncanonical(with_admissions(BTreeMap::from([(
+            key("a"),
+            ExpertAdmissionEpochs::new(0, 0)
+        )]))));
+        // An admission for an expert the registry does not hold.
+        assert!(noncanonical(with_admissions(BTreeMap::from([(
+            key("zz"),
+            ExpertAdmissionEpochs::new(1, 1)
+        )]))));
+        // A standing with a zero epoch or a zero identity.
+        for (gate, evaluator) in [(standing(0, 1), None), (standing(3, 0), None)] {
+            assert!(noncanonical(authority_state(
+                gate,
+                evaluator,
+                BTreeMap::new()
+            )));
+        }
+    }
+
+    #[test]
+    fn a_truncated_padded_or_reordered_authority_block_is_refused() {
+        let bytes = state().encode().unwrap();
+        for len in 0..bytes.len() {
+            assert!(
+                LifecycleState::decode(&bytes[..len], Layout::Authority).is_err(),
+                "prefix {len}"
+            );
+        }
+        let mut padded = bytes.clone();
+        padded.push(0);
+        assert!(matches!(
+            LifecycleState::decode(&padded, Layout::Authority),
+            Err(RuntimeError::Compacted(CompactedError::LengthMismatch))
+        ));
+        // Unknown block magic.
+        let block = bytes
+            .windows(8)
+            .position(|window| window == AUTHORITY_BLOCK_MAGIC)
+            .unwrap();
+        let mut unknown = bytes.clone();
+        unknown[block + 7] = b'9';
+        assert!(matches!(
+            LifecycleState::decode(&unknown, Layout::Authority),
+            Err(RuntimeError::Compacted(CompactedError::UnsupportedVersion))
+        ));
+        // Swapping the two admission keys breaks the strict ascending order.
+        let mut swapped = bytes.clone();
+        let positions: Vec<usize> = (block..bytes.len() - 1)
+            .filter(|at| bytes[*at] == b'a' || bytes[*at] == b'b')
+            .collect();
+        // The two pod names are the last single-byte texts: swap them.
+        let [.., first, second] = positions[..] else {
+            panic!("pod bytes");
+        };
+        swapped.swap(first, second);
+        assert!(matches!(
+            LifecycleState::decode(&swapped, Layout::Authority),
+            Err(RuntimeError::Compacted(CompactedError::NoncanonicalSection))
+        ));
     }
 }

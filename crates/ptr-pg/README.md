@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-08  
-**Code footprint:** 17 Rust source files · 6639 nonblank source lines · 2 integration-test files · 160 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 17 Rust source files · 6672 nonblank source lines · 2 integration-test files · 161 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -122,6 +122,7 @@
 - tests/postgres.rs: work migration 16 (a_tampered_or_injected_branch_is_refused_at_load_under_a_seal_key over a changed value, author and base revision, a copied tag, another key's tag, a removed tag and an untagged injected branch, each a whole-branch rewrite every trigger accepts, a row edited and legacy-looking rows written with the triggers off, and appended tags; a_seal_tag_is_never_rewritten_and_goes_only_with_its_branch; a_branch_stored_before_seal_tags_is_tagged_in_place_and_keeps_its_triage, with the refusals of seal_stored_branch and a key rotation; without_a_seal_key_branches_store_and_load_as_before, which pins the tag to the HMAC of the domain and the seal digest; a_loaded_branch_merges_exactly_as_the_sealed_one, through PtrRuntime::merge_branch, the projection and record_outcome; work_migration_16_gives_a_reason_for_the_foreign_key_it_adds), unit tests of the tag and the key's redacted Debug, and a merged outcome refused as MergeNotProjected while a rebuild has dropped the projection
 - workspace fmt/check/test/clippy
 - an_input_invalidation_has_a_topic_a_subject_and_only_a_revocation_tombstones
+- ExpertAuthorityChanged (ledger tag 31, R011 WP4) has the topic expert.authority_changed, the subject expert-authority:<kind name>, no lifecycle change and the expert-authority entry of the shared ptr-state projection (an_authority_change_has_a_topic_a_subject_an_entry_and_no_lifecycle_row); the experts it fences are the runtime's, as for tag 30
 
 <!-- PTR:STATUS:END -->
 

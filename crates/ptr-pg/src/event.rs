@@ -106,6 +106,9 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         // The projection holds no expert catalog yet; structural records stay in the ledger.
         | LedgerEvent::ExpertStructuralCommitted { .. }
         | LedgerEvent::ExpertFenceCommitted { .. }
+        // An authority change moves an epoch the runtime keeps; the experts it fences are the
+        // runtime's too.
+        | LedgerEvent::ExpertAuthorityChanged { .. }
         // A supersession changes no lifecycle row; the fenced experts are the runtime's.
         | LedgerEvent::InputInvalidated {
             kind: InputInvalidationKind::Superseded { .. },
@@ -149,6 +152,7 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::ExpertFenceCommitted { .. } => "expert.fence_committed",
         LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
         LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
+        LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
     }
 }
 
@@ -229,6 +233,12 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             None => "kv-taint:none".to_owned(),
         },
         LedgerEvent::InputInvalidated { input, .. } => format!("expert-input:{input}"),
+        LedgerEvent::ExpertAuthorityChanged { kind, .. } => {
+            format!(
+                "expert-authority:{}",
+                ptr_state::expert_authority_kind_name(*kind)
+            )
+        }
     }
 }
 
@@ -487,5 +497,29 @@ mod tests {
         });
         assert_eq!(lifecycle_change(&superseded), LifecycleChange::None);
         assert_eq!(event_topic(&superseded.event), "expert.input_invalidated");
+    }
+
+    #[test]
+    fn an_authority_change_has_a_topic_a_subject_an_entry_and_no_lifecycle_row() {
+        let change = committed(
+            9,
+            LedgerEvent::ExpertAuthorityChanged {
+                kind: ptr_ledger::ExpertAuthorityKind::Evaluator,
+                id_digest: [1; 32],
+                epoch: 4,
+                class: ptr_ledger::ExpertAuthorityClass::TighteningRotation,
+                fence_count: 2,
+                fence_digest: [2; 32],
+            },
+        );
+        assert_eq!(event_topic(&change.event), "expert.authority_changed");
+        assert_eq!(event_subject(&change), "expert-authority:evaluator");
+        assert_eq!(lifecycle_change(&change), LifecycleChange::None);
+        let payload = event_payload(&change);
+        assert_eq!(payload["commit_index"], 9);
+        assert_eq!(
+            payload["entries"]["expert-authority:evaluator"],
+            format!("4:{}:tightening:2:{}", "01".repeat(32), "02".repeat(32))
+        );
     }
 }

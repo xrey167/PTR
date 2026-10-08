@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-08  
-**Code footprint:** 1 Rust source files · 1000 nonblank source lines · 3 integration-test files · 16 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 1 Rust source files · 1150 nonblank source lines · 3 integration-test files · 17 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -31,11 +31,13 @@
 - ExpertFenceCommitted projects the one expert it names: Fence and Escalate as <generation>:fenced:<epoch>, Retire as <generation>:retired-input-revoked:<epoch> and Readmit as <generation>:serving|frozen:<epoch> per the event's resume state, where the epoch is the event's new state version (the expert's fence epoch), so the materialized value an oracle reads no longer carries an earlier epoch (a_fence_event_projects_fenced_at_its_epoch_and_a_readmission_serving_at_the_next, which also covers the retirement)
 - KvTaintCommitted projects one entry per subject: kv-taint:<kind>:<hex digest> = approx:<report hex>:<recipe hex> for a Record and cleared:<recompute hex> for a Clear (a_kv_taint_event_projects_one_entry_per_subject); the runtime registry that rebuilds from these entries is not built yet
 - Projection of InputInvalidated (ledger tag 30, R011 WP3): expert-input:<identity byte length>:<identity>:<generation> holds revoked:<fence count>:<hex fence digest> or superseded:<new generation>:<hex new digest>:<fence count>:<hex fence digest>, and a revocation also projects revoked:<identity> as a Revoked record does. The event names the fenced experts by count and digest only, so this stateless projection writes no expert: key for them; the runtime, which derives the set from its dependency index, writes those. A version 3 ExpertCommitRecord additionally projects expert-inputs:<project>/<pod> = <generation>:<training>:<evaluation>:<hex block digest> for every expert it creates. Key and value parsers (parse_expert_input_key, parse_expert_input_entry, parse_expert_inputs_generation) accept exactly what the writers write
+- Projection of ExpertAuthorityChanged (ledger tag 31, R011 WP4): expert-authority:<kind name> (gate-config or evaluator) holds <epoch>:<hex identity digest>:<class name>:<fence count>:<hex fence digest> and records the latest change of that kind; parse_expert_authority_key and parse_expert_authority_entry are the strict inverses a compacted-snapshot restore checks the authority state against. The experts the change fenced are not in the event; the runtime writes their expert: keys
 
 ### Missing for the target architecture
 
 - Rebuild equivalence tests across every backend (the PostgreSQL projection is compared with the reference in ptr-pg; L004 extends it)
 - The per-expert effect of a tag-30 fence is not derivable from the event, so a projection backend that applies only projection_entries (the Turso reference, ptr-pg) records the invalidated input, the count and the digest but not which expert: keys moved; only the runtime's materialized state holds them
+- The per-expert effect of a tag-31 authority change is not derivable from the event (count and digest only), so a projection backend that applies only projection_entries (the Turso reference, ptr-pg) records the new standing but not which experts the change fenced
 
 ### Next milestones
 
@@ -70,6 +72,7 @@
 - unit test that only the exact next index is applicable and every other index is classified as duplicate, out-of-order or gap
 - ptr-pg postgres test replays a mixed log and compares every entry with MaterializedState
 - an_input_invalidation_projects_the_input_and_never_guesses_the_fenced_experts, the_input_key_and_value_parsers_accept_exactly_what_the_writers_write and a_version_3_record_commits_to_its_dependency_block_per_created_expert (versions 1 and 2 project exactly what they did)
+- an_authority_change_projects_one_entry_per_kind_and_the_value_parses_back: the entry for each kind, the strict key and value parsers (leading zero, zero epoch, unknown class, bad count or digest and extra fields refused)
 
 <!-- PTR:STATUS:END -->
 

@@ -1101,6 +1101,7 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::ExpertFenceCommitted { .. } => "expert.fence_committed",
         LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
         LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
+        LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
     }
 }
 
@@ -1183,6 +1184,12 @@ fn expected_subject(record: &CommittedEvent) -> String {
             None => "kv-taint:none".to_owned(),
         },
         LedgerEvent::InputInvalidated { input, .. } => format!("expert-input:{input}"),
+        LedgerEvent::ExpertAuthorityChanged { kind, .. } => {
+            format!(
+                "expert-authority:{}",
+                ptr_state::expert_authority_kind_name(*kind)
+            )
+        }
     }
 }
 
