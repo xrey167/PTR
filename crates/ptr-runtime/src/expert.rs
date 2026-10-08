@@ -130,6 +130,27 @@
 //! expert's earlier epoch is never revived, because the materialized value
 //! (`<generation>:<state>:<epoch>`) no longer carries that epoch.
 //!
+//! # Revocation-driven retirement
+//!
+//! [`PtrRuntime::retire_revoked_expert`] takes a `Fenced` expert of cause `InputRevoked` to
+//! `Retired(InputRevoked)` (fence action `Retire`, ledger code 3), compare-and-setting generation
+//! and state version and moving the state version up by one. It is the runtime's reaction to a
+//! revocation, not a gate decision: it needs a [`ExpertFenceAuthority::RuntimeRevocation`] grant
+//! (revalidated at commit like a fence), the same committed generation-exact `Revoked` or
+//! `ProcedureRevoked` the fence rests on, and it carries no gate evidence (the codec refuses
+//! any). It is refused, typed and with nothing appended, for an unfenced expert
+//! ([`ExpertAdmissionError::NotFenced`]), an already retired one, a fence of cause
+//! `AuthorityQuarantine` ([`ExpertAdmissionError::NotRetirable`]), a wrong generation or state
+//! version, an uncommitted revocation and a gate grant. The retired expert leaves the fence
+//! registry, releases its routing slot, is never routable ([`RouteRefusal::NotServing`]) and is
+//! terminal: readmission is refused (`NotFenced`), no proposal may name it as a reactivation seed
+//! ([`ptr_pods::ExpertProposalError::SeedUnavailable`]) and no proposal may retire a fenced
+//! expert ([`ptr_pods::ExpertProposalError::FencedTarget`]). Replay repeats the compare-and-set,
+//! the cause check and the committed-revocation check; a compacted snapshot carries the state
+//! and the fence memo; a KV entry that depended on the expert is dead from the fence on.
+//! The transition does not run by itself: no code derives it from a revocation, the host issues
+//! it (open point: the compound invalidation event).
+//!
 //! `InputRevoked` is a ledger-backed cause: the event names the `(subject, generation)` of a
 //! committed `Revoked` (or `ProcedureRevoked`) record, and commit and replay refuse it unless the
 //! runtime's revocations, built in commit order, already hold it. `AuthorityQuarantine` stays a
@@ -405,6 +426,11 @@ pub enum ExpertAdmissionError {
     /// fence is already final, and the cause never loosens. A fence of unknown cause (restored
     /// from a snapshot that did not record it) is not escalated either.
     NotEscalatable { pod: String },
+    /// A retirement names a fence whose cause is not `InputRevoked`: only a revoked input retires
+    /// an expert. An `AuthorityQuarantine` fence is readmitted or escalated, never retired, and a
+    /// fence of unknown cause (restored from a snapshot that did not record it) is not retired
+    /// either.
+    NotRetirable { pod: String },
     /// An `InputRevoked` fence or escalation names a revocation that no committed `Revoked` (or
     /// `ProcedureRevoked`) record at or before it carries, or names none.
     FenceRevocationNotCommitted { pod: String },
@@ -1035,6 +1061,40 @@ impl ExpertRegistryProjection {
                     None,
                 )
             }
+            ExpertFenceAction::Retire => {
+                if evidence.is_some() {
+                    return Err(ExpertAdmissionError::FenceEvidenceUnexpected {
+                        pod: pod.0.clone(),
+                    });
+                }
+                if entry.state != ExpertState::Fenced {
+                    return Err(ExpertAdmissionError::NotFenced {
+                        pod: pod.0.clone(),
+                        state: entry.state,
+                    });
+                }
+                // Only a revoked input retires: the fence must be `InputRevoked` and so must the
+                // event. The expert leaves the fence registry for good: `Retired` is terminal.
+                let standing = match self.fence_causes.get(&key) {
+                    Some(standing)
+                        if standing.cause == ExpertFenceCause::InputRevoked
+                            && *cause == ExpertFenceCause::InputRevoked =>
+                    {
+                        *standing
+                    }
+                    _ => {
+                        return Err(ExpertAdmissionError::NotRetirable { pod: pod.0.clone() });
+                    }
+                };
+                if *resume != standing.resume {
+                    return Err(resume_mismatch());
+                }
+                (
+                    ExpertState::Retired(RetiredReason::InputRevoked),
+                    None,
+                    None,
+                )
+            }
             ExpertFenceAction::Readmit => {
                 if entry.state != ExpertState::Fenced {
                     return Err(ExpertAdmissionError::NotFenced {
@@ -1588,6 +1648,27 @@ impl PtrRuntime {
         self.commit_expert_fence(ExpertFenceAction::Escalate, request, None, grant)
     }
 
+    /// Retire the `Fenced` expert `request` names for good: `Retired(InputRevoked)` at its
+    /// unchanged generation, the fence epoch (state version) up by one. The expert must be fenced
+    /// with cause [`ExpertFenceCause::InputRevoked`]; the request must name that cause and the
+    /// `(subject, generation)` of a `Revoked` (or `ProcedureRevoked`) record the ledger already
+    /// holds, exactly as the fence did. Needs a grant of
+    /// [`ExpertFenceAuthority::RuntimeRevocation`]; a gate grant is refused, and no gate evidence
+    /// exists or is accepted: this is the runtime's reaction to a revocation, never a gate
+    /// decision. The state is terminal: no readmission, no reactivation seeds from it and no
+    /// proposal may name it. An `AuthorityQuarantine` fence, an unfenced, a retired or a
+    /// wrong-generation expert is refused.
+    ///
+    /// # Errors
+    /// [`RuntimeError::Expert`] with the first failing check; nothing is appended on error.
+    pub fn retire_revoked_expert(
+        &mut self,
+        request: &ExpertFenceRequest,
+        grant: &ExpertFenceGrant,
+    ) -> Result<CommitIndex, RuntimeError> {
+        self.commit_expert_fence(ExpertFenceAction::Retire, request, None, grant)
+    }
+
     /// Readmit a fenced expert at its unchanged generation, in the state the fence left it
     /// (`Serving` or `Frozen`), at a new fence epoch,
     /// so no entry recorded under an earlier epoch is revived. Needs a grant of
@@ -1618,7 +1699,7 @@ impl PtrRuntime {
             return Err(expert(ExpertAdmissionError::FenceProjectMismatch));
         }
         let required = match action {
-            ExpertFenceAction::Fence | ExpertFenceAction::Escalate => {
+            ExpertFenceAction::Fence | ExpertFenceAction::Escalate | ExpertFenceAction::Retire => {
                 ExpertFenceAuthority::RuntimeRevocation
             }
             ExpertFenceAction::Readmit => ExpertFenceAuthority::Gate,
@@ -1638,7 +1719,11 @@ impl PtrRuntime {
                 })
             })?;
         let evidence = match (action, report, grant.gate) {
-            (ExpertFenceAction::Fence | ExpertFenceAction::Escalate, _, _) => None,
+            (
+                ExpertFenceAction::Fence | ExpertFenceAction::Escalate | ExpertFenceAction::Retire,
+                _,
+                _,
+            ) => None,
             (ExpertFenceAction::Readmit, Some(report), Some(requirement)) => {
                 let entry = self
                     .experts
@@ -1682,7 +1767,9 @@ impl PtrRuntime {
                 Some(entry) if entry.state == ExpertState::Frozen => ExpertFenceResume::Frozen,
                 _ => ExpertFenceResume::Serving,
             },
-            ExpertFenceAction::Escalate | ExpertFenceAction::Readmit => self
+            ExpertFenceAction::Escalate
+            | ExpertFenceAction::Retire
+            | ExpertFenceAction::Readmit => self
                 .experts
                 .fence_resume(&request.project, &request.pod)
                 .unwrap_or(ExpertFenceResume::Serving),
@@ -1690,6 +1777,11 @@ impl PtrRuntime {
         if action == ExpertFenceAction::Escalate && request.cause != ExpertFenceCause::InputRevoked
         {
             return Err(expert(ExpertAdmissionError::NotEscalatable {
+                pod: request.pod.0.clone(),
+            }));
+        }
+        if action == ExpertFenceAction::Retire && request.cause != ExpertFenceCause::InputRevoked {
+            return Err(expert(ExpertAdmissionError::NotRetirable {
                 pod: request.pod.0.clone(),
             }));
         }

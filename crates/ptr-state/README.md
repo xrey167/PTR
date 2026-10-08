@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-05  
-**Code footprint:** 1 Rust source files · 624 nonblank source lines · 3 integration-test files · 13 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-08  
+**Code footprint:** 1 Rust source files · 652 nonblank source lines · 3 integration-test files · 13 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -28,7 +28,7 @@
 - projection_entries now maps the newer ledger variants: ProtectedStateCommitted projects protected:<domain>:<logical_id>:generation/revision/ciphertext (the ciphertext digest as lowercase hex, never the ciphertext), MeshTunnelLifecycle projects mesh:<network>:<peer>:revision/state, and ExecutionManifestAdmitted/Revoked project execution-manifest:<digest hex>:state as admitted/revoked
 - ScopeLifecycle, PodEvidenceCommitted, PodOutputAdmitted, PodHypothesisCommitted, PolicyBundleActivated/Revoked and SessionRevoked deliberately project no entries (they advance last_applied only); the match over LedgerEvent stays exhaustive
 - ExpertStructuralCommitted projects one entry per expert the operation leaves in a new state: expert:<project>/<pod> = <generation>:<state>:<state_version> (state names from expert_state_name, retirement reasons joined with '-'), derived from the record through ptr_pods StructuralOp::outcomes so the projection and the runtime registry share one state table; a record that does not decode projects nothing (the runtime refuses it before commit)
-- ExpertFenceCommitted projects the one expert it names: Fence and Escalate as <generation>:fenced:<epoch> and Readmit as <generation>:serving|frozen:<epoch> per the event's resume state, where the epoch is the event's new state version (the expert's fence epoch), so the materialized value an oracle reads no longer carries an earlier epoch (a_fence_event_projects_fenced_at_its_epoch_and_a_readmission_serving_at_the_next)
+- ExpertFenceCommitted projects the one expert it names: Fence and Escalate as <generation>:fenced:<epoch>, Retire as <generation>:retired-input-revoked:<epoch> and Readmit as <generation>:serving|frozen:<epoch> per the event's resume state, where the epoch is the event's new state version (the expert's fence epoch), so the materialized value an oracle reads no longer carries an earlier epoch (a_fence_event_projects_fenced_at_its_epoch_and_a_readmission_serving_at_the_next, which also covers the retirement)
 - KvTaintCommitted projects one entry per subject: kv-taint:<kind>:<hex digest> = approx:<report hex>:<recipe hex> for a Record and cleared:<recompute hex> for a Clear (a_kv_taint_event_projects_one_entry_per_subject); the runtime registry that rebuilds from these entries is not built yet
 
 ### Missing for the target architecture
