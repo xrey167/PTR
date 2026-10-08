@@ -213,7 +213,7 @@ status = "planned"
 [[experiment]]
 id = "R007"
 path = "runtime/R007-span-forget"
-status = "prepared"
+status = "completed"
 
 [[experiment]]
 id = "R008"
