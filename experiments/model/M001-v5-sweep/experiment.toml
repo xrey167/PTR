@@ -1,6 +1,6 @@
 version = 1
 id = "M001-v5-sweep"
-status = "planned"
+status = "prepared"
 hypothesis = "Which learning rate of the fixed grid 0.0025,0.005,0.0125,0.025 trains each arm of M001-v5, the plain baseline included, best on validation data (seed 17, validation only)? Sweep of the A0 baseline study v1."
 metrics = "validation accuracy, validation NLL and divergence per fold, arm and learning rate"
 baseline = "no external baseline: the plain baseline is swept as an arm with its own rate"
@@ -10,3 +10,5 @@ entrypoint = "cargo +1.95.0 run --release --locked --quiet --manifest-path model
 seeds = [17]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json"]
+preregistration_sha256 = "1dca637166efecc23c10cb44809055d96ddc285d7425bafa152a997a155e3ad4"
+preregistration_rules_sha256 = "61c206420540b2b2b2ad5ac1fb91fa41e2056b4225ac8956d4cc069b95c68398"
