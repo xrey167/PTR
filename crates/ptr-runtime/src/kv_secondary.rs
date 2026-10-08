@@ -428,6 +428,11 @@ impl SecondaryRefusalCounts {
     }
 }
 
+/// A validated, not yet applied secondary section (see [`SecondaryIndex::prepare_restore`]).
+pub(crate) struct RestorePlan {
+    fresh: Vec<Run>,
+}
+
 /// Counters and gauges of one index.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SecondaryStats {
@@ -458,6 +463,9 @@ pub struct SecondaryStats {
     pub suppressed_refusals: u64,
     pub tombstoned_at_lookup: u64,
     pub invalidated: u64,
+    /// Runs tombstoned because an insert found their tokens or rows digest in conflict with
+    /// the offered content (a crafted or damaged restored run).
+    pub conflict_tombstones: u64,
     pub refusals: SecondaryRefusalCounts,
 }
 
@@ -900,6 +908,7 @@ struct Counters {
     suppressed_refusals: u64,
     tombstoned_at_lookup: u64,
     invalidated: u64,
+    conflict_tombstones: u64,
     refusals: SecondaryRefusalCounts,
 }
 
@@ -1051,6 +1060,7 @@ impl SecondaryIndex {
             suppressed_refusals: counters.suppressed_refusals,
             tombstoned_at_lookup: counters.tombstoned_at_lookup,
             invalidated: counters.invalidated,
+            conflict_tombstones: counters.conflict_tombstones,
             refusals: counters.refusals,
         }
     }
@@ -1165,10 +1175,16 @@ impl SecondaryIndex {
         if tombstoned {
             return Err(SecondaryError::SlotDraining);
         }
+        // A conflicting run (a crafted or damaged restored one) is tombstoned so it can never
+        // be admitted again; the offer is refused with a typed reason, not a request failure.
         if !tokens_equal {
+            self.counters.conflict_tombstones += 1;
+            self.tombstone_run(existing_id);
             return Err(SecondaryError::TokensConflict);
         }
         if !digest_equal {
+            self.counters.conflict_tombstones += 1;
+            self.tombstone_run(existing_id);
             return Err(SecondaryError::RowsDigestMismatch);
         }
         if let Some(existing) = self.runs.get_mut(&existing_id) {
@@ -1706,6 +1722,22 @@ impl SecondaryIndex {
     /// unchanged. Runs already present are left as they are. Nothing is evicted to make
     /// room. Returns the number of runs added.
     pub fn restore_section(&mut self, bytes: &[u8]) -> Result<usize, SecondaryError> {
+        match self.prepare_restore(bytes) {
+            Ok(plan) => Ok(self.commit_restore(plan)),
+            Err(error) => {
+                if matches!(error, SecondaryError::CapacityExhausted(_)) {
+                    self.counters.capacity_refusals += 1;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Decode and fully validate a section against the current index (strict decoding and
+    /// every capacity bound) without changing anything, not even a counter. A caller that
+    /// has other state to restore runs this first and commits only when everything else
+    /// has been admitted.
+    pub(crate) fn prepare_restore(&self, bytes: &[u8]) -> Result<RestorePlan, SecondaryError> {
         let decoded = self.decode_section(bytes)?;
         let fresh: Vec<Run> = decoded
             .into_iter()
@@ -1722,21 +1754,25 @@ impl SecondaryIndex {
         for (slot, added) in &per_window {
             let held = self.postings.get(slot).map_or(0, Vec::len);
             if held + added > self.limits.max_candidates_per_window {
-                self.counters.capacity_refusals += 1;
                 return Err(SecondaryError::CapacityExhausted(
                     SecondaryResource::CandidatesPerWindow,
                 ));
             }
         }
         if let Some(resource) = self.totals.add(need).first_exceeded(&self.limits) {
-            self.counters.capacity_refusals += 1;
             return Err(SecondaryError::CapacityExhausted(resource));
         }
-        let added = fresh.len();
-        for run in fresh {
+        Ok(RestorePlan { fresh })
+    }
+
+    /// Apply a plan made by [`Self::prepare_restore`] on this same, unchanged index. Cannot
+    /// fail. Returns the number of runs added.
+    pub(crate) fn commit_restore(&mut self, plan: RestorePlan) -> usize {
+        let added = plan.fresh.len();
+        for run in plan.fresh {
             self.add_run(run);
         }
-        Ok(added)
+        added
     }
 
     fn decode_section(&self, bytes: &[u8]) -> Result<Vec<Run>, SecondarySectionError> {
@@ -3042,7 +3078,7 @@ mod tests {
     }
 
     #[test]
-    fn a_conflicting_reinsert_is_a_typed_error_and_changes_nothing() {
+    fn a_conflicting_reinsert_is_a_typed_error_and_tombstones_the_conflicting_run() {
         let (origin, _) = shifted_pair(1, 20);
         let mut idx = index();
         put(&mut idx, &origin, 0);
@@ -3054,9 +3090,39 @@ mod tests {
             idx.insert(other, &AllLive).unwrap_err(),
             SecondaryError::RowsDigestMismatch
         );
+        // The conflicting run is tombstoned (unpinned, so dropped) and counted; it can never
+        // be admitted again.
+        assert_eq!(idx.stats().conflict_tombstones, 1);
+        assert_eq!(idx.len(), 0);
         let outcome = find(&mut idx, &origin, &AllLive);
-        assert_eq!(outcome.last_token_skips, 0);
-        assert_eq!(idx.len(), 1);
+        assert!(outcome.splices.is_empty());
+    }
+
+    #[test]
+    fn a_pinned_conflicting_run_stays_unreachable_until_its_pin_is_released() {
+        let (origin, shifted) = shifted_pair(1, 20);
+        let mut idx = index();
+        put(&mut idx, &origin, 0);
+        let hit = find(&mut idx, &shifted, &AllLive);
+        assert_eq!(hit.splices.len(), 1);
+        let mut other = insert_of(salt(), &CHAIN, &origin, 0);
+        let mut keys = other.rows.keys.to_vec();
+        keys[0] += 1.0;
+        other.rows.keys = keys.into();
+        assert_eq!(
+            idx.insert(other, &AllLive).unwrap_err(),
+            SecondaryError::RowsDigestMismatch
+        );
+        // Still held by the pin, but tombstoned: no new lookup reaches it, no insert merges.
+        assert_eq!(idx.stats().tombstoned_pinned_runs, 1);
+        assert!(find(&mut idx, &shifted, &AllLive).splices.is_empty());
+        assert_eq!(
+            idx.insert(insert_of(salt(), &CHAIN, &origin, 0), &AllLive)
+                .unwrap_err(),
+            SecondaryError::SlotDraining
+        );
+        release_all(&mut idx, &hit);
+        assert!(idx.is_empty());
     }
 
     // ----- bounds and LRU --------------------------------------------------------------
@@ -3542,7 +3608,7 @@ mod tests {
         assert!(miss.splices.is_empty() && miss.refusals.is_empty());
         assert_eq!(restored.stats().rows_missing_misses, 1);
 
-        // A wrong row buffer is a typed error and the run stays row-less.
+        // A wrong row buffer is a typed error; the conflicting restored run is tombstoned.
         let mut wrong = insert_of(salt(), &CHAIN, &origin, 1);
         let mut keys = wrong.rows.keys.to_vec();
         keys[3] = f32::from_bits(keys[3].to_bits() ^ 1);
@@ -3552,7 +3618,8 @@ mod tests {
             SecondaryError::RowsDigestMismatch
         );
         assert_eq!(restored.stats().row_bytes, 0);
-        // A dead dependency refuses the attach.
+        assert_eq!(restored.stats().conflict_tombstones, 1);
+        // Its slot is free; a dead dependency still refuses the new run.
         assert_eq!(
             restored
                 .insert(
@@ -3566,8 +3633,7 @@ mod tests {
         let attached = restored
             .insert(insert_of(salt(), &CHAIN, &origin, 1), &AllLive)
             .unwrap();
-        assert!(matches!(attached, SecondaryInsertOutcome::RowsAttached(_)));
-        assert_eq!(restored.stats().rows_attached, 1);
+        assert!(matches!(attached, SecondaryInsertOutcome::Inserted(_)));
         assert!(restored.stats().row_bytes > 0);
         let hit = find(&mut restored, &shifted, &AllLive);
         assert_eq!(hit.splices.len(), 1);

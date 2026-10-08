@@ -258,6 +258,10 @@ pub enum ReferenceKvError {
     /// `PostRope` stack is only accepted as the explicit negative control
     /// ([`PositionalControl::PermitPostRopeKeys`]).
     PositionalNeedsPreRope,
+    /// The catalog's secondary index already holds runs (for example from a restored
+    /// snapshot); opting in would silently drop them, so it is refused. Opt in before
+    /// restoring.
+    PositionalIndexNotEmpty,
 }
 
 impl fmt::Display for ReferenceKvError {
@@ -321,6 +325,10 @@ impl fmt::Display for ReferenceKvError {
             Self::PositionalNeedsPreRope => {
                 write!(f, "positional reuse needs PreRope key storage")
             }
+            Self::PositionalIndexNotEmpty => write!(
+                f,
+                "the secondary index already holds runs; opt in to positional reuse before restoring"
+            ),
         }
     }
 }
@@ -880,8 +888,8 @@ impl ReferenceKvReuseBackend {
         })
     }
 
-    /// Opt into positional reuse: the catalog's secondary index is rebuilt from
-    /// `options.secondary` (it is empty at construction) and
+    /// Opt into positional reuse: the catalog's (empty) secondary index is rebuilt from
+    /// `options.secondary` and
     /// [`Self::begin_session_positional`] and [`Self::probe_positional`] become available.
     /// Every other entry point behaves exactly as without it: no secondary lookup and no
     /// secondary insert. Chain ids, pinned digests and outputs of existing configurations do
@@ -890,8 +898,10 @@ impl ReferenceKvReuseBackend {
     /// # Errors
     /// [`ReferenceKvError::PositionalNeedsOneLayer`] unless the stack has exactly one layer,
     /// [`ReferenceKvError::PositionalNeedsPreRope`] for a `PostRope` stack (unless the
-    /// options carry [`PositionalControl::PermitPostRopeKeys`]) and
-    /// [`ReferenceKvError::Secondary`] for an invalid index configuration.
+    /// options carry [`PositionalControl::PermitPostRopeKeys`]),
+    /// [`ReferenceKvError::Secondary`] for an invalid index configuration and
+    /// [`ReferenceKvError::PositionalIndexNotEmpty`] when the secondary index already holds
+    /// runs (restore the catalog after opting in, not before).
     pub fn with_positional_reuse(
         mut self,
         options: PositionalOptions,
@@ -910,6 +920,9 @@ impl ReferenceKvReuseBackend {
         let index = SecondaryIndex::new(options.secondary)?;
         {
             let mut state = self.lock()?;
+            if !state.catalog.secondary().is_empty() {
+                return Err(ReferenceKvError::PositionalIndexNotEmpty);
+            }
             *state.catalog.secondary_mut() = index;
         }
         self.positional = Some(options);

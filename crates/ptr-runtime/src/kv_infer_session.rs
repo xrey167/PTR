@@ -1297,8 +1297,12 @@ impl<'a> KvSession<'a> {
         }
     }
 
-    /// Ask the oracle about the lineage (outside any lock) and the catalog about the pin;
-    /// cancel on a failure.
+    /// Ask the oracle about the lineage and binding guards (no backend lock held) and, for
+    /// the pins, the catalog; cancel on a failure. The per-pin re-validation of a positional
+    /// session (`SecondaryIndex::revalidate`) calls the oracle **while the backend state
+    /// lock is held**, as the primary catalog lookup and the secondary insert do. An oracle
+    /// must therefore answer from its own state and must never call back into the backend
+    /// (it would deadlock); the reference oracle takes only its own lock.
     fn check_live(
         &mut self,
         liveness: &dyn KvLivenessOracle,
@@ -1554,7 +1558,9 @@ impl<'a> KvSession<'a> {
                 Err(
                     error @ (SecondaryError::CapacityExhausted(_)
                     | SecondaryError::SlotDraining
-                    | SecondaryError::DependencyNotLive),
+                    | SecondaryError::DependencyNotLive
+                    | SecondaryError::TokensConflict
+                    | SecondaryError::RowsDigestMismatch),
                 ) => positional.report.insert_refusals.push(error),
                 Err(error) => return Err(ReferenceKvError::Secondary(error)),
             }
