@@ -28,8 +28,9 @@ and no falsifier trips; FALSIFIED if a coverage rule (the run is vacuous) or a f
 record is missing, does not describe the frozen run, or a counter is missing or mistyped, or the exit status disagrees
 with the rules (INVALID says nothing about the hypothesis). The harness exits 0 when every rule holds, 1 when one fails,
 2 when it cannot run a case: a refusal that is not the expected one, an insert refusal on the honest path, a baseline that
-does not reproduce itself, a span that changes nothing, a probe that does not reuse the aligned prefix, or a negative
-control that does not trip every falsifier. No rule changes after a run.
+does not reproduce itself (warm on an empty catalog differing from cold), a baseline probe that does not reuse the aligned
+prefix, a span that changes nothing, or a negative control that does not trip every falsifier. A reuse deviation on the
+forget side is not exit 2 but a falsifier (section 3, item 7). No rule changes after a run.
 
 Coverage (the run is vacuous if unmet): span_insertions, span_evictions, downstream_recomputations, canary_probes,
 canary_span_tokens, downstream_rows_before_forget, prefix_reuse_tokens, post_forget_probes all >= 1; canary_probes >= 32
@@ -54,14 +55,19 @@ canary_logit_shift != 0, stale_downstream_rows_reused > 0, recompute_tokens != t
 - **Bitwise comparison**: on `f32` bit patterns (`to_bits`), no tolerance; a NaN payload or a signed-zero difference is a
   mismatch. Two logits vectors are equal iff all 256 bit patterns are equal.
 - **State digest**: the KV-state digest of `ptr-runtime` (`KvSession::kv_state_digest`): SHA-256 over every layer's K and V
-  rows for all prompt positions. `bitwise_mismatch_count` counts, per seed, one per differing KV-state digest plus one per
-  differing logits entry (f32 bit patterns), for the forget run against the baseline and for each of the 32 probes (forget
-  backend against baseline backend). The decode digest and generated tokens are compared too and reported under
-  `internal.decode_digest_mismatches` only.
+  rows for all prompt positions. `bitwise_mismatch_count` counts, per seed, one per differing KV-state digest, one per
+  differing logits entry (f32 bit patterns), one per differing decode digest or generated tokens, and one per non-finite
+  logits entry on either side (identical NaN vectors are not a pass), for: the forget run against the cold baseline; each of
+  the 32 probes (forget backend against baseline backend, warm against warm); and the two cold anchors (below) against both
+  warm probes of the same request.
+- **Cold anchors**: warm-vs-warm alone could hide a defect shared by both warm paths (fork or reuse of a long aligned
+  prefix), so per seed the probe requests of canary 0 (in the span) and canary 16 (never in it) are also run `Cold` on the
+  baseline backend (no lookup, no insert) and compared with the forget-backend and baseline-backend warm probes of the same
+  request. Their bit differences count into `bitwise_mismatch_count` and their ulp distance into `canary_logit_shift`.
 - **Canary probe** (owner decision 3): per probe, the full next-token logits vector (256 entries) after the probe suffix.
   The probe request is the prompt without the span plus the 16 bytes of canary i as a final Raw segment, run `Warm` on B and
-  on F; each reuses the aligned prefix (3968 tokens) and recomputes only the tail (a probe that does not reuse the aligned
-  prefix is exit 2). **`canary_logit_shift`** is printed as a JSON integer: the largest distance, in representable `f32`
+  on F; each reuses the aligned prefix (3968 tokens) and recomputes only the tail (a baseline probe that does not reuse the aligned
+  prefix is exit 2, a forget-side deviation is a falsifier, section 3 item 7). **`canary_logit_shift`** is printed as a JSON integer: the largest distance, in representable `f32`
   steps (ulps), between F's and B's logit over all 256 entries and all 32 probes. It is 0 iff the maximum absolute
   difference is exactly 0 (a signed-zero pair is 0 ulps and is counted by `bitwise_mismatch_count`; a NaN pair with
   different bits is 2^32). The `f64` maximum absolute difference is printed under `cases.C5.max_abs_f32`, which no rule
@@ -95,6 +101,12 @@ canary_logit_shift != 0, stale_downstream_rows_reused > 0, recompute_tokens != t
    all 32 probes.
 4. `recompute_tokens == tokens_after_span` stays exact.
 5. `downstream_recomputations` and `downstream_rows_before_forget` are counted in 16-token chunks after the span (180).
+6. Refinement of 3 (review): two cold anchors per seed (canary 0 and canary 16) plus the 32 warm-vs-warm comparisons, as
+   defined in section 2; decode digests and non-finite entries count into `bitwise_mismatch_count`.
+7. Forget-side reuse deviations falsify instead of exiting 2: a hit on the empty catalog or a probe hit above the aligned
+   prefix counts into `stale_downstream_rows_reused` (rows); prefilled tokens beyond what the expected hit leaves, and any
+   disagreement of the outcome's books (`prompt_tokens` against the request, `prompt_tokens - hit_tokens` against
+   `prefilled_tokens`), add to `recompute_tokens` (never cancelling it). Only baseline validity and harness errors are exit 2.
 
 Where this harness differs from the draft's table, before any run: the probes run `Warm` on a baseline backend B whose
 catalog was populated by a warm run of the same prompt (C1; B's warm run must equal its cold run bitwise, else exit 2),
@@ -119,10 +131,10 @@ Exactly these prefill-scale runs per seed (a 4224-token cold prefill takes about
 | Case | What runs | Metrics produced |
 |---|---|---|
 | C1 baseline | backend B: `Cold` probe of the 3968-token prompt without the span; then `Warm` of the same prompt to populate B's catalog; the two must be bitwise equal | reference values; exit 2 if unequal |
-| C2 warm with span | backend F: `Warm` probe of the 4224-token prompt on an empty catalog; the span must change the state against C1 (else exit 2) | span_insertions, downstream_rows_before_forget, canary_span_tokens (via the canary identity) |
+| C2 warm with span | backend F: `Warm` probe of the 4224-token prompt on an empty catalog; a hit on the empty catalog counts as stale reuse; the span must change the state against C1 (else exit 2) | span_insertions, downstream_rows_before_forget, canary_span_tokens (via the canary identity) |
 | C3 forget and rerun | revoke the span's lineage identity on F; `Warm` probe of the prompt without the span | span_evictions, prefix_reuse_tokens, recompute_tokens, tokens_after_span, downstream_recomputations, stale_downstream_rows_reused |
 | C4 compare | the forget run against C1's cold run: KV-state digest and the 256 logits bit patterns | bitwise_mismatch_count (part) |
-| C5 canary probes | 32 probes (seeded order), each the prompt without the span plus canary i, `Warm` on B and on F after the forget; all 256 entries and the KV-state digests compared | canary_probes, post_forget_probes, canary_logit_shift, bitwise_mismatch_count (rest), canary_identity_set_digest |
+| C5 canary probes | 32 probes (seeded order), each the prompt without the span plus canary i, `Warm` on B and on F after the forget; all 256 entries, KV-state and decode digests, finiteness compared; plus 2 cold anchors (canary 0 and 16, `Cold` on B) compared with both warm probes | canary_probes, post_forget_probes, canary_logit_shift, bitwise_mismatch_count (rest), canary_identity_set_digest |
 | C6 negative control | backend G under `set_faults(IndexUpdate::Suppressed)`: the same warm run with the span, a revocation that does not reach the index (retires 0), then a `StaleDonor` probe of the prompt without the span; its digest and logits must differ from C1's and all four falsifiers, judged on its counters, must trip | no manifest metric; recorded under `cases.C6`; exit 2 if it does not trip |
 | C7 pins | corpus selection digest, the procedure parameters (the 23 names of `procedure_parameters_recorded_per_cell`, each observed from the requests or the backend and compared with the pinned value), model pins, canary digest | selection_digest_mismatches, procedure_mismatches, model_pin_mismatches, canary_identity_set_digest |
 
@@ -132,8 +144,14 @@ All 17 metrics of `experiment.toml` are produced, as JSON integers except `canar
 
 - `model_pin_mismatches` and `procedure_mismatches` are weak: the base checkpoint, topology and the canary generator seed
   are constants here; the shape and the tokenizer are read from the backend, the segment sizes from the requests built.
-- `canary_probes` and `post_forget_probes` count probes whose two runtime calls returned; they do not measure that the
-  probe could have seen the span.
+- `canary_probes` counts probes whose two runtime calls returned with finite logits (per probe); `post_forget_probes`
+  counts those made after the revocation retired exactly the span's rows and the forget run recomputed. Both are weak:
+  they count completed work, not that a probe could have seen the span, and in the absence of an `Err` they are 32.
+- `procedure_mismatches` records `canary_generator_seed` and `moe_topology` as constants (listed under
+  `procedure.constants_never_counted`, never counted); `seeds` compares the manifest file with the list the harness was
+  written for. A finite-comparison count (`internal.finite_comparisons`) is recorded, not a coverage rule (no rule is added).
+- Measured values are printed next to shape-derived expectations (`expected.*`: 1088, 68, 2880, 180, 180); no rule reads
+  them, the tests assert them.
 - `span_insertions` and `span_evictions` are 0/1 per the single span; they read the rows the catalog accepted and retired.
 - `stale_downstream_rows_reused` is structurally near-zero because chunk keys hash the parent; only the negative control
   shows it can be non-zero.

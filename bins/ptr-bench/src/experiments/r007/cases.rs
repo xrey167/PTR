@@ -14,7 +14,9 @@
 //!   span's lineage identity and a Warm probe of the prompt without it, compared with B's cold
 //!   run (C3, C4);
 //! * the 32 canary probes, each the prompt without the span plus the canary's 16 bytes, run
-//!   Warm on B and on F, each reusing the aligned prefix and recomputing the tail (C5);
+//!   Warm on B and on F, each reusing the aligned prefix and recomputing the tail, plus two cold
+//!   anchors (canary 0 in the span, canary 16 never in it) run Cold on B and compared with both
+//!   warm probes of the same request (C5);
 //! * backend G (negative control): the same Warm probe with the span under
 //!   `IndexUpdate::Suppressed`, a revocation that does not reach the index, and a StaleDonor
 //!   probe whose result must differ from B's cold run and trip the falsifiers (C6).
@@ -374,6 +376,75 @@ fn same_state(a: &ReferenceKvProbe, b: &ReferenceKvProbe) -> bool {
         && a.outcome.generated == b.outcome.generated
 }
 
+/// Non-finite entries of a probe's logits vector.
+fn non_finite(probe: &ReferenceKvProbe) -> i64 {
+    probe
+        .prompt_logits
+        .iter()
+        .filter(|value| !value.is_finite())
+        .count() as i64
+}
+
+/// One comparison of two probes, counted the way `bitwise_mismatch_count` counts: one per
+/// differing KV-state digest, one per differing logits entry (bit patterns), one for a
+/// differing decode digest or generated tokens, and one per non-finite logits entry on either
+/// side (a non-finite vector is never a silent pass).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Compare {
+    pub digest: i64,
+    pub decode: i64,
+    pub non_finite: i64,
+    pub logits: Diff,
+}
+
+impl Compare {
+    pub fn total(&self) -> i64 {
+        self.digest + self.decode + self.non_finite + self.logits.entries
+    }
+}
+
+pub fn compare(a: &ReferenceKvProbe, b: &ReferenceKvProbe) -> Compare {
+    Compare {
+        digest: i64::from(a.kv_state_digest != b.kv_state_digest),
+        decode: i64::from(
+            a.outcome.logits_digest != b.outcome.logits_digest
+                || a.outcome.generated != b.outcome.generated,
+        ),
+        non_finite: non_finite(a) + non_finite(b),
+        logits: diff(&a.prompt_logits, &b.prompt_logits),
+    }
+}
+
+/// What a forget-side run reused against what it should have: rows served beyond the expected
+/// hit (over-reuse), tokens prefilled beyond what the expected hit leaves (under-reuse), and
+/// the disagreement of the outcome's own accounting (prompt tokens against the request, and
+/// prompt minus hit against prefilled).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Reuse {
+    pub over_rows: usize,
+    pub extra_prefilled: usize,
+    pub accounting: usize,
+}
+
+pub fn reuse_defects(
+    probe: &ReferenceKvProbe,
+    request_tokens: usize,
+    expected_hit: usize,
+) -> Reuse {
+    let outcome = &probe.outcome;
+    let over = outcome.hit_tokens.saturating_sub(expected_hit);
+    let expected_prefilled = request_tokens.saturating_sub(expected_hit);
+    Reuse {
+        over_rows: over.div_ceil(CHUNK_TOKENS),
+        extra_prefilled: outcome.prefilled_tokens.saturating_sub(expected_prefilled),
+        accounting: outcome.prompt_tokens.abs_diff(request_tokens)
+            + outcome
+                .prompt_tokens
+                .saturating_sub(outcome.hit_tokens)
+                .abs_diff(outcome.prefilled_tokens),
+    }
+}
+
 /// What the cases produced besides the metric counters (which go into the tally).
 pub struct Findings {
     pub cases: Vec<(String, Json)>,
@@ -381,6 +452,7 @@ pub struct Findings {
     pub canary_identity: Json,
     pub procedure: Json,
     pub roles: Json,
+    pub expected: Json,
 }
 
 /// A procedure parameter checked against its pinned value: the observed value is recorded and
@@ -391,6 +463,7 @@ struct Procedure {
     observed: Vec<(String, Json)>,
     expected: Vec<(String, Json)>,
     differing: Vec<String>,
+    constants: Vec<String>,
 }
 
 impl Procedure {
@@ -401,6 +474,13 @@ impl Procedure {
         }
         self.observed.push((name.to_string(), observed));
         self.expected.push((name.to_string(), expected));
+    }
+
+    /// A parameter that is a constant of this harness on both sides: recorded, never counted.
+    fn constant(&mut self, name: &str, value: Json) {
+        self.observed.push((name.to_string(), value.clone()));
+        self.expected.push((name.to_string(), value));
+        self.constants.push(name.to_string());
     }
 
     fn int(&mut self, name: &str, observed: u64, expected: u64) {
@@ -470,12 +550,11 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
         ReferenceKvProbeMode::Warm,
     )?;
     accepted("C2.warm_with_span", &warm)?;
-    if warm.outcome.hit_tokens != 0 {
-        return Err(format!(
-            "C2: the first run of an empty catalog hit {} tokens",
-            warm.outcome.hit_tokens
-        ));
-    }
+    // A hit on an empty catalog is reuse that should not exist: it counts as stale reuse and
+    // falsifies, it is not a harness error.
+    let mut stale_extra = warm.outcome.hit_tokens.div_ceil(chunk);
+    let mut recompute_extra = 0usize;
+    let mut accounting_defect = reuse_defects(&warm, with_span.total_tokens(), 0).accounting;
     if warm.kv_state_digest == base_cold.kv_state_digest
         || warm.logit_bits() == base_cold.logit_bits()
     {
@@ -524,6 +603,10 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
     let recomputed = forget.outcome.prefilled_tokens > 0 && forget.outcome.inserted_chunks > 0;
     let stale_rows = forget.outcome.hit_tokens.saturating_sub(span_layout.before) / chunk;
     let tokens_after_span = span_layout.after;
+    // The runtime's own accounting of the forget run must agree with the request built.
+    let forget_reuse = reuse_defects(&forget, without.total_tokens(), span_layout.before);
+    recompute_extra += forget_reuse.extra_prefilled;
+    accounting_defect += forget_reuse.accounting;
     cases.push((
         "C3".into(),
         Json::obj([
@@ -541,18 +624,19 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
     // C4: the forget run against the fresh prefill without the span.
     let forget_diff = diff(&forget.prompt_logits, &base_cold.prompt_logits);
     let forget_digest_differs = forget.kv_state_digest != base_cold.kv_state_digest;
-    let mut bitwise = i64::from(forget_digest_differs) + forget_diff.entries;
-    let decode_mismatch = i64::from(
-        forget.outcome.logits_digest != base_cold.outcome.logits_digest
-            || forget.outcome.generated != base_cold.outcome.generated,
-    );
+    let forget_cmp = compare(&forget, &base_cold);
+    let mut bitwise = forget_cmp.total();
+    let mut decode_mismatch = forget_cmp.decode;
+    let mut non_finite_total = forget_cmp.non_finite;
+    let mut finite_comparisons = i64::from(forget_cmp.non_finite == 0);
     cases.push((
         "C4".into(),
         Json::obj([
             ("what", Json::str("the forget run against B's cold run: KV-state digest and the 256 logits bit patterns")),
             ("kv_state_digest_differs", Json::Bool(forget_digest_differs)),
             ("logits", diff_json(forget_diff)),
-            ("decode_digest_or_tokens_differ", Json::Bool(decode_mismatch == 1)),
+            ("decode_digest_or_tokens_differ", Json::Bool(forget_cmp.decode == 1)),
+            ("non_finite_entries", Json::Int(forget_cmp.non_finite)),
         ]),
     ));
 
@@ -566,6 +650,10 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
     let mut probe_entries = 0i64;
     let mut probe_digests = 0i64;
     let mut min_hit = usize::MAX;
+    // Canary 0 (in the span) and canary 16 (never in the span) are also run Cold.
+    let anchors = [0usize, params::CANARIES_IN_SPAN];
+    let mut anchor_inputs = Vec::new();
+    let mut anchor_mismatches = 0i64;
     let mut prefilled_total = 0usize;
     let order_of_probes = order(
         seed,
@@ -588,7 +676,6 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
             &request,
             ReferenceKvProbeMode::Warm,
         )?;
-        let after_forget_state = evicted && recomputed;
         let on_forget = run(
             &mut timings,
             &format!("C5.probe_{index}.forget"),
@@ -598,27 +685,49 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
         )?;
         accepted("C5 baseline probe", &on_baseline)?;
         accepted("C5 forget probe", &on_forget)?;
-        for (side, probe) in [("baseline", &on_baseline), ("forget", &on_forget)] {
-            if probe.outcome.hit_tokens != expected_hit {
-                return Err(format!(
-                    "C5 probe {index} on the {side} backend reused {} tokens, not the aligned prefix {expected_hit}",
-                    probe.outcome.hit_tokens
-                ));
+        // The baseline must reuse the aligned prefix (its validity); the forget side may not
+        // deviate silently: over-reuse is stale reuse and under-reuse is recomputation beyond
+        // the tail, both falsifiers.
+        if on_baseline.outcome.hit_tokens != expected_hit {
+            return Err(format!(
+                "C5 probe {index} on the baseline backend reused {} tokens, not the aligned prefix {expected_hit}",
+                on_baseline.outcome.hit_tokens
+            ));
+        }
+        let reuse = reuse_defects(&on_forget, request.total_tokens(), expected_hit);
+        stale_extra += reuse.over_rows;
+        recompute_extra += reuse.extra_prefilled;
+        accounting_defect += reuse.accounting;
+        let cmp = compare(&on_forget, &on_baseline);
+        non_finite_total += cmp.non_finite;
+        finite_comparisons += i64::from(cmp.non_finite == 0);
+        // The probe counts when both runtime calls returned with finite logits; it is a
+        // post-forget probe when the revocation retired exactly the span's rows and the
+        // forget run recomputed before it.
+        if cmp.non_finite == 0 {
+            probes_done += 1;
+            if evicted && recomputed {
+                post_forget += 1;
             }
         }
-        // Both runtime calls returned: the probe counts.
-        probes_done += 1;
-        if after_forget_state {
-            post_forget += 1;
-        }
-        let d = diff(&on_forget.prompt_logits, &on_baseline.prompt_logits);
-        let digest_differs = on_forget.kv_state_digest != on_baseline.kv_state_digest;
+        let d = cmp.logits;
+        let digest_differs = cmp.digest == 1;
+        bitwise += cmp.total();
+        decode_mismatch += cmp.decode;
         shift = shift.max(d.max_ulps);
         max_abs = max_abs.max(d.max_abs);
         probe_entries += d.entries;
-        probe_digests += i64::from(digest_differs);
+        probe_digests += cmp.digest;
         min_hit = min_hit.min(on_forget.outcome.hit_tokens);
         prefilled_total += on_forget.outcome.prefilled_tokens;
+        if anchors.contains(index) {
+            anchor_inputs.push((
+                *index,
+                request.clone(),
+                on_baseline.clone(),
+                on_forget.clone(),
+            ));
+        }
         probed.insert(*index, suffix);
         probe_rows.push(Json::obj([
             ("canary_index", Json::Int(*index as i64)),
@@ -632,11 +741,52 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
             ("logits", diff_json(d)),
         ]));
     }
-    bitwise += probe_entries + probe_digests;
+    // The cold anchors: a fresh prefill (no lookup, no insert) of the probe request of canary 0
+    // (in the span) and of canary 16 (never in the span) on the baseline backend, compared
+    // with the warm probes of the same request on both backends.
+    let mut anchor_rows = Vec::new();
+    for (index, request, on_baseline, on_forget) in &anchor_inputs {
+        let cold = run(
+            &mut timings,
+            &format!("C5.cold_anchor_{index}"),
+            &baseline,
+            request,
+            ReferenceKvProbeMode::Cold,
+        )?;
+        let mut row = vec![
+            ("canary_index".to_string(), Json::Int(*index as i64)),
+            (
+                "in_span".to_string(),
+                Json::Bool(*index < params::CANARIES_IN_SPAN),
+            ),
+        ];
+        for (side, warm_probe) in [("baseline_warm", on_baseline), ("forget_warm", on_forget)] {
+            let cmp = compare(warm_probe, &cold);
+            bitwise += cmp.total();
+            decode_mismatch += cmp.decode;
+            non_finite_total += cmp.non_finite;
+            finite_comparisons += i64::from(cmp.non_finite == 0);
+            shift = shift.max(cmp.logits.max_ulps);
+            max_abs = max_abs.max(cmp.logits.max_abs);
+            anchor_mismatches += cmp.total();
+            row.push((
+                format!("{side}_against_cold"),
+                Json::obj([
+                    ("mismatches", Json::Int(cmp.total())),
+                    ("kv_state_digest_differs", Json::Bool(cmp.digest == 1)),
+                    ("logits", diff_json(cmp.logits)),
+                ]),
+            ));
+        }
+        anchor_rows.push(Json::Obj(row));
+    }
+    if anchor_rows.len() != anchors.len() {
+        return Err("a cold anchor was not probed".into());
+    }
     cases.push((
         "C5".into(),
         Json::obj([
-            ("what", Json::str("32 probes, each the prompt without the span plus the canary's 16 bytes, Warm on B and on F after the forget; compared on all 256 logits entries and the KV-state digest")),
+            ("what", Json::str("32 probes, each the prompt without the span plus the canary's 16 bytes, Warm on B and on F after the forget, compared with each other (256 logits entries, KV-state digest, decode digest, finiteness); two of them (canary 0 in the span, canary 16 never in it) also run Cold and compared with both warm probes")),
             ("order", Json::ints(order_of_probes.iter().map(|index| *index as i64))),
             ("probes", Json::Int(probes_done)),
             ("entries_differing", Json::Int(probe_entries)),
@@ -645,6 +795,7 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
             ("max_abs_f32", Json::Float(max_abs)),
             ("min_reused_tokens", Json::Int(min_hit as i64)),
             ("prefilled_tokens_total", Json::Int(prefilled_total as i64)),
+            ("cold_anchors", Json::Arr(anchor_rows)),
             ("per_probe", Json::Arr(probe_rows)),
         ]),
     ));
@@ -855,16 +1006,15 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
         params::TINY_MODEL_CONFIG_DIGEST,
     );
     procedure.text("tokenizer_pin", &tokenizer_text, params::TOKENIZER_PIN);
-    procedure.text("moe_topology", params::MOE_TOPOLOGY, params::MOE_TOPOLOGY);
+    procedure.constant("moe_topology", Json::str(params::MOE_TOPOLOGY));
     procedure.int(
         "test_model_layers",
         config.num_layers as u64,
         params::TEST_MODEL_LAYERS,
     );
-    procedure.int(
+    procedure.constant(
         "canary_generator_seed",
-        params::CANARY_GENERATOR_SEED,
-        params::CANARY_GENERATOR_SEED,
+        Json::Int(params::CANARY_GENERATOR_SEED as i64),
     );
     procedure.text(
         "canary_expected_digest",
@@ -883,7 +1033,12 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
     // The metric counters, all measured above.
     tally.set("bitwise_mismatch_count", bitwise);
     tally.set("canary_logit_shift", shift);
-    tally.set("recompute_tokens", forget.outcome.prefilled_tokens as i64);
+    // Under-reuse and accounting disagreements add to the recomputation (never cancelling it).
+    let mut recompute_total = forget.outcome.prefilled_tokens + recompute_extra;
+    if accounting_defect > 0 && recompute_total == tokens_after_span {
+        recompute_total += accounting_defect;
+    }
+    tally.set("recompute_tokens", recompute_total as i64);
     tally.set("span_insertions", span_insertions);
     tally.set("span_evictions", i64::from(evicted));
     tally.set(
@@ -891,7 +1046,10 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
         forget.outcome.inserted_chunks as i64,
     );
     tally.set("canary_probes", probes_done);
-    tally.set("stale_downstream_rows_reused", stale_rows as i64);
+    tally.set(
+        "stale_downstream_rows_reused",
+        (stale_rows + stale_extra) as i64,
+    );
     tally.set("tokens_after_span", tokens_after_span as i64);
     tally.set("canary_span_tokens", canary_span_tokens as i64);
     tally.set("downstream_rows_before_forget", downstream_rows as i64);
@@ -903,6 +1061,12 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
         Json::str(identity_digest.clone()),
     );
     tally.set("decode_digest_mismatches", decode_mismatch);
+    tally.set("non_finite_logits_entries", non_finite_total);
+    tally.set("finite_comparisons", finite_comparisons);
+    tally.set("cold_anchor_mismatches", anchor_mismatches);
+    tally.set("stale_rows_beyond_the_forget_run", stale_extra as i64);
+    tally.set("recompute_tokens_beyond_the_tail", recompute_extra as i64);
+    tally.set("outcome_accounting_disagreement", accounting_defect as i64);
     tally.set("probe_logit_entries_differing", probe_entries);
     tally.set("probe_digests_differing", probe_digests);
     tally.set("forget_logit_entries_differing", forget_diff.entries);
@@ -950,10 +1114,38 @@ pub fn run_all(tally: &mut Tally, seed: u64, shape: Shape) -> Res<Findings> {
                     Json::Obj(procedure.expected.clone()),
                 ),
                 ("differing".to_string(), Json::strs(&procedure.differing)),
+                (
+                    "constants_never_counted".to_string(),
+                    Json::strs(&procedure.constants),
+                ),
             ])
             .collect(),
     );
+    let expected = Json::obj([
+        ("prefix_reuse_tokens", Json::Int(shape.prefix() as i64)),
+        (
+            "prefix_reuse_chunks",
+            Json::Int((shape.prefix() / chunk) as i64),
+        ),
+        ("recompute_tokens", Json::Int(shape.after_span() as i64)),
+        ("tokens_after_span", Json::Int(shape.after_span() as i64)),
+        (
+            "downstream_recomputations",
+            Json::Int((shape.after_span() / chunk) as i64),
+        ),
+        (
+            "downstream_rows_before_forget",
+            Json::Int((shape.after_span() / chunk) as i64),
+        ),
+        (
+            "rows_citing_span",
+            Json::Int(((shape.span + shape.after_span()) / chunk) as i64),
+        ),
+        ("canary_probes", Json::Int(params::CANARY_PROBES as i64)),
+        ("note", Json::str("shape-derived expectations recorded next to the measured values; no rule reads them (at the pinned shape they are the config's 1088, 68, 2880, 180, 180)")),
+    ]);
     Ok(Findings {
+        expected,
         cases,
         timings: timings.json(),
         canary_identity,
@@ -1161,5 +1353,86 @@ mod tests {
         )
         .unwrap();
         assert!(accepted("roomy", &clean).is_ok());
+    }
+
+    fn probe_of(logits: Vec<f32>) -> ReferenceKvProbe {
+        let shape = params::REDUCED_SHAPE;
+        let backend = backend(shape).unwrap();
+        let prompt = Prompt::new(17, shape);
+        let mut probe = backend
+            .probe(
+                &lab::scope(),
+                &prompt.without_span(),
+                ReferenceKvProbeMode::Cold,
+            )
+            .unwrap();
+        probe.prompt_logits = logits;
+        probe
+    }
+
+    #[test]
+    fn a_comparison_counts_digest_decode_entries_and_non_finite_values() {
+        let a = probe_of(vec![1.0; 256]);
+        let same = compare(&a, &a.clone());
+        assert_eq!(same.total(), 0);
+        assert_eq!(same.logits, Diff::default());
+
+        let mut changed = a.clone();
+        changed.prompt_logits[3] = 2.0;
+        changed.kv_state_digest[0] ^= 1;
+        changed.outcome.generated.clear();
+        let cmp = compare(&changed, &a);
+        assert_eq!((cmp.digest, cmp.decode, cmp.logits.entries), (1, 1, 1));
+        assert_eq!(cmp.total(), 3);
+
+        // Identical non-finite vectors on both sides are no pass.
+        let nan = probe_of(vec![f32::NAN; 256]);
+        let cmp = compare(&nan, &nan.clone());
+        assert_eq!(cmp.logits.entries, 0);
+        assert_eq!(cmp.non_finite, 512);
+        assert_eq!(cmp.total(), 512);
+        let mut one = a.clone();
+        one.prompt_logits[0] = f32::INFINITY;
+        assert_eq!(compare(&one, &a).non_finite, 1);
+    }
+
+    #[test]
+    fn reuse_defects_separate_over_reuse_under_reuse_and_disagreeing_accounting() {
+        let a = probe_of(vec![0.0; 256]);
+        let mut probe = a.clone();
+        probe.outcome.prompt_tokens = 64;
+        probe.outcome.hit_tokens = 32;
+        probe.outcome.prefilled_tokens = 32;
+        assert_eq!(reuse_defects(&probe, 64, 32), Reuse::default());
+        // Over-reuse: 48 served where 32 is right.
+        probe.outcome.hit_tokens = 48;
+        probe.outcome.prefilled_tokens = 16;
+        let over = reuse_defects(&probe, 64, 32);
+        assert_eq!(
+            (over.over_rows, over.extra_prefilled, over.accounting),
+            (1, 0, 0)
+        );
+        // Under-reuse: 16 served, 48 prefilled.
+        probe.outcome.hit_tokens = 16;
+        probe.outcome.prefilled_tokens = 48;
+        let under = reuse_defects(&probe, 64, 32);
+        assert_eq!(
+            (under.over_rows, under.extra_prefilled, under.accounting),
+            (0, 16, 0)
+        );
+        // The outcome's own books disagree with the request and with each other.
+        probe.outcome.prefilled_tokens = 40;
+        assert_eq!(reuse_defects(&probe, 64, 32).accounting, 8);
+        probe.outcome.prompt_tokens = 50;
+        assert!(reuse_defects(&probe, 64, 32).accounting > 8);
+    }
+
+    #[test]
+    fn a_constant_procedure_parameter_is_recorded_and_never_counted() {
+        let mut procedure = Procedure::default();
+        procedure.constant("moe_topology", Json::str("none"));
+        assert_eq!(procedure.mismatches, 0);
+        assert_eq!(procedure.constants, ["moe_topology"]);
+        assert_eq!(procedure.observed.len(), 1);
     }
 }

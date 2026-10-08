@@ -277,6 +277,7 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
     pairs.push(("selection".to_string(), selection));
     pairs.push(("canary_identity".to_string(), findings.canary_identity));
     pairs.push(("corpus_roles".to_string(), findings.roles));
+    pairs.push(("expected".to_string(), findings.expected));
     pairs.push(("cases".to_string(), Json::Obj(findings.cases)));
     pairs.push(("unsupported".to_string(), tally.unsupported_json()));
     pairs.push((
@@ -653,6 +654,47 @@ mod tests {
         );
         assert_eq!(int(&report.json, "canary_probes"), 32);
         assert_eq!(int(&report.json, "post_forget_probes"), 32);
+        // The measured values equal the shape-derived expectations printed next to them.
+        for (metric, expected) in [
+            ("prefix_reuse_tokens", "expected.prefix_reuse_tokens"),
+            ("recompute_tokens", "expected.recompute_tokens"),
+            ("tokens_after_span", "expected.tokens_after_span"),
+            (
+                "downstream_recomputations",
+                "expected.downstream_recomputations",
+            ),
+            (
+                "downstream_rows_before_forget",
+                "expected.downstream_rows_before_forget",
+            ),
+            ("canary_probes", "expected.canary_probes"),
+        ] {
+            assert_eq!(
+                int(&report.json, metric),
+                int(&report.json, expected),
+                "{metric}"
+            );
+        }
+        assert_eq!(int(&report.json, "internal.cold_anchor_mismatches"), 0);
+        assert_eq!(int(&report.json, "internal.non_finite_logits_entries"), 0);
+        assert_eq!(
+            int(&report.json, "internal.outcome_accounting_disagreement"),
+            0
+        );
+        assert_eq!(
+            int(&report.json, "internal.stale_rows_beyond_the_forget_run"),
+            0
+        );
+        assert_eq!(
+            int(&report.json, "internal.recompute_tokens_beyond_the_tail"),
+            0
+        );
+        // 1 forget comparison + 32 probe pairs + 2 anchors x 2 sides, all finite.
+        assert_eq!(int(&report.json, "internal.finite_comparisons"), 1 + 32 + 4);
+        assert!(matches!(
+            emit::resolve(&report.json, "cases.C5.cold_anchors"),
+            Some(Json::Arr(items)) if items.len() == 2
+        ));
         assert_eq!(int(&report.json, "canary_span_tokens"), 256);
         assert_eq!(int(&report.json, "span_insertions"), 1);
         assert_eq!(int(&report.json, "span_evictions"), 1);
@@ -737,6 +779,10 @@ mod tests {
         assert_eq!(
             int(&report.json, "prefix_reuse_tokens") as u64,
             params::PREFIX_REUSE_TOKENS_EXPECTED
+        );
+        assert_eq!(
+            int(&report.json, "expected.prefix_reuse_chunks") as u64,
+            params::PREFIX_REUSE_CHUNKS_EXPECTED
         );
         assert_eq!(
             int(&report.json, "recompute_tokens") as u64,
