@@ -79,6 +79,10 @@ fn main() {
             &args,
             "approximate-taint-containment",
         ))),
+        // The harness of R011: one seed per run, no default seed.
+        "self-modification-safety" => {
+            experiments::r011::run(strict_or_exit(seed_arg(&args, "self-modification-safety")))
+        }
         // Not an R005 result: an exactness smoke run of the CPU reference backend.
         "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(
             &args, 2, 8, "requests",
@@ -105,9 +109,9 @@ fn main() {
 /// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
 const EXPERIMENT_COMMANDS: &str =
-    "|certified-branches|exact-prefix-reuse|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
+    "|certified-branches|exact-prefix-reuse|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "|certified-branches|exact-prefix-reuse|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|kv-reuse-smoke";
+const EXPERIMENT_COMMANDS: &str = "|certified-branches|exact-prefix-reuse|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)

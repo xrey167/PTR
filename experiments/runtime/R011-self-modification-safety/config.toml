@@ -168,7 +168,7 @@ min_non_tightening_rotation_controls = 1
 max_routable_after_tightening_rotation = 0
 tightening_rotation_definition = "raises the gate configuration strictness (threshold raise) or replaces the evaluator identity so that the old epoch lacks the tightened check; classified by ExpertAuthorityChanged.class (Revoke | TighteningRotation | NonTightening)"
 tightening_rotation_fence = "atomic at the rotation commit index; fenced with cause AuthorityQuarantine until re-evaluated and re-admitted via ExpertReadmitted"
-same_project_impersonation_op_kinds = ["Birth", "Merge", "Split", "Freeze", "Reactivate", "Prune", "Retire"]
+same_project_impersonation_op_kinds = ["Birth", "Birth_targetless", "Merge", "Split", "Freeze", "Reactivate", "Prune", "Retire"]
 min_same_project_impersonation_attempts_per_kind = 1
 min_authority_quarantine_readmission_cases_per_kind = 1
 min_readmission_controls_accepted = 1
@@ -197,7 +197,7 @@ num_heads = 4
 num_kv_heads = 2
 head_dim = 16
 vocab_size = 256
-tiny_model_config = { layers = 4, hidden_size = 64, num_heads = 4, num_kv_heads = 2, head_dim = 16, vocab_size = 256, weight_seed = 20240607 }
+tiny_model_config = { layers = 4, hidden_size = 64, num_heads = 4, num_kv_heads = 2, head_dim = 16, vocab_size = 256, weight_seed = 20240607, num_experts = 4, top_k = 2 }
 tiny_model_config_digest = "sha256:fccf7bd315c89853010d486c2f1e11344f5d1e29fa0c8791eef69b5e246f84f0"
 tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
 tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
