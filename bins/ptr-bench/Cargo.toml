@@ -25,6 +25,7 @@ turso-oracle = ["postgres-experiments", "ptr-state/turso-backend"]
 
 [dependencies]
 ptr-types = { workspace = true }
+ed25519-dalek = { workspace = true }
 ptr-config = { workspace = true }
 ptr-core = { workspace = true }
 ptr-semdb = { workspace = true }

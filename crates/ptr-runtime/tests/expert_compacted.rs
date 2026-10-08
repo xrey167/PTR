@@ -10,9 +10,16 @@ use ptr_pods::{
     RetiredReason, StructuralOp,
 };
 use ptr_runtime::compacted::{CompactedAnchor, CompactedError};
-use ptr_runtime::expert::{ExpertAdmissionError, ExpertAdmissionGrant};
+use ptr_runtime::expert::{
+    expert_evidence_artifact_digest, expert_evidence_base_model_digest, ExpertAdmissionError,
+    ExpertAdmissionGrant,
+};
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
+
+mod expert_support;
+
+use expert_support::{binding, prime, requirement, EVAL_MANIFEST};
 
 fn project() -> ProjectId {
     ProjectId::from("proj")
@@ -77,12 +84,17 @@ fn admit(rt: &mut PtrRuntime, op: StructuralOp) -> Result<CommitIndex, RuntimeEr
         .bind(GateSubject::new(
             *proposal.proposal_id().as_bytes(),
             *proposal.operation_id().as_bytes(),
-            [3; 32],
-            [4; 32],
-            [5; 32],
+            expert_evidence_artifact_digest(proposal.op()),
+            expert_evidence_base_model_digest(proposal.op()).unwrap(),
+            EVAL_MANIFEST,
         ));
-    let grant =
-        ExpertAdmissionGrant::new(project(), proposer(), 7, gate().config_digest().unwrap());
+    prime(rt);
+    let grant = ExpertAdmissionGrant::new(
+        project(),
+        proposer(),
+        requirement(7, gate().config_digest().unwrap()),
+        binding(),
+    );
     rt.admit_expert_proposal(&proposal, &report, &grant)
 }
 
