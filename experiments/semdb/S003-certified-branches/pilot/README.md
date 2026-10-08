@@ -143,3 +143,28 @@ excludes small-fixture probe timings from the workload time model. OCC no-change
 settlements are included in anomaly counts and the `occ_anomalies_per_settled_attempt`
 denominator, matching the LWW treatment. These changes invalidate earlier pilot
 source identities; collect fresh pilots before attempting the freeze.
+
+## Round 4: source-bound pilots on the final source, and the pinned `low_cells`
+
+- Source: `18a5b849` (clean tree). Command, for s in 1, 2, 3, run three at a time:
+  `python3 experiments/semdb/S003-certified-branches/aggregate.py --record-pilot <s> --output experiments/semdb/S003-certified-branches/pilot/source-bound/pilot-seed-<s>.json`
+  (each builds in a fresh temporary target directory; all three exited 0, about 17 minutes of wall time together, builds included).
+  Outputs: [`source-bound/pilot-seed-1.json`](source-bound/pilot-seed-1.json), [`-2`](source-bound/pilot-seed-2.json), [`-3`](source-bound/pilot-seed-3.json).
+- `aggregate.py --pilot source-bound/pilot-seed-{1,2,3}.json` accepted them: every hard counter 0, every run complete, 9 cells at or
+  above 100‰ and 15 below, at least one low cell for every N (5, 4, 4, 2). The ladder `[4, 8, 16, 32, 64, 256]` stands; no fallback is needed.
+
+| level | groups | N=2 | N=4 | N=8 | N=16 |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 4 | **121‰** | **199‰** | **324‰** | **479‰** |
+| 1 | 8 | 64‰ | **108‰** | **184‰** | **300‰** |
+| 2 | 16 | 33‰ | 52‰ | 97‰ | **179‰** |
+| 3 | 32 | 23‰ | 34‰ | 57‰ | **105‰** |
+| 4 | 64 | 14‰ | 21‰ | 38‰ | 66‰ |
+| 5 | 256 | 9‰ | 7‰ | 15‰ | 27‰ |
+
+These are the same cells as round 3 (the repairs since then changed checks, not the schedule). `low_cells` in `config.toml` is
+pinned to the aggregator's list:
+
+```toml
+low_cells = ["L1N2", "L2N2", "L2N4", "L2N8", "L3N2", "L3N4", "L3N8", "L4N2", "L4N4", "L4N8", "L4N16", "L5N2", "L5N4", "L5N8", "L5N16"]
+```
