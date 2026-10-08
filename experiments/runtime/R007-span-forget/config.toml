@@ -63,3 +63,19 @@ max_model_pin_mismatches = 0
 canary_generator_rule = "canary_i = first 16 hex chars of sha256(seed + colon + i) for i in 0 to 31; digest = sha256 of the canaries joined by newlines"
 canary_generator_seed = 20240607
 canary_expected_digest = "65f9b8cd60e57cb38a8588c23d5bb494c7817fc10511353980f8be1c690efe19"
+
+# Owner decisions of 2026-10-08 (binding; verbatim text in DRAFT_PREREGISTRATION.md section 3). Draft only: R007 is
+# planned, not frozen, and no preregistration table exists yet.
+owner_decision_2026_10_08_forget_mechanism = "the span is a revocable PromptSegment (Derived or Memory); forget = revoke its lineage segment, then run the prompt without it (prefix reused, everything after the span recomputed); the README states the mechanism is revocation plus parent-chained chunk keys; a negative control with injected stale reuse (set_faults) shows the criterion is not vacuous"
+owner_decision_2026_10_08_canary_probe = "per probe, the full next-token logits vector (all 256 entries) after the probe suffix; canary_logit_shift = max absolute difference over all 256 entries and all 32 probes; frozen before the preregistration"
+owner_decision_2026_10_08_deferred = "R008 and M016 stay planned and are deferred to the GPU phase (pretrained Qwen2.5-0.5B); no re-pinning to the tiny model"
+owner_decision_2026_10_08_reference_limits = "reference limits are raised in the R007 harness only via ReferenceKvLimits; the default stays 256"
+canary_probe_vector_entries = 256
+canary_shift_reduction = "max over all 256 logits entries and all 32 probes of the absolute difference to the fresh prefill without the span"
+comparison_rule = "bitwise on f32 bit patterns (to_bits), no tolerance"
+prefix_reuse_tokens_expected = 1088
+prefix_reuse_chunks_expected = 68
+tokens_after_span_expected = 2880
+forget_mechanism = "revoke the span's lineage segment, then run the prompt without it; not a mid-sequence eviction primitive"
+negative_control = "injected stale reuse (set_faults) must change the digests and trip the criteria; otherwise the run is vacuous"
+reference_limits_raised_in_harness_only = true
