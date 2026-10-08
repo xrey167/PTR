@@ -187,6 +187,7 @@
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
 - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
+- [R011](../../experiments/runtime/R011-self-modification-safety/README.md) — `frozen`
 - [R012](../../experiments/runtime/R012-approximate-taint-containment/README.md) — `frozen`
 
 ### Technology evaluations
