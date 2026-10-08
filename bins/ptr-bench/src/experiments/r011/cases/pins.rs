@@ -123,18 +123,9 @@ pub fn c13_pins(cx: &mut Cx) -> Res<()> {
         "selection_digest_mismatches",
         i64::from(computed != params::SELECTION_DIGEST),
     );
-    // Every case the run attempted is a case of the suite and the suite is what the config
-    // lists (no attempt of an unlisted name can exist: `Cx::attempt` refuses it; an unlisted
-    // member of the family would show here).
-    let suite: BTreeSet<String> = params::ADVERSARIAL_CASES
-        .iter()
-        .map(|name| (*name).to_string())
-        .collect();
-    let attempted = observed_members(cx, "adversarial_attempts_per_case");
-    cx.count(
-        "selection_digest_mismatches",
-        i64::from(!attempted.is_subset(&suite)),
-    );
+    // That every attempted case is a case of the suite is not checked here: `Cx::attempt` refuses
+    // an unlisted name, so such a check would be a tautology. The family check below still
+    // holds `adversarial_attempts_per_case` to exactly the members the config lists.
 
     // The procedure: every family of cells has no member the config does not list.
     for name in metrics::NESTED {

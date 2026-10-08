@@ -8,7 +8,15 @@
 //!   runtime boundary it names: [`Cx::verdict`] counts it after the call returned `Ok` (the
 //!   runtime let it through: a violation) or an `Err` of the expected typed kind. Any other
 //!   error is a harness error (`Err`, exit status 2), never a pass, and so is an unexpected
-//!   `Ok` of a negative control's counterpart or a failing positive control.
+//!   `Ok` of a negative control's counterpart or a failing positive control. A refusal by the
+//!   proposal constructor is not a runtime attempt: it is noted under `internal` only.
+//! * A **route probe** of an expert that must be refused is kind-checked ([`classify_route`]):
+//!   `Fenced` after a fence, `DependencyNotLive` after a plain revocation; any other refusal is
+//!   a harness error.
+//! * A **fence finding** (the event fenced more or fewer experts than the topology owes, a
+//!   dependent refused without a fence, a bystander closed) is a violation counted as
+//!   `fence_set_digest_mismatches` and as a stale hit of its cell, and the run goes on; exit 2
+//!   stays for harness and fixture errors.
 //! * A **violation** counter (`*_admitted`, `*_accepted`, `routable_after_*`, ...) counts what
 //!   the runtime did wrong; the sub-case that produced it is recorded under `subcases` with
 //!   its violation count.
@@ -34,7 +42,7 @@ use crate::experiments::layered_kv::emit::{Json, Tally};
 use crate::experiments::layered_kv::lab::{self, id_set_digest, Res};
 use crate::experiments::layered_kv::Scale;
 use crate::experiments::r010::arms::World;
-use ptr_runtime::expert::ExpertAdmissionError;
+use ptr_runtime::expert::{ExpertAdmissionError, RouteRefusal};
 use ptr_runtime::{ReferenceKvReuseBackend, RuntimeError};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -105,6 +113,162 @@ pub fn expert(error: &RuntimeError) -> Option<&ExpertAdmissionError> {
     match error {
         RuntimeError::Expert(inner) => Some(inner),
         _ => None,
+    }
+}
+
+/// The refusal kind a route probe must meet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RouteExpect {
+    /// The registry fences the expert: `Err(RouteRefusal::Fenced)`.
+    Fenced,
+    /// The expert is not fenced (a plain revocation, no fence written) but a recorded
+    /// dependency is dead: `Err(RouteRefusal::DependencyNotLive)`.
+    DependencyNotLive,
+}
+
+/// What a route probe of an expert that must be refused found.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RouteFinding {
+    /// The route was admitted: the violation every "served" counter counts.
+    Served,
+    /// Refused with the expected kind.
+    Refused,
+    /// A fence was expected but only the dependency index refused: the registry does not
+    /// fence the expert (under-fencing), though the route is closed.
+    Unfenced,
+}
+
+impl RouteFinding {
+    /// 1 when the route was admitted, else 0.
+    pub fn served(self) -> i64 {
+        i64::from(self == Self::Served)
+    }
+
+    /// 1 when the expert was refused without the fence the event owed, else 0.
+    pub fn unfenced(self) -> i64 {
+        i64::from(self == Self::Unfenced)
+    }
+}
+
+/// Classify a route probe of an expert that must be refused: `Ok` is `Served`, the expected
+/// refusal kind is `Refused`, a dependency refusal where a fence was expected is `Unfenced`,
+/// and any other refusal (an unknown expert, a generation mismatch, a state) is a harness error
+/// and never a pass.
+pub fn classify_route(
+    what: &str,
+    result: Result<(), RouteRefusal>,
+    expect: RouteExpect,
+) -> Res<RouteFinding> {
+    match (result, expect) {
+        (Ok(()), _) => Ok(RouteFinding::Served),
+        (Err(RouteRefusal::Fenced), RouteExpect::Fenced)
+        | (Err(RouteRefusal::DependencyNotLive { .. }), RouteExpect::DependencyNotLive) => {
+            Ok(RouteFinding::Refused)
+        }
+        (Err(RouteRefusal::DependencyNotLive { .. }), RouteExpect::Fenced) => {
+            Ok(RouteFinding::Unfenced)
+        }
+        (Err(other), expect) => Err(format!(
+            "{what}: the route probe was refused with {other:?}, expected {expect:?}"
+        )),
+    }
+}
+
+/// Classify a route probe of a bystander that must stay routable: `true` when the runtime
+/// closed it (over-fencing: a fence, or a dependency refusal, on an expert that rests on
+/// nothing invalidated), a harness error for any other refusal.
+pub fn classify_bystander(what: &str, result: Result<(), RouteRefusal>) -> Res<bool> {
+    match result {
+        Ok(()) => Ok(false),
+        Err(RouteRefusal::Fenced | RouteRefusal::DependencyNotLive { .. }) => Ok(true),
+        Err(other) => Err(format!(
+            "{what}: the bystander was refused with {other:?}, which is neither a fence nor a dead dependency"
+        )),
+    }
+}
+
+/// A positive route control: the expert must be routable now, else the harness cannot run the
+/// case.
+pub fn route_control(what: &str, result: Result<(), RouteRefusal>) -> Res<()> {
+    result.map_err(|refusal| format!("{what}: a route control was refused with {refusal:?}"))
+}
+
+/// Probe each of `pods` (at `generation` 1 unless the registry says otherwise) of `rt` and sum
+/// what the probes found.
+pub fn probe_routes(rt: &fixture::Rt, pods: &[&str], expect: RouteExpect) -> Res<RouteTally> {
+    let mut tally = RouteTally::default();
+    for pod in pods {
+        let generation = rt.init(pod).map(|init| init.generation.0).unwrap_or(1);
+        tally.add(classify_route(pod, rt.route(pod, generation), expect)?);
+    }
+    Ok(tally)
+}
+
+/// The findings of a set of route probes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RouteTally {
+    /// Experts that must be refused and were routed.
+    pub served: i64,
+    /// Experts that must be fenced and were refused without a fence.
+    pub unfenced: i64,
+    /// Bystanders that must stay routable and were closed.
+    pub overfenced: i64,
+}
+
+impl RouteTally {
+    pub fn add(&mut self, finding: RouteFinding) {
+        self.served += finding.served();
+        self.unfenced += finding.unfenced();
+    }
+
+    pub fn merge(&mut self, other: RouteTally) {
+        self.served += other.served;
+        self.unfenced += other.unfenced;
+        self.overfenced += other.overfenced;
+    }
+}
+
+/// Probe each of `pods`, bystanders of the event that must stay routable, on `rt`; the closed
+/// ones are counted as `overfenced`.
+pub fn probe_bystanders(rt: &fixture::Rt, pods: &[&str]) -> Res<RouteTally> {
+    let mut tally = RouteTally::default();
+    for pod in pods {
+        let generation = rt.init(pod).map(|init| init.generation.0).unwrap_or(1);
+        tally.overfenced += i64::from(classify_bystander(pod, rt.route(pod, generation))?);
+    }
+    Ok(tally)
+}
+
+/// The experts a fence event owed and the experts it fenced, compared as sets: the experts it
+/// missed (under-fencing) and the experts it fenced without owing it (over-fencing).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FenceDiff {
+    pub missed: Vec<String>,
+    pub extra: Vec<String>,
+}
+
+impl FenceDiff {
+    pub fn of<'a>(
+        owed: impl IntoIterator<Item = &'a str>,
+        fenced: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        let owed: BTreeSet<&str> = owed.into_iter().collect();
+        let fenced: BTreeSet<&str> = fenced.into_iter().collect();
+        Self {
+            missed: owed
+                .difference(&fenced)
+                .map(|pod| (*pod).to_string())
+                .collect(),
+            extra: fenced
+                .difference(&owed)
+                .map(|pod| (*pod).to_string())
+                .collect(),
+        }
+    }
+
+    /// The number of experts on which the two sets differ.
+    pub fn mismatches(&self) -> i64 {
+        (self.missed.len() + self.extra.len()) as i64
     }
 }
 
@@ -286,6 +450,17 @@ impl Cx {
             .collect()
     }
 
+    /// Count what a fence event and the probes after it found wrong as
+    /// `fence_set_digest_mismatches`: experts the event missed or fenced without owing it
+    /// (`diff`), experts refused by the dependency index but not fenced and bystanders closed
+    /// (`probes`). A finding is a violation of the sub-case, never a harness error. Returns the
+    /// number counted.
+    pub fn count_fence_findings(&mut self, diff: &FenceDiff, probes: &RouteTally) -> i64 {
+        let found = diff.mismatches() + probes.unfenced + probes.overfenced;
+        self.count("fence_set_digest_mismatches", found);
+        found
+    }
+
     /// A pinned procedure parameter observed in this case differs from the pin.
     pub fn procedure_mismatch(&mut self, observed_ok: bool) {
         if !observed_ok {
@@ -363,10 +538,34 @@ pub fn run_all(cx: &mut Cx) -> Res<Vec<Json>> {
 /// How each weak or definitional metric is measured, and what the cases do not claim, for the
 /// reader of a result. The same sentences are the stated limits of the preregistration.
 pub fn measurement_notes() -> Json {
-    let notes: [(&str, &str); 23] = [
+    let notes: [(&str, &str); 29] = [
         (
             "attempts",
-            "an adversarial attempt counts only after the runtime returned either Ok (a violation) or the expected typed error; any other error is a harness error and ends the run with exit 2, and so does a failing positive control",
+            "an adversarial attempt counts only after the runtime returned either Ok (a violation) or the expected typed error; any other error is a harness error and ends the run with exit 2, and so does a failing positive control; a refusal by the proposal constructor is not a runtime attempt and is only noted under internal (fenced_gate_retire and reactivate_from_revoked count the calls that reached the runtime: a proposal the constructor let through and the same operation from a stale view)",
+        ),
+        (
+            "route_probes",
+            "every route probe of an expert that must be refused is kind-checked: Err(Fenced) after a fence, Err(DependencyNotLive) after a plain revocation without a fence, and a refusal of another kind (an unknown expert, a generation mismatch, a state) is a harness error; a live Ok-control precedes each fence; a bystander is re-probed after every reopen, replay and restore",
+        ),
+        (
+            "fence_findings",
+            "an event that fenced a set other than the one the topology owes (under-fencing or over-fencing), a dependent refused by the dependency index without a fence and a bystander closed are findings: they count as fence_set_digest_mismatches (and as stale hits of the matrix cell) and the run goes on; exit 2 stays for harness and fixture errors",
+        ),
+        (
+            "set_digest_equalities",
+            "weak: impersonation_attempted_op_kind_set_digest = admitted_op_kind_set_digest and gate_grant_race_kind_set_digest = gate_host_issued_kind_set_digest cannot differ in a run that ends with a status other than 2, because the positive control that fills the admitted side is a harness error when it fails; they are bookkeeping that every kind ran, not a check of the runtime. direct_append_attempted_event_type_set_digest = admitted_event_type_set_digest is read from the ledger of the gated path and is not vacuous",
+        ),
+        (
+            "replacement_visible_without_fence",
+            "weak: its first increment (a crash before the event) never calls the runtime beyond a reopen, so it cannot be non-zero there; only the second (a replacement visible after the event and a crash without the fence) measures the runtime",
+        ),
+        (
+            "evidence_reactivate_forms",
+            "Reactivate is run in two forms under one name in C4 (the frozen-to-serving form and the retired-target form that creates a new generation), so each of its cells of evidence_binding_negative_cases_per_event_type, evidence_binding_controls_accepted_by_case and control_accepts_by_path counts both; internal notes say how many cells each form filled",
+        ),
+        (
+            "inflight_control",
+            "each C11 cell first runs an un-invalidated control session on a backend of its own that must complete with the cold output, then runs the cell on a fresh backend; the cancellation after the event must be InputNotLive and the dependencies the check failed on must be exactly the fenced expert; the race point is drawn in 1..=total steps so a step runs before the event, and a session that ended before it is noted and its finish is the next use",
         ),
         (
             "route",
@@ -463,4 +662,155 @@ pub fn measurement_notes() -> Json {
             .map(|(name, text)| ((*name).to_string(), Json::str(*text)))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture::{inputs, Rt, D1, TRAIN};
+    use super::*;
+    use crate::experiments::layered_kv::emit;
+    use ptr_types::Generation;
+
+    fn dead() -> RouteRefusal {
+        RouteRefusal::DependencyNotLive {
+            identity: "dataset:train".into(),
+            generation: Generation(1),
+        }
+    }
+
+    #[test]
+    fn a_route_probe_is_kind_checked() {
+        use RouteExpect::{DependencyNotLive, Fenced};
+        use RouteFinding::{Refused, Served, Unfenced};
+        let table: [(Result<(), RouteRefusal>, RouteExpect, Option<RouteFinding>); 10] = [
+            (Ok(()), Fenced, Some(Served)),
+            (Ok(()), DependencyNotLive, Some(Served)),
+            (Err(RouteRefusal::Fenced), Fenced, Some(Refused)),
+            (Err(dead()), DependencyNotLive, Some(Refused)),
+            // The index refuses an expert the registry should have fenced: under-fencing.
+            (Err(dead()), Fenced, Some(Unfenced)),
+            // A fence where only a dependency refusal was expected is not the model's.
+            (Err(RouteRefusal::Fenced), DependencyNotLive, None),
+            (Err(RouteRefusal::UnknownExpert), Fenced, None),
+            (Err(RouteRefusal::UnknownExpert), DependencyNotLive, None),
+            (
+                Err(RouteRefusal::GenerationMismatch {
+                    current: Generation(2),
+                }),
+                Fenced,
+                None,
+            ),
+            (
+                Err(RouteRefusal::NotServing {
+                    state: ptr_pods::ExpertState::Frozen,
+                }),
+                Fenced,
+                None,
+            ),
+        ];
+        for (result, expect, want) in table {
+            let found = classify_route("probe", result.clone(), expect);
+            match want {
+                Some(finding) => assert_eq!(found, Ok(finding), "{result:?} under {expect:?}"),
+                None => assert!(found.is_err(), "{result:?} under {expect:?}"),
+            }
+        }
+        assert_eq!(Served.served(), 1);
+        assert_eq!(Unfenced.unfenced(), 1);
+        assert_eq!(Refused.served() + Refused.unfenced(), 0);
+    }
+
+    #[test]
+    fn a_bystander_probe_finds_a_closed_route_and_rejects_other_refusals() {
+        assert_eq!(classify_bystander("z", Ok(())), Ok(false));
+        assert_eq!(classify_bystander("z", Err(RouteRefusal::Fenced)), Ok(true));
+        assert_eq!(classify_bystander("z", Err(dead())), Ok(true));
+        assert!(classify_bystander("z", Err(RouteRefusal::UnknownExpert)).is_err());
+        assert!(route_control("z", Ok(())).is_ok());
+        assert!(route_control("z", Err(RouteRefusal::Fenced)).is_err());
+    }
+
+    #[test]
+    fn the_fence_diff_finds_the_missed_and_the_extra_expert() {
+        let exact = FenceDiff::of(["x", "y"], ["y", "x"]);
+        assert_eq!(exact.mismatches(), 0);
+        let under = FenceDiff::of(["x", "y"], ["x"]);
+        assert_eq!(
+            (under.missed.clone(), under.extra.len()),
+            (vec!["y".to_string()], 0)
+        );
+        assert_eq!(under.mismatches(), 1);
+        let over = FenceDiff::of(["x"], ["x", "w"]);
+        assert_eq!(
+            (over.missed.len(), over.extra.clone()),
+            (0, vec!["w".to_string()])
+        );
+        assert_eq!(over.mismatches(), 1);
+    }
+
+    /// Under-fencing and over-fencing are findings: they are counted, the sub-case records a
+    /// violation, the falsifier's bound is passed, and nothing is a harness error.
+    #[test]
+    fn under_and_over_fencing_are_counted_as_violations_and_do_not_end_the_run() {
+        for (owed, fenced) in [(["x", "y"], vec!["x"]), (["x", "y"], vec!["x", "y", "w"])] {
+            let mut cx = Cx::new(17, Scale::Reduced).expect("a context");
+            cx.begin("T");
+            cx.sub("t");
+            let diff = FenceDiff::of(owed, fenced.iter().copied());
+            let counted = cx.count_fence_findings(&diff, &RouteTally::default());
+            assert_eq!(counted, 1);
+            assert_eq!(cx.tally.get("fence_set_digest_mismatches"), 1);
+            assert!(
+                cx.tally.get("fence_set_digest_mismatches")
+                    > params::MAX_FENCE_SET_DIGEST_MISMATCHES as i64
+            );
+            assert_eq!(
+                emit::resolve(&cx.subcases_json(), "t.violations"),
+                Some(&Json::Int(1))
+            );
+        }
+        // The probes count too: a dependent refused without a fence, a bystander closed.
+        let mut cx = Cx::new(17, Scale::Reduced).expect("a context");
+        cx.sub("t");
+        let probes = RouteTally {
+            served: 3,
+            unfenced: 2,
+            overfenced: 1,
+        };
+        assert_eq!(cx.count_fence_findings(&FenceDiff::default(), &probes), 3);
+    }
+
+    /// The probes against a real runtime: a plain revocation leaves the dependent unfenced, so a
+    /// probe that expects a fence finds the missing fence, and a probe that expects the
+    /// dependency refusal is satisfied; a ghost expert is a harness error either way.
+    #[test]
+    fn the_probes_against_a_runtime_find_a_missing_and_an_extra_fence() {
+        let mut rt = Rt::fresh().expect("a runtime");
+        rt.birth_with("x", inputs(&[(TRAIN, 1, D1)], &[])).unwrap();
+        rt.birth("w").unwrap();
+        rt.revoke(TRAIN, 1).unwrap();
+        let expecting_a_fence = probe_routes(&rt, &["x"], RouteExpect::Fenced).unwrap();
+        assert_eq!(
+            expecting_a_fence,
+            RouteTally {
+                served: 0,
+                unfenced: 1,
+                overfenced: 0
+            }
+        );
+        let expecting_the_dependency = probe_routes(&rt, &["x"], RouteExpect::DependencyNotLive);
+        assert_eq!(expecting_the_dependency, Ok(RouteTally::default()));
+        assert!(probe_routes(&rt, &["ghost"], RouteExpect::Fenced).is_err());
+        assert!(probe_routes(&rt, &["ghost"], RouteExpect::DependencyNotLive).is_err());
+        assert!(probe_bystanders(&rt, &["ghost"]).is_err());
+        // The bystander w is routable; fenced for no reason it is over-fencing.
+        assert_eq!(probe_bystanders(&rt, &["w"]).unwrap().overfenced, 0);
+        rt.fence_quarantine("w").unwrap();
+        assert_eq!(probe_bystanders(&rt, &["w"]).unwrap().overfenced, 1);
+        // An expert the fence did close is refused as `Fenced`.
+        assert_eq!(
+            probe_routes(&rt, &["w"], RouteExpect::Fenced).unwrap(),
+            RouteTally::default()
+        );
+    }
 }

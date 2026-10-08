@@ -17,7 +17,10 @@ use super::fixture::{
     base_model_input, inputs, report_for, ReportSpec, Rt, Setup, ADAPTER, D1, D2, D3, EVAL, OTHER,
     REPLACEMENT, TRAIN,
 };
-use super::{classify, control, is_where, Cx};
+use super::{
+    classify, classify_route, control, is_where, probe_bystanders, probe_routes, route_control, Cx,
+    FenceDiff, RouteExpect, RouteTally,
+};
 use crate::experiments::layered_kv::emit::Json;
 use crate::experiments::layered_kv::lab::{fail, Res};
 use ptr_ledger::{ExpertFenceAction, ExpertFenceResume, InputInvalidationKind, LedgerEvent};
@@ -51,13 +54,16 @@ struct Topology {
     scenario: String,
     /// The experts that must end up fenced, by the harness's own derivation.
     derived: BTreeSet<String>,
+    /// The experts that rest on nothing invalidated and must stay routable.
+    bystanders: BTreeSet<String>,
 }
 
 impl Topology {
-    fn new(scenario: &str, derived: &[&str]) -> Self {
+    fn new(scenario: &str, derived: &[&str], bystanders: &[&str]) -> Self {
         Self {
             scenario: scenario.to_string(),
             derived: derived.iter().map(|pod| (*pod).to_string()).collect(),
+            bystanders: bystanders.iter().map(|pod| (*pod).to_string()).collect(),
         }
     }
 }
@@ -67,15 +73,6 @@ fn fenced_and_refused(rt: &Rt, pod: &str) -> bool {
     let generation = rt.init(pod).map(|init| init.generation.0).unwrap_or(1);
     matches!(rt.state(pod), Some((ExpertState::Fenced, _)))
         && matches!(rt.route(pod, generation), Err(RouteRefusal::Fenced))
-}
-
-fn routable_count(rt: &Rt, pods: &[&str]) -> i64 {
-    pods.iter()
-        .filter(|pod| {
-            let generation = rt.init(pod).map(|init| init.generation.0).unwrap_or(1);
-            rt.routable(pod, generation)
-        })
-        .count() as i64
 }
 
 /// Fill the set metrics from every scenario of the run (C10 and C12 add to the sets).
@@ -107,8 +104,21 @@ pub fn finish_sets(cx: &mut Cx) {
         .set_json("derived_dependency_set_digest", Json::str(digest(&derived)));
 }
 
+/// The name of the set of experts the probe `at` of `scenario` saw fenced.
+fn probe_set(scenario: &str, at: &str) -> String {
+    format!("fenced_dependents@{scenario}@{at}")
+}
+
+/// Open the set of probe `at` of `scenario` before anything is added to it: a probe that sees
+/// no member still takes part in the intersection `fold_scenario` takes, so a fence that is
+/// missing at that probe shows up as a set mismatch instead of the probe dropping out.
+fn open_probe(cx: &mut Cx, scenario: &str, at: &str) {
+    cx.sets.entry(probe_set(scenario, at)).or_default();
+}
+
 /// Record the fenced set of `scenario` at probe `at` (`now`, `reopen`, `replay`, `restore`).
 fn probe_fenced(cx: &mut Cx, topology: &Topology, rt: &Rt, universe: &[&str], at: &str) {
+    open_probe(cx, &topology.scenario, at);
     for pod in &topology.derived {
         cx.set_add(
             "derived_dependents",
@@ -118,15 +128,11 @@ fn probe_fenced(cx: &mut Cx, topology: &Topology, rt: &Rt, universe: &[&str], at
     for pod in universe {
         if fenced_and_refused(rt, pod) {
             cx.set_add(
-                &format!("fenced_dependents@{}@{at}", topology.scenario),
+                &probe_set(&topology.scenario, at),
                 &format!("{}/{pod}", topology.scenario),
             );
         }
     }
-    // A probe that saw no member still takes part in the intersection.
-    cx.sets
-        .entry(format!("fenced_dependents@{}@{at}", topology.scenario))
-        .or_default();
 }
 
 /// Fold the probes of one scenario into the global fenced set: the identities every probe saw
@@ -156,28 +162,46 @@ fn fold_scenario(cx: &mut Cx, scenario: &str) {
 }
 
 /// The three probes of a scenario after the event: now, after the runtime was dropped and the
-/// ledger reopened, and after a replay of the history. Returns the routable members of the
-/// universe over all probes (dependents still routable after the event).
-fn probe_all(cx: &mut Cx, topology: &Topology, rt: &mut Rt, universe: &[&str]) -> Res<i64> {
+/// ledger reopened, and after a replay of the history. Returns what the probes found over all
+/// three: dependents still routable after the event, dependents refused without a fence and
+/// bystanders closed. Every refusal is kind-checked: a dependent must be refused as `Fenced`.
+fn probe_all(cx: &mut Cx, topology: &Topology, rt: &mut Rt, universe: &[&str]) -> Res<RouteTally> {
     let dependents: Vec<&str> = topology.derived.iter().map(String::as_str).collect();
+    let bystanders: Vec<&str> = topology.bystanders.iter().map(String::as_str).collect();
     probe_fenced(cx, topology, rt, universe, "now");
-    let mut routable = routable_count(rt, &dependents);
+    let mut found = probe_routes(rt, &dependents, RouteExpect::Fenced)?;
+    found.merge(probe_bystanders(rt, &bystanders)?);
     rt.reopen()?;
     probe_fenced(cx, topology, rt, universe, "reopen");
-    routable += routable_count(rt, &dependents);
+    found.merge(probe_routes(rt, &dependents, RouteExpect::Fenced)?);
+    found.merge(probe_bystanders(rt, &bystanders)?);
     let replayed = rt.replayed()?;
     probe_fenced_runtime(cx, topology, rt, &replayed, universe, "replay");
-    routable += dependents
-        .iter()
-        .filter(|pod| {
-            let generation = rt.init(pod).map(|init| init.generation.0).unwrap_or(1);
-            replayed
-                .expert_route_admission(&rt.project, &PodId::from(**pod), Generation(generation))
-                .is_ok()
-        })
-        .count() as i64;
+    for pod in &dependents {
+        let generation = rt.init(pod).map(|init| init.generation.0).unwrap_or(1);
+        found.add(classify_route(
+            pod,
+            replayed.expert_route_admission(
+                &rt.project,
+                &PodId::from(*pod),
+                Generation(generation),
+            ),
+            RouteExpect::Fenced,
+        )?);
+    }
+    for pod in &bystanders {
+        let generation = rt.init(pod).map(|init| init.generation.0).unwrap_or(1);
+        found.overfenced += i64::from(super::classify_bystander(
+            pod,
+            replayed.expert_route_admission(
+                &rt.project,
+                &PodId::from(*pod),
+                Generation(generation),
+            ),
+        )?);
+    }
     fold_scenario(cx, &topology.scenario);
-    Ok(routable)
+    Ok(found)
 }
 
 /// [`probe_fenced`] for a runtime rebuilt by replay.
@@ -189,8 +213,8 @@ fn probe_fenced_runtime(
     universe: &[&str],
     at: &str,
 ) {
-    let set = format!("fenced_dependents@{}@{at}", topology.scenario);
-    cx.sets.entry(set.clone()).or_default();
+    let set = probe_set(&topology.scenario, at);
+    open_probe(cx, &topology.scenario, at);
     for pod in universe {
         let entry = replayed
             .expert_registry()
@@ -217,6 +241,10 @@ fn window_before_the_fence(cx: &mut Cx) -> Res<()> {
     rt.birth_with("x", inputs(&[(TRAIN, 1, D1)], &[]))?;
     rt.birth_with("y", inputs(&[(TRAIN, 1, D1)], &[(EVAL, 1, D2)]))?;
     rt.birth_with("z", inputs(&[(OTHER, 1, D3)], &[]))?;
+    // The live controls: before the revocation every expert is routable.
+    for pod in ["x", "y", "z"] {
+        route_control(&format!("{pod} before the revocation"), rt.route(pod, 1))?;
+    }
     rt.revoke(TRAIN, 1)?;
     // The registry still says Serving (no fence was written) ...
     let unfenced = matches!(rt.state("x"), Some((ExpertState::Serving, _)));
@@ -224,23 +252,26 @@ fn window_before_the_fence(cx: &mut Cx) -> Res<()> {
         "internal_plain_revocation_leaves_state_serving",
         i64::from(unfenced),
     );
-    // ... but the use-time admission refuses the dependents, and only them.
-    let served = routable_count(&rt, &["x", "y"]);
+    // ... but the use-time admission refuses the dependents as `DependencyNotLive` (any other
+    // refusal is a harness error), and only them.
+    let found = probe_routes(&rt, &["x", "y"], RouteExpect::DependencyNotLive)?;
     cx.attempt("revoked_training_input_route")?;
-    cx.count("expert_routes_after_revocation_before_fence", served);
-    cx.count("routes_to_revoked_dependency_experts", served);
-    cx.count("revoked_expert_served_count", served);
-    if !rt.routable("z", 1) {
-        return Err("a bystander of the revoked input is not routable".to_string());
-    }
+    cx.count("expert_routes_after_revocation_before_fence", found.served);
+    cx.count("routes_to_revoked_dependency_experts", found.served);
+    cx.count("revoked_expert_served_count", found.served);
+    let bystander = probe_bystanders(&rt, &["z"])?;
+    cx.count_fence_findings(&FenceDiff::default(), &bystander);
     // The crash before the fence: the process dies after the append.
     cx.sub("fault_between_revocation_and_fence");
     rt.reopen()?;
-    let served = routable_count(&rt, &["x", "y"]);
+    let found = probe_routes(&rt, &["x", "y"], RouteExpect::DependencyNotLive)?;
     cx.attempt("fault_between_revocation_and_fence")?;
-    cx.count("expert_routes_after_revocation_before_fence", served);
-    cx.count("routes_to_revoked_dependency_experts", served);
-    cx.count("revoked_expert_served_count", served);
+    cx.count("expert_routes_after_revocation_before_fence", found.served);
+    cx.count("routes_to_revoked_dependency_experts", found.served);
+    cx.count("revoked_expert_served_count", found.served);
+    // The bystander again after the reopen.
+    let bystander = probe_bystanders(&rt, &["z"])?;
+    cx.count_fence_findings(&FenceDiff::default(), &bystander);
     Ok(())
 }
 
@@ -308,15 +339,25 @@ fn compound_event_and_crash(cx: &mut Cx) -> Res<()> {
                 || outcome.fence_digest() != &digest,
         ),
     );
-    // The crash after the append: the runtime is dropped before anything else and reopened.
+    // The fence set the event applied is the one the harness derived, as sets.
+    let diff = FenceDiff::of(
+        ["x", "y"],
+        outcome.fenced().iter().map(|member| member.pod.0.as_str()),
+    );
+    cx.count_fence_findings(&diff, &RouteTally::default());
+    // The crash after the append: the runtime is dropped before anything else and reopened;
+    // `open_durable` derives the fence set again, so the dependents are `Fenced`.
     rt.reopen()?;
-    let served = routable_count(&rt, &["x", "y"]);
+    let found = probe_routes(&rt, &["x", "y"], RouteExpect::Fenced)?;
     cx.attempt("crash_between_append_and_apply")?;
-    cx.count("expert_routes_after_crash_between_append_and_apply", served);
-    cx.count("revoked_expert_served_count", served);
-    if !rt.routable("z", 1) {
-        return Err("a bystander is not routable after the crash".to_string());
-    }
+    cx.count(
+        "expert_routes_after_crash_between_append_and_apply",
+        found.served,
+    );
+    cx.count("revoked_expert_served_count", found.served);
+    let bystander = probe_bystanders(&rt, &["z"])?;
+    cx.count_fence_findings(&FenceDiff::default(), &found);
+    cx.count_fence_findings(&FenceDiff::default(), &bystander);
     Ok(())
 }
 
@@ -724,18 +765,20 @@ fn build_cell(kind: Kind) -> Res<Cell> {
 struct Probed {
     /// Dependents still routable after the event.
     routable: i64,
+    /// Dependents refused without a fence, and bystanders closed (a fence-set mismatch).
+    tally: RouteTally,
     /// Admissions naming the dead input that the runtime accepted.
     admitted: i64,
 }
 
-/// Probe the dependents and the dead input on `rt` as it stands now.
+/// Probe the dependents and the dead input on `rt` as it stands now. A dependent must be
+/// refused as `Fenced` and a bystander must stay routable; a fence missing or one too many is a
+/// finding of the cell (counted by the caller), never a harness error. A refusal of any other
+/// kind is a harness error.
 fn probe_cell(cell: &mut Cell, kind: Kind, ty: Type) -> Res<Probed> {
-    let routable = routable_count(&cell.rt, &cell.dependents);
-    for bystander in &cell.bystanders {
-        if !cell.rt.routable(bystander, 1) {
-            return Err(format!("the bystander {bystander} was fenced as well"));
-        }
-    }
+    let mut tally = probe_routes(&cell.rt, &cell.dependents, RouteExpect::Fenced)?;
+    let routable = tally.served;
+    tally.merge(probe_bystanders(&cell.rt, &cell.bystanders)?);
     // A record naming the dead input is refused.
     let pod = "n";
     let result = birth_with_block(&mut cell.rt, pod, kind.probe_block());
@@ -753,6 +796,7 @@ fn probe_cell(cell: &mut Cell, kind: Kind, ty: Type) -> Res<Probed> {
     };
     Ok(Probed {
         routable,
+        tally,
         admitted: verdict.violation(),
     })
 }
@@ -775,20 +819,20 @@ fn run_cell(cx: &mut Cx, kind: Kind, ty: Type, path: Path) -> Res<Probed> {
     let topology = Topology::new(
         &format!("{}_{}_{}", kind.cell(), path.name(), ty.name()),
         &cell.dependents.clone(),
+        &cell.bystanders.clone(),
     );
     let request = ty.request(kind);
     let outcome = cell
         .rt
         .invalidate(request)
         .map_err(|error| format!("{}: {error:?}", topology.scenario))?;
-    if outcome.fence_count() as usize != cell.dependents.len() {
-        return Err(format!(
-            "{}: the event fenced {} experts, the topology derives {}",
-            topology.scenario,
-            outcome.fence_count(),
-            cell.dependents.len()
-        ));
-    }
+    // The experts the event fenced against the experts the topology says it owes: a missed or
+    // an extra expert is a finding of the cell (a stale hit and a fence-set mismatch), and the
+    // cell goes on to its probes.
+    let diff = FenceDiff::of(
+        cell.dependents.iter().copied(),
+        outcome.fenced().iter().map(|member| member.pod.0.as_str()),
+    );
     match path {
         Path::Normal => {}
         // The runtime dropped after the append and reopened: `open_durable` derives the fence
@@ -802,11 +846,12 @@ fn run_cell(cx: &mut Cx, kind: Kind, ty: Type, path: Path) -> Res<Probed> {
     probe_fenced(cx, &topology, &cell.rt, &universe, "path");
     fold_scenario(cx, &topology.scenario);
     let name = format!("{}_{}_{}", kind.cell(), path.name(), ty.name());
+    let fence_findings = cx.count_fence_findings(&diff, &probed.tally);
     cx.count_in("invalidation_matrix_cases", &name, 1);
     cx.count_in(
         "invalidation_matrix_stale_hits",
         &name,
-        probed.routable + probed.admitted,
+        probed.routable + probed.admitted + fence_findings,
     );
     Ok(probed)
 }
@@ -1027,14 +1072,18 @@ fn transitive_and_lineage(cx: &mut Cx) -> Res<()> {
     rt.merge(&["a", "e"], result, None)?;
     let results = vec![rt.spec("x"), rt.spec("y")];
     rt.split("b", results, None)?;
-    let topology = Topology::new("transitive", &["x", "y"]);
+    let topology = Topology::new("transitive", &["x", "y"], &["w"]);
     rt.invalidate(InputInvalidation::revoked(TRAIN, Generation(1), D1))
         .map_err(fail("revoking the root input"))?;
     cx.attempt("transitive_dependency_invalidation")?;
     cx.count("transitive_dependency_cases", 1);
-    let routable = probe_all(cx, &topology, &mut rt, &["a", "e", "w", "b", "x", "y"])?;
-    cx.count("derived_routable_after_transitive_invalidation", routable);
-    cx.count("experts_serving_after_revocation", routable);
+    let found = probe_all(cx, &topology, &mut rt, &["a", "e", "w", "b", "x", "y"])?;
+    cx.count(
+        "derived_routable_after_transitive_invalidation",
+        found.served,
+    );
+    cx.count("experts_serving_after_revocation", found.served);
+    cx.count_fence_findings(&FenceDiff::default(), &found);
 
     // X to g to Reactivate(g+1): the reactivated generation rests on X through its seed.
     cx.sub("reactivate_lineage");
@@ -1043,7 +1092,7 @@ fn transitive_and_lineage(cx: &mut Cx) -> Res<()> {
     rt.birth_with("w", inputs(&[(OTHER, 1, D3)], &[]))?;
     rt.retire("g", ptr_pods::RetiredReason::GateFailed)?;
     rt.reactivate_retired("g", None)?;
-    let topology = Topology::new("reactivate_lineage", &["g"]);
+    let topology = Topology::new("reactivate_lineage", &["g"], &["w"]);
     rt.invalidate(InputInvalidation::revoked(TRAIN, Generation(1), D1))
         .map_err(fail("revoking the root input"))?;
     cx.attempt("reactivate_lineage")?;
@@ -1052,9 +1101,13 @@ fn transitive_and_lineage(cx: &mut Cx) -> Res<()> {
     if generation_two != 2 {
         return Err("the reactivated generation is not 2".to_string());
     }
-    let routable = probe_all(cx, &topology, &mut rt, &["g", "w"])?;
-    cx.count("experts_serving_after_revocation", routable);
-    cx.count("derived_routable_after_transitive_invalidation", routable);
+    let found = probe_all(cx, &topology, &mut rt, &["g", "w"])?;
+    cx.count("experts_serving_after_revocation", found.served);
+    cx.count(
+        "derived_routable_after_transitive_invalidation",
+        found.served,
+    );
+    cx.count_fence_findings(&FenceDiff::default(), &found);
     Ok(())
 }
 
@@ -1072,13 +1125,15 @@ fn supersession_atomicity(cx: &mut Cx) -> Res<()> {
     let index = rt.runtime.expert_registry().dependencies();
     let visible = index.supersession_floor(TRAIN).is_some()
         || index.registered_digest(TRAIN, Generation(2)).is_some();
+    let before = rt.route("x", 1);
     cx.count(
         "replacement_visible_without_fence",
-        i64::from(visible && rt.routable("x", 1)),
+        i64::from(visible && before.is_ok()),
     );
-    if visible || !rt.routable("x", 1) {
-        return Err("the replacement is visible or the dependent fenced before the event".into());
+    if visible {
+        return Err("the replacement is visible before the event".into());
     }
+    route_control("x after a crash before the event", before)?;
     // A crash after the event's append: the replacement is visible exactly with the fence.
     rt.invalidate(InputInvalidation::superseded(
         TRAIN,
@@ -1228,31 +1283,91 @@ fn large_fanout(cx: &mut Cx) -> Res<()> {
                 || outcome.fence_digest() != &digest,
         ),
     );
-    // Every dependent is fenced and refused; the bystander is untouched.
-    let routable = pods.iter().filter(|pod| rt.route(pod, 1).is_ok()).count() as i64;
-    cx.count("experts_serving_after_revocation", routable);
-    if !rt.routable(&bystander, 1) {
-        return Err("the bystander of the fan-out was fenced".to_string());
-    }
+    // The experts the event fenced are the experts built on the input, as sets.
+    let diff = FenceDiff::of(
+        pods.iter().map(String::as_str),
+        outcome.fenced().iter().map(|member| member.pod.0.as_str()),
+    );
+    cx.count_fence_findings(&diff, &RouteTally::default());
+    // Every dependent is fenced and refused as `Fenced`; the bystander is untouched. The set of
+    // the probe is opened before the loop, so a fence that is not live at this probe is a
+    // mismatch of the intersection and not a probe that dropped out.
+    open_probe(cx, "fanout", "now");
+    let mut found = RouteTally::default();
     for pod in &pods {
+        found.add(classify_route(pod, rt.route(pod, 1), RouteExpect::Fenced)?);
         if fenced_and_refused(&rt, pod) {
-            cx.set_add("fenced_dependents@fanout@now", &format!("fanout/{pod}"));
+            cx.set_add(&probe_set("fanout", "now"), &format!("fanout/{pod}"));
         }
         cx.set_add("derived_dependents", &format!("fanout/{pod}"));
     }
+    found.merge(probe_bystanders(&rt, &[bystander.as_str()])?);
+    cx.count("experts_serving_after_revocation", found.served);
+    cx.count_fence_findings(&FenceDiff::default(), &found);
     // The set again after a reopen: `open_durable` replays the whole history and re-derives it.
     rt.reopen()?;
-    cx.sets
-        .entry("fenced_dependents@fanout@reopen".to_string())
-        .or_default();
-    let mut routable = 0;
+    open_probe(cx, "fanout", "reopen");
+    let mut found = RouteTally::default();
     for pod in &pods {
         if fenced_and_refused(&rt, pod) {
-            cx.set_add("fenced_dependents@fanout@reopen", &format!("fanout/{pod}"));
+            cx.set_add(&probe_set("fanout", "reopen"), &format!("fanout/{pod}"));
         }
-        routable += i64::from(rt.route(pod, 1).is_ok());
+        found.add(classify_route(pod, rt.route(pod, 1), RouteExpect::Fenced)?);
     }
-    cx.count("experts_serving_after_revocation", routable);
+    found.merge(probe_bystanders(&rt, &[bystander.as_str()])?);
+    cx.count("experts_serving_after_revocation", found.served);
+    cx.count_fence_findings(&FenceDiff::default(), &found);
     fold_scenario(cx, "fanout");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::experiments::layered_kv::Scale;
+
+    /// The fan-out's live probe used to create its set only when a member was fenced, so a
+    /// runtime that applied no fence live dropped the probe out of the fold and the reopen
+    /// probe alone decided. `open_probe` creates the set first.
+    #[test]
+    fn a_probe_that_saw_no_fence_takes_part_in_the_fold() {
+        let mut cx = Cx::new(17, Scale::Reduced).expect("a context");
+        open_probe(&mut cx, "s", "now");
+        cx.set_add(&probe_set("s", "reopen"), "s/x");
+        fold_scenario(&mut cx, "s");
+        assert!(
+            cx.sets
+                .get("fenced_and_probed")
+                .is_none_or(|set| set.is_empty()),
+            "the live probe saw no fence, so no member was fenced and probed in every probe"
+        );
+
+        // What the fan-out did before: without the opened set the reopen probe alone decides.
+        let mut cx = Cx::new(17, Scale::Reduced).expect("a context");
+        cx.set_add(&probe_set("s", "reopen"), "s/x");
+        fold_scenario(&mut cx, "s");
+        assert_eq!(cx.sets["fenced_and_probed"].len(), 1);
+    }
+
+    /// A cell whose event left the dependent unfenced (a plain revocation, no fence) and a cell
+    /// whose bystander was closed are findings of the cell, not harness errors.
+    #[test]
+    fn a_cell_with_a_missing_or_an_extra_fence_is_a_finding() {
+        let mut cell = build_cell(Kind::Training).expect("a cell");
+        cell.rt.revoke(TRAIN, 1).expect("a plain revocation");
+        let probed = probe_cell(&mut cell, Kind::Training, Type::Revocation).expect("probes");
+        assert_eq!(probed.routable, 0);
+        assert_eq!(probed.tally.unfenced, 1);
+        assert_eq!(probed.tally.overfenced, 0);
+
+        let mut cell = build_cell(Kind::Training).expect("a cell");
+        cell.rt
+            .invalidate(Type::Revocation.request(Kind::Training))
+            .expect("the invalidation");
+        cell.rt.fence_quarantine("w").expect("a fence nobody owed");
+        let probed = probe_cell(&mut cell, Kind::Training, Type::Revocation).expect("probes");
+        assert_eq!(probed.routable, 0);
+        assert_eq!(probed.tally.unfenced, 0);
+        assert_eq!(probed.tally.overfenced, 1);
+    }
 }

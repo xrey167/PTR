@@ -1020,7 +1020,9 @@ impl Rt {
         )
     }
 
-    /// Whether `pod` at `generation` is routable now.
+    /// Whether `pod` at `generation` is routable now. For positive controls only, where `Ok` is
+    /// the expected answer; a probe of an expert that must be refused goes through
+    /// `probe_routes` / `classify_route`, which check the kind of the refusal.
     pub fn routable(&self, pod: &str, generation: u64) -> bool {
         self.route(pod, generation).is_ok()
     }

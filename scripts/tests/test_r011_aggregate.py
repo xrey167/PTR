@@ -238,6 +238,59 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(results, before)
 
 
+class ManifestTests(unittest.TestCase):
+    MANIFEST = tomllib.loads((HERE / "experiment.toml").read_text(encoding="utf-8"))
+
+    def test_the_required_artifacts_are_the_ones_the_aggregate_publishes(self):
+        """`adversarial_attempts.json` was required and written by nothing: the per-case attempts are in each
+        seed's harness record and reach metrics.json through the manifest's metric list."""
+        self.assertEqual(self.MANIFEST["required_artifacts"], ["run.json", "metrics.json"])
+        self.assertIn("adversarial_attempts_per_case", self.MANIFEST["metrics"].split(", "))
+        self.assertNotIn("attempts_artifact", CONFIG["pinned_thresholds"])
+        for name in ("experiment.toml", "config.toml", "criteria.toml", "aggregate.py", "PREREGISTRATION.md", "DRAFT_PREREGISTRATION.md"):
+            self.assertNotIn("adversarial_attempts.json", (HERE / name).read_text(encoding="utf-8"), name)
+
+    def test_the_two_compound_events_are_in_the_direct_append_family(self):
+        cases = CONFIG["pinned_thresholds"]["adversarial_cases"]
+        types = CONFIG["pinned_thresholds"]["direct_append_event_types"]
+        for name in ("InputInvalidated", "ExpertAuthorityChanged"):
+            self.assertIn(name, types)
+            self.assertIn(f"direct_ledger_append_{name}", cases)
+            self.assertIn(f"adversarial_attempts_per_case.direct_ledger_append_{name} >= 1", CRITERIA["coverage"])
+            self.assertIn(f"direct_ledger_append_accepted_by_type.{name} <= 0", CRITERIA["falsifiers"])
+        self.assertEqual(len(cases), 91)
+        self.assertEqual(len(types), 11)
+
+
+class FenceFindingTests(unittest.TestCase):
+    """Under-fencing and over-fencing are findings (exit 1): a falsification, never an invalid seed."""
+
+    def test_a_fence_set_mismatch_falsifies_and_is_not_invalid(self):
+        results = clean_seeds()
+        put(results[29], "fence_set_digest_mismatches", 1)
+        verdict = aggregate.decide(judged(results, {29: 1}), PASSED, SEEDS)
+        self.assertEqual(verdict["verdict"], aggregate.FALSIFIED)
+        self.assertEqual(verdict["falsified_seeds"], [29])
+        self.assertEqual(verdict["invalid_seeds"], [])
+
+    def test_a_stale_hit_in_a_cell_and_an_accepted_compound_append_falsify(self):
+        for path in (
+            "invalidation_matrix_stale_hits.training_input_normal_revocation",
+            "direct_ledger_append_accepted_by_type.InputInvalidated",
+            "direct_ledger_append_accepted_by_type.ExpertAuthorityChanged",
+        ):
+            results = clean_seeds()
+            put(results[43], path, 1)
+            verdict = aggregate.decide(judged(results, {43: 1}), PASSED, SEEDS)
+            self.assertEqual(verdict["verdict"], aggregate.FALSIFIED, path)
+
+    def test_a_set_digest_mismatch_of_the_fenced_and_derived_sets_falsifies(self):
+        results = clean_seeds()
+        put(results[17], "fenced_and_probed_dependents_set_digest", "sha256:other")
+        verdict = aggregate.decide(judged(results, {17: 1}), PASSED, SEEDS)
+        self.assertEqual(verdict["verdict"], aggregate.FALSIFIED)
+
+
 class ReportTests(unittest.TestCase):
     def test_the_report_names_the_verdict_and_every_failed_rule(self):
         results = clean_seeds()

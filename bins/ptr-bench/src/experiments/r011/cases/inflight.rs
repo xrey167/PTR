@@ -21,10 +21,17 @@ use super::Cx;
 use crate::experiments::layered_kv::corpus;
 use crate::experiments::layered_kv::lab::{self, fail, refused_not_live, Res, Steps};
 use crate::experiments::layered_kv::SEQUENCE_SEED;
+use ptr_model_api::SegmentedModelRequest;
 use ptr_pods::{ExpertLevel, StructuralOp};
 use ptr_runtime::expert::InputInvalidation;
-use ptr_runtime::{BoundExpert, KvSessionFinish, KvSessionPhase, MoeBinding, StackBinding};
+use ptr_runtime::{
+    BoundExpert, KvCancelReason, KvCancellation, KvDependency, KvDependencyKind, KvLivenessOracle,
+    KvSession, KvSessionFinish, KvSessionPhase, KvSessionStep, MoeBinding, PtrRuntime,
+    StackBinding,
+};
 use ptr_types::{Generation, PodId};
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 
 const LAYERS: usize = super::super::params::TEST_MODEL_LAYERS as usize;
 const EXPERTS: usize = super::super::params::MOE_TOPOLOGY_NUM_EXPERTS as usize;
@@ -203,30 +210,177 @@ fn tracked(rt: &Rt, target: usize, target_pod: &str) -> Vec<BoundExpert> {
     bound
 }
 
+/// A liveness oracle that remembers every dependency it answered "not live" for: after a
+/// cancellation these are the dependencies the session's check failed on.
+struct Recording<'a> {
+    inner: &'a dyn KvLivenessOracle,
+    dead: RefCell<Vec<KvDependency>>,
+}
+
+impl<'a> Recording<'a> {
+    fn new(inner: &'a dyn KvLivenessOracle) -> Self {
+        Self {
+            inner,
+            dead: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn dead(&self) -> Vec<KvDependency> {
+        self.dead.borrow().clone()
+    }
+}
+
+impl KvLivenessOracle for Recording<'_> {
+    fn is_live(&self, dependency: &KvDependency) -> bool {
+        let live = self.inner.is_live(dependency);
+        if !live {
+            self.dead.borrow_mut().push(dependency.clone());
+        }
+        live
+    }
+}
+
+/// Run one step (a prefill chunk or a decode step, whichever the phase allows) and return what
+/// it did.
+fn step_once(session: &mut KvSession<'_>, oracle: &dyn KvLivenessOracle) -> Res<KvSessionStep> {
+    match session.phase() {
+        KvSessionPhase::Prefilling => session.prefill_chunk(oracle),
+        KvSessionPhase::Decoding => session.decode_step(oracle),
+        other => return Err(format!("no step in phase {other:?}")),
+    }
+    .map_err(fail("a session step"))
+}
+
+/// Whether a session can still take a step.
+fn steppable(session: &KvSession<'_>) -> bool {
+    matches!(
+        session.phase(),
+        KvSessionPhase::Prefilling | KvSessionPhase::Decoding
+    )
+}
+
+/// The expert identity a session's dependency on `pod` carries: `expert:{project}/{pod}`.
+fn expert_identity(project: &str, pod: &str) -> String {
+    format!("expert:{project}/{pod}")
+}
+
+/// A cancellation counts as the fence of the called expert only if its reason is a dead
+/// dependency (`InputNotLive`, not a tombstoned prefix), the dependencies the check failed on
+/// are exactly the one expert dependency the event fenced, and nothing was emitted after the
+/// event. Any other cancellation is not attributable to the event: a harness error, never a
+/// pass.
+fn check_cancellation(
+    label: &str,
+    cancellation: &KvCancellation,
+    dead: &[KvDependency],
+    fenced_identity: &str,
+    tokens_at_event: usize,
+) -> Res<()> {
+    if cancellation.reason != KvCancelReason::InputNotLive {
+        return Err(format!(
+            "{label}: cancelled for {:?}, not for a dead dependency",
+            cancellation.reason
+        ));
+    }
+    let named: BTreeSet<(&KvDependencyKind, &str)> = dead
+        .iter()
+        .map(|dependency| (&dependency.kind, dependency.identity.as_str()))
+        .collect();
+    let expected: BTreeSet<(&KvDependencyKind, &str)> =
+        BTreeSet::from([(&KvDependencyKind::Expert, fenced_identity)]);
+    if named != expected {
+        return Err(format!(
+            "{label}: the dead dependencies were {named:?}, not the fenced expert {fenced_identity}"
+        ));
+    }
+    if cancellation.tokens_emitted != tokens_at_event {
+        return Err(format!(
+            "{label}: {} tokens were emitted when the event came, {} at the cancellation",
+            tokens_at_event, cancellation.tokens_emitted
+        ));
+    }
+    Ok(())
+}
+
+/// The un-invalidated control of a cell: the same bound request on a backend of its own runs to
+/// its end against the live ledger, completes, and equals the cold run of the live binding.
+/// Without it a cancellation after the event would not show that the call could have completed.
+fn run_control(
+    label: &str,
+    request: &SegmentedModelRequest,
+    live: &StackBinding,
+    runtime: &PtrRuntime,
+) -> Res<()> {
+    let backend = lab::backend()?;
+    let mut session = backend
+        .begin_session_bound(&lab::scope(), request, None, live, runtime)
+        .map_err(fail("beginning the control session"))?;
+    while steppable(&session) {
+        if let KvSessionStep::Cancelled(cancellation) = step_once(&mut session, runtime)? {
+            return Err(format!(
+                "{label}: the control session was cancelled with nothing invalidated: {cancellation:?}"
+            ));
+        }
+    }
+    let outcome = match session
+        .finish(runtime)
+        .map_err(fail("finishing the control session"))?
+    {
+        KvSessionFinish::Completed(outcome) => outcome,
+        KvSessionFinish::Cancelled(cancellation) => {
+            return Err(format!(
+                "{label}: the control session was cancelled at its end: {cancellation:?}"
+            ))
+        }
+    };
+    let cold = lab::cold(&backend, request, live)?;
+    if !lab::same_result(&outcome, &cold) {
+        return Err(format!(
+            "{label}: the control session's output differs from the cold run"
+        ));
+    }
+    Ok(())
+}
+
 fn run_cell(cx: &mut Cx, level: Level, role: Role, trigger: Trigger) -> Res<()> {
     let label = format!("c11.{}.{}.{}", level.key(), role.key(), trigger.key());
     cx.sub(&label);
     let mut rt = Rt::fresh()?;
     let (live, reference, target_pod) = bind(cx, &mut rt, level, role)?;
     let request = corpus::raw_request(&label, &prompt());
+    // The un-invalidated control of the cell, on a backend of its own.
+    run_control(&label, &request, &live, &rt.runtime)?;
+    cx.note("c11_control_sessions_completed");
+    // A backend of its own per cell: its catalog and its liveness carry nothing from the cells
+    // that ran before, so the order the seed draws cannot change a cell.
+    let backend = lab::backend()?;
     let total_steps = Steps::count(PROMPT, 0, super::super::params::MAX_NEW_TOKENS as usize);
-    let race_at = corpus::scenario(cx.seed, &label).range(0, total_steps as u64) as usize;
+    // The race point is drawn in 1..=total_steps (the range is inclusive): at least one step
+    // runs before the event, so the call has started; at `total_steps` every step ran and the
+    // next use is the finish.
+    let race_at = corpus::scenario(cx.seed, &label).range(1, total_steps as u64) as usize;
     cx.fixture.push((
         format!("race_point.{label}"),
         crate::experiments::layered_kv::emit::Json::Int(race_at as i64),
     ));
     // The call starts while the expert is live.
-    let session = cx
-        .backend
+    let mut session = backend
         .begin_session_bound(&lab::scope(), &request, None, &live, &rt.runtime)
         .map_err(fail("beginning the bound session"))?;
-    let mut steps = Steps { session };
     for _ in 0..race_at {
-        if steps.step(&rt.runtime)? {
-            return Err(format!("{label}: cancelled before the event"));
+        if !steppable(&session) {
+            // The session ended before the race point (an early end, a catalog hit): the event
+            // then comes after its last step, and its finish is the next use.
+            cx.note("c11_session_ended_before_the_race_point");
+            break;
+        }
+        if let KvSessionStep::Cancelled(cancellation) = step_once(&mut session, &rt.runtime)? {
+            return Err(format!(
+                "{label}: cancelled before the event: {cancellation:?}"
+            ));
         }
     }
-    let tokens_at_event = steps.session.generated().len();
+    let tokens_at_event = session.generated().len();
 
     // The invalidation: one ledger event revokes or supersedes the input and fences the expert.
     let (identity, digest) = role.input();
@@ -244,61 +398,73 @@ fn run_cell(cx: &mut Cx, level: Level, role: Role, trigger: Trigger) -> Res<()> 
     let outcome = rt
         .invalidate(request_event)
         .map_err(|error| format!("{label}: {error:?}"))?;
-    if !outcome
+    // An event that did not fence the called expert is a finding (a fence-set mismatch, and the
+    // call then survives and escapes below), not a harness error.
+    let fenced_called = outcome
         .fenced()
         .iter()
-        .any(|member| member.pod.0 == target_pod)
-    {
-        return Err(format!(
-            "{label}: the event did not fence the called expert"
-        ));
-    }
+        .any(|member| member.pod.0 == target_pod);
+    cx.count("fence_set_digest_mismatches", i64::from(!fenced_called));
     let event = rt
         .runtime
         .committed_events()
         .last()
         .map(|committed| committed.event.clone())
         .ok_or_else(|| "no event".to_string())?;
-    cx.backend
+    backend
         .apply_input_invalidation(&event, &outcome.fence_epochs())
         .map_err(fail("applying the invalidation to the catalog"))?;
 
     // The next use after the event is a step, or the finish of a session whose every step ran
-    // before the event.
+    // before the event; the oracle records the dependencies it answered "dead" for.
+    let oracle = Recording::new(&rt.runtime);
     let mut completed_by_finish = false;
-    let cancelled = if steps.session.phase() == KvSessionPhase::Finished {
-        match steps
-            .session
-            .finish(&rt.runtime)
+    let mut cancellation = None;
+    if session.phase() == KvSessionPhase::Finished {
+        match session
+            .finish(&oracle)
             .map_err(fail("finishing the session"))?
         {
-            KvSessionFinish::Cancelled(_) => true,
-            KvSessionFinish::Completed(_) => {
-                completed_by_finish = true;
-                false
-            }
+            KvSessionFinish::Cancelled(found) => cancellation = Some(found),
+            KvSessionFinish::Completed(_) => completed_by_finish = true,
         }
-    } else {
-        steps.step(&rt.runtime)?
-    };
+    } else if let KvSessionStep::Cancelled(found) = step_once(&mut session, &oracle)? {
+        cancellation = Some(found);
+    }
+    let cancelled = cancellation.is_some();
+    if let Some(found) = &cancellation {
+        check_cancellation(
+            &label,
+            found,
+            &oracle.dead(),
+            &expert_identity(&rt.project.0, &target_pod),
+            tokens_at_event,
+        )?;
+    }
     let mut escaped = i64::from(!cancelled);
-    escaped += (steps.session.generated().len() - tokens_at_event) as i64;
+    escaped += (session.generated().len() - tokens_at_event) as i64;
     if !cancelled && !completed_by_finish {
         // Whatever the surviving call produces from here is an escape; finish it.
-        if let KvSessionFinish::Completed(_) = steps
-            .session
-            .finish(&rt.runtime)
-            .map_err(fail("finishing the surviving session"))?
-        {
-            escaped += 1;
+        while steppable(&session) {
+            if let KvSessionStep::Cancelled(_) = step_once(&mut session, &rt.runtime)? {
+                break;
+            }
+        }
+        if session.phase() == KvSessionPhase::Finished {
+            if let KvSessionFinish::Completed(_) = session
+                .finish(&rt.runtime)
+                .map_err(fail("finishing the surviving session"))?
+            {
+                escaped += 1;
+            }
         }
     }
     let mut incomplete = 0;
     let mut mismatched = 0;
     if cancelled {
-        match steps.session.restart_with(&rt.runtime) {
+        match session.restart_with(&rt.runtime) {
             Ok(restarted) => {
-                let cold = lab::cold(&cx.backend, &request, &reference)?;
+                let cold = lab::cold(&backend, &request, &reference)?;
                 let fresh = restarted.hit_tokens == 0
                     && restarted.prefilled_tokens == request.total_tokens()
                     && restarted.inserted_chunks == 0
@@ -310,14 +476,12 @@ fn run_cell(cx: &mut Cx, level: Level, role: Role, trigger: Trigger) -> Res<()> 
         }
     }
     // A later request citing the dead expert is refused at the beginning of its session.
-    let late = cx
-        .backend
-        .begin_session_bound(&lab::scope(), &request, None, &live, &rt.runtime);
+    let late = backend.begin_session_bound(&lab::scope(), &request, None, &live, &rt.runtime);
     let late_ok = refused_not_live(&late);
     drop(late);
     escaped += i64::from(!late_ok);
 
-    drop(steps);
+    drop(session);
     count_cell(
         cx, level, role, trigger, escaped, incomplete, mismatched, cancelled,
     )?;
@@ -376,4 +540,68 @@ fn count_cell(
         cx.count_in("invalidation_matrix_stale_hits", &matrix, escaped);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ptr_types::{ProjectId, RequestId};
+
+    fn cancellation(reason: KvCancelReason, tokens_emitted: usize) -> KvCancellation {
+        KvCancellation {
+            request_id: RequestId::from("r"),
+            reason,
+            at_phase: KvSessionPhase::Decoding,
+            tokens_emitted,
+            prefilled_tokens: 48,
+        }
+    }
+
+    fn expert(pod: &str) -> KvDependency {
+        KvDependency::expert(
+            &ProjectId::from("p"),
+            &PodId::from(pod),
+            Generation(1),
+            [1; 32],
+        )
+    }
+
+    /// A fixed liveness: the listed identities are dead.
+    struct Dead(Vec<String>);
+
+    impl KvLivenessOracle for Dead {
+        fn is_live(&self, dependency: &KvDependency) -> bool {
+            !self.0.contains(&dependency.identity)
+        }
+    }
+
+    #[test]
+    fn a_cancellation_counts_only_if_it_names_the_fenced_expert() {
+        let fenced = expert_identity("p", "e");
+        assert_eq!(fenced, expert("e").identity);
+        let ok = cancellation(KvCancelReason::InputNotLive, 3);
+        assert!(check_cancellation("c", &ok, &[expert("e")], &fenced, 3).is_ok());
+        // A tombstoned prefix is not a dead dependency.
+        let tombstoned = cancellation(KvCancelReason::PrefixTombstoned, 3);
+        assert!(check_cancellation("c", &tombstoned, &[expert("e")], &fenced, 3).is_err());
+        // The check failed on nothing, or on another expert, or on more than the fenced one.
+        assert!(check_cancellation("c", &ok, &[], &fenced, 3).is_err());
+        assert!(check_cancellation("c", &ok, &[expert("other")], &fenced, 3).is_err());
+        assert!(check_cancellation("c", &ok, &[expert("e"), expert("other")], &fenced, 3).is_err());
+        // The base model under the same identity is another kind of dependency.
+        let base = KvDependency::base_model(&fenced, Generation(1), [1; 32]);
+        assert!(check_cancellation("c", &ok, &[base], &fenced, 3).is_err());
+        // A token emitted between the event and the cancellation.
+        let late = cancellation(KvCancelReason::InputNotLive, 4);
+        assert!(check_cancellation("c", &late, &[expert("e")], &fenced, 3).is_err());
+    }
+
+    #[test]
+    fn the_recording_oracle_remembers_what_it_answered_dead() {
+        let inner = Dead(vec![expert("e").identity]);
+        let oracle = Recording::new(&inner);
+        assert!(oracle.is_live(&expert("other")));
+        assert!(!oracle.is_live(&expert("e")));
+        assert_eq!(oracle.dead(), vec![expert("e")]);
+    }
 }

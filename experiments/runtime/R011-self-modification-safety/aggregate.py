@@ -76,7 +76,8 @@ LIMITATIONS = [
     "fences of the compound events are authoritative in the runtime's registry only; a plain projection still shows the members Serving",
     "every race is a sequenced interleaving in a single-writer runtime and a crash inside one call is modelled as drop after the append and reopen; no concurrent-writer claim",
     "one cause per fence; the authority epoch covers the gate configuration and the evaluator only and does not propagate to descendants",
-    "uncommitted_effective_changes, direct_serving_mutation_bypass_count, l3_fence_attempts_admitted, the adapter cells and the L2 in-flight cells are weak metrics (type-level or modelled evidence; see the preregistration)",
+    "uncommitted_effective_changes, direct_serving_mutation_bypass_count, l3_fence_attempts_admitted, replacement_visible_without_fence (its first increment), the adapter cells and the L2 in-flight cells are weak metrics (type-level or modelled evidence; see the preregistration)",
+    "the attempted and admitted set digests of the impersonation kinds and of the gate-grant race kinds are equal by construction in any run the harness completes (bookkeeping, not evidence); the eleven direct-append event types are offered to the public commit only, not to a raw ledger writer",
     "the code under test is the CPU reference path with a tiny seeded model; no GPU, no large model, no training",
     "timings come from one shared cloud container; no capacity claim",
 ]

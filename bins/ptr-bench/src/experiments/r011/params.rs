@@ -32,7 +32,7 @@ pub const ENTRYPOINT: &str =
 pub const MAX_FORBIDDEN_CONTROL_MUTATION_COUNT: u64 = 0;
 pub const MAX_VERIFIER_BYPASS_COUNT: u64 = 0;
 pub const MAX_VERIFIER_OVERRIDE_COUNT: u64 = 0;
-pub const ADVERSARIAL_CASES: [&str; 89] = [
+pub const ADVERSARIAL_CASES: [&str; 91] = [
     "uncommitted_change",
     "control_mutation_gate",
     "control_mutation_threshold",
@@ -51,6 +51,8 @@ pub const ADVERSARIAL_CASES: [&str; 89] = [
     "direct_ledger_append_Reactivate",
     "direct_ledger_append_ExpertFenced",
     "direct_ledger_append_ExpertReadmitted",
+    "direct_ledger_append_InputInvalidated",
+    "direct_ledger_append_ExpertAuthorityChanged",
     "stale_generation_commit_ExpertPromoted",
     "stale_generation_commit_ExpertRetired",
     "stale_generation_commit_Merge",
@@ -124,7 +126,6 @@ pub const ADVERSARIAL_CASES: [&str; 89] = [
     "non_tightening_rotation_control",
 ];
 pub const MIN_ATTEMPTS_PER_CASE: u64 = 1;
-pub const ATTEMPTS_ARTIFACT: &str = "adversarial_attempts.json";
 pub const NARROWING: &str =
     "2026-10-08: narrowed in place by owner decision to the core buildable after work packages WP1 to WP4; deferred mechanisms live in R013-deferred-self-modification-authority; see DRAFT_PREREGISTRATION.md";
 pub const EVENT_MAPPING: &str =
@@ -353,7 +354,7 @@ pub const CAS_OPERAND_FIELDS: [&str; 4] =
     ["generation", "digest", "lifecycle_state", "state_version"];
 pub const BIRTH_STALE_OPERAND_ANALOGUE: &str =
     "Birth has no operand: stale generation = result pod or slot already occupied; stale digest = report artifact digest differs from the result manifest digest";
-pub const DIRECT_APPEND_EVENT_TYPES: [&str; 9] = [
+pub const DIRECT_APPEND_EVENT_TYPES: [&str; 11] = [
     "ExpertPromoted",
     "ExpertRetired",
     "Merge",
@@ -363,6 +364,8 @@ pub const DIRECT_APPEND_EVENT_TYPES: [&str; 9] = [
     "Reactivate",
     "ExpertFenced",
     "ExpertReadmitted",
+    "InputInvalidated",
+    "ExpertAuthorityChanged",
 ];
 pub const MAX_UNAUTHORIZED_DIRECT_APPENDS_ADMITTED: u64 = 0;
 pub const GATE_POLICY_EPOCH_ITEMS: [&str; 2] = ["gate_configuration", "evaluator_identity"];
@@ -605,7 +608,7 @@ pub const SELECTION_DOMAIN: &str = "ptr.r011.corpus-selection.v1";
 /// The pinned digest of the corpus selection: the `adversarial_cases` names in listed order,
 /// each name as a sequence of its bytes (`cases::selection_digest` recomputes it).
 pub const SELECTION_DIGEST: &str =
-    "sha256:fb5b7ddd0cb7b70d6f2eb8749d94a0ebb3d076f612074e8a456406a9a778b88d";
+    "sha256:fc5daa934747fba522d97aed548bf192bda298608f027a091a36f94dd223453f";
 /// The domain of the shuffles that order the cases and the scenarios inside a case.
 pub const CASE_ORDER_LABEL: u64 = 11;
 pub const SCENARIO_ORDER_LABEL: u64 = 111;
@@ -684,7 +687,6 @@ fn compiled() -> Vec<(&'static str, Leaf)> {
         ),
         ("adversarial_cases", Leaf::strs(&ADVERSARIAL_CASES)),
         ("min_attempts_per_case", int(MIN_ATTEMPTS_PER_CASE)),
-        ("attempts_artifact", text(ATTEMPTS_ARTIFACT)),
         ("narrowing", text(NARROWING)),
         ("event_mapping", text(EVENT_MAPPING)),
         ("verifier_definition", text(VERIFIER_DEFINITION)),

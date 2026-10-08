@@ -8,7 +8,7 @@
 //! snapshot) paths of the matrix.
 
 use super::fixture::{ReportSpec, Rt, Setup};
-use super::{classify, control, Cx};
+use super::{classify, control, probe_bystanders, probe_routes, Cx, FenceDiff, RouteExpect};
 use crate::experiments::layered_kv::lab::{fail, Res};
 use ptr_ledger::{ExpertAuthorityClass, ExpertAuthorityKind, ExpertFenceCause};
 use ptr_pods::{ExpertState, StructuralOp};
@@ -158,18 +158,37 @@ fn birth_under(
     rt.admit_as(op, None, &ReportSpec::correct_under(setup), setup)
 }
 
+/// How many of `pods` are routable now: a positive control probe, used where `Ok` is the
+/// expected answer (the experts of the regime before any event, the readmitted expert).
 fn routable_among(rt: &Rt, pods: &[&str]) -> i64 {
     pods.iter().filter(|pod| rt.routable(pod, 1)).count() as i64
 }
 
-fn is_stale(kind: Kind) -> impl Fn(&RuntimeError) -> bool {
-    move |error| {
-        matches!(
-            error,
-            RuntimeError::Expert(ExpertAdmissionError::StalePolicyEvidence { kind: found, .. })
-                if *found == kind.authority()
-        )
+/// The reason the old evidence of `kind` is refused after the event of `kind`: the gate
+/// configuration moved its epoch from `GATE_START`, so the evidence carries another epoch; the
+/// evaluator moved to another identity at an unchanged gate epoch.
+fn stale_reason(kind: Kind) -> StaleEvidenceReason {
+    match kind {
+        Kind::GateConfig => StaleEvidenceReason::EpochMismatch {
+            current: kind.next_epoch(),
+            evidence: GATE_START,
+        },
+        Kind::Evaluator => StaleEvidenceReason::IdentityMismatch,
     }
+}
+
+/// Whether `error` is the stale-evidence refusal of `kind` with exactly the reason
+/// [`stale_reason`] names (an unrelated reason is not the refusal the case attempts).
+fn stale_matches(kind: Kind, error: &RuntimeError) -> bool {
+    matches!(
+        error,
+        RuntimeError::Expert(ExpertAdmissionError::StalePolicyEvidence { kind: found, reason })
+            if *found == kind.authority() && *reason == stale_reason(kind)
+    )
+}
+
+fn is_stale(kind: Kind) -> impl Fn(&RuntimeError) -> bool {
+    move |error| stale_matches(kind, error)
 }
 
 pub fn c12_authority_epoch(cx: &mut Cx) -> Res<()> {
@@ -301,7 +320,6 @@ fn readmission(cx: &mut Cx) -> Res<()> {
         if !rt.routable("a", 1) || rt.routable("b", 1) {
             return Err("the readmission did not return exactly the readmitted expert".to_string());
         }
-        let _ = StaleEvidenceReason::IdentityNotNamed;
     }
     Ok(())
 }
@@ -314,13 +332,12 @@ fn cell(cx: &mut Cx, kind: Kind, class: Class, path: Path) -> Res<()> {
     let outcome = rt
         .change_authority(kind.authority(), kind.next_epoch(), class.authority())
         .map_err(|error| format!("{name}: {error:?}"))?;
-    if outcome.fence_count() as usize != dependents.len() {
-        return Err(format!(
-            "{name}: the event fenced {} experts, the topology derives {}",
-            outcome.fence_count(),
-            dependents.len()
-        ));
-    }
+    // The experts the event fenced against the experts the topology says it owes: a missed or
+    // an extra expert is a finding of the cell, not a harness error.
+    let diff = FenceDiff::of(
+        dependents,
+        outcome.fenced().iter().map(|member| member.pod.0.as_str()),
+    );
     // An expert admitted under the new standing is not touched by the event.
     control(
         &format!("{name}: an expert under the new standing"),
@@ -331,12 +348,12 @@ fn cell(cx: &mut Cx, kind: Kind, class: Class, path: Path) -> Res<()> {
         Path::Lag => rt.reopen()?,
         Path::Restore => rt.compact_restore()?,
     }
-    let mut hits = routable_among(&rt, &dependents);
-    if !rt.routable("c", 1) {
-        return Err(format!(
-            "{name}: the expert under the new standing was fenced"
-        ));
-    }
+    // The dependents must be refused as `Fenced` (any other refusal is a harness error); the
+    // expert admitted under the new standing must stay routable.
+    let mut probes = probe_routes(&rt, &dependents, RouteExpect::Fenced)?;
+    probes.merge(probe_bystanders(&rt, &["c"])?);
+    let served = probes.served;
+    let mut hits = served + cx.count_fence_findings(&diff, &probes);
     // The standing survived the path: evidence of the old epoch is refused.
     let stale = classify(
         &format!("{name}: a commit on evidence of the old epoch"),
@@ -359,18 +376,12 @@ fn cell(cx: &mut Cx, kind: Kind, class: Class, path: Path) -> Res<()> {
             Class::Revoke => {
                 cx.attempt("post_promotion_authority_revocation")?;
                 cx.count_in("post_promotion_authority_revocation_cases", kind.key(), 1);
-                cx.count(
-                    "routable_after_authority_revocation",
-                    routable_among(&rt, &dependents),
-                );
+                cx.count("routable_after_authority_revocation", served);
             }
             Class::Tightening => {
                 cx.attempt("tightening_rotation")?;
                 cx.count_in("tightening_rotation_cases", kind.key(), 1);
-                cx.count(
-                    "routable_after_tightening_rotation",
-                    routable_among(&rt, &dependents),
-                );
+                cx.count("routable_after_tightening_rotation", served);
             }
             Class::NonTightening => {}
         }
@@ -393,4 +404,64 @@ fn cell(cx: &mut Cx, kind: Kind, class: Class, path: Path) -> Res<()> {
         cx.set_add("fenced_and_probed", &member);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stale(kind: ExpertAuthorityKind, reason: StaleEvidenceReason) -> RuntimeError {
+        RuntimeError::Expert(ExpertAdmissionError::StalePolicyEvidence { kind, reason })
+    }
+
+    /// The refusal the cases attempt is the kind's stale evidence with the reason the event
+    /// causes; the same kind with another reason, or another kind, is not it.
+    #[test]
+    fn the_stale_evidence_refusal_is_matched_by_kind_and_reason() {
+        let gate = ExpertAuthorityKind::GateConfig;
+        let evaluator = ExpertAuthorityKind::Evaluator;
+        let epoch = StaleEvidenceReason::EpochMismatch {
+            current: GATE_START + 1,
+            evidence: GATE_START,
+        };
+        assert!(stale_matches(Kind::GateConfig, &stale(gate, epoch)));
+        assert!(stale_matches(
+            Kind::Evaluator,
+            &stale(evaluator, StaleEvidenceReason::IdentityMismatch)
+        ));
+        // Another reason of the right kind.
+        for reason in [
+            StaleEvidenceReason::IdentityMismatch,
+            StaleEvidenceReason::IdentityNotNamed,
+            StaleEvidenceReason::EpochMismatch {
+                current: GATE_START + 2,
+                evidence: GATE_START,
+            },
+            StaleEvidenceReason::EpochMismatch {
+                current: GATE_START + 1,
+                evidence: GATE_START + 1,
+            },
+        ] {
+            assert!(
+                !stale_matches(Kind::GateConfig, &stale(gate, reason)),
+                "{reason:?}"
+            );
+        }
+        for reason in [StaleEvidenceReason::IdentityNotNamed, epoch] {
+            assert!(
+                !stale_matches(Kind::Evaluator, &stale(evaluator, reason)),
+                "{reason:?}"
+            );
+        }
+        // Another kind with the right reason.
+        assert!(!stale_matches(Kind::GateConfig, &stale(evaluator, epoch)));
+        assert!(!stale_matches(
+            Kind::Evaluator,
+            &stale(gate, StaleEvidenceReason::IdentityMismatch)
+        ));
+        assert!(!stale_matches(
+            Kind::Evaluator,
+            &RuntimeError::Expert(ExpertAdmissionError::GateFailed)
+        ));
+    }
 }

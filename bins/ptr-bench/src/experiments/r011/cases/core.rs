@@ -8,7 +8,10 @@ use super::fixture::{
     base, config_digest, exact, gate, gate_v, level_of, proposer_of, readmission_report,
     report_for, weaker_gate, ReportSpec, Rt, Scenario, Setup, GATE_EPOCH, SCENARIOS,
 };
-use super::{classify, control, is, is_where, outside_admission_path, Cx, Verdict};
+use super::{
+    classify, classify_route, control, is, is_where, outside_admission_path, probe_bystanders,
+    probe_routes, route_control, Cx, FenceDiff, RouteExpect, RouteTally, Verdict,
+};
 use crate::experiments::layered_kv::emit::Json;
 use crate::experiments::layered_kv::lab::{fail, Res};
 use ptr_ledger::{
@@ -19,15 +22,17 @@ use ptr_lineage::BoundGateReport;
 use ptr_pods::{ExpertCommitRecord, ExpertProposal, RetiredReason, StructuralOp};
 use ptr_runtime::expert::{
     ledger_op_kind, ExpertAdmissionError, ExpertAdmissionGrant, ExpertAuthorityChange,
-    ExpertFenceAuthority, ExpertFenceGrant, ExpertGrantKind, ExpertStaleField,
+    ExpertFenceAuthority, ExpertFenceGrant, ExpertGrantKind, ExpertStaleField, InputInvalidation,
 };
 use ptr_runtime::RuntimeError;
 use ptr_types::{PodId, ProjectId};
 
 /// The event type the draft names for an event, or `None` for an event of no listed type (the
-/// revocation-driven retirement is a fence action of its own, not one of the nine).
+/// revocation-driven retirement is a fence action of its own, not one of the eleven).
 pub fn event_type_of(event: &LedgerEvent) -> Option<&'static str> {
     match event {
+        LedgerEvent::InputInvalidated { .. } => Some("InputInvalidated"),
+        LedgerEvent::ExpertAuthorityChanged { .. } => Some("ExpertAuthorityChanged"),
         LedgerEvent::ExpertStructuralCommitted { op_kind, .. } => Some(match op_kind {
             ExpertOpKind::Birth => "ExpertPromoted",
             ExpertOpKind::Retire => "ExpertRetired",
@@ -422,16 +427,22 @@ pub fn c2_bypass_and_direct_append(cx: &mut Cx) -> Res<()> {
         }
     }
     // Direct append, per type: the exact event that the gated step committed, offered to the
-    // public `commit` of a durable runtime that stands exactly where the step started.
+    // public `commit` of a durable runtime that stands exactly where the step started. The nine
+    // types of the gated history, then the two runtime-granted compound events, which a
+    // proposal can neither commit nor fence with: `InputInvalidated` (it fences the experts
+    // resting on an input) and `ExpertAuthorityChanged` (it moves the gate configuration or
+    // the evaluator standing).
     cx.sub("direct_append");
     for name in cx.shuffled("c2.types", &super::super::params::DIRECT_APPEND_EVENT_TYPES) {
-        let index = HISTORY
-            .iter()
-            .position(|(candidate, _)| *candidate == name)
-            .ok_or_else(|| format!("no step of type {name} in the history"))?;
-        let mut stand = Rt::fresh()?;
-        run_history(&mut stand, index)?;
-        let event = events[index].event.clone();
+        let (mut stand, event, before) =
+            match HISTORY.iter().position(|(candidate, _)| *candidate == name) {
+                Some(index) => {
+                    let mut stand = Rt::fresh()?;
+                    run_history(&mut stand, index)?;
+                    (stand, events[index].event.clone(), index)
+                }
+                None => compound_direct_append(cx, name)?,
+            };
         let verdict = cx.verdict(
             &format!("direct_ledger_append_{name}"),
             &format!("a public commit of {name}"),
@@ -448,10 +459,29 @@ pub fn c2_bypass_and_direct_append(cx: &mut Cx) -> Res<()> {
         if name == "ExpertPromoted" {
             cx.count("direct_promotion_bypass_count", verdict.violation());
         }
-        let applied = stand.event_count() != index;
+        let applied = stand.event_count() != before;
         cx.count("uncommitted_effective_changes", i64::from(applied));
+        if name == "InputInvalidated" {
+            // The dependent of the input must not have been fenced by the refused event.
+            let closed = probe_bystanders(&stand, &["x"])?;
+            cx.count("direct_serving_mutation_bypass_count", closed.overfenced);
+        }
+        if name == "ExpertAuthorityChanged" {
+            // Neither authority may have a standing after the refused event.
+            for kind in [
+                ExpertAuthorityKind::GateConfig,
+                ExpertAuthorityKind::Evaluator,
+            ] {
+                cx.count(
+                    "forbidden_control_mutation_count",
+                    i64::from(stand.runtime.expert_authority(kind).is_some()),
+                );
+            }
+            let closed = probe_bystanders(&stand, &["x"])?;
+            cx.count("direct_serving_mutation_bypass_count", closed.overfenced);
+        }
     }
-    // The revocation-driven retirement is a fence action of its own, outside the nine types;
+    // The revocation-driven retirement is a fence action of its own, outside the eleven types;
     // its direct append is attempted as well (internal counter).
     let mut stand = Rt::fresh()?;
     stand.birth("r")?;
@@ -584,6 +614,55 @@ pub fn c2_bypass_and_direct_append(cx: &mut Cx) -> Res<()> {
     cx.tally
         .set_json("admitted_event_type_set_digest", Json::str(admitted));
     Ok(())
+}
+
+/// The runtime-granted compound events offered to the public `commit`: a donor runtime commits
+/// the event through its real path, a second runtime stands where the donor started, and the
+/// donor's event is what the attempt offers. Returns the standing runtime, the event and the
+/// event count the standing runtime must still have afterwards. The donor's committed event is
+/// read back, so the type is the one the ledger holds; `admitted_event_types` takes it from
+/// there.
+fn compound_direct_append(cx: &mut Cx, name: &str) -> Res<(Rt, LedgerEvent, usize)> {
+    use super::fixture::{inputs, D1, TRAIN};
+    let build = || -> Res<Rt> {
+        let mut rt = Rt::fresh()?;
+        rt.birth_with("x", inputs(&[(TRAIN, 1, D1)], &[]))?;
+        Ok(rt)
+    };
+    let mut donor = build()?;
+    match name {
+        "InputInvalidated" => {
+            donor
+                .invalidate(InputInvalidation::revoked(
+                    TRAIN,
+                    ptr_types::Generation(1),
+                    D1,
+                ))
+                .map_err(fail("committing the donor's invalidation"))?;
+        }
+        "ExpertAuthorityChanged" => {
+            donor
+                .change_authority(
+                    ExpertAuthorityKind::GateConfig,
+                    GATE_EPOCH,
+                    ExpertAuthorityClass::Revoke,
+                )
+                .map_err(fail("committing the donor's authority change"))?;
+        }
+        other => return Err(format!("no compound donor for the type {other}")),
+    }
+    let event = donor
+        .events()
+        .pop()
+        .ok_or_else(|| "the donor committed nothing".to_string())?
+        .event;
+    if event_type_of(&event) != Some(name) {
+        return Err(format!("the donor's last event is not an {name}"));
+    }
+    cx.set_add("admitted_event_types", name);
+    let stand = build()?;
+    let before = stand.event_count();
+    Ok((stand, event, before))
 }
 
 fn classify_direct(rt: &mut Rt, event: LedgerEvent) -> Res<Verdict> {
@@ -902,6 +981,14 @@ pub fn c4_evidence_binding(cx: &mut Cx) -> Res<()> {
             control(&format!("{case} control"), controlled)?;
             cx.count_in("evidence_binding_controls_accepted_by_case", &case, 1);
             cx.count_in("control_accepts_by_path", kind_type, 1);
+            if kind_type == "Reactivate" {
+                // Reactivate is run in two forms under one name, and each cell of the family
+                // counts both; the notes say how many cells each form filled.
+                cx.note(match scenario {
+                    Some(Scenario::ReactivateFrozen) => "c4_reactivate_frozen_form_cells",
+                    _ => "c4_reactivate_retired_form_cells",
+                });
+            }
         }
     }
     // The weaker gate configuration of a promotion.
@@ -1112,6 +1199,8 @@ pub fn c6_fence_authority(cx: &mut Cx) -> Res<()> {
     let mut rt = Rt::fresh()?;
     for pod in ["x", "y", "z"] {
         rt.birth(pod)?;
+        // The live control: the expert is routable before anything happens to it.
+        route_control(&format!("{pod} before the fence"), rt.route(pod, 1))?;
     }
     // The control: a fence under the runtime revocation grant, with no gate pass.
     cx.sub("fence_with_grant");
@@ -1124,9 +1213,8 @@ pub fn c6_fence_authority(cx: &mut Cx) -> Res<()> {
     cx.attempt("expert_fenced_without_gate_pass")?;
     cx.count("runtime_fence_with_grant_succeeded", 1);
     cx.count_in("control_accepts_by_path", "ExpertFenced", 1);
-    if rt.routable("x", 1) {
-        cx.count("revoked_expert_served_count", 1);
-    }
+    let fenced = classify_route("x after its fence", rt.route("x", 1), RouteExpect::Fenced)?;
+    cx.count("revoked_expert_served_count", fenced.served());
 
     // L3 fence attempts on y: the event offered to the public commit; a fence under a Gate
     // grant; a fence under the runtime-wide grant (not accepted for a per-expert fence).
@@ -1204,44 +1292,120 @@ pub fn c6_fence_authority(cx: &mut Cx) -> Res<()> {
         }),
     )?;
     cx.count("fence_without_runtime_grant_admitted", verdict.violation());
-    if !rt.routable("y", 1) {
-        return Err("y was fenced although every fence attempt was refused".to_string());
-    }
+    // Every fence attempt on y was refused, so y must still be routable: a closed y means an
+    // attempt took effect (a fence nobody was entitled to write).
+    let closed = probe_bystanders(&rt, &["y", "z"])?;
+    cx.count("l3_fence_attempts_admitted", closed.overfenced);
+    cx.count("fence_without_runtime_grant_admitted", closed.overfenced);
 
-    // The route probe after the fence, a restart, a replay and a compaction.
+    // The route probe after the fence, a restart, a replay and a compaction: x must be refused
+    // as `Fenced` at every point (any other refusal, an unknown expert after a restore for
+    // one, is a harness error), and the bystanders y and z must stay routable after each.
     cx.sub("restart_replay_route_after_fence");
-    let mut served = i64::from(rt.routable("x", 1));
+    let mut found = RouteTally::default();
+    found.merge(probe_routes(&rt, &["x"], RouteExpect::Fenced)?);
+    found.merge(probe_bystanders(&rt, &["y", "z"])?);
     rt.reopen()?;
-    served += i64::from(rt.routable("x", 1));
+    found.merge(probe_routes(&rt, &["x"], RouteExpect::Fenced)?);
+    found.merge(probe_bystanders(&rt, &["y", "z"])?);
     let replayed = rt.replayed()?;
-    served += i64::from(
-        replayed
-            .expert_route_admission(&rt.project, &PodId::from("x"), ptr_types::Generation(1))
-            .is_ok(),
-    );
+    found.add(classify_route(
+        "x on a replay",
+        replayed.expert_route_admission(&rt.project, &PodId::from("x"), ptr_types::Generation(1)),
+        RouteExpect::Fenced,
+    )?);
+    for pod in ["y", "z"] {
+        found.overfenced += i64::from(super::classify_bystander(
+            pod,
+            replayed.expert_route_admission(
+                &rt.project,
+                &PodId::from(pod),
+                ptr_types::Generation(1),
+            ),
+        )?);
+    }
     rt.compact_restore()?;
-    served += i64::from(rt.routable("x", 1));
+    found.merge(probe_routes(&rt, &["x"], RouteExpect::Fenced)?);
+    found.merge(probe_bystanders(&rt, &["y", "z"])?);
     cx.attempt("restart_replay_route_after_fence")?;
-    cx.count("expert_routes_after_replay", served);
+    cx.count("expert_routes_after_replay", found.served);
+    cx.count_fence_findings(&FenceDiff::default(), &found);
 
     // revoked_expert_serve: an expert fenced for a committed revocation is never served, also
     // after the same faults.
     cx.sub("revoked_expert_serve");
     let mut rt = Rt::fresh()?;
     rt.birth("z")?;
+    rt.birth("w")?;
+    // The live control: z is routable before the revocation and before the fence.
+    route_control("z before the revocation", rt.route("z", 1))?;
     rt.revoke("k", 1)?;
+    route_control("z after the revocation, before the fence", rt.route("z", 1))?;
     rt.fence_revoked("z", "k", 1)?;
-    let mut served = i64::from(rt.routable("z", 1));
+    let mut found = RouteTally::default();
+    found.merge(probe_routes(&rt, &["z"], RouteExpect::Fenced)?);
+    found.merge(probe_bystanders(&rt, &["w"])?);
     rt.reopen()?;
-    served += i64::from(rt.routable("z", 1));
-    served += i64::from(
-        rt.replayed()?
-            .expert_route_admission(&rt.project, &PodId::from("z"), ptr_types::Generation(1))
-            .is_ok(),
-    );
+    found.merge(probe_routes(&rt, &["z"], RouteExpect::Fenced)?);
+    found.merge(probe_bystanders(&rt, &["w"])?);
+    found.add(classify_route(
+        "z on a replay",
+        rt.replayed()?.expert_route_admission(
+            &rt.project,
+            &PodId::from("z"),
+            ptr_types::Generation(1),
+        ),
+        RouteExpect::Fenced,
+    )?);
     rt.compact_restore()?;
-    served += i64::from(rt.routable("z", 1));
+    found.merge(probe_routes(&rt, &["z"], RouteExpect::Fenced)?);
+    found.merge(probe_bystanders(&rt, &["w"])?);
     cx.attempt("revoked_expert_serve")?;
-    cx.count("revoked_expert_served_count", served);
+    cx.count("revoked_expert_served_count", found.served);
+    cx.count_fence_findings(&FenceDiff::default(), &found);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::experiments::layered_kv::Scale;
+
+    /// The two compound events are event types of the direct-append family: each donor event is
+    /// a genuine event of its type, the public commit refuses it as a structural record, and a
+    /// refused offer leaves the standing runtime as it was (the dependent still routable, no
+    /// authority standing).
+    #[test]
+    fn the_compound_events_are_offered_to_the_public_commit_and_refused() {
+        let mut cx = Cx::new(17, Scale::Reduced).expect("a context");
+        for name in ["InputInvalidated", "ExpertAuthorityChanged"] {
+            let (mut stand, event, before) = compound_direct_append(&mut cx, name).expect(name);
+            assert_eq!(event_type_of(&event), Some(name));
+            let verdict = classify_direct(&mut stand, event).expect(name);
+            assert_eq!(verdict, Verdict::Refused, "{name}");
+            assert_eq!(stand.event_count(), before, "{name}");
+            assert!(stand.routable("x", 1), "{name}");
+            for kind in [
+                ExpertAuthorityKind::GateConfig,
+                ExpertAuthorityKind::Evaluator,
+            ] {
+                assert!(stand.runtime.expert_authority(kind).is_none(), "{name}");
+            }
+        }
+        assert!(compound_direct_append(&mut cx, "Merge").is_err());
+        assert!(cx.sets["admitted_event_types"].contains("InputInvalidated"));
+        assert!(cx.sets["admitted_event_types"].contains("ExpertAuthorityChanged"));
+    }
+
+    #[test]
+    fn the_event_types_of_the_family_are_the_configs() {
+        for name in super::super::super::params::DIRECT_APPEND_EVENT_TYPES {
+            let history = HISTORY.iter().any(|(step, _)| *step == name);
+            let compound = ["InputInvalidated", "ExpertAuthorityChanged"].contains(&name);
+            assert!(
+                history != compound,
+                "{name} has exactly one way to be offered"
+            );
+        }
+    }
 }

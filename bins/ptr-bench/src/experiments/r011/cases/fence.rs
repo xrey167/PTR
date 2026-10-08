@@ -109,9 +109,25 @@ fn input_revoked_is_final(cx: &mut Cx) -> Res<()> {
     Ok(())
 }
 
+/// The refusal the runtime owes a gate-driven proposal that names a fenced or revoked-retired
+/// operand, whether it names it as it really is (the proposal constructor refused first, so
+/// this is only reached if the constructor let it through) or as a stale view: a typed operand
+/// refusal of the compare-and-set. Any other error is a harness error.
+fn is_operand_refusal(error: &RuntimeError) -> bool {
+    is_where(|e| {
+        matches!(
+            e,
+            ExpertAdmissionError::StaleOperand { .. } | ExpertAdmissionError::NotFenceable { .. }
+        )
+    })(error)
+}
+
 /// The gate cannot retire a fenced operand and cannot reactivate from a seed retired for a
-/// revoked input; both are refused by the proposal constructor and, from a stale view, by the
-/// compare-and-set.
+/// revoked input. Both are refused by the proposal constructor, which is NOT the runtime
+/// boundary and so never counts as an attempt (it is noted under `internal`); an attempt counts
+/// only when the call reached the runtime: a proposal the constructor let through (it must meet
+/// the runtime's typed refusal) and, for each, the same operation from a stale view, refused by
+/// the compare-and-set.
 fn gate_cannot_retire_a_fenced_operand(cx: &mut Cx) -> Res<()> {
     cx.sub("fenced_gate_retire");
     let mut rt = Rt::fresh()?;
@@ -127,46 +143,50 @@ fn gate_cannot_retire_a_fenced_operand(cx: &mut Cx) -> Res<()> {
         match built("a gate-driven retire of a fenced operand", result, |e| {
             matches!(e, ExpertProposalError::FencedTarget { .. })
         })? {
-            Built::Refused => {}
+            Built::Refused => cx.note("fenced_gate_retire_constructor_refusals"),
             Built::Through(proposal) => {
-                // The constructor let it through: it must at least not commit.
+                // The constructor let it through: the runtime must refuse it typed.
                 let report = super::fixture::report_for(&proposal, None, &ReportSpec::correct())?;
                 let grant = rt.admission_grant(Setup::PRE)?;
-                let committed = rt.commit_proposal(&proposal, &report, &grant, None).is_ok();
-                cx.count("fenced_gate_retires_admitted", i64::from(committed));
+                let verdict = cx.verdict(
+                    "fenced_gate_retire",
+                    "a gate-driven retire of a fenced operand the constructor let through",
+                    rt.commit_proposal(&proposal, &report, &grant, None),
+                    is_operand_refusal,
+                )?;
+                cx.count("fenced_gate_retire_attempts", 1);
+                cx.count("fenced_gate_retires_admitted", verdict.violation());
             }
         }
-        cx.attempt("fenced_gate_retire")?;
+        // From the stale Serving view the runtime refuses at the compare-and-set.
+        let stale = rt.target_with("x", &|_, mut init| {
+            init.state = ExpertState::Serving;
+            init.state_version = 1;
+            init
+        })?;
+        let proposal = rt.proposal(StructuralOp::Retire {
+            target: stale,
+            reason,
+        })?;
+        let report = super::fixture::report_for(&proposal, None, &ReportSpec::correct())?;
+        let grant = rt.admission_grant(Setup::PRE)?;
+        let verdict = cx.verdict(
+            "fenced_gate_retire",
+            "a gate-driven retire from a stale Serving view",
+            rt.commit_proposal(&proposal, &report, &grant, None),
+            is_where(|e| {
+                matches!(
+                    e,
+                    ExpertAdmissionError::StaleOperand {
+                        field: ExpertStaleField::State | ExpertStaleField::StateVersion,
+                        ..
+                    }
+                )
+            }),
+        )?;
         cx.count("fenced_gate_retire_attempts", 1);
+        cx.count("fenced_gate_retires_admitted", verdict.violation());
     }
-    // From the stale Serving view the runtime refuses at the compare-and-set.
-    let stale = rt.target_with("x", &|_, mut init| {
-        init.state = ExpertState::Serving;
-        init.state_version = 1;
-        init
-    })?;
-    let proposal = rt.proposal(StructuralOp::Retire {
-        target: stale,
-        reason: RetiredReason::GateFailed,
-    })?;
-    let report = super::fixture::report_for(&proposal, None, &ReportSpec::correct())?;
-    let grant = rt.admission_grant(Setup::PRE)?;
-    let verdict = cx.verdict(
-        "fenced_gate_retire",
-        "a gate-driven retire from a stale Serving view",
-        rt.commit_proposal(&proposal, &report, &grant, None),
-        is_where(|e| {
-            matches!(
-                e,
-                ExpertAdmissionError::StaleOperand {
-                    field: ExpertStaleField::State | ExpertStaleField::StateVersion,
-                    ..
-                }
-            )
-        }),
-    )?;
-    cx.count("fenced_gate_retire_attempts", 1);
-    cx.count("fenced_gate_retires_admitted", verdict.violation());
 
     // Reactivate from Retired(InputRevoked): the revocation-driven retirement first.
     cx.sub("reactivate_from_revoked");
@@ -188,36 +208,57 @@ fn gate_cannot_retire_a_fenced_operand(cx: &mut Cx) -> Res<()> {
             attempt,
             |e| matches!(e, ExpertProposalError::SeedUnavailable { .. }),
         )? {
-            Built::Refused => {}
+            Built::Refused => cx.note("reactivate_from_revoked_constructor_refusals"),
             Built::Through(proposal) => {
+                // The constructor let it through: the runtime must refuse it typed.
                 let report = super::fixture::report_for(&proposal, None, &ReportSpec::correct())?;
                 let grant = rt.admission_grant(Setup::PRE)?;
-                let committed = rt.commit_proposal(&proposal, &report, &grant, None).is_ok();
-                cx.count("reactivations_from_revoked_admitted", i64::from(committed));
+                let verdict = cx.verdict(
+                    "reactivate_from_revoked",
+                    "a reactivation from a revoked seed the constructor let through",
+                    rt.commit_proposal(&proposal, &report, &grant, None),
+                    is_operand_refusal,
+                )?;
+                cx.count("reactivate_from_revoked_attempts", 1);
+                cx.count("reactivations_from_revoked_admitted", verdict.violation());
             }
         }
-        cx.attempt("reactivate_from_revoked")?;
-        cx.count("reactivate_from_revoked_attempts", 1);
     }
-    // From a stale Frozen view the runtime refuses at the compare-and-set.
-    let stale = rt.target_with("x", &|_, mut init| {
-        init.state = ExpertState::Frozen;
-        init
-    })?;
-    let proposal = rt.proposal(StructuralOp::Reactivate {
-        target: stale,
-        result: None,
-    })?;
-    let report = super::fixture::report_for(&proposal, None, &ReportSpec::correct())?;
-    let grant = rt.admission_grant(Setup::PRE)?;
-    let verdict = cx.verdict(
-        "reactivate_from_revoked",
-        "a reactivation from a stale Frozen view",
-        rt.commit_proposal(&proposal, &report, &grant, None),
-        is_where(|e| matches!(e, ExpertAdmissionError::StaleOperand { .. })),
-    )?;
-    cx.count("reactivate_from_revoked_attempts", 1);
-    cx.count("reactivations_from_revoked_admitted", verdict.violation());
+    // From a stale view the runtime refuses at the compare-and-set: a Frozen view of the seed
+    // (the same pod, no result) and a Retired(GateFailed) view (the retired-target form, with a
+    // result), each as the registry does not hold it.
+    let next = super::fixture::spec_at(&rt.project, "x", 2, super::fixture::level_of("x"));
+    for (what, state, result) in [
+        (
+            "a reactivation from a stale Frozen view",
+            ExpertState::Frozen,
+            None,
+        ),
+        (
+            "a reactivation from a stale Retired(GateFailed) view",
+            ExpertState::Retired(RetiredReason::GateFailed),
+            Some(next),
+        ),
+    ] {
+        let stale = rt.target_with("x", &|_, mut init| {
+            init.state = state;
+            init
+        })?;
+        let proposal = rt.proposal(StructuralOp::Reactivate {
+            target: stale,
+            result,
+        })?;
+        let report = super::fixture::report_for(&proposal, None, &ReportSpec::correct())?;
+        let grant = rt.admission_grant(Setup::PRE)?;
+        let verdict = cx.verdict(
+            "reactivate_from_revoked",
+            what,
+            rt.commit_proposal(&proposal, &report, &grant, None),
+            is_where(|e| matches!(e, ExpertAdmissionError::StaleOperand { .. })),
+        )?;
+        cx.count("reactivate_from_revoked_attempts", 1);
+        cx.count("reactivations_from_revoked_admitted", verdict.violation());
+    }
     Ok(())
 }
 
@@ -516,4 +557,34 @@ fn unauthorized_readmission(cx: &mut Cx) -> Res<()> {
         verdict.violation(),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The refusal owed to a proposal the constructor let through is a typed operand refusal;
+    /// any other error is not it (and so is a harness error where `Cx::verdict` meets it).
+    #[test]
+    fn only_a_typed_operand_refusal_is_the_expected_runtime_refusal() {
+        let expert = RuntimeError::Expert;
+        assert!(is_operand_refusal(&expert(
+            ExpertAdmissionError::StaleOperand {
+                pod: "x".into(),
+                field: ExpertStaleField::State,
+            }
+        )));
+        assert!(is_operand_refusal(&expert(
+            ExpertAdmissionError::NotFenceable {
+                pod: "x".into(),
+                state: ExpertState::Fenced,
+            }
+        )));
+        assert!(!is_operand_refusal(&expert(
+            ExpertAdmissionError::GateFailed
+        )));
+        assert!(!is_operand_refusal(
+            &RuntimeError::StructuralRecordOutsideAdmissionPath
+        ));
+    }
 }

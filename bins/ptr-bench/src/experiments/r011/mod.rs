@@ -494,6 +494,11 @@ mod tests {
     const CRITERIA: &str = include_str!(
         "../../../../../experiments/runtime/R011-self-modification-safety/criteria.toml"
     );
+    const DRAFT: &str = include_str!(
+        "../../../../../experiments/runtime/R011-self-modification-safety/DRAFT_PREREGISTRATION.md"
+    );
+    const README: &str =
+        include_str!("../../../../../experiments/runtime/R011-self-modification-safety/README.md");
 
     /// The shared reduced run (every case once at the reduced scale; a few tens of seconds in a
     /// debug build).
@@ -536,10 +541,10 @@ mod tests {
     fn the_pinned_selection_digest_is_what_the_suite_produces() {
         assert_eq!(cases::selection_digest(), params::SELECTION_DIGEST);
         assert!(PREREGISTRATION.contains(params::SELECTION_DIGEST));
-        // The suite is the 89 cases of the manifest's falsification text, in its order.
+        // The suite is the 91 cases of the manifest's falsification text, in its order.
         let manifest: toml::Table = params::EXPERIMENT_TOML.parse().expect("experiment.toml");
         let text = manifest["falsification"].as_str().expect("falsification");
-        assert_eq!(params::ADVERSARIAL_CASES.len(), 89);
+        assert_eq!(params::ADVERSARIAL_CASES.len(), 91);
         let start = text.find("uncommitted_change, ").expect("the first case");
         let end = text
             .find(", non_tightening_rotation_control;")
@@ -836,6 +841,135 @@ mod tests {
             )
         });
         assert_eq!(refused, Ok(cases::Verdict::Refused));
+    }
+
+    /// R011 is `planned` and its attempts are in the harness record of every seed
+    /// (`adversarial_attempts_per_case`), which aggregate.py carries into run.json and
+    /// metrics.json: no file of the experiment names a separate attempts artifact that nothing
+    /// writes.
+    #[test]
+    fn no_required_artifact_is_one_that_nothing_writes() {
+        let manifest: toml::Table = params::EXPERIMENT_TOML.parse().expect("experiment.toml");
+        let required: Vec<&str> = manifest["required_artifacts"]
+            .as_array()
+            .expect("required_artifacts")
+            .iter()
+            .map(|name| name.as_str().expect("a name"))
+            .collect();
+        assert_eq!(required, ["run.json", "metrics.json"]);
+        for (file, text) in [
+            ("experiment.toml", params::EXPERIMENT_TOML),
+            ("config.toml", params::CONFIG_TOML),
+            ("PREREGISTRATION.md", PREREGISTRATION),
+            ("DRAFT_PREREGISTRATION.md", DRAFT),
+            ("criteria.toml", CRITERIA),
+            ("README.md", README),
+        ] {
+            assert!(!text.contains("adversarial_attempts.json"), "{file}");
+        }
+        assert!(!params::CONFIG_TOML.contains("attempts_artifact"));
+    }
+
+    /// The counts the preregistration states are the counts of the rules and of the suite.
+    #[test]
+    fn the_preregistration_states_the_counts_the_harness_has() {
+        let suite = params::ADVERSARIAL_CASES.len();
+        assert!(PREREGISTRATION.contains(&format!(
+            "{} coverage rules and {} falsifier rules",
+            metrics::coverage().len(),
+            metrics::falsifiers().len()
+        )));
+        assert!(PREREGISTRATION.contains(&format!("the {suite} `adversarial_cases`")));
+        assert!(PREREGISTRATION.contains(&format!("per case of the {suite}")));
+        assert!(DRAFT.contains(&format!("({suite} cases)")));
+        let manifest: toml::Table = params::EXPERIMENT_TOML.parse().expect("experiment.toml");
+        let text = manifest["falsification"].as_str().expect("falsification");
+        assert!(text.contains(&format!("adversarial_cases, {suite} cases")));
+        // The direct-append family of the text is the config's, with both compound events.
+        for name in params::DIRECT_APPEND_EVENT_TYPES {
+            assert!(
+                text.contains(&format!("direct_ledger_append_{name}")),
+                "{name}"
+            );
+        }
+        assert_eq!(params::DIRECT_APPEND_EVENT_TYPES.len(), 11);
+    }
+
+    /// The attempts of the two C7 families are the calls that reached the runtime: the proposal
+    /// constructor's refusals are not attempts and are only noted.
+    #[test]
+    fn constructor_refusals_are_not_attempts() {
+        let json = &reduced_report().json;
+        for (case, counter, note) in [
+            (
+                "fenced_gate_retire",
+                "fenced_gate_retire_attempts",
+                "internal.fenced_gate_retire_constructor_refusals",
+            ),
+            (
+                "reactivate_from_revoked",
+                "reactivate_from_revoked_attempts",
+                "internal.reactivate_from_revoked_constructor_refusals",
+            ),
+        ] {
+            let attempts = int(json, &format!("adversarial_attempts_per_case.{case}"));
+            assert_eq!(attempts, int(json, counter), "{case}");
+            assert_eq!(
+                attempts, 2,
+                "{case}: one per reason or form, from a stale view"
+            );
+            assert_eq!(int(json, note), 2, "{case}");
+        }
+    }
+
+    /// Both compound events were offered to the public commit in every run, and the sets of the
+    /// attempted and the admitted event types hold them.
+    #[test]
+    fn the_direct_append_family_has_the_compound_events() {
+        let json = &reduced_report().json;
+        for name in ["InputInvalidated", "ExpertAuthorityChanged"] {
+            assert_eq!(
+                int(
+                    json,
+                    &format!("adversarial_attempts_per_case.direct_ledger_append_{name}")
+                ),
+                1
+            );
+            assert_eq!(
+                int(
+                    json,
+                    &format!("direct_ledger_append_accepted_by_type.{name}")
+                ),
+                0
+            );
+        }
+        assert_eq!(
+            emit::resolve(json, "direct_append_attempted_event_type_set_digest"),
+            emit::resolve(json, "admitted_event_type_set_digest")
+        );
+    }
+
+    /// C11 ran its un-invalidated control in every cell, drew every race point after at least
+    /// one step, and Reactivate's two forms in C4 are each four cells.
+    #[test]
+    fn the_inflight_cells_have_a_control_and_a_step_before_the_event() {
+        let json = &reduced_report().json;
+        assert_eq!(int(json, "internal.c11_control_sessions_completed"), 6);
+        let Some(Json::Obj(fixture)) = emit::resolve(json, "fixture") else {
+            panic!("fixture");
+        };
+        let points: Vec<i64> = fixture
+            .iter()
+            .filter(|(name, _)| name.starts_with("race_point."))
+            .map(|(_, value)| match value {
+                Json::Int(point) => *point,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(points.len(), 6);
+        assert!(points.iter().all(|point| *point >= 1), "{points:?}");
+        assert_eq!(int(json, "internal.c4_reactivate_frozen_form_cells"), 4);
+        assert_eq!(int(json, "internal.c4_reactivate_retired_form_cells"), 4);
     }
 
     #[test]
