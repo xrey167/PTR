@@ -334,6 +334,47 @@ pub struct ReferenceKvOutcome {
     pub layered: Option<LayeredReuseReport>,
 }
 
+/// How [`ReferenceKvReuseBackend::probe`] runs a request.
+#[derive(Clone, Copy, Debug)]
+pub enum ReferenceKvProbeMode<'a> {
+    /// No lookup and no insert: the cold path.
+    Cold,
+    /// Look up and insert as [`ReferenceKvReuseBackend::infer_scoped`] does.
+    Warm,
+    /// Negative control, **not a serving path**. The catalog is asked for `donor`'s prefix
+    /// under an always-live oracle (the use-time liveness check is bypassed on purpose), the
+    /// forked rows are cut to the longest 16-token boundary below the prompt and served as the
+    /// prompt's own rows, and the rest is prefilled. If the donor's prefix holds rows that are
+    /// not the prompt's (a span the prompt no longer has), the result differs from a cold run
+    /// of the prompt, which is what a bitwise check must detect. The run inserts nothing. The
+    /// catalog still has to hold the donor's entries, so revoke the donor's input under
+    /// [`IndexUpdate::Suppressed`] (or not at all) before using this mode.
+    StaleDonor(&'a SegmentedModelRequest),
+}
+
+/// A run plus the two bitwise probes of the R007 span-forget experiment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferenceKvProbe {
+    pub outcome: ReferenceKvOutcome,
+    /// The full next-token logits vector (256 entries) at the last prompt position, before
+    /// the first generated token. Compare on `f32::to_bits`; see
+    /// [`ReferenceKvProbe::logit_bits`].
+    pub prompt_logits: Vec<f32>,
+    /// Digest of the K and V rows of every layer for all prompt positions; the definition is
+    /// on [`KvSession::kv_state_digest`].
+    pub kv_state_digest: Digest,
+}
+
+impl ReferenceKvProbe {
+    /// The logits as `f32` bit patterns, the unit of the bitwise comparison.
+    pub fn logit_bits(&self) -> Vec<u32> {
+        self.prompt_logits
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+}
+
 /// Whether a run may look up and insert.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CacheUse {
@@ -779,6 +820,65 @@ impl ReferenceKvReuseBackend {
     ) -> Result<ReferenceKvOutcome, ReferenceKvError> {
         let policy = hint.map_or(KvReusePolicy::ExactOnly, |hint| hint.policy);
         self.generate(scope, request, policy, CacheUse::Disabled, binding)
+    }
+
+    /// Run `request` like the one-shot entry points (same gate, same own-liveness oracle, same
+    /// restart on a mid-run cancellation) and also return the full prompt-position logits
+    /// vector and the KV-state digest of the run, for the cold path, the warm path or the
+    /// stale-reuse negative control (see [`ReferenceKvProbeMode`]). Always the default binding
+    /// and Exact reuse.
+    pub fn probe(
+        &self,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        mode: ReferenceKvProbeMode<'_>,
+    ) -> Result<ReferenceKvProbe, ReferenceKvError> {
+        let _gate = self
+            .oneshot
+            .lock()
+            .map_err(|_| ReferenceKvError::Poisoned)?;
+        let liveness = self.own_liveness();
+        let mut session = match mode {
+            ReferenceKvProbeMode::Cold => KvSession::begin(
+                self,
+                scope,
+                request,
+                KvReusePolicy::ExactOnly,
+                CacheUse::Disabled,
+                crate::kv_infer_session::SessionAdmission::OneShot,
+                &liveness,
+            )?,
+            ReferenceKvProbeMode::Warm => KvSession::begin(
+                self,
+                scope,
+                request,
+                KvReusePolicy::ExactOnly,
+                CacheUse::Enabled,
+                crate::kv_infer_session::SessionAdmission::OneShot,
+                &liveness,
+            )?,
+            ReferenceKvProbeMode::StaleDonor(donor) => {
+                KvSession::begin_stale_donor(self, scope, request, donor, &liveness)?
+            }
+        };
+        let outcome = match session.run_to_end(&liveness)? {
+            KvSessionFinish::Completed(outcome) => *outcome,
+            KvSessionFinish::Cancelled(_) => session.restart_with(&liveness)?,
+        };
+        let prompt_logits =
+            session
+                .prompt_logits()
+                .map(<[f32]>::to_vec)
+                .ok_or(ReferenceKvError::SessionPhase {
+                    operation: "probe",
+                    phase: session.phase(),
+                })?;
+        let kv_state_digest = session.kv_state_digest()?;
+        Ok(ReferenceKvProbe {
+            outcome,
+            prompt_logits,
+            kv_state_digest,
+        })
     }
 
     /// Run `request` with no lookup and no insert: the cold path.

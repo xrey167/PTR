@@ -73,11 +73,14 @@ use ptr_model_api::{
     SegmentedModelRequest, TokenId, Tokenizer,
 };
 use ptr_pods::{
-    KvBackendError, PagedKvTensorBackend, Qwen2Binding, Qwen2RopeRegime, Qwen2StackInput,
+    KvBackendError, KvTensorBackend, PagedKvTensorBackend, Qwen2Binding, Qwen2RopeRegime,
+    Qwen2StackInput,
 };
 use ptr_types::{Digest, RequestId};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
+
+const KV_STATE_DOMAIN: &[u8] = b"ptr.kv.reference-state.v1\0";
 
 /// Counters of the session lifecycle, for the R005 arms and for tests.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -230,6 +233,8 @@ pub struct KvSession<'a> {
     binding_guards: Vec<KvDependency>,
     position: usize,
     last_logits: Vec<f32>,
+    /// The next-token logits at the last prompt position, kept once the prompt is prefilled.
+    prompt_logits: Option<Vec<f32>>,
     generated: Vec<TokenId>,
     hasher: Sha256,
     work: Work,
@@ -355,6 +360,47 @@ impl<'a> KvSession<'a> {
         binding: &StackBinding,
         liveness: &dyn KvLivenessOracle,
     ) -> Result<Self, ReferenceKvError> {
+        Self::begin_inner(
+            backend, scope, request, policy, cache_use, admission, binding, liveness, None,
+        )
+    }
+
+    /// Like [`Self::begin`] on the default binding, but the catalog lookup is made for `donor`
+    /// under an always-live oracle and the forked rows are cut to the longest chunk boundary
+    /// below the prompt: the fault-injected stale reuse of the R007 negative control. The
+    /// session neither looks up nor inserts afterwards, so it cannot poison the catalog.
+    pub(crate) fn begin_stale_donor(
+        backend: &'a ReferenceKvReuseBackend,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        donor: &SegmentedModelRequest,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<Self, ReferenceKvError> {
+        Self::begin_inner(
+            backend,
+            scope,
+            request,
+            KvReusePolicy::ExactOnly,
+            CacheUse::Enabled,
+            SessionAdmission::OneShot,
+            &StackBinding::base(),
+            liveness,
+            Some(donor),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn begin_inner(
+        backend: &'a ReferenceKvReuseBackend,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        policy: KvReusePolicy,
+        cache_use: CacheUse,
+        admission: SessionAdmission,
+        binding: &StackBinding,
+        liveness: &dyn KvLivenessOracle,
+        stale_donor: Option<&SegmentedModelRequest>,
+    ) -> Result<Self, ReferenceKvError> {
         check_scope(scope)?;
         if request.tokenizer() != backend.tokenizer().identity() {
             return Err(ReferenceKvError::TokenizerMismatch {
@@ -443,15 +489,27 @@ impl<'a> KvSession<'a> {
                     layered,
                 )?;
             } else {
+                // A stale donor replaces both the key source and the oracle; otherwise the
+                // request itself and the caller's oracle decide.
+                let (lookup_request, lookup_oracle): (_, &dyn KvLivenessOracle) = match stale_donor
+                {
+                    Some(donor) => (donor, &NoCache),
+                    None => (request, liveness),
+                };
                 let lookup = KvLookup {
                     salt: &salt,
                     chain: &chain,
-                    request,
+                    request: lookup_request,
                     positions: &KvRequestPositions::Canonical,
                 };
-                if let Some(hit) = state.catalog.lookup(lookup, liveness) {
+                if let Some(hit) = state.catalog.lookup(lookup, lookup_oracle) {
                     let matched = hit.matched_tokens();
-                    if matched >= total {
+                    let stale_cut = (total.saturating_sub(1) / KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS;
+                    let unusable = match stale_donor {
+                        None => matched >= total,
+                        Some(_) => stale_cut == 0,
+                    };
+                    if unusable {
                         // The stack needs the logits of the last prompt token, which a cache
                         // does not hold: refuse the whole-prompt hit and prefill from scratch.
                         let hit_pin = hit.pin().clone();
@@ -459,9 +517,18 @@ impl<'a> KvSession<'a> {
                     } else {
                         match state
                             .catalog
-                            .fork(&backend.paged, &mut cache, hit, liveness)
+                            .fork(&backend.paged, &mut cache, hit, lookup_oracle)
                         {
                             Ok(forked) => {
+                                let matched = if stale_donor.is_some() {
+                                    // Keep the donor's rows up to the cut and serve them as if
+                                    // they were this prompt's.
+                                    let kept = matched.min(stale_cut);
+                                    backend.paged.truncate(&mut cache, kept)?;
+                                    kept
+                                } else {
+                                    matched
+                                };
                                 let covered = lineage_dependencies(request, matched);
                                 if covered
                                     .iter()
@@ -506,6 +573,12 @@ impl<'a> KvSession<'a> {
             state.pins.insert(id, pins);
         }
         drop(state);
+        // A stale-donor session served its one lookup; it never inserts.
+        let cache_use = if stale_donor.is_some() {
+            CacheUse::Disabled
+        } else {
+            cache_use
+        };
         Ok(Self {
             backend,
             scope: scope.clone(),
@@ -526,6 +599,7 @@ impl<'a> KvSession<'a> {
             binding_guards,
             position: hit_tokens,
             last_logits: Vec::new(),
+            prompt_logits: None,
             generated: Vec::new(),
             hasher: new_hasher(),
             work: Work::default(),
@@ -560,6 +634,61 @@ impl<'a> KvSession<'a> {
     /// Tokens emitted so far.
     pub fn generated(&self) -> &[TokenId] {
         &self.generated
+    }
+
+    /// The full next-token logits vector at the last prompt position, available once the
+    /// prompt is prefilled (cold, warm or restarted) and `None` before. It is the vector the
+    /// first generated token is chosen from. Compare vectors bitwise on `f32::to_bits`, never
+    /// with `==` on floats (`-0.0 == 0.0`, `NaN != NaN`).
+    pub fn prompt_logits(&self) -> Option<&[f32]> {
+        self.prompt_logits.as_deref()
+    }
+
+    /// SHA-256 over the K and V rows of every layer for all prompt positions of this run (the
+    /// rows decoded tokens appended afterwards are excluded), so two runs' KV state compares
+    /// bitwise without exposing pages. Available once the prompt is prefilled, for a cold run
+    /// and for a warm one (reused plus recomputed rows alike).
+    ///
+    /// Definition (all integers little-endian `u64`, all floats as `f32::to_bits` little-endian
+    /// `u32`): `SHA-256( "ptr.kv.reference-state.v1\0" || prompt_tokens || layers ||
+    /// row_width || for each layer in order: [keys of positions 0..prompt_tokens row by row
+    /// || values of positions 0..prompt_tokens row by row] )`, with `row_width` the
+    /// key-value heads times the head dimension. It does not include page ids, page
+    /// boundaries, digests of pages, the chain id or the catalog salt, so it is independent of
+    /// how the rows were obtained.
+    ///
+    /// # Errors
+    /// [`ReferenceKvError::SessionPhase`] before the prompt is prefilled; a backend refusal.
+    pub fn kv_state_digest(&self) -> Result<Digest, ReferenceKvError> {
+        if self.prompt_logits.is_none() {
+            return Err(ReferenceKvError::SessionPhase {
+                operation: "kv_state_digest",
+                phase: self.phase,
+            });
+        }
+        let snapshot = self.backend.paged.snapshot(&self.cache)?;
+        let prompt = self.ids.len();
+        let width = snapshot.schema.key_value_heads * snapshot.schema.head_dim;
+        if snapshot.sequence_length < prompt {
+            return Err(KvBackendError::SnapshotSchemaMismatch.into());
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(KV_STATE_DOMAIN);
+        hasher.update((prompt as u64).to_le_bytes());
+        hasher.update((snapshot.layers.len() as u64).to_le_bytes());
+        hasher.update((width as u64).to_le_bytes());
+        for layer in &snapshot.layers {
+            for tensor in [&layer.keys, &layer.values] {
+                let rows = tensor
+                    .values
+                    .get(..prompt * width)
+                    .ok_or(KvBackendError::SnapshotSchemaMismatch)?;
+                for value in rows {
+                    hasher.update(value.to_bits().to_le_bytes());
+                }
+            }
+        }
+        Ok(hasher.finalize().into())
     }
 
     /// The binding the session currently runs under (re-resolved by a restart).
@@ -628,6 +757,7 @@ impl<'a> KvSession<'a> {
         self.last_logits = output.logits.into_iter().next_back().unwrap_or_default();
         self.position = next;
         if next >= total {
+            self.prompt_logits = Some(self.last_logits.clone());
             self.adopt_layers(liveness)?;
         }
         if !self.exact && self.catalog_requested && next.is_multiple_of(KV_CHUNK_TOKENS) {
@@ -861,6 +991,7 @@ impl<'a> KvSession<'a> {
         self.hit_tokens = 0;
         self.position = 0;
         self.last_logits = Vec::new();
+        self.prompt_logits = None;
         self.generated = Vec::new();
         self.hasher = new_hasher();
         self.work = Work::default();
