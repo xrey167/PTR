@@ -1,4 +1,4 @@
-use ptr_ledger::{CommittedEvent, LedgerEvent};
+use ptr_ledger::{CommittedEvent, InputInvalidationKind, LedgerEvent};
 use ptr_state::projection_entries;
 use ptr_types::{Generation, ProjectId};
 
@@ -65,6 +65,17 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
             subject: format!("procedure:{id}"),
             generation: *generation,
         },
+        // A compound revocation joins the revocation set like a `Revoked` record; a
+        // supersession is an expert-dependency floor the runtime keeps, not a lifecycle change.
+        LedgerEvent::InputInvalidated {
+            input,
+            generation,
+            kind: InputInvalidationKind::Revoked,
+            ..
+        } => LifecycleChange::Tombstone {
+            subject: input.clone(),
+            generation: *generation,
+        },
         LedgerEvent::SemanticDeltaCommitted {
             base_revision,
             revision,
@@ -95,6 +106,11 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         // The projection holds no expert catalog yet; structural records stay in the ledger.
         | LedgerEvent::ExpertStructuralCommitted { .. }
         | LedgerEvent::ExpertFenceCommitted { .. }
+        // A supersession changes no lifecycle row; the fenced experts are the runtime's.
+        | LedgerEvent::InputInvalidated {
+            kind: InputInvalidationKind::Superseded { .. },
+            ..
+        }
         // The projection holds no taint table; taint records stay in the ledger.
         | LedgerEvent::KvTaintCommitted { .. } => LifecycleChange::None,
     }
@@ -132,6 +148,7 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::ExpertStructuralCommitted { .. } => "expert.structural_committed",
         LedgerEvent::ExpertFenceCommitted { .. } => "expert.fence_committed",
         LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
+        LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
     }
 }
 
@@ -211,6 +228,7 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             Some((kind, digest)) => format!("kv-taint:{}:{}", kind.name(), hex_digest(digest)),
             None => "kv-taint:none".to_owned(),
         },
+        LedgerEvent::InputInvalidated { input, .. } => format!("expert-input:{input}"),
     }
 }
 
@@ -426,5 +444,48 @@ mod tests {
             assert_eq!(event_topic(&delta.event), "semantic.delta_committed");
             assert_eq!(event_subject(&delta), "revision:3");
         }
+    }
+
+    #[test]
+    fn an_input_invalidation_has_a_topic_a_subject_and_only_a_revocation_tombstones() {
+        let event = |kind| {
+            committed(
+                8,
+                LedgerEvent::InputInvalidated {
+                    input: "dataset:a".into(),
+                    generation: Generation(2),
+                    binding_digest: [1; 32],
+                    kind,
+                    fence_count: 3,
+                    fence_digest: [2; 32],
+                },
+            )
+        };
+        let revoked = event(InputInvalidationKind::Revoked);
+        assert_eq!(event_topic(&revoked.event), "expert.input_invalidated");
+        assert_eq!(event_subject(&revoked), "expert-input:dataset:a");
+        assert_eq!(
+            lifecycle_change(&revoked),
+            LifecycleChange::Tombstone {
+                subject: "dataset:a".into(),
+                generation: Generation(2)
+            }
+        );
+        let payload = event_payload(&revoked);
+        assert_eq!(payload["commit_index"], 8);
+        assert_eq!(payload["entries"]["revoked:dataset:a"], "2");
+        assert_eq!(
+            payload["entries"]["expert-input:9:dataset:a:2"],
+            format!("revoked:3:{}", "02".repeat(32))
+        );
+        // A supersession is the runtime's floor, not a lifecycle row.
+        let superseded = event(InputInvalidationKind::Superseded {
+            old_generation: Generation(2),
+            new_generation: Generation(3),
+            new_digest: [4; 32],
+            replacement_ref: [5; 32],
+        });
+        assert_eq!(lifecycle_change(&superseded), LifecycleChange::None);
+        assert_eq!(event_topic(&superseded.event), "expert.input_invalidated");
     }
 }

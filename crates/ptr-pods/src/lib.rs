@@ -47,11 +47,12 @@ pub use evidence::{
 };
 pub use expert::{
     BaseModelDigest, BaseModelId, BaseModelRef, ExpertCommitRecord, ExpertEvidence,
-    ExpertIdentityError, ExpertLevel, ExpertOperationRequest, ExpertOutcome, ExpertPodSpec,
-    ExpertProposal, ExpertProposalError, ExpertState, ExpertTarget, ExpertTargetInit,
-    ManifestDigest, OpKind, OperandCount, OperationId, OutcomeKind, ProposalId, ProposalParts,
-    ProposerRef, RationaleDigest, RequestedOp, ResultIntent, RetiredReason, StructuralOp,
-    ZeroDigest, MAX_EXPERT_COMMIT_RECORD_BYTES,
+    ExpertIdentityError, ExpertInputError, ExpertInputRef, ExpertInputs, ExpertLevel,
+    ExpertOperationRequest, ExpertOutcome, ExpertPodSpec, ExpertProposal, ExpertProposalError,
+    ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId,
+    OutcomeKind, ProposalId, ProposalParts, ProposerRef, RationaleDigest, RequestedOp,
+    ResultIntent, RetiredReason, StructuralOp, ZeroDigest, MAX_EXPERT_COMMIT_RECORD_BYTES,
+    MAX_EXPERT_INPUTS_PER_ROLE, MAX_EXPERT_INPUT_IDENTITY_BYTES,
 };
 pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
 pub use kv::{

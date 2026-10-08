@@ -85,7 +85,60 @@
 //! # Route admission
 //!
 //! [`PtrRuntime::expert_route_admission`] is the use-time check an inference path asks before it
-//! routes to an expert. It is not a router: no production router consumes it.
+//! routes to an expert. It is not a router: no production router consumes it. It refuses an
+//! expert that is unknown, at another generation, fenced, not `Serving`/`Frozen`, or, for an
+//! expert admitted with a dependency block, one of whose recorded inputs is revoked or
+//! superseded beyond the generation it was built from
+//! ([`RouteRefusal::DependencyNotLive`]), whether or not a fence was ever applied.
+//!
+//! # Input dependencies and the compound invalidation
+//!
+//! [`PtrRuntime::admit_expert_proposal_with_inputs`] commits a version 3
+//! [`ExpertCommitRecord`] whose typed dependency block names the training and the evaluation
+//! inputs the produced expert(s) rest on, each as `(identity, generation, digest)`; the base
+//! model of the expert is a dependency too, under the identity `base-model:{id}` (see
+//! [`ptr_pods::ExpertInputRef::from_base_model`]). [`PtrRuntime::admit_expert_proposal`] keeps
+//! writing version 2 records that name no inputs, so an expert admitted that way is outside every
+//! mechanism below. The [`ExpertDependencyIndex`] inside the registry projection holds the
+//! relation, the source edges of `Merge`, `Split` and `Reactivate` and the input-digest registry
+//! (see `dependency.rs` for the full content).
+//!
+//! Admission of a version 3 record, and its replay, refuse before anything is appended (typed,
+//! for training and evaluation inputs and the base model alike):
+//!
+//! * an input revoked, by a committed `InputInvalidated`, by a committed `Revoked` or
+//!   `ProcedureRevoked`, or as [`PtrRuntime::generation_validity`] reports it
+//!   ([`ExpertAdmissionError::InputRevoked`]);
+//! * an input generation below a supersession floor or below the live generation the lifecycle
+//!   authority holds ([`ExpertAdmissionError::InputSuperseded`], the stale input generation);
+//! * an input digest that differs from the one the first committed use of that
+//!   `(identity, generation)` fixed ([`ExpertAdmissionError::InputDigestStale`]). Only a
+//!   committed `Superseded` invalidation moves a generation's digest forward, by fixing the digest
+//!   of its new generation.
+//!
+//! [`PtrRuntime::invalidate_input`] is the compound event. Under a
+//! [`ExpertFenceAuthority::RuntimeRevocation`] grant it appends ONE
+//! [`LedgerEvent::InputInvalidated`] (ledger tag 30) that revokes (or supersedes) the input and
+//! fences every expert that rests on it. The fence set is derived at this commit index from the
+//! index: every expert whose dependency block names the input (`Revoked`: at exactly that
+//! generation; `Superseded`: at any generation below the new one), closed over the source edges
+//! (a descendant of an affected expert is affected), keeping those that are `Serving`, `Frozen`
+//! or fenced for `AuthorityQuarantine`. A `Superseded` closure does not follow a descendant whose
+//! own block already names the input at the new generation or above (it was retrained on the
+//! replacement); no other planned-succession typing exists. The event carries only the count and
+//! a domain-separated SHA-256 over the canonical ordered set ([`expert_fence_set_digest`]);
+//! applying it fences every member in one step with cause `InputRevoked` (a quarantined member is
+//! escalated; a supersession uses the same cause, which is final), moves their fence epochs up by
+//! one and, for a revocation, joins the revocation set exactly like a `Revoked` record. Commit
+//! and replay both re-derive the set at that point of the history and refuse a different count
+//! or digest ([`ExpertAdmissionError::FenceSetMismatch`]), so a fan-out of any size is one small
+//! record and costs O(set) to apply.
+//!
+//! The older pair, a plain `Revoked` followed by [`PtrRuntime::fence_expert`] per expert, keeps
+//! working unchanged. Only the compound event is atomic: between a plain `Revoked` and the last
+//! fence an expert is still `Serving`, which route admission closes only for experts that
+//! recorded their inputs. A readmission of a quarantined expert is refused while any recorded
+//! input is not live ([`ExpertAdmissionError::DependencyNotLive`]).
 //!
 //! # Legacy records
 //!
@@ -101,8 +154,9 @@
 //! The report is trusted to be what the host's evaluator produced (see `ptr-lineage`
 //! `BoundGateReport`): neither admission nor replay re-runs the gate, and the digest is an
 //! unkeyed hash, so replay shows the committed evidence is the evidence that was admitted, not
-//! that the measurements are true. Nothing checks that attested training inputs are still live
-//! or revalidates the gate epoch at commit. The grant is a snapshot the host builds from its own
+//! that the measurements are true. The inputs a version 3 record names are checked for liveness
+//! and digest (see "Input dependencies"); an expert admitted without a dependency block is not,
+//! and the gate epoch is not revalidated at commit. The grant is a snapshot the host builds from its own
 //! current authority; only the identity, key, principal and grant generation it rests on are
 //! re-read at commit. A compacted snapshot carries neither the legacy marks nor the per-epoch
 //! configuration digests, so both restart empty from one.
@@ -148,19 +202,22 @@
 //! expert ([`ptr_pods::ExpertProposalError::FencedTarget`]). Replay repeats the compare-and-set,
 //! the cause check and the committed-revocation check; a compacted snapshot carries the state
 //! and the fence memo; a KV entry that depended on the expert is dead from the fence on.
-//! The transition does not run by itself: no code derives it from a revocation, the host issues
-//! it (open point: the compound invalidation event).
+//! The transition does not run by itself: the compound invalidation fences, it does not retire,
+//! so the host still issues the retirement (a `Superseded` invalidation fences with the same
+//! cause but names no committed revocation, so `retire_revoked_expert` cannot retire what it
+//! fenced).
 //!
 //! `InputRevoked` is a ledger-backed cause: the event names the `(subject, generation)` of a
 //! committed `Revoked` (or `ProcedureRevoked`) record, and commit and replay refuse it unless the
 //! runtime's revocations, built in commit order, already hold it. `AuthorityQuarantine` stays a
 //! cause the host asserts under its grant: the ledger holds no record of it to check.
 //!
-//! The registry does not record which inputs an expert was built from, so a readmission cannot
-//! re-check them; the safeguard for an input revoked while the expert is quarantined is the
-//! escalation above, which the host issues when it sees the revocation. A readmission therefore
-//! rests on the host having escalated in time (open point: record expert inputs in the
-//! structural record and refuse readmission against `revoked_generations`).
+//! The registry records the inputs of an expert admitted with a version 3 record (see "Input
+//! dependencies"), and a readmission of such an expert is refused while any of them is not live.
+//! For an expert admitted without a dependency block the registry knows no inputs, so the
+//! safeguard for an input revoked while the expert is quarantined stays the escalation above,
+//! which the host issues when it sees the revocation, or the compound invalidation, which
+//! escalates a quarantined dependent itself.
 //!
 //! Replay repeats the compare-and-set against the registry as of that point of the history; it
 //! cannot re-check the grant, which is not recorded.
@@ -178,19 +235,25 @@
 //! dependency whose recorded epoch is `0` or at most the memo is never live, also after a
 //! readmission, so an entry recorded before the fence (or with no epoch) is never revived.
 
+mod dependency;
+
 use crate::manifest::ManifestBindingAuthority;
 use crate::{PtrRuntime, RuntimeError};
+pub use dependency::ExpertDependencyIndex;
+use dependency::{DependencyUpdate, ExpertRef, InputKey, InputStatus, RecordedInput};
+pub use ptr_ledger::InputInvalidationKind;
 use ptr_ledger::{
     ExpertFenceAction, ExpertFenceCause, ExpertFenceEvidence, ExpertFenceResume,
     ExpertFenceRevocation, ExpertOpKind, LedgerEvent,
 };
 use ptr_lineage::BoundGateReport;
 use ptr_pods::{
-    BaseModelRef, ExpertCommitRecord, ExpertLevel, ExpertProposal, ExpertState, ManifestDigest,
-    OpKind, ProposerRef, RetiredReason, StructuralOp,
+    BaseModelRef, ExpertCommitRecord, ExpertInputRef, ExpertInputs, ExpertLevel, ExpertProposal,
+    ExpertState, ManifestDigest, OpKind, ProposerRef, RetiredReason, StructuralOp,
 };
 use ptr_types::{
     CommitIndex, Generation, IdentityContext, NodeId, PodId, PrincipalId, ProjectId, Timestamp,
+    Validity,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -477,6 +540,78 @@ pub enum ExpertAdmissionError {
     GrantPeerNotAdmitted,
     /// The grant generation of this kind cannot be advanced any further.
     GrantGenerationExhausted { kind: ExpertGrantKind },
+    /// A record names an input that is revoked: by a committed `InputInvalidated`, a committed
+    /// `Revoked` or `ProcedureRevoked`, or as the lifecycle authority reports it.
+    InputRevoked {
+        role: ExpertInputRole,
+        identity: String,
+        generation: Generation,
+    },
+    /// A record names an input generation that is superseded: below a supersession floor or
+    /// below the live generation of the lifecycle authority (a stale input generation).
+    InputSuperseded {
+        role: ExpertInputRole,
+        identity: String,
+        generation: Generation,
+        floor: Generation,
+    },
+    /// A record names an input with a digest other than the one the first committed use of that
+    /// `(identity, generation)` fixed (a stale input digest), or names one `(identity,
+    /// generation)` with two digests.
+    InputDigestStale {
+        role: ExpertInputRole,
+        identity: String,
+        generation: Generation,
+    },
+    /// The input generation is already revoked by a committed `InputInvalidated`.
+    InputAlreadyInvalidated {
+        identity: String,
+        generation: Generation,
+    },
+    /// The invalidation's binding digest (or a supersession's new digest) differs from the
+    /// digest the registry fixed for that `(identity, generation)`.
+    InputBindingMismatch {
+        identity: String,
+        generation: Generation,
+    },
+    /// The invalidation names a generation the lifecycle authority does not hold: a revocation
+    /// of a generation ahead of the live one, or a supersession to a generation not yet
+    /// committed there. `live` is the generation the authority holds.
+    InputGenerationMismatch {
+        identity: String,
+        generation: Generation,
+        live: Generation,
+    },
+    /// A supersession does not move the floor of its identity forward.
+    StaleSupersession {
+        identity: String,
+        floor: Generation,
+        new_generation: Generation,
+    },
+    /// The count or digest of the fence set an `InputInvalidated` event carries is not the set
+    /// derived from the dependency index at that point of the history.
+    FenceSetMismatch {
+        derived_count: u32,
+        event_count: u32,
+        digest_matches: bool,
+    },
+    /// A readmission names an expert one of whose recorded inputs is revoked or superseded.
+    DependencyNotLive {
+        pod: String,
+        identity: String,
+        generation: Generation,
+    },
+}
+
+/// The role an input plays in a version 3 record, as named in a refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertInputRole {
+    /// A training input.
+    Training,
+    /// An evaluation input.
+    Evaluation,
+    /// The base model, derived from the record's operation.
+    BaseModel,
 }
 
 /// Why an expert may not be routed to.
@@ -490,6 +625,12 @@ pub enum RouteRefusal {
     Fenced,
     /// The expert is in a state other than `Serving` or `Frozen`.
     NotServing { state: ExpertState },
+    /// One of the inputs the expert's record named is revoked or superseded beyond the
+    /// generation the expert was built from, whether or not a fence was applied.
+    DependencyNotLive {
+        identity: String,
+        generation: Generation,
+    },
 }
 
 /// Which of the host's authorities a fence grant carries.
@@ -578,6 +719,186 @@ pub struct ExpertFenceRequest {
     pub revocation: Option<ExpertFenceRevocation>,
 }
 
+/// One invalidation of an input: revoke it, or supersede it by a newer generation. Both fence
+/// every expert that rests on the input in the same committed event; see
+/// [`PtrRuntime::invalidate_input`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputInvalidation {
+    input: String,
+    generation: Generation,
+    binding_digest: [u8; 32],
+    kind: InputInvalidationKind,
+}
+
+impl InputInvalidation {
+    /// Revoke `input` at `generation`. `binding_digest` is the content digest of the input at
+    /// that generation; it must equal the digest the first committed use fixed, when there was
+    /// one.
+    pub fn revoked(
+        input: impl Into<String>,
+        generation: Generation,
+        binding_digest: [u8; 32],
+    ) -> Self {
+        Self {
+            input: input.into(),
+            generation,
+            binding_digest,
+            kind: InputInvalidationKind::Revoked,
+        }
+    }
+
+    /// Supersede `input` at `old_generation` (whose content digest is `binding_digest`) by
+    /// `new_generation` with content digest `new_digest`. `replacement_ref` is a digest of the
+    /// replacement artifact, recorded as evidence only. Every generation below `new_generation`
+    /// is stale afterwards.
+    pub fn superseded(
+        input: impl Into<String>,
+        old_generation: Generation,
+        binding_digest: [u8; 32],
+        new_generation: Generation,
+        new_digest: [u8; 32],
+        replacement_ref: [u8; 32],
+    ) -> Self {
+        Self {
+            input: input.into(),
+            generation: old_generation,
+            binding_digest,
+            kind: InputInvalidationKind::Superseded {
+                old_generation,
+                new_generation,
+                new_digest,
+                replacement_ref,
+            },
+        }
+    }
+
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+
+    /// The invalidated generation (the old generation of a supersession).
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+
+    pub fn binding_digest(&self) -> &[u8; 32] {
+        &self.binding_digest
+    }
+
+    pub fn kind(&self) -> InputInvalidationKind {
+        self.kind
+    }
+}
+
+/// One expert a compound invalidation fences, as the fence set records it: the expert at its
+/// generation and the state version the fence compares against. Its new fence epoch is
+/// `expected_state_version + 1`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertFenceSetMember {
+    pub project: ProjectId,
+    pub pod: PodId,
+    pub generation: Generation,
+    pub expected_state_version: u64,
+    /// `Fence` for a `Serving` or `Frozen` expert, `Escalate` for a quarantined one.
+    pub action: ExpertFenceAction,
+    /// The state the expert returns to when the fence is cleared (for a quarantined expert that
+    /// is now final, the state it was fenced from).
+    pub resume: ExpertFenceResume,
+}
+
+impl ExpertFenceSetMember {
+    /// The fence epoch the expert stands at once fenced.
+    pub fn epoch(&self) -> u64 {
+        self.expected_state_version.saturating_add(1)
+    }
+}
+
+/// What a committed [`PtrRuntime::invalidate_input`] did.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputInvalidationOutcome {
+    index: CommitIndex,
+    fence_digest: [u8; 32],
+    fenced: Vec<ExpertFenceSetMember>,
+}
+
+impl InputInvalidationOutcome {
+    /// The commit index of the one `InputInvalidated` event.
+    pub fn index(&self) -> CommitIndex {
+        self.index
+    }
+
+    /// The number of experts the event fenced, as the event carries it.
+    pub fn fence_count(&self) -> u32 {
+        // The count was checked to fit the event's `u32` before the event was built.
+        self.fenced.len() as u32
+    }
+
+    /// The digest the event carries over the fence set.
+    pub fn fence_digest(&self) -> &[u8; 32] {
+        &self.fence_digest
+    }
+
+    /// The fenced experts in canonical order. Held for the caller only: the event itself does
+    /// not list them.
+    pub fn fenced(&self) -> &[ExpertFenceSetMember] {
+        &self.fenced
+    }
+
+    /// The fence epoch now in force per `expert:{project}/{pod}` identity, the map a standalone
+    /// KV backend or catalog takes to make the fenced experts' entries dead (see
+    /// [`expert_fence_epochs`], which is the same map for a plain fence event).
+    pub fn fence_epochs(&self) -> BTreeMap<String, u64> {
+        fence_set_epochs(&self.fenced)
+    }
+}
+
+fn fence_set_epochs(members: &[ExpertFenceSetMember]) -> BTreeMap<String, u64> {
+    members
+        .iter()
+        .map(|member| {
+            (
+                ptr_state::expert_key(&member.project.0, &member.pod.0),
+                member.epoch(),
+            )
+        })
+        .collect()
+}
+
+fn put_text(bytes: &mut Vec<u8>, value: &str) {
+    bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(value.as_bytes());
+}
+
+const FENCE_SET_DOMAIN: &str = "ptr.expert.input-invalidation.fence-set.v1";
+
+/// The digest an `InputInvalidated` event carries over its fence set: SHA-256 over the
+/// length-prefixed domain `ptr.expert.input-invalidation.fence-set.v1`, the length-prefixed
+/// `input`, the invalidated `generation`, the member count and, for each member in the order
+/// given (canonical order is ascending `(project, pod)`), the length-prefixed project and pod,
+/// the expert generation, the expected state version, the action code and the resume code.
+/// Integers are little-endian `u64`, codes are one byte. A harness uses this to check the digest
+/// of an event against the set it independently derived.
+pub fn expert_fence_set_digest(
+    input: &str,
+    generation: Generation,
+    members: &[ExpertFenceSetMember],
+) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    put_text(&mut bytes, FENCE_SET_DOMAIN);
+    put_text(&mut bytes, input);
+    bytes.extend_from_slice(&generation.0.to_le_bytes());
+    bytes.extend_from_slice(&(members.len() as u64).to_le_bytes());
+    for member in members {
+        put_text(&mut bytes, &member.project.0);
+        put_text(&mut bytes, &member.pod.0);
+        bytes.extend_from_slice(&member.generation.0.to_le_bytes());
+        bytes.extend_from_slice(&member.expected_state_version.to_le_bytes());
+        bytes.push(member.action.code());
+        bytes.push(member.resume.code());
+    }
+    ptr_ledger::integrity::sha256(&bytes)
+}
+
 /// How the evidence behind an expert's latest structural record was checked on replay.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExpertEvidenceStatus {
@@ -620,6 +941,10 @@ pub struct ExpertRegistryProjection {
     /// The highest epoch each expert was ever fenced at. Never lowered, kept after a
     /// readmission; see [`ExpertRegistryProjection::highest_fenced_epoch`].
     fenced_epochs: BTreeMap<(String, String), u64>,
+    /// Which experts rest on which inputs, the source edges between experts, the input-digest
+    /// registry and the committed invalidations. Projected from version 3 records and
+    /// `InputInvalidated` events; see [`ExpertDependencyIndex`].
+    deps: ExpertDependencyIndex,
     /// The current grant generation per [`ExpertGrantKind`]. Host authority in memory, not
     /// projected from the ledger: it takes no part in equality and a rebuilt registry starts at
     /// [`ExpertGrantGeneration::INITIAL`].
@@ -695,10 +1020,19 @@ struct FencePlan {
 
 type Plan = Vec<((String, String), ExpertEntry)>;
 
-/// What applying one record changes: the entries, and how its evidence was checked.
+/// What applying one record changes: the entries, how its evidence was checked and what it adds
+/// to the dependency index.
 struct ExpertPlan {
     entries: Plan,
     verified: Option<VerifiedEvidence>,
+    dependency: DependencyUpdate,
+}
+
+/// The experts an invalidation fences, with the count and digest the event commits to.
+struct FenceSet {
+    members: Vec<ExpertFenceSetMember>,
+    count: u32,
+    digest: [u8; 32],
 }
 
 /// The facts a verified record contributes to the projection.
@@ -722,6 +1056,7 @@ impl ExpertRegistryProjection {
         fence_causes: BTreeMap<(String, String), FenceStanding>,
         fenced_epochs: BTreeMap<(String, String), u64>,
         readmit_gate_epoch: u64,
+        deps: ExpertDependencyIndex,
     ) -> Self {
         Self {
             entries: entries.into_iter().collect(),
@@ -730,6 +1065,7 @@ impl ExpertRegistryProjection {
             fence_causes,
             fenced_epochs,
             readmit_gate_epoch,
+            deps,
             grants: HostGrantGenerations::default(),
         }
     }
@@ -747,7 +1083,18 @@ impl ExpertRegistryProjection {
             BTreeMap::new(),
             fenced_epochs,
             0,
+            ExpertDependencyIndex::default(),
         )
+    }
+
+    /// The dependency index: recorded inputs, source edges, input digests and committed
+    /// invalidations.
+    pub fn dependencies(&self) -> &ExpertDependencyIndex {
+        &self.deps
+    }
+
+    pub(crate) fn dependency_index(&self) -> &ExpertDependencyIndex {
+        &self.deps
     }
 
     pub(crate) fn legacy_keys(&self) -> impl Iterator<Item = (&str, &str)> {
@@ -851,16 +1198,31 @@ impl ExpertRegistryProjection {
         self.dependencies_live(project, pod, entry)
     }
 
-    /// The extension point for the liveness of what an expert was built from. A structural
-    /// record names no inputs yet, so the registry has nothing to check and every expert that
-    /// passes the state test is live here; a record that names inputs makes this refuse an
-    /// expert one of whose inputs is no longer live.
+    /// The liveness of what an expert was built from, as the dependency index knows it: an
+    /// expert admitted with a dependency block is refused when one of its recorded inputs is
+    /// revoked or below a supersession floor, fenced or not. An expert whose record named no
+    /// inputs has nothing to check. (The runtime adds the lifecycle authority's own view in
+    /// [`PtrRuntime::expert_route_admission`].)
     fn dependencies_live(
         &self,
-        _project: &ProjectId,
-        _pod: &PodId,
-        _entry: &ExpertEntry,
+        project: &ProjectId,
+        pod: &PodId,
+        entry: &ExpertEntry,
     ) -> Result<(), RouteRefusal> {
+        let Some(inputs) = self
+            .deps
+            .recorded_inputs(&project.0, &pod.0, entry.generation)
+        else {
+            return Ok(());
+        };
+        for (identity, generation) in inputs {
+            if self.deps.status(identity, generation).is_some() {
+                return Err(RouteRefusal::DependencyNotLive {
+                    identity: identity.to_owned(),
+                    generation,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -1228,7 +1590,97 @@ impl ExpertRegistryProjection {
         self.entries.insert(plan.key, plan.entry);
     }
 
+    /// The experts an invalidation of `input` at `generation` fences, derived from the
+    /// dependency index and the registry as they stand now, in canonical `(project, pod)` order,
+    /// with the digest the event commits to.
+    ///
+    /// The index yields every expert generation that names the input (see
+    /// [`ExpertDependencyIndex`]), closed over source edges; of those, the registry's current
+    /// generation of each pod is kept when it is `Serving`, `Frozen`, or fenced for
+    /// `AuthorityQuarantine` (escalated). An expert already fenced for `InputRevoked`, or fenced
+    /// with an unknown cause, is final and not part of the set; a candidate, gated, superseded or
+    /// retired expert is not live.
+    fn fence_set(
+        &self,
+        input: &str,
+        generation: Generation,
+        kind: &InputInvalidationKind,
+    ) -> Result<FenceSet, ExpertAdmissionError> {
+        let superseded_by = match kind {
+            InputInvalidationKind::Revoked => None,
+            InputInvalidationKind::Superseded { new_generation, .. } => Some(*new_generation),
+        };
+        let mut members = Vec::new();
+        for (project, pod, expert_generation) in
+            self.deps.affected(input, generation, superseded_by)
+        {
+            let key = (project, pod);
+            let Some(entry) = self.entries.get(&key) else {
+                continue;
+            };
+            if entry.generation != expert_generation {
+                continue;
+            }
+            let (action, resume) = match entry.state {
+                ExpertState::Serving => (ExpertFenceAction::Fence, ExpertFenceResume::Serving),
+                ExpertState::Frozen => (ExpertFenceAction::Fence, ExpertFenceResume::Frozen),
+                ExpertState::Fenced => match self.fence_causes.get(&key) {
+                    Some(standing) if standing.cause == ExpertFenceCause::AuthorityQuarantine => {
+                        (ExpertFenceAction::Escalate, standing.resume)
+                    }
+                    _ => continue,
+                },
+                ExpertState::Candidate
+                | ExpertState::Gated
+                | ExpertState::Superseded
+                | ExpertState::Retired(_) => continue,
+            };
+            if entry.state_version.checked_add(1).is_none() {
+                return Err(ExpertAdmissionError::FenceEpochMismatch { pod: key.1 });
+            }
+            members.push(ExpertFenceSetMember {
+                project: ProjectId(key.0),
+                pod: PodId(key.1),
+                generation: entry.generation,
+                expected_state_version: entry.state_version,
+                action,
+                resume,
+            });
+        }
+        let count = u32::try_from(members.len()).map_err(|_| ExpertAdmissionError::Unencodable)?;
+        let digest = expert_fence_set_digest(input, generation, &members);
+        Ok(FenceSet {
+            members,
+            count,
+            digest,
+        })
+    }
+
+    /// Fence every member of `set` in one step: `Fenced` at the next state version, cause
+    /// `InputRevoked`, the fence memo raised. The set was derived against this very registry, so
+    /// every member is present and at the state it compares against.
+    fn apply_fence_set(&mut self, set: &FenceSet) {
+        for member in &set.members {
+            let key = (member.project.0.clone(), member.pod.0.clone());
+            let epoch = member.epoch();
+            if let Some(entry) = self.entries.get_mut(&key) {
+                entry.state = ExpertState::Fenced;
+                entry.state_version = epoch;
+            }
+            self.fence_causes.insert(
+                key.clone(),
+                FenceStanding {
+                    cause: ExpertFenceCause::InputRevoked,
+                    resume: member.resume,
+                },
+            );
+            let highest = self.fenced_epochs.entry(key).or_insert(0);
+            *highest = (*highest).max(epoch);
+        }
+    }
+
     fn apply(&mut self, plan: ExpertPlan) {
+        self.deps.register(&plan.dependency);
         for (key, _) in &plan.entries {
             if plan.verified.is_some() {
                 self.legacy.remove(key);
@@ -1510,17 +1962,62 @@ impl PtrRuntime {
         report: &BoundGateReport,
         grant: &ExpertAdmissionGrant,
     ) -> Result<CommitIndex, RuntimeError> {
+        self.admit_expert_record(proposal, report, grant, None)
+    }
+
+    /// [`PtrRuntime::admit_expert_proposal`] for a proposal whose result expert(s) rest on the
+    /// training and evaluation inputs in `inputs`: commits a version 3 record carrying the
+    /// dependency block. Besides every check of the plain path it refuses, typed and with nothing
+    /// appended, a record that names a revoked input, an input generation that is superseded or
+    /// stale, or an input digest other than the one the first committed use fixed
+    /// ([`ExpertAdmissionError::InputRevoked`], [`ExpertAdmissionError::InputSuperseded`],
+    /// [`ExpertAdmissionError::InputDigestStale`]), for the base model as for the training and
+    /// evaluation inputs. The proposal must create at least one expert (`Birth`, `Merge`,
+    /// `Split`, or a `Reactivate` of a retired expert); inputs on any other operation are refused
+    /// as an invalid record.
+    ///
+    /// # Errors
+    /// [`RuntimeError::Expert`] with the first failing check, or the runtime's own errors when
+    /// execution is fenced or the append fails.
+    pub fn admit_expert_proposal_with_inputs(
+        &mut self,
+        proposal: &ExpertProposal,
+        report: &BoundGateReport,
+        grant: &ExpertAdmissionGrant,
+        inputs: ExpertInputs,
+    ) -> Result<CommitIndex, RuntimeError> {
+        self.admit_expert_record(proposal, report, grant, Some(inputs))
+    }
+
+    fn admit_expert_record(
+        &mut self,
+        proposal: &ExpertProposal,
+        report: &BoundGateReport,
+        grant: &ExpertAdmissionGrant,
+        inputs: Option<ExpertInputs>,
+    ) -> Result<CommitIndex, RuntimeError> {
         check_evidence(proposal, report, grant).map_err(RuntimeError::Expert)?;
-        let record = ExpertCommitRecord::new_with_evidence(
-            proposal.clone(),
-            report.digest(),
-            grant.gate_epoch(),
-            *grant.required_gate_config_digest(),
-            report.encode_canonical(),
-        )
-        .map_err(|error| {
+        let invalid = |error: ptr_pods::ExpertProposalError| {
             RuntimeError::Expert(ExpertAdmissionError::InvalidRecord(error.to_string()))
-        })?;
+        };
+        let record = match inputs {
+            None => ExpertCommitRecord::new_with_evidence(
+                proposal.clone(),
+                report.digest(),
+                grant.gate_epoch(),
+                *grant.required_gate_config_digest(),
+                report.encode_canonical(),
+            ),
+            Some(inputs) => ExpertCommitRecord::new_with_inputs(
+                proposal.clone(),
+                report.digest(),
+                grant.gate_epoch(),
+                *grant.required_gate_config_digest(),
+                report.encode_canonical(),
+                inputs,
+            ),
+        }
+        .map_err(invalid)?;
         let event = event_for(&record);
         self.validate_expert_event(&event)?;
         self.revalidate_grant(ExpertGrantKind::Admission, grant.binding())?;
@@ -1615,7 +2112,16 @@ impl PtrRuntime {
         pod: &PodId,
         generation: Generation,
     ) -> Result<(), RouteRefusal> {
-        self.experts.route_admission(project, pod, generation)
+        self.experts.route_admission(project, pod, generation)?;
+        // The index knows the invalidations it committed; the lifecycle authority also knows
+        // the plain revocations and supersessions, which no fence need have followed yet.
+        match self.first_dead_dependency(project, pod, generation) {
+            Some((identity, generation)) => Err(RouteRefusal::DependencyNotLive {
+                identity,
+                generation,
+            }),
+            None => Ok(()),
+        }
     }
 
     /// Fence the expert `request` names: a committed, ledger-ordered withdrawal from serving at
@@ -1685,6 +2191,222 @@ impl PtrRuntime {
         grant: &ExpertFenceGrant,
     ) -> Result<CommitIndex, RuntimeError> {
         self.commit_expert_fence(ExpertFenceAction::Readmit, request, Some(report), grant)
+    }
+
+    /// Invalidate an input and fence every expert that rests on it, in ONE committed
+    /// [`LedgerEvent::InputInvalidated`]. Needs a grant of
+    /// [`ExpertFenceAuthority::RuntimeRevocation`], revalidated at commit like a fence.
+    ///
+    /// The fence set is derived here, deterministically, from the dependency index at this
+    /// commit index (see "Input dependencies" in the module documentation): the event carries
+    /// its count and digest only, never a list, and applying the event fences every member
+    /// atomically. For [`InputInvalidationKind::Revoked`] the input also joins the revocation set
+    /// (as a `Revoked` record does), so [`PtrRuntime::generation_validity`] reports it revoked
+    /// and no record may name it again; for `Superseded` the floor of the input moves up and the
+    /// digest registry takes the new generation's digest.
+    ///
+    /// The grant's project is not a scope here: an input identity names no project, so the
+    /// invalidation reaches the dependents in every project, like a plain `Revoked` record does
+    /// for everything that cites its subject.
+    ///
+    /// Refused, typed and with nothing appended: a gate grant; a revocation already committed
+    /// through this event ([`ExpertAdmissionError::InputAlreadyInvalidated`]); a binding digest
+    /// other than the one the first committed use fixed
+    /// ([`ExpertAdmissionError::InputBindingMismatch`]); a generation the lifecycle authority
+    /// does not hold (a revocation ahead of the live generation, a supersession to a generation
+    /// it has not committed: [`ExpertAdmissionError::InputGenerationMismatch`]); a supersession
+    /// that does not move the floor forward ([`ExpertAdmissionError::StaleSupersession`]).
+    /// Commit and replay both re-derive the set and refuse a different count or digest
+    /// ([`ExpertAdmissionError::FenceSetMismatch`]).
+    ///
+    /// # Errors
+    /// [`RuntimeError::Expert`] with the first failing check, or the runtime's own errors when
+    /// execution is fenced or the append fails.
+    pub fn invalidate_input(
+        &mut self,
+        grant: &ExpertFenceGrant,
+        request: InputInvalidation,
+    ) -> Result<InputInvalidationOutcome, RuntimeError> {
+        let expert = RuntimeError::Expert;
+        if grant.authority() != ExpertFenceAuthority::RuntimeRevocation {
+            return Err(expert(ExpertAdmissionError::FenceAuthorityMismatch {
+                action: ExpertFenceAction::Fence,
+                required: ExpertFenceAuthority::RuntimeRevocation,
+            }));
+        }
+        let set = self
+            .experts
+            .fence_set(&request.input, request.generation, &request.kind)
+            .map_err(expert)?;
+        let event = LedgerEvent::InputInvalidated {
+            input: request.input,
+            generation: request.generation,
+            binding_digest: request.binding_digest,
+            kind: request.kind,
+            fence_count: set.count,
+            fence_digest: set.digest,
+        };
+        // The same validation replay applies, including re-deriving the set.
+        let planned = self.plan_input_invalidation(&event)?;
+        self.revalidate_grant(grant.kind(), grant.binding())?;
+        let index = self.append_prepared(event, None)?;
+        Ok(InputInvalidationOutcome {
+            index,
+            fence_digest: planned.digest,
+            fenced: planned.members,
+        })
+    }
+
+    /// Replay-time and commit-time check of an `InputInvalidated` event against the history as of
+    /// now; the fence set it would apply.
+    pub(crate) fn validate_input_invalidated_event(
+        &self,
+        event: &LedgerEvent,
+    ) -> Result<(), RuntimeError> {
+        self.plan_input_invalidation(event).map(|_| ())
+    }
+
+    fn plan_input_invalidation(&self, event: &LedgerEvent) -> Result<FenceSet, RuntimeError> {
+        let LedgerEvent::InputInvalidated {
+            input,
+            generation,
+            binding_digest,
+            kind,
+            fence_count,
+            fence_digest,
+        } = event
+        else {
+            return Err(RuntimeError::Expert(ExpertAdmissionError::InvalidRecord(
+                "not an input invalidation".to_owned(),
+            )));
+        };
+        let expert = RuntimeError::Expert;
+        ptr_ledger::check_encodable(event)
+            .map_err(|_| expert(ExpertAdmissionError::Unencodable))?;
+        let index = self.experts.dependency_index();
+        let (identity, generation) = (input.clone(), *generation);
+        if matches!(kind, InputInvalidationKind::Revoked) && index.is_revoked(input, generation) {
+            return Err(expert(ExpertAdmissionError::InputAlreadyInvalidated {
+                identity,
+                generation,
+            }));
+        }
+        // The digest the first committed use fixed for the invalidated generation, if any.
+        if index
+            .registered_digest(input, generation)
+            .is_some_and(|fixed| fixed != *binding_digest)
+        {
+            return Err(expert(ExpertAdmissionError::InputBindingMismatch {
+                identity,
+                generation,
+            }));
+        }
+        // A generation the lifecycle authority holds: a revocation cannot be ahead of it, and a
+        // supersession needs its new generation committed there.
+        let live = self.live_generation(input);
+        match kind {
+            InputInvalidationKind::Revoked => {
+                if let Some(live) = live.filter(|live| generation > *live) {
+                    return Err(expert(ExpertAdmissionError::InputGenerationMismatch {
+                        identity,
+                        generation,
+                        live,
+                    }));
+                }
+            }
+            InputInvalidationKind::Superseded {
+                new_generation,
+                new_digest,
+                ..
+            } => {
+                if let Some(live) = live.filter(|live| new_generation > live) {
+                    return Err(expert(ExpertAdmissionError::InputGenerationMismatch {
+                        identity,
+                        generation: *new_generation,
+                        live,
+                    }));
+                }
+                if let Some(floor) = index
+                    .supersession_floor(input)
+                    .filter(|floor| new_generation <= floor)
+                {
+                    return Err(expert(ExpertAdmissionError::StaleSupersession {
+                        identity,
+                        floor,
+                        new_generation: *new_generation,
+                    }));
+                }
+                if index
+                    .registered_digest(input, *new_generation)
+                    .is_some_and(|fixed| fixed != *new_digest)
+                {
+                    return Err(expert(ExpertAdmissionError::InputBindingMismatch {
+                        identity,
+                        generation: *new_generation,
+                    }));
+                }
+            }
+        }
+        let set = self
+            .experts
+            .fence_set(input, generation, kind)
+            .map_err(expert)?;
+        if set.count != *fence_count || set.digest != *fence_digest {
+            return Err(expert(ExpertAdmissionError::FenceSetMismatch {
+                derived_count: set.count,
+                event_count: *fence_count,
+                digest_matches: set.digest == *fence_digest,
+            }));
+        }
+        Ok(set)
+    }
+
+    /// Apply a committed `InputInvalidated` event: the revocation or the supersession floor, the
+    /// fences of every member of the derived set in one step, the materialized `expert:` keys of
+    /// the fenced experts and the KV catalog entries that rest on them.
+    pub(crate) fn apply_input_invalidated_event(
+        &mut self,
+        event: &LedgerEvent,
+    ) -> Result<(), RuntimeError> {
+        let LedgerEvent::InputInvalidated {
+            input,
+            generation,
+            kind,
+            ..
+        } = event
+        else {
+            return Ok(());
+        };
+        // Everything fallible happens before the first mutation.
+        let set = self.plan_input_invalidation(event)?;
+        self.invalidate_kv_expert_fences(&fence_set_epochs(&set.members));
+        match kind {
+            InputInvalidationKind::Revoked => {
+                self.experts.deps.record_revocation(input, *generation);
+                self.revoked_generations
+                    .insert((input.clone(), *generation));
+                // A revocation of a semantic key is a floor over every citation of it.
+                let held = self.semdb.snapshot().value(input).is_some();
+                self.semantic_edits
+                    .record_revocation(input, held, self.semdb.revision());
+            }
+            InputInvalidationKind::Superseded {
+                new_generation,
+                new_digest,
+                ..
+            } => self
+                .experts
+                .deps
+                .record_supersession(input, *new_generation, *new_digest),
+        }
+        self.experts.apply_fence_set(&set);
+        for member in &set.members {
+            self.state.values.insert(
+                ptr_state::expert_key(&member.project.0, &member.pod.0),
+                ptr_state::expert_entry(member.generation.0, ExpertState::Fenced, member.epoch()),
+            );
+        }
+        Ok(())
     }
 
     fn commit_expert_fence(
@@ -1820,6 +2542,28 @@ impl PtrRuntime {
         self.experts
             .plan_fence(event)
             .map_err(RuntimeError::Expert)?;
+        // A readmission puts an expert back to work: none of the inputs its record named may be
+        // revoked or superseded meanwhile.
+        if let LedgerEvent::ExpertFenceCommitted {
+            project,
+            pod,
+            generation,
+            action: ExpertFenceAction::Readmit,
+            ..
+        } = event
+        {
+            if let Some((identity, input_generation)) =
+                self.first_dead_dependency(project, pod, *generation)
+            {
+                return Err(RuntimeError::Expert(
+                    ExpertAdmissionError::DependencyNotLive {
+                        pod: pod.0.clone(),
+                        identity,
+                        generation: input_generation,
+                    },
+                ));
+            }
+        }
         // An `InputRevoked` fence rests on a revocation the ledger holds at or before it: the
         // runtime's revoked set is built in commit order, at commit and on replay alike.
         if let LedgerEvent::ExpertFenceCommitted {
@@ -1898,7 +2642,156 @@ impl PtrRuntime {
             .map_err(|_| expert(ExpertAdmissionError::Unencodable))?;
         let verified = self.verify_expert_evidence(&decoded).map_err(expert)?;
         let entries = self.experts.plan(&decoded).map_err(expert)?;
-        Ok(ExpertPlan { entries, verified })
+        let dependency = self.plan_dependencies(&decoded).map_err(expert)?;
+        Ok(ExpertPlan {
+            entries,
+            verified,
+            dependency,
+        })
+    }
+
+    /// What `record` adds to the dependency index, after checking the inputs it names against
+    /// the history as of now: each must be live (not revoked, not superseded, by the index or by
+    /// the lifecycle authority) and carry the digest the first committed use fixed. A record
+    /// without a dependency block contributes only its source edges.
+    fn plan_dependencies(
+        &self,
+        record: &ExpertCommitRecord,
+    ) -> Result<DependencyUpdate, ExpertAdmissionError> {
+        let proposal = record.proposal();
+        let project = &proposal.project().0;
+        let op = proposal.op();
+        let key =
+            |pod: &PodId, generation: Generation| (project.clone(), pod.0.clone(), generation);
+        let results: Vec<ExpertRef> = op
+            .results()
+            .iter()
+            .map(|result| key(result.pod(), result.generation()))
+            .collect();
+        let sources: Vec<ExpertRef> = op
+            .sources()
+            .iter()
+            .map(|source| key(source.pod(), source.generation()))
+            .collect();
+        let Some(block) = record.inputs() else {
+            return Ok(DependencyUpdate {
+                results,
+                sources,
+                inputs: None,
+            });
+        };
+        let base = op
+            .results()
+            .first()
+            .map(|result| ExpertInputRef::from_base_model(result.base_model()))
+            .ok_or_else(|| {
+                ExpertAdmissionError::InvalidRecord("inputs without a result expert".to_owned())
+            })?;
+        let named = block
+            .training()
+            .iter()
+            .map(|input| (ExpertInputRole::Training, input))
+            .chain(
+                block
+                    .evaluation()
+                    .iter()
+                    .map(|input| (ExpertInputRole::Evaluation, input)),
+            )
+            .chain(std::iter::once((ExpertInputRole::BaseModel, &base)));
+        let mut seen: BTreeMap<InputKey, [u8; 32]> = BTreeMap::new();
+        let mut inputs = Vec::new();
+        for (role, input) in named {
+            let identity = input.identity();
+            let generation = input.generation();
+            self.check_input_live(role, identity, generation)?;
+            let stale = || ExpertAdmissionError::InputDigestStale {
+                role,
+                identity: identity.to_owned(),
+                generation,
+            };
+            if self
+                .experts
+                .dependency_index()
+                .registered_digest(identity, generation)
+                .is_some_and(|fixed| fixed != *input.digest())
+            {
+                return Err(stale());
+            }
+            // One record cannot name one pair with two digests (the base model derives a pair
+            // that an explicit input may collide with).
+            let known = seen
+                .entry((identity.to_owned(), generation))
+                .or_insert(*input.digest());
+            if *known != *input.digest() {
+                return Err(stale());
+            }
+            inputs.push(RecordedInput {
+                identity: identity.to_owned(),
+                generation,
+                digest: *input.digest(),
+            });
+        }
+        Ok(DependencyUpdate {
+            results,
+            sources,
+            inputs: Some(inputs),
+        })
+    }
+
+    /// Whether `identity` at `generation` may be built on or served from now: neither revoked nor
+    /// superseded, by a committed `InputInvalidated`, a committed `Revoked`/`ProcedureRevoked`,
+    /// or the lifecycle authority's own generation (see [`PtrRuntime::generation_validity`]).
+    fn check_input_live(
+        &self,
+        role: ExpertInputRole,
+        identity: &str,
+        generation: Generation,
+    ) -> Result<(), ExpertAdmissionError> {
+        let revoked = || ExpertAdmissionError::InputRevoked {
+            role,
+            identity: identity.to_owned(),
+            generation,
+        };
+        match self.experts.dependency_index().status(identity, generation) {
+            Some(InputStatus::Revoked) => return Err(revoked()),
+            Some(InputStatus::Superseded { floor }) => {
+                return Err(ExpertAdmissionError::InputSuperseded {
+                    role,
+                    identity: identity.to_owned(),
+                    generation,
+                    floor,
+                })
+            }
+            None => {}
+        }
+        match self.generation_validity(identity, generation) {
+            Some(Validity::Live) | None => Ok(()),
+            Some(Validity::Revoked | Validity::Disputed) => Err(revoked()),
+            Some(Validity::Superseded) => Err(ExpertAdmissionError::InputSuperseded {
+                role,
+                identity: identity.to_owned(),
+                generation,
+                floor: self.live_generation(identity).unwrap_or(generation),
+            }),
+        }
+    }
+
+    /// The first recorded input of the expert `pod` of `project` at `generation` that is not
+    /// live now, if any.
+    fn first_dead_dependency(
+        &self,
+        project: &ProjectId,
+        pod: &PodId,
+        generation: Generation,
+    ) -> Option<(String, Generation)> {
+        self.experts
+            .dependency_index()
+            .recorded_inputs(&project.0, &pod.0, generation)?
+            .find(|(identity, input_generation)| {
+                self.check_input_live(ExpertInputRole::Training, identity, *input_generation)
+                    .is_err()
+            })
+            .map(|(identity, input_generation)| (identity.to_owned(), input_generation))
     }
 
     /// Re-verify the evidence a record embeds. `None` for a legacy record, which embeds none.

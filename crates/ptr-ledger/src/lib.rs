@@ -295,6 +295,58 @@ pub enum LedgerEvent {
         subjects: Vec<(KvTaintSubjectKind, [u8; 32])>,
         change: KvTaintChange,
     },
+    /// The compound invalidation of one input (tag 30): `input` at `generation` is revoked or
+    /// superseded and, in the same record, every expert that rests on it is fenced. The event
+    /// names the invalidated input and commits to the set of experts it fences by count and
+    /// digest only (`fence_count`, `fence_digest`), never by an explicit list: the set is
+    /// derived from the runtime's dependency index at this commit index, so a large fan-out
+    /// costs one small record. `binding_digest` is the content digest of the invalidated input
+    /// at `generation` (the digest the first committed use of it fixed, when there was one).
+    ///
+    /// This crate checks only the shape: the identity is bounded, no digest is zero, a
+    /// `Superseded` kind names `old_generation == generation` and `new_generation >
+    /// old_generation`. It cannot check that the count and digest are the fence set; the
+    /// runtime re-derives the set on commit and on replay and refuses a mismatch. The record is
+    /// written only by the runtime's invalidation path; the public `commit` refuses it.
+    InputInvalidated {
+        input: String,
+        generation: Generation,
+        binding_digest: [u8; 32],
+        kind: InputInvalidationKind,
+        fence_count: u32,
+        fence_digest: [u8; 32],
+    },
+}
+
+/// The longest identity an [`LedgerEvent::InputInvalidated`] names, in bytes.
+pub const MAX_INPUT_IDENTITY_BYTES: usize = 256;
+
+/// How an [`LedgerEvent::InputInvalidated`] ends the life of its input. The codes are pinned
+/// data: Revoked 0, Superseded 1.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputInvalidationKind {
+    /// The input generation is revoked: no record may rest on it again.
+    Revoked,
+    /// The input moves from `old_generation` (the event's `generation`) to `new_generation`,
+    /// whose content digest is `new_digest`. Every generation below `new_generation` is stale
+    /// from here on. `replacement_ref` is a digest of the replacement artifact, kept as
+    /// evidence only: the ledger and the runtime never dereference it.
+    Superseded {
+        old_generation: Generation,
+        new_generation: Generation,
+        new_digest: [u8; 32],
+        replacement_ref: [u8; 32],
+    },
+}
+
+impl InputInvalidationKind {
+    /// The stored code: Revoked 0, Superseded 1.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Revoked => 0,
+            Self::Superseded { .. } => 1,
+        }
+    }
 }
 
 /// What a [`LedgerEvent::KvTaintCommitted`] subject digest identifies. The codes are pinned data.
@@ -967,6 +1019,34 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
                 }
             }
         }
+        LedgerEvent::InputInvalidated {
+            input,
+            generation,
+            binding_digest,
+            kind,
+            fence_count,
+            fence_digest,
+        } => {
+            out.push(30);
+            put_string(&mut out, input);
+            put_u64(&mut out, generation.0);
+            out.extend_from_slice(binding_digest);
+            out.push(kind.code());
+            if let InputInvalidationKind::Superseded {
+                old_generation,
+                new_generation,
+                new_digest,
+                replacement_ref,
+            } = kind
+            {
+                put_u64(&mut out, old_generation.0);
+                put_u64(&mut out, new_generation.0);
+                out.extend_from_slice(new_digest);
+                out.extend_from_slice(replacement_ref);
+            }
+            put_u32(&mut out, *fence_count);
+            out.extend_from_slice(fence_digest);
+        }
         LedgerEvent::ExecutionManifestRevoked {
             manifest_digest,
             generation,
@@ -1508,6 +1588,39 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             check_kv_taint(&event)?;
             event
         }
+        30 => {
+            let input = cursor.string()?;
+            let generation = Generation(cursor.u64()?);
+            let binding_digest = cursor.digest()?;
+            let kind_code = cursor.u8()?;
+            let kind = match kind_code {
+                0 => InputInvalidationKind::Revoked,
+                1 => InputInvalidationKind::Superseded {
+                    old_generation: Generation(cursor.u64()?),
+                    new_generation: Generation(cursor.u64()?),
+                    new_digest: cursor.digest()?,
+                    replacement_ref: cursor.digest()?,
+                },
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown input invalidation kind {other}"),
+                    ))
+                }
+            };
+            let fence_count = cursor.u32()?;
+            let fence_digest = cursor.digest()?;
+            let event = LedgerEvent::InputInvalidated {
+                input,
+                generation,
+                binding_digest,
+                kind,
+                fence_count,
+                fence_digest,
+            };
+            check_input_invalidated(&event)?;
+            event
+        }
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1627,6 +1740,7 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
         LedgerEvent::ExpertStructuralCommitted { record, .. } => check_expert_record(record)?,
         LedgerEvent::ExpertFenceCommitted { .. } => check_expert_fence(event)?,
         LedgerEvent::KvTaintCommitted { .. } => check_kv_taint(event)?,
+        LedgerEvent::InputInvalidated { .. } => check_input_invalidated(event)?,
         LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
             endpoint: Some(endpoint),
             ..
@@ -1634,6 +1748,54 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
         _ => {}
+    }
+    Ok(())
+}
+
+/// An input invalidation names a non-empty identity of at most [`MAX_INPUT_IDENTITY_BYTES`]
+/// bytes without control characters, a non-zero generation, and carries no all-zero digest. A
+/// `Superseded` kind repeats the event's generation as its `old_generation` and moves strictly
+/// forward: the one canonical form. The decoder and the append paths both call this.
+fn check_input_invalidated(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::InputInvalidated {
+        input,
+        generation,
+        binding_digest,
+        kind,
+        fence_digest,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    const ZERO: [u8; 32] = [0; 32];
+    let identity_ok = !input.is_empty()
+        && input.len() <= MAX_INPUT_IDENTITY_BYTES
+        && !input.chars().any(char::is_control);
+    if !identity_ok || generation.0 == 0 {
+        return Err(integrity::invalid("PTR_LEDGER_INPUT_INVALIDATED"));
+    }
+    let kind_ok = match kind {
+        InputInvalidationKind::Revoked => true,
+        InputInvalidationKind::Superseded {
+            old_generation,
+            new_generation,
+            new_digest,
+            replacement_ref,
+        } => {
+            old_generation == generation
+                && new_generation > old_generation
+                && *new_digest != ZERO
+                && *replacement_ref != ZERO
+        }
+    };
+    if !kind_ok {
+        return Err(integrity::invalid("PTR_LEDGER_INPUT_INVALIDATED"));
+    }
+    if *binding_digest == ZERO || *fence_digest == ZERO {
+        return Err(integrity::invalid(
+            "PTR_LEDGER_INPUT_INVALIDATED_ZERO_DIGEST",
+        ));
     }
     Ok(())
 }
@@ -2715,6 +2877,179 @@ mod effect_record_tests {
         let mut unknown_change = good.clone();
         unknown_change[2 + 32 + 1] = 2;
         assert!(decode_event(&unknown_change).is_err());
+    }
+
+    fn invalidated_event(kind: InputInvalidationKind) -> LedgerEvent {
+        LedgerEvent::InputInvalidated {
+            input: "capsule:data".to_owned(),
+            generation: Generation(3),
+            binding_digest: [1; 32],
+            kind,
+            fence_count: 2_000,
+            fence_digest: [2; 32],
+        }
+    }
+
+    fn superseded() -> InputInvalidationKind {
+        InputInvalidationKind::Superseded {
+            old_generation: Generation(3),
+            new_generation: Generation(4),
+            new_digest: [3; 32],
+            replacement_ref: [4; 32],
+        }
+    }
+
+    #[test]
+    fn input_invalidation_round_trips_under_tag_30_and_the_codes_are_pinned() {
+        assert_eq!(InputInvalidationKind::Revoked.code(), 0);
+        assert_eq!(superseded().code(), 1);
+        for kind in [InputInvalidationKind::Revoked, superseded()] {
+            let event = invalidated_event(kind);
+            check_encodable(&event).unwrap();
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 30);
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            // Every strict prefix is a truncation and is refused.
+            for len in 0..encoded.len() {
+                assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
+            }
+            // Trailing bytes are refused.
+            let mut padded = encoded.clone();
+            padded.push(0);
+            assert!(decode_event(&padded).is_err());
+        }
+        // The count is carried as a u32 and the largest fan-out round-trips.
+        let mut event = invalidated_event(InputInvalidationKind::Revoked);
+        if let LedgerEvent::InputInvalidated { fence_count, .. } = &mut event {
+            *fence_count = u32::MAX;
+        }
+        assert_eq!(decode_event(&encode_event(&event)).unwrap(), event);
+    }
+
+    #[test]
+    fn input_invalidation_refuses_every_non_canonical_form() {
+        let with = |edit: &dyn Fn(&mut LedgerEvent)| {
+            let mut event = invalidated_event(superseded());
+            edit(&mut event);
+            event
+        };
+        let long = "x".repeat(MAX_INPUT_IDENTITY_BYTES + 1);
+        let bad = [
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { input, .. } = e {
+                    input.clear();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { input, .. } = e {
+                    *input = long.clone();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { input, .. } = e {
+                    *input = "a\nb".to_owned();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { generation, .. } = e {
+                    *generation = Generation(0);
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { binding_digest, .. } = e {
+                    *binding_digest = [0; 32];
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { fence_digest, .. } = e {
+                    *fence_digest = [0; 32];
+                }
+            }),
+            // The event's generation and the old generation of a supersession must agree.
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { generation, .. } = e {
+                    *generation = Generation(2);
+                }
+            }),
+            // A supersession moves strictly forward.
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { kind, .. } = e {
+                    *kind = InputInvalidationKind::Superseded {
+                        old_generation: Generation(3),
+                        new_generation: Generation(3),
+                        new_digest: [3; 32],
+                        replacement_ref: [4; 32],
+                    };
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { kind, .. } = e {
+                    *kind = InputInvalidationKind::Superseded {
+                        old_generation: Generation(3),
+                        new_generation: Generation(2),
+                        new_digest: [3; 32],
+                        replacement_ref: [4; 32],
+                    };
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { kind, .. } = e {
+                    *kind = InputInvalidationKind::Superseded {
+                        old_generation: Generation(3),
+                        new_generation: Generation(4),
+                        new_digest: [0; 32],
+                        replacement_ref: [4; 32],
+                    };
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { kind, .. } = e {
+                    *kind = InputInvalidationKind::Superseded {
+                        old_generation: Generation(3),
+                        new_generation: Generation(4),
+                        new_digest: [3; 32],
+                        replacement_ref: [0; 32],
+                    };
+                }
+            }),
+        ];
+        for event in bad {
+            assert_eq!(
+                check_encodable(&event).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{event:?}"
+            );
+            // What the append path refuses, the decoder refuses too.
+            assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
+        }
+        // An identity at the bound is accepted.
+        let mut at_bound = invalidated_event(InputInvalidationKind::Revoked);
+        if let LedgerEvent::InputInvalidated { input, .. } = &mut at_bound {
+            *input = "x".repeat(MAX_INPUT_IDENTITY_BYTES);
+        }
+        check_encodable(&at_bound).unwrap();
+        assert_eq!(decode_event(&encode_event(&at_bound)).unwrap(), at_bound);
+    }
+
+    #[test]
+    fn input_invalidation_refuses_an_unknown_kind() {
+        let encoded = encode_event(&invalidated_event(InputInvalidationKind::Revoked));
+        // tag, input (4-byte length + 12 bytes), generation, binding digest, then the kind.
+        let kind_at = 1 + 4 + "capsule:data".len() + 8 + 32;
+        assert_eq!(encoded[kind_at], 0);
+        for code in [2u8, 3, 255] {
+            let mut unknown = encoded.clone();
+            unknown[kind_at] = code;
+            let error = decode_event(&unknown).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(error
+                .to_string()
+                .contains("unknown input invalidation kind"));
+        }
+        // Changing a Revoked record's kind byte to Superseded leaves too few bytes.
+        let mut as_superseded = encoded.clone();
+        as_superseded[kind_at] = 1;
+        assert!(decode_event(&as_superseded).is_err());
     }
 
     fn expert_event() -> LedgerEvent {

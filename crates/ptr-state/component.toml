@@ -21,10 +21,12 @@ implemented = [
   "ExpertStructuralCommitted projects one entry per expert the operation leaves in a new state: expert:<project>/<pod> = <generation>:<state>:<state_version> (state names from expert_state_name, retirement reasons joined with '-'), derived from the record through ptr_pods StructuralOp::outcomes so the projection and the runtime registry share one state table; a record that does not decode projects nothing (the runtime refuses it before commit)",
   "ExpertFenceCommitted projects the one expert it names: Fence and Escalate as <generation>:fenced:<epoch>, Retire as <generation>:retired-input-revoked:<epoch> and Readmit as <generation>:serving|frozen:<epoch> per the event's resume state, where the epoch is the event's new state version (the expert's fence epoch), so the materialized value an oracle reads no longer carries an earlier epoch (a_fence_event_projects_fenced_at_its_epoch_and_a_readmission_serving_at_the_next, which also covers the retirement)",
   "KvTaintCommitted projects one entry per subject: kv-taint:<kind>:<hex digest> = approx:<report hex>:<recipe hex> for a Record and cleared:<recompute hex> for a Clear (a_kv_taint_event_projects_one_entry_per_subject); the runtime registry that rebuilds from these entries is not built yet",
+  "Projection of InputInvalidated (ledger tag 30, R011 WP3): expert-input:<identity byte length>:<identity>:<generation> holds revoked:<fence count>:<hex fence digest> or superseded:<new generation>:<hex new digest>:<fence count>:<hex fence digest>, and a revocation also projects revoked:<identity> as a Revoked record does. The event names the fenced experts by count and digest only, so this stateless projection writes no expert: key for them; the runtime, which derives the set from its dependency index, writes those. A version 3 ExpertCommitRecord additionally projects expert-inputs:<project>/<pod> = <generation>:<training>:<evaluation>:<hex block digest> for every expert it creates. Key and value parsers (parse_expert_input_key, parse_expert_input_entry, parse_expert_inputs_generation) accept exactly what the writers write",
 ]
 
 missing = [
   "Rebuild equivalence tests across every backend (the PostgreSQL projection is compared with the reference in ptr-pg; L004 extends it)",
+  "The per-expert effect of a tag-30 fence is not derivable from the event, so a projection backend that applies only projection_entries (the Turso reference, ptr-pg) records the invalidated input, the count and the digest but not which expert: keys moved; only the runtime's materialized state holds them",
 ]
 
 next = [
@@ -58,4 +60,5 @@ checks = [
   "workspace fmt/check/test/clippy",
   "unit test that only the exact next index is applicable and every other index is classified as duplicate, out-of-order or gap",
   "ptr-pg postgres test replays a mixed log and compares every entry with MaterializedState",
+  "an_input_invalidation_projects_the_input_and_never_guesses_the_fenced_experts, the_input_key_and_value_parsers_accept_exactly_what_the_writers_write and a_version_3_record_commits_to_its_dependency_block_per_created_expert (versions 1 and 2 project exactly what they did)",
 ]

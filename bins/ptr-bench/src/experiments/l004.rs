@@ -915,6 +915,15 @@ fn expected_catalog(log: &[CommittedEvent]) -> Catalog {
             LedgerEvent::ProcedureRevoked { id, generation } => {
                 tombstones.insert((format!("procedure:{id}"), generation.0));
             }
+            // A compound revocation joins the revocation set; a supersession changes no row.
+            LedgerEvent::InputInvalidated {
+                input,
+                generation,
+                kind: ptr_ledger::InputInvalidationKind::Revoked,
+                ..
+            } => {
+                tombstones.insert((input.clone(), generation.0));
+            }
             _ => {}
         }
     }
@@ -1091,6 +1100,7 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::ExpertStructuralCommitted { .. } => "expert.structural_committed",
         LedgerEvent::ExpertFenceCommitted { .. } => "expert.fence_committed",
         LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
+        LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
     }
 }
 
@@ -1172,6 +1182,7 @@ fn expected_subject(record: &CommittedEvent) -> String {
             Some((kind, digest)) => format!("kv-taint:{}:{}", kind.name(), hex_of(digest)),
             None => "kv-taint:none".to_owned(),
         },
+        LedgerEvent::InputInvalidated { input, .. } => format!("expert-input:{input}"),
     }
 }
 

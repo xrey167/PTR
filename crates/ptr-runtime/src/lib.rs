@@ -3110,6 +3110,9 @@ impl PtrRuntime {
             // (taint only refuses more). Only a directly committed record is refused earlier
             // ([`validate_new_record`]).
             LedgerEvent::KvTaintCommitted { .. } => self.validate_kv_taint_event(event),
+            // Replay re-derives the fence set at this point of the history and compares its count
+            // and digest with the event's (see the `expert` module).
+            LedgerEvent::InputInvalidated { .. } => self.validate_input_invalidated_event(event),
         }
     }
 
@@ -3232,6 +3235,9 @@ impl PtrRuntime {
             }
             LedgerEvent::ExpertFenceCommitted { .. } => {
                 self.apply_expert_fence_event(&committed.event)?;
+            }
+            LedgerEvent::InputInvalidated { .. } => {
+                self.apply_input_invalidated_event(&committed.event)?;
             }
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }
@@ -3424,7 +3430,9 @@ impl PtrRuntime {
 ///
 /// An expert structural record is refused the same way
 /// ([`RuntimeError::StructuralRecordOutsideAdmissionPath`]): only the expert admission path may
-/// build one. So is an expert fence record: only `fence_expert` and `readmit_expert` may. A taint
+/// build one. So is an expert fence record: only `fence_expert` and `readmit_expert` may, and an
+/// input invalidation record ([`LedgerEvent::InputInvalidated`]): only
+/// `invalidate_input`, which derives its fence set, may. A taint
 /// record ([`LedgerEvent::KvTaintCommitted`]) is refused the same way: only the runtime's taint
 /// path may write one.
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
@@ -3432,6 +3440,7 @@ fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
         event,
         LedgerEvent::ExpertStructuralCommitted { .. }
             | LedgerEvent::ExpertFenceCommitted { .. }
+            | LedgerEvent::InputInvalidated { .. }
             | LedgerEvent::KvTaintCommitted { .. }
     ) {
         return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
