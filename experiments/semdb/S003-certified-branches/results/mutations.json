@@ -1,0 +1,669 @@
+{
+  "experiment_id": "S003",
+  "git_sha": "c9b57ddc9e46a8e515f8c566c57b01d7cd882550",
+  "recorded_at": "2026-10-08T19:06:37.478044+00:00",
+  "subcommand": "certified-branches",
+  "killed": 41,
+  "total": 41,
+  "mutations": [
+    {
+      "name": "value-digest-ignored",
+      "file": "crates/ptr-branch/src/certify.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 599,
+      "expected": [
+        "lost_updates",
+        "stale_read_merges"
+      ],
+      "counters": {
+        "lost_updates": 81,
+        "stale_read_merges": 70,
+        "serialization_divergences": 96,
+        "refusal_kind_mismatches": 352
+      }
+    },
+    {
+      "name": "range-digest-ignored",
+      "file": "crates/ptr-branch/src/certify.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 799,
+      "expected": [
+        "undetected_phantoms",
+        "stale_scan_merges"
+      ],
+      "counters": {
+        "undetected_phantoms": 39,
+        "stale_scan_merges": 144,
+        "serialization_divergences": 71,
+        "refusal_kind_mismatches": 545
+      }
+    },
+    {
+      "name": "input-set-digest-ignored",
+      "file": "crates/ptr-branch/src/certify.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 46,
+      "expected": [
+        "stale_input_merges"
+      ],
+      "counters": {
+        "stale_input_merges": 18,
+        "serialization_divergences": 2,
+        "refusal_kind_mismatches": 26
+      }
+    },
+    {
+      "name": "unread-inputs-ignored",
+      "file": "crates/ptr-branch/src/certify.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "undeclared_input_merges"
+      ],
+      "counters": {
+        "undeclared_input_merges": 3
+      }
+    },
+    {
+      "name": "lifecycle-ignored",
+      "file": "crates/ptr-branch/src/certify.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 140,
+      "expected": [
+        "stale_reliance_merges"
+      ],
+      "counters": {
+        "stale_reliance_merges": 17,
+        "refusal_kind_mismatches": 123
+      }
+    },
+    {
+      "name": "rebase-on-absent",
+      "file": "crates/ptr-branch/src/certify.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1635,
+      "expected": [
+        "lost_increments"
+      ],
+      "counters": {
+        "lost_increments": 571,
+        "serialization_divergences": 571,
+        "spurious_refusals": 445,
+        "refusal_kind_mismatches": 48
+      }
+    },
+    {
+      "name": "rebased-set-inverted",
+      "file": "crates/ptr-branch/src/certify.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2184,
+      "expected": [
+        "rebase_classification_errors"
+      ],
+      "counters": {
+        "rebase_classification_errors": 1092,
+        "provenance_mismatches": 1092
+      }
+    },
+    {
+      "name": "set-member-conflict-dropped",
+      "file": "crates/ptr-branch/src/certify.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "refusal_kind_mismatches"
+      ],
+      "counters": {
+        "refusal_kind_mismatches": 3
+      }
+    },
+    {
+      "name": "range-digest-keys-only",
+      "file": "crates/ptr-branch/src/digest.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 643,
+      "expected": [
+        "stale_scan_merges"
+      ],
+      "counters": {
+        "stale_scan_merges": 168,
+        "serialization_divergences": 61,
+        "refusal_kind_mismatches": 414
+      }
+    },
+    {
+      "name": "seal-reserved-check-dropped",
+      "file": "crates/ptr-branch/src/branch.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "seal_invariant_failures"
+      ],
+      "counters": {
+        "seal_invariant_failures": 3
+      }
+    },
+    {
+      "name": "seal-unread-target-dropped",
+      "file": "crates/ptr-branch/src/branch.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "seal_invariant_failures"
+      ],
+      "counters": {
+        "seal_invariant_failures": 3
+      }
+    },
+    {
+      "name": "merge-lifecycle-always-live",
+      "file": "crates/ptr-runtime/src/merge.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 140,
+      "expected": [
+        "stale_reliance_merges"
+      ],
+      "counters": {
+        "stale_reliance_merges": 17,
+        "refusal_kind_mismatches": 123
+      }
+    },
+    {
+      "name": "merge-once-removed",
+      "file": "crates/ptr-runtime/src/merge.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 15,
+      "expected": [
+        "double_merges"
+      ],
+      "counters": {
+        "double_merges": 12,
+        "forged_histories_accepted": 3
+      }
+    },
+    {
+      "name": "merge-key-not-projected",
+      "file": "crates/ptr-state/src/lib.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3214,
+      "expected": [
+        "double_merges"
+      ],
+      "counters": {
+        "double_merges": 12,
+        "forged_histories_accepted": 3,
+        "provenance_mismatches": 3199
+      }
+    },
+    {
+      "name": "ingress-keys-unguarded",
+      "file": "crates/ptr-runtime/src/semantic.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "reserved_writes_accepted"
+      ],
+      "counters": {
+        "reserved_writes_accepted": 3
+      }
+    },
+    {
+      "name": "verdict-level-strongest",
+      "file": "crates/ptr-runtime/src/merge.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "ungated_commits"
+      ],
+      "counters": {
+        "ungated_commits": 3
+      }
+    },
+    {
+      "name": "hard-findings-ignored",
+      "file": "crates/ptr-runtime/src/merge.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "ungated_commits"
+      ],
+      "counters": {
+        "ungated_commits": 3
+      }
+    },
+    {
+      "name": "triage-not-enforced",
+      "file": "crates/ptr-runtime/src/merge.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 757,
+      "expected": [
+        "ungated_commits"
+      ],
+      "counters": {
+        "ungated_commits": 3,
+        "provenance_mismatches": 754
+      }
+    },
+    {
+      "name": "approval-digest-unchecked",
+      "file": "crates/ptr-runtime/src/merge.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 528,
+      "expected": [
+        "approval_bypasses"
+      ],
+      "counters": {
+        "approval_bypasses": 522,
+        "program_mirror_divergences": 6
+      }
+    },
+    {
+      "name": "reviewer-unchecked",
+      "file": "crates/ptr-runtime/src/merge.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "approval_bypasses"
+      ],
+      "counters": {
+        "approval_bypasses": 3,
+        "program_mirror_divergences": 3
+      }
+    },
+    {
+      "name": "before-is-after",
+      "file": "crates/ptr-runtime/src/semantic.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "ungated_commits"
+      ],
+      "counters": {
+        "ungated_commits": 3
+      }
+    },
+    {
+      "name": "host-writes-default-on",
+      "file": "crates/ptr-runtime/src/merge.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "bypass_commits_accepted"
+      ],
+      "counters": {
+        "bypass_commits_accepted": 3
+      }
+    },
+    {
+      "name": "grant-replaceable",
+      "file": "crates/ptr-runtime/src/merge.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "bypass_commits_accepted"
+      ],
+      "counters": {
+        "bypass_commits_accepted": 3
+      }
+    },
+    {
+      "name": "generic-commit-accepts-semantic",
+      "file": "crates/ptr-runtime/src/lib.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "bypass_commits_accepted"
+      ],
+      "counters": {
+        "refusal_kind_mismatches": 3,
+        "bypass_commits_accepted": 3
+      }
+    },
+    {
+      "name": "replay-plan-digest-unchecked",
+      "file": "crates/ptr-runtime/src/semantic.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "forged_histories_accepted"
+      ],
+      "counters": {
+        "forged_histories_accepted": 3
+      }
+    },
+    {
+      "name": "replay-legacy-after-attested",
+      "file": "crates/ptr-runtime/src/semantic.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "forged_histories_accepted"
+      ],
+      "counters": {
+        "forged_histories_accepted": 6
+      }
+    },
+    {
+      "name": "ingress-shape-prefix-only",
+      "file": "crates/ptr-runtime/src/semantic.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "forged_histories_accepted"
+      ],
+      "counters": {
+        "forged_histories_accepted": 3
+      }
+    },
+    {
+      "name": "merge-dependencies-accepted",
+      "file": "crates/ptr-runtime/src/semantic.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "forged_histories_accepted"
+      ],
+      "counters": {
+        "forged_histories_accepted": 3
+      }
+    },
+    {
+      "name": "origin-not-encoded",
+      "file": "crates/ptr-ledger/src/lib.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "replay_divergences",
+        "double_merges"
+      ],
+      "counters": {
+        "double_merges": 3,
+        "replay_divergences": 1
+      }
+    },
+    {
+      "name": "set-removals-not-applied",
+      "file": "crates/ptr-branch/src/ops.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 179,
+      "expected": [
+        "serialization_divergences"
+      ],
+      "counters": {
+        "lost_increments": 62,
+        "serialization_divergences": 62,
+        "spurious_refusals": 55
+      }
+    },
+    {
+      "name": "negative-counter-check-removed",
+      "file": "bins/ptr-bench/src/experiments/s003/verifier.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 9,
+      "expected": [
+        "invariant_violations"
+      ],
+      "counters": {
+        "invariant_violations": 3,
+        "refusal_kind_mismatches": 3,
+        "ungated_commits": 3
+      }
+    },
+    {
+      "name": "rebased-plan-refused",
+      "file": "crates/ptr-branch/src/certify.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 185,
+      "expected": [
+        "spurious_refusals"
+      ],
+      "counters": {
+        "spurious_refusals": 182,
+        "refusal_kind_mismatches": 3
+      }
+    },
+    {
+      "name": "scan-conflict-names-the-prefix",
+      "file": "crates/ptr-branch/src/certify.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 705,
+      "expected": [
+        "conflict_key_errors"
+      ],
+      "counters": {
+        "conflict_key_errors": 705
+      }
+    },
+    {
+      "name": "merge-record-author-forged",
+      "file": "crates/ptr-runtime/src/merge.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3199,
+      "expected": [
+        "provenance_mismatches"
+      ],
+      "counters": {
+        "provenance_mismatches": 3199
+      }
+    },
+    {
+      "name": "workload-drawn-from-the-clock",
+      "file": "bins/ptr-bench/src/experiments/s003/workload.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "nondeterminism"
+      ],
+      "counters": {
+        "nondeterminism": 1
+      }
+    },
+    {
+      "name": "genesis-write-refused",
+      "file": "bins/ptr-bench/src/experiments/s003/world.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 54,
+      "expected": [
+        "harness_errors"
+      ],
+      "counters": {
+        "harness_errors": 54
+      }
+    },
+    {
+      "name": "host-write-records-less-than-asked",
+      "file": "crates/ptr-runtime/src/semantic.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 74312,
+      "expected": [
+        "model_divergences"
+      ],
+      "counters": {
+        "model_divergences": 74309,
+        "harness_errors": 3
+      }
+    },
+    {
+      "name": "oracle-ignores-scans",
+      "file": "bins/ptr-bench/src/experiments/s003/oracle.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 711,
+      "expected": [
+        "canary_misses"
+      ],
+      "counters": {
+        "spurious_refusals": 656,
+        "conflict_key_errors": 49,
+        "canary_misses": 6
+      }
+    },
+    {
+      "name": "oracle-lifecycle-live",
+      "file": "bins/ptr-bench/src/experiments/s003/oracle.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 122,
+      "expected": [
+        "canary_misses"
+      ],
+      "counters": {
+        "spurious_refusals": 82,
+        "refusal_kind_mismatches": 37,
+        "canary_misses": 3
+      }
+    },
+    {
+      "name": "model-skips-evictions",
+      "file": "bins/ptr-bench/src/experiments/s003/model.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 19983,
+      "expected": [
+        "model_divergences"
+      ],
+      "counters": {
+        "lost_updates": 183,
+        "spurious_refusals": 1,
+        "refusal_kind_mismatches": 277,
+        "conflict_key_errors": 47,
+        "provenance_mismatches": 493,
+        "model_divergences": 17784,
+        "program_mirror_divergences": 1143,
+        "replay_divergences": 55
+      }
+    },
+    {
+      "name": "mirror-drops-reads",
+      "file": "bins/ptr-bench/src/experiments/s003/program.rs",
+      "cases": 3,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6073,
+      "expected": [
+        "program_mirror_divergences"
+      ],
+      "counters": {
+        "program_mirror_divergences": 6073
+      }
+    }
+  ]
+}
