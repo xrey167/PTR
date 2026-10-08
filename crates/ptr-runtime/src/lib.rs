@@ -10,6 +10,7 @@ pub mod kv_infer;
 pub mod kv_infer_layered;
 pub mod kv_infer_session;
 pub mod kv_prefix;
+mod kv_secondary;
 pub mod kv_taint;
 pub mod manifest;
 pub mod memory;
@@ -57,6 +58,13 @@ pub use kv_prefix::{
     KvLayeredInsert, KvLayeredLookup, KvLivenessOracle, KvLookup, KvPageCharge, KvPagedInsert,
     KvPin, KvPrefixCatalog, KvPrefixRetirer, KvRequestPositions, KvRestoreReport, KvSalt,
     KvSnapshotError, SemanticSegmentError, KV_CHUNK_TOKENS, KV_SNAPSHOT_MAX_BYTES,
+};
+pub use kv_secondary::{
+    SecondaryConfig, SecondaryError, SecondaryIndex, SecondaryInsert, SecondaryInsertOutcome,
+    SecondaryLimits, SecondaryLineage, SecondaryLookup, SecondaryLookupOutcome, SecondaryPin,
+    SecondaryPinState, SecondaryRefusal, SecondaryRefusalCounts, SecondaryRefusalReason,
+    SecondaryResource, SecondaryRows, SecondaryRunId, SecondarySectionError, SecondarySplice,
+    SecondaryStats, DEFAULT_WINDOW_TOKENS, SECONDARY_SECTION_MAX_BYTES,
 };
 pub use manifest::{
     validate_and_build, validate_authority, ExecutionManifestRegistry, ManifestAuthorityRegistry,
