@@ -78,6 +78,7 @@ a0_ablation baseline-v1 phases (all flags are `--flag value`)
 STUDY: m001-v5 | m002-v10 | m003-v2     (arms: see `Study::arm_names`, plus `plain`)
 FOLDS: fold=FNV64[,fold=FNV64..]        (FNV64 lowercase hex; names unique)
 --out files are created exclusively; an existing file is never overwritten.
+--out - writes the rows to stdout (the hardened runner records stdout only).
 ";
 
 /// Typed failure of the learning-rate file.

@@ -16,7 +16,7 @@
 //!
 //! - `baseline-v1`, `baseline-v1-sweep`, `baseline-v1-select`: the successor study
 //!   against the plain transformer; see `baseline.rs` and `--help`. These write
-//!   their rows to `--out` (created exclusively), not to stdout.
+//!   their rows to `--out` (created exclusively; `--out -` is stdout).
 //!
 //! Stdout carries one JSON object per line (string fields name the row, numeric
 //! fields are its metrics) and `PRED <arm> <split> <hex digit per example>` lines.
@@ -732,25 +732,36 @@ fn self_test(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Exclusive, flushed line sink for the baseline-v1 `--out` files.
-struct OutFile {
-    file: std::fs::File,
+/// Flushed line sink of the baseline-v1 phases: `--out PATH` is created
+/// exclusively; `--out -` is stdout, which a hardened run record captures (the
+/// record of a listed experiment holds stdout and no side files).
+enum OutFile {
+    File(std::fs::File),
+    Stdout,
 }
 
 impl OutFile {
     /// Create `path`; an existing file is an error so evidence is never overwritten.
     fn create(path: &str) -> Result<Self, String> {
+        if path == "-" {
+            return Ok(Self::Stdout);
+        }
         std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)
-            .map(|file| Self { file })
+            .map(Self::File)
             .map_err(|error| format!("--out {path}: {error}"))
     }
 
     fn line(&mut self, line: &str) {
-        writeln!(self.file, "{line}").expect("--out is writable");
-        self.file.flush().expect("--out flushes");
+        match self {
+            Self::File(file) => {
+                writeln!(file, "{line}").expect("--out is writable");
+                file.flush().expect("--out flushes");
+            }
+            Self::Stdout => emit(line),
+        }
     }
 }
 
