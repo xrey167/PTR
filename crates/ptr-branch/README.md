@@ -58,7 +58,7 @@
 
 ### Linked experiments
 
-- [S003](../../experiments/semdb/S003-certified-branches/README.md) — `planned`
+- [S003](../../experiments/semdb/S003-certified-branches/README.md) — `frozen`
 - [F003](../../experiments/feedback/F003-calibrated-arbiter/README.md) — `planned`
 
 ### Technology evaluations
