@@ -39,7 +39,8 @@ pub use kv::{KvUseError, KvUseRequest, KvUseTicket, RuntimeKvAuthority};
 pub use kv_derivation::{AdmittedSegments, DerivedRun, DerivedRunRequest};
 pub use kv_infer::{
     IndexUpdate, ReferenceKvError, ReferenceKvFaults, ReferenceKvLimits, ReferenceKvLiveness,
-    ReferenceKvOutcome, ReferenceKvReuseBackend, ReferenceKvScope, REFERENCE_KV_WEIGHT_SEED,
+    ReferenceKvOutcome, ReferenceKvProbe, ReferenceKvProbeMode, ReferenceKvReuseBackend,
+    ReferenceKvScope, REFERENCE_KV_WEIGHT_SEED,
 };
 pub use kv_infer_layered::{
     BindingError, BindingRecord, BindingSuccessors, BoundExpert, ExpertSuccessor, LayerAssembly,
