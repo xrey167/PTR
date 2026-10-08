@@ -5,10 +5,11 @@
 //! hidden size, heads and vocabulary, with `layers = 1`, whose canonical configuration digest
 //! is the `tiny_model_config_digest` of `config.toml`.
 //!
-//! The checks of this module need no backend. A backend with a configurable layer count does
-//! not exist yet (the planned `ReferenceKvReuseBackend::with_layers`), so the comparison of the
-//! backend's chain id and cold run with the independent one-layer stack built here is part of
-//! the harness (`cases`, not built yet); nothing here pretends to have made it.
+//! [`verify_independent`] needs no backend. [`verify_backend`] compares the one-layer backend
+//! the harness runs (`ReferenceKvReuseBackend::with_layers`, raised prompt limits) with the
+//! independent one-layer stack built here: the digest of the configuration it reports, its
+//! chain id and its cold run (generated tokens and logits digest), so a backend that is not
+//! the pinned model is a model-pin mismatch.
 //!
 //! The checks are recorded the way the shared ones are (a [`PinChecks`], one mismatch per
 //! failed check), and the checkpoint and the topology have no real counterpart: both are the
@@ -19,11 +20,16 @@ use crate::experiments::layered_kv::emit::Json;
 use crate::experiments::layered_kv::lab::{fail, Res};
 use crate::experiments::layered_kv::pins as shared;
 pub use crate::experiments::layered_kv::pins::{canonical_digest, PinChecks};
+use ptr_ledger::integrity::sha256;
 use ptr_model_api::{ByteTokenizer, Tokenizer};
 use ptr_pods::{
-    derive_kv_layer_chains_in_regime, KvChainIdentity, KvKeyEncoding, Qwen2Activation,
+    derive_kv_layer_chains_in_regime, InMemoryPagedKvBackend, KvChainIdentity, KvKeyEncoding,
+    KvPageBinding, KvPageSize, KvTensorDType, PagedKvTensorBackend, Qwen2Activation, Qwen2Binding,
     Qwen2LayerConfig, Qwen2PagedStack, Qwen2QkNorm, Qwen2RopeScaling, Qwen2StackConfig,
+    Qwen2StackInput,
 };
+use ptr_runtime::{ReferenceKvProbeMode, ReferenceKvReuseBackend};
+use ptr_types::{AdapterVersion, DeviceId, Generation, ModelVersion, PrincipalId};
 
 /// The tiny model of R006 (`tiny_model_config`): the shared shape with one layer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -202,6 +208,251 @@ pub fn verify_independent(checks: &mut PinChecks, pinned_digest: &str) -> Res<()
         ]),
     );
     Ok(())
+}
+
+/// The numerics label the backend binds into its build identity (`NUMERICS` in
+/// `kv_infer.rs`), as the shared pins reconstruct it.
+const BACKEND_NUMERICS: &str = "cpu-f32-sequential-reference";
+/// The domain of the logits digest (`LOGITS_DOMAIN` in `kv_infer.rs`).
+const LOGITS_DOMAIN: &[u8] = b"ptr.kv.reference-logits.v1\0";
+
+/// The build identity the backend reports to its chain, as this crate reconstructs it: it is
+/// verified against the backend's chain id before it is trusted.
+fn reconstructed_build() -> String {
+    format!(
+        "ptr-runtime@{}|{BACKEND_NUMERICS}|{}-{}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
+/// The independent one-layer stack for prompts of up to `max_prompt_tokens` tokens.
+pub fn sized_stack(max_prompt_tokens: usize) -> Res<Qwen2PagedStack> {
+    Qwen2PagedStack::reference(
+        stack_config_with(SHAPE.layers as usize, max_prompt_tokens),
+        SHAPE.weight_seed,
+    )
+    .map_err(fail("the independent one-layer stack"))
+}
+
+/// The generated tokens and the logits digest of a cold run of `tokens` on the independent
+/// `stack`, driven here chunk by chunk and token by token, with a cache for
+/// `max_prompt_tokens`. The shared helper allocates a 256-token cache; R006's prompts reach
+/// 4,160 tokens.
+pub fn independent_cold_run_sized(
+    stack: &Qwen2PagedStack,
+    tokens: &[u32],
+    max_prompt_tokens: usize,
+) -> Res<(Vec<u32>, [u8; 32])> {
+    let chunk_tokens = crate::experiments::layered_kv::corpus::CHUNK_TOKENS;
+    let paged = InMemoryPagedKvBackend::new(
+        KvPageSize::new(chunk_tokens as u16).map_err(fail("the page size"))?,
+    );
+    let schema = stack
+        .kv_schema(
+            ModelVersion::from(MODEL_NAME),
+            AdapterVersion::from("base"),
+            DeviceId::from("cpu"),
+        )
+        .map_err(fail("the schema"))?;
+    let binding = KvPageBinding {
+        model: schema.model.clone(),
+        adapter: schema.adapter.clone(),
+        generation: Generation(1),
+        execution_manifest: [1; 32],
+        principal: PrincipalId::from(crate::experiments::layered_kv::lab::PRINCIPAL),
+        device: schema.device.clone(),
+        dtype: KvTensorDType::F32,
+        page_tokens: KvPageSize::new(chunk_tokens as u16).map_err(fail("the page size"))?,
+    };
+    let mut cache = paged
+        .allocate_bound(schema, max_prompt_tokens + shared::MAX_NEW_TOKENS, binding)
+        .map_err(fail("a cache"))?;
+    let regime = stack
+        .admit_rope_regime(tokens.len(), shared::MAX_NEW_TOKENS)
+        .map_err(fail("the regime"))?;
+    let binding = Qwen2Binding { adapter: None };
+    let mut last = Vec::new();
+    for chunk in tokens.chunks(chunk_tokens) {
+        let output = stack
+            .prefill_bound_in_regime(
+                &paged,
+                &mut cache,
+                Qwen2StackInput {
+                    tokens: chunk.to_vec(),
+                },
+                &regime,
+                &binding,
+            )
+            .map_err(fail("a prefill chunk"))?;
+        last = output.logits.into_iter().next_back().unwrap_or_default();
+    }
+    let mut material = LOGITS_DOMAIN.to_vec();
+    let mut generated = Vec::new();
+    for step in 0..shared::MAX_NEW_TOKENS {
+        for value in &last {
+            material.extend_from_slice(&value.to_bits().to_le_bytes());
+        }
+        let mut best = 0usize;
+        for (index, value) in last.iter().enumerate() {
+            if *value > last[best] {
+                best = index;
+            }
+        }
+        generated.push(best as u32);
+        if step + 1 < shared::MAX_NEW_TOKENS {
+            let output = stack
+                .decode_bound_in_regime(
+                    &paged,
+                    &mut cache,
+                    Qwen2StackInput {
+                        tokens: vec![best as u32],
+                    },
+                    &regime,
+                    &binding,
+                )
+                .map_err(fail("a decode step"))?;
+            last = output.logits.into_iter().next().unwrap_or_default();
+        }
+    }
+    Ok((generated, sha256(&material)))
+}
+
+/// The digest of the configuration `backend` reports, by the rule of
+/// `tiny_model_config_digest_rule` (read from the backend, not from this module's constants).
+pub fn observed_config_digest(backend: &ReferenceKvReuseBackend) -> String {
+    let config = backend.stack_config();
+    canonical_digest(&[
+        ("layers", config.num_layers as u64),
+        ("hidden_size", config.layer.hidden_size as u64),
+        ("num_heads", config.layer.num_attention_heads as u64),
+        ("num_kv_heads", config.layer.num_key_value_heads as u64),
+        (
+            "head_dim",
+            (config.layer.hidden_size / config.layer.num_attention_heads) as u64,
+        ),
+        ("vocab_size", config.vocab_size as u64),
+        ("weight_seed", ptr_runtime::REFERENCE_KV_WEIGHT_SEED),
+    ])
+}
+
+/// The checks of the backend the harness runs, recorded in `checks`:
+///
+/// * the digest of the configuration the backend reports equals the pinned digest;
+/// * the backend is the pinned one-layer shape with `PreRope` keys and the byte tokenizer;
+/// * a stack built here from the pinned shape derives the same KV chain id as the backend (the
+///   chain hashes every weight, the shape, the rotary parameters, the key encoding, the
+///   tokenizer and the build identity), and the raised prompt limits left that chain untouched
+///   (`default_chain` is the chain of a backend at the crate's default limits);
+/// * a cold run of the backend (`ReferenceKvProbeMode::Cold`) produces the same generated
+///   tokens and logits digest as the independent stack's cold run.
+///
+/// Returns the verified build identity.
+pub fn verify_backend(
+    checks: &mut PinChecks,
+    backend: &ReferenceKvReuseBackend,
+    default_chain: [u8; 32],
+    max_prompt_tokens: usize,
+    pinned_digest: &str,
+) -> Res<Option<String>> {
+    let observed = observed_config_digest(backend);
+    checks.check(
+        "backend_config_digest",
+        observed == pinned_digest,
+        Json::str(observed),
+    );
+    let config = backend.stack_config();
+    let identity = backend.tokenizer().identity();
+    checks.check(
+        "backend_shape",
+        config.num_layers as u64 == SHAPE.layers
+            && config.key_encoding == KvKeyEncoding::PreRope
+            && config.vocab_size as u64 == SHAPE.vocab_size
+            && identity.name() == "ptr.byte"
+            && identity.version() == "1",
+        Json::str("one layer, PreRope keys, vocabulary 256, the byte tokenizer"),
+    );
+    let stack = sized_stack(max_prompt_tokens)?;
+    let regime = stack
+        .config()
+        .layer
+        .rope_regime(1)
+        .map_err(fail("the plain regime"))?;
+    let build = reconstructed_build();
+    let derived = derive_kv_layer_chains_in_regime(
+        &stack,
+        &KvChainIdentity {
+            base_model: MODEL_NAME.to_string(),
+            generation: 1,
+            build: build.clone(),
+            tokenizer: format!("{}@{}", identity.name(), identity.version()),
+        },
+        &regime,
+    )
+    .map_err(fail("the chain"))?
+    .final_id();
+    let chain_ok = derived == backend.chain_id().0;
+    checks.check(
+        "backend_chain_id",
+        chain_ok,
+        Json::obj([
+            (
+                "backend",
+                Json::str(format!(
+                    "sha256:{}",
+                    crate::experiments::layered_kv::corpus::hex(&backend.chain_id().0)
+                )),
+            ),
+            (
+                "independent",
+                Json::str(format!(
+                    "sha256:{}",
+                    crate::experiments::layered_kv::corpus::hex(&derived)
+                )),
+            ),
+        ]),
+    );
+    checks.check(
+        "raised_limits_leave_the_chain_untouched",
+        default_chain == backend.chain_id().0,
+        Json::str("the chain id at the crate's default limits equals the harness backend's"),
+    );
+    let tokens = crate::experiments::layered_kv::corpus::sequence(
+        SHAPE.weight_seed,
+        9_998,
+        3 * crate::experiments::layered_kv::corpus::CHUNK_TOKENS + 5,
+    );
+    let request = crate::experiments::layered_kv::corpus::raw_request("r006-pin-probe", &tokens);
+    let probe = backend
+        .probe(
+            &crate::experiments::layered_kv::lab::scope(),
+            &request,
+            ReferenceKvProbeMode::Cold,
+        )
+        .map_err(fail("the pin probe"))?;
+    let (generated, logits) = independent_cold_run_sized(&stack, &tokens, max_prompt_tokens)?;
+    let observed_tokens: Vec<u32> = probe
+        .outcome
+        .generated
+        .iter()
+        .map(|token| token.0)
+        .collect();
+    checks.check(
+        "backend_cold_run",
+        generated == observed_tokens && logits == probe.outcome.logits_digest,
+        Json::obj([
+            ("generated", Json::Int(generated.len() as i64)),
+            (
+                "logits_digest",
+                Json::str(format!(
+                    "sha256:{}",
+                    crate::experiments::layered_kv::corpus::hex(&logits)
+                )),
+            ),
+        ]),
+    );
+    Ok(chain_ok.then_some(build))
 }
 
 /// The pinned values the run echoes under `model_pins.pinned`.
