@@ -793,6 +793,9 @@ fn a_catalog_with_runs_exports_v4_and_restores_row_less_runs() {
         target.secondary_mut().insert(wrong, &AllLive).unwrap_err(),
         SecondaryError::RowsDigestMismatch
     );
+    // The conflicting restored run is tombstoned (and, unpinned, dropped) for good.
+    assert_eq!(target.secondary().stats().conflict_tombstones, 1);
+    assert_eq!(target.secondary().stats().runs, 1);
     assert_eq!(
         target
             .secondary_mut()
@@ -804,15 +807,21 @@ fn a_catalog_with_runs_exports_v4_and_restores_row_less_runs() {
         SecondaryError::DependencyNotLive,
         "rows are never attached to a run whose input died at rest"
     );
-    for segment in [0, 1] {
-        assert!(matches!(
-            target
-                .secondary_mut()
-                .insert(insert_of(&salt, &origin, segment, Vec::new()), &AllLive)
-                .unwrap(),
-            SecondaryInsertOutcome::RowsAttached(_)
-        ));
-    }
+    assert!(matches!(
+        target
+            .secondary_mut()
+            .insert(insert_of(&salt, &origin, 0, Vec::new()), &AllLive)
+            .unwrap(),
+        SecondaryInsertOutcome::RowsAttached(_)
+    ));
+    // The tombstoned run's slot is free: the correct content is a fresh run.
+    assert!(matches!(
+        target
+            .secondary_mut()
+            .insert(insert_of(&salt, &origin, 1, Vec::new()), &AllLive)
+            .unwrap(),
+        SecondaryInsertOutcome::Inserted(_)
+    ));
     let hit = lookup_all(&mut target, &shifted, &AllLive);
     assert_eq!(hit.splices.len(), 2);
     assert_eq!(hit.splices[0].rows, rows_for(origin.segments()[0].tokens()));
@@ -864,9 +873,16 @@ fn a_malformed_v4_snapshot_admits_nothing() {
 
     let restore = |bytes: &[u8]| {
         let (mut target, _) = new_catalog(CatalogLimits::default());
+        let (stats, secondary) = (target.stats(), target.secondary().stats());
         let result = target.restore_entries(bytes);
         assert_eq!(target.stats().entries, 0, "nothing stays admitted");
         assert_eq!(target.secondary().stats().runs, 0, "nothing stays admitted");
+        assert_eq!(target.stats(), stats, "no catalog counter moved");
+        assert_eq!(
+            target.secondary().stats(),
+            secondary,
+            "no index counter moved"
+        );
         result
     };
 
@@ -929,6 +945,64 @@ fn a_malformed_v4_snapshot_admits_nothing() {
     );
     assert_eq!(tiny.stats().entries, 0);
     assert_eq!(tiny.secondary().stats().runs, 0);
+    // The refusal is decided before any trie entry is admitted: every counter, including
+    // the index's capacity counter, is as it was.
+    let (mut tiny2, _) = new_catalog(CatalogLimits::default());
+    tiny2 = tiny2
+        .with_secondary_config(SecondaryConfig {
+            window_tokens: DEFAULT_WINDOW_TOKENS,
+            limits: SecondaryLimits {
+                max_indexed_windows: 5,
+                ..SecondaryLimits::default()
+            },
+        })
+        .unwrap();
+    let (stats, secondary) = (tiny2.stats(), tiny2.secondary().stats());
+    assert!(tiny2.restore_entries(&good).is_err());
+    assert_eq!(tiny2.stats(), stats);
+    assert_eq!(tiny2.secondary().stats(), secondary);
+}
+
+#[test]
+fn a_conflicting_restored_run_is_tombstoned_and_refused_not_fatal() {
+    let (source, _) = populated(true);
+    let bytes = source.export_entries().unwrap();
+    let (mut target, _) = new_catalog(CatalogLimits::default());
+    target.restore_entries(&bytes).unwrap();
+    assert_eq!(target.secondary().stats().runs, 2);
+
+    let origin = request(vec![
+        semantic("price:sku", 1, TEXT_A),
+        memory("capsule:a", 1, TEXT_B),
+        raw("tail tail"),
+    ]);
+    let salt = salt();
+    // Rows that do not match the digest the restored run recorded.
+    let altered: Vec<TokenId> = origin.segments()[1]
+        .tokens()
+        .iter()
+        .map(|token| TokenId(token.0 ^ 1))
+        .collect();
+    let mut conflicting = insert_of(&salt, &origin, 1, Vec::new());
+    conflicting.rows = rows_for(&altered);
+    assert_eq!(
+        target
+            .secondary_mut()
+            .insert(conflicting, &AllLive)
+            .unwrap_err(),
+        SecondaryError::RowsDigestMismatch
+    );
+    let stats = target.secondary().stats();
+    assert_eq!(stats.conflict_tombstones, 1);
+    assert_eq!(stats.runs, 1, "the conflicting run is gone");
+
+    // The slot is free for the correct content, which is a fresh run.
+    let fresh = target
+        .secondary_mut()
+        .insert(insert_of(&salt, &origin, 1, Vec::new()), &AllLive)
+        .unwrap();
+    assert!(matches!(fresh, SecondaryInsertOutcome::Inserted(_)));
+    assert_eq!(target.secondary().stats().runs, 2);
 }
 
 // ----- configuration ------------------------------------------------------------------------

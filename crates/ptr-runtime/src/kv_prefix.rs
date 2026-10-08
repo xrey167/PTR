@@ -2294,6 +2294,20 @@ impl KvPrefixCatalog {
             return Err(KvSnapshotError::NotEmpty);
         }
         let DecodedSnapshot { entries, secondary } = decode_snapshot(snapshot, &self.limits)?;
+        // The secondary section is decoded and checked against its bounds BEFORE any trie
+        // entry is admitted, so a malformed section leaves the catalog and every counter
+        // exactly as they were.
+        let plan = match secondary {
+            Some(section) => Some(
+                self.secondary
+                    .prepare_restore(&section)
+                    .map_err(KvSnapshotError::Secondary)?,
+            ),
+            None => None,
+        };
+        let stats_before = self.stats.clone();
+        let clock_before = self.clock;
+        let next_pin_before = self.next_pin;
         let mut count = 0usize;
         let mut skipped = 0usize;
         for entry in entries {
@@ -2315,21 +2329,14 @@ impl KvPrefixCatalog {
             );
             if let Err(error) = admitted {
                 self.clear_trie();
+                self.stats = stats_before;
+                self.clock = clock_before;
+                self.next_pin = next_pin_before;
                 return Err(KvSnapshotError::Admission(error));
             }
         }
-        // The secondary section is merged last: it is atomic itself, and a failure here
-        // empties the trie again, so a refused snapshot admits nothing.
-        let secondary_runs = match secondary {
-            Some(section) => match self.secondary.restore_section(&section) {
-                Ok(added) => added,
-                Err(error) => {
-                    self.clear_trie();
-                    return Err(KvSnapshotError::Secondary(error));
-                }
-            },
-            None => 0,
-        };
+        // The prepared section cannot fail to apply: the index has not changed since.
+        let secondary_runs = plan.map_or(0, |plan| self.secondary.commit_restore(plan));
         self.stats.restored_entries += count as u64;
         Ok(KvRestoreReport {
             entries: count,

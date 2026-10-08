@@ -478,6 +478,55 @@ fn positional_reuse_is_off_by_default_and_changes_no_existing_path() {
     );
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Everything the opt-in-off path must keep reproducing bit for bit.
+fn default_backend_fingerprint() -> [String; 5] {
+    let default =
+        ReferenceKvReuseBackend::with_seed(limits(256), scope(), REFERENCE_KV_WEIGHT_SEED).unwrap();
+    let config = hex(&Sha256::digest(
+        format!("{:?}", default.stack_config()).as_bytes(),
+    ));
+    let probe = default
+        .probe(&scope(), &origin(), ReferenceKvProbeMode::Cold)
+        .unwrap();
+    let warm = default.infer_scoped(&scope(), &origin(), None).unwrap();
+    [
+        hex(&default.chain_id().0),
+        config,
+        hex(&probe.kv_state_digest),
+        hex(&probe.outcome.logits_digest),
+        hex(&warm.logits_digest),
+    ]
+}
+
+/// Literals computed from the code at the base commit cb2db074, before any R006 positional
+/// change: the opt-in-off path must not drift. `config` is the SHA-256 of the `Debug` text of
+/// the stack configuration.
+#[test]
+fn the_default_backend_fingerprint_is_pinned_to_the_pre_r006_literals() {
+    let [chain, config, kv_state, probe_logits, infer_logits] = default_backend_fingerprint();
+    assert_eq!(
+        chain,
+        "9a14f47059404a447f1c12044908d91dec08a158ed6e1fdfe6f6bc872b7861ee"
+    );
+    assert_eq!(
+        config,
+        "064a7c65166ca7fafd2986f906dfc63d0d5d2e044fb23403eb4f25575d0fcb05"
+    );
+    assert_eq!(
+        kv_state,
+        "97e1598049890c3aff69568318364ebde5479ef034937551a1157c4f58dec180"
+    );
+    assert_eq!(
+        probe_logits,
+        "ff315dbdb6cf20f6aa65bc5f988c459b6a7d5727df500f9050bdd73be26b09ab"
+    );
+    assert_eq!(infer_logits, probe_logits);
+}
+
 #[test]
 fn the_default_four_layer_backend_is_unchanged_and_refuses_positional_reuse() {
     let default =
@@ -1132,6 +1181,84 @@ fn a_restored_run_whose_upstream_died_at_rest_never_gets_its_rows_back() {
         !again_report.insert_refusals.is_empty(),
         "DependencyNotLive is a graceful insert refusal"
     );
+}
+
+fn reseal_v4(mut body: Vec<u8>) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr.kv.catalog-snapshot.v4\0");
+    hasher.update(&body);
+    body.extend_from_slice(&hasher.finalize());
+    body
+}
+
+/// A v4 snapshot whose run for `doc()` records a wrong rows digest (re-sealed).
+fn snapshot_with_wrong_doc_digest(snapshot: &[u8]) -> Vec<u8> {
+    let pattern: Vec<u8> = tokens(11, SEGMENT_TOKENS)
+        .iter()
+        .flat_map(|token| token.0.to_le_bytes())
+        .collect();
+    let at = snapshot
+        .windows(pattern.len())
+        .position(|window| window == pattern.as_slice())
+        .expect("the doc run's tokens are in the section");
+    let mut body = snapshot[..snapshot.len() - 32].to_vec();
+    body[at + pattern.len()] ^= 0xff; // first byte of the recorded rows digest
+    reseal_v4(body)
+}
+
+#[test]
+fn a_conflicting_restored_run_is_refused_and_tombstoned_and_never_fails_a_request() {
+    let source = positional(256);
+    run_positional(&source, &origin());
+    let crafted = snapshot_with_wrong_doc_digest(&source.export_catalog().unwrap());
+
+    let target = positional(256);
+    assert_eq!(target.restore_catalog(&crafted).unwrap().secondary_runs, 2);
+
+    // Re-running the origin offers the doc's rows: the digest conflicts. The request
+    // completes, the conflict is a typed insert refusal and the other run gets its rows.
+    let again = run_positional(&target, &origin());
+    let again_report = report(&again.outcome);
+    assert_eq!(
+        again_report.insert_refusals,
+        vec![ptr_runtime::SecondaryError::RowsDigestMismatch]
+    );
+    assert_eq!(again_report.rows_attached, 1);
+    let stats = target.secondary_stats().unwrap();
+    assert_eq!(stats.conflict_tombstones, 1);
+    assert_eq!(stats.runs, 1, "the conflicting run is gone");
+
+    // The conflicting run is never spliced, and a later request is not failed by it.
+    let request = shifted(16);
+    let baseline = cold(&target, &request);
+    let first = run_positional(&target, &request);
+    assert_eq!(report(&first.outcome).reused_tokens, 0);
+    assert!(report(&first.outcome).insert_refusals.is_empty());
+    assert_bitwise_equal("conflicting run not spliced", &baseline, &first);
+    // The content re-entered as a fresh, correct run and now serves.
+    let second = run_positional(&target, &request);
+    assert_eq!(report(&second.outcome).reused_tokens, SEGMENT_TOKENS + 16);
+    assert_bitwise_equal("fresh run serves", &baseline, &second);
+}
+
+#[test]
+fn opting_in_is_refused_when_the_index_already_holds_restored_runs() {
+    let source = positional(256);
+    run_positional(&source, &origin());
+    let snapshot = source.export_catalog().unwrap();
+
+    let restored_first =
+        ReferenceKvReuseBackend::with_layers(limits(256), scope(), REFERENCE_KV_WEIGHT_SEED, 1)
+            .unwrap();
+    restored_first.restore_catalog(&snapshot).unwrap();
+    assert!(matches!(
+        restored_first.with_positional_reuse(PositionalOptions::default()),
+        Err(ReferenceKvError::PositionalIndexNotEmpty)
+    ));
+
+    // Opting in first, then restoring, is the supported order.
+    let target = positional(256);
+    assert_eq!(target.restore_catalog(&snapshot).unwrap().secondary_runs, 2);
 }
 
 // ---- negative control: PostRope --------------------------------------------------------------------------
