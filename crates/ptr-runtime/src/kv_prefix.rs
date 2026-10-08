@@ -36,6 +36,13 @@
 //!   without a liveness check. The use-time check (and the backend, for pages that are
 //!   gone) decides at the first use, so a restored entry whose input was revoked, or whose
 //!   pages were lost, misses cleanly.
+//! * **Secondary index.** The catalog owns one position-independent
+//!   [`SecondaryIndex`] (R006). Every `invalidate_*` function and the
+//!   committed-event mapping reach it through the same identities and the same affected
+//!   closure as the trie; an invalidation that never arrives (index lag) is covered by the
+//!   index's own use-time liveness check. Its runs ride in an optional v4 snapshot section
+//!   written only when a live run exists, so a catalog without runs exports the
+//!   byte-identical earlier snapshot.
 //! * **Canonical positions only.** Only a request whose positions start at 0 without
 //!   explicit ids can hit, and only an entry published at `position_offset` 0 is admitted.
 //!
@@ -46,6 +53,7 @@
 //! `PtrRuntime::apply_committed` for committed revocations, committed supersessions and
 //! committed semantic deltas, never for prepared ones.
 
+use crate::kv_secondary::{SecondaryConfig, SecondaryError, SecondaryIndex};
 use crate::PtrRuntime;
 use ptr_ledger::{InputInvalidationKind, LedgerEvent};
 use ptr_model_api::{
@@ -655,6 +663,9 @@ pub struct KvPrefixCatalog {
     clock: u64,
     next_pin: u64,
     stats: KvCatalogStats,
+    /// The position-independent secondary index (R006). Empty and inert unless a caller
+    /// inserts runs; every invalidation below reaches it.
+    secondary: SecondaryIndex,
 }
 
 impl fmt::Debug for KvPrefixCatalog {
@@ -676,6 +687,8 @@ impl KvPrefixCatalog {
         {
             return Err(KvCatalogError::InvalidLimits);
         }
+        let secondary = SecondaryIndex::new(SecondaryConfig::default())
+            .map_err(|_| KvCatalogError::InvalidLimits)?;
         Ok(Self {
             limits,
             authority,
@@ -690,7 +703,34 @@ impl KvPrefixCatalog {
             clock: 0,
             next_pin: 0,
             stats: KvCatalogStats::default(),
+            secondary,
         })
+    }
+
+    /// Replace the (still empty) secondary index with one built from `config`. The default
+    /// configuration is what every catalog starts with, so a catalog that never calls this
+    /// behaves as before. Refused with [`KvCatalogError::InvalidLimits`] for an invalid
+    /// configuration or when the index already holds runs.
+    pub fn with_secondary_config(
+        mut self,
+        config: SecondaryConfig,
+    ) -> Result<Self, KvCatalogError> {
+        if !self.secondary.is_empty() {
+            return Err(KvCatalogError::InvalidLimits);
+        }
+        self.secondary = SecondaryIndex::new(config).map_err(|_| KvCatalogError::InvalidLimits)?;
+        Ok(self)
+    }
+
+    /// The secondary index this catalog owns and invalidates.
+    pub fn secondary(&self) -> &SecondaryIndex {
+        &self.secondary
+    }
+
+    /// Mutable access, for inserting and looking up runs and releasing their pins. The
+    /// catalog still reaches the same index from every `invalidate_*` function.
+    pub fn secondary_mut(&mut self) -> &mut SecondaryIndex {
+        &mut self.secondary
     }
 
     /// Register the backend on which invalidated prefixes are retired by the runtime
@@ -1270,6 +1310,8 @@ impl KvPrefixCatalog {
             .collect();
         let wanted: BTreeSet<&str> = identities.iter().map(String::as_str).collect();
         self.tombstone_matching(&wanted, |dep| dep.kind == KvDependencyKind::Expert);
+        // The secondary index scans its own `expert:` identity range.
+        self.secondary.invalidate_all_experts();
         self.take_retirements()
     }
 
@@ -1353,6 +1395,11 @@ impl KvPrefixCatalog {
         for (node_key, entry_key) in targets {
             self.tombstone_entry(&node_key, &entry_key);
         }
+        // The secondary index sees the same identities and the same affected closure, so
+        // every `invalidate_*` function reaches it. It owns row copies, so there is
+        // nothing to retire on the backend.
+        self.secondary
+            .invalidate_matching(identities, &mut affected);
     }
 
     /// Make an entry unreachable now; reclaim it now if unpinned, else when released.
@@ -1715,6 +1762,14 @@ const SNAPSHOT_DOMAIN_V2: &[u8] = b"ptr.kv.catalog-snapshot.v2\0";
 /// would be refused by the backend as a scope mismatch, never as a hit.
 const SNAPSHOT_MAGIC_V3: &[u8; 8] = b"PTRKVL03";
 const SNAPSHOT_DOMAIN_V3: &[u8] = b"ptr.kv.catalog-snapshot.v3\0";
+/// Snapshot v4: the v3 body (layer tag and scope on every entry) followed by one
+/// length-prefixed secondary-index section (R006, [`crate::SecondaryIndex::export_section`]).
+/// Written **only** when the secondary index holds a live run, so a catalog without runs
+/// still exports the byte-identical v1 or v3 snapshot. Restoring a v4 snapshot merges the
+/// section's runs without rows; rows come back by an idempotent re-insert whose digest
+/// matches.
+const SNAPSHOT_MAGIC_V4: &[u8; 8] = b"PTRKVS04";
+const SNAPSHOT_DOMAIN_V4: &[u8] = b"ptr.kv.catalog-snapshot.v4\0";
 /// Largest snapshot exported or accepted.
 pub const KV_SNAPSHOT_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SNAPSHOT_MAX_DEPENDENCIES: usize = 1024;
@@ -1741,6 +1796,9 @@ pub enum KvSnapshotError {
     NonCanonical(&'static str),
     /// The entries do not fit this catalog's limits; nothing was admitted.
     Admission(KvCatalogError),
+    /// The v4 secondary section was refused (malformed, over a bound, or over this
+    /// index's limits); the catalog stays empty.
+    Secondary(SecondaryError),
 }
 
 impl fmt::Display for KvSnapshotError {
@@ -1754,6 +1812,7 @@ impl fmt::Display for KvSnapshotError {
             Self::LimitExceeded(what) => write!(f, "KV catalog snapshot bound exceeded: {what}"),
             Self::NonCanonical(what) => write!(f, "KV catalog snapshot is not canonical: {what}"),
             Self::Admission(error) => write!(f, "snapshot entries were refused: {error}"),
+            Self::Secondary(error) => write!(f, "snapshot secondary section: {error}"),
         }
     }
 }
@@ -1768,6 +1827,9 @@ pub struct KvRestoreReport {
     /// Per-layer entries of a v2 snapshot that were not admitted because that format does not
     /// record the key's layer scope. Zero for a v1 or v3 snapshot.
     pub skipped_unscoped_layered: usize,
+    /// Secondary-index runs added from a v4 section (without rows). Zero for any other
+    /// version, and for runs the index already held.
+    pub secondary_runs: usize,
 }
 
 struct SnapshotEntry {
@@ -1811,13 +1873,16 @@ fn dependency_from_tag(tag: u8, segment: u8) -> Option<KvDependencyKind> {
     }
 }
 
-fn encode_snapshot(entries: &[SnapshotEntry]) -> Result<Vec<u8>, KvSnapshotError> {
-    let layered = entries.iter().any(|entry| entry.layer.is_some());
+fn encode_snapshot(
+    entries: &[SnapshotEntry],
+    secondary: Option<&[u8]>,
+) -> Result<Vec<u8>, KvSnapshotError> {
+    let layered = secondary.is_some() || entries.iter().any(|entry| entry.layer.is_some());
     let mut out = Vec::new();
-    out.extend_from_slice(if layered {
-        SNAPSHOT_MAGIC_V3
-    } else {
-        SNAPSHOT_MAGIC
+    out.extend_from_slice(match (secondary, layered) {
+        (Some(_), _) => SNAPSHOT_MAGIC_V4,
+        (None, true) => SNAPSHOT_MAGIC_V3,
+        (None, false) => SNAPSHOT_MAGIC,
     });
     put_u32(&mut out, entries.len());
     for entry in entries {
@@ -1887,11 +1952,15 @@ fn encode_snapshot(entries: &[SnapshotEntry]) -> Result<Vec<u8>, KvSnapshotError
             return Err(KvSnapshotError::TooLarge);
         }
     }
+    if let Some(section) = secondary {
+        put_u32(&mut out, section.len());
+        out.extend_from_slice(section);
+    }
     let mut hasher = Sha256::new();
-    hasher.update(if layered {
-        SNAPSHOT_DOMAIN_V3
-    } else {
-        SNAPSHOT_DOMAIN
+    hasher.update(match (secondary, layered) {
+        (Some(_), _) => SNAPSHOT_DOMAIN_V4,
+        (None, true) => SNAPSHOT_DOMAIN_V3,
+        (None, false) => SNAPSHOT_DOMAIN,
     });
     hasher.update(&out);
     let trailer: [u8; 32] = hasher.finalize().into();
@@ -1946,10 +2015,16 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// A decoded snapshot: the trie entries and, for v4, the raw secondary section.
+struct DecodedSnapshot {
+    entries: Vec<SnapshotEntry>,
+    secondary: Option<Vec<u8>>,
+}
+
 fn decode_snapshot(
     bytes: &[u8],
     limits: &CatalogLimits,
-) -> Result<Vec<SnapshotEntry>, KvSnapshotError> {
+) -> Result<DecodedSnapshot, KvSnapshotError> {
     if bytes.len() > KV_SNAPSHOT_MAX_BYTES {
         return Err(KvSnapshotError::TooLarge);
     }
@@ -1960,21 +2035,24 @@ fn decode_snapshot(
             KvSnapshotError::BadMagic
         });
     }
-    let (layered, scoped) = if bytes.starts_with(SNAPSHOT_MAGIC) {
-        (false, false)
+    let (layered, scoped, sectioned) = if bytes.starts_with(SNAPSHOT_MAGIC) {
+        (false, false, false)
     } else if bytes.starts_with(SNAPSHOT_MAGIC_V2) {
-        (true, false)
+        (true, false, false)
     } else if bytes.starts_with(SNAPSHOT_MAGIC_V3) {
-        (true, true)
+        (true, true, false)
+    } else if bytes.starts_with(SNAPSHOT_MAGIC_V4) {
+        (true, true, true)
     } else {
         return Err(KvSnapshotError::BadMagic);
     };
     let (body, trailer) = bytes.split_at(bytes.len() - 32);
     let mut hasher = Sha256::new();
-    hasher.update(match (layered, scoped) {
-        (false, _) => SNAPSHOT_DOMAIN,
-        (true, false) => SNAPSHOT_DOMAIN_V2,
-        (true, true) => SNAPSHOT_DOMAIN_V3,
+    hasher.update(match (layered, scoped, sectioned) {
+        (false, _, _) => SNAPSHOT_DOMAIN,
+        (true, false, _) => SNAPSHOT_DOMAIN_V2,
+        (true, true, false) => SNAPSHOT_DOMAIN_V3,
+        (true, true, true) => SNAPSHOT_DOMAIN_V4,
     });
     hasher.update(body);
     let expected: [u8; 32] = hasher.finalize().into();
@@ -2147,10 +2225,22 @@ fn decode_snapshot(
         }
         entries.push(entry);
     }
+    let secondary = if sectioned {
+        let len = reader.u32()?;
+        if len == 0 {
+            return Err(KvSnapshotError::NonCanonical("empty secondary section"));
+        }
+        if len > crate::kv_secondary::SECONDARY_SECTION_MAX_BYTES {
+            return Err(KvSnapshotError::LimitExceeded("secondary section"));
+        }
+        Some(reader.take(len)?.to_vec())
+    } else {
+        None
+    };
     if reader.at != body.len() {
         return Err(KvSnapshotError::NonCanonical("trailing bytes"));
     }
-    Ok(entries)
+    Ok(DecodedSnapshot { entries, secondary })
 }
 
 impl KvPrefixCatalog {
@@ -2188,7 +2278,7 @@ impl KvPrefixCatalog {
                 });
             }
         }
-        encode_snapshot(&entries)
+        encode_snapshot(&entries, self.secondary.export_section().as_deref())
     }
 
     /// Admit the entries of an [`Self::export_entries`] snapshot into this empty catalog.
@@ -2203,7 +2293,7 @@ impl KvPrefixCatalog {
         if !self.nodes.is_empty() {
             return Err(KvSnapshotError::NotEmpty);
         }
-        let entries = decode_snapshot(snapshot, &self.limits)?;
+        let DecodedSnapshot { entries, secondary } = decode_snapshot(snapshot, &self.limits)?;
         let mut count = 0usize;
         let mut skipped = 0usize;
         for entry in entries {
@@ -2224,21 +2314,38 @@ impl KvPrefixCatalog {
                 Eviction::Refuse,
             );
             if let Err(error) = admitted {
-                self.nodes.clear();
-                self.by_identity.clear();
-                self.live_key_refs.clear();
-                self.page_refs.clear();
-                self.retire_queue.clear();
-                self.page_bytes = 0;
-                self.metadata_bytes = 0;
+                self.clear_trie();
                 return Err(KvSnapshotError::Admission(error));
             }
         }
+        // The secondary section is merged last: it is atomic itself, and a failure here
+        // empties the trie again, so a refused snapshot admits nothing.
+        let secondary_runs = match secondary {
+            Some(section) => match self.secondary.restore_section(&section) {
+                Ok(added) => added,
+                Err(error) => {
+                    self.clear_trie();
+                    return Err(KvSnapshotError::Secondary(error));
+                }
+            },
+            None => 0,
+        };
         self.stats.restored_entries += count as u64;
         Ok(KvRestoreReport {
             entries: count,
             skipped_unscoped_layered: skipped,
+            secondary_runs,
         })
+    }
+
+    fn clear_trie(&mut self) {
+        self.nodes.clear();
+        self.by_identity.clear();
+        self.live_key_refs.clear();
+        self.page_refs.clear();
+        self.retire_queue.clear();
+        self.page_bytes = 0;
+        self.metadata_bytes = 0;
     }
 }
 
@@ -2821,6 +2928,319 @@ mod tests {
         // The revoked key is still dead at the floor.
         assert!(!edits.is_current("r", Revision(3), Revision(3)));
         assert_eq!(edits.revoked.len(), 1);
+    }
+
+    mod secondary_events {
+        use super::*;
+        use crate::kv_secondary::{SecondaryInsert, SecondaryRows, SecondaryRunId};
+        use ptr_ledger::{
+            ExpertFenceAction, ExpertFenceCause, ExpertFenceResume, ExpertOpKind,
+            InputInvalidationKind,
+        };
+        use ptr_model_api::{ByteTokenizer, KvReuseMode};
+        use ptr_pods::{InMemoryPagedKvBackend, KvPageSize};
+        use ptr_types::{CapsuleId, EvidenceId, KnowledgeObjectId, RequestId, SemanticContext};
+
+        struct AllLive;
+
+        impl KvLivenessOracle for AllLive {
+            fn is_live(&self, _: &KvDependency) -> bool {
+                true
+            }
+        }
+
+        const DIGEST: [u8; 32] = [4; 32];
+        const CHAIN: KvChainId = KvChainId([1; 32]);
+
+        fn catalog() -> KvPrefixCatalog {
+            let backend = InMemoryPagedKvBackend::new(KvPageSize::DEFAULT);
+            KvPrefixCatalog::new(
+                backend.take_fork_authority().unwrap(),
+                CatalogLimits::default(),
+            )
+            .unwrap()
+        }
+
+        fn salt() -> KvSalt {
+            KvSalt::derive(
+                &PrincipalId::from("p"),
+                &ProjectId::from("proj"),
+                &ModelVersion::from("m"),
+                ByteTokenizer::new().identity(),
+                "f32",
+                "schema",
+            )
+        }
+
+        fn request(segment: PromptSegment) -> SegmentedModelRequest {
+            SegmentedModelRequest::new(
+                RequestId::from("r"),
+                SemanticContext {
+                    revision: Revision(0),
+                    entries: Vec::new(),
+                },
+                ByteTokenizer::new().identity().clone(),
+                vec![segment],
+            )
+            .unwrap()
+        }
+
+        fn segment(source: SegmentSource) -> PromptSegment {
+            PromptSegment::from_text(&ByteTokenizer::new(), source, "some segment text").unwrap()
+        }
+
+        fn run_with(
+            catalog: &mut KvPrefixCatalog,
+            segment: PromptSegment,
+            extras: Vec<KvDependency>,
+        ) -> SecondaryRunId {
+            let request = request(segment);
+            let tokens = request.segments()[0].tokens().len();
+            let rows = SecondaryRows::new(
+                vec![0.5; tokens * 2].into(),
+                vec![0.25; tokens * 2].into(),
+                2,
+            );
+            let salt = salt();
+            match catalog
+                .secondary_mut()
+                .insert(
+                    SecondaryInsert {
+                        salt: &salt,
+                        chain: &CHAIN,
+                        mode: KvReuseMode::Exact,
+                        request: &request,
+                        segment: 0,
+                        rows,
+                        extra_dependencies: extras,
+                    },
+                    &AllLive,
+                )
+                .unwrap()
+            {
+                crate::SecondaryInsertOutcome::Inserted(id)
+                | crate::SecondaryInsertOutcome::AlreadyPresent(id)
+                | crate::SecondaryInsertOutcome::RowsAttached(id) => id,
+            }
+        }
+
+        fn memory(id: &str, generation: u64) -> PromptSegment {
+            segment(SegmentSource::Memory {
+                id: KnowledgeObjectId::from(id),
+                generation: Generation(generation),
+            })
+        }
+
+        fn alive(catalog: &KvPrefixCatalog, run: SecondaryRunId) -> bool {
+            catalog.secondary().contains_live_run(run)
+        }
+
+        /// Each event kind of the one mapping kills the run it names in the secondary index
+        /// and leaves a bystander alone.
+        #[test]
+        fn every_event_kind_of_the_mapping_reaches_the_secondary_index() {
+            let cases: Vec<(&str, LedgerEvent, &str, u64)> = vec![
+                (
+                    "Revoked",
+                    LedgerEvent::Revoked {
+                        subject: "x".into(),
+                        generation: Generation(1),
+                    },
+                    "x",
+                    1,
+                ),
+                (
+                    "InputInvalidated revoked",
+                    LedgerEvent::InputInvalidated {
+                        input: "x".into(),
+                        generation: Generation(1),
+                        binding_digest: DIGEST,
+                        kind: InputInvalidationKind::Revoked,
+                        fence_count: 0,
+                        fence_digest: DIGEST,
+                    },
+                    "x",
+                    1,
+                ),
+                (
+                    "InputInvalidated superseded",
+                    LedgerEvent::InputInvalidated {
+                        input: "x".into(),
+                        generation: Generation(1),
+                        binding_digest: DIGEST,
+                        kind: InputInvalidationKind::Superseded {
+                            old_generation: Generation(1),
+                            new_generation: Generation(2),
+                            new_digest: DIGEST,
+                            replacement_ref: DIGEST,
+                        },
+                        fence_count: 0,
+                        fence_digest: DIGEST,
+                    },
+                    "x",
+                    1,
+                ),
+                (
+                    "ProcedureRevoked",
+                    LedgerEvent::ProcedureRevoked {
+                        id: "x".into(),
+                        generation: Generation(1),
+                    },
+                    "procedure:x",
+                    1,
+                ),
+                (
+                    "ProcedurePromoted",
+                    LedgerEvent::ProcedurePromoted {
+                        id: "x".into(),
+                        generation: Generation(2),
+                    },
+                    "procedure:x",
+                    1,
+                ),
+                (
+                    "HardConstraintCommitted",
+                    LedgerEvent::HardConstraintCommitted {
+                        key: "x".into(),
+                        generation: Generation(2),
+                    },
+                    "constraint:x",
+                    1,
+                ),
+                (
+                    "CapsuleSuperseded",
+                    LedgerEvent::CapsuleSuperseded {
+                        capsule: CapsuleId::from("x"),
+                        old: Generation(1),
+                        new: Generation(2),
+                    },
+                    "x",
+                    1,
+                ),
+                (
+                    "CapsuleCommitted",
+                    LedgerEvent::CapsuleCommitted {
+                        project: ProjectId::from("proj"),
+                        capsule: CapsuleId::from("x"),
+                        generation: Generation(2),
+                    },
+                    "x",
+                    1,
+                ),
+            ];
+            for (name, event, identity, generation) in cases {
+                let mut catalog = catalog();
+                let run = run_with(&mut catalog, memory(identity, generation), Vec::new());
+                let bystander = run_with(&mut catalog, memory("bystander", 1), Vec::new());
+                let retire = invalidate_catalog_for_event(&mut catalog, &event, None);
+                assert!(retire.is_some(), "{name} maps to an invalidation");
+                assert!(!alive(&catalog, run), "{name} did not reach the index");
+                assert!(alive(&catalog, bystander), "{name} over-invalidated");
+            }
+        }
+
+        #[test]
+        fn a_revocation_reaches_a_semantic_run_at_every_generation() {
+            let mut catalog = catalog();
+            let semantic = |generation| {
+                segment(SegmentSource::Semantic {
+                    key: "price:sku".to_owned(),
+                    generation: Generation(generation),
+                })
+            };
+            let g5 = run_with(&mut catalog, semantic(5), Vec::new());
+            let g9 = run_with(&mut catalog, semantic(9), Vec::new());
+            let event = LedgerEvent::Revoked {
+                subject: "price:sku".into(),
+                generation: Generation(1),
+            };
+            invalidate_catalog_for_event(&mut catalog, &event, None);
+            assert!(!alive(&catalog, g5) && !alive(&catalog, g9));
+        }
+
+        #[test]
+        fn a_derived_run_dies_with_its_exact_revoked_pair_only() {
+            let mut catalog = catalog();
+            let derived = |generation| {
+                segment(SegmentSource::Derived {
+                    id: EvidenceId::from("ev"),
+                    generation: Generation(generation),
+                })
+            };
+            let g1 = run_with(&mut catalog, derived(1), Vec::new());
+            let g2 = run_with(&mut catalog, derived(2), Vec::new());
+            let event = LedgerEvent::Revoked {
+                subject: "ev".into(),
+                generation: Generation(1),
+            };
+            invalidate_catalog_for_event(&mut catalog, &event, None);
+            assert!(!alive(&catalog, g1));
+            assert!(alive(&catalog, g2));
+        }
+
+        fn expert(pod: &str, epoch: u64) -> KvDependency {
+            KvDependency::expert_fenced(
+                &ProjectId::from("proj"),
+                &PodId::from(pod),
+                Generation(1),
+                DIGEST,
+                epoch,
+            )
+        }
+
+        #[test]
+        fn a_committed_expert_fence_reaches_the_index_per_epoch() {
+            let mut catalog = catalog();
+            let below = run_with(&mut catalog, memory("a", 1), vec![expert("e1", 1)]);
+            let other = run_with(&mut catalog, memory("b", 1), vec![expert("e2", 1)]);
+            let at = run_with(&mut catalog, memory("c", 1), vec![expert("e1", 5)]);
+            let event = LedgerEvent::ExpertFenceCommitted {
+                project: ProjectId::from("proj"),
+                pod: PodId::from("e1"),
+                action: ExpertFenceAction::Fence,
+                cause: ExpertFenceCause::InputRevoked,
+                resume: ExpertFenceResume::Serving,
+                generation: Generation(1),
+                expected_state_version: 0,
+                epoch: 5,
+                revocation: None,
+                evidence: None,
+            };
+            assert!(invalidate_catalog_for_event(&mut catalog, &event, None).is_some());
+            assert!(!alive(&catalog, below));
+            assert!(alive(&catalog, at), "a dependency at the new epoch stays");
+            assert!(alive(&catalog, other), "another expert is untouched");
+        }
+
+        #[test]
+        fn an_undecodable_expert_structure_flushes_every_expert_run() {
+            let mut catalog = catalog();
+            let expert_run = run_with(&mut catalog, memory("a", 1), vec![expert("e1", 1)]);
+            let plain = run_with(&mut catalog, memory("b", 1), Vec::new());
+            let event = LedgerEvent::ExpertStructuralCommitted {
+                project: ProjectId::from("proj"),
+                op_kind: ExpertOpKind::Retire,
+                proposal_id: DIGEST,
+                operation_id: DIGEST,
+                evidence_digest: DIGEST,
+                record: vec![0xff, 0xff],
+            };
+            assert!(invalidate_catalog_for_event(&mut catalog, &event, None).is_some());
+            assert!(!alive(&catalog, expert_run));
+            assert!(alive(&catalog, plain));
+        }
+
+        #[test]
+        fn an_event_that_invalidates_nothing_leaves_the_index_alone() {
+            let mut catalog = catalog();
+            let run = run_with(&mut catalog, memory("a", 1), Vec::new());
+            let event = LedgerEvent::VerifierAttested {
+                subject: "a".into(),
+                passed: true,
+            };
+            assert!(invalidate_catalog_for_event(&mut catalog, &event, None).is_none());
+            assert!(alive(&catalog, run));
+        }
     }
 
     #[test]

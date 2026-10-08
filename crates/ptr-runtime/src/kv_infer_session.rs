@@ -39,6 +39,20 @@
 //! (`DependencyNotLive`, counted as an insert refusal). Only a lineage that was live at
 //! begin and dies mid-session cancels.
 //!
+//! # Positional sessions (R006)
+//!
+//! A session opened with
+//! [`ReferenceKvReuseBackend::begin_session_positional`](crate::ReferenceKvReuseBackend::begin_session_positional)
+//! also uses the catalog's secondary index; see the [`crate::kv_infer`] module documentation.
+//! Its step contract is the same, plus: a [`KvSession::prefill_chunk`] that finds an admitted
+//! span starting at the current position appends the span's stored rows (the repack) and
+//! returns `Prefilled` with the position after it, and a chunk before a span ends at the
+//! span's start. Cancellation names its cause: a dead segment of the request's own lineage is
+//! [`KvCancelReason::InputNotLive`], a dead dependency of a spliced run or of the base model is
+//! [`KvCancelReason::SecondaryDependencyNotLive`] and a secondary run tombstoned under a pin is
+//! [`KvCancelReason::SecondaryRunTombstoned`]. After any of them nothing is emitted, repacked
+//! or inserted, every pin is released, and [`KvSession::restart_with`] runs cold.
+//!
 //! # Bounds and saturation
 //!
 //! At most [`ReferenceKvLimits::max_sessions`](crate::ReferenceKvLimits) sessions are open
@@ -57,8 +71,9 @@
 //! against the catalog; here the tests use a scripted oracle and the backend's own set).
 
 use crate::kv_infer::{
-    argmax, check_scope, CacheUse, ReferenceCache, ReferenceKvError, ReferenceKvOutcome,
-    ReferenceKvReuseBackend, ReferenceKvScope, ReuseState, LOGITS_DOMAIN,
+    argmax, check_scope, CacheUse, PositionalControl, PositionalReport, ReferenceCache,
+    ReferenceKvError, ReferenceKvOutcome, ReferenceKvReuseBackend, ReferenceKvScope, ReuseState,
+    LOGITS_DOMAIN,
 };
 use crate::kv_infer_layered::{
     adopt_pending, assemble, offer_layers, record_of, resolve_binding, AssembleInput, BindingError,
@@ -66,7 +81,9 @@ use crate::kv_infer_layered::{
 };
 use crate::{
     KvCatalogError, KvChainId, KvDependency, KvDependencyKind, KvLivenessOracle, KvLookup,
-    KvPageCharge, KvPagedInsert, KvPin, KvRequestPositions, KvSalt, KV_CHUNK_TOKENS,
+    KvPageCharge, KvPagedInsert, KvPin, KvRequestPositions, KvSalt, SecondaryError,
+    SecondaryInsert, SecondaryInsertOutcome, SecondaryLookup, SecondaryPin, SecondaryPinState,
+    SecondaryRefusalCounts, SecondaryRefusalReason, SecondaryRows, KV_CHUNK_TOKENS,
 };
 use ptr_model_api::{
     KvReuseMode, KvReusePolicy, KvReuseReport, LineageContribution, ModelEvent, ModelRun,
@@ -74,11 +91,11 @@ use ptr_model_api::{
 };
 use ptr_pods::{
     KvBackendError, KvTensorBackend, PagedKvTensorBackend, Qwen2Binding, Qwen2RopeRegime,
-    Qwen2StackInput,
+    Qwen2StackInput, TensorRef,
 };
 use ptr_types::{Digest, RequestId};
 use sha2::{Digest as _, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 const KV_STATE_DOMAIN: &[u8] = b"ptr.kv.reference-state.v1\0";
 
@@ -145,6 +162,13 @@ pub enum KvCancelReason {
     InputNotLive,
     /// The catalog entry behind the session's pin was tombstoned.
     PrefixTombstoned,
+    /// A positional session: the secondary-index run behind one of its pins was tombstoned
+    /// (invalidated while the session held it).
+    SecondaryRunTombstoned,
+    /// A positional session: a dependency of a run it spliced (or the recorded base model)
+    /// is no longer live. A dead segment of the request's own lineage is still
+    /// [`Self::InputNotLive`].
+    SecondaryDependencyNotLive,
 }
 
 /// A typed cancellation: nothing after this point was emitted or inserted.
@@ -191,6 +215,47 @@ struct Work {
     prefilled: usize,
     inserted: usize,
     refusals: Vec<KvCatalogError>,
+}
+
+/// An admitted span waiting for its turn: the stored rows are appended when the cache holds
+/// exactly `start` tokens.
+struct PendingSplice {
+    start: usize,
+    len: usize,
+    rows: SecondaryRows,
+}
+
+/// How a session begins: with or without the secondary index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PositionalUse {
+    Off,
+    On,
+}
+
+/// The positional half of a session; present only for a positional session.
+struct PositionalState {
+    control: PositionalControl,
+    /// Admitted spans not yet repacked, ascending by start.
+    pending: VecDeque<PendingSplice>,
+    /// Every secondary pin the session holds; released with the primary pin.
+    pins: Vec<SecondaryPin>,
+    /// Segments before this index were offered to the index.
+    next_segment: usize,
+    report: PositionalReport,
+}
+
+fn count_refusal(counts: &mut SecondaryRefusalCounts, reason: SecondaryRefusalReason) {
+    let slot = match reason {
+        SecondaryRefusalReason::SourceKindMismatch => &mut counts.source_kind_mismatch,
+        SecondaryRefusalReason::SourceIdentityMismatch => &mut counts.source_identity_mismatch,
+        SecondaryRefusalReason::SourceGenerationMismatch => &mut counts.source_generation_mismatch,
+        SecondaryRefusalReason::SourceDigestMismatch => &mut counts.source_digest_mismatch,
+        SecondaryRefusalReason::OriginalUpstreamDead => &mut counts.original_upstream_dead,
+        SecondaryRefusalReason::BindingDependencyDead => &mut counts.binding_dependency_dead,
+        SecondaryRefusalReason::OriginalUpstreamOmitted => &mut counts.original_upstream_omitted,
+        SecondaryRefusalReason::RawAncestorOmitted => &mut counts.raw_ancestor_omitted,
+    };
+    *slot += 1;
 }
 
 /// Attempts [`KvSession::restart_with`] makes on a bound session (each re-resolves the
@@ -249,6 +314,8 @@ pub struct KvSession<'a> {
     exact: bool,
     /// The caller asked for the catalog (an Approximate run still counts the refusals).
     catalog_requested: bool,
+    /// `Some` for a positional session (see [`ReferenceKvReuseBackend::begin_session_positional`]).
+    positional: Option<PositionalState>,
 }
 
 impl std::fmt::Debug for KvSession<'_> {
@@ -327,6 +394,15 @@ pub(crate) fn audit_pins(state: &mut ReuseState) {
     state.stats.pinned_entry_evictions += missing;
 }
 
+struct PositionalLookupInput<'a> {
+    salt: &'a KvSalt,
+    chain: &'a KvChainId,
+    request: &'a SegmentedModelRequest,
+    liveness: &'a dyn KvLivenessOracle,
+    control: PositionalControl,
+    primary_hit: usize,
+}
+
 impl<'a> KvSession<'a> {
     pub(crate) fn begin(
         backend: &'a ReferenceKvReuseBackend,
@@ -361,7 +437,43 @@ impl<'a> KvSession<'a> {
         liveness: &dyn KvLivenessOracle,
     ) -> Result<Self, ReferenceKvError> {
         Self::begin_inner(
-            backend, scope, request, policy, cache_use, admission, binding, liveness, None,
+            backend,
+            scope,
+            request,
+            policy,
+            cache_use,
+            admission,
+            binding,
+            liveness,
+            None,
+            PositionalUse::Off,
+        )
+    }
+
+    /// A positional session on the default binding: the primary lookup first, then the
+    /// secondary index for whole segments found at another offset.
+    pub(crate) fn begin_positional(
+        backend: &'a ReferenceKvReuseBackend,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        policy: KvReusePolicy,
+        admission: SessionAdmission,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<Self, ReferenceKvError> {
+        if backend.positional.is_none() {
+            return Err(ReferenceKvError::PositionalNotEnabled);
+        }
+        Self::begin_inner(
+            backend,
+            scope,
+            request,
+            policy,
+            CacheUse::Enabled,
+            admission,
+            &StackBinding::base(),
+            liveness,
+            None,
+            PositionalUse::On,
         )
     }
 
@@ -386,6 +498,7 @@ impl<'a> KvSession<'a> {
             &StackBinding::base(),
             liveness,
             Some(donor),
+            PositionalUse::Off,
         )
     }
 
@@ -400,6 +513,7 @@ impl<'a> KvSession<'a> {
         binding: &StackBinding,
         liveness: &dyn KvLivenessOracle,
         stale_donor: Option<&SegmentedModelRequest>,
+        positional: PositionalUse,
     ) -> Result<Self, ReferenceKvError> {
         check_scope(scope)?;
         if request.tokenizer() != backend.tokenizer().identity() {
@@ -461,6 +575,21 @@ impl<'a> KvSession<'a> {
             && dependencies
                 .iter()
                 .all(|dependency| liveness.is_live(dependency));
+        let positional_control = match (positional, backend.positional) {
+            (PositionalUse::On, Some(options)) if cache_use == CacheUse::Enabled => {
+                Some(options.control)
+            }
+            _ => None,
+        };
+        if let Some(control) = positional_control {
+            // The base model is a recorded dependency of a positional session: a revoked or
+            // superseded base model cancels it. A base model already dead at begin guards
+            // nothing (the lookup refuses the runs that recorded it).
+            let base = backend.base_model_dependency(&chain);
+            if control != PositionalControl::BypassUseTimeLiveness && liveness.is_live(&base) {
+                binding_guards.push(base);
+            }
+        }
 
         let mut state = backend.lock()?;
         if admission == SessionAdmission::Counted
@@ -555,6 +684,38 @@ impl<'a> KvSession<'a> {
             }
             backend.drain_retirements(&mut state)?;
         }
+        let positional_state = match positional_control {
+            Some(control) => {
+                match Self::positional_lookup(
+                    backend,
+                    &mut state,
+                    PositionalLookupInput {
+                        salt: &salt,
+                        chain: &chain,
+                        request,
+                        liveness,
+                        control,
+                        primary_hit: hit_tokens,
+                    },
+                ) {
+                    Ok((found, guards)) => {
+                        for guard in guards {
+                            if !binding_guards.contains(&guard) {
+                                binding_guards.push(guard);
+                            }
+                        }
+                        Some(found)
+                    }
+                    Err(error) => {
+                        if let Some(held) = &pin {
+                            state.catalog.release(held);
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            None => None,
+        };
         state.next_session += 1;
         let id = state.next_session;
         state.open_sessions += 1;
@@ -610,7 +771,97 @@ impl<'a> KvSession<'a> {
             layered,
             exact,
             catalog_requested,
+            positional: positional_state,
         })
+    }
+
+    /// Ask the secondary index for the request's segments, keep the spans that start at or
+    /// after the primary hit (releasing the pins of the others at once) and return the state
+    /// plus the dependencies to guard.
+    fn positional_lookup(
+        backend: &ReferenceKvReuseBackend,
+        state: &mut ReuseState,
+        input: PositionalLookupInput<'_>,
+    ) -> Result<(PositionalState, Vec<KvDependency>), ReferenceKvError> {
+        let bypass = input.control == PositionalControl::BypassUseTimeLiveness;
+        let oracle: &dyn KvLivenessOracle = if bypass { &NoCache } else { input.liveness };
+        let outcome = state.catalog.secondary_mut().lookup_positional(
+            SecondaryLookup {
+                salt: input.salt,
+                chain: input.chain,
+                mode: KvReuseMode::Exact,
+                request: input.request,
+                positions: &KvRequestPositions::Canonical,
+            },
+            oracle,
+        )?;
+        let mut report = PositionalReport {
+            lookups: 1,
+            admitted_splices: outcome.splices.len(),
+            last_token_skips: outcome.last_token_skips,
+            liveness_bypassed: bypass,
+            ..PositionalReport::default()
+        };
+        for refusal in &outcome.refusals {
+            count_refusal(&mut report.refusals, refusal.reason);
+        }
+        let width = backend.row_width();
+        let mut pending = VecDeque::new();
+        let mut pins = Vec::new();
+        let mut guards: Vec<KvDependency> = Vec::new();
+        let mut malformed = false;
+        for splice in outcome.splices {
+            let well_formed = splice.rows.row_width == width
+                && splice.rows.row_count() == splice.len
+                && splice.rows.values.len() == splice.rows.keys.len();
+            if !well_formed {
+                malformed = true;
+                state.catalog.secondary_mut().release(splice.pin);
+                continue;
+            }
+            if splice.request_start < input.primary_hit {
+                report.dropped_below_primary += 1;
+                state.catalog.secondary_mut().release(splice.pin);
+                continue;
+            }
+            if bypass
+                && splice
+                    .dependencies
+                    .iter()
+                    .any(|dependency| !input.liveness.is_live(dependency))
+            {
+                report.bypass_dead_admissions += 1;
+            }
+            if !bypass {
+                for dependency in &splice.dependencies {
+                    if !guards.contains(dependency) {
+                        guards.push(dependency.clone());
+                    }
+                }
+            }
+            pins.push(splice.pin);
+            pending.push_back(PendingSplice {
+                start: splice.request_start,
+                len: splice.len,
+                rows: splice.rows,
+            });
+        }
+        if malformed {
+            for pin in pins {
+                state.catalog.secondary_mut().release(pin);
+            }
+            return Err(SecondaryError::RowShape.into());
+        }
+        Ok((
+            PositionalState {
+                control: input.control,
+                pending,
+                pins,
+                next_segment: 0,
+                report,
+            },
+            guards,
+        ))
     }
 
     pub fn request_id(&self) -> &RequestId {
@@ -629,6 +880,22 @@ impl<'a> KvSession<'a> {
     /// Prompt tokens in the cache so far (hit plus prefilled).
     pub fn position(&self) -> usize {
         self.position
+    }
+
+    /// Accounting of a positional session so far; `None` for any other session.
+    pub fn positional_report(&self) -> Option<&PositionalReport> {
+        self.positional
+            .as_ref()
+            .map(|positional| &positional.report)
+    }
+
+    /// Token offset of the next admitted span that has not been repacked yet (the position
+    /// at which the next [`Self::prefill_chunk`] step will splice), or `None`.
+    pub fn next_splice_start(&self) -> Option<usize> {
+        self.positional
+            .as_ref()
+            .and_then(|positional| positional.pending.front())
+            .map(|splice| splice.start)
     }
 
     /// Tokens emitted so far.
@@ -734,9 +1001,17 @@ impl<'a> KvSession<'a> {
             return Ok(KvSessionStep::Cancelled(cancelled));
         }
         let backend = self.backend;
+        if let Some(step) = self.repack_due_splice()? {
+            return Ok(step);
+        }
         let total = self.ids.len();
         let from = self.position;
-        let next = total.min((from / KV_CHUNK_TOKENS + 1) * KV_CHUNK_TOKENS);
+        let mut next = total.min((from / KV_CHUNK_TOKENS + 1) * KV_CHUNK_TOKENS);
+        // A chunk ends where the next admitted span begins, so the span is repacked at its
+        // exact offset.
+        if let Some(start) = self.next_splice_start().filter(|start| *start > from) {
+            next = next.min(start);
+        }
         let stack = self
             .layered
             .as_ref()
@@ -770,6 +1045,9 @@ impl<'a> KvSession<'a> {
                 return Ok(KvSessionStep::Cancelled(cancelled));
             }
             self.offer_boundary(liveness)?;
+        }
+        if let Some(cancelled) = self.offer_positional(liveness)? {
+            return Ok(KvSessionStep::Cancelled(cancelled));
         }
         if next >= total {
             self.phase = KvSessionPhase::Decoding;
@@ -839,8 +1117,12 @@ impl<'a> KvSession<'a> {
         let logits_digest: Digest = std::mem::replace(&mut self.hasher, new_hasher())
             .finalize()
             .into();
+        let positional_reused = self
+            .positional
+            .as_ref()
+            .map_or(0, |positional| positional.report.reused_tokens);
         let report = KvReuseReport::new(
-            self.hit_tokens,
+            self.hit_tokens + positional_reused,
             if self.exact {
                 KvReuseMode::Exact
             } else {
@@ -872,6 +1154,10 @@ impl<'a> KvSession<'a> {
                 .layered
                 .as_ref()
                 .map(|layered| layered.report.finalized(total)),
+            positional: self
+                .positional
+                .as_ref()
+                .map(|positional| positional.report.clone()),
         };
         self.phase = KvSessionPhase::Closed;
         self.close_slot(SlotEnd::Completed)?;
@@ -997,6 +1283,18 @@ impl<'a> KvSession<'a> {
         self.work = Work::default();
         self.restarted = true;
         self.phase = KvSessionPhase::Prefilling;
+        // A restart is cold: no span is repacked and nothing is offered. Its pins were
+        // released with the primary pin.
+        if let Some(positional) = self.positional.as_mut() {
+            positional.pending.clear();
+            positional.pins.clear();
+            positional.next_segment = usize::MAX;
+            positional.report = PositionalReport {
+                liveness_bypassed: positional.control == PositionalControl::BypassUseTimeLiveness,
+                cold_restart: true,
+                ..PositionalReport::default()
+            };
+        }
     }
 
     /// Ask the oracle about the lineage (outside any lock) and the catalog about the pin;
@@ -1014,21 +1312,50 @@ impl<'a> KvSession<'a> {
             .binding_guards
             .iter()
             .any(|dependency| !liveness.is_live(dependency));
-        let reason = if lineage_dead || binding_dead {
+        let reason = if lineage_dead {
             Some(KvCancelReason::InputNotLive)
+        } else if binding_dead {
+            // A positional session's guards are the dependencies of the runs it spliced and
+            // the base model.
+            Some(if self.positional.is_some() {
+                KvCancelReason::SecondaryDependencyNotLive
+            } else {
+                KvCancelReason::InputNotLive
+            })
         } else {
             let mut pins: Vec<KvPin> = self.pin.iter().cloned().collect();
             if let Some(layered) = &self.layered {
                 pins.extend(layered.all_pins());
             }
-            if pins.is_empty() {
+            let secondary: Vec<SecondaryPin> = self
+                .positional
+                .as_ref()
+                .map(|positional| positional.pins.clone())
+                .unwrap_or_default();
+            let bypass = self.positional.as_ref().is_some_and(|positional| {
+                positional.control == PositionalControl::BypassUseTimeLiveness
+            });
+            if pins.is_empty() && secondary.is_empty() {
                 None
             } else {
-                let state = self.backend.lock()?;
-                if pins.iter().all(|pin| state.catalog.pin_is_live(pin)) {
-                    None
-                } else {
+                let mut state = self.backend.lock()?;
+                if !pins.iter().all(|pin| state.catalog.pin_is_live(pin)) {
                     Some(KvCancelReason::PrefixTombstoned)
+                } else {
+                    let mut reason = None;
+                    for pin in &secondary {
+                        let index = state.catalog.secondary_mut();
+                        if index.pin_state(pin) != SecondaryPinState::Live {
+                            reason = Some(KvCancelReason::SecondaryRunTombstoned);
+                            break;
+                        }
+                        // The fault mode skips exactly this use-time re-check.
+                        if !bypass && index.revalidate(pin, liveness) != SecondaryPinState::Live {
+                            reason = Some(KvCancelReason::SecondaryDependencyNotLive);
+                            break;
+                        }
+                    }
+                    reason
                 }
             }
         };
@@ -1054,6 +1381,11 @@ impl<'a> KvSession<'a> {
     }
 
     fn release_pin(&mut self) -> Result<(), ReferenceKvError> {
+        let secondary: Vec<SecondaryPin> = self
+            .positional
+            .as_mut()
+            .map(|positional| std::mem::take(&mut positional.pins))
+            .unwrap_or_default();
         let mut pins: Vec<KvPin> = self.pin.take().into_iter().collect();
         if let Some(layered) = self.layered.as_mut() {
             pins.extend(std::mem::take(&mut layered.forked_pins));
@@ -1064,15 +1396,170 @@ impl<'a> KvSession<'a> {
                     .map(|pending| pending.into_pin()),
             );
         }
-        if pins.is_empty() {
+        if pins.is_empty() && secondary.is_empty() {
             return Ok(());
         }
         let mut state = self.backend.lock()?;
         for pin in &pins {
             state.catalog.release(pin);
         }
+        for pin in secondary {
+            state.catalog.secondary_mut().release(pin);
+        }
         state.pins.remove(&self.id);
         self.backend.drain_retirements(&mut state)
+    }
+
+    /// If an admitted span starts exactly at the cache's length, append its stored rows (the
+    /// repack): the cache index equals the absolute position, so the consumer rotates each
+    /// row at its new position when it is used. This is a step of its own.
+    fn repack_due_splice(&mut self) -> Result<Option<KvSessionStep>, ReferenceKvError> {
+        let Some(positional) = self.positional.as_mut() else {
+            return Ok(None);
+        };
+        while positional
+            .pending
+            .front()
+            .is_some_and(|splice| splice.start < self.position)
+        {
+            // Behind the cache already (cannot happen for spans kept at begin): never used.
+            positional.pending.pop_front();
+            positional.report.dropped_below_primary += 1;
+        }
+        let due = positional
+            .pending
+            .front()
+            .is_some_and(|splice| splice.start == self.position);
+        if !due {
+            return Ok(None);
+        }
+        let Some(splice) = positional.pending.pop_front() else {
+            return Ok(None);
+        };
+        let width = splice.rows.row_width;
+        let tensor = |values: &[f32]| TensorRef {
+            layer: 0,
+            shape: vec![splice.len, width],
+            values: values.to_vec(),
+        };
+        self.backend.paged.append(
+            &mut self.cache,
+            &[tensor(&splice.rows.keys)],
+            &[tensor(&splice.rows.values)],
+        )?;
+        self.position += splice.len;
+        positional.report.splices += 1;
+        positional.report.reused_tokens += splice.len;
+        Ok(Some(KvSessionStep::Prefilled {
+            position: self.position,
+        }))
+    }
+
+    /// Offer every segment that is complete now (the position passed its end) to the
+    /// secondary index, after a fresh liveness check. Only a positional, exact, default-binding
+    /// session with the cache enabled that was not restarted inserts; its stack has exactly one
+    /// layer (checked when the backend opted in). Returns the cancellation if the check failed.
+    fn offer_positional(
+        &mut self,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<Option<KvCancellation>, ReferenceKvError> {
+        let eligible = self.cache_use == CacheUse::Enabled
+            && self.exact
+            && self.layered.is_none()
+            && !self.restarted;
+        let Some(first) = self
+            .positional
+            .as_ref()
+            .filter(|_| eligible)
+            .map(|positional| positional.next_segment)
+        else {
+            return Ok(None);
+        };
+        let mut ends = Vec::new();
+        let mut at = 0usize;
+        for segment in self.request.segments() {
+            ends.push((at, at + segment.tokens().len()));
+            at += segment.tokens().len();
+        }
+        let completed: Vec<usize> = (first..ends.len())
+            .take_while(|index| ends[*index].1 <= self.position)
+            .collect();
+        if completed.is_empty() {
+            return Ok(None);
+        }
+        // Re-check immediately before the insert: nothing built on a revoked input, or after
+        // a revoked span, may enter the index.
+        if let Some(cancelled) = self.check_live(liveness)? {
+            return Ok(Some(cancelled));
+        }
+        let backend = self.backend;
+        let snapshot = backend.paged.snapshot(&self.cache)?;
+        let layer = snapshot
+            .layers
+            .first()
+            .ok_or(KvBackendError::SnapshotSchemaMismatch)?;
+        let width = snapshot.schema.key_value_heads * snapshot.schema.head_dim;
+        let base = backend.base_model_dependency(&self.chain);
+        let mut state = backend.lock()?;
+        let Some(positional) = self.positional.as_mut() else {
+            return Ok(None);
+        };
+        for index in completed.iter().copied() {
+            let (start, end) = ends[index];
+            positional.next_segment = index + 1;
+            if start == end {
+                continue;
+            }
+            if snapshot.position_offset != 0 || snapshot.sequence_length < end {
+                return Err(KvBackendError::SnapshotSchemaMismatch.into());
+            }
+            let range = start * width..end * width;
+            let rows = SecondaryRows::new(
+                layer
+                    .keys
+                    .values
+                    .get(range.clone())
+                    .ok_or(KvBackendError::SnapshotSchemaMismatch)?
+                    .into(),
+                layer
+                    .values
+                    .values
+                    .get(range)
+                    .ok_or(KvBackendError::SnapshotSchemaMismatch)?
+                    .into(),
+                width,
+            );
+            let inserted = state.catalog.secondary_mut().insert(
+                SecondaryInsert {
+                    salt: &self.salt,
+                    chain: &self.chain,
+                    mode: KvReuseMode::Exact,
+                    request: &self.request,
+                    segment: index,
+                    rows,
+                    extra_dependencies: vec![base.clone()],
+                },
+                liveness,
+            );
+            match inserted {
+                Ok(SecondaryInsertOutcome::Inserted(_)) => {
+                    positional.report.inserted_segments += 1;
+                }
+                Ok(SecondaryInsertOutcome::AlreadyPresent(_)) => {
+                    positional.report.already_present_segments += 1;
+                }
+                Ok(SecondaryInsertOutcome::RowsAttached(_)) => {
+                    positional.report.rows_attached += 1;
+                }
+                Err(
+                    error @ (SecondaryError::CapacityExhausted(_)
+                    | SecondaryError::SlotDraining
+                    | SecondaryError::DependencyNotLive),
+                ) => positional.report.insert_refusals.push(error),
+                Err(error) => return Err(ReferenceKvError::Secondary(error)),
+            }
+        }
+        Ok(None)
     }
 
     /// Adopt the live layers queued by a partial hit into the fully computed cache (checked

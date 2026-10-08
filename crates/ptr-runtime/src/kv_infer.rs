@@ -57,6 +57,34 @@
 //! revocation between two decode steps deterministically, which is how the R005 race arms
 //! are tested. See [`crate::kv_infer_session`].
 //!
+//! # Positional reuse (R006)
+//!
+//! [`ReferenceKvReuseBackend::with_layers`] builds the same stack with another layer count
+//! (the default stays 4; chain ids and pinned digests of existing configurations do not
+//! change) and [`ReferenceKvReuseBackend::with_positional_reuse`] opts the backend into the
+//! catalog's secondary index. It is off by default and only
+//! [`ReferenceKvReuseBackend::begin_session_positional`] and
+//! [`ReferenceKvReuseBackend::probe_positional`] use it; every other entry point behaves
+//! exactly as without it. Only a one-layer `PreRope` stack is accepted: the layer-0 K/V rows
+//! of a token are a pure function of the token, the cache index of a row equals its absolute
+//! position and the stack rotates every cached key at use, so a stored row appended at a new
+//! offset gives the same bits as a fresh prefill there. A positional session
+//!
+//! 1. looks up the primary prefix as before,
+//! 2. asks the index for whole segments found at another offset (spans that start below the
+//!    primary hit are dropped and their pins released),
+//! 3. prefills up to the next span start, appends the span's stored rows as a step of its own
+//!    and continues,
+//! 4. offers every completed segment's layer-0 rows to the index after a fresh liveness check
+//!    (never in a restarted run), recording the base model as a dependency of the run, and
+//! 5. guards the dependencies of every span it used (and the base model), revalidates its
+//!    secondary pins before every token and insert, and releases every pin when it finishes,
+//!    is cancelled, restarts or is dropped. A restart is cold: no lookup, no insert.
+//!
+//! The result is reported in [`ReferenceKvOutcome::positional`]. Two controls exist only so
+//! an experiment can show its checks can fail ([`PositionalControl`]): a `PostRope` stack, and
+//! a mode that bypasses the index's use-time liveness. Neither is a serving path.
+//!
 //! # Scope
 //!
 //! Liveness is asked of a [`KvLivenessOracle`] the caller passes to every session step;
@@ -72,6 +100,7 @@ use crate::kv_infer_session::{KvSession, KvSessionFinish, KvSessionStats};
 use crate::{
     CatalogLimits, KvCatalogError, KvCatalogStats, KvChainId, KvDependency, KvDependencyKind,
     KvLivenessOracle, KvPin, KvPrefixCatalog, KvRestoreReport, KvSalt, KvSnapshotError,
+    SecondaryConfig, SecondaryError, SecondaryIndex, SecondaryRefusalCounts, SecondaryStats,
     KV_CHUNK_TOKENS,
 };
 use ptr_ledger::{InputInvalidationKind, LedgerEvent};
@@ -82,9 +111,9 @@ use ptr_model_api::{
 };
 use ptr_pods::{
     derive_kv_layer_chains_in_regime, InMemoryPagedKvBackend, KvBackendError, KvChainError,
-    KvChainIdentity, KvPageBinding, KvPageSize, KvPrefixKey, KvTensorDType, KvTensorSchema,
-    PagedKvTensorBackend, Qwen2Activation, Qwen2LayerConfig, Qwen2PagedStack, Qwen2QkNorm,
-    Qwen2RopeRegime, Qwen2RopeScaling, Qwen2StackConfig, Qwen2StackError,
+    KvChainIdentity, KvKeyEncoding, KvPageBinding, KvPageSize, KvPrefixKey, KvTensorDType,
+    KvTensorSchema, PagedKvTensorBackend, Qwen2Activation, Qwen2LayerConfig, Qwen2PagedStack,
+    Qwen2QkNorm, Qwen2RopeRegime, Qwen2RopeScaling, Qwen2StackConfig, Qwen2StackError,
 };
 use ptr_types::{
     AdapterVersion, DeviceId, Digest, Generation, ModelVersion, PrincipalId, ProjectId,
@@ -213,6 +242,22 @@ pub enum ReferenceKvError {
     /// which names no experts: the fence set is not in the event, so applying it without the
     /// fences would leave the fenced experts' entries live. Use `apply_authority_change`.
     AuthorityChangeNeedsFences,
+    /// The secondary (positional) index refused an operation that is not a graceful insert
+    /// miss.
+    Secondary(SecondaryError),
+    /// A positional session or probe was requested on a backend that was not built with
+    /// [`ReferenceKvReuseBackend::with_positional_reuse`].
+    PositionalNotEnabled,
+    /// Positional reuse is sound only for a one-layer stack: the layer-0 K/V rows of a token
+    /// are a pure function of the token, while the rows of a deeper layer depend on the
+    /// context and the positions before them.
+    PositionalNeedsOneLayer {
+        layers: usize,
+    },
+    /// Positional reuse needs `PreRope` keys, rotated at use at the row's new position; a
+    /// `PostRope` stack is only accepted as the explicit negative control
+    /// ([`PositionalControl::PermitPostRopeKeys`]).
+    PositionalNeedsPreRope,
 }
 
 impl fmt::Display for ReferenceKvError {
@@ -265,6 +310,17 @@ impl fmt::Display for ReferenceKvError {
                 f,
                 "an authority change names no experts; apply it with its fence epochs"
             ),
+            Self::Secondary(error) => write!(f, "secondary index: {error}"),
+            Self::PositionalNotEnabled => {
+                write!(f, "positional reuse is not enabled on this backend")
+            }
+            Self::PositionalNeedsOneLayer { layers } => write!(
+                f,
+                "positional reuse needs a one-layer stack, this one has {layers} layers"
+            ),
+            Self::PositionalNeedsPreRope => {
+                write!(f, "positional reuse needs PreRope key storage")
+            }
         }
     }
 }
@@ -286,6 +342,12 @@ impl From<KvChainError> for ReferenceKvError {
 impl From<KvBackendError> for ReferenceKvError {
     fn from(error: KvBackendError) -> Self {
         Self::Kv(error)
+    }
+}
+
+impl From<SecondaryError> for ReferenceKvError {
+    fn from(error: SecondaryError) -> Self {
+        Self::Secondary(error)
     }
 }
 
@@ -332,6 +394,101 @@ pub struct ReferenceKvOutcome {
     pub binding: BindingRecord,
     /// Layer-scoped reuse accounting of a bound run; `None` for the default binding.
     pub layered: Option<LayeredReuseReport>,
+    /// Positional (secondary index) accounting; `None` unless the run was a positional
+    /// session. `prompt_tokens == hit_tokens + positional.reused_tokens + prefilled_tokens`
+    /// for a positional run that was not restarted.
+    pub positional: Option<PositionalReport>,
+}
+
+/// Which stack a backend builds. The default is the R005 stack (4 layers, `PreRope`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReferenceKvStackShape {
+    /// Decoder layers; R006 uses 1.
+    pub layers: usize,
+    /// Where RoPE is applied. `PostRope` exists only as R006's negative control: its stored
+    /// keys are rotated at the position they were computed at.
+    pub key_encoding: KvKeyEncoding,
+}
+
+impl Default for ReferenceKvStackShape {
+    fn default() -> Self {
+        Self {
+            layers: DEFAULT_LAYERS,
+            key_encoding: KvKeyEncoding::PreRope,
+        }
+    }
+}
+
+impl ReferenceKvStackShape {
+    /// The R005 shape with `layers` layers and `PreRope` keys.
+    pub fn with_layers(layers: usize) -> Self {
+        Self {
+            layers,
+            key_encoding: KvKeyEncoding::PreRope,
+        }
+    }
+}
+
+/// A negative control or fault of the positional path. Everything but `None` is **not a
+/// serving path**: it exists so a harness can show its counters can trip.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PositionalControl {
+    /// The serving behaviour.
+    #[default]
+    None,
+    /// Use-time liveness is bypassed for the secondary index: the lookup asks an always-live
+    /// oracle, the session adds no guard for a spliced run's dependencies and does not
+    /// revalidate its pins against the oracle (an already tombstoned pin still cancels). A
+    /// dead run whose invalidation never reached the index (lag) is then admitted and
+    /// consumed, which is what the structural counters must detect.
+    BypassUseTimeLiveness,
+    /// Accept a `PostRope` stack. Its stored keys are rotated at the old position, so a
+    /// spliced span is **not** bit-equal to a fresh prefill: the control that shows the
+    /// bitwise comparison can fail.
+    PermitPostRopeKeys,
+}
+
+/// Opt-in configuration of positional reuse on one backend.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PositionalOptions {
+    /// The secondary index: rolling window and bounds.
+    pub secondary: SecondaryConfig,
+    pub control: PositionalControl,
+}
+
+/// What a positional session did with the secondary index.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PositionalReport {
+    /// Positional lookups made at begin (0 after a cold restart, else 1).
+    pub lookups: usize,
+    /// Spans the lookup admitted.
+    pub admitted_splices: usize,
+    /// Admitted spans dropped because they start below the primary catalog's hit (their
+    /// pins were released at once).
+    pub dropped_below_primary: usize,
+    /// Spans repacked into the cache at their new positions.
+    pub splices: usize,
+    /// Prompt tokens whose stored rows were repacked instead of recomputed.
+    pub reused_tokens: usize,
+    /// Refused candidates by reason (see [`crate::SecondaryRefusalReason`]).
+    pub refusals: SecondaryRefusalCounts,
+    /// Segments whose only admitted run would have covered the last prompt token.
+    pub last_token_skips: usize,
+    /// Segments newly offered to the index.
+    pub inserted_segments: usize,
+    /// Segments already present with the same rows.
+    pub already_present_segments: usize,
+    /// Restored row-less runs that got their rows back.
+    pub rows_attached: usize,
+    /// Segments the index declined (capacity, a draining slot, a dependency not live).
+    pub insert_refusals: Vec<SecondaryError>,
+    /// The session ran with [`PositionalControl::BypassUseTimeLiveness`].
+    pub liveness_bypassed: bool,
+    /// Under the bypass: admitted spans with a dependency the real oracle called dead. Zero
+    /// without the bypass, where such a span is refused instead.
+    pub bypass_dead_admissions: usize,
+    /// The session was cancelled and restarted cold: nothing above survives except this flag.
+    pub cold_restart: bool,
 }
 
 /// How [`ReferenceKvReuseBackend::probe`] runs a request.
@@ -532,6 +689,8 @@ pub struct ReferenceKvReuseBackend {
     liveness: ReferenceKvLiveness,
     /// Serializes the one-shot entry points, as the former whole-request lock did.
     oneshot: Mutex<()>,
+    /// `Some` when positional reuse was opted into; `None` leaves every path as before.
+    pub(crate) positional: Option<PositionalOptions>,
 }
 
 impl fmt::Debug for ReferenceKvReuseBackend {
@@ -543,8 +702,21 @@ impl fmt::Debug for ReferenceKvReuseBackend {
     }
 }
 
+/// The R005 layer count, kept for every backend that does not ask for another.
+const DEFAULT_LAYERS: usize = 4;
+
+#[cfg(test)]
 fn stack_config(limits: &ReferenceKvLimits, rope_scaling: Qwen2RopeScaling) -> Qwen2StackConfig {
-    // R005 tiny_model_config: 4 layers, hidden 64, 4 heads, 2 KV heads, head_dim 16, vocab 256.
+    stack_config_for(limits, rope_scaling, ReferenceKvStackShape::default())
+}
+
+fn stack_config_for(
+    limits: &ReferenceKvLimits,
+    rope_scaling: Qwen2RopeScaling,
+    shape: ReferenceKvStackShape,
+) -> Qwen2StackConfig {
+    // R005 tiny_model_config: hidden 64, 4 heads, 2 KV heads, head_dim 16, vocab 256, and
+    // 4 layers unless the shape says otherwise (R006 uses 1).
     Qwen2StackConfig {
         layer: Qwen2LayerConfig {
             hidden_size: 64,
@@ -558,9 +730,9 @@ fn stack_config(limits: &ReferenceKvLimits, rope_scaling: Qwen2RopeScaling) -> Q
             hidden_act: Qwen2Activation::Silu,
             sliding_window: None,
         },
-        num_layers: 4,
+        num_layers: shape.layers,
         vocab_size: 256,
-        key_encoding: ptr_pods::KvKeyEncoding::PreRope,
+        key_encoding: shape.key_encoding,
         qk_norm: Qwen2QkNorm::Disabled,
     }
 }
@@ -622,11 +794,48 @@ impl ReferenceKvReuseBackend {
         weight_seed: u64,
         rope_scaling: Qwen2RopeScaling,
     ) -> Result<Self, ReferenceKvError> {
+        Self::with_stack_shape(
+            limits,
+            default_scope,
+            weight_seed,
+            rope_scaling,
+            ReferenceKvStackShape::default(),
+        )
+    }
+
+    /// Like [`Self::with_seed`] with `layers` decoder layers (R006 uses 1; the default
+    /// constructors keep 4). The same seed gives the same embedding and layer-0 weights at any
+    /// depth, but the final norm, the head and therefore the chain id differ. Nothing else
+    /// changes: a 4-layer backend built here is identical to [`Self::with_seed`].
+    pub fn with_layers(
+        limits: ReferenceKvLimits,
+        default_scope: ReferenceKvScope,
+        weight_seed: u64,
+        layers: usize,
+    ) -> Result<Self, ReferenceKvError> {
+        Self::with_stack_shape(
+            limits,
+            default_scope,
+            weight_seed,
+            Qwen2RopeScaling::None,
+            ReferenceKvStackShape::with_layers(layers),
+        )
+    }
+
+    /// The general constructor: RoPE scaling and the whole [`ReferenceKvStackShape`], including
+    /// a `PostRope` stack for R006's negative control.
+    pub fn with_stack_shape(
+        limits: ReferenceKvLimits,
+        default_scope: ReferenceKvScope,
+        weight_seed: u64,
+        rope_scaling: Qwen2RopeScaling,
+        shape: ReferenceKvStackShape,
+    ) -> Result<Self, ReferenceKvError> {
         if limits.max_prompt_tokens == 0 || limits.max_new_tokens == 0 || limits.max_sessions == 0 {
             return Err(ReferenceKvError::InvalidLimits);
         }
         check_scope(&default_scope)?;
-        let config = stack_config(&limits, rope_scaling);
+        let config = stack_config_for(&limits, rope_scaling, shape);
         let stack = Qwen2PagedStack::reference(config, weight_seed)?;
         let paged = InMemoryPagedKvBackend::new(KvPageSize::new(KV_CHUNK_TOKENS as u16)?);
         let schema = stack.kv_schema(
@@ -667,7 +876,57 @@ impl ReferenceKvReuseBackend {
             }),
             liveness: ReferenceKvLiveness::default(),
             oneshot: Mutex::new(()),
+            positional: None,
         })
+    }
+
+    /// Opt into positional reuse: the catalog's secondary index is rebuilt from
+    /// `options.secondary` (it is empty at construction) and
+    /// [`Self::begin_session_positional`] and [`Self::probe_positional`] become available.
+    /// Every other entry point behaves exactly as without it: no secondary lookup and no
+    /// secondary insert. Chain ids, pinned digests and outputs of existing configurations do
+    /// not change.
+    ///
+    /// # Errors
+    /// [`ReferenceKvError::PositionalNeedsOneLayer`] unless the stack has exactly one layer,
+    /// [`ReferenceKvError::PositionalNeedsPreRope`] for a `PostRope` stack (unless the
+    /// options carry [`PositionalControl::PermitPostRopeKeys`]) and
+    /// [`ReferenceKvError::Secondary`] for an invalid index configuration.
+    pub fn with_positional_reuse(
+        mut self,
+        options: PositionalOptions,
+    ) -> Result<Self, ReferenceKvError> {
+        let config = self.stack.config();
+        if config.num_layers != 1 {
+            return Err(ReferenceKvError::PositionalNeedsOneLayer {
+                layers: config.num_layers,
+            });
+        }
+        if config.key_encoding != KvKeyEncoding::PreRope
+            && options.control != PositionalControl::PermitPostRopeKeys
+        {
+            return Err(ReferenceKvError::PositionalNeedsPreRope);
+        }
+        let index = SecondaryIndex::new(options.secondary)?;
+        {
+            let mut state = self.lock()?;
+            *state.catalog.secondary_mut() = index;
+        }
+        self.positional = Some(options);
+        Ok(self)
+    }
+
+    /// Counters of the catalog's secondary index (lookups, hits, refusals per reason,
+    /// invalidations, evictions).
+    pub fn secondary_stats(&self) -> Result<SecondaryStats, ReferenceKvError> {
+        Ok(self.lock()?.catalog.secondary().stats())
+    }
+
+    /// The base-model dependency a positional session records: the lifecycle identity of the
+    /// reference model, generation 1 and the session's chain as its content digest (as a
+    /// bound session records it).
+    pub(crate) fn base_model_dependency(&self, chain: &KvChainId) -> KvDependency {
+        KvDependency::base_model(MODEL_NAME, Generation(1), chain.0)
     }
 
     pub fn limits(&self) -> ReferenceKvLimits {
@@ -959,6 +1218,76 @@ impl ReferenceKvReuseBackend {
             binding,
             liveness,
         )
+    }
+
+    /// Open a stepwise **positional** session: after the primary catalog's lookup the
+    /// secondary index is asked for whole segments found at another offset, admitted spans
+    /// are repacked into the cache at their new positions (one step each) and every completed
+    /// segment is offered to the index. The spans' dependencies (and the base model) join the
+    /// session's guards, and every secondary pin is released when the session finishes,
+    /// cancels, restarts or is dropped. Default binding, Exact only.
+    ///
+    /// # Errors
+    /// [`ReferenceKvError::PositionalNotEnabled`] on a backend built without
+    /// [`Self::with_positional_reuse`].
+    pub fn begin_session_positional<'a>(
+        &'a self,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        hint: Option<&KvReuseHint>,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<KvSession<'a>, ReferenceKvError> {
+        let policy = hint.map_or(KvReusePolicy::ExactOnly, |hint| hint.policy);
+        KvSession::begin_positional(
+            self,
+            scope,
+            request,
+            policy,
+            crate::kv_infer_session::SessionAdmission::Counted,
+            liveness,
+        )
+    }
+
+    /// Like [`Self::probe`] in its warm mode for a positional session: the same one-shot gate
+    /// and restart on a mid-run cancellation, `liveness` as the oracle, and the logits and
+    /// KV-state digest of the run. There is deliberately no [`ReferenceKvProbeMode`] variant
+    /// for it: the existing probe modes never touch the secondary index.
+    pub fn probe_positional(
+        &self,
+        scope: &ReferenceKvScope,
+        request: &SegmentedModelRequest,
+        liveness: &dyn KvLivenessOracle,
+    ) -> Result<ReferenceKvProbe, ReferenceKvError> {
+        let _gate = self
+            .oneshot
+            .lock()
+            .map_err(|_| ReferenceKvError::Poisoned)?;
+        let mut session = KvSession::begin_positional(
+            self,
+            scope,
+            request,
+            KvReusePolicy::ExactOnly,
+            crate::kv_infer_session::SessionAdmission::OneShot,
+            liveness,
+        )?;
+        let outcome = match session.run_to_end(liveness)? {
+            KvSessionFinish::Completed(outcome) => *outcome,
+            KvSessionFinish::Cancelled(_) => session.restart_with(liveness)?,
+        };
+        let prompt_logits =
+            session
+                .prompt_logits()
+                .map(<[f32]>::to_vec)
+                .ok_or(ReferenceKvError::SessionPhase {
+                    operation: "probe_positional",
+                    phase: session.phase(),
+                })?;
+        let kv_state_digest = session.kv_state_digest()?;
+        Ok(ReferenceKvProbe {
+            outcome,
+            prompt_logits,
+            kv_state_digest,
+        })
     }
 
     /// Record that `(identity, generation)` pairs are no longer live: every entry that
@@ -1304,6 +1633,12 @@ impl ReferenceKvReuseBackend {
             // the restart is a cold run (no lookup, no insert) guarded by the same oracle.
             KvSessionFinish::Cancelled(_) => session.restart_with(&liveness),
         }
+    }
+
+    /// `f32` values per cached token row (`kv_heads * head_dim`).
+    pub(crate) fn row_width(&self) -> usize {
+        let layer = &self.stack.config().layer;
+        layer.num_key_value_heads * (layer.hidden_size / layer.num_attention_heads)
     }
 
     pub(crate) fn max_session_limit(&self) -> usize {
