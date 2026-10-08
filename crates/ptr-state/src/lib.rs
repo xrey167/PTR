@@ -265,9 +265,11 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             epoch,
             ..
         } => {
-            // A readmission restores the state the fence left, which the event records.
+            // A readmission restores the state the fence left, which the event records; a
+            // retirement ends in the terminal `Retired(InputRevoked)`.
             let state = match (action, resume) {
                 (ExpertFenceAction::Fence | ExpertFenceAction::Escalate, _) => ExpertState::Fenced,
+                (ExpertFenceAction::Retire, _) => ExpertState::Retired(RetiredReason::InputRevoked),
                 (ExpertFenceAction::Readmit, ExpertFenceResume::Serving) => ExpertState::Serving,
                 (ExpertFenceAction::Readmit, ExpertFenceResume::Frozen) => ExpertState::Frozen,
             };
@@ -613,6 +615,32 @@ mod tests {
             project_event(escalation),
             vec![("expert:p/a".to_owned(), "2:fenced:3".to_owned())]
         );
+        // A retirement of the revoked, fenced expert is terminal: the retired state at the next
+        // epoch, whatever state the fence left.
+        for resume in [ExpertFenceResume::Serving, ExpertFenceResume::Frozen] {
+            let retirement = LedgerEvent::ExpertFenceCommitted {
+                project: ProjectId::from("p"),
+                pod: PodId::from("a"),
+                action: ExpertFenceAction::Retire,
+                cause: ExpertFenceCause::InputRevoked,
+                resume,
+                generation: Generation(2),
+                expected_state_version: 3,
+                epoch: 4,
+                revocation: Some(ExpertFenceRevocation {
+                    subject: "k".to_owned(),
+                    generation: Generation(1),
+                }),
+                evidence: None,
+            };
+            assert_eq!(
+                project_event(retirement),
+                vec![(
+                    "expert:p/a".to_owned(),
+                    "2:retired-input-revoked:4".to_owned()
+                )]
+            );
+        }
     }
 
     #[test]

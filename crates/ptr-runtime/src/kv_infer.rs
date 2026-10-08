@@ -12,7 +12,7 @@
 //! 3. prefills only the remaining tokens, 16 tokens (one chunk) at a time, publishing and
 //!    inserting every completed chunk boundary of the prompt into the catalog,
 //! 4. decodes greedily for a bounded number of tokens and
-//! 5. returns a [`ModelRun`] whose [`KvReuseReport`] is [`KvReuseMode::Exact`]. The default
+//! 5. returns a [`ModelRun`] whose `KvReuseReport` is `KvReuseMode::Exact`. The default
 //!    binding never produces Approximate output; only a [`StackBinding`] whose MoE routes
 //!    batch-variantly does, and it then neither looks up nor inserts.
 //!

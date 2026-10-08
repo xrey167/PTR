@@ -258,7 +258,8 @@ pub enum LedgerEvent {
     /// fence path. A fence withdraws the expert from serving without changing its generation
     /// (`Serving` or `Frozen` to `Fenced`); a readmission returns a fenced expert to the state it
     /// left (`resume`) at the same generation; an escalation keeps it fenced and tightens the
-    /// cause. Either moves the expert's state version, which is its fence
+    /// cause; a retirement takes a fenced expert of cause `InputRevoked` to
+    /// `Retired(InputRevoked)`, final. Each moves the expert's state version, which is its fence
     /// epoch, to `epoch`, so a cache entry recorded under an earlier epoch is never revived.
     /// `expected_state_version` is the compare-and-set operand and `epoch` must be exactly
     /// `expected_state_version + 1`: the codec refuses any other pair. The record is written
@@ -275,11 +276,12 @@ pub enum LedgerEvent {
         generation: Generation,
         expected_state_version: u64,
         epoch: u64,
-        /// The committed revocation an `InputRevoked` fence or escalation rests on; `None` for
-        /// every other record. The codec requires `Some` for exactly those two.
+        /// The committed revocation an `InputRevoked` fence, escalation or retirement rests on;
+        /// `None` for every other record. The codec requires `Some` for exactly those three.
         revocation: Option<ExpertFenceRevocation>,
-        /// The gate evidence a readmission rests on; `None` for a fence, which never waits for
-        /// a gate. The codec requires `Some` for exactly a readmission.
+        /// The gate evidence a readmission rests on; `None` for a fence, an escalation and a
+        /// retirement, none of which waits for a gate. The codec requires `Some` for exactly a
+        /// readmission.
         evidence: Option<ExpertFenceEvidence>,
     },
     /// A change to the approximate-KV taint registry, committed by the runtime's taint path
@@ -418,15 +420,21 @@ pub enum ExpertFenceAction {
     /// A `Fenced` expert whose cause is `AuthorityQuarantine` is re-fenced for `InputRevoked`:
     /// the cause only ever tightens, and the epoch moves like for any fence.
     Escalate,
+    /// A `Fenced` expert whose cause is `InputRevoked` is retired for good
+    /// (`Retired(InputRevoked)`, terminal): the runtime's revocation authority, never a gate,
+    /// writes it, it carries no gate evidence and it rests on a committed revocation like the
+    /// fence it follows. The epoch moves like for any fence action.
+    Retire,
 }
 
 impl ExpertFenceAction {
-    /// The stored code: Fence 0, Readmit 1, Escalate 2.
+    /// The stored code: Fence 0, Readmit 1, Escalate 2, Retire 3.
     pub fn code(self) -> u8 {
         match self {
             Self::Fence => 0,
             Self::Readmit => 1,
             Self::Escalate => 2,
+            Self::Retire => 3,
         }
     }
 
@@ -436,6 +444,7 @@ impl ExpertFenceAction {
             0 => Some(Self::Fence),
             1 => Some(Self::Readmit),
             2 => Some(Self::Escalate),
+            3 => Some(Self::Retire),
             _ => None,
         }
     }
@@ -1690,11 +1699,11 @@ fn check_expert_fence(event: &LedgerEvent) -> Result<(), io::Error> {
     else {
         return Ok(());
     };
-    // An InputRevoked fence or escalation names its revocation; nothing else does, and an
-    // escalation is only ever to InputRevoked.
+    // An InputRevoked fence, escalation or retirement names its revocation; nothing else does,
+    // and an escalation or retirement is only ever for InputRevoked.
     let revocation_ok = match (action, cause, revocation) {
         (
-            ExpertFenceAction::Fence | ExpertFenceAction::Escalate,
+            ExpertFenceAction::Fence | ExpertFenceAction::Escalate | ExpertFenceAction::Retire,
             ExpertFenceCause::InputRevoked,
             Some(revocation),
         ) => !revocation.subject.is_empty(),
@@ -1704,7 +1713,10 @@ fn check_expert_fence(event: &LedgerEvent) -> Result<(), io::Error> {
     };
     // A readmission carries a non-empty, bounded report; a fence carries none.
     let evidence_ok = match (action, evidence) {
-        (ExpertFenceAction::Fence | ExpertFenceAction::Escalate, None) => true,
+        (
+            ExpertFenceAction::Fence | ExpertFenceAction::Escalate | ExpertFenceAction::Retire,
+            None,
+        ) => true,
         (ExpertFenceAction::Readmit, Some(evidence)) => {
             !evidence.report.is_empty() && evidence.report.len() <= MAX_EXPERT_RECORD_BYTES
         }
@@ -2806,7 +2818,9 @@ mod effect_record_tests {
             epoch: 5,
             revocation: None,
             evidence: match action {
-                ExpertFenceAction::Fence | ExpertFenceAction::Escalate => None,
+                ExpertFenceAction::Fence
+                | ExpertFenceAction::Escalate
+                | ExpertFenceAction::Retire => None,
                 ExpertFenceAction::Readmit => Some(ExpertFenceEvidence {
                     gate_epoch: 7,
                     required_gate_config_digest: [6; 32],
@@ -2822,6 +2836,7 @@ mod effect_record_tests {
             (ExpertFenceAction::Fence, 0),
             (ExpertFenceAction::Readmit, 1),
             (ExpertFenceAction::Escalate, 2),
+            (ExpertFenceAction::Retire, 3),
         ] {
             assert_eq!(action.code(), code);
             assert_eq!(ExpertFenceAction::from_code(code), Some(action));
@@ -2833,12 +2848,28 @@ mod effect_record_tests {
             assert_eq!(cause.code(), code);
             assert_eq!(ExpertFenceCause::from_code(code), Some(cause));
         }
-        assert_eq!(ExpertFenceAction::from_code(3), None);
+        assert_eq!(ExpertFenceAction::from_code(4), None);
         assert_eq!(ExpertFenceResume::from_code(2), None);
         assert_eq!(ExpertFenceResume::Frozen.code(), 1);
         assert_eq!(ExpertFenceCause::from_code(2), None);
-        for action in [ExpertFenceAction::Fence, ExpertFenceAction::Readmit] {
-            let event = fence_event(action);
+        for action in [
+            ExpertFenceAction::Fence,
+            ExpertFenceAction::Readmit,
+            ExpertFenceAction::Retire,
+        ] {
+            let mut event = fence_event(action);
+            if action == ExpertFenceAction::Retire {
+                if let LedgerEvent::ExpertFenceCommitted {
+                    cause, revocation, ..
+                } = &mut event
+                {
+                    *cause = ExpertFenceCause::InputRevoked;
+                    *revocation = Some(ExpertFenceRevocation {
+                        subject: "k".to_owned(),
+                        generation: Generation(2),
+                    });
+                }
+            }
             let encoded = encode_event(&event);
             assert_eq!(encoded[0], 28);
             assert_eq!(decode_event(&encoded).unwrap(), event);
@@ -2851,16 +2882,56 @@ mod effect_record_tests {
     }
 
     #[test]
+    fn an_expert_retirement_carries_a_revocation_and_never_gate_evidence() {
+        let retire =
+            |evidence: Option<ExpertFenceEvidence>, epoch: u64| LedgerEvent::ExpertFenceCommitted {
+                project: ProjectId::from("p"),
+                pod: PodId::from("pod-a"),
+                action: ExpertFenceAction::Retire,
+                cause: ExpertFenceCause::InputRevoked,
+                resume: ExpertFenceResume::Serving,
+                generation: Generation(3),
+                expected_state_version: 4,
+                epoch,
+                revocation: Some(ExpertFenceRevocation {
+                    subject: "k".to_owned(),
+                    generation: Generation(1),
+                }),
+                evidence,
+            };
+        let good = retire(None, 5);
+        check_encodable(&good).unwrap();
+        assert_eq!(decode_event(&encode_event(&good)).unwrap(), good);
+        // Gate evidence on a retirement: it never waits for a gate.
+        let with_evidence = retire(
+            Some(ExpertFenceEvidence {
+                gate_epoch: 7,
+                required_gate_config_digest: [6; 32],
+                report: b"PTRGR-opaque".to_vec(),
+            }),
+            5,
+        );
+        assert!(check_encodable(&with_evidence).is_err());
+        assert!(decode_event(&encode_event(&with_evidence)).is_err());
+        // The epoch is exactly one above the compared state version, as for every action.
+        for epoch in [4, 6] {
+            let bad = retire(None, epoch);
+            assert!(check_encodable(&bad).is_err());
+            assert!(decode_event(&encode_event(&bad)).is_err());
+        }
+    }
+
+    #[test]
     fn expert_fence_events_refuse_unknown_codes_and_non_canonical_epochs() {
         let encoded = encode_event(&fence_event(ExpertFenceAction::Fence));
         // tag, project (4 + 1), pod (4 + 5), then action and cause.
         let action_at = 1 + 5 + 9;
         let mut unknown_action = encoded.clone();
-        unknown_action[action_at] = 3;
+        unknown_action[action_at] = 4;
         assert!(decode_event(&unknown_action)
             .unwrap_err()
             .to_string()
-            .contains("unknown expert fence action code 3"));
+            .contains("unknown expert fence action code 4"));
         let mut unknown_cause = encoded.clone();
         unknown_cause[action_at + 1] = 9;
         assert!(decode_event(&unknown_cause)
@@ -2944,11 +3015,12 @@ mod effect_record_tests {
             }
             event
         };
-        use ExpertFenceAction::{Escalate, Fence, Readmit};
+        use ExpertFenceAction::{Escalate, Fence, Readmit, Retire};
         use ExpertFenceCause::{AuthorityQuarantine, InputRevoked};
         for good in [
             event(Fence, InputRevoked, Some("k")),
             event(Escalate, InputRevoked, Some("k")),
+            event(Retire, InputRevoked, Some("k")),
             event(Fence, AuthorityQuarantine, None),
             event(Readmit, AuthorityQuarantine, None),
         ] {
@@ -2959,6 +3031,11 @@ mod effect_record_tests {
             event(Fence, InputRevoked, None),
             event(Escalate, InputRevoked, None),
             event(Escalate, AuthorityQuarantine, None),
+            // A retirement is for InputRevoked only and always names its revocation.
+            event(Retire, InputRevoked, None),
+            event(Retire, InputRevoked, Some("")),
+            event(Retire, AuthorityQuarantine, None),
+            event(Retire, AuthorityQuarantine, Some("k")),
             event(Fence, InputRevoked, Some("")),
             event(Fence, AuthorityQuarantine, Some("k")),
             event(Readmit, AuthorityQuarantine, Some("k")),

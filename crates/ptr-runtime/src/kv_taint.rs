@@ -14,7 +14,7 @@
 //! `(KvTaintSubjectKind, digest)`. An Approximate ingest appends its records BEFORE the
 //! [`ResumableRun`] is returned (taint first: a crash in between leaves a stray record, which
 //! only refuses more) and only then updates the in-memory registry, through the very function
-//! replay uses ([`PtrRuntime::apply_kv_taint_event`]), so live and replayed state cannot
+//! replay uses (`PtrRuntime::apply_kv_taint_event`), so live and replayed state cannot
 //! diverge. Replay is fail closed: a `Record` must keep the live set within
 //! [`MAX_LIVE_TAINT_SUBJECTS`]; a `Clear` must name only live subjects of the same recipe
 //! digest, and a `Record` must name no subject that is already live
@@ -33,7 +33,7 @@
 //!
 //! # Digests
 //!
-//! * Subject, Action: [`taint_identity`] (domain `ptr.kv.taint.action-identity.v1`).
+//! * Subject, Action: `taint_identity` (domain `ptr.kv.taint.action-identity.v1`).
 //! * Subject, Request: SHA-256 of `ptr.kv.taint.request.v1\0 || u64le(len) || request id`.
 //! * Report digest: [`ptr_model_api::KvReuseReport::digest`], SHA-256 over the domain tag,
 //!   the mode byte (Exact 0, Approximate 1) and `u64le(hit_tokens)`.
@@ -59,7 +59,7 @@
 //! `run_model_with_pods`) apply the same input rule and record through the same helper
 //! (`record_approximate_run`); a backend there cannot report KV reuse, so only input taint
 //! exists on them, and clean input appends nothing. A Pod output is tainted if any manifest binding resolves to tainted stored
-//! content ([`PtrRuntime::binding_kv_taint`]).
+//! content (`PtrRuntime::binding_kv_taint`).
 
 use crate::kv_derivation::generated_text;
 use crate::{PtrRuntime, ResumableRun, RuntimeError};

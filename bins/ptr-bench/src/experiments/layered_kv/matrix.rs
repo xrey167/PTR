@@ -5,7 +5,7 @@
 //! the experiment's own binding (R009: a QKV-LoRA attached at layer 2; R010: the MoE with the
 //! tracked expert `(1, i)`), so per-layer entries, per-layer dependency sets and the
 //! re-resolving restart are what the cell exercises. The liveness oracle is a real
-//! [`PtrRuntime`] ([`Authority`]): the base model, adapters, memory and derived inputs are
+//! `PtrRuntime` ([`Authority`]): the base model, adapters, memory and derived inputs are
 //! committed capsules, a semantic input is a key of the committed semantic state, and an
 //! expert is a record written by the real admission path.
 //!
