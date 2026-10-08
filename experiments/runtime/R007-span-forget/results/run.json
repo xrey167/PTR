@@ -1,0 +1,64 @@
+{
+  "experiment_id": "R007",
+  "status": "prepared",
+  "scope": "forgetting a span on the CPU reference KV backend (seeded random tiny model, raised prompt limits): the span is a revocable Derived prompt segment, forget is revoking its lineage identity and running the prompt without it (parent-chained chunk keys, no mid-sequence eviction primitive); bitwise equality of the KV state and of the next-token logits with a fresh prefill without the span, and 32 canary probes; a regression guard for forget semantics",
+  "git_sha": "86fad6aee1dd3d3c5325967956d13c41c5bf0121",
+  "aggregated_at_git_sha": "98bb8f2aca110f332af5dda4b46453c7f658ea7a",
+  "recorded_at": "2026-10-08T14:08:29.041737+00:00",
+  "preregistration_sha256": "1eb9e7c9c32a47f6eccc1485fe87a5c90ac417e3991a6731ca57eebcde309b6d",
+  "preregistration_rules_sha256": "30af5a6dfa0ead950e43fb698b2191ad1cb5f3d76543fc5c73baae55f92f1aed",
+  "criteria_sha256": "c1e66efb95e99368165780d76eee63c9d37bbe4694157f6aded03d121b6eab02",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- span-forget <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261008T132920.183240Z-seed-17.json",
+      "git_sha": "86fad6aee1dd3d3c5325967956d13c41c5bf0121",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261008T133700.033411Z-seed-29.json",
+      "git_sha": "67850af18debfd1722b5d79899652ffea03af7cc",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261008T134448.101117Z-seed-43.json",
+      "git_sha": "040dcfcb9f310fefb68535f979132b9c8f5a2786",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261008T135222.168588Z-seed-71.json",
+      "git_sha": "a273997188d7f2b24b281d04c139e5680474caa0",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261008T140005.365800Z-seed-101.json",
+      "git_sha": "5b0b891bdd7babaf0cc761be066b12186e890c18",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "989eae0827c86ee23c0f62bc41a97f662e3a7f6e87c17325a134771c5e2e0a23",
+    "29": "c47588ea59964a98cc61ef4555cc45d3d8b6909ccc7e5e3a439c30b9e2f26b65",
+    "43": "84c4c8a5dde334327b5506193b3fb8e13007c1ff84928712181384201a8d725d",
+    "71": "9c689104f767729a14f11dd1e64cc2dc8f8571c2766b767968e93048a2095f46",
+    "101": "ee34e4dbecdb314975c974b5807a4c99176402f396bfd20e746f4945f9df3aba"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "limitations": [
+    "the mechanism is lineage revocation plus parent-chained chunk keys, not a mid-sequence eviction primitive; the catalog has none",
+    "stale reuse is nearly structural to rule out (a chunk key hashes its parent chain): a pass is the expected outcome, and only the negative control (a StaleDonor probe under a suppressed index update) shows the criteria can fail",
+    "tiny seeded random model, CPU reference path, one machine profile: nothing about a trained model, a GPU kernel or a non-deterministic reduction order",
+    "the probe is the 256-entry next-token logits vector after a 16-byte suffix at one position, plus the KV-state digest of K and V rows for all prompt positions; a trace outside them (timing, memory, uncached activations) is not covered",
+    "canary_logit_shift is an integer count of f32 ulps (0 iff the maximum absolute difference is exactly 0); canaries 16 to 31 never appear in the span",
+    "model_pin_mismatches and procedure_mismatches are weak metrics (base checkpoint, topology and the canary generator seed are constants; the rest is read from the backend and the requests built)",
+    "timings come from one shared cloud container; no capacity claim"
+  ],
+  "metrics_sha256": "448e54ca2f3b8e21e45c99526243636dc4452e26c568b2eee034c50697a0a062"
+}
