@@ -14,11 +14,16 @@
 //! - `paired`: one selected A0 arm and the matched plain baseline at the same
 //!   seed, step count and learning rate, for the frozen M001/M002 comparison.
 //!
+//! - `baseline-v1`, `baseline-v1-sweep`, `baseline-v1-select`: the successor study
+//!   against the plain transformer; see `baseline.rs` and `--help`. These write
+//!   their rows to `--out` (created exclusively), not to stdout.
+//!
 //! Stdout carries one JSON object per line (string fields name the row, numeric
 //! fields are its metrics) and `PRED <arm> <split> <hex digit per example>` lines.
 //! Timing goes to stderr only, so stdout is comparable byte for byte.
 
 mod arms;
+mod baseline;
 mod batch;
 mod data;
 mod rng;
@@ -111,24 +116,7 @@ fn load(args: &Args) -> Result<Dataset, String> {
 
 /// Parse the ordered `fold=digest` list used by M002-v5.
 fn v2_folds(args: &Args) -> Result<Vec<(String, u64)>, String> {
-    let mut folds = Vec::new();
-    for item in args.get("folds")?.split(',') {
-        let (fold, digest) = item
-            .split_once('=')
-            .ok_or_else(|| format!("--folds item {item:?} must be fold=fnv64"))?;
-        if fold.is_empty() || folds.iter().any(|(seen, _)| seen == fold) {
-            return Err(format!(
-                "--folds contains an empty or duplicate fold {fold:?}"
-            ));
-        }
-        let digest = u64::from_str_radix(digest, 16)
-            .map_err(|_| format!("--folds digest for {fold} is not hexadecimal"))?;
-        folds.push((fold.to_owned(), digest));
-    }
-    if folds.is_empty() {
-        return Err("--folds must contain at least one fold".to_owned());
-    }
-    Ok(folds)
+    baseline::parse_folds(args.get("folds")?)
 }
 
 /// Load one operator-routing v2 fold and emit its bound identity.
@@ -744,8 +732,116 @@ fn self_test(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Exclusive, flushed line sink for the baseline-v1 `--out` files.
+struct OutFile {
+    file: std::fs::File,
+}
+
+impl OutFile {
+    /// Create `path`; an existing file is an error so evidence is never overwritten.
+    fn create(path: &str) -> Result<Self, String> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map(|file| Self { file })
+            .map_err(|error| format!("--out {path}: {error}"))
+    }
+
+    fn line(&mut self, line: &str) {
+        writeln!(self.file, "{line}").expect("--out is writable");
+        self.file.flush().expect("--out flushes");
+    }
+}
+
+/// Shared argument handling of the two training baseline-v1 phases.
+fn baseline_plan(args: &Args) -> Result<baseline::Plan, String> {
+    let study = arms::Study::from_id(args.get("study")?).map_err(|e| e.to_string())?;
+    let selection: Option<Vec<&str>> = args
+        .values
+        .get("arms")
+        .map(|list| list.split(',').collect());
+    baseline::Plan::new(
+        study,
+        selection.as_deref(),
+        args.number("seed")?,
+        args.number_or("steps", baseline::STEPS)?,
+        args.number_or("d-model", baseline::D_MODEL)?,
+        baseline::Knobs {
+            rank: args.number_or("rank", 8usize)?,
+            bias_limit: args.number_or("bias-limit", 1.0f32)?,
+            metadata_dropout: args.number_or("metadata-dropout", 0.0f32)?,
+        },
+    )
+}
+
+/// Train every arm of a study and plain, per fold, at each arm's own rate.
+fn baseline_v1(args: &Args) -> Result<bool, String> {
+    let plan = baseline_plan(args)?;
+    let folds = v2_folds(args)?;
+    let path = args.get("lr-file")?;
+    let text = std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+    let rates = plan
+        .rates(&baseline::parse_rates(&text).map_err(|e| format!("{path}: {e}"))?)
+        .map_err(|e| format!("{path}: {e}"))?;
+    let mut out = OutFile::create(args.get("out")?)?;
+    out.line(&format!(
+        r#"{{"row":"run-baseline-v1","study":"{}","seed":{},"d_model":{},"batch_size":{},"steps":{},"arms":"{}","order_salt":{}}}"#,
+        plan.study.id(),
+        plan.seed,
+        plan.d_model,
+        train::BATCH,
+        plan.steps,
+        plan.names().join(","),
+        baseline::ORDER_SALT,
+    ));
+    let mut finite = true;
+    for (fold, digest) in folds {
+        let data = data::load_v2_fold(&PathBuf::from(args.get("data")?).join(&fold), digest)?;
+        out.line(&format!(
+            r#"{{"row":"data-v2","fold":"{fold}","data_fnv64":"{:016x}"}}"#,
+            data.fnv64
+        ));
+        finite &= baseline::run_fold(&plan, &rates, &fold, &data, &mut |l| out.line(l))?;
+    }
+    Ok(finite)
+}
+
+/// Validation-only learning-rate sweep over the fixed grid.
+fn baseline_v1_sweep(args: &Args) -> Result<bool, String> {
+    let plan = baseline_plan(args)?;
+    let folds = v2_folds(args)?;
+    let mut out = OutFile::create(args.get("out")?)?;
+    let mut finite = true;
+    for (fold, digest) in folds {
+        let data = data::load_v2_fold(&PathBuf::from(args.get("data")?).join(&fold), digest)?;
+        finite &= baseline::sweep_fold(&plan, &fold, &data, &mut |l| out.line(l))?;
+    }
+    Ok(finite)
+}
+
+/// Apply the fixed selection rule to sweep rows and write the lr file.
+fn baseline_v1_select(args: &Args) -> Result<bool, String> {
+    let mut text = String::new();
+    for path in args.get("sweep")?.split(',') {
+        text.push_str(&std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?);
+        text.push('\n');
+    }
+    let (study, seed, points) = baseline::parse_sweep(&text).map_err(|e| e.to_string())?;
+    let selected = baseline::select_rates(&points).map_err(|e| e.to_string())?;
+    let mut out = OutFile::create(args.get("out")?)?;
+    for line in baseline::render_lr_file(&study, seed, &selected).lines() {
+        out.line(line);
+    }
+    Ok(true)
+}
+
 /// Dispatch the study phase; exit 2 on a returned error or 3 on a false phase result.
 fn main() {
+    if std::env::args().skip(1).any(|a| a == "--help" || a == "-h") {
+        print!("{}", baseline::USAGE);
+        return;
+    }
     let result = Args::parse().and_then(|args| match args.get("phase")? {
         "list-arms" => {
             let arms: Vec<String> = arms::ARMS.iter().map(Arm::json).collect();
@@ -759,6 +855,13 @@ fn main() {
         "plain" => plain(&args),
         "paired" => paired(&args),
         "paired-v5" => paired_v5(&args),
+        "baseline-v1" => baseline_v1(&args),
+        "baseline-v1-sweep" => baseline_v1_sweep(&args),
+        "baseline-v1-select" => baseline_v1_select(&args),
+        "help" => {
+            print!("{}", baseline::USAGE);
+            Ok(true)
+        }
         other => Err(format!("unknown phase {other:?}")),
     });
     match result {
