@@ -36,6 +36,7 @@
 ### Missing for the target architecture
 
 - Rebuild equivalence tests across every backend (the PostgreSQL projection is compared with the reference in ptr-pg; L004 extends it)
+- The expert: rows a plain projection writes are NOT authoritative after a tag-30 or tag-31 fence (R011 WP3b): projection_entries writes only the invalidated input, the count and the digest (or the new standing), so a consumer that applies only it shows the fenced experts as Serving; the ptr-runtime materialized state, whose runtime writes the fenced rows from its dependency index, is the only place they are marked (materialized_state_marks_the_fenced_experts_but_a_naive_projection_replay_does_not, ptr-runtime tests/expert_review_fixes.rs). Nothing may route from a plain projection
 - The per-expert effect of a tag-30 fence is not derivable from the event, so a projection backend that applies only projection_entries (the Turso reference, ptr-pg) records the invalidated input, the count and the digest but not which expert: keys moved; only the runtime's materialized state holds them
 - The per-expert effect of a tag-31 authority change is not derivable from the event (count and digest only), so a projection backend that applies only projection_entries (the Turso reference, ptr-pg) records the new standing but not which experts the change fenced
 

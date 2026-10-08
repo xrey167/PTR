@@ -25,9 +25,10 @@ use ptr_pods::{
     RetiredReason, StructuralOp, TensorRef,
 };
 use ptr_runtime::expert::{
-    expert_evidence_artifact_digest, expert_evidence_base_model_digest, expert_fence_set_digest,
-    ExpertAdmissionError, ExpertAdmissionGrant, ExpertFenceAuthority, ExpertFenceGrant,
-    ExpertFenceRequest, ExpertGrantKind, ExpertInputRole, InputInvalidation, RouteRefusal,
+    expert_evidence_artifact_digest, expert_evidence_artifact_digest_with_inputs,
+    expert_evidence_base_model_digest, expert_fence_set_digest, ExpertAdmissionError,
+    ExpertAdmissionGrant, ExpertFenceAuthority, ExpertFenceGrant, ExpertFenceRequest,
+    ExpertGrantKind, ExpertInputRole, InputInvalidation, RouteRefusal,
 };
 use ptr_runtime::{
     CatalogLimits, KvCatalogError, KvChainId, KvDependency, KvInsert, KvLivenessOracle, KvLookup,
@@ -88,11 +89,15 @@ fn propose(op: StructuralOp) -> ExpertProposal {
     .unwrap()
 }
 
-fn report_for(proposal: &ExpertProposal) -> BoundGateReport {
+fn report_for(proposal: &ExpertProposal, inputs: Option<&ExpertInputs>) -> BoundGateReport {
+    let artifact = match inputs {
+        Some(inputs) => expert_evidence_artifact_digest_with_inputs(proposal.op(), inputs),
+        None => expert_evidence_artifact_digest(proposal.op()),
+    };
     let subject = GateSubject::new(
         *proposal.proposal_id().as_bytes(),
         *proposal.operation_id().as_bytes(),
-        expert_evidence_artifact_digest(proposal.op()),
+        artifact,
         expert_evidence_base_model_digest(proposal.op()).unwrap(),
         EVAL_MANIFEST,
     );
@@ -122,7 +127,7 @@ fn admit(
         requirement(7, gate().config_digest().unwrap()),
         current_binding(rt, ExpertGrantKind::Admission),
     );
-    let report = report_for(proposal);
+    let report = report_for(proposal, inputs.as_ref());
     match inputs {
         Some(inputs) => rt.admit_expert_proposal_with_inputs(proposal, &report, &grant, inputs),
         None => rt.admit_expert_proposal(proposal, &report, &grant),
@@ -216,12 +221,17 @@ fn revocation_grant(rt: &PtrRuntime) -> ExpertFenceGrant {
     ExpertFenceGrant::revocation(project(), current_binding(rt, ExpertGrantKind::Fence))
 }
 
+/// The runtime-wide revocation authority an input invalidation needs.
+fn global_grant(rt: &PtrRuntime) -> ExpertFenceGrant {
+    ExpertFenceGrant::global_revocation(current_binding(rt, ExpertGrantKind::GlobalRevocation))
+}
+
 fn invalidate(
     rt: &mut PtrRuntime,
     request: InputInvalidation,
 ) -> Result<ptr_runtime::expert::InputInvalidationOutcome, RuntimeError> {
     prime(rt);
-    let grant = revocation_grant(rt);
+    let grant = global_grant(rt);
     rt.invalidate_input(&grant, request)
 }
 
@@ -761,14 +771,9 @@ fn an_invalidation_naming_the_wrong_generation_is_refused_and_appends_nothing() 
             live: Generation(1),
         }
     );
-    // A binding digest other than the one the first use fixed.
-    assert_eq!(
-        refuse(&mut rt, revoke(T, 1, D3)),
-        ExpertAdmissionError::InputBindingMismatch {
-            identity: T.into(),
-            generation: Generation(1),
-        }
-    );
+    // A supersession whose binding digest is other than the one the first use fixed. (A
+    // revocation does not depend on the asserted digest; see
+    // `a_revocation_does_not_depend_on_the_digest_a_proposer_asserted`.)
     assert_eq!(
         refuse(&mut rt, supersede(T, 1, D3, 2, D2)),
         ExpertAdmissionError::InputBindingMismatch {
@@ -839,16 +844,17 @@ fn the_grant_is_checked_like_any_runtime_fence() {
         expert_error(rt.invalidate_input(&gate_grant, revoke(T, 1, D1))),
         ExpertAdmissionError::FenceAuthorityMismatch {
             action: ExpertFenceAction::Fence,
-            required: ExpertFenceAuthority::RuntimeRevocation,
+            required: ExpertFenceAuthority::GlobalRevocation,
         }
     );
     // A grant minted before its generation was superseded is stale.
-    let stale = revocation_grant(&rt);
-    rt.supersede_expert_grant(ExpertGrantKind::Fence).unwrap();
+    let stale = global_grant(&rt);
+    rt.supersede_expert_grant(ExpertGrantKind::GlobalRevocation)
+        .unwrap();
     assert!(matches!(
         expert_error(rt.invalidate_input(&stale, revoke(T, 1, D1))),
         ExpertAdmissionError::GrantGenerationStale {
-            kind: ExpertGrantKind::Fence,
+            kind: ExpertGrantKind::GlobalRevocation,
             ..
         }
     ));
@@ -1000,10 +1006,13 @@ fn the_base_model_is_a_dependency_of_every_version_3_expert() {
             generation: Generation(1),
         }
     );
-    // A binding digest other than the base model's is refused.
+    // A supersession whose binding digest is other than the base model's is refused.
     let mut other = populated();
     assert_eq!(
-        expert_error(invalidate(&mut other, revoke("base-model:base-a", 1, D1))),
+        expert_error(invalidate(
+            &mut other,
+            supersede("base-model:base-a", 1, D1, 2, D2)
+        )),
         ExpertAdmissionError::InputBindingMismatch {
             identity: "base-model:base-a".into(),
             generation: Generation(1),

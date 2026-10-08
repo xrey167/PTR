@@ -20,8 +20,8 @@
 use super::execution::{ActionIdentity, SettledOutcome, UnsettledEffect};
 use super::expert::{
     fenced_at_current_epoch, AuthorityState, ExpertAdmissionEpochs, ExpertAuthorityKind,
-    ExpertAuthorityStanding, ExpertDependencyIndex, ExpertEntry, ExpertRegistryProjection,
-    FenceStanding,
+    ExpertAuthorityStanding, ExpertDependencyIndex, ExpertEntry, ExpertInputSet,
+    ExpertRegistryProjection, FenceStanding,
 };
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_config::PtrConfig;
@@ -79,7 +79,16 @@ const AUTHORITY_BLOCK_MAGIC: &[u8; 8] = b"PTRAU001";
 /// Restore checks what is derivable: every list is in strictly ascending order, every expert
 /// and edge endpoint names a registered pod at a generation it has reached, every recorded input
 /// has a registered digest, and the materialized `expert-input:` keys agree with the revoked
-/// pairs and floors, entry for entry.
+/// pairs and floors, entry for entry. Each expert generation is stored as its training list, its
+/// evaluation list, its base model and the canonical digest of the inputs block its record
+/// committed; restore rebuilds the block from the lists and the registered digests and refuses
+/// (state mismatch) one that does not hash to the stored commitment, and the commitment of the
+/// latest generation of each pod must be the digest (and the counts) its `expert-inputs:` key
+/// holds. An edge must start at a tracked expert. What cannot be verified: an edge dropped
+/// together with nothing else (the edges have no commitment), and an older generation whose list
+/// and commitment were edited consistently; the snapshot's own integrity is the only defence
+/// there. PTRCS008 was introduced with the dependency index and no released build wrote it, so
+/// its expert entries were changed in place to carry the role split and the commitment.
 const DEPENDENCY_MAGIC: &[u8; 8] = b"PTRCS008";
 /// The lifecycle section of a PTRCS008 snapshot.
 const DEPENDENCY_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC006";
@@ -951,15 +960,20 @@ fn encode_dependency_block(
     out.raw(DEPENDENCY_BLOCK_MAGIC)?;
     let experts: Vec<_> = deps.expert_entries().collect();
     out.count(experts.len())?;
-    for ((project, pod, generation), inputs) in experts {
+    for ((project, pod, generation), set) in experts {
         out.text(project)?;
         out.text(pod)?;
         out.number(generation.0)?;
-        out.count(inputs.len())?;
-        for (identity, input_generation) in inputs {
-            out.text(identity)?;
-            out.number(input_generation.0)?;
+        for list in [&set.training, &set.evaluation] {
+            out.count(list.len())?;
+            for (identity, input_generation) in list {
+                out.text(identity)?;
+                out.number(input_generation.0)?;
+            }
         }
+        out.text(&set.base.0)?;
+        out.number(set.base.1 .0)?;
+        out.raw(&set.commitment)?;
     }
     let edges: Vec<_> = deps.edge_entries().collect();
     out.count(edges.len())?;
@@ -1040,15 +1054,23 @@ fn decode_dependency_block(
         let key = expert_ref(reader)?;
         canonical(previous.as_ref().is_none_or(|last| *last < key))?;
         previous = Some(key.clone());
-        let count = reader.count()?;
-        canonical(count != 0)?;
-        let mut inputs = Vec::with_capacity(count);
-        for _ in 0..count {
-            let input = input_key(reader)?;
-            canonical(inputs.last().is_none_or(|last| *last < input))?;
-            inputs.push(input);
+        let mut lists: [Vec<(String, Generation)>; 2] = [Vec::new(), Vec::new()];
+        for list in &mut lists {
+            let count = reader.count()?;
+            for _ in 0..count {
+                let input = input_key(reader)?;
+                canonical(list.last().is_none_or(|last| *last < input))?;
+                list.push(input);
+            }
         }
-        by_expert.insert(key, inputs);
+        let base = input_key(reader)?;
+        let commitment: [u8; 32] = reader.take(DIGEST_BYTES)?.try_into().expect("fixed digest");
+        canonical(commitment != [0; 32])?;
+        let [training, evaluation] = lists;
+        by_expert.insert(
+            key,
+            ExpertInputSet::new(training, evaluation, base, commitment),
+        );
     }
     let mut edges = Vec::new();
     let mut previous: Option<(ExpertRefKey, ExpertRefKey)> = None;
@@ -1092,8 +1114,38 @@ fn decode_dependency_block(
     canonical(
         by_expert
             .values()
-            .flatten()
+            .flat_map(|set| set.pairs())
             .all(|input| digests.contains_key(input)),
+    )?;
+    // The dependency entries of every expert generation hash to the block digest the record
+    // committed: the inputs block is rebuilt from the lists and the registered digests (an
+    // input's digest never changes once fixed), so a dropped, added or edited entry, or a
+    // moved role, no longer matches.
+    for set in by_expert.values() {
+        let rebuilt = |list: &[(String, Generation)]| -> Option<Vec<ptr_pods::ExpertInputRef>> {
+            list.iter()
+                .map(|key| {
+                    let digest = digests.get(key)?;
+                    ptr_pods::ExpertInputRef::new(key.0.clone(), key.1, *digest).ok()
+                })
+                .collect()
+        };
+        let block = rebuilt(&set.training)
+            .zip(rebuilt(&set.evaluation))
+            .and_then(|(training, evaluation)| {
+                ptr_pods::ExpertInputs::new(training, evaluation).ok()
+            });
+        if !block.is_some_and(|block| block.canonical_digest() == set.commitment) {
+            return Err(invalid(CompactedError::StateMismatch));
+        }
+    }
+    // An edge is recorded only when its source is tracked: it has a block or is itself the
+    // result of a recorded edge.
+    let descendants: BTreeSet<&ExpertRefKey> = edges.iter().map(|(_, result)| result).collect();
+    canonical(
+        edges
+            .iter()
+            .all(|(source, _)| by_expert.contains_key(source) || descendants.contains(source)),
     )?;
     Ok(ExpertDependencyIndex::from_parts(
         by_expert, edges, digests, revoked, floors,
@@ -1325,12 +1377,14 @@ impl LifecycleState {
         {
             return Err(mismatch());
         }
-        let mut latest: BTreeMap<(&str, &str), Generation> = BTreeMap::new();
-        for ((project, pod, generation), _) in deps.expert_entries() {
+        let mut latest: BTreeMap<(&str, &str), (Generation, &ExpertInputSet)> = BTreeMap::new();
+        for ((project, pod, generation), set) in deps.expert_entries() {
             let known = latest
                 .entry((project.as_str(), pod.as_str()))
-                .or_insert(*generation);
-            *known = (*known).max(*generation);
+                .or_insert((*generation, set));
+            if *generation > known.0 {
+                *known = (*generation, set);
+            }
         }
         let marks = self
             .materialized
@@ -1340,7 +1394,7 @@ impl LifecycleState {
         if marks != latest.len() {
             return Err(mismatch());
         }
-        for ((project, pod), generation) in latest {
+        for ((project, pod), (generation, set)) in latest {
             let value = self
                 .materialized
                 .get(&ptr_state::expert_inputs_key(project, pod))
@@ -1348,9 +1402,38 @@ impl LifecycleState {
             if ptr_state::parse_expert_inputs_generation(value) != Some(generation.0) {
                 return Err(mismatch());
             }
+            // The commitment the materialized value holds is the block digest the record
+            // committed, and its counts are the block's: the entries the index holds for the
+            // latest generation of the pod must hash to it (every generation was checked against
+            // its own commitment when the block was read).
+            let (training, evaluation, digest) = inputs_mark_fields(value).ok_or_else(mismatch)?;
+            if training != set.training.len()
+                || evaluation != set.evaluation.len()
+                || digest != set.commitment
+            {
+                return Err(mismatch());
+            }
         }
         Ok(())
     }
+}
+
+/// The training count, evaluation count and block digest of an `expert-inputs:` value
+/// (`<generation>:<training>:<evaluation>:<64 hex digits>`).
+fn inputs_mark_fields(value: &str) -> Option<(usize, usize, [u8; 32])> {
+    let mut fields = value.split(':');
+    let _generation = fields.next()?;
+    let training = fields.next()?.parse().ok()?;
+    let evaluation = fields.next()?.parse().ok()?;
+    let hex = fields.next()?;
+    if fields.next().is_some() || hex.len() != 64 {
+        return None;
+    }
+    let mut digest = [0u8; 32];
+    for (slot, pair) in digest.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some((training, evaluation, digest))
 }
 
 /// Require the next decoded key to be strictly greater than its predecessor.
@@ -1992,6 +2075,16 @@ mod fence_cause_tests {
         assert!(LifecycleState::decode(&serving.encode().unwrap(), Layout::FenceCause).is_err());
     }
 
+    /// The block digest of the training input `data@1` (digest `[3; 32]`) of `dependency_state`.
+    fn data_block_digest() -> [u8; 32] {
+        ptr_pods::ExpertInputs::new(
+            vec![ptr_pods::ExpertInputRef::new("data", Generation(1), [3; 32]).unwrap()],
+            vec![],
+        )
+        .unwrap()
+        .canonical_digest()
+    }
+
     /// A fenced expert `p/a` with a recorded dependency block, a source edge from it to `p/b`,
     /// a revoked input and a supersession, as the materialized state would show them.
     fn dependency_state() -> LifecycleState {
@@ -2011,7 +2104,12 @@ mod fence_cause_tests {
         let deps = ExpertDependencyIndex::from_parts(
             BTreeMap::from([(
                 expert("a"),
-                vec![input("base-model:b", 1), input("data", 1)],
+                ExpertInputSet::new(
+                    vec![input("data", 1)],
+                    vec![],
+                    input("base-model:b", 1),
+                    data_block_digest(),
+                ),
             )]),
             vec![(expert("a"), expert("b"))],
             BTreeMap::from([
@@ -2037,7 +2135,7 @@ mod fence_cause_tests {
         );
         state.materialized.insert(
             ptr_state::expert_inputs_key("p", "a"),
-            ptr_state::expert_inputs_entry(1, 1, 0, &[9; 32]),
+            ptr_state::expert_inputs_entry(1, 1, 0, &data_block_digest()),
         );
         state.materialized.insert(
             ptr_state::expert_input_key("data", 1),
@@ -2150,11 +2248,25 @@ mod fence_cause_tests {
             reencode(&|s| {
                 s.materialized.insert(
                     ptr_state::expert_inputs_key("p", "a"),
-                    ptr_state::expert_inputs_entry(2, 1, 0, &[9; 32]),
+                    ptr_state::expert_inputs_entry(2, 1, 0, &data_block_digest()),
                 );
             }),
             Err(RuntimeError::Compacted(CompactedError::StateMismatch))
         ));
+        // The materialized commitment must be the block digest the index entries hash to, and
+        // the counts must be the block's.
+        for wrong in [
+            ptr_state::expert_inputs_entry(1, 1, 0, &[9; 32]),
+            ptr_state::expert_inputs_entry(1, 0, 1, &data_block_digest()),
+        ] {
+            assert!(matches!(
+                reencode(&|s| {
+                    s.materialized
+                        .insert(ptr_state::expert_inputs_key("p", "a"), wrong.clone());
+                }),
+                Err(RuntimeError::Compacted(CompactedError::StateMismatch))
+            ));
+        }
         assert!(matches!(
             reencode(&|s| {
                 s.materialized.insert(
@@ -2194,44 +2306,101 @@ mod fence_cause_tests {
         let expert =
             |pod: &str, generation: u64| ("p".to_owned(), pod.to_owned(), Generation(generation));
         let input = |identity: &str| (identity.to_owned(), Generation(1));
+        let base_key = || ("base-model:b".to_owned(), Generation(1));
+        // The block digest of an expert whose training list is `training`, when the registered
+        // digests cover it, so a case fails for the reason it names and not for a wrong digest.
+        let commitment = |training: &[(String, Generation)],
+                          digests: &[((String, Generation), [u8; 32])]| {
+            let refs: Option<Vec<_>> = training
+                .iter()
+                .map(|key| {
+                    let digest = digests.iter().find(|(k, _)| k == key)?.1;
+                    ptr_pods::ExpertInputRef::new(key.0.clone(), key.1, digest).ok()
+                })
+                .collect();
+            refs.and_then(|refs| ptr_pods::ExpertInputs::new(refs, vec![]).ok())
+                .map_or([8; 32], |block| block.canonical_digest())
+        };
         let index = |experts: Vec<(ExpertRefKey, Vec<(String, Generation)>)>,
                      edges: Vec<(ExpertRefKey, ExpertRefKey)>,
                      digests: Vec<((String, Generation), [u8; 32])>| {
             ExpertDependencyIndex::from_parts(
-                experts.into_iter().collect(),
+                experts
+                    .into_iter()
+                    .map(|(key, training)| {
+                        let sum = commitment(&training, &digests);
+                        (key, ExpertInputSet::new(training, vec![], base_key(), sum))
+                    })
+                    .collect(),
                 edges,
                 digests.into_iter().collect(),
                 BTreeSet::new(),
                 BTreeMap::new(),
             )
         };
+        let digests = || vec![(input("data"), [3; 32]), (base_key(), [2; 32])];
         for bad in [
+            // A recorded input without a registered digest.
             index(vec![(expert("a", 1), vec![input("data")])], vec![], vec![]),
+            // A pod the registry does not hold, and a generation it has not reached.
             index(
                 vec![(expert("ghost", 1), vec![input("data")])],
                 vec![],
-                vec![(input("data"), [1; 32])],
+                digests(),
             ),
             index(
                 vec![(expert("a", 2), vec![input("data")])],
                 vec![],
-                vec![(input("data"), [1; 32])],
+                digests(),
             ),
-            index(vec![(expert("a", 1), vec![])], vec![], vec![]),
             index(vec![], vec![(expert("a", 1), expert("ghost", 1))], vec![]),
             index(vec![], vec![(expert("a", 1), expert("a", 1))], vec![]),
+            // An edge out of an expert the index does not track.
+            index(vec![], vec![(expert("a", 1), expert("b", 1))], vec![]),
+            // A zero digest.
             index(vec![], vec![], vec![(input("data"), [0; 32])]),
+            // Dependency entries that do not hash to the block digest the record committed: an
+            // input dropped, an input added and a digest edited.
+            index(vec![(expert("a", 1), vec![])], vec![], digests()),
+            {
+                let mut digests = digests();
+                digests.push((input("extra"), [5; 32]));
+                // Same commitment as `data` alone, but the list now also names `extra`.
+                ExpertDependencyIndex::from_parts(
+                    BTreeMap::from([(
+                        expert("a", 1),
+                        ExpertInputSet::new(
+                            vec![input("data"), input("extra")],
+                            vec![],
+                            base_key(),
+                            data_block_digest(),
+                        ),
+                    )]),
+                    vec![],
+                    digests.into_iter().collect(),
+                    BTreeSet::new(),
+                    BTreeMap::new(),
+                )
+            },
+            index(
+                vec![(expert("a", 1), vec![input("data")])],
+                vec![],
+                vec![(input("data"), [4; 32]), (base_key(), [2; 32])],
+            ),
         ] {
             assert!(with_deps(bad).is_err());
         }
-        // Positive control: a consistent edge-only index (no marks) is accepted when nothing
-        // else disagrees.
-        let edge_only = index(vec![], vec![(expert("a", 1), expert("b", 1))], vec![]);
+        // Positive control: the same shapes with consistent digests are accepted when nothing
+        // else disagrees (the expert has a block, so does its materialized mark).
+        let consistent = index(
+            vec![(expert("a", 1), vec![input("data")])],
+            vec![(expert("a", 1), expert("b", 1))],
+            digests(),
+        );
         let mut state = dependency_state();
-        state.materialized.retain(|key, _| {
-            !key.starts_with(ptr_state::EXPERT_INPUT_PREFIX)
-                && !key.starts_with(ptr_state::EXPERT_INPUTS_PREFIX)
-        });
+        state
+            .materialized
+            .retain(|key, _| !key.starts_with(ptr_state::EXPERT_INPUT_PREFIX));
         state.revoked_generations.clear();
         let entries: Vec<_> = state
             .experts
@@ -2245,13 +2414,88 @@ mod fence_cause_tests {
             causes(ExpertFenceCause::InputRevoked),
             BTreeMap::from([(("p".to_owned(), "a".to_owned()), 2)]),
             0,
-            edge_only,
+            consistent,
         );
         let bytes = state.encode().unwrap();
         assert_eq!(
             LifecycleState::decode(&bytes, Layout::Dependency).unwrap(),
             state
         );
+    }
+
+    #[test]
+    fn a_tampered_dependency_entry_is_refused_against_the_inputs_commitment() {
+        let expert = ("p".to_owned(), "a".to_owned(), Generation(1));
+        let input = |identity: &str| (identity.to_owned(), Generation(1));
+        let base = || input("base-model:b");
+        let digests = |extra: Option<(&str, u8)>| {
+            let mut digests =
+                BTreeMap::from([(input("base-model:b"), [2; 32]), (input("data"), [3; 32])]);
+            if let Some((identity, byte)) = extra {
+                digests.insert(input(identity), [byte; 32]);
+            }
+            digests
+        };
+        let restore = |training: Vec<(String, Generation)>,
+                       evaluation: Vec<(String, Generation)>,
+                       digests: BTreeMap<(String, Generation), [u8; 32]>| {
+            let mut state = dependency_state();
+            let entries: Vec<_> = state
+                .experts
+                .iter()
+                .map(|(p, d, e)| ((p.to_owned(), d.to_owned()), e.clone()))
+                .collect();
+            state.experts = ExpertRegistryProjection::from_parts(
+                entries,
+                BTreeSet::new(),
+                BTreeMap::new(),
+                causes(ExpertFenceCause::InputRevoked),
+                BTreeMap::from([(("p".to_owned(), "a".to_owned()), 2)]),
+                0,
+                ExpertDependencyIndex::from_parts(
+                    BTreeMap::from([(
+                        expert.clone(),
+                        ExpertInputSet::new(training, evaluation, base(), data_block_digest()),
+                    )]),
+                    vec![(
+                        expert.clone(),
+                        ("p".to_owned(), "b".to_owned(), Generation(1)),
+                    )],
+                    digests,
+                    BTreeSet::from([input("data")]),
+                    BTreeMap::from([("data".to_owned(), Generation(2))]),
+                ),
+            );
+            LifecycleState::decode(&state.encode().unwrap(), Layout::Dependency)
+        };
+        let mut with_replacement = digests(None);
+        with_replacement.insert(("data".to_owned(), Generation(2)), [4; 32]);
+        // The untampered entry restores.
+        assert!(restore(vec![input("data")], vec![], with_replacement.clone()).is_ok());
+        // An input dropped from the list, one added, one moved to the other role and a digest
+        // edited all fail the commitment the record made.
+        let mismatch = |result: Result<LifecycleState, RuntimeError>| {
+            matches!(
+                result,
+                Err(RuntimeError::Compacted(CompactedError::StateMismatch))
+            )
+        };
+        assert!(mismatch(restore(vec![], vec![], with_replacement.clone())));
+        let mut extra = with_replacement.clone();
+        extra.insert(input("extra"), [5; 32]);
+        assert!(mismatch(restore(
+            vec![input("data"), input("extra")],
+            vec![],
+            extra
+        )));
+        assert!(mismatch(restore(
+            vec![],
+            vec![input("data")],
+            with_replacement.clone()
+        )));
+        let mut edited = with_replacement;
+        edited.insert(input("data"), [9; 32]);
+        assert!(mismatch(restore(vec![input("data")], vec![], edited)));
     }
 
     #[test]
@@ -2286,7 +2530,7 @@ mod fence_cause_tests {
             Err(RuntimeError::Compacted(CompactedError::UnsupportedVersion))
         ));
         // Swapping the digests of two registry entries moves them between keys: the section
-        // still parses, but to a different index.
+        // still parses.
         let first = [3u8; 32];
         let second = [4u8; 32];
         let position = |needle: &[u8; 32]| {
@@ -2299,10 +2543,13 @@ mod fence_cause_tests {
         let mut swapped = bytes.clone();
         swapped[a..a + 32].copy_from_slice(&second);
         swapped[b..b + 32].copy_from_slice(&first);
-        // Digests swapped between keys are still ascending by key: still decodes, but to a
-        // different index.
-        let decoded = LifecycleState::decode(&swapped, Layout::Dependency).unwrap();
-        assert_ne!(decoded, dependency_state());
+        // Digests swapped between keys are still ascending by key, so the section parses.
+        // The block digest of `p/a` hashes the digest of `data@1`, so the swap no longer matches
+        // the commitment the record made.
+        assert!(matches!(
+            LifecycleState::decode(&swapped, Layout::Dependency),
+            Err(RuntimeError::Compacted(CompactedError::StateMismatch))
+        ));
     }
 }
 

@@ -80,6 +80,7 @@ fn requirement() -> Res<ExpertGateRequirement> {
             .config_digest()
             .map_err(fail("the gate configuration digest"))?,
         eval_manifest_digest: EVAL_MANIFEST,
+        require_inputs: false,
     })
 }
 

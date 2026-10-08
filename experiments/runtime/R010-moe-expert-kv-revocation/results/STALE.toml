@@ -1,3 +1,3 @@
 results_git_sha = "c68ea7de2fb5204885615f684a1404c2da9060e3"
 stale_since = "aa1842bd8e7a15b450a6f384a964d37c68d6baf1"
-reason = "No code under test changed after R010's seed records. aa1842bd merges R009's archived results (aggregated at R009's own records commit), which the repository-wide provenance counts as a change; R009's completion status follows. R009 and R010 share one freeze commit (d904daa6, tags r009-prereg and r010-prereg)."
+reason = "No code under test changed after R010's seed records. aa1842bd merges R009's archived results (aggregated at R009's own records commit), which the repository-wide provenance counts as a change; R009's completion status follows. R009 and R010 share one freeze commit (d904daa6, tags r009-prereg and r010-prereg). The R010 harness now builds bound evidence (R011 WP1: the gate subject carries the artifact, base-model and evaluation-manifest digests instead of constants), so its evidence digests differ from the archived run."

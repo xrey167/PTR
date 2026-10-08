@@ -43,8 +43,11 @@
 //!
 //! # Limits
 //!
-//! The authority is runtime-wide: an event reaches the experts of every project, and the fence
-//! grant's project is not a scope. The grant is not recorded, so a ledger writer that bypasses
+//! The authority is runtime-wide: an event reaches the experts of every project, so it needs the
+//! runtime-wide [`ExpertFenceAuthority::GlobalRevocation`] grant and refuses a project-scoped
+//! one. The evaluator identity is a host assertion that replay does not re-check, and an expert
+//! admitted before a kind had a standing counts as epoch 0, fenced by the first `Revoke` or
+//! tightening of that kind. The grant is not recorded, so a ledger writer that bypasses
 //! the public API is not defended against. Only the gate configuration and the evaluator are
 //! kinds; attestor and verifier-set authorities do not exist.
 
@@ -472,8 +475,9 @@ impl PtrRuntime {
     /// Move the authority `change` names and, for a `Revoke` or a `TighteningRotation`, fence
     /// every expert admitted under an earlier epoch of that kind, in ONE committed
     /// [`LedgerEvent::ExpertAuthorityChanged`]. Needs a grant of
-    /// [`ExpertFenceAuthority::RuntimeRevocation`], revalidated at commit like a fence; the
-    /// grant's project is not a scope (see the module documentation).
+    /// [`ExpertFenceAuthority::GlobalRevocation`] ([`ExpertFenceGrant::global_revocation`]),
+    /// revalidated at commit like a fence: the change fences experts of every project, so a
+    /// project-scoped [`ExpertFenceAuthority::RuntimeRevocation`] grant is refused.
     ///
     /// The fence set is derived here, deterministically, from the registry at this commit index:
     /// the event carries its count and digest only, and applying it fences every member
@@ -495,10 +499,10 @@ impl PtrRuntime {
         change: ExpertAuthorityChange,
     ) -> Result<ExpertAuthorityOutcome, RuntimeError> {
         let expert = RuntimeError::Expert;
-        if grant.authority() != ExpertFenceAuthority::RuntimeRevocation {
+        if grant.authority() != ExpertFenceAuthority::GlobalRevocation {
             return Err(expert(ExpertAdmissionError::FenceAuthorityMismatch {
                 action: ExpertFenceAction::Fence,
-                required: ExpertFenceAuthority::RuntimeRevocation,
+                required: ExpertFenceAuthority::GlobalRevocation,
             }));
         }
         let set = self
