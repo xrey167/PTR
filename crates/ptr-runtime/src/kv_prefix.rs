@@ -2361,7 +2361,7 @@ impl KvLivenessOracle for PtrRuntime {
     /// consulted for it (a key that happens to be named like a capsule, constraint or
     /// procedure identity must not borrow that identity's liveness): it is live iff the
     /// committed snapshot holds the key, no committed revocation floor covers it (see
-    /// [`SemanticEdits`]), no tombstone names the exact pair, and the segment's
+    /// `SemanticEdits`), no tombstone names the exact pair, and the segment's
     /// generation (the committed semantic revision its content was read at) is not older
     /// than the key's last committed edit nor newer than the current revision. So a
     /// committed edit or revocation supersedes every entry built on the earlier content
