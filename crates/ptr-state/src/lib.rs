@@ -1,6 +1,6 @@
 use ptr_ledger::{
-    CommittedEvent, ExpertFenceAction, ExpertFenceResume, InputInvalidationKind, KvTaintChange,
-    LedgerEvent,
+    CommittedEvent, ExpertAuthorityClass, ExpertAuthorityKind, ExpertFenceAction,
+    ExpertFenceResume, InputInvalidationKind, KvTaintChange, LedgerEvent,
 };
 use ptr_pods::{ExpertCommitRecord, ExpertState, OutcomeKind, RetiredReason};
 use std::collections::BTreeMap;
@@ -312,6 +312,20 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             entries.push((expert_input_key(input, generation.0), value));
             entries
         }
+        // An authority change. Like the compound invalidation it commits to the fenced experts
+        // by count and digest only, so the `expert:` keys that moved are the runtime's to write;
+        // here the authority itself is recorded under `expert-authority:`.
+        LedgerEvent::ExpertAuthorityChanged {
+            kind,
+            id_digest,
+            epoch,
+            class,
+            fence_count,
+            fence_digest,
+        } => vec![(
+            expert_authority_key(*kind),
+            expert_authority_entry(*epoch, id_digest, *class, *fence_count, fence_digest),
+        )],
         // One entry per subject: `kv-taint:<kind>:<hex>` is `approx:<report>:<recipe>` while
         // tainted and `cleared:<recompute>` once a cold exact recomputation cleared it.
         LedgerEvent::KvTaintCommitted { subjects, change } => {
@@ -515,6 +529,90 @@ pub fn expert_inputs_entry(
         "{generation}:{training}:{evaluation}:{}",
         hex_digest(block_digest)
     )
+}
+
+/// The prefix of every expert authority key ([`expert_authority_key`]).
+pub const EXPERT_AUTHORITY_PREFIX: &str = "expert-authority:";
+
+/// Stable lowercase name of an authority kind in a materialized key.
+pub fn expert_authority_kind_name(kind: ExpertAuthorityKind) -> &'static str {
+    match kind {
+        ExpertAuthorityKind::GateConfig => "gate-config",
+        ExpertAuthorityKind::Evaluator => "evaluator",
+    }
+}
+
+/// Stable lowercase name of an authority change class in a materialized value.
+pub fn expert_authority_class_name(class: ExpertAuthorityClass) -> &'static str {
+    match class {
+        ExpertAuthorityClass::Revoke => "revoke",
+        ExpertAuthorityClass::TighteningRotation => "tightening",
+        ExpertAuthorityClass::NonTightening => "non-tightening",
+    }
+}
+
+/// The materialized key of one authority kind: `expert-authority:<kind name>`.
+pub fn expert_authority_key(kind: ExpertAuthorityKind) -> String {
+    format!(
+        "{EXPERT_AUTHORITY_PREFIX}{}",
+        expert_authority_kind_name(kind)
+    )
+}
+
+/// The kind an [`expert_authority_key`] names, or `None` for a key that is not exactly one.
+pub fn parse_expert_authority_key(key: &str) -> Option<ExpertAuthorityKind> {
+    let name = key.strip_prefix(EXPERT_AUTHORITY_PREFIX)?;
+    [
+        ExpertAuthorityKind::GateConfig,
+        ExpertAuthorityKind::Evaluator,
+    ]
+    .into_iter()
+    .find(|kind| expert_authority_kind_name(*kind) == name)
+}
+
+/// The value of an authority key:
+/// `<epoch>:<hex id digest>:<class name>:<fence count>:<hex fence digest>`, the state of the
+/// latest change of that kind.
+pub fn expert_authority_entry(
+    epoch: u64,
+    id_digest: &[u8; 32],
+    class: ExpertAuthorityClass,
+    fence_count: u32,
+    fence_digest: &[u8; 32],
+) -> String {
+    format!(
+        "{epoch}:{}:{}:{fence_count}:{}",
+        hex_digest(id_digest),
+        expert_authority_class_name(class),
+        hex_digest(fence_digest)
+    )
+}
+
+/// The epoch and the hex id digest an [`expert_authority_entry`] value names, or `None` for a
+/// value that is not exactly one.
+pub fn parse_expert_authority_entry(value: &str) -> Option<(u64, &str)> {
+    let mut fields = value.split(':');
+    let epoch = fields.next()?;
+    let id = fields.next()?;
+    let class = fields.next()?;
+    let count = fields.next()?;
+    let digest = fields.next()?;
+    let hex = |text: &str| text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit());
+    let known_class = [
+        ExpertAuthorityClass::Revoke,
+        ExpertAuthorityClass::TighteningRotation,
+        ExpertAuthorityClass::NonTightening,
+    ]
+    .into_iter()
+    .any(|candidate| expert_authority_class_name(candidate) == class);
+    (fields.next().is_none()
+        && !epoch.starts_with('0')
+        && hex(id)
+        && known_class
+        && count.parse::<u32>().is_ok()
+        && hex(digest))
+    .then(|| epoch.parse().ok().map(|epoch| (epoch, id)))
+    .flatten()
 }
 
 /// The entries an expert structural record projects: one per expert the operation leaves in a
@@ -1045,5 +1143,65 @@ mod tests {
         )
         .unwrap();
         assert_eq!(project_record(v2).len(), 1);
+    }
+
+    #[test]
+    fn an_authority_change_projects_one_entry_per_kind_and_the_value_parses_back() {
+        use ptr_types::CommitIndex;
+        let project = |kind, class| {
+            projection_entries(&CommittedEvent {
+                index: CommitIndex(5),
+                event: LedgerEvent::ExpertAuthorityChanged {
+                    kind,
+                    id_digest: [0xab; 32],
+                    epoch: 7,
+                    class,
+                    fence_count: 3,
+                    fence_digest: [0xcd; 32],
+                },
+            })
+        };
+        for (kind, name) in [
+            (ExpertAuthorityKind::GateConfig, "gate-config"),
+            (ExpertAuthorityKind::Evaluator, "evaluator"),
+        ] {
+            let entries = project(kind, ExpertAuthorityClass::Revoke);
+            let key = format!("expert-authority:{name}");
+            let value = format!("7:{}:revoke:3:{}", "ab".repeat(32), "cd".repeat(32));
+            assert_eq!(entries, vec![(key.clone(), value.clone())]);
+            assert_eq!(expert_authority_key(kind), key);
+            assert_eq!(parse_expert_authority_key(&key), Some(kind));
+            assert_eq!(
+                parse_expert_authority_entry(&value),
+                Some((7, "ab".repeat(32).as_str()))
+            );
+        }
+        for class in [
+            ExpertAuthorityClass::TighteningRotation,
+            ExpertAuthorityClass::NonTightening,
+        ] {
+            let entries = project(ExpertAuthorityKind::GateConfig, class);
+            assert!(parse_expert_authority_entry(&entries[0].1).is_some());
+        }
+        for bad in [
+            "expert-authority:",
+            "expert-authority:gate",
+            "expert-authority:gate-config:x",
+            "expert:gate-config",
+        ] {
+            assert_eq!(parse_expert_authority_key(bad), None, "{bad}");
+        }
+        let digest = "ab".repeat(32);
+        for bad in [
+            String::new(),
+            format!("0:{digest}:revoke:3:{digest}"),
+            format!("07:{digest}:revoke:3:{digest}"),
+            format!("7:{digest}:unknown:3:{digest}"),
+            format!("7:{digest}:revoke:x:{digest}"),
+            format!("7:short:revoke:3:{digest}"),
+            format!("7:{digest}:revoke:3:{digest}:extra"),
+        ] {
+            assert_eq!(parse_expert_authority_entry(&bad), None, "{bad}");
+        }
     }
 }

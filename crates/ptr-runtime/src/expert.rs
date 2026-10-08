@@ -140,6 +140,19 @@
 //! recorded their inputs. A readmission of a quarantined expert is refused while any recorded
 //! input is not live ([`ExpertAdmissionError::DependencyNotLive`]).
 //!
+//! # Evidence-authority epoch
+//!
+//! [`PtrRuntime::change_expert_authority`] moves the standing (epoch and identity) of the gate
+//! configuration or of the evaluator with ONE [`LedgerEvent::ExpertAuthorityChanged`] (ledger tag
+//! 31). Once a kind has a standing, admission, readmission and replay all require evidence under
+//! it ([`ExpertAdmissionError::StalePolicyEvidence`]), and a `Revoke` or `TighteningRotation`
+//! fences, in the same event and with cause `AuthorityQuarantine`, every `Serving` or `Frozen`
+//! expert admitted under an earlier epoch of that kind (count and digest in the event, re-derived
+//! on replay); a `NonTightening` rotation fences nothing. A quarantined expert is readmitted
+//! through the gated path on evidence under the current standing. The standings and the
+//! per-expert admission epochs are part of the registry projection and of the compacted snapshot.
+//! See the `authority` module for the full rules and their limits.
+//!
 //! # Legacy records
 //!
 //! A version 1 record (written before evidence was embedded) carries only a digest. Rewriting
@@ -155,8 +168,9 @@
 //! `BoundGateReport`): neither admission nor replay re-runs the gate, and the digest is an
 //! unkeyed hash, so replay shows the committed evidence is the evidence that was admitted, not
 //! that the measurements are true. The inputs a version 3 record names are checked for liveness
-//! and digest (see "Input dependencies"); an expert admitted without a dependency block is not,
-//! and the gate epoch is not revalidated at commit. The grant is a snapshot the host builds from its own
+//! and digest (see "Input dependencies"); an expert admitted without a dependency block is not.
+//! The gate epoch is held to the current standing once a kind has one (see "Evidence-authority
+//! epoch"), not otherwise. The grant is a snapshot the host builds from its own
 //! current authority; only the identity, key, principal and grant generation it rests on are
 //! re-read at commit. A compacted snapshot carries neither the legacy marks nor the per-epoch
 //! configuration digests, so both restart empty from one.
@@ -235,10 +249,18 @@
 //! dependency whose recorded epoch is `0` or at most the memo is never live, also after a
 //! readmission, so an entry recorded before the fence (or with no epoch) is never revived.
 
+mod authority;
 mod dependency;
 
 use crate::manifest::ManifestBindingAuthority;
 use crate::{PtrRuntime, RuntimeError};
+pub(crate) use authority::AuthorityState;
+pub use authority::{
+    expert_authority_fence_set_digest, ExpertAdmissionEpochs, ExpertAuthorityChange,
+    ExpertAuthorityClass, ExpertAuthorityKind, ExpertAuthorityOutcome, ExpertAuthorityStanding,
+    StaleEvidenceReason,
+};
+use authority::{EvaluatorClaim, EvidenceClaim};
 pub use dependency::ExpertDependencyIndex;
 use dependency::{DependencyUpdate, ExpertRef, InputKey, InputStatus, RecordedInput};
 pub use ptr_ledger::InputInvalidationKind;
@@ -367,6 +389,7 @@ pub struct ExpertAdmissionGrant {
     proposer: ProposerRef,
     requirement: ExpertGateRequirement,
     binding: ExpertGrantBinding,
+    evaluator: Option<[u8; 32]>,
 }
 
 impl ExpertAdmissionGrant {
@@ -384,7 +407,24 @@ impl ExpertAdmissionGrant {
             proposer,
             requirement,
             binding,
+            evaluator: None,
         }
+    }
+
+    /// The same grant naming `evaluator_id_digest` as the evaluator the report comes from. Once
+    /// the evaluator authority has a standing (see [`PtrRuntime::change_expert_authority`]) the
+    /// name must equal its current identity or the admission is refused as stale policy
+    /// evidence; a grant that names none is refused. The name is the host's assertion: the
+    /// report does not carry an evaluator, and the record does not either.
+    #[must_use]
+    pub fn with_evaluator(mut self, evaluator_id_digest: [u8; 32]) -> Self {
+        self.evaluator = Some(evaluator_id_digest);
+        self
+    }
+
+    /// The evaluator this grant names, if any.
+    pub fn evaluator(&self) -> Option<&[u8; 32]> {
+        self.evaluator.as_ref()
     }
 
     pub fn project(&self) -> &ProjectId {
@@ -601,6 +641,21 @@ pub enum ExpertAdmissionError {
         identity: String,
         generation: Generation,
     },
+    /// The evidence was issued under an authority that is no longer current: its gate epoch or
+    /// gate configuration is not the current one, or the evaluator it comes from is not the
+    /// current evaluator (see [`ExpertAuthorityKind`]).
+    StalePolicyEvidence {
+        kind: ExpertAuthorityKind,
+        reason: StaleEvidenceReason,
+    },
+    /// An authority change names an epoch that does not exceed the current epoch of its kind.
+    AuthorityEpochNotIncreasing {
+        kind: ExpertAuthorityKind,
+        current: u64,
+        found: u64,
+    },
+    /// A `Revoke` names the identity that is current: a revoked identity cannot stay current.
+    AuthorityIdentityUnchanged { kind: ExpertAuthorityKind },
 }
 
 /// The role an input plays in a version 3 record, as named in a refusal.
@@ -654,6 +709,7 @@ pub struct ExpertFenceGrant {
     authority: ExpertFenceAuthority,
     gate: Option<ExpertGateRequirement>,
     binding: ExpertGrantBinding,
+    evaluator: Option<[u8; 32]>,
 }
 
 impl ExpertFenceGrant {
@@ -664,6 +720,7 @@ impl ExpertFenceGrant {
             authority: ExpertFenceAuthority::RuntimeRevocation,
             gate: None,
             binding,
+            evaluator: None,
         }
     }
 
@@ -679,7 +736,21 @@ impl ExpertFenceGrant {
             authority: ExpertFenceAuthority::Gate,
             gate: Some(requirement),
             binding,
+            evaluator: None,
         }
+    }
+
+    /// The same grant naming `evaluator_id_digest` as the evaluator the readmission report comes
+    /// from; see [`ExpertAdmissionGrant::with_evaluator`].
+    #[must_use]
+    pub fn with_evaluator(mut self, evaluator_id_digest: [u8; 32]) -> Self {
+        self.evaluator = Some(evaluator_id_digest);
+        self
+    }
+
+    /// The evaluator this grant names, if any.
+    pub fn evaluator(&self) -> Option<&[u8; 32]> {
+        self.evaluator.as_ref()
     }
 
     pub fn project(&self) -> &ProjectId {
@@ -945,6 +1016,10 @@ pub struct ExpertRegistryProjection {
     /// registry and the committed invalidations. Projected from version 3 records and
     /// `InputInvalidated` events; see [`ExpertDependencyIndex`].
     deps: ExpertDependencyIndex,
+    /// The standing of the gate configuration and the evaluator and the epochs each expert was
+    /// admitted under; see the `authority` module. Projected from `ExpertAuthorityChanged`
+    /// events, structural records and readmissions.
+    authority: AuthorityState,
     /// The current grant generation per [`ExpertGrantKind`]. Host authority in memory, not
     /// projected from the ledger: it takes no part in equality and a rebuilt registry starts at
     /// [`ExpertGrantGeneration::INITIAL`].
@@ -1029,7 +1104,7 @@ struct ExpertPlan {
 }
 
 /// The experts an invalidation fences, with the count and digest the event commits to.
-struct FenceSet {
+pub(crate) struct FenceSet {
     members: Vec<ExpertFenceSetMember>,
     count: u32,
     digest: [u8; 32],
@@ -1066,8 +1141,20 @@ impl ExpertRegistryProjection {
             fenced_epochs,
             readmit_gate_epoch,
             deps,
+            authority: AuthorityState::default(),
             grants: HostGrantGenerations::default(),
         }
+    }
+
+    /// The same registry with the authority state a compacted snapshot carries.
+    #[must_use]
+    pub(crate) fn with_authority(mut self, authority: AuthorityState) -> Self {
+        self.authority = authority;
+        self
+    }
+
+    pub(crate) fn authority_state(&self) -> &AuthorityState {
+        &self.authority
     }
 
     /// A registry restored from a snapshot that does not say how its evidence was checked
@@ -1534,6 +1621,11 @@ impl ExpertRegistryProjection {
         };
         let report = BoundGateReport::decode_canonical(&evidence.report)
             .map_err(|error| ExpertAdmissionError::EvidenceUndecodable(error.to_string()))?;
+        self.check_authority(&EvidenceClaim {
+            gate_epoch: evidence.gate_epoch,
+            gate_config_digest: evidence.required_gate_config_digest,
+            evaluator: EvaluatorClaim::NotRechecked,
+        })?;
         let expected = readmission_expectation(
             ReadmissionTarget {
                 project,
@@ -1574,6 +1666,8 @@ impl ExpertRegistryProjection {
                 .entry(verified.epoch)
                 .or_insert(verified.gate_config_digest);
             self.readmit_gate_epoch = self.readmit_gate_epoch.max(verified.epoch);
+            // A readmission is fresh evidence: the expert stands under the current epochs.
+            self.authority.record_admission(&plan.key, true);
         }
         if let Some(epoch) = plan.fenced_at {
             let highest = self.fenced_epochs.entry(plan.key.clone()).or_insert(0);
@@ -1656,10 +1750,10 @@ impl ExpertRegistryProjection {
         })
     }
 
-    /// Fence every member of `set` in one step: `Fenced` at the next state version, cause
-    /// `InputRevoked`, the fence memo raised. The set was derived against this very registry, so
-    /// every member is present and at the state it compares against.
-    fn apply_fence_set(&mut self, set: &FenceSet) {
+    /// Fence every member of `set` in one step: `Fenced` at the next state version, with
+    /// `cause`, the fence memo raised. The set was derived against this very registry, so every
+    /// member is present and at the state it compares against.
+    fn apply_fence_set(&mut self, set: &FenceSet, cause: ExpertFenceCause) {
         for member in &set.members {
             let key = (member.project.0.clone(), member.pod.0.clone());
             let epoch = member.epoch();
@@ -1670,7 +1764,7 @@ impl ExpertRegistryProjection {
             self.fence_causes.insert(
                 key.clone(),
                 FenceStanding {
-                    cause: ExpertFenceCause::InputRevoked,
+                    cause,
                     resume: member.resume,
                 },
             );
@@ -1687,6 +1781,8 @@ impl ExpertRegistryProjection {
             } else {
                 self.legacy.insert(key.clone());
             }
+            self.authority
+                .record_admission(key, plan.verified.is_some());
         }
         if let Some(verified) = plan.verified {
             self.epoch_gate_configs
@@ -1922,6 +2018,7 @@ fn readmission_expectation(
 }
 
 fn check_evidence(
+    registry: &ExpertRegistryProjection,
     proposal: &ExpertProposal,
     report: &BoundGateReport,
     grant: &ExpertAdmissionGrant,
@@ -1932,6 +2029,13 @@ fn check_evidence(
     if proposal.proposer() != grant.proposer() {
         return Err(ExpertAdmissionError::ProposerMismatch);
     }
+    // The grant's epoch and evaluator must be the current authority (shared with readmission and
+    // replay).
+    registry.check_authority(&EvidenceClaim {
+        gate_epoch: grant.gate_epoch(),
+        gate_config_digest: *grant.required_gate_config_digest(),
+        evaluator: EvaluatorClaim::Named(grant.evaluator().copied()),
+    })?;
     let expected = proposal_expectation(
         proposal,
         *grant.required_gate_config_digest(),
@@ -1996,7 +2100,7 @@ impl PtrRuntime {
         grant: &ExpertAdmissionGrant,
         inputs: Option<ExpertInputs>,
     ) -> Result<CommitIndex, RuntimeError> {
-        check_evidence(proposal, report, grant).map_err(RuntimeError::Expert)?;
+        check_evidence(&self.experts, proposal, report, grant).map_err(RuntimeError::Expert)?;
         let invalid = |error: ptr_pods::ExpertProposalError| {
             RuntimeError::Expert(ExpertAdmissionError::InvalidRecord(error.to_string()))
         };
@@ -2399,7 +2503,8 @@ impl PtrRuntime {
                 .deps
                 .record_supersession(input, *new_generation, *new_digest),
         }
-        self.experts.apply_fence_set(&set);
+        self.experts
+            .apply_fence_set(&set, ExpertFenceCause::InputRevoked);
         for member in &set.members {
             self.state.values.insert(
                 ptr_state::expert_key(&member.project.0, &member.pod.0),
@@ -2447,6 +2552,14 @@ impl PtrRuntime {
                 _,
             ) => None,
             (ExpertFenceAction::Readmit, Some(report), Some(requirement)) => {
+                // Readmission needs evidence under the current authority, as admission does.
+                self.experts
+                    .check_authority(&EvidenceClaim {
+                        gate_epoch: requirement.gate_epoch,
+                        gate_config_digest: requirement.config_digest,
+                        evaluator: EvaluatorClaim::Named(grant.evaluator().copied()),
+                    })
+                    .map_err(expert)?;
                 let entry = self
                     .experts
                     .get(&request.project, &request.pod)
@@ -2807,6 +2920,11 @@ impl PtrRuntime {
         if report.digest() != *record.evidence_digest() {
             return Err(ExpertAdmissionError::EvidenceDigestMismatch);
         }
+        self.experts.check_authority(&EvidenceClaim {
+            gate_epoch: record.gate_epoch(),
+            gate_config_digest: *evidence.required_gate_config_digest(),
+            evaluator: EvaluatorClaim::NotRechecked,
+        })?;
         let expected = proposal_expectation(
             record.proposal(),
             *evidence.required_gate_config_digest(),

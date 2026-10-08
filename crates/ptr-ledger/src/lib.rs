@@ -316,6 +316,98 @@ pub enum LedgerEvent {
         fence_count: u32,
         fence_digest: [u8; 32],
     },
+    /// A change of the authority expert admission evidence rests on (tag 31): the current
+    /// epoch and identity of the gate configuration or of the evaluator moves to `epoch` and
+    /// `id_digest`. `class` says what the change does to evidence issued under earlier epochs: a
+    /// `Revoke` or a `TighteningRotation` fences, in the same record, every expert whose
+    /// admission evidence was issued under an epoch below `epoch`; a `NonTightening` rotation
+    /// fences nothing. As for tag 30, the fenced set is committed to by count and digest only
+    /// (`fence_count`, `fence_digest`): the runtime derives it from its registry at this commit
+    /// index and re-derives it on replay.
+    ///
+    /// This crate checks only the shape: a non-zero epoch, no all-zero digest, and a
+    /// `NonTightening` change that fences nobody. It cannot check that the epoch advances or that
+    /// the count and digest are the fence set; the runtime does both on commit and on replay.
+    /// The record is written only by the runtime's authority path; the public `commit` refuses it.
+    ExpertAuthorityChanged {
+        kind: ExpertAuthorityKind,
+        id_digest: [u8; 32],
+        epoch: u64,
+        class: ExpertAuthorityClass,
+        fence_count: u32,
+        fence_digest: [u8; 32],
+    },
+}
+
+/// Which authority an [`LedgerEvent::ExpertAuthorityChanged`] moves. The codes are pinned data:
+/// GateConfig 0, Evaluator 1.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ExpertAuthorityKind {
+    /// The gate configuration admission evidence must have been produced under.
+    GateConfig,
+    /// The evaluator whose reports count as admission evidence.
+    Evaluator,
+}
+
+impl ExpertAuthorityKind {
+    /// The stored code: GateConfig 0, Evaluator 1.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::GateConfig => 0,
+            Self::Evaluator => 1,
+        }
+    }
+
+    /// The member for a stored code, or `None` for an unknown one.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::GateConfig),
+            1 => Some(Self::Evaluator),
+            _ => None,
+        }
+    }
+}
+
+/// What an [`LedgerEvent::ExpertAuthorityChanged`] does to evidence issued under earlier epochs.
+/// The codes are pinned data: Revoke 0, TighteningRotation 1, NonTightening 2.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertAuthorityClass {
+    /// The previous authority is withdrawn outright; its evidence no longer counts.
+    Revoke,
+    /// The authority rotates to a stricter one; evidence issued under an earlier epoch no longer
+    /// meets it.
+    TighteningRotation,
+    /// The authority rotates without becoming stricter; earlier evidence keeps counting.
+    NonTightening,
+}
+
+impl ExpertAuthorityClass {
+    /// The stored code: Revoke 0, TighteningRotation 1, NonTightening 2.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Revoke => 0,
+            Self::TighteningRotation => 1,
+            Self::NonTightening => 2,
+        }
+    }
+
+    /// The member for a stored code, or `None` for an unknown one.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Revoke),
+            1 => Some(Self::TighteningRotation),
+            2 => Some(Self::NonTightening),
+            _ => None,
+        }
+    }
+
+    /// Whether evidence issued under an earlier epoch stops counting.
+    pub fn fences_earlier_evidence(self) -> bool {
+        match self {
+            Self::Revoke | Self::TighteningRotation => true,
+            Self::NonTightening => false,
+        }
+    }
 }
 
 /// The longest identity an [`LedgerEvent::InputInvalidated`] names, in bytes.
@@ -1047,6 +1139,22 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_u32(&mut out, *fence_count);
             out.extend_from_slice(fence_digest);
         }
+        LedgerEvent::ExpertAuthorityChanged {
+            kind,
+            id_digest,
+            epoch,
+            class,
+            fence_count,
+            fence_digest,
+        } => {
+            out.push(31);
+            out.push(kind.code());
+            out.extend_from_slice(id_digest);
+            put_u64(&mut out, *epoch);
+            out.push(class.code());
+            put_u32(&mut out, *fence_count);
+            out.extend_from_slice(fence_digest);
+        }
         LedgerEvent::ExecutionManifestRevoked {
             manifest_digest,
             generation,
@@ -1621,6 +1729,36 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             check_input_invalidated(&event)?;
             event
         }
+        31 => {
+            let kind_code = cursor.u8()?;
+            let kind = ExpertAuthorityKind::from_code(kind_code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown expert authority kind {kind_code}"),
+                )
+            })?;
+            let id_digest = cursor.digest()?;
+            let epoch = cursor.u64()?;
+            let class_code = cursor.u8()?;
+            let class = ExpertAuthorityClass::from_code(class_code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown expert authority class {class_code}"),
+                )
+            })?;
+            let fence_count = cursor.u32()?;
+            let fence_digest = cursor.digest()?;
+            let event = LedgerEvent::ExpertAuthorityChanged {
+                kind,
+                id_digest,
+                epoch,
+                class,
+                fence_count,
+                fence_digest,
+            };
+            check_expert_authority_changed(&event)?;
+            event
+        }
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1741,6 +1879,7 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
         LedgerEvent::ExpertFenceCommitted { .. } => check_expert_fence(event)?,
         LedgerEvent::KvTaintCommitted { .. } => check_kv_taint(event)?,
         LedgerEvent::InputInvalidated { .. } => check_input_invalidated(event)?,
+        LedgerEvent::ExpertAuthorityChanged { .. } => check_expert_authority_changed(event)?,
         LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
             endpoint: Some(endpoint),
             ..
@@ -1748,6 +1887,33 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
         _ => {}
+    }
+    Ok(())
+}
+
+/// An authority change carries a non-zero epoch and no all-zero digest, and a `NonTightening`
+/// change fences nobody: the one canonical form. The decoder and the append paths both call
+/// this.
+fn check_expert_authority_changed(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::ExpertAuthorityChanged {
+        id_digest,
+        epoch,
+        class,
+        fence_count,
+        fence_digest,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    const ZERO: [u8; 32] = [0; 32];
+    if *epoch == 0 || *id_digest == ZERO || *fence_digest == ZERO {
+        return Err(integrity::invalid("PTR_LEDGER_EXPERT_AUTHORITY_CHANGED"));
+    }
+    if !class.fences_earlier_evidence() && *fence_count != 0 {
+        return Err(integrity::invalid(
+            "PTR_LEDGER_EXPERT_AUTHORITY_CHANGED_FENCES",
+        ));
     }
     Ok(())
 }
@@ -3029,6 +3195,122 @@ mod effect_record_tests {
         }
         check_encodable(&at_bound).unwrap();
         assert_eq!(decode_event(&encode_event(&at_bound)).unwrap(), at_bound);
+    }
+
+    fn authority_event(class: ExpertAuthorityClass) -> LedgerEvent {
+        LedgerEvent::ExpertAuthorityChanged {
+            kind: ExpertAuthorityKind::Evaluator,
+            id_digest: [5; 32],
+            epoch: 7,
+            class,
+            fence_count: if class.fences_earlier_evidence() {
+                3
+            } else {
+                0
+            },
+            fence_digest: [6; 32],
+        }
+    }
+
+    #[test]
+    fn authority_change_round_trips_under_tag_31_and_the_codes_are_pinned() {
+        assert_eq!(ExpertAuthorityKind::GateConfig.code(), 0);
+        assert_eq!(ExpertAuthorityKind::Evaluator.code(), 1);
+        assert_eq!(ExpertAuthorityKind::from_code(2), None);
+        for (class, code) in [
+            (ExpertAuthorityClass::Revoke, 0),
+            (ExpertAuthorityClass::TighteningRotation, 1),
+            (ExpertAuthorityClass::NonTightening, 2),
+        ] {
+            assert_eq!(class.code(), code);
+            assert_eq!(ExpertAuthorityClass::from_code(code), Some(class));
+            let event = authority_event(class);
+            check_encodable(&event).unwrap();
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 31);
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            for len in 0..encoded.len() {
+                assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
+            }
+            let mut padded = encoded.clone();
+            padded.push(0);
+            assert!(decode_event(&padded).is_err());
+        }
+        assert_eq!(ExpertAuthorityClass::from_code(3), None);
+    }
+
+    #[test]
+    fn authority_change_refuses_every_non_canonical_form() {
+        let with = |edit: &dyn Fn(&mut LedgerEvent)| {
+            let mut event = authority_event(ExpertAuthorityClass::Revoke);
+            edit(&mut event);
+            event
+        };
+        let bad = [
+            with(&|e| {
+                if let LedgerEvent::ExpertAuthorityChanged { epoch, .. } = e {
+                    *epoch = 0;
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::ExpertAuthorityChanged { id_digest, .. } = e {
+                    *id_digest = [0; 32];
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::ExpertAuthorityChanged { fence_digest, .. } = e {
+                    *fence_digest = [0; 32];
+                }
+            }),
+            // A non-tightening rotation fences nobody.
+            with(&|e| {
+                if let LedgerEvent::ExpertAuthorityChanged {
+                    class, fence_count, ..
+                } = e
+                {
+                    *class = ExpertAuthorityClass::NonTightening;
+                    *fence_count = 1;
+                }
+            }),
+        ];
+        for event in bad {
+            assert_eq!(
+                check_encodable(&event).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{event:?}"
+            );
+            assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
+        }
+        // The largest fan-out round-trips.
+        let mut event = authority_event(ExpertAuthorityClass::TighteningRotation);
+        if let LedgerEvent::ExpertAuthorityChanged { fence_count, .. } = &mut event {
+            *fence_count = u32::MAX;
+        }
+        assert_eq!(decode_event(&encode_event(&event)).unwrap(), event);
+    }
+
+    #[test]
+    fn authority_change_refuses_an_unknown_kind_or_class() {
+        let encoded = encode_event(&authority_event(ExpertAuthorityClass::Revoke));
+        // tag, kind, id digest, epoch, class.
+        let kind_at = 1;
+        let class_at = 1 + 1 + 32 + 8;
+        assert_eq!(encoded[kind_at], 1);
+        assert_eq!(encoded[class_at], 0);
+        for code in [2u8, 3, 255] {
+            let mut unknown_kind = encoded.clone();
+            unknown_kind[kind_at] = code;
+            assert!(decode_event(&unknown_kind)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown expert authority kind"));
+            let mut unknown_class = encoded.clone();
+            unknown_class[class_at] = code.max(3);
+            assert!(decode_event(&unknown_class)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown expert authority class"));
+        }
     }
 
     #[test]

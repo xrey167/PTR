@@ -550,7 +550,9 @@ pub enum RuntimeError {
     /// compare-and-set and derives the event's ids from the record. Replay does not use this
     /// error: it re-checks the record and reports [`RuntimeError::Expert`]. An expert fence
     /// record ([`LedgerEvent::ExpertFenceCommitted`]) is refused the same way: it may only be
-    /// written by [`PtrRuntime::fence_expert`] and [`PtrRuntime::readmit_expert`].
+    /// written by [`PtrRuntime::fence_expert`] and [`PtrRuntime::readmit_expert`]; so is an
+    /// expert authority change record ([`LedgerEvent::ExpertAuthorityChanged`]), which only
+    /// [`PtrRuntime::change_expert_authority`] may write.
     StructuralRecordOutsideAdmissionPath,
     /// A semantic record written before origins existed, replayed after a
     /// record with an attributed origin (rule R1).
@@ -3113,6 +3115,12 @@ impl PtrRuntime {
             // Replay re-derives the fence set at this point of the history and compares its count
             // and digest with the event's (see the `expert` module).
             LedgerEvent::InputInvalidated { .. } => self.validate_input_invalidated_event(event),
+            // Replay re-derives the fence set of an authority change at this point of the history
+            // and compares its count and digest with the event's, and holds the epoch to the
+            // current standing (see the `expert::authority` module).
+            LedgerEvent::ExpertAuthorityChanged { .. } => {
+                self.validate_authority_changed_event(event)
+            }
         }
     }
 
@@ -3238,6 +3246,9 @@ impl PtrRuntime {
             }
             LedgerEvent::InputInvalidated { .. } => {
                 self.apply_input_invalidated_event(&committed.event)?;
+            }
+            LedgerEvent::ExpertAuthorityChanged { .. } => {
+                self.apply_authority_changed_event(&committed.event)?;
             }
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }
@@ -3432,7 +3443,8 @@ impl PtrRuntime {
 /// ([`RuntimeError::StructuralRecordOutsideAdmissionPath`]): only the expert admission path may
 /// build one. So is an expert fence record: only `fence_expert` and `readmit_expert` may, and an
 /// input invalidation record ([`LedgerEvent::InputInvalidated`]): only
-/// `invalidate_input`, which derives its fence set, may. A taint
+/// `invalidate_input`, which derives its fence set, may, and so is an authority change record
+/// ([`LedgerEvent::ExpertAuthorityChanged`]): only `change_expert_authority` may. A taint
 /// record ([`LedgerEvent::KvTaintCommitted`]) is refused the same way: only the runtime's taint
 /// path may write one.
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
@@ -3441,6 +3453,7 @@ fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
         LedgerEvent::ExpertStructuralCommitted { .. }
             | LedgerEvent::ExpertFenceCommitted { .. }
             | LedgerEvent::InputInvalidated { .. }
+            | LedgerEvent::ExpertAuthorityChanged { .. }
             | LedgerEvent::KvTaintCommitted { .. }
     ) {
         return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);

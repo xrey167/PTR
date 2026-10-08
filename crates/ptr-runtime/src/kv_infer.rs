@@ -206,6 +206,13 @@ pub enum ReferenceKvError {
     /// which names no experts: the fence set is not in the event, so applying it without the
     /// fences would leave the fenced experts' entries live. Use `apply_input_invalidation`.
     InputInvalidationNeedsFences,
+    /// [`ReferenceKvReuseBackend::apply_authority_change`] was handed an event that is not an
+    /// `ExpertAuthorityChanged`.
+    NotAnAuthorityChange,
+    /// [`ReferenceKvReuseBackend::apply_committed_event`] was handed an `ExpertAuthorityChanged`,
+    /// which names no experts: the fence set is not in the event, so applying it without the
+    /// fences would leave the fenced experts' entries live. Use `apply_authority_change`.
+    AuthorityChangeNeedsFences,
 }
 
 impl fmt::Display for ReferenceKvError {
@@ -250,6 +257,13 @@ impl fmt::Display for ReferenceKvError {
             Self::InputInvalidationNeedsFences => write!(
                 f,
                 "an input invalidation names no experts; apply it with its fence epochs"
+            ),
+            Self::NotAnAuthorityChange => {
+                write!(f, "the event is not an expert authority change")
+            }
+            Self::AuthorityChangeNeedsFences => write!(
+                f,
+                "an authority change names no experts; apply it with its fence epochs"
             ),
         }
     }
@@ -931,6 +945,9 @@ impl ReferenceKvReuseBackend {
         if matches!(event, LedgerEvent::InputInvalidated { .. }) {
             return Err(ReferenceKvError::InputInvalidationNeedsFences);
         }
+        if matches!(event, LedgerEvent::ExpertAuthorityChanged { .. }) {
+            return Err(ReferenceKvError::AuthorityChangeNeedsFences);
+        }
         let mut state = self.lock()?;
         {
             let mut inputs = self
@@ -993,6 +1010,45 @@ impl ReferenceKvReuseBackend {
             crate::kv_prefix::invalidate_catalog_for_event(&mut state.catalog, event, None)
                 .unwrap_or_default();
         keys.extend(state.catalog.invalidate_expert_fences(fences));
+        let retired = keys.len();
+        for key in &keys {
+            self.retire(&mut state, key)?;
+        }
+        self.drain_retirements(&mut state)?;
+        Ok(retired)
+    }
+
+    /// Apply one committed [`LedgerEvent::ExpertAuthorityChanged`] to this backend: the experts
+    /// the event fenced die through `fences`, the fence epochs the runtime derived
+    /// (`ExpertAuthorityOutcome::fence_epochs`). The event carries only the count and digest of
+    /// that set and changes no other KV liveness, so a standalone backend must be handed the
+    /// epochs. An event of another kind is refused. Returns how many backend prefixes were
+    /// retired.
+    ///
+    /// # Errors
+    /// [`ReferenceKvError::NotAnAuthorityChange`] for any other event; a poisoned backend.
+    pub fn apply_authority_change(
+        &self,
+        event: &LedgerEvent,
+        fences: &BTreeMap<String, u64>,
+    ) -> Result<usize, ReferenceKvError> {
+        if !matches!(event, LedgerEvent::ExpertAuthorityChanged { .. }) {
+            return Err(ReferenceKvError::NotAnAuthorityChange);
+        }
+        let mut state = self.lock()?;
+        {
+            let mut inputs = self
+                .liveness
+                .inner
+                .lock()
+                .map_err(|_| ReferenceKvError::Poisoned)?;
+            inputs.note_fences(fences.clone());
+        }
+        if state.faults.index_update == IndexUpdate::Suppressed {
+            state.stats.suppressed_index_updates += 1;
+            return Ok(0);
+        }
+        let keys = state.catalog.invalidate_expert_fences(fences);
         let retired = keys.len();
         for key in &keys {
             self.retire(&mut state, key)?;
