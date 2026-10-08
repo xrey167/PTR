@@ -1,6 +1,6 @@
 version = 1
 id = "S003"
-status = "planned"
+status = "prepared"
 hypothesis = "Do dependency-certified agent branches avoid lost updates and phantoms while merging more concurrent work than serial execution?"
 metrics = "lost updates; undetected phantoms; certified merge rate; conflict rate; merge latency"
 baseline = "serial execution; last-writer-wins branches; key-level optimistic locking without range digests"
@@ -12,3 +12,5 @@ seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json", "mutations.json"]
 design = "../../../docs/architecture/35-agentic-substrate.md"
+preregistration_sha256 = "2e9118979f59e943baf92fab45f4ac8f3dfeff62af87896305711edc866ba757"
+preregistration_rules_sha256 = "94e7be5bf51f5dc0fe7c4f9f248479d1f4c33b3d692055ff5c23597d1d3d09b2"
