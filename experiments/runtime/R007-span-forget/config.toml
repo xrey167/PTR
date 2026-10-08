@@ -64,7 +64,7 @@ canary_generator_rule = "canary_i = first 16 hex chars of sha256(seed + colon + 
 canary_generator_seed = 20240607
 canary_expected_digest = "65f9b8cd60e57cb38a8588c23d5bb494c7817fc10511353980f8be1c690efe19"
 
-# Owner decisions of 2026-10-08 (binding; verbatim text in DRAFT_PREREGISTRATION.md section 3). Draft only: R007 is
+# Owner decisions of 2026-10-08 (binding; verbatim text in PREREGISTRATION.md section 3). Draft only: R007 is
 # planned, not frozen, and no preregistration table exists yet.
 owner_decision_2026_10_08_forget_mechanism = "the span is a revocable PromptSegment (Derived or Memory); forget = revoke its lineage segment, then run the prompt without it (prefix reused, everything after the span recomputed); the README states the mechanism is revocation plus parent-chained chunk keys; a negative control with injected stale reuse (set_faults) shows the criterion is not vacuous"
 owner_decision_2026_10_08_canary_probe = "per probe, the full next-token logits vector (all 256 entries) after the probe suffix; canary_logit_shift = max absolute difference over all 256 entries and all 32 probes; frozen before the preregistration"
@@ -79,3 +79,25 @@ tokens_after_span_expected = 2880
 forget_mechanism = "revoke the span's lineage segment, then run the prompt without it; not a mid-sequence eviction primitive"
 negative_control = "injected stale reuse (set_faults) must change the digests and trip the criteria; otherwise the run is vacuous"
 reference_limits_raised_in_harness_only = true
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "span-forget"
+corpus_selection_digest = "sha256:48de01d2f91315b6d124dce668e01f783e599a00677f92b7325cf1467d3308c1"
+selection_domain = "ptr.r007.corpus-selection.v1"
+selection_sequences = 8
+selection_sequence_tokens = 2816
+role_order_label = 7
+probe_order_label = 107
+per_seed_role = "the seed picks which corpus sequence fills the system, document head, document tail and question roles and the order in which the 32 canaries are probed; the corpus, the weights and the canaries are fixed by their pinned seeds"
+canaries_in_span = 16
+canary_bytes = 16
+span_identity = "span:canary-1"
+span_generation = 1
+probe_headroom_tokens = 16
+canary_logit_shift_unit = "largest f32 ulp distance over the 256 entries and 32 probes; 0 iff the maximum absolute difference is exactly 0"
+preregistration_text = "experiments/runtime/R007-span-forget/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/runtime/R007-span-forget/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

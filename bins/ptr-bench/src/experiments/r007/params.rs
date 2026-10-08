@@ -22,7 +22,7 @@ pub const EXPERIMENT_TOML: &str =
 /// The subcommand of the harness (`ptr-bench <BENCHMARK> <seed>`).
 pub const BENCHMARK: &str = "span-forget";
 
-/// The runner's command, as the draft preregistration states it. `experiment.toml` carries it
+/// The runner's command, as the preregistration states it. `experiment.toml` carries it
 /// from the freeze on (until then its `entrypoint` is empty).
 pub const ENTRYPOINT: &str = "cargo run --release --locked -p ptr-bench -- span-forget <seed>";
 

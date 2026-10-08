@@ -6,7 +6,7 @@ nothing here is a result and no run is evidence. The decisions are made by `crit
 `aggregate.py`; this file gives their reasons, the definitions, the modelling choices, what the harness cannot produce and
 the limits of the claim. Every criterion is the verbatim text of `experiment.toml` (hypothesis, falsification, metrics)
 and the pins of `config.toml`; nothing here changes, weakens or adds a success criterion. It supersedes
-`DRAFT_PREREGISTRATION.md`, whose proposals are confirmed or corrected below (section 3). The harness is
+`PREREGISTRATION.md`, whose proposals are confirmed or corrected below (section 3). The harness is
 `bins/ptr-bench/src/experiments/r007/` (subcommand `span-forget <seed>`).
 
 Entrypoint (`experiment.toml`'s `entrypoint`, the runner's command, set at the freeze):
