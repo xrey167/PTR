@@ -5,7 +5,7 @@ SHA-256 is frozen with the table. Nothing in it is a result. The decisions are m
 way) and applied by `aggregate.py`; this file gives their reasons, the definitions, the modelling choices, what the
 harness cannot produce and the limits of the claim. The harness is
 `bins/ptr-bench/src/experiments/r011/` (subcommand `self-modification-safety <seed>`). It is derived from
-`DRAFT_PREREGISTRATION.md` (owner decisions of 2026-10-08), which the freeze deletes; nothing in the draft is weakened
+`PREREGISTRATION.md` (owner decisions of 2026-10-08), which the freeze deletes; nothing in the draft is weakened
 except one sentence that section 7 states (the draft's C7 line on a fence naming a committed revocation of the exact
 generation, which has no negative case). Strengthened since the draft: the direct-append family also offers the two
 runtime-granted compound events (section 5, C2).

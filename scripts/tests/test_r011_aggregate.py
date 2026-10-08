@@ -247,7 +247,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(self.MANIFEST["required_artifacts"], ["run.json", "metrics.json"])
         self.assertIn("adversarial_attempts_per_case", self.MANIFEST["metrics"].split(", "))
         self.assertNotIn("attempts_artifact", CONFIG["pinned_thresholds"])
-        for name in ("experiment.toml", "config.toml", "criteria.toml", "aggregate.py", "PREREGISTRATION.md", "DRAFT_PREREGISTRATION.md"):
+        for name in ("experiment.toml", "config.toml", "criteria.toml", "aggregate.py", "PREREGISTRATION.md"):
             self.assertNotIn("adversarial_attempts.json", (HERE / name).read_text(encoding="utf-8"), name)
 
     def test_the_two_compound_events_are_in_the_direct_append_family(self):

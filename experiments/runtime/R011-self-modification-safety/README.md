@@ -17,7 +17,7 @@ R011 was narrowed in place (it is `planned`, nothing frozen, no result) by owner
 
 The deferred mechanisms moved, as a planned experiment with no code and no evidence, to the successor [R013-deferred-self-modification-authority](../R013-deferred-self-modification-authority/README.md): attestors, trusted evaluators and attested manifests, single-use run ids, Birth with a source expert and upcycling, multi-cause readmission with ReadmissionRequest, ExpertQuarantineRetired and QuarantineFailed, hard-deny verifiers and verifier-set epochs, Split per-result gating, and provenance references for Freeze, Prune and Retire. Metrics of R011 that no case measures after the narrowing were moved there too (the list is in the draft).
 
-The binding owner decisions, the definitions accepted as stated limits, the case list C1 to C13 mapped to every remaining metric, the work package each case depends on and the stated limits are recorded in [DRAFT_PREREGISTRATION.md](DRAFT_PREREGISTRATION.md). It is a draft and is not frozen: there is no harness, `criteria.toml`, `aggregate.py` or `entrypoint` yet, and no `preregistration` table.
+The binding owner decisions, the definitions accepted as stated limits, the case list C1 to C13 mapped to every remaining metric, the work package each case depends on and the stated limits are recorded in [PREREGISTRATION.md](PREREGISTRATION.md). It is a draft and is not frozen: there is no harness, `criteria.toml`, `aggregate.py` or `entrypoint` yet, and no `preregistration` table.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

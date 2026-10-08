@@ -494,9 +494,6 @@ mod tests {
     const CRITERIA: &str = include_str!(
         "../../../../../experiments/runtime/R011-self-modification-safety/criteria.toml"
     );
-    const DRAFT: &str = include_str!(
-        "../../../../../experiments/runtime/R011-self-modification-safety/DRAFT_PREREGISTRATION.md"
-    );
     const README: &str =
         include_str!("../../../../../experiments/runtime/R011-self-modification-safety/README.md");
 
@@ -861,7 +858,6 @@ mod tests {
             ("experiment.toml", params::EXPERIMENT_TOML),
             ("config.toml", params::CONFIG_TOML),
             ("PREREGISTRATION.md", PREREGISTRATION),
-            ("DRAFT_PREREGISTRATION.md", DRAFT),
             ("criteria.toml", CRITERIA),
             ("README.md", README),
         ] {
@@ -881,7 +877,6 @@ mod tests {
         )));
         assert!(PREREGISTRATION.contains(&format!("the {suite} `adversarial_cases`")));
         assert!(PREREGISTRATION.contains(&format!("per case of the {suite}")));
-        assert!(DRAFT.contains(&format!("({suite} cases)")));
         let manifest: toml::Table = params::EXPERIMENT_TOML.parse().expect("experiment.toml");
         let text = manifest["falsification"].as_str().expect("falsification");
         assert!(text.contains(&format!("adversarial_cases, {suite} cases")));

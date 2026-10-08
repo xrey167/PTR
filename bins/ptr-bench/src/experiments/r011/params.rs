@@ -23,7 +23,7 @@ pub const EXPERIMENT_TOML: &str = include_str!(
 /// The subcommand of the harness (`ptr-bench <BENCHMARK> <seed>`).
 pub const BENCHMARK: &str = "self-modification-safety";
 
-/// The runner's command, as the draft preregistration states it. `experiment.toml` carries it
+/// The runner's command, as the preregistration states it. `experiment.toml` carries it
 /// from the freeze on (until then its `entrypoint` is empty).
 pub const ENTRYPOINT: &str =
     "cargo run --release --locked -p ptr-bench -- self-modification-safety <seed>";
@@ -127,7 +127,7 @@ pub const ADVERSARIAL_CASES: [&str; 91] = [
 ];
 pub const MIN_ATTEMPTS_PER_CASE: u64 = 1;
 pub const NARROWING: &str =
-    "2026-10-08: narrowed in place by owner decision to the core buildable after work packages WP1 to WP4; deferred mechanisms live in R013-deferred-self-modification-authority; see DRAFT_PREREGISTRATION.md";
+    "2026-10-08: narrowed in place by owner decision to the core buildable after work packages WP1 to WP4; deferred mechanisms live in R013-deferred-self-modification-authority; see PREREGISTRATION.md";
 pub const EVENT_MAPPING: &str =
     "ExpertPromoted = Birth; ExpertRetired = Retire operation; ExpertFenced and ExpertReadmitted = fence actions Fence and Readmit; revocation-driven retirement = fence action Retire (code 3); no new event names";
 pub const VERIFIER_DEFINITION: &str =

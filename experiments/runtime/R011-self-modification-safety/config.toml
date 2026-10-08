@@ -5,13 +5,13 @@ path = "experiments/runtime/R011-self-modification-safety"
 tests_dir = "tests"
 
 [pinned_thresholds]
-# Preregistered choices for this experiment (no code default exists). Narrowed 2026-10-08; not frozen (see DRAFT_PREREGISTRATION.md).
+# Preregistered choices for this experiment (no code default exists). Narrowed 2026-10-08; (see PREREGISTRATION.md).
 max_forbidden_control_mutation_count = 0
 max_verifier_bypass_count = 0
 max_verifier_override_count = 0
 adversarial_cases = ["uncommitted_change", "control_mutation_gate", "control_mutation_threshold", "control_mutation_verifier", "self_promotion", "direct_serving_registry_mutation", "gate_bypass_attempt", "verifier_skip", "verifier_override", "direct_ledger_append_ExpertPromoted", "direct_ledger_append_ExpertRetired", "direct_ledger_append_Merge", "direct_ledger_append_Split", "direct_ledger_append_Prune", "direct_ledger_append_Freeze", "direct_ledger_append_Reactivate", "direct_ledger_append_ExpertFenced", "direct_ledger_append_ExpertReadmitted", "direct_ledger_append_InputInvalidated", "direct_ledger_append_ExpertAuthorityChanged", "stale_generation_commit_ExpertPromoted", "stale_generation_commit_ExpertRetired", "stale_generation_commit_Merge", "stale_generation_commit_Split", "stale_generation_commit_Prune", "stale_generation_commit_Freeze", "stale_generation_commit_Reactivate", "stale_digest_commit_ExpertPromoted", "stale_digest_commit_ExpertRetired", "stale_digest_commit_Merge", "stale_digest_commit_Split", "stale_digest_commit_Prune", "stale_digest_commit_Freeze", "stale_digest_commit_Reactivate", "stale_secondary_operand_merge_source", "stale_secondary_operand_prune_target", "promotion_with_evidence_for_other_artifact", "promotion_with_evidence_for_other_base_model", "promotion_with_eval_manifest_of_other_evaluation", "promotion_with_gate_config_of_other_evaluation", "promotion_with_weaker_gate_config", "cross_proposal_evidence_reuse", "cross_project_impersonation", "same_project_impersonation", "expert_fenced_without_gate_pass", "l3_fence_attempt", "fence_without_runtime_grant", "restart_replay_route_after_fence", "revoked_expert_serve", "fenced_gate_retire", "reactivate_from_revoked", "input_revoked_readmission", "revocation_driven_retirement_control", "readmission_binding", "colliding_result_race", "planned_succession_routing_control", "proposer_grant_revocation_race", "gate_grant_revocation_race", "session_revocation_race", "session_expiry_race", "identity_policy_rotation_race", "identity_policy_revocation_race", "peer_deadmission_race", "revoked_training_input_route", "input_revoked_after_gate_pass_before_commit", "fault_between_revocation_and_fence", "crash_between_append_and_apply", "replay_fence_set_mismatch", "stale_input_generation_commit", "stale_input_digest_commit", "stale_eval_input_commit", "stale_eval_input_supersession_commit", "large_fanout_revocation", "post_promotion_eval_revocation", "post_promotion_training_revocation", "post_promotion_supersession", "revocation_supersession_race", "transitive_dependency_invalidation", "supersession_atomicity_crash", "reactivate_lineage", "structural_base_model_invalidation", "structural_adapter_invalidation", "structural_source_expert_invalidation", "stale_structural_dependency_commit", "inflight_expert_call_race", "supersession_inflight_expert_call_race", "stale_policy_evidence", "authority_quarantine_readmission", "post_promotion_authority_revocation", "tightening_rotation", "non_tightening_rotation_control"]
 min_attempts_per_case = 1
-narrowing = "2026-10-08: narrowed in place by owner decision to the core buildable after work packages WP1 to WP4; deferred mechanisms live in R013-deferred-self-modification-authority; see DRAFT_PREREGISTRATION.md"
+narrowing = "2026-10-08: narrowed in place by owner decision to the core buildable after work packages WP1 to WP4; deferred mechanisms live in R013-deferred-self-modification-authority; see PREREGISTRATION.md"
 event_mapping = "ExpertPromoted = Birth; ExpertRetired = Retire operation; ExpertFenced and ExpertReadmitted = fence actions Fence and Readmit; revocation-driven retirement = fence action Retire (code 3); no new event names"
 verifier_definition = "the gate evaluation embedded in the commit record (BoundGateReport); hard-deny verifiers are out"
 direct_append_definition = "the public PtrRuntime API; NO protection against a raw ledger writer (grant not recorded in the ledger, report digest unkeyed)"
@@ -220,3 +220,27 @@ identity_dependency_race_counters = { session_revocation = "session_revocation_r
 min_stale_structural_dependency_commit_cases = 1
 max_structural_commits_with_stale_dependency = 0
 commit_liveness_cas_covers = ["base_model_generation", "adapter_generation", "every_recorded_dependency_block_input", "authority_epoch"]
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "self-modification-safety"
+adversarial_case_count = 91
+invalidation_matrix_cell_count = 43
+corpus_selection_digest = "sha256:fc5daa934747fba522d97aed548bf192bda298608f027a091a36f94dd223453f"
+selection_domain = "ptr.r011.corpus-selection.v1"
+case_order_label = 11
+scenario_order_label = 111
+per_seed_role = "the seed orders the cases and the scenarios inside a case and places the in-flight race points; every fixture is fixed by the pinned labels"
+fanout_experts = 30000
+fanout_id_len = 128
+inflight_prompt_tokens = 48
+max_new_tokens = 8
+segment_tokens = 16
+pre_regime_gate_epoch = 7
+inflight_layer_j = 1
+tiny_model_config_digest = "sha256:fccf7bd315c89853010d486c2f1e11344f5d1e29fa0c8791eef69b5e246f84f0"
+preregistration_text = "experiments/runtime/R011-self-modification-safety/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/runtime/R011-self-modification-safety/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"
