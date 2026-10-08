@@ -379,3 +379,38 @@ status = "completed"
 id = "R013"
 path = "runtime/R013-deferred-self-modification-authority"
 status = "planned"
+
+[[experiment]]
+id = "M001-v5-sweep"
+path = "model/M001-v5-sweep"
+status = "planned"
+
+[[experiment]]
+id = "M001-v5"
+path = "model/M001-v5-semantic-slots"
+status = "planned"
+
+[[experiment]]
+id = "M002-v10-sweep"
+path = "model/M002-v10-sweep"
+status = "planned"
+
+[[experiment]]
+id = "M002-v10"
+path = "model/M002-v10-typed-attention"
+status = "planned"
+
+[[experiment]]
+id = "M003-v2-sweep"
+path = "model/M003-v2-sweep"
+status = "planned"
+
+[[experiment]]
+id = "M003-v2"
+path = "model/M003-v2-latent-recurrence"
+status = "planned"
+
+[[experiment]]
+id = "M004-v2"
+path = "model/M004-v2-operator-router"
+status = "planned"

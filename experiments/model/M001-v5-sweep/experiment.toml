@@ -1,0 +1,12 @@
+version = 1
+id = "M001-v5-sweep"
+status = "planned"
+hypothesis = "Which learning rate of the fixed grid 0.0025,0.005,0.0125,0.025 trains each arm of M001-v5, the plain baseline included, best on validation data (seed 17, validation only)? Sweep of the A0 baseline study v1."
+metrics = "validation accuracy, validation NLL and divergence per fold, arm and learning rate"
+baseline = "no external baseline: the plain baseline is swept as an arm with its own rate"
+falsification = "Not a hypothesis test: the select phase picks one rate per arm by the rule fixed before the sweep (best mean validation accuracy over folds, tie lower mean validation NLL, tie smaller lr, a diverged grid point ineligible). An incomplete or inconsistent sweep is refused by the select phase, not patched; a changed sweep is a successor experiment."
+hardware_profile = "hardware/a0-cpu-4core.toml"
+entrypoint = "cargo +1.95.0 run --release --locked --quiet --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase baseline-v1-sweep --study <study> --arms <arms> --seed <seed> --steps <steps> --data <data> --folds <folds> --d-model <d_model> --rank <rank> --bias-limit <bias_limit> --metadata-dropout <metadata_dropout> --out -"
+seeds = [17]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

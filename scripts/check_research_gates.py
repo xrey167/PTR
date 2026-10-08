@@ -3290,6 +3290,93 @@ def m002_v9_successor_freeze_errors(root: Path, experiment: Path, manifest: dict
     return errors
 
 
+A0_BASELINE_V1_CRITERIA="research/falsification/A0-baseline-v1/criteria.toml"
+A0_BASELINE_V1_IDS=("M001-v5","M002-v10","M003-v2")
+A0_BASELINE_V1_FLAGS=(
+    ("--study","<study>"),("--arms","<arms>"),("--seed","<seed>"),("--steps","<steps>"),("--data","<data>"),
+    ("--folds","<folds>"),("--d-model","<d_model>"),("--rank","<rank>"),("--bias-limit","<bias_limit>"),
+    ("--metadata-dropout","<metadata_dropout>"),("--out","-"),
+)
+
+def a0_baseline_v1_freeze_errors(root: Path, experiment: Path, manifest: dict, exp_id: str) -> list[str]:
+    """Bind a frozen experiment of the A0 baseline study v1 (a confirmatory
+    experiment of `A0_BASELINE_V1_IDS` or its `-sweep`) to the study's
+    criteria.toml, the single source of its protocol: every pinned protocol
+    value, the fold identities, the arm set, the phase and every flag of the
+    command (so the runner never falls back to a default of its own), and the
+    `model/burn-a0` Git-tree digest at HEAD. The files the table names are
+    frozen by the generic preregistration check; a placeholder is reported
+    there and skipped here."""
+    if status_of(manifest) not in FROZEN:
+        return []
+    try:
+        config=load(experiment/"config.toml").get("preregistration",{})
+        criteria=load(root/A0_BASELINE_V1_CRITERIA)
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(config,dict):
+        return [f"{exp_id}: config.toml has no preregistration table"]
+    sweep=exp_id.endswith("-sweep")
+    study=next((item for item in criteria.get("study",[]) if item.get("id")==exp_id.removesuffix("-sweep")),None)
+    if study is None:
+        return [f"{exp_id}: {A0_BASELINE_V1_CRITERIA} names no such study"]
+    protocol=criteria["protocol"]
+    expected={
+        "seeds":[protocol["sweep_seed"]] if sweep else criteria["seeds"],
+        "study":study["runner_study"],"arms":",".join(study["arms"]),"steps":protocol["steps"],
+        "batch":protocol["batch_size"],"d_model":protocol["d_model"],"rank":protocol["rank"],
+        "router_mode":protocol["router_mode"],"data":criteria["data"]["dataset"],"folds":criteria["data"]["folds"],
+        "dataset_lock":criteria["data"]["lock"],"sweep_seed":protocol["sweep_seed"],
+        "lr_grid":",".join(str(value) for value in protocol["lr_grid"]),
+        "lr_selection_rule":protocol["lr_selection_rule"],"criteria":A0_BASELINE_V1_CRITERIA,
+        "decision_core":criteria["decision"]["core"],"implementation_tree":"model/burn-a0",
+    }
+    errors=[]
+    for key,value in expected.items():
+        if key in config and not is_unset(config[key]) and not same_value(config[key],value):
+            errors.append(f"{exp_id}: preregistration key {key} {config[key]!r} is not {value!r}, the value criteria.toml fixes")
+    for key,value in (("bias_limit",protocol["bias_limit"]),("metadata_dropout",protocol["metadata_dropout"])):
+        try:
+            agrees=float(config[key])==float(value)
+        except (KeyError,TypeError,ValueError):
+            agrees=False
+        if not agrees:
+            errors.append(f"{exp_id}: preregistration key {key} is not {value!r}, the value criteria.toml fixes")
+    try:
+        lock=json.loads((root/criteria["data"]["lock"]).read_text(encoding="utf-8"))
+        folds=",".join(f"{fold}={lock['folds'][fold]['data_fnv1a64']}" for fold in M002_V6_FOLDS)
+    except (OSError,UnicodeDecodeError,json.JSONDecodeError,KeyError,TypeError) as error:
+        return [*errors,f"{exp_id}: cannot load the confirmatory fold lock: {error}"]
+    if config.get("folds")!=folds or criteria["data"]["folds"]!=folds:
+        errors.append(f"{exp_id}: folds must bind the exact canonical evidence-temporal,evidence-tabular,claim-interventional FNV64 values")
+    target=f"research/falsification/A0-baseline-v1/lr_{study['id']}.tsv"
+    key="lr_file_target" if sweep else "lr_file"
+    if config.get(key)!=target:
+        errors.append(f"{exp_id}: preregistration key {key} must be {target!r}")
+    entrypoint=manifest.get("entrypoint")
+    phase="baseline-v1-sweep" if sweep else "baseline-v1"
+    if not isinstance(entrypoint,str):
+        return [*errors,f"{exp_id}: experiment.toml names no entrypoint"]
+    tokens=entrypoint.split()
+    if tokens.count("--phase")!=1 or tokens[tokens.index("--phase")+1:][:1]!=[phase]:
+        errors.append(f"{exp_id}: entrypoint must run --phase {phase}")
+    for flag,value in A0_BASELINE_V1_FLAGS:
+        if f"{flag} {value}" not in entrypoint:
+            errors.append(f"{exp_id}: entrypoint must pass {flag} {value}")
+    if sweep and "--lr-file" in tokens:
+        errors.append(f"{exp_id}: a sweep takes no learning-rate file")
+    if not sweep and "--lr-file <lr_file>" not in entrypoint:
+        errors.append(f"{exp_id}: entrypoint must pass --lr-file <lr_file>")
+    if "cargo +1.95.0 run --release --locked" not in entrypoint:
+        errors.append(f"{exp_id}: entrypoint must run the release build of the a0_ablation example with cargo +1.95.0 --locked")
+    digest=config.get("implementation_tree_git_digest")
+    if not isinstance(digest,str) or not (is_unset(digest) or re.fullmatch(r"[0-9a-f]{64}",digest)):
+        errors.append(f"{exp_id}: implementation tree digest is invalid")
+    elif not is_unset(digest) and directory_digest_at(root,"HEAD","model/burn-a0")!=digest:
+        errors.append(f"{exp_id}: implementation tree differs from its pinned Git digest")
+    return errors
+
+
 def m002_v5_factorized_contract(root: Path, directory: Path | None) -> tuple[dict | None, list[str]]:
     """The architecture an M009 learned backend is permitted to instantiate."""
     if directory is None:
@@ -3609,6 +3696,9 @@ def gate_errors(root: Path) -> list[str]:
         errors.extend(m002_v8_successor_freeze_errors(root,directories["M002-v8"],experiments["M002-v8"]))
     if "M002-v9" in experiments and "M002-v9" in directories:
         errors.extend(m002_v9_successor_freeze_errors(root,directories["M002-v9"],experiments["M002-v9"]))
+    for exp_id in (*A0_BASELINE_V1_IDS,*(f"{item}-sweep" for item in A0_BASELINE_V1_IDS)):
+        if exp_id in experiments and exp_id in directories:
+            errors.extend(a0_baseline_v1_freeze_errors(root,directories[exp_id],experiments[exp_id],exp_id))
     errors.extend(m009_lock_errors(root,experiments,directories))
     errors.extend(preregistration_errors(root,experiments,directories))
     return errors
