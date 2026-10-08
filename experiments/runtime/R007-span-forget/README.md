@@ -14,3 +14,8 @@ The run is invalid (vacuous) and counts as falsified if any coverage prerequisit
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.
+
+## Owner decisions (2026-10-08) and draft preregistration
+Binding decisions: the span is a revocable `PromptSegment` (Derived or Memory) and forget means revoking its lineage segment and then running the prompt without it, with the prefix reused and everything after the span recomputed; the canary probe is the full next-token logits vector (all 256 entries) after the probe suffix, and `canary_logit_shift` is the maximum absolute difference over all 256 entries and all 32 probes; reference limits are raised in the R007 harness only, via `ReferenceKvLimits`, and the default stays 256; R008 and M016 stay planned and deferred to the GPU phase. The verbatim text is in [DRAFT_PREREGISTRATION.md](DRAFT_PREREGISTRATION.md) and the keys `owner_decision_2026_10_08_*` of `config.toml`.
+
+The mechanism under test is lineage revocation plus parent-chained chunk keys, not a mid-sequence eviction primitive (the catalog has none). A negative control with injected stale reuse (`set_faults`) shows the stale-row criterion is not vacuous. The claim has the character of a regression guard on forget semantics. Stated limits: tiny seeded random model, CPU reference path only, bitwise comparison on f32 bit patterns with no tolerance. R007 is still `planned`: the draft maps every metric to a case (baseline, warm, forget and rerun, compare, 32 probes, negative control, pins) and lists definitions that are proposals to confirm before the freeze.
