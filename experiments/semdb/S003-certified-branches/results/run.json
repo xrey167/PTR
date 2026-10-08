@@ -1,0 +1,75 @@
+{
+  "experiment_id": "S003",
+  "status": "prepared",
+  "scope": "certified agent branches merged through PtrRuntime::merge_branch in memory, against a reference model and oracle that share no code with certification, in simulated ticks: five arms (serial, certified, certified-review, last-writer-wins, key-level OCC) at 2, 4, 8 and 16 agents over six contention levels, with twenty-six adversarial probes and nine oracle canaries in every case",
+  "git_sha": "6db887283fe57673069b4594e07216e2f0e3b4b0",
+  "aggregated_at_git_sha": "8e01ab55be70033c032ed59377a0ec0b364760f0",
+  "recorded_at": "2026-10-08T19:09:03.156034+00:00",
+  "preregistration_sha256": "2e9118979f59e943baf92fab45f4ac8f3dfeff62af87896305711edc866ba757",
+  "preregistration_rules_sha256": "94e7be5bf51f5dc0fe7c4f9f248479d1f4c33b3d692055ff5c23597d1d3d09b2",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- certified-branches <cases_per_seed> <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261008T173448.181961Z-seed-17.json",
+      "git_sha": "6db887283fe57673069b4594e07216e2f0e3b4b0",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261008T174411.406549Z-seed-29.json",
+      "git_sha": "0d3343c118e473e86fe8b198f85c0ca0510a8eb8",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261008T175237.943047Z-seed-43.json",
+      "git_sha": "1f8a432aac9a8bfc8a9689f113a2085e840c569b",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261008T180053.852511Z-seed-71.json",
+      "git_sha": "5edde3040fcdc4af710acc929ecf23a9fe4ab7a4",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261008T180959.641658Z-seed-101.json",
+      "git_sha": "3f80fe48a7a03d6ffd9379eeda1778d54b9ea12d",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "b50583006adecafa1ee2ee0c24286f84cd350867fba6d714d68c421684125b54",
+    "29": "df3f19c80ffcd9f072c8e74efee499f5010420025a0940171dd9b28277045d09",
+    "43": "ca6e31ce8a0eeafa53f25839807a43593aa915a4ba40fa54e37e6117c804526a",
+    "71": "9c240d98ab4ef5de5315662aa9f0b96f6f14c8dedaea68c1f903173e5ca45b7d",
+    "101": "543bc21568bdf303b47834b72c7593fc1082cd7315d063d6b20f5b48bfa165dd"
+  },
+  "hard_pass": true,
+  "runs_complete": true,
+  "coverage_ok": true,
+  "time_model_ok": true,
+  "low_cells_ok": true,
+  "manipulation_ok": true,
+  "mutations_ok": true,
+  "throughput_verdict": "supported",
+  "efficiency_verdict": "met",
+  "recommended_status": "completed",
+  "mutation_checks": {
+    "killed": 41,
+    "total": 41,
+    "git_sha": "c9b57ddc9e46a8e515f8c566c57b01d7cd882550",
+    "sha256": "17c492bff656437be70ea219810120d4de37f0b4ffdb58488f7bdbfeba2b9197"
+  },
+  "limitations": [
+    "simulated agents are pure programs; the certification and verification paths are exercised, not agent reasoning",
+    "the ledger is in memory and the runtime one single writer; stored branches, seal tags and projections are covered by ptr-pg tests, not here",
+    "the agent-time model makes think time dominate merge time by design, so the throughput half is expected to hold whenever waste is modest; its informative content is the efficiency and the waste",
+    "the review arm has one reviewer and a plan digest that covers the revision, so most approvals are void; it is reported, not tuned",
+    "timings come from one shared cloud container with the seeds run one after another; the hardware profile is unspecified until measured; not a capacity claim",
+    "the generalisation of the safety claim is the rule-of-three figure 3/n per hazard class, computed as if the trials were independent; they are not, so it is not a bound and not a proof"
+  ],
+  "metrics_sha256": "50a2a320df10642535c937e1732a78fe47b069979998caccaa69c3cd3731f96b"
+}
