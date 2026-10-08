@@ -1,4 +1,4 @@
-# R006 positional-reuse-oracle: draft preregistration
+# R006 positional-reuse-oracle: preregistration
 
 DRAFT, not frozen. This is the pre-freeze text of the preregistration of R006; at the freeze it becomes the
 `preregistration_text` file of `config.toml`'s `[preregistration]` table (as `PREREGISTRATION.md`) and its SHA-256 is frozen with

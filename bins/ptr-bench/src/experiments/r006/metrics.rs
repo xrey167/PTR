@@ -85,7 +85,7 @@ pub const LIST: MetricList = MetricList {
 /// milliseconds, floats), and the preregistration makes no wall-clock claim.
 pub const UNJUDGED: [&str; 1] = ["reuse_latency_ms"];
 
-/// The metrics each case of the draft preregistration produces (a metric can be fed by several
+/// The metrics each case of the preregistration produces (a metric can be fed by several
 /// cases). The map is checked against the manifest: every metric has a case, and no case names
 /// a metric the manifest lacks. C10 (the negative controls) produces no manifest metric.
 pub const CASE_MAP: [(&str, &[&str]); 11] = [

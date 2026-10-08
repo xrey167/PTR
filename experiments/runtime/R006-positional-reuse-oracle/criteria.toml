@@ -1,4 +1,4 @@
-# R006 decision criteria. DRAFT: proposed with the draft preregistration and frozen with it (config.toml names this file and
+# R006 decision criteria, frozen with the preregistration (config.toml names this file and
 # its SHA-256 at the freeze); no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
 # r006/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order, and every path below
 # is resolved against the JSON a (reduced) run of that harness emits.

@@ -583,7 +583,7 @@ mod tests {
     use crate::experiments::layered_kv::emit;
 
     const DRAFT: &str = include_str!(
-        "../../../../../experiments/runtime/R006-positional-reuse-oracle/DRAFT_PREREGISTRATION.md"
+        "../../../../../experiments/runtime/R006-positional-reuse-oracle/PREREGISTRATION.md"
     );
     const CRITERIA: &str = include_str!(
         "../../../../../experiments/runtime/R006-positional-reuse-oracle/criteria.toml"

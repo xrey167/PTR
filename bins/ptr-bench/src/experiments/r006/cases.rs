@@ -1,4 +1,4 @@
-//! The cases C1 to C8 and C10 of R006's draft preregistration (C9 is the matrix, C11 the pins
+//! The cases C1 to C8 and C10 of R006's preregistration (C9 is the matrix, C11 the pins
 //! in `mod.rs`), run once per seed on one-layer reference backends with positional reuse
 //! opted in.
 //!
