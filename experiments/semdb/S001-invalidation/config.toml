@@ -3,3 +3,74 @@ kind = "workspace-area"
 name = "S001-invalidation"
 path = "experiments/semdb/S001-invalidation"
 tests_dir = "tests"
+
+# The preregistered choices of the harness (`ptr-bench invalidation`, bins/ptr-bench/src/experiments/s001/params.rs,
+# which fails its drift test if a compiled constant differs from this table). S001 is planned, not frozen: no
+# [preregistration] table exists yet; the freeze adds it, after the owner decisions of 2026-10-09 below.
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
+# The graphs: three sizes (total keys) of five topology classes; the update stream of each graph has
+# deltas_per_size[i] operations for sizes[i] (cycle attempts and MissingDependency probes included).
+sizes = [256, 1024, 4096]
+deltas_per_size = [150, 150, 100]
+topology_classes = ["layered-fan-in", "deep-chains", "diamonds", "hub-and-spoke", "lossy"]
+layered_depth = 8
+leaf_fraction_denominator = 4
+chain_nodes = 16
+chain_cross_link_permille = 200
+diamonds_per_group = 4
+spoke_fraction_denominator = 8
+hub_extra_derived_input_permille = 250
+leaf_value_range = 1000000
+lossy_leaf_value_range = 16
+setup_chunk_keys = 1024
+# The update stream: the share of each operation, per mille of the operations of a graph.
+op_leaf_edit_permille = 440
+op_hub_edit_permille = 80
+op_rewire_permille = 110
+op_remove_permille = 50
+op_no_op_permille = 80
+op_mixed_permille = 120
+op_cycle_attempt_permille = 70
+op_missing_dependency_permille = 50
+mixed_max_leaf_edits = 4
+rewire_max_inputs = 3
+removal_max_keys = 4
+# The local-change class: applied deltas whose oracle structural closure holds at least one derived key and at
+# most 5% of the derived keys of the graph after the delta (closure_derived * 1000 <= 50 * derived_keys).
+local_class_max_closure_permille = 50
+# The negative controls (a graph and a stream, run with a doctored affected set).
+control_topology = "diamonds"
+control_size = 1024
+control_deltas = 80
+# Coverage prerequisites (a run that misses one is vacuous).
+min_deltas = 1000
+min_topology_classes = 5
+min_max_closure_depth = 4
+min_rewires = 1
+min_removals = 1
+min_noop_writes = 1
+min_cycle_attempts = 1
+min_missing_dependency_probes = 1
+min_hub_deltas = 1
+min_lossy_class_deltas = 1
+min_local_class_deltas = 100
+min_value_changed_total = 1
+min_evals_global = 1
+# Falsifiers.
+max_missed_invalidations = 0
+max_closure_mismatches = 0
+max_semantic_divergences = 0
+max_noop_revision_bumps = 0
+max_revision_mismatches = 0
+max_unexpected_refusals = 0
+max_locality_ratio_permille_local = 250
+# Descriptive only (never gated): the hub class, the unnecessary invalidations and every wall-clock time.
+hub_class_gated = false
+unnecessary_invalidations_gated = false
+timing_gated = false
+
+# Owner decisions of 2026-10-09 (binding; verbatim text in DRAFT_PREREGISTRATION.md section 3).
+owner_decision_2026_10_09_locality = "locality falsifier locality_ratio_permille_local <= 250 (local-change class, blast radius <= 5% of derived keys); hub class ungated control; wall time descriptive only; unnecessary invalidations descriptive only (no early cutoff in the design)"

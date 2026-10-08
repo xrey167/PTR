@@ -24,4 +24,5 @@ pub mod r011;
 pub mod r012;
 #[cfg_attr(not(feature = "postgres-experiments"), allow(dead_code))]
 mod rng;
+pub mod s001;
 pub mod s003;

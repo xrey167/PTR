@@ -1,0 +1,57 @@
+# S001 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256);
+# no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
+# s001/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order, and every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and so a
+# parse error: no decimal literal exists, fractions are integer permille).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON result
+# object, separated by '.' (no key holds a '.', no array is indexed): "deltas" is a top-level key.
+# A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a failed rule).
+# A reference compared with an integer literal or another reference must be a JSON integer (not a
+# boolean, not a float). Exact comparisons.
+# The manifest's "< N" prerequisites are written ">= N", its "> N" violations "<= N" and its "a != b"
+# violations "a == b". Two rules read a second counter instead of a literal: the cycle attempts and the
+# MissingDependency probes must each equal the number of refusals of that kind.
+# locality_ratio_permille_local is 1000 * (derivation evaluations of arm A) / (derivation evaluations of arm G) over the
+# local-change class: applied deltas whose oracle structural closure holds at least one derived key and at most 5% of the
+# derived keys of the graph after the delta. The hub class (locality_ratio_permille_hub), the unnecessary invalidations,
+# precision_value_permille and every wall-clock time are descriptive and are in no rule.
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies S001 on that seed.
+# Decision: every seed must hold every coverage rule and every falsifier rule; COMPLETED iff so,
+# INVALID if a seed is missing, unresolvable, or its record does not describe the frozen run, FALSIFIED
+# otherwise.
+version = 1
+experiment = "S001"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "deltas >= 1000",
+  "topology_classes >= 5",
+  "max_closure_depth >= 4",
+  "rewires >= 1",
+  "removals >= 1",
+  "noop_writes >= 1",
+  "cycle_attempts >= 1",
+  "missing_dependency_probes >= 1",
+  "hub_deltas >= 1",
+  "lossy_class_deltas >= 1",
+  "local_class_deltas >= 100",
+  "value_changed_total >= 1",
+  "evals_global >= 1",
+]
+
+falsifiers = [
+  "missed_invalidations <= 0",
+  "closure_mismatches <= 0",
+  "semantic_divergences <= 0",
+  "noop_revision_bumps <= 0",
+  "revision_mismatches <= 0",
+  "unexpected_refusals <= 0",
+  "cycle_attempts == cycle_refusals",
+  "missing_dependency_probes == missing_dependency_refusals",
+  "locality_ratio_permille_local <= 250",
+]
