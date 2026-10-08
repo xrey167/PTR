@@ -374,3 +374,8 @@ status = "prepared"
 id = "R012"
 path = "runtime/R012-approximate-taint-containment"
 status = "completed"
+
+[[experiment]]
+id = "R013"
+path = "runtime/R013-deferred-self-modification-authority"
+status = "planned"

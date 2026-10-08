@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R013-deferred-self-modification-authority"
+path = "experiments/runtime/R013-deferred-self-modification-authority"
+tests_dir = "tests"
