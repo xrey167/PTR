@@ -17,11 +17,71 @@ use ptr_pods::{
     ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, ProposerRef, RationaleDigest,
     RetiredReason, StructuralOp,
 };
+use ptr_runtime::execution::AdmissionPolicy;
 use ptr_runtime::expert::{
+    expert_evidence_artifact_digest, expert_evidence_base_model_digest,
     expert_readmission_subject_ids, ExpertAdmissionGrant, ExpertFenceGrant, ExpertFenceRequest,
+    ExpertGateRequirement, ExpertGrantBinding, ExpertGrantKind,
 };
 use ptr_runtime::PtrRuntime;
-use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
+use ptr_types::{
+    AuthenticationLevel, CommitIndex, Generation, IdentityContext, NodeId, PodId, ProjectId,
+    SessionId, Timestamp,
+};
+
+const EVAL_MANIFEST: [u8; 32] = [5; 32];
+const KEY_ID: &str = "r010-policy-key";
+const NOW: Timestamp = Timestamp(1_000);
+
+/// The host authority behind a grant, installed on `runtime` (idempotent) and read back.
+fn host_binding(runtime: &mut PtrRuntime, kind: ExpertGrantKind) -> Res<ExpertGrantBinding> {
+    let mut identity = IdentityContext {
+        subject: "r010-host".into(),
+        issuer: "r010".into(),
+        groups: Vec::new(),
+        authentication_level: AuthenticationLevel::MultiFactor,
+        session_id: SessionId("r010-session".into()),
+        issued_at: Timestamp(1),
+        expires_at: Timestamp(1_000_000),
+        identity_digest: [0; 32],
+    };
+    identity.identity_digest = identity.canonical_digest();
+    runtime.install_policy_key(
+        KEY_ID,
+        ed25519_dalek::SigningKey::from_bytes(&[7; 32]).verifying_key(),
+    );
+    runtime
+        .admit_identity_context(&identity, NOW)
+        .map_err(fail("admitting the host identity"))?;
+    let peer = NodeId::from("r010-host-peer");
+    let mut policy = AdmissionPolicy::new();
+    policy
+        .admit(
+            peer.clone(),
+            "r010-host",
+            std::time::Duration::from_secs(60),
+            Vec::new,
+        )
+        .map_err(fail("admitting the host peer"))?;
+    runtime.install_admission_policy(policy);
+    Ok(ExpertGrantBinding::new(
+        identity,
+        peer,
+        NOW,
+        KEY_ID,
+        runtime.expert_grant_generation(kind),
+    ))
+}
+
+fn requirement() -> Res<ExpertGateRequirement> {
+    Ok(ExpertGateRequirement {
+        gate_epoch: GATE_EPOCH,
+        config_digest: gate()
+            .config_digest()
+            .map_err(fail("the gate configuration digest"))?,
+        eval_manifest_digest: EVAL_MANIFEST,
+    })
+}
 
 /// The gate epoch of the admission grant.
 const GATE_EPOCH: u64 = 7;
@@ -52,14 +112,12 @@ fn gate() -> ForgettingGate {
     }
 }
 
-fn grant() -> Res<ExpertAdmissionGrant> {
+fn grant(runtime: &mut PtrRuntime) -> Res<ExpertAdmissionGrant> {
     Ok(ExpertAdmissionGrant::new(
         project(),
         proposer()?,
-        GATE_EPOCH,
-        gate()
-            .config_digest()
-            .map_err(fail("the gate configuration digest"))?,
+        requirement()?,
+        host_binding(runtime, ExpertGrantKind::Admission)?,
     ))
 }
 
@@ -109,9 +167,10 @@ fn admit(runtime: &mut PtrRuntime, op: StructuralOp) -> Res<()> {
     let subject = GateSubject::new(
         *proposal.proposal_id().as_bytes(),
         *proposal.operation_id().as_bytes(),
-        [3; 32],
-        [4; 32],
-        [5; 32],
+        expert_evidence_artifact_digest(proposal.op()),
+        expert_evidence_base_model_digest(proposal.op())
+            .ok_or_else(|| "the proposal names no expert".to_owned())?,
+        EVAL_MANIFEST,
     );
     let matrix = AccuracyMatrix::new(vec![vec![0.9, 0.0], vec![0.9, 0.9]])
         .map_err(fail("the accuracy matrix"))?;
@@ -126,8 +185,9 @@ fn admit(runtime: &mut PtrRuntime, op: StructuralOp) -> Res<()> {
         )
         .map_err(fail("the gate evaluation"))?
         .bind(subject);
+    let grant = grant(runtime)?;
     runtime
-        .admit_expert_proposal(&proposal, &report, &grant()?)
+        .admit_expert_proposal(&proposal, &report, &grant)
         .map(|_| ())
         .map_err(fail("admitting an expert proposal"))
 }
@@ -224,8 +284,9 @@ pub fn fence(
             generation: Generation(generation),
         }),
     };
+    let binding = host_binding(runtime, ExpertGrantKind::Fence)?;
     runtime
-        .fence_expert(&request, &ExpertFenceGrant::revocation(project()))
+        .fence_expert(&request, &ExpertFenceGrant::revocation(project(), binding))
         .map(|_| ())
         .map_err(fail("fencing an expert"))
 }
@@ -257,7 +318,17 @@ pub fn readmit(
         version + 1,
         cause,
     );
-    let subject = GateSubject::new(proposal_id, operation_id, [3; 32], [4; 32], [5; 32]);
+    let entry = runtime
+        .expert_registry()
+        .get(&request.project, &request.pod)
+        .ok_or_else(|| "readmitting an unknown expert".to_owned())?;
+    let subject = GateSubject::new(
+        proposal_id,
+        operation_id,
+        *entry.manifest_digest.as_bytes(),
+        *entry.base_model.digest().as_bytes(),
+        EVAL_MANIFEST,
+    );
     let matrix = AccuracyMatrix::new(vec![vec![0.9, 0.0], vec![0.9, 0.9]])
         .map_err(fail("the accuracy matrix"))?;
     let report: BoundGateReport = gate()
@@ -271,14 +342,12 @@ pub fn readmit(
         )
         .map_err(fail("the gate evaluation"))?
         .bind(subject);
-    let digest = gate()
-        .config_digest()
-        .map_err(fail("the gate configuration digest"))?;
+    let binding = host_binding(runtime, ExpertGrantKind::Gate)?;
     runtime
         .readmit_expert(
             &request,
             &report,
-            &ExpertFenceGrant::gate(project(), GATE_EPOCH, digest),
+            &ExpertFenceGrant::gate(project(), requirement()?, binding),
         )
         .map(|_| ())
         .map_err(fail("readmitting an expert"))

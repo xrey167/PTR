@@ -7,12 +7,16 @@
 //!
 //! 1. the proposal's project and proposer are the ones the host authenticated
 //!    ([`ExpertAdmissionGrant`]), never the caller's claim;
-//! 2. the gate report is bound to exactly this proposal and this operation;
+//! 2. the gate report is bound to exactly this proposal and this operation, to the artifact the
+//!    operation produces or acts on, to the expert's base model and to the evaluation manifest
+//!    the host expects (see "Evidence binding");
 //! 3. the report was produced under the gate configuration the grant requires;
 //! 4. the report passed;
 //! 5. a compare-and-set against [`ExpertRegistryProjection`] for every operand (generation,
 //!    manifest digest, state, state version, level, base model) and for every result (pod and
-//!    routing slot absent, except an atomic takeover from an operand of the same operation).
+//!    routing slot absent, except an atomic takeover from an operand of the same operation);
+//! 6. immediately before the append, the authority behind the grant is still current (see
+//!    "Commit-time authority").
 //!
 //! The record and the event's ids are then derived from the validated proposal, never taken from
 //! the caller, and the event is appended through the runtime's internal path. The public
@@ -33,6 +37,56 @@
 //! reordered or truncated history therefore fails to open instead of producing a different
 //! expert registry, and a record whose digest was merely made self-consistent is refused.
 //!
+//! # Evidence binding
+//!
+//! One function, `check_report`, decides whether a report is evidence for an expectation, and
+//! both [`PtrRuntime::admit_expert_proposal`] and [`PtrRuntime::readmit_expert`] call it (replay
+//! calls it too, see below). It checks, in this order, the subject's proposal id, operation id,
+//! artifact digest, base model digest and (at commit only) evaluation manifest digest, then the
+//! gate configuration, then that the report passed. Each disagreement is its own typed refusal
+//! and nothing is appended.
+//!
+//! * `artifact_digest` must equal [`expert_evidence_artifact_digest`]: the result's manifest
+//!   digest for `Birth`, `Merge` and a `Reactivate` that creates a new generation; the operand's
+//!   manifest digest for `Freeze`, `Retire`, a `Reactivate` of a frozen expert (the unfreeze)
+//!   and a `Prune` of one target; for a `Split` and for a `Prune` of several targets a
+//!   domain-separated SHA-256 over the ordered result (or operand) manifest digests. A readmission
+//!   is bound to the manifest digest of the expert it readmits.
+//! * `base_model_digest` must equal the digest of the [`BaseModelRef`] every operand and result
+//!   of the operation (or the readmitted expert) shares.
+//! * `eval_manifest_digest` must equal the digest the host put in its grant
+//!   ([`ExpertGateRequirement::eval_manifest_digest`]).
+//!
+//! The grant is not recorded, so replay re-checks the artifact and the base model binding but not
+//! the evaluation manifest: the committed history cannot say which manifest the host expected.
+//! A history written before these checks existed, whose reports carry arbitrary digests, is
+//! refused on replay for the same reason a forged one is.
+//!
+//! # Commit-time authority
+//!
+//! Every grant carries an [`ExpertGrantBinding`]: the host's [`IdentityContext`], the host clock
+//! reading `now` it hands the grant over at, the policy key id the grant's authority rests on
+//! and the grant generation it was minted at. Immediately before the append (after the
+//! compare-and-set, nothing awaits in between) the runtime refuses, with a typed error and
+//! nothing appended, a grant whose generation is no longer current for its [`ExpertGrantKind`],
+//! a revoked identity session, an identity context not valid at `now` (expired, not yet issued or
+//! with a wrong digest), a policy key that is revoked or was never installed, a transport peer
+//! ([`NodeId`]) the installed [`crate::execution::AdmissionPolicy`] no longer admits and a
+//! principal (`issuer:subject`) the manifest authority registry no longer admits.
+//!
+//! The grant generation registry is host authority held in memory:
+//! [`PtrRuntime::expert_grant_generation`] reads it and [`PtrRuntime::supersede_expert_grant`]
+//! bumps it, so every grant minted at an older generation is refused at its next commit. It is not written
+//! to the ledger, not replayed, restarts at [`ExpertGrantGeneration::INITIAL`] and is not part
+//! of the registry projection's equality. Session revocation is ledger-backed and policy key
+//! revocation, peer admission and principal admission are runtime state; none of them is
+//! re-checked on replay, because the grant is not recorded.
+//!
+//! # Route admission
+//!
+//! [`PtrRuntime::expert_route_admission`] is the use-time check an inference path asks before it
+//! routes to an expert. It is not a router: no production router consumes it.
+//!
 //! # Legacy records
 //!
 //! A version 1 record (written before evidence was embedded) carries only a digest. Rewriting
@@ -48,9 +102,10 @@
 //! `BoundGateReport`): neither admission nor replay re-runs the gate, and the digest is an
 //! unkeyed hash, so replay shows the committed evidence is the evidence that was admitted, not
 //! that the measurements are true. Nothing checks that attested training inputs are still live
-//! or revalidates the proposer's session or the gate epoch at commit. The grant is a snapshot the
-//! host builds from its own current authority. A compacted snapshot carries neither the legacy
-//! marks nor the per-epoch configuration digests, so both restart empty from one.
+//! or revalidates the gate epoch at commit. The grant is a snapshot the host builds from its own
+//! current authority; only the identity, key, principal and grant generation it rests on are
+//! re-read at commit. A compacted snapshot carries neither the legacy marks nor the per-epoch
+//! configuration digests, so both restart empty from one.
 //!
 //! # Post-operation state
 //!
@@ -102,6 +157,7 @@
 //! dependency whose recorded epoch is `0` or at most the memo is never live, also after a
 //! readmission, so an entry recorded before the fence (or with no epoch) is never revived.
 
+use crate::manifest::ManifestBindingAuthority;
 use crate::{PtrRuntime, RuntimeError};
 use ptr_ledger::{
     ExpertFenceAction, ExpertFenceCause, ExpertFenceEvidence, ExpertFenceResume,
@@ -110,23 +166,123 @@ use ptr_ledger::{
 use ptr_lineage::BoundGateReport;
 use ptr_pods::{
     BaseModelRef, ExpertCommitRecord, ExpertLevel, ExpertProposal, ExpertState, ManifestDigest,
-    OpKind, ProposerRef, RetiredReason,
+    OpKind, ProposerRef, RetiredReason, StructuralOp,
 };
-use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
+use ptr_types::{
+    CommitIndex, Generation, IdentityContext, NodeId, PodId, PrincipalId, ProjectId, Timestamp,
+};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// What the host expects of the evidence behind one grant: the gate epoch it stands at, the
+/// digest of the gate configuration it requires and the digest of the evaluation manifest the
+/// evaluation must have run on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExpertGateRequirement {
+    pub gate_epoch: u64,
+    pub config_digest: [u8; 32],
+    pub eval_manifest_digest: [u8; 32],
+}
+
+/// The kind of host authority a grant stands on. Each kind has its own current grant generation.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ExpertGrantKind {
+    /// An [`ExpertAdmissionGrant`]: the proposer's authority to admit a proposal.
+    Admission,
+    /// An [`ExpertFenceGrant`] of [`ExpertFenceAuthority::Gate`]: the gate host's authority to
+    /// readmit.
+    Gate,
+    /// An [`ExpertFenceGrant`] of [`ExpertFenceAuthority::RuntimeRevocation`]: the runtime's
+    /// authority to fence.
+    Fence,
+}
+
+/// The generation of a host grant. A grant is refused at commit unless its generation is the
+/// current one for its [`ExpertGrantKind`].
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExpertGrantGeneration(u64);
+
+impl ExpertGrantGeneration {
+    /// The generation every kind starts at in a new runtime.
+    pub const INITIAL: Self = Self(1);
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// The authority a grant rests on, re-read from the runtime immediately before the append.
+///
+/// Built by the host from its own authentication: the identity context of the principal the
+/// grant speaks for, the host clock reading `now`, the id of the policy key the grant's
+/// authority was signed under and the grant generation read from
+/// [`PtrRuntime::expert_grant_generation`] when the grant was minted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertGrantBinding {
+    identity: IdentityContext,
+    peer: NodeId,
+    now: Timestamp,
+    policy_key_id: String,
+    generation: ExpertGrantGeneration,
+}
+
+impl ExpertGrantBinding {
+    pub fn new(
+        identity: IdentityContext,
+        peer: NodeId,
+        now: Timestamp,
+        policy_key_id: impl Into<String>,
+        generation: ExpertGrantGeneration,
+    ) -> Self {
+        Self {
+            identity,
+            peer,
+            now,
+            policy_key_id: policy_key_id.into(),
+            generation,
+        }
+    }
+
+    /// The same binding with the host clock reading `now`.
+    #[must_use]
+    pub fn at(mut self, now: Timestamp) -> Self {
+        self.now = now;
+        self
+    }
+
+    pub fn identity(&self) -> &IdentityContext {
+        &self.identity
+    }
+
+    /// The transport peer the grant was authenticated over.
+    pub fn peer(&self) -> &NodeId {
+        &self.peer
+    }
+
+    pub fn now(&self) -> Timestamp {
+        self.now
+    }
+
+    pub fn policy_key_id(&self) -> &str {
+        &self.policy_key_id
+    }
+
+    pub fn generation(&self) -> ExpertGrantGeneration {
+        self.generation
+    }
+}
 
 /// What the host has authenticated for one expert admission.
 ///
 /// Only the host constructs a grant, from its own authority: the project and policy pod the
-/// session's principal is granted, the gate epoch it currently stands at, and the digest of the
-/// gate configuration it requires evidence to come from. Nothing in a proposal or a report can
+/// session's principal is granted, the gate requirement it currently stands at and the
+/// [`ExpertGrantBinding`] of the authority behind it. Nothing in a proposal or a report can
 /// supply or widen one of these, and the runtime does not remember a grant between calls.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExpertAdmissionGrant {
     project: ProjectId,
     proposer: ProposerRef,
-    gate_epoch: u64,
-    required_gate_config_digest: [u8; 32],
+    requirement: ExpertGateRequirement,
+    binding: ExpertGrantBinding,
 }
 
 impl ExpertAdmissionGrant {
@@ -136,14 +292,14 @@ impl ExpertAdmissionGrant {
     pub fn new(
         project: ProjectId,
         proposer: ProposerRef,
-        gate_epoch: u64,
-        required_gate_config_digest: [u8; 32],
+        requirement: ExpertGateRequirement,
+        binding: ExpertGrantBinding,
     ) -> Self {
         Self {
             project,
             proposer,
-            gate_epoch,
-            required_gate_config_digest,
+            requirement,
+            binding,
         }
     }
 
@@ -156,11 +312,19 @@ impl ExpertAdmissionGrant {
     }
 
     pub fn gate_epoch(&self) -> u64 {
-        self.gate_epoch
+        self.requirement.gate_epoch
     }
 
     pub fn required_gate_config_digest(&self) -> &[u8; 32] {
-        &self.required_gate_config_digest
+        &self.requirement.config_digest
+    }
+
+    pub fn expected_eval_manifest_digest(&self) -> &[u8; 32] {
+        &self.requirement.eval_manifest_digest
+    }
+
+    pub fn binding(&self) -> &ExpertGrantBinding {
+        &self.binding
     }
 }
 
@@ -259,6 +423,47 @@ pub enum ExpertAdmissionError {
     FenceEvidenceUnexpected { pod: String },
     /// The event's epoch is not exactly one above the state version it compares against.
     FenceEpochMismatch { pod: String },
+    /// The gate report's artifact digest is not the digest the operation (or the readmitted
+    /// expert) determines, see [`expert_evidence_artifact_digest`].
+    EvidenceArtifactMismatch,
+    /// The gate report's base model digest is not the digest of the base model the operation
+    /// (or the readmitted expert) is on.
+    EvidenceBaseModelMismatch,
+    /// The gate report's evaluation manifest digest is not the one the grant expects.
+    EvidenceEvalManifestMismatch,
+    /// The grant was minted at a generation that is no longer current for its kind.
+    GrantGenerationStale {
+        kind: ExpertGrantKind,
+        grant: u64,
+        current: u64,
+    },
+    /// The identity session behind the grant was revoked after the grant was minted.
+    GrantSessionRevoked,
+    /// The identity context behind the grant is not valid at the grant's `now`: expired, not yet
+    /// issued, or its digest does not match its content.
+    GrantIdentityInvalid,
+    /// The policy key the grant's authority rests on is revoked or was never installed.
+    GrantPolicyKeyUntrusted,
+    /// The principal the grant's identity maps to is not (or no longer) admitted.
+    GrantPrincipalNotAdmitted,
+    /// The transport peer the grant was authenticated over is no longer admitted by the
+    /// runtime's [`crate::execution::AdmissionPolicy`].
+    GrantPeerNotAdmitted,
+    /// The grant generation of this kind cannot be advanced any further.
+    GrantGenerationExhausted { kind: ExpertGrantKind },
+}
+
+/// Why an expert may not be routed to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RouteRefusal {
+    /// The registry holds no such expert.
+    UnknownExpert,
+    /// The registry holds the expert at another generation than the one asked for.
+    GenerationMismatch { current: Generation },
+    /// The expert is fenced.
+    Fenced,
+    /// The expert is in a state other than `Serving` or `Frozen`.
+    NotServing { state: ExpertState },
 }
 
 /// Which of the host's authorities a fence grant carries.
@@ -274,35 +479,39 @@ pub enum ExpertFenceAuthority {
 ///
 /// As with [`ExpertAdmissionGrant`], only the host constructs one, from its own authority, and
 /// the runtime does not remember it between calls. A readmission grant also carries the gate
-/// epoch the host stands at and the digest of the gate configuration it requires evidence from.
+/// requirement: the epoch the host stands at, the digest of the gate configuration it requires
+/// evidence from and the evaluation manifest digest it expects the evaluation to have run on.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExpertFenceGrant {
     project: ProjectId,
     authority: ExpertFenceAuthority,
-    gate: Option<(u64, [u8; 32])>,
+    gate: Option<ExpertGateRequirement>,
+    binding: ExpertGrantBinding,
 }
 
 impl ExpertFenceGrant {
     /// A grant of the runtime's revocation authority: it may fence, never readmit.
-    pub fn revocation(project: ProjectId) -> Self {
+    pub fn revocation(project: ProjectId, binding: ExpertGrantBinding) -> Self {
         Self {
             project,
             authority: ExpertFenceAuthority::RuntimeRevocation,
             gate: None,
+            binding,
         }
     }
 
     /// A grant of the gate authority: it may readmit on a report produced under
-    /// `required_gate_config_digest`, never fence.
+    /// `requirement`, never fence.
     pub fn gate(
         project: ProjectId,
-        gate_epoch: u64,
-        required_gate_config_digest: [u8; 32],
+        requirement: ExpertGateRequirement,
+        binding: ExpertGrantBinding,
     ) -> Self {
         Self {
             project,
             authority: ExpertFenceAuthority::Gate,
-            gate: Some((gate_epoch, required_gate_config_digest)),
+            gate: Some(requirement),
+            binding,
         }
     }
 
@@ -312,6 +521,17 @@ impl ExpertFenceGrant {
 
     pub fn authority(&self) -> ExpertFenceAuthority {
         self.authority
+    }
+
+    pub fn binding(&self) -> &ExpertGrantBinding {
+        &self.binding
+    }
+
+    fn kind(&self) -> ExpertGrantKind {
+        match self.authority {
+            ExpertFenceAuthority::RuntimeRevocation => ExpertGrantKind::Fence,
+            ExpertFenceAuthority::Gate => ExpertGrantKind::Gate,
+        }
     }
 }
 
@@ -374,7 +594,59 @@ pub struct ExpertRegistryProjection {
     /// The highest epoch each expert was ever fenced at. Never lowered, kept after a
     /// readmission; see [`ExpertRegistryProjection::highest_fenced_epoch`].
     fenced_epochs: BTreeMap<(String, String), u64>,
+    /// The current grant generation per [`ExpertGrantKind`]. Host authority in memory, not
+    /// projected from the ledger: it takes no part in equality and a rebuilt registry starts at
+    /// [`ExpertGrantGeneration::INITIAL`].
+    grants: HostGrantGenerations,
 }
+
+/// The current grant generation of each [`ExpertGrantKind`].
+#[derive(Clone, Copy, Debug)]
+struct HostGrantGenerations {
+    admission: u64,
+    gate: u64,
+    fence: u64,
+}
+
+impl Default for HostGrantGenerations {
+    fn default() -> Self {
+        let initial = ExpertGrantGeneration::INITIAL.get();
+        Self {
+            admission: initial,
+            gate: initial,
+            fence: initial,
+        }
+    }
+}
+
+impl HostGrantGenerations {
+    fn slot(&mut self, kind: ExpertGrantKind) -> &mut u64 {
+        match kind {
+            ExpertGrantKind::Admission => &mut self.admission,
+            ExpertGrantKind::Gate => &mut self.gate,
+            ExpertGrantKind::Fence => &mut self.fence,
+        }
+    }
+
+    fn current(&self, kind: ExpertGrantKind) -> u64 {
+        match kind {
+            ExpertGrantKind::Admission => self.admission,
+            ExpertGrantKind::Gate => self.gate,
+            ExpertGrantKind::Fence => self.fence,
+        }
+    }
+}
+
+/// Grant generations are host authority, not projected state: two registries that agree on every
+/// expert are equal whatever grants the host has superseded, so a registry compared with a fresh
+/// replay of its ledger stays equal.
+impl PartialEq for HostGrantGenerations {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for HostGrantGenerations {}
 
 /// Why a `Fenced` expert is fenced and what it returns to when readmitted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -432,6 +704,7 @@ impl ExpertRegistryProjection {
             fence_causes,
             fenced_epochs,
             readmit_gate_epoch,
+            grants: HostGrantGenerations::default(),
         }
     }
 
@@ -525,6 +798,44 @@ impl ExpertRegistryProjection {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Whether `pod` at `generation` may be routed to: it is in the registry at exactly that
+    /// generation, `Serving` or `Frozen`, and not fenced.
+    fn route_admission(
+        &self,
+        project: &ProjectId,
+        pod: &PodId,
+        generation: Generation,
+    ) -> Result<(), RouteRefusal> {
+        let entry = self.get(project, pod).ok_or(RouteRefusal::UnknownExpert)?;
+        if entry.generation != generation {
+            return Err(RouteRefusal::GenerationMismatch {
+                current: entry.generation,
+            });
+        }
+        match entry.state {
+            ExpertState::Serving | ExpertState::Frozen => {}
+            ExpertState::Fenced => return Err(RouteRefusal::Fenced),
+            state @ (ExpertState::Candidate
+            | ExpertState::Gated
+            | ExpertState::Superseded
+            | ExpertState::Retired(_)) => return Err(RouteRefusal::NotServing { state }),
+        }
+        self.dependencies_live(project, pod, entry)
+    }
+
+    /// The extension point for the liveness of what an expert was built from. A structural
+    /// record names no inputs yet, so the registry has nothing to check and every expert that
+    /// passes the state test is live here; a record that names inputs makes this refuse an
+    /// expert one of whose inputs is no longer live.
+    fn dependencies_live(
+        &self,
+        _project: &ProjectId,
+        _pod: &PodId,
+        _entry: &ExpertEntry,
+    ) -> Result<(), RouteRefusal> {
+        Ok(())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -748,7 +1059,7 @@ impl ExpertRegistryProjection {
                 let evidence = evidence.as_ref().ok_or_else(|| {
                     ExpertAdmissionError::FenceEvidenceMissing { pod: pod.0.clone() }
                 })?;
-                let verified = self.verify_readmission_evidence(event, evidence)?;
+                let verified = self.verify_readmission_evidence(event, evidence, entry)?;
                 let state = match standing.resume {
                     ExpertFenceResume::Serving => ExpertState::Serving,
                     ExpertFenceResume::Frozen => ExpertState::Frozen,
@@ -774,13 +1085,16 @@ impl ExpertRegistryProjection {
     }
 
     /// Re-verify the evidence a readmission embeds, at commit and on replay alike: the report
-    /// decodes canonically, passed, is bound to exactly this readmission, was produced under the
-    /// gate configuration the event says was required, and agrees with every other record of its
-    /// gate epoch.
+    /// decodes canonically and is evidence for exactly this readmission of `entry` (the shared
+    /// `check_report`: subject ids, artifact and base model of the expert, gate configuration
+    /// the event says was required, passed), and it agrees with every other record of its gate
+    /// epoch. The evaluation manifest is not re-checked: the grant that named it is not
+    /// recorded.
     fn verify_readmission_evidence(
         &self,
         event: &LedgerEvent,
         evidence: &ExpertFenceEvidence,
+        entry: &ExpertEntry,
     ) -> Result<VerifiedEvidence, ExpertAdmissionError> {
         let LedgerEvent::ExpertFenceCommitted {
             project,
@@ -798,27 +1112,20 @@ impl ExpertRegistryProjection {
         };
         let report = BoundGateReport::decode_canonical(&evidence.report)
             .map_err(|error| ExpertAdmissionError::EvidenceUndecodable(error.to_string()))?;
-        if !report.passed() {
-            return Err(ExpertAdmissionError::GateFailed);
-        }
-        let (proposal_id, operation_id) = expert_readmission_subject_ids(
-            project,
-            pod,
-            *generation,
-            *expected_state_version,
-            *epoch,
-            *cause,
+        let expected = readmission_expectation(
+            ReadmissionTarget {
+                project,
+                pod,
+                generation: *generation,
+                expected_state_version: *expected_state_version,
+                epoch: *epoch,
+                cause: *cause,
+            },
+            entry,
+            evidence.required_gate_config_digest,
+            None,
         );
-        let subject = report.subject();
-        if subject.proposal_id != proposal_id {
-            return Err(ExpertAdmissionError::EvidenceProposalMismatch);
-        }
-        if subject.operation_id != operation_id {
-            return Err(ExpertAdmissionError::EvidenceOperationMismatch);
-        }
-        if report.gate_config_digest() != evidence.required_gate_config_digest {
-            return Err(ExpertAdmissionError::GateConfigMismatch);
-        }
+        check_report(&report, &expected)?;
         if evidence.gate_epoch < self.readmit_gate_epoch {
             return Err(ExpertAdmissionError::GateEpochRegressed {
                 pod: pod.0.clone(),
@@ -917,6 +1224,191 @@ fn event_for(record: &ExpertCommitRecord) -> LedgerEvent {
     }
 }
 
+/// What a gate report must be evidence for, as the runtime derives it from the operation (or
+/// the readmitted expert) and the host's requirement, never from the report.
+struct ExpectedEvidence {
+    proposal_id: [u8; 32],
+    operation_id: [u8; 32],
+    artifact_digest: [u8; 32],
+    base_model_digest: [u8; 32],
+    gate_config_digest: [u8; 32],
+    /// The evaluation manifest digest the host expects. `None` on replay, where the grant that
+    /// named it is not available.
+    eval_manifest_digest: Option<[u8; 32]>,
+}
+
+/// The one function that decides whether `report` is evidence for `expected`, for admission,
+/// readmission and replay alike. Typed refusals, first failing check wins: subject proposal id,
+/// operation id, artifact, base model, evaluation manifest (when expected), gate configuration,
+/// then whether the report passed.
+fn check_report(
+    report: &BoundGateReport,
+    expected: &ExpectedEvidence,
+) -> Result<(), ExpertAdmissionError> {
+    let subject = report.subject();
+    if subject.proposal_id != expected.proposal_id {
+        return Err(ExpertAdmissionError::EvidenceProposalMismatch);
+    }
+    if subject.operation_id != expected.operation_id {
+        return Err(ExpertAdmissionError::EvidenceOperationMismatch);
+    }
+    if subject.artifact_digest != expected.artifact_digest {
+        return Err(ExpertAdmissionError::EvidenceArtifactMismatch);
+    }
+    if subject.base_model_digest != expected.base_model_digest {
+        return Err(ExpertAdmissionError::EvidenceBaseModelMismatch);
+    }
+    if let Some(eval) = expected.eval_manifest_digest {
+        if subject.eval_manifest_digest != eval {
+            return Err(ExpertAdmissionError::EvidenceEvalManifestMismatch);
+        }
+    }
+    if report.gate_config_digest() != expected.gate_config_digest {
+        return Err(ExpertAdmissionError::GateConfigMismatch);
+    }
+    if !report.passed() {
+        return Err(ExpertAdmissionError::GateFailed);
+    }
+    Ok(())
+}
+
+const ARTIFACT_SET_DOMAIN_SPLIT: &str = "ptr.expert.evidence.artifact-set.split-results.v1";
+const ARTIFACT_SET_DOMAIN_PRUNE: &str = "ptr.expert.evidence.artifact-set.prune-targets.v1";
+
+/// SHA-256 over the length-prefixed `domain`, the count and each digest in order.
+fn ordered_digest_set<'a>(
+    domain: &str,
+    digests: impl ExactSizeIterator<Item = &'a ManifestDigest>,
+) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(domain.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(domain.as_bytes());
+    bytes.extend_from_slice(&(digests.len() as u64).to_le_bytes());
+    for digest in digests {
+        bytes.extend_from_slice(digest.as_bytes());
+    }
+    ptr_ledger::integrity::sha256(&bytes)
+}
+
+/// The `artifact_digest` a [`GateSubject`](ptr_lineage::GateSubject) must carry for a gate report
+/// to be evidence for `op`. A host's evaluator uses this to build the subject; admission and
+/// replay use it to check one.
+///
+/// | operation | digest |
+/// |---|---|
+/// | `Birth`, `Merge` | the result's manifest digest |
+/// | `Reactivate` creating a new generation | the result's manifest digest |
+/// | `Reactivate` of a frozen expert (unfreeze), `Freeze`, `Retire` | the operand's manifest digest |
+/// | `Prune` of one target | that target's manifest digest |
+/// | `Prune` of several targets | SHA-256 over `"ptr.expert.evidence.artifact-set.prune-targets.v1"`, the target count and the target manifest digests in operand order |
+/// | `Split` | SHA-256 over `"ptr.expert.evidence.artifact-set.split-results.v1"`, the result count and the result manifest digests in result order |
+///
+/// Each text is length-prefixed and each count is a little-endian `u64`, so no two sets share an
+/// encoding and a set digest cannot equal a single manifest digest by construction of the input.
+pub fn expert_evidence_artifact_digest(op: &StructuralOp) -> [u8; 32] {
+    match op {
+        StructuralOp::Birth { result } | StructuralOp::Merge { result, .. } => {
+            *result.manifest_digest().as_bytes()
+        }
+        StructuralOp::Reactivate {
+            result: Some(result),
+            ..
+        } => *result.manifest_digest().as_bytes(),
+        StructuralOp::Reactivate {
+            target,
+            result: None,
+        }
+        | StructuralOp::Freeze { target }
+        | StructuralOp::Retire { target, .. } => *target.manifest_digest().as_bytes(),
+        StructuralOp::Prune { targets } => match targets.as_slice() {
+            [only] => *only.manifest_digest().as_bytes(),
+            many => ordered_digest_set(
+                ARTIFACT_SET_DOMAIN_PRUNE,
+                many.iter().map(|target| target.manifest_digest()),
+            ),
+        },
+        StructuralOp::Split { results, .. } => ordered_digest_set(
+            ARTIFACT_SET_DOMAIN_SPLIT,
+            results.iter().map(|result| result.manifest_digest()),
+        ),
+    }
+}
+
+/// The `base_model_digest` a [`GateSubject`](ptr_lineage::GateSubject) must carry for a gate
+/// report to be evidence for `op`: the digest of the base model every operand and result is on
+/// (proposal validation requires them to agree, so the first result, else the first operand,
+/// stands for all). `None` only for an operation that names no expert, which no valid proposal
+/// is.
+pub fn expert_evidence_base_model_digest(op: &StructuralOp) -> Option<[u8; 32]> {
+    let result = op
+        .results()
+        .first()
+        .map(|r| *r.base_model().digest().as_bytes());
+    result.or_else(|| {
+        op.sources()
+            .first()
+            .map(|s| *s.base_model().digest().as_bytes())
+    })
+}
+
+/// The expectation for a structural record: ids from the proposal, artifact and base model from
+/// its operation.
+fn proposal_expectation(
+    proposal: &ExpertProposal,
+    gate_config_digest: [u8; 32],
+    eval_manifest_digest: Option<[u8; 32]>,
+) -> Result<ExpectedEvidence, ExpertAdmissionError> {
+    // A proposal always names at least one result or operand; an operation that does not has
+    // no base model to bind and is no evidence target.
+    let base_model_digest = expert_evidence_base_model_digest(proposal.op()).ok_or_else(|| {
+        ExpertAdmissionError::InvalidRecord("operation names no expert".to_owned())
+    })?;
+    Ok(ExpectedEvidence {
+        proposal_id: *proposal.proposal_id().as_bytes(),
+        operation_id: *proposal.operation_id().as_bytes(),
+        artifact_digest: expert_evidence_artifact_digest(proposal.op()),
+        base_model_digest,
+        gate_config_digest,
+        eval_manifest_digest,
+    })
+}
+
+/// The readmission a report must be evidence for.
+struct ReadmissionTarget<'a> {
+    project: &'a ProjectId,
+    pod: &'a PodId,
+    generation: Generation,
+    expected_state_version: u64,
+    epoch: u64,
+    cause: ExpertFenceCause,
+}
+
+/// The expectation for a readmission of `entry`: ids from [`expert_readmission_subject_ids`],
+/// artifact and base model from the expert itself.
+fn readmission_expectation(
+    target: ReadmissionTarget<'_>,
+    entry: &ExpertEntry,
+    gate_config_digest: [u8; 32],
+    eval_manifest_digest: Option<[u8; 32]>,
+) -> ExpectedEvidence {
+    let (proposal_id, operation_id) = expert_readmission_subject_ids(
+        target.project,
+        target.pod,
+        target.generation,
+        target.expected_state_version,
+        target.epoch,
+        target.cause,
+    );
+    ExpectedEvidence {
+        proposal_id,
+        operation_id,
+        artifact_digest: *entry.manifest_digest.as_bytes(),
+        base_model_digest: *entry.base_model.digest().as_bytes(),
+        gate_config_digest,
+        eval_manifest_digest,
+    }
+}
+
 fn check_evidence(
     proposal: &ExpertProposal,
     report: &BoundGateReport,
@@ -928,20 +1420,12 @@ fn check_evidence(
     if proposal.proposer() != grant.proposer() {
         return Err(ExpertAdmissionError::ProposerMismatch);
     }
-    let subject = report.subject();
-    if subject.proposal_id != *proposal.proposal_id().as_bytes() {
-        return Err(ExpertAdmissionError::EvidenceProposalMismatch);
-    }
-    if subject.operation_id != *proposal.operation_id().as_bytes() {
-        return Err(ExpertAdmissionError::EvidenceOperationMismatch);
-    }
-    if report.gate_config_digest() != *grant.required_gate_config_digest() {
-        return Err(ExpertAdmissionError::GateConfigMismatch);
-    }
-    if !report.passed() {
-        return Err(ExpertAdmissionError::GateFailed);
-    }
-    Ok(())
+    let expected = proposal_expectation(
+        proposal,
+        *grant.required_gate_config_digest(),
+        Some(*grant.expected_eval_manifest_digest()),
+    )?;
+    check_report(report, &expected)
 }
 
 impl PtrRuntime {
@@ -979,7 +1463,99 @@ impl PtrRuntime {
         })?;
         let event = event_for(&record);
         self.validate_expert_event(&event)?;
+        self.revalidate_grant(ExpertGrantKind::Admission, grant.binding())?;
         self.append_prepared(event, None)
+    }
+
+    /// The current grant generation of `kind`. A host reads it when it mints a grant.
+    pub fn expert_grant_generation(&self, kind: ExpertGrantKind) -> ExpertGrantGeneration {
+        ExpertGrantGeneration(self.experts.grants.current(kind))
+    }
+
+    /// Revoke every grant of `kind` minted so far by moving its current generation up by one;
+    /// the new generation is returned for the host to mint the replacement at. A grant of an
+    /// older generation is refused at its next commit. Host authority held in memory: not
+    /// written to the ledger and not replayed.
+    ///
+    /// # Errors
+    /// [`ExpertAdmissionError::GrantGenerationExhausted`] when the generation cannot advance.
+    pub fn supersede_expert_grant(
+        &mut self,
+        kind: ExpertGrantKind,
+    ) -> Result<ExpertGrantGeneration, ExpertAdmissionError> {
+        self.bump_grant_generation(kind)
+    }
+
+    fn bump_grant_generation(
+        &mut self,
+        kind: ExpertGrantKind,
+    ) -> Result<ExpertGrantGeneration, ExpertAdmissionError> {
+        let slot = self.experts.grants.slot(kind);
+        *slot = slot
+            .checked_add(1)
+            .ok_or(ExpertAdmissionError::GrantGenerationExhausted { kind })?;
+        Ok(ExpertGrantGeneration(*slot))
+    }
+
+    /// Re-read, from the runtime's own state, the authority a grant rests on: its generation is
+    /// current for `kind`, its identity session is not revoked, its identity context is valid at
+    /// the grant's `now`, its policy key is installed and not revoked and its principal is
+    /// admitted. Called immediately before the append.
+    fn revalidate_grant(
+        &self,
+        kind: ExpertGrantKind,
+        binding: &ExpertGrantBinding,
+    ) -> Result<(), RuntimeError> {
+        let expert = RuntimeError::Expert;
+        let current = self.experts.grants.current(kind);
+        if binding.generation().get() != current {
+            return Err(expert(ExpertAdmissionError::GrantGenerationStale {
+                kind,
+                grant: binding.generation().get(),
+                current,
+            }));
+        }
+        let identity = binding.identity();
+        if self.revoked_sessions.contains(&identity.session_id) {
+            return Err(expert(ExpertAdmissionError::GrantSessionRevoked));
+        }
+        if !identity.is_valid_at(binding.now()) {
+            return Err(expert(ExpertAdmissionError::GrantIdentityInvalid));
+        }
+        if !self.policy_trust.contains(binding.policy_key_id()) {
+            return Err(expert(ExpertAdmissionError::GrantPolicyKeyUntrusted));
+        }
+        if !self.execution.peer_admitted(binding.peer()) {
+            return Err(expert(ExpertAdmissionError::GrantPeerNotAdmitted));
+        }
+        let principal = PrincipalId(format!("{}:{}", identity.issuer, identity.subject));
+        // A poisoned lock reads as not admitted: authority fails closed.
+        let admitted = self
+            .manifest_authority
+            .read()
+            .map(|authority| authority.principal_admitted(&principal))
+            .unwrap_or(false);
+        if !admitted {
+            return Err(expert(ExpertAdmissionError::GrantPrincipalNotAdmitted));
+        }
+        Ok(())
+    }
+
+    /// Whether the runtime may route to the expert `pod` of `project` at `generation` now: it is
+    /// in the registry at exactly that generation, `Serving` or `Frozen`, and not fenced. A
+    /// restart that rebuilds the registry from the ledger answers the same.
+    ///
+    /// This is the one use-time admission check; no production router consumes it.
+    ///
+    /// # Errors
+    /// [`RouteRefusal`] naming the first failing condition.
+    pub fn expert_route_admission(
+        &self,
+        project: &ProjectId,
+        pod: &PodId,
+        generation: Generation,
+    ) -> Result<(), RouteRefusal> {
+        self.experts.route_admission(project, pod, generation)
     }
 
     /// Fence the expert `request` names: a committed, ledger-ordered withdrawal from serving at
@@ -1063,31 +1639,32 @@ impl PtrRuntime {
             })?;
         let evidence = match (action, report, grant.gate) {
             (ExpertFenceAction::Fence | ExpertFenceAction::Escalate, _, _) => None,
-            (ExpertFenceAction::Readmit, Some(report), Some((gate_epoch, required))) => {
-                let (proposal_id, operation_id) = expert_readmission_subject_ids(
-                    &request.project,
-                    &request.pod,
-                    request.generation,
-                    request.expected_state_version,
-                    epoch,
-                    request.cause,
+            (ExpertFenceAction::Readmit, Some(report), Some(requirement)) => {
+                let entry = self
+                    .experts
+                    .get(&request.project, &request.pod)
+                    .ok_or_else(|| {
+                        expert(ExpertAdmissionError::UnknownOperand {
+                            pod: request.pod.0.clone(),
+                        })
+                    })?;
+                let expected = readmission_expectation(
+                    ReadmissionTarget {
+                        project: &request.project,
+                        pod: &request.pod,
+                        generation: request.generation,
+                        expected_state_version: request.expected_state_version,
+                        epoch,
+                        cause: request.cause,
+                    },
+                    entry,
+                    requirement.config_digest,
+                    Some(requirement.eval_manifest_digest),
                 );
-                let subject = report.subject();
-                if subject.proposal_id != proposal_id {
-                    return Err(expert(ExpertAdmissionError::EvidenceProposalMismatch));
-                }
-                if subject.operation_id != operation_id {
-                    return Err(expert(ExpertAdmissionError::EvidenceOperationMismatch));
-                }
-                if report.gate_config_digest() != required {
-                    return Err(expert(ExpertAdmissionError::GateConfigMismatch));
-                }
-                if !report.passed() {
-                    return Err(expert(ExpertAdmissionError::GateFailed));
-                }
+                check_report(report, &expected).map_err(expert)?;
                 Some(ExpertFenceEvidence {
-                    gate_epoch,
-                    required_gate_config_digest: required,
+                    gate_epoch: requirement.gate_epoch,
+                    required_gate_config_digest: requirement.config_digest,
                     report: report.encode_canonical(),
                 })
             }
@@ -1136,6 +1713,7 @@ impl PtrRuntime {
             evidence,
         };
         self.validate_expert_fence_event(&event)?;
+        self.revalidate_grant(grant.kind(), grant.binding())?;
         self.append_prepared(event, None)
     }
 
@@ -1244,20 +1822,12 @@ impl PtrRuntime {
         if report.digest() != *record.evidence_digest() {
             return Err(ExpertAdmissionError::EvidenceDigestMismatch);
         }
-        if !report.passed() {
-            return Err(ExpertAdmissionError::GateFailed);
-        }
-        let proposal = record.proposal();
-        let subject = report.subject();
-        if subject.proposal_id != *proposal.proposal_id().as_bytes() {
-            return Err(ExpertAdmissionError::EvidenceProposalMismatch);
-        }
-        if subject.operation_id != *proposal.operation_id().as_bytes() {
-            return Err(ExpertAdmissionError::EvidenceOperationMismatch);
-        }
-        if report.gate_config_digest() != *evidence.required_gate_config_digest() {
-            return Err(ExpertAdmissionError::GateConfigMismatch);
-        }
+        let expected = proposal_expectation(
+            record.proposal(),
+            *evidence.required_gate_config_digest(),
+            None,
+        )?;
+        check_report(&report, &expected)?;
         let epoch = record.gate_epoch();
         if let Some(known) = self.experts.epoch_gate_configs.get(&epoch) {
             if known != evidence.required_gate_config_digest() {

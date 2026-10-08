@@ -11,10 +11,15 @@ use ptr_pods::{
 };
 use ptr_runtime::compacted::{CompactedAnchor, CompactedError};
 use ptr_runtime::expert::{
-    ledger_op_kind, ExpertAdmissionError, ExpertAdmissionGrant, ExpertEvidenceStatus,
+    expert_evidence_artifact_digest, expert_evidence_base_model_digest, ledger_op_kind,
+    ExpertAdmissionError, ExpertAdmissionGrant, ExpertEvidenceStatus,
 };
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
+
+mod expert_support;
+
+use expert_support::{binding, prime, requirement, EVAL_MANIFEST};
 
 const EPOCH: u64 = 7;
 
@@ -92,12 +97,17 @@ fn admit_birth(
         .bind(GateSubject::new(
             *proposal.proposal_id().as_bytes(),
             *proposal.operation_id().as_bytes(),
-            [3; 32],
-            [4; 32],
-            [5; 32],
+            expert_evidence_artifact_digest(proposal.op()),
+            expert_evidence_base_model_digest(proposal.op()).unwrap(),
+            EVAL_MANIFEST,
         ));
-    let grant =
-        ExpertAdmissionGrant::new(project(), proposer(), EPOCH, gate.config_digest().unwrap());
+    prime(rt);
+    let grant = ExpertAdmissionGrant::new(
+        project(),
+        proposer(),
+        requirement(EPOCH, gate.config_digest().unwrap()),
+        binding(),
+    );
     rt.admit_expert_proposal(&proposal, &report, &grant)
 }
 

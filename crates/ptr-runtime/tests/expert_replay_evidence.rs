@@ -13,10 +13,15 @@ use ptr_pods::{
     RetiredReason, StructuralOp,
 };
 use ptr_runtime::expert::{
-    ledger_op_kind, ExpertAdmissionError, ExpertAdmissionGrant, ExpertEvidenceStatus,
+    expert_evidence_artifact_digest, expert_evidence_base_model_digest, ledger_op_kind,
+    ExpertAdmissionError, ExpertAdmissionGrant, ExpertEvidenceStatus,
 };
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
+
+mod expert_support;
+
+use expert_support::{binding, prime, requirement, EVAL_MANIFEST};
 
 const LAYER: u16 = 3;
 const EPOCH: u64 = 7;
@@ -84,9 +89,9 @@ fn subject_of(proposal: &ExpertProposal) -> GateSubject {
     GateSubject::new(
         *proposal.proposal_id().as_bytes(),
         *proposal.operation_id().as_bytes(),
-        [3; 32],
-        [4; 32],
-        [5; 32],
+        expert_evidence_artifact_digest(proposal.op()),
+        expert_evidence_base_model_digest(proposal.op()).unwrap(),
+        EVAL_MANIFEST,
     )
 }
 
@@ -94,8 +99,8 @@ fn grant() -> ExpertAdmissionGrant {
     ExpertAdmissionGrant::new(
         project(),
         proposer(),
-        EPOCH,
-        gate().config_digest().unwrap(),
+        requirement(EPOCH, gate().config_digest().unwrap()),
+        binding(),
     )
 }
 
@@ -133,10 +138,13 @@ fn proposal(op: StructuralOp) -> ExpertProposal {
 }
 
 fn runtime() -> PtrRuntime {
-    PtrRuntime::new(PtrConfig::default()).unwrap()
+    let mut rt = PtrRuntime::new(PtrConfig::default()).unwrap();
+    prime(&mut rt);
+    rt
 }
 
 fn admit(rt: &mut PtrRuntime, op: StructuralOp) -> Result<CommitIndex, RuntimeError> {
+    prime(rt);
     let proposal = proposal(op);
     let report = bind(subject_of(&proposal), &gate(), passing(), "candidate");
     rt.admit_expert_proposal(&proposal, &report, &grant())

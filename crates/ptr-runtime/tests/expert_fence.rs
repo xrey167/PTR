@@ -21,9 +21,9 @@ use ptr_pods::{
     ProposerRef, RationaleDigest, RetiredReason, StructuralOp, TensorRef,
 };
 use ptr_runtime::expert::{
-    expert_fence_epochs, expert_readmission_subject_ids, ExpertAdmissionError,
-    ExpertAdmissionGrant, ExpertFenceAuthority, ExpertFenceGrant, ExpertFenceRequest,
-    ExpertStaleField,
+    expert_evidence_artifact_digest, expert_evidence_base_model_digest, expert_fence_epochs,
+    expert_readmission_subject_ids, ExpertAdmissionError, ExpertAdmissionGrant,
+    ExpertFenceAuthority, ExpertFenceGrant, ExpertFenceRequest, ExpertStaleField,
 };
 use ptr_runtime::{
     CatalogLimits, KvCatalogError, KvChainId, KvDependency, KvInsert, KvLookup, KvPrefixCatalog,
@@ -33,6 +33,10 @@ use ptr_types::{
     AdapterVersion, CommitIndex, DeviceId, Generation, ModelVersion, PodId, PrincipalId, ProjectId,
     RequestId, Revision, SemanticContext,
 };
+
+mod expert_support;
+
+use expert_support::{binding, prime, requirement, BASE_MODEL_DIGEST, EVAL_MANIFEST};
 
 const CHAIN: KvChainId = KvChainId([1; 32]);
 
@@ -74,9 +78,9 @@ fn admit(rt: &mut PtrRuntime, op: StructuralOp) {
     let subject = GateSubject::new(
         *proposal.proposal_id().as_bytes(),
         *proposal.operation_id().as_bytes(),
-        [3; 32],
-        [4; 32],
-        [5; 32],
+        expert_evidence_artifact_digest(proposal.op()),
+        expert_evidence_base_model_digest(proposal.op()).unwrap(),
+        EVAL_MANIFEST,
     );
     let matrix = AccuracyMatrix::new(vec![vec![0.9, 0.0], vec![0.9, 0.9]]).unwrap();
     let report: BoundGateReport = gate()
@@ -90,8 +94,13 @@ fn admit(rt: &mut PtrRuntime, op: StructuralOp) {
         )
         .unwrap()
         .bind(subject);
-    let grant =
-        ExpertAdmissionGrant::new(project(), proposer(), 7, gate().config_digest().unwrap());
+    prime(rt);
+    let grant = ExpertAdmissionGrant::new(
+        project(),
+        proposer(),
+        requirement(7, gate().config_digest().unwrap()),
+        binding(),
+    );
     rt.admit_expert_proposal(&proposal, &report, &grant)
         .unwrap();
 }
@@ -159,11 +168,15 @@ fn committed_revocation() -> ExpertFenceRevocation {
 }
 
 fn revocation() -> ExpertFenceGrant {
-    ExpertFenceGrant::revocation(project())
+    ExpertFenceGrant::revocation(project(), binding())
 }
 
 fn gate_grant() -> ExpertFenceGrant {
-    ExpertFenceGrant::gate(project(), 7, gate().config_digest().unwrap())
+    ExpertFenceGrant::gate(
+        project(),
+        requirement(7, gate().config_digest().unwrap()),
+        binding(),
+    )
 }
 
 const QUARANTINE: ExpertFenceCause = ExpertFenceCause::AuthorityQuarantine;
@@ -300,6 +313,7 @@ fn hits(rt: &mut PtrRuntime) -> bool {
 
 fn runtime() -> PtrRuntime {
     let mut rt = PtrRuntime::new(PtrConfig::default()).unwrap();
+    prime(&mut rt);
     let revocation = committed_revocation();
     rt.commit(LedgerEvent::Revoked {
         subject: revocation.subject,
@@ -418,7 +432,7 @@ fn an_unauthorized_or_stale_fence_is_refused_and_appends_nothing() {
     };
 
     // A grant for another project.
-    let other = ExpertFenceGrant::revocation(ProjectId::from("other"));
+    let other = ExpertFenceGrant::revocation(ProjectId::from("other"), binding());
     assert_eq!(
         fence(&mut rt, &request("x", 1, QUARANTINE), &other),
         ExpertAdmissionError::FenceProjectMismatch
@@ -518,9 +532,9 @@ fn a_fenced_expert_is_outside_the_proposal_path() {
     let subject = GateSubject::new(
         *proposal.proposal_id().as_bytes(),
         *proposal.operation_id().as_bytes(),
-        [3; 32],
-        [4; 32],
-        [5; 32],
+        expert_evidence_artifact_digest(proposal.op()),
+        expert_evidence_base_model_digest(proposal.op()).unwrap(),
+        EVAL_MANIFEST,
     );
     let matrix = AccuracyMatrix::new(vec![vec![0.9, 0.0], vec![0.9, 0.9]]).unwrap();
     let report = gate()
@@ -534,8 +548,13 @@ fn a_fenced_expert_is_outside_the_proposal_path() {
         )
         .unwrap()
         .bind(subject);
-    let grant =
-        ExpertAdmissionGrant::new(project(), proposer(), 7, gate().config_digest().unwrap());
+    prime(&mut rt);
+    let grant = ExpertAdmissionGrant::new(
+        project(),
+        proposer(),
+        requirement(7, gate().config_digest().unwrap()),
+        binding(),
+    );
     assert!(matches!(
         rt.admit_expert_proposal(&proposal, &report, &grant),
         Err(RuntimeError::Expert(ExpertAdmissionError::StaleOperand {
@@ -662,7 +681,13 @@ fn report_for(
         request.expected_state_version + 1,
         request.cause,
     );
-    let subject = GateSubject::new(proposal_id, operation_id, [3; 32], [4; 32], [5; 32]);
+    let subject = GateSubject::new(
+        proposal_id,
+        operation_id,
+        [request.pod.0.as_bytes()[0]; 32],
+        BASE_MODEL_DIGEST,
+        EVAL_MANIFEST,
+    );
     let matrix = AccuracyMatrix::new(vec![vec![0.9, 0.0], vec![0.9, 0.9]]).unwrap();
     gate.evaluate(
         &AdapterId::from("candidate"),
@@ -681,6 +706,8 @@ fn readmit(
     request: &ExpertFenceRequest,
     grant: &ExpertFenceGrant,
 ) -> Result<CommitIndex, RuntimeError> {
+    // A runtime restored from a snapshot or a replay holds no host authority until it is primed.
+    prime(rt);
     // A readmission names no revocation, whatever the cause it names.
     let request = ExpertFenceRequest {
         revocation: None,
@@ -1041,9 +1068,9 @@ fn a_readmission_needs_passed_evidence_bound_to_this_expert_and_epoch() {
         .bind(GateSubject::new(
             proposal_id,
             [9; 32],
-            [3; 32],
-            [4; 32],
-            [5; 32],
+            [b'x'; 32],
+            BASE_MODEL_DIGEST,
+            EVAL_MANIFEST,
         ));
     assert_eq!(
         expert_refusal(&mut rt, &req, &wrong_operation),
@@ -1147,7 +1174,11 @@ fn replay_reverifies_the_readmission_evidence() {
         max_average_forgetting: 0.9,
         ..gate()
     };
-    let other_grant = ExpertFenceGrant::gate(project(), 7, other_gate.config_digest().unwrap());
+    let other_grant = ExpertFenceGrant::gate(
+        project(),
+        requirement(7, other_gate.config_digest().unwrap()),
+        binding(),
+    );
     assert_eq!(
         expert_error(conflicting.readmit_expert(
             &req_b,
@@ -1462,7 +1493,7 @@ fn a_readmission_may_not_stand_at_an_older_gate_epoch_than_an_earlier_one() {
     let mut rt = runtime();
     birth(&mut rt, "x");
     let digest = gate().config_digest().unwrap();
-    let at_epoch = |epoch| ExpertFenceGrant::gate(project(), epoch, digest);
+    let at_epoch = |epoch| ExpertFenceGrant::gate(project(), requirement(epoch, digest), binding());
     let try_readmit = |rt: &mut PtrRuntime, version, epoch| {
         let req = request("x", version, QUARANTINE);
         rt.readmit_expert(&req, &report_for(&req, &gate(), true), &at_epoch(epoch))

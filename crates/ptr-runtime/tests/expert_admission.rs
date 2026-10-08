@@ -12,13 +12,17 @@ use ptr_pods::{
     RationaleDigest, RetiredReason, StructuralOp,
 };
 use ptr_runtime::expert::{
-    ledger_op_kind, ExpertAdmissionError, ExpertAdmissionGrant, ExpertEntry, ExpertEventField,
-    ExpertStaleField,
+    expert_evidence_artifact_digest, expert_evidence_base_model_digest, ledger_op_kind,
+    ExpertAdmissionError, ExpertAdmissionGrant, ExpertEntry, ExpertEventField, ExpertStaleField,
 };
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_state::MaterializedState;
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
 use std::path::PathBuf;
+
+mod expert_support;
+
+use expert_support::{binding, prime, requirement, EVAL_MANIFEST};
 
 const LAYER: u16 = 3;
 
@@ -73,9 +77,9 @@ fn subject_of(proposal: &ExpertProposal) -> GateSubject {
     GateSubject::new(
         *proposal.proposal_id().as_bytes(),
         *proposal.operation_id().as_bytes(),
-        [3; 32],
-        [4; 32],
-        [5; 32],
+        expert_evidence_artifact_digest(proposal.op()),
+        expert_evidence_base_model_digest(proposal.op()).unwrap(),
+        EVAL_MANIFEST,
     )
 }
 
@@ -95,7 +99,12 @@ fn bind(subject: GateSubject, gate: &ForgettingGate, public: PublicSuite) -> Bou
 }
 
 fn grant() -> ExpertAdmissionGrant {
-    ExpertAdmissionGrant::new(project(), proposer(), 7, gate().config_digest().unwrap())
+    ExpertAdmissionGrant::new(
+        project(),
+        proposer(),
+        requirement(7, gate().config_digest().unwrap()),
+        binding(),
+    )
 }
 
 /// A slot index that follows the pod name, so distinct pods get distinct slots.
@@ -151,7 +160,9 @@ fn expert_error(error: ExpertAdmissionError) -> RuntimeError {
 }
 
 fn runtime() -> PtrRuntime {
-    PtrRuntime::new(PtrConfig::default()).unwrap()
+    let mut rt = PtrRuntime::new(PtrConfig::default()).unwrap();
+    prime(&mut rt);
+    rt
 }
 
 fn entry(rt: &PtrRuntime, pod: &str) -> ExpertEntry {
@@ -672,7 +683,7 @@ fn a_proposer_or_project_other_than_the_authenticated_one_is_refused_before_the_
         ProposerRef::new(project(), PodId::from("meta2"), Generation(1)).unwrap(),
         ProposerRef::new(project(), PodId::from("meta"), Generation(2)).unwrap(),
     ] {
-        let grant = ExpertAdmissionGrant::new(project(), other, 7, digest);
+        let grant = ExpertAdmissionGrant::new(project(), other, requirement(7, digest), binding());
         assert_refused(
             &mut rt,
             &freeze,
@@ -685,8 +696,8 @@ fn a_proposer_or_project_other_than_the_authenticated_one_is_refused_before_the_
     let foreign = ExpertAdmissionGrant::new(
         elsewhere.clone(),
         ProposerRef::new(elsewhere, PodId::from("meta"), Generation(1)).unwrap(),
-        7,
-        digest,
+        requirement(7, digest),
+        binding(),
     );
     // Even with a failing report the identity is the first thing refused.
     let failed = report(&freeze, &gate(), failing());
@@ -810,6 +821,7 @@ fn temp_log() -> (PathBuf, PathBuf) {
 fn a_durable_runtime_reopens_with_the_same_registry() {
     let (dir, path) = temp_log();
     let mut rt = PtrRuntime::open_durable(PtrConfig::default(), &path).unwrap();
+    prime(&mut rt);
     birth(&mut rt, "a");
     birth(&mut rt, "b");
     freeze(&mut rt, "a");

@@ -667,6 +667,11 @@ impl Default for ExecutionState {
 }
 
 impl ExecutionState {
+    /// Whether the installed admission policy still admits `peer`.
+    pub(crate) fn peer_admitted(&self, peer: &NodeId) -> bool {
+        self.policy.admits(peer)
+    }
+
     /// Either kind of ambiguity blocks execution and commits: this runtime does
     /// not know the outcome of its own last append, or it does not know whether
     /// an external effect applied.

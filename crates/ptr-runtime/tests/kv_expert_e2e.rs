@@ -16,7 +16,9 @@ use ptr_pods::{
     KvPageBinding, KvPageSize, KvTensorBackend, KvTensorDType, KvTensorSchema, ManifestDigest,
     PagedKvTensorBackend, ProposerRef, RationaleDigest, RetiredReason, StructuralOp, TensorRef,
 };
-use ptr_runtime::expert::ExpertAdmissionGrant;
+use ptr_runtime::expert::{
+    expert_evidence_artifact_digest, expert_evidence_base_model_digest, ExpertAdmissionGrant,
+};
 use ptr_runtime::{
     CatalogLimits, KvCatalogError, KvChainId, KvDependency, KvInsert, KvLookup, KvPrefixCatalog,
     KvRequestPositions, KvSalt, PtrRuntime,
@@ -25,6 +27,10 @@ use ptr_types::{
     AdapterVersion, CommitIndex, DeviceId, Generation, ModelVersion, PodId, PrincipalId, ProjectId,
     RequestId, Revision, SemanticContext,
 };
+
+mod expert_support;
+
+use expert_support::{binding, prime, requirement, EVAL_MANIFEST};
 
 const CHAIN: KvChainId = KvChainId([1; 32]);
 
@@ -55,7 +61,12 @@ fn gate() -> ForgettingGate {
 }
 
 fn grant() -> ExpertAdmissionGrant {
-    ExpertAdmissionGrant::new(project(), proposer(), 7, gate().config_digest().unwrap())
+    ExpertAdmissionGrant::new(
+        project(),
+        proposer(),
+        requirement(7, gate().config_digest().unwrap()),
+        binding(),
+    )
 }
 
 fn level_of(pod: &str) -> ExpertLevel {
@@ -91,9 +102,9 @@ fn admit(rt: &mut PtrRuntime, op: StructuralOp) {
     let subject = GateSubject::new(
         *proposal.proposal_id().as_bytes(),
         *proposal.operation_id().as_bytes(),
-        [3; 32],
-        [4; 32],
-        [5; 32],
+        expert_evidence_artifact_digest(proposal.op()),
+        expert_evidence_base_model_digest(proposal.op()).unwrap(),
+        EVAL_MANIFEST,
     );
     let matrix = AccuracyMatrix::new(vec![vec![0.9, 0.0], vec![0.9, 0.9]]).unwrap();
     let report: BoundGateReport = gate()
@@ -268,7 +279,9 @@ fn hits(rt: &mut PtrRuntime) -> bool {
 }
 
 fn runtime() -> PtrRuntime {
-    PtrRuntime::new(PtrConfig::default()).unwrap()
+    let mut rt = PtrRuntime::new(PtrConfig::default()).unwrap();
+    prime(&mut rt);
+    rt
 }
 
 #[test]
