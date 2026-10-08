@@ -105,6 +105,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - M002-v5 is superseded and the other planned architecture experiments are not positive evidence; L001 remains the only running experiment and has two executed scoped crash/recovery evidence slices
 - external component candidates mostly lack comparative benchmark evidence
 - strong RAG/GraphRAG/editable-memory and matched plain-model comparative runs are not yet executed
+- GPU phase (RTX 4090 desktop): ordered run plan, per-experiment gaps and open owner decisions are in [docs/GPU_HANDOVER.md](docs/GPU_HANDOVER.md); nothing in it has run on a GPU
 - GitHub main-branch ruleset/repository-admin settings still require manual completion; recommendations are documented in `docs/GITHUB_SETTINGS.md`
 - the TypeScript SDK and Axum server now share `/health` and `/v1/requests`; streaming, auth/session policy and a real configured model backend remain open
 

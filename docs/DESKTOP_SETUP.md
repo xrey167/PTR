@@ -196,6 +196,9 @@ Example requests:
   loss curve, labelled as pipeline evidence."
 - "Prepare the M011 run as its manifest describes; do not edit prepared experiment records."
 
+The ordered GPU run plan after the smoke runs, the per-experiment gaps and the open owner decisions are in
+[`docs/GPU_HANDOVER.md`](GPU_HANDOVER.md).
+
 GitHub is currently suspended: for the GitLab remote, the `ptr-gitlab` skill and registering this
 desktop as a GitLab runner tagged `ptr-gpu`, see `docs/HOSTING.md`.
 
