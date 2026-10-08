@@ -208,7 +208,7 @@ status = "completed"
 [[experiment]]
 id = "R006"
 path = "runtime/R006-positional-reuse-oracle"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "R007"
