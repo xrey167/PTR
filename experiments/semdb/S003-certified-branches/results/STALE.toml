@@ -1,0 +1,3 @@
+results_git_sha = "c9b57ddc9e46a8e515f8c566c57b01d7cd882550"
+stale_since = "2f15f6098bdb4cf18fab795e05b62e456300a5e9"
+reason = "No code under test changed after S003's seed records and mutation check. The documentation commit records the completed result in STATUS.md, research/novelty/CLAIMS.md and docs/architecture/35-agentic-substrate.md, which the repository-wide provenance counts as a change; the merge into the integration line then brings unrelated runtime changes (R006 positional KV reuse in ptr-runtime) that S003's harness links. S003 was preregistered at s003-prereg (38769d2b). No rerun under the same preregistration follows (each seed runs once)."
