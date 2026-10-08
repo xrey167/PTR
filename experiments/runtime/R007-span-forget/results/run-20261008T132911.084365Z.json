@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "experiment_id": "R007",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v80",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16876494848
+  },
+  "hardware_profile_record": {
+    "path": "hardware/default.toml",
+    "sha256": "ea754cf5ddb19c70de11237e9aedab43cbba4ac2e8ff8fec15d85b18699052d6",
+    "contents": {
+      "id": "unspecified",
+      "os": "unspecified",
+      "cpu": "unspecified",
+      "ram_gib": 0,
+      "gpu": "unspecified",
+      "gpu_memory_gib": 0,
+      "notes": "Replace with an explicit measured hardware profile before publishing benchmark results."
+    },
+    "unspecified_fields": [
+      "cpu",
+      "gpu",
+      "id",
+      "os"
+    ]
+  },
+  "git_sha": "f86c9bc302c467b220f71aa0d11806dfded98436",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "R007",
+    "status": "prepared",
+    "hypothesis": "evicting a span and re-prefilling everything after it yields a state bit-identical to a fresh prefill without the span and leaves no probeable trace of the span (canary_logit_shift is exactly 0); the experiment is bitwise only and uses seeded random weights with a pinned seed and shape; the prompt is a system part of 64 tokens, a document of 4096 tokens and a question of 64 tokens, the span has 256 tokens and starts at token offset 1024 of the document (middle position), and 32 distinct canary strings are probed (their identity-set digest is recorded); the canary identity set is pinned by its expected digest 65f9b8cd60e57cb38a8588c23d5bb494c7817fc10511353980f8be1c690efe19 (sha256 over the 32 canary strings joined by newlines, each canary being the first 16 hex characters of sha256 over the seed 20240607, a colon and its index), and a recorded digest that differs rejects the run.",
+    "metrics": "bitwise_mismatch_count, canary_logit_shift, recompute_tokens, span_insertions, span_evictions, downstream_recomputations, canary_probes, stale_downstream_rows_reused, tokens_after_span, canary_span_tokens, downstream_rows_before_forget, prefix_reuse_tokens, post_forget_probes, selection_digest_mismatches, procedure_mismatches, canary_identity_set_digest, model_pin_mismatches",
+    "baseline": "fresh prefill of the prompt without the span",
+    "falsification": "The run is invalid (vacuous) and counts as falsified if any coverage prerequisite is unmet: span_insertions < 1, span_evictions < 1, downstream_recomputations < 1 or canary_probes < 1 on the pinned canary-bearing span case, or canary_span_tokens < 1, downstream_rows_before_forget < 1, prefix_reuse_tokens < 1 or post_forget_probes < 1 (canary_probes must be made after the span eviction and the downstream recomputation); selection_digest_mismatches > 0 (the corpus selection digest recorded in run.json differs from the pinned digest) or procedure_mismatches > 0 (a pinned run-procedure parameter recorded per arm or cell in run.json differs from the pinned value; equality across arms is also compared against the pinned value); canary_identity_set_digest is not recorded in run.json or the canary set is not the 32 distinct pinned canaries (canary_probes < 32); model_pin_mismatches > 0 (the base checkpoint (repo and revision), the tokenizer (repo and revision) or the initial MoE topology recorded in run.json differs from the pin in config.toml, or the tiny-model config digest differs); canary_identity_set_digest differs from the pinned expected digest (the recorded set is not the pinned canary set). Falsified if any of: bitwise_mismatch_count > 0 (any state difference against a fresh prefill without the span); canary_logit_shift != 0 (the absolute difference of the canary token's logit versus the fresh prefill, max over probes; there is no noise threshold); stale_downstream_rows_reused > 0 or recompute_tokens != tokens_after_span (every token after the span must be recomputed); any one of the 5 listed seeds misses any criterion above (every seed must pass).",
+    "hardware_profile": "hardware/default.toml",
+    "entrypoint": "cargo run --release --locked -p ptr-bench -- span-forget <seed>",
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json"
+    ],
+    "preregistration_sha256": "1eb9e7c9c32a47f6eccc1485fe87a5c90ac417e3991a6731ca57eebcde309b6d",
+    "preregistration_rules_sha256": "30af5a6dfa0ead950e43fb698b2191ad1cb5f3d76543fc5c73baae55f92f1aed"
+  },
+  "manifest_sha256": "d07faef8ef63019a7fdd38b8d01492b41730ffa91d3267ec682801108f2703f8",
+  "cargo_lock_sha256": "b6aae57ccfbc83db4e455d209fc46f0dfd713754d36e34d841b4f35110eb868e",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/default.toml",
+  "status": "prepared",
+  "prepared_at": "20261008T132911.084365Z"
+}
