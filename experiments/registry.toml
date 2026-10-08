@@ -418,4 +418,4 @@ status = "planned"
 [[experiment]]
 id = "M002-v10-sweep-r2"
 path = "model/M002-v10-sweep-r2"
-status = "planned"
+status = "prepared"
