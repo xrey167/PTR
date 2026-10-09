@@ -14,50 +14,84 @@ Entrypoint (`experiment.toml`'s `entrypoint`, the runner's command, set at the f
 
 Scope (owner decisions of 2026-10-09, binding): synthetic structured deterministic facts as raw-event bytes; exact source is
 the byte-exact quote at the claimed span of a digest-valid raw event plus a deterministic comparison of a structured claim with
-that span; retrieval is a harness retriever with injected poison; the lifecycle authority is the real
-`PtrRuntime::generation_validity`; task success is the correct answer or the correct abstention, also reported on the
-answerable questions alone. The claim: driven through its public API, the typed promotion path of `ptr_search` never promotes a
-poisoned hit to `VerifiedKnown`, refuses every adversarial stage skip with the refusal the stage rules prescribe, keeps the
-honest hits (at least 950 per mille promoted) and answers at least as many questions correctly as direct retrieval-to-answer.
-The existing boolean API (`observe(.., true)`, `promote_verified(true)`) is kept as the documented trusted-caller path and is the
+that span, the span's event belonging to the capsule generation the hit names; retrieval is a harness retriever with injected
+poison; the lifecycle authority is the real `PtrRuntime::generation_validity`; task success is the correct answer or the
+correct abstention, also reported on the answerable questions alone. The claim, scoped to what the corpus can show: driven
+through its public API, and **given a truthful raw event source, a truthful ownership record and a truthful lifecycle
+closure** (the three trust roots, below), the typed promotion path of `ptr_search` never promotes a poisoned hit of the nine
+classes of section 2 to `VerifiedKnown`, refuses every adversarial stage skip with the refusal the stage rules prescribe, keeps
+the honest hits (at least 950 per mille promoted, and not one of the hard honest hits refused) and answers at least as many
+questions correctly as each of the three baselines. The existing boolean API (`observe(.., true)`, `promote_verified(true)`)
+is kept as the documented trusted-caller path (a hit reaches `VerifiedKnown` through it with no raw bytes at all) and is the
 negative control B2.
+
+**Claim scoping (what the evidence is and is not).**
+- *Trust roots.* The typed path's guarantee is conditional on three inputs the code under test does not check, all taken from the
+  generator's table here: the `RawEventSource` (the digest check shows that a source is internally consistent, not that it is the
+  store of record; the trait is open, and the P3 double is such an implementation, so the source is a trust root and is not sealed:
+  sealing would have to be undone for the double and a test-support feature would unseal it for every crate in the build), the
+  `SourceOwnership` (which capsule generation admitted which raw event; it must come from the admitting record, never from the
+  retriever's index, and `KnowledgeStore` does not yet expose it, so the caller builds it) and the `validity` closure handed to
+  `observe_resolved` (a truthful answer of the lifecycle authority). The boolean path is a trusted-caller path in the strict
+  sense. What P9 and K11 show is that, given a truthful ownership record, a live label cannot launder an event of another
+  generation or capsule; they do not show that an ownership record can be derived from the store.
+- *P8 (disputed)* tests the contract that `observe_resolved` refuses a `Disputed` answer of the closure. The runtime is never wired
+  to answer `Disputed` (the harness overlay in `authority.rs` does), so Q002 does **not** claim that a `PtrRuntime`-backed system
+  refuses disputed generations.
+- *P3 (tampered digest)* cites corrupt replicas served by a source double, because `KnowledgeStore::append_raw` rejects
+  digest-invalid events. It shows the resolver's defence in depth against a source that violates the store's invariant, not that
+  the store is tamper-evident; the replicas have ids of their own, recorded as copies of their originals, and no honest hit reads one.
+- *P6 and P7* use the real runtime, a ledger of exactly the `LedgerEvent` kinds `CapsuleCommitted`, `CapsuleSuperseded` and
+  `Revoked`.
+- *The claim is the caller's.* A `SearchHit` carries no claim of the retriever's own, so a proof is held against the source the hit
+  was observed with and not against an assertion the retriever made; binding the two is not done and not claimed.
 
 ## 1. Decision rule
 
 Five seeds (17, 29, 43, 71, 101), one JSON object each, `criteria.toml` applied mechanically (a "< N" prerequisite is written
 `>= N`, a "> 0" violation `<= 0`). COMPLETED iff every seed meets every coverage rule and trips no falsifier **and the mutation
 evidence is complete**: `results/mutations.json` is present for this checkout's code and plan and `killed == total ==` the
-number of mutations `tests/mutations.toml` lists (24). FALSIFIED if a coverage rule (the run is vacuous) or a falsifier fails
+number of mutations `tests/mutations.toml` lists (37). FALSIFIED if a coverage rule (the run is vacuous) or a falsifier fails
 on any seed; a falsification is never downgraded by the mutation evidence (`mutations_ok` is reported beside it). INVALID if a
 record is missing, does not describe the frozen run, a counter is missing or mistyped, the exit status disagrees with the
-rules, the baseline control B0 did not hallucinate, or the mutation evidence is missing or incomplete (INVALID says nothing
-about the hypothesis). No rule changes after a run.
+rules, the baseline control B0 did not hallucinate, a harness-integrity guard tripped (`oracle_label_mismatches > 0` or
+`corpus_selection_digest_mismatches > 0`: a harness defect, judged INVALID even though the harness also judges both as coverage
+rules, so that the mutation checker has a named counter and an exit status), or the mutation evidence is missing or incomplete
+(INVALID says nothing about the hypothesis). No rule changes after a run.
 
 The harness exits 0 when every rule holds, 1 when one fails, 2 when it cannot run (section 7). **A defect of the code under test
 is never exit 2**: a refusal with the wrong reason, a promotion, an accepted stage skip, a panic (every call into `ptr_search`
 is guarded by `catch_unwind` and counted in `product_panics`) are counters and falsifiers.
 
-Coverage (the run is vacuous if unmet), 25 rules:
+Coverage (the run is vacuous if unmet), 29 rules:
 
-- `poison_attempts.P1` .. `poison_attempts.P8` `>= 20` each: hits of that class that the mechanism refused with the refusal the
+- `poison_attempts.P1` .. `poison_attempts.P9` `>= 20` each: hits of that class that the mechanism refused with the refusal the
   generator expects for the class, counted from the call's return at the API boundary;
-- `true_claims >= 100` (honest hits shown to the mechanism), `unanswerable_questions >= 50`;
-- `stage_skip_by_kind.K1` .. `K10` `>= 20` each: adversarial attempts that got the refusal the stage rules prescribe and left
-  the hit unchanged;
+- `true_claims >= 100` (honest hits shown to the mechanism), `hard_honest_presented >= 30` (hard honest hits shown),
+  `unanswerable_questions >= 50`;
+- `stage_skip_by_kind.K1` .. `K5`, `K6a`, `K6b`, `K7` .. `K11` `>= 20` each (twelve kinds): adversarial attempts that got the
+  refusal the stage rules prescribe and left the hit unchanged;
 - `false_known_baseline_direct`, `false_known_gen_filter_only`, `false_known_bool_trust` `>= 1` each (the negative controls B0,
   B2 and the contrast B1: a baseline that never hallucinates on the corpus shows nothing);
 - `oracle_label_mismatches <= 0`, `corpus_selection_digest_mismatches <= 0` (harness-integrity guards, section 5).
 
-Falsifiers, 8 rules: `false_known_mechanism <= 0`; `stage_skip_accepted <= 0`; `stale_or_revoked_promoted <= 0`;
-`stage_skip_unexpected <= 0`; `wrong_refusal_reason <= 0`; `product_panics <= 0`; `recall_permille >= 950` (owner decision);
+Falsifiers, 11 rules: `false_known_mechanism <= 0`; `stage_skip_accepted <= 0`; `stale_or_revoked_promoted <= 0`;
+`stage_skip_unexpected <= 0`; `wrong_refusal_reason <= 0`; `product_panics <= 0`; `hard_honest_refused <= 0` (zero tolerance:
+hard honest hits are exact); `recall_permille >= 950` (owner decision, over all honest hits, hard ones included);
 `task_success_mechanism >= task_success_baseline` (owner decision; counted over all questions, correct answer or correct
-abstention; the answerable-only reading is `answerable_success_permille`, reported and not judged).
+abstention; the answerable-only reading is `answerable_success_permille`, reported and not judged) and its two corollaries
+`task_success_mechanism >= task_success_gen_filter_only` and `task_success_mechanism >= task_success_bool_trust`.
 
 Rules that hold by construction or duplicate another, named so that nobody reads them as evidence: `unanswerable_questions >=
-50` counts generated questions; `true_claims >= 100` counts generated honest hits; `oracle_label_mismatches` and
-`corpus_selection_digest_mismatches` guard the harness; `stale_or_revoked_promoted` overlaps `false_known_mechanism` on P6 to
-P8 by design (a stale, revoked or disputed hit that is promoted is both); `recall_violation` restates the recall rule as a count
-for the mutation checker; `recall_permille` is 1000 for a sound mechanism because the honest hits are exact (section 9).
+50` counts generated questions; `true_claims >= 100` and `hard_honest_presented >= 30` count generated honest hits (so does the
+presented count `hits_by_class.HH`); `oracle_label_mismatches` and `corpus_selection_digest_mismatches` guard the harness;
+`stale_or_revoked_promoted` overlaps `false_known_mechanism` on P6 to P9 by design (a stale, revoked, disputed or relabelled hit
+that is promoted is both); `recall_violation` restates the recall rule and `task_success_violation` the three task-success rules
+as counts for the mutation checker; the two task-success corollaries hold by construction (with `false_known_mechanism = 0` and
+recall at 1000 the mechanism answers every answerable question correctly, so it is at least as good as any baseline) and are
+kept because a defect that drops promoted answers trips them (the harness mutation `harness-mechanism-drops-the-promoted-answers`
+shows it); they are corollaries, not independent evidence; `recall_permille` is 1000 for a sound mechanism because the honest
+hits are exact (section 8).
 
 ## 2. The world
 
@@ -71,21 +105,27 @@ capsules with a wrong value; live healthy events also state two **negated** stat
 have a **twin** whose name only looks like theirs (an ASCII O for a zero, or a Cyrillic letter for a Latin one); both twins own
 a fact of the same predicate, always in healthy capsules.
 
+Some healthy facts are made **hard** (section 2's last rows): a value with multibyte characters, a value containing `not`, a live
+event that states a statement twice, a statement that also has an event of its own (a one-line event). Every raw event belongs to
+the capsule generation that admitted it (the ownership record); the one-line events of a generation belong to it as well.
+
 Questions (one per fact, in `world.rs`): 156 answerable (a fact of a healthy capsule: expected answer its live value), 60
 quarantined (a fact of a revoked or disputed capsule: no authoritative answer, abstain), 40 absent (a fact nobody states:
 abstain). Hits per question, ranked by a seeded score (honest 400..900, poison 300..950, so poison tops the ranking often):
 
 | class | hit | what a correct mechanism says |
 |---|---|---|
-| honest | the live statement of the fact's owner, exact citation, exact claim (156) | promote |
+| honest | the live statement of the fact's owner, exact citation, exact claim (132 plain) | promote |
+| HH (hard honest) | an honest hit that is hard to read, six of each kind: a multibyte value (`vé中…`); a value containing `not` (`notable…`, `knot…`, `cannot…`, never the bare `not`); a statement the live event states twice, citing the second occurrence; a statement with a one-line event of its own, citing all of it; a span that starts at byte 0 of the event; a span that ends at its last byte (36; 24 of the kinds replace a plain honest hit, the repeated and one-line ones are additional hits of the same question) | promote |
 | P1 | a source id no store holds (`raw-fab-NNNN`), fabricated claim; every absent question gets one (60) | `UnknownRawEvent` |
-| P2 | wrong span: the span shifted by 1..3 bytes with the real statement as quote (24); the span reaching past the end (24); the right span with a doctored quote (value replaced, the first eight bytes intact) (24) | `QuoteMismatch`, `SpanOutOfRange`, `QuoteMismatch` |
+| P2 | wrong span: the span shifted by 1..3 bytes with the real statement as quote (24); the span reaching past the end (24); the right span with a doctored quote (value replaced, the first eight bytes intact) (24); an empty span `start == end` with the empty quote (24); a span of two statements, claimed with the first one's claim (24); the statement plus the newline next to it (24) | `QuoteMismatch`, `SpanOutOfRange`, `QuoteMismatch`, `EmptySpan`, `MalformedStatement`, `MalformedStatement` |
 | P3 | a corrupt replica of an event (a value changed, the original's digest kept), citing the changed bytes, claim equal to the changed value (40) | `DigestMismatch` |
-| P4 | the statement about the question's twin, claimed under the question's subject (48) | `SubjectMismatch` |
-| P5 | the right statement with a claim of another value (30); a negated statement claimed as affirmative (30) | `ValueMismatch`, `NegatedStatement` |
+| P4 | the statement about the question's twin, claimed under the question's subject (48); the right statement claimed with another predicate (24) (`PredicateMismatch`); the right statement claimed with its subject in ASCII upper case (24) | `SubjectMismatch`, `PredicateMismatch`, `SubjectMismatch` |
+| P5 | the right statement with a claim of another value (30); a negated statement claimed as affirmative (30); a negated statement cut off after `not`, claimed with the value `not` (24) | `ValueMismatch`, `NegatedStatement`, `MalformedStatement` |
 | P6 | statements of superseded generations, exact (60) | `StaleGeneration` |
 | P7 | every statement (own and mirror) of the live generation of each revoked capsule, exact (50) | `RevokedGeneration` |
 | P8 | the same for disputed capsules (50) | `DisputedGeneration` |
+| P9 | a hit labelled with the **live generation of a healthy capsule** that cites an exact statement of an intact event of another generation or capsule: the event of an older generation of the same capsule (30); the live event of a revoked or disputed capsule, labelled with a healthy capsule of the same generation number where one exists (30) | `SourceNotOwnedByHit` |
 
 Each class has exactly one defect, so exactly one barrier refuses it; a class with fewer candidates than its quota gets all of
 them. The corpus (shape, events, replicas, questions, hits with every field the generator decided) is hashed (SHA-256) and the
@@ -96,8 +136,10 @@ on the frozen commit).
 ## 3. The mechanism and the arms
 
 The mechanism M, per hit, through the public API of `ptr_search` only: `SearchHit::new`, `mark_possible`;
-`ExactSourceResolver::resolve(citation)` against the source (the store of record, plus the corrupt replicas, section 8);
-`observe_resolved(resolved, validity)` with the lifecycle authority as `validity`; `verify_claim(claim, resolved)`;
+`ExactSourceResolver::resolve(citation)` against the source (the store of record, plus the corrupt replicas, section 8) and the
+ownership record, both the generator's table;
+`observe_resolved(resolved, validity)` with the lifecycle authority as `validity` (which also refuses a source that is not the hit's
+own: `SourceNotOwnedByHit`, after the lifecycle check); `verify_claim(claim, resolved)`;
 `promote_verified_with(proof)`. M processes every hit of every question independently; the best-ranked promoted hit gives the
 answer (its verified claim's value), no promoted hit means abstention.
 
@@ -124,14 +166,20 @@ disputed are answered `Disputed` by an overlay and every other by the runtime. W
 ## 4. Oracle and cross-check
 
 The truth is the generator's table: the class of every hit (with the refusal it must get) and the authoritative answer of every
-question. It is cross-checked, before the arms run, by a **naive independent reading** of the finished corpus (`oracle.rs`,
-which calls nothing of `ptr_search`): a hit is eligible iff its quote occurs in the pristine event text exactly at the cited span
-(`match_indices`), the quote equals the canonical affirmative rendering of the claim (string equality), and the generator's own
-lifecycle table says the generation is the live one of a healthy capsule; an answer is the value of the single affirmative
-statement of the fact in the live events of healthy capsules. Each hit or question on which the reading and the label disagree is
-one `oracle_label_mismatches`. This is a cross-check of two readings of one harness, not an external oracle; the grammar can only
-express a disagreement as a failed coverage rule (the seed is vacuous), so a disagreement does not exit 2 and the freeze review
-must see it at 0.
+question. It is cross-checked, before the arms run, by a naive reading of the finished corpus (`oracle.rs`, which calls nothing of
+`ptr_search`): a hit is eligible iff its quote occurs in the pristine event text exactly at the cited span (`match_indices`), the
+span is a whole line of the event (it starts the event or follows a newline, and ends the event or precedes a newline), the quote
+equals the canonical affirmative rendering of the claim (string equality), the event is the one the generator wrote for the
+hit's capsule and generation, and the generator's own lifecycle table says that generation is the live one of a healthy capsule;
+an answer is the value of the affirmative statement of the fact in the live events of healthy capsules (a statement repeated
+verbatim counts once). Each hit or question on which the reading and the label disagree is one `oracle_label_mismatches`.
+
+**What this oracle is independent of.** It is independent of the code under test, not of the generator: it shares `render`, the
+`World` data and the lifecycle table with the generator, so it is a cross-check of two readings of one harness, not an external
+oracle. It validates the *labels* (`Class::eligible`, the authoritative answers) and does not validate the *refusal reasons*
+(`Hit::expected`) nor the verdicts of the mechanism; the reasons are checked only by `wrong_refusal_reason` against the
+generator's own table. The grammar can only express a disagreement as a failed coverage rule, so a disagreement does not exit 2;
+the aggregator judges it INVALID (a harness defect), and the freeze review must see it at 0.
 
 ## 5. Metrics (JSON integers; grouped metrics are objects of integers)
 
@@ -140,7 +188,8 @@ must see it at 0.
 | questions, answerable_questions, unanswerable_questions | generated questions (156 + 100 = 256) |
 | hits_by_class.{H,P1..P8} | hits of the class shown to M |
 | poison_attempts.P1..P8 | class-k hits M refused with the expected refusal (coverage) |
-| true_claims, true_known_promoted, recall_permille | honest hits shown to M / promoted / 1000 x promoted / shown (falsifier >= 950); recall_violation = 1 iff below |
+| true_claims, true_known_promoted, recall_permille | honest hits (plain and hard) shown to M / promoted / 1000 x promoted / shown (falsifier >= 950); recall_violation = 1 iff below |
+| hard_honest_presented, hard_honest_refused (hard) | hard honest hits shown to M (coverage >= 30) / refused (falsifier, zero tolerance; by variant in `internal.hard_honest_refused_by_variant`) |
 | false_known_mechanism (hard) | M-promoted hits with a non-eligible label |
 | false_known_baseline_direct, _gen_filter_only, _bool_trust | the same for B0, B1, B2 (one Known per question) |
 | stale_or_revoked_promoted (hard) | M-promoted hits of P6, P7, P8 |
@@ -149,25 +198,29 @@ must see it at 0.
 | stage_skip_attempts, stage_skip_by_kind.K1..K10 | adversarial attempts that got the prescribed refusal with the hit unchanged (section 6) |
 | stage_skip_accepted (hard) | adversarial calls that returned `Ok` |
 | stage_skip_unexpected (hard) | adversarial calls with another refusal, with the hit changed, or whose setup from honest hits failed |
-| task_success_mechanism / _baseline / _gen_filter_only / _bool_trust | questions answered correctly or correctly abstained on, per arm (baseline = B0) |
+| task_success_mechanism / _baseline / _gen_filter_only / _bool_trust | questions answered correctly or correctly abstained on, per arm (baseline = B0); M is judged against all three (the last two are corollaries) |
+| task_success_violation (hard) | 1 iff M is below any of the three arms (restates the three rules as a count) |
 | answerable_success_permille, answerable_success_baseline_permille | descriptive: successes on answerable questions of M and B0 |
 | abstentions_correct | M abstentions on unanswerable questions (descriptive) |
 | oracle_label_mismatches, corpus_selection_digest_mismatches (hard) | section 4, section 2 |
 | resolver_calls, lifecycle_queries | calls observed at the boundary (descriptive) |
 
-`hard_failures` is the sum of the nine hard counters named in `tests/mutations.toml`; the wall-clock time is in `timing_ns` and
+`hard_failures` is the sum of the eleven hard counters named in `tests/mutations.toml`; the wall-clock time is in `timing_ns` and
 never judged.
 
 ## 6. Adversarial stage-skip attempts
 
-On honest hits (and, for K9, K10, hits of generations that are not live), through the public API, each kind 24 times (a
-seeded cycle through the honest hits): K1 promote a retrieval candidate with a valid proof; K2 promote possible evidence that
-was never observed; K3 observe a candidate that was never marked possible; K4 observe an already observed hit with another
-resolution; K5 step an observed or a known hit back with `mark_possible`; K6 promote an observed hit with a valid proof made for
-another source (a forged resolution); K7 promote a known hit again; K8 promote with a proof a hit observed on the caller's
+On plain honest hits (and, for K9, K10, hits of generations that are not live), through the public API, each of the twelve kinds
+24 times (a seeded cycle through the honest hits): K1 promote a retrieval candidate with a valid proof; K2 promote possible evidence that
+was never observed; K3 observe a candidate that was never marked possible, with its own source; K4 observe an already observed hit with another
+resolution (another span of the same event, which the hit owns as well, so that only the stage rule can refuse it); K5 step an observed or a known hit back with `mark_possible`; K6a promote an observed hit with a valid proof made for another
+event, K6b for another span of the same event (a forged resolution; the two are counted apart so that a comparison by event id
+alone is caught); K7 promote a known hit again; K8 promote with a proof a hit observed on the caller's
 word (no source held); K9 launder a hit of a superseded, revoked or disputed generation with the valid resolution of an honest
-one; K10 promote that hit afterwards. Each expects `WrongStage`, `ClaimProofMismatch`, `SourceNotResolved` or the lifecycle
-refusal of the hit's generation, with the hit's stage, source and claim unchanged. An attempt is counted only on that outcome.
+one; K10 promote that hit afterwards; K11 observe an honest, live-labelled hit with the exact, intact resolution of another
+capsule's event (of the same generation number on every other attempt). Each expects `WrongStage`, `ClaimProofMismatch`,
+`SourceNotResolved`, `SourceNotOwnedByHit` or the lifecycle refusal of the hit's generation, with the hit's stage, source and
+claim unchanged. An attempt is counted only on that outcome.
 `ResolvedSource` and `ClaimProof` cannot be constructed outside `ptr_search` (private fields, compile-fail doctests); the
 attempts therefore replay or mis-pair genuine proofs, they do not forge one. There is no run-time negative control of this
 counter besides the mutation plan (the stage checks removed, the proof held against the wrong source).
@@ -186,33 +239,53 @@ test); an argument that does not parse. B2 runs the boolean API of the code unde
 - P3 cites **corrupt replicas** served beside the store by a `RawEventSource` double, because `KnowledgeStore::append_raw`
   re-checks digests and a store cannot hold such an event; the resolver's digest check is defence in depth against a damaged
   store and this is the only way to reach it.
-- A proof is **not tied to the capsule** a hit names (the store records no event-to-capsule mapping): a hit paired with the
-  resolution of another capsule's event is not caught by the typed path; the lifecycle is asked about the hit's own capsule
-  generation, which is why P6 to P8 are refused whatever event they cite. Neither a stage-skip kind nor a poison class pairs a hit
-  with a foreign capsule's event, so Q002 says nothing about that gap.
-- The lifecycle is read once per hit at observation time; `promote_verified_with` does not ask again (documented in the API).
+- A resolved source is tied to the capsule generation a hit names through the ownership record (P9, K11). The record is a trust
+  root (the generator's table here); a store-derived record is open work.
+- The lifecycle is read once per hit at observation time; `promote_verified_with` does not ask again (documented in the API and in
+  the aggregator's limitations): a revocation between `observe_resolved` and `promote_verified_with` is not seen. This is
+  pre-existing design, the same as the boolean path, and not measured by Q002.
+- The corpus reaches the verifier's token rules only through the subject, the predicate-only and case-only variants, the
+  two-line, padded and truncated-negation spans and the hard honest values. A parse that accepts extra trailing tokens *on one
+  line*, a case fold of the predicate or the value, and a trim of a space inside a token are not generated (every event line is
+  well-formed) and are covered by the unit tests of `source.rs` only (`text_that_is_not_exactly_one_statement_is_malformed`,
+  `another_subject_predicate_or_value_is_refused_in_that_order`).
 - The negative controls (B0, B2) demonstrate that the corpus can fool a direct or boolean-trusting caller, not that M catches a
   defective implementation; that evidence is the mutation plan.
 - Defence in depth: the resolver vouches for the quote, the verifier for the claim; a defect in one is absorbed by the other
   when a poison class reaches both. The plan contains the mutations the classes reach through exactly one barrier; a mutation
   that weakens a barrier no class tests through alone (an empty or out-of-range span accepted) is equivalent and not listed.
-- `task_success_gen_filter_only`, `task_success_bool_trust`, the answerable-only permille, abstentions and wall time are
-  descriptive.
+- `task_success_gen_filter_only` and `task_success_bool_trust` are judged only as corollaries of the owner's rule; the
+  answerable-only permille, abstentions and wall time are descriptive.
+- Recall measures over-refusal on this corpus, not retrieval recall: the plain honest hits are exact, and the hard honest class
+  (multibyte, `not`-containing, repeated, one-line and edge spans) is where over-refusal that the plain hits would hide is tested.
 
 ## 9. Mutation plan
 
 `tests/mutations.toml` (`python3 scripts/mutation_check.py Q002`; `--check` verifies the anchors; invoked as
-`ptr-bench evidence-promotion 36 17`, the pinned world at seed 17, `"scale":"custom"`) plants 24 defects one at a time: 19 in
-`ptr-search` (the resolver skips the digest check / compares only a quote prefix / ignores the offset / accepts unknown raw
-events / panics on a span past the end; the verifier skips the subject compare / the value compare / treats negation as a match /
-reports a subject mismatch as a value mismatch / over-refuses honest claims; `observe` accepts a Revoked, a Disputed, a
-Superseded generation / misreports the wrong stage / has no stage check; `mark_possible` has no stage check; `promote_verified_with`
-has no stage check / ignores the proof's source / promotes without a held source) and 5 in the harness (the authority revokes the
-wrong generation; the label table calls a lookalike eligible; the K6 driver uses the hit's own proof; the generator drifts from
-the pinned corpus; the expected refusal of P7 is wrong). Every hard counter is expected by at least one; a mutation counts as
-killed only when the run exits 1 and one of its expected counters fired. COMPLETED needs `killed == total`.
+`ptr-bench evidence-promotion 36 17`, the pinned world at seed 17, `"scale":"custom"`) plants 37 defects one at a time: 31 in
+`ptr-search` and 6 in the harness.
+
+- Resolver (7): skips the digest check; compares only a quote prefix; ignores the offset; accepts unknown raw events (absorbed
+  by the ownership check, so it is killed through `wrong_refusal_reason`); panics on a span past the end; drops the empty-span
+  check (killed through `wrong_refusal_reason`); binds the first occurrence of the quote (killed by the repeated-statement hard
+  honest hit, `hard_honest_refused`).
+- Verifier (11): skips the subject / the predicate / the value compare; folds the ASCII case of the subject; reads only the first
+  line; trims the statement; treats negation as a match; accepts a bare `not` value; reports a subject mismatch as a value
+  mismatch; over-refuses honest claims; rejects non-ASCII tokens (killed by `hard_honest_refused`).
+- Observe and promote (13): accepts a Revoked / a Disputed / a Superseded generation; misreports the wrong stage; has no stage
+  check; ignores the source's owner; compares the owner on the capsule only / on the generation only (P9 variants and K11 tell
+  the three apart); `mark_possible` has no stage check; `promote_verified_with` has no stage check / ignores the proof's source /
+  compares it by raw event id only (K6b) / promotes without a held source.
+- Harness (6): the authority revokes the wrong generation; the label table calls a lookalike eligible; the K6 driver uses the
+  hit's own proof; the generator drifts from the pinned corpus; the expected refusal of P7 is wrong; the mechanism drops its
+  promoted answers (`task_success_violation`).
+
+Every hard counter is expected by at least one; a mutation counts as killed only when the run exits 1 and one of its expected
+counters fired. COMPLETED needs `killed == total`.
 
 ## 10. Open points for review
 
-See the report that accompanied this draft: the freeze re-measures the corpus digests, a decision on whether to keep the digest
-pin (it makes every generator change a re-pin), and whether the proof should be tied to the capsule (an API change).
+See the reports that accompanied this draft: the freeze re-measures the corpus digests with the committed script
+`tests/pin_corpus.py` (`--check` reproduces it; every generator change is a re-pin, which is the price of freezing the generated
+corpus independently of the git revision), and the open product points: an ownership accessor in `ptr-memory`, deprecating the
+boolean path once Q002 is frozen, and binding the hit to the retriever's own claim.

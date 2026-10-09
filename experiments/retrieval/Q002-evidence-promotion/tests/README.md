@@ -24,3 +24,7 @@ python3 scripts/mutation_check.py Q002 --only <name> ...  # a few, no record
 The checker runs `ptr-bench evidence-promotion 36 17` (the pinned world at seed 17; the result says `"scale":"custom"` and is no
 evidence). The mutation run edits `crates/ptr-search/src/*.rs` and `bins/ptr-bench/src/experiments/q002/*.rs` in place and
 rebuilds `target/release`, so it runs on a quiet tree and never beside another build.
+
+Every edit of the world generator changes the generated corpus and so the pinned digests (`corpus_digest_seed_N` in
+`config.toml`, `CORPUS_DIGESTS` in `params.rs`). [`pin_corpus.py`](pin_corpus.py) re-measures them from the harness binary and
+rewrites both places (`--check` writes nothing and fails when a pin is stale); re-pin once, after the last generator edit.

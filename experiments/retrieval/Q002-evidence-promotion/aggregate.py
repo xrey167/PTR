@@ -17,15 +17,19 @@ rule grammar, which `evaluate` below implements):
 - COMPLETED iff every seed holds every coverage rule and every falsifier rule
   and the mutation evidence is complete;
 - FALSIFIED if some valid seed fails a rule (a coverage rule that fails makes
-  the run vacuous, which counts as falsified; so does a disagreement between the
-  generator's labels and the harness's naive reading of the corpus, which the
-  grammar can only express as a failed coverage rule);
+  the run vacuous, which counts as falsified);
 - INVALID otherwise when a seed cannot be judged: no result line, a harness
   that exited 2 or by a signal, another benchmark, seed, scale or experiment
   than the record's, harness gaps, a baseline control that did not hallucinate,
-  a rule whose counter is missing, null or of the wrong type, or an exit status
-  that disagrees with the rules (0 with a failed rule, 1 with none). INVALID
-  says nothing about the hypothesis.
+  a rule whose counter is missing, null or of the wrong type, an exit status
+  that disagrees with the rules (0 with a failed rule, 1 with none), or a
+  harness-integrity failure: a disagreement between the generator's labels and
+  the harness's naive reading of the corpus (`oracle_label_mismatches > 0`) or a
+  generated corpus that is not the pinned one (`corpus_selection_digest_mismatches
+  > 0`). The two counters are also coverage rules, because the grammar and the
+  mutation checker want a named counter and a nonzero exit, but a harness
+  defect says nothing about the hypothesis, so such a seed is INVALID, never
+  FALSIFIED. INVALID says nothing about the hypothesis.
 
 The harness is shown able to fail by `results/mutations.json`
 (scripts/mutation_check.py Q002), which must be this experiment's evidence from the
@@ -72,28 +76,33 @@ OPERATORS = (">=", "<=", "==")
 NUMBER = re.compile(r"-?[0-9]+")
 SCOPE = (
     "evidence promotion of search hits by exact-source verification: ptr_search's typed promotion path "
-    "(ExactSourceResolver, SearchHit::observe_resolved against the lifecycle authority, verify_claim, "
+    "(ExactSourceResolver, SearchHit::observe_resolved against the lifecycle authority and the source ownership, verify_claim, "
     "SearchHit::promote_verified_with) must promote a retrieved hit to VerifiedKnown only if its citation is the byte-exact "
-    "quote at the cited span of an intact raw event, its claim is what that one statement states (subject, predicate and value "
-    "byte for byte, not negated) and the lifecycle authority (PtrRuntime::generation_validity, with a harness overlay for the "
-    "one state the runtime cannot answer, Disputed) holds the hit's generation live; seeded synthetic worlds of 36 capsules of "
-    "one to three generations (healthy, revoked, disputed), 156 answerable, 60 quarantined and 40 absent questions, and a noisy "
-    "retriever whose hits include eight classes of poison (fabricated source id, wrong span or doctored quote, tampered digest, "
-    "lookalike subject, contradicting value or negation, superseded, revoked-but-live and disputed generations); the mechanism "
-    "must promote none of the poison, accept none of the adversarial stage skips at the API boundary, promote at least 950 per "
-    "mille of the honest hits and get at least as many questions right (correct answer or correct abstention) as direct "
-    "retrieval-to-answer; the boolean API fed true (B2) and direct retrieval (B0) are the negative controls and the lifecycle "
-    "filter alone (B1) a contrast"
+    "quote at the cited span of an intact raw event that belongs to the capsule generation the hit names, its claim is what that "
+    "one statement states (subject, predicate and value byte for byte, not negated) and the lifecycle authority "
+    "(PtrRuntime::generation_validity, with a harness overlay for the one state the runtime cannot answer, Disputed) holds the "
+    "hit's generation live; the raw event source, the ownership record and the lifecycle closure are trust roots taken from the "
+    "generator's table; seeded synthetic worlds of 36 capsules of one to three generations (healthy, revoked, disputed), 156 "
+    "answerable, 60 quarantined and 40 absent questions, and a noisy retriever whose hits include nine classes of poison "
+    "(fabricated source id, wrong or empty or two-statement or newline-padded span or doctored quote, tampered digest, lookalike "
+    "subject or other predicate or subject differing by case, contradicting value or negation or truncated negation, superseded, "
+    "revoked-but-live and disputed generations, and a live label on the exact event of another generation or capsule) and hard "
+    "honest hits (multibyte value, value containing not, repeated statement, one-line event, spans at the event edges); the "
+    "mechanism must promote none of the poison, refuse none of the hard honest hits, accept none of the adversarial stage skips "
+    "at the API boundary, promote at least 950 per mille of the honest hits and get at least as many questions right (correct "
+    "answer or correct abstention) as direct retrieval-to-answer, the lifecycle filter alone and the boolean API fed true; "
+    "direct retrieval (B0) and the boolean API (B2) are the negative controls and the lifecycle filter alone (B1) a contrast"
 )
 LIMITATIONS = [
     "the claim is about a synthetic structured world: every fact is one statement of the fixed format `subject: predicate is [not ]value` in a raw event the generator wrote; nothing is claimed about free text, paraphrase, statements that span lines, units, dates or a real retriever, all of which the verifier refuses rather than interprets",
-    "the honest hits are exact by construction (their citation and claim are the statement itself), so recall_permille measures that the mechanism does not over-refuse well-formed evidence, not that it recovers hits a real retriever garbles; a recall of 1000 is the expected value",
-    "the proof says that this claim is what this span of this intact raw event states; it does not tie the raw event to the capsule a hit names (the store does not record that mapping, the retriever's index does), so a hit paired with the resolution of another capsule's event is not caught by the typed path; P6 to P8 are refused because the hit's own capsule generation is asked, not because of the event it cites",
-    "Disputed is not a state of PtrRuntime::generation_validity: P8 is answered by a harness overlay, so the experiment shows that the mechanism refuses a Disputed answer, not that a runtime produces one; P6 and P7 use the real runtime (a ledger of CapsuleCommitted, CapsuleSuperseded and Revoked events)",
-    "a KnowledgeStore cannot hold an event whose bytes disagree with its digest, so P3 cites corrupt replicas served beside the store by a RawEventSource double; the digest check is defence in depth against a damaged store, and this is the only way to reach it",
-    "a Known is false by the generator's label (eligible: exact source, exact claim, live generation); the baselines are counted once per question and the mechanism on every hit it promotes; a P2 hit whose claim is true in the world but whose span is wrong still counts as a false Known (false_known_untrue_* reports the subset whose claim is also false); the generator's labels are checked against a naive independent reading of the corpus, but both are this harness",
+    "the honest hits are exact by construction (their citation and claim are the statement itself), so recall_permille measures that the mechanism does not over-refuse well-formed evidence (the hard honest class, with its zero-tolerance falsifier, is where that is tested), not that it recovers hits a real retriever garbles; a recall of 1000 is the expected value",
+    "the typed path's guarantee holds given three trust roots, each taken from the generator's table and none checked by the code under test: the RawEventSource (the digest check shows internal consistency, not that the source is the store of record; the trait is open and the P3 double is such an implementation), the SourceOwnership (which capsule generation admitted which raw event; it must come from the admitting record, not from the retriever's index) and the lifecycle closure (a truthful validity answer); what P9 and K11 show is that, given a truthful ownership, a live label cannot launder an event of another generation or capsule, not that an ownership record can be derived from KnowledgeStore (it cannot yet)",
+    "the claim a proof is made for is the caller's: a SearchHit carries no assertion of the retriever's own, so nothing ties the claim verified to a claim the retriever made; the boolean observe/promote_verified path reaches VerifiedKnown with no raw bytes at all and is the documented trusted-caller path (baseline B2), not restricted by this experiment",
+    "Disputed is not a state of PtrRuntime::generation_validity and the runtime is never wired to answer it: P8 tests the contract that observe_resolved refuses a Disputed answer of the validity closure (the harness overlay, with the mutation observe-accepts-disputed), not that a PtrRuntime-backed system refuses disputed generations; P6 and P7 use the real runtime (a ledger of CapsuleCommitted, CapsuleSuperseded and Revoked events)",
+    "a KnowledgeStore cannot hold an event whose bytes disagree with its digest, so P3 cites corrupt replicas served beside the store by a RawEventSource double, recorded as copies of their originals; P3 shows the resolver's defence in depth against a source that violates the store's invariant, not that the store is tamper-evident, and no honest hit reads a replica",
+    "a Known is false by the generator's label (eligible: exact source, exact claim, own live generation); the baselines are counted once per question and the mechanism on every hit it promotes; a P2 hit whose claim is true in the world but whose span is wrong still counts as a false Known (false_known_untrue_* reports the subset whose claim is also false); the generator's labels are checked against a naive reading of the corpus that is independent of the code under test, not of the generator (it shares the rendering, the world data and the lifecycle table with it) and that checks labels, not refusal reasons, which are checked only by wrong_refusal_reason against the generator's table",
     "the lifecycle is read once per hit at observation time (a revocation committed after observe_resolved is not seen by promote_verified_with), one process, one machine profile, no concurrency; the boolean path observe/promote_verified is the documented trusted-caller path and is not restricted",
-    "the stage-skip attempts are a fixed list of ten kinds on honest and lifecycle-ineligible hits through the public API; a caller that can construct a ResolvedSource or ClaimProof is excluded by privacy of their fields (compile-fail doctests), which this experiment does not test; wall-clock times (timing_ns) are recorded and never judged",
+    "the stage-skip attempts are a fixed list of twelve kinds (K6 split into another event and another span of the same event, K11 an honest hit given another capsule's source) on honest and lifecycle-ineligible hits through the public API; a caller that can construct a ResolvedSource or ClaimProof is excluded by privacy of their fields (compile-fail doctests), which this experiment does not test; wall-clock times (timing_ns) are recorded and never judged",
 ]
 
 CONFIG = tomllib.loads((HERE / "config.toml").read_text(encoding="utf-8"))
@@ -185,6 +194,15 @@ def judge_seed(result: dict | None, exit_code, criteria: dict, seed: int) -> dic
         invalid.append("the result does not report the negative control bool_trust")
     if result.get("harness_gaps") != []:
         invalid.append(f"harness gaps: {result.get('harness_gaps')!r}")
+    # Harness-integrity guards: a defect of the harness says nothing about the hypothesis. They are coverage rules too (the
+    # mutation checker wants a named counter and exit 1), but the verdict of such a seed is INVALID, never FALSIFIED.
+    for counter, reason in (
+        ("oracle_label_mismatches", "the generator's labels differ from the naive reading of the corpus"),
+        ("corpus_selection_digest_mismatches", "the generated corpus is not the pinned one"),
+    ):
+        count = result.get(counter)
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            invalid.append(f"harness integrity: {counter} = {count} ({reason})")
     for key, failed in (("coverage", coverage_failed), ("falsifiers", falsifiers_failed)):
         for rule in criteria[key]:
             try:

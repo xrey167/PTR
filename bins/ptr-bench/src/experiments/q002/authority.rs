@@ -14,7 +14,7 @@ use ptr_config::PtrConfig;
 use ptr_ledger::LedgerEvent;
 use ptr_memory::{KnowledgeStore, RawEvent};
 use ptr_runtime::PtrRuntime;
-use ptr_search::RawEventSource;
+use ptr_search::{RawEventSource, SourceOwners, SourceOwnership};
 use ptr_types::{CapsuleId, Generation, ProjectId, RawEventId, Validity};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -110,6 +110,7 @@ impl Authority {
 pub struct Source<'store> {
     store: &'store KnowledgeStore,
     replicas: BTreeMap<RawEventId, RawEvent>,
+    owners: SourceOwners,
 }
 
 impl<'store> Source<'store> {
@@ -124,7 +125,25 @@ impl<'store> Source<'store> {
         Ok(store)
     }
 
+    /// The source over `store` and the world's replicas, and the ownership the generator
+    /// wrote down: every real event belongs to the capsule generation that admitted it, and a
+    /// replica to the one of the event it is a damaged copy of.
     pub fn new(store: &'store KnowledgeStore, world: &World) -> Source<'store> {
+        let mut owners = SourceOwners::default();
+        for (id, _, capsule, generation) in world.owned_events() {
+            owners.record(
+                RawEventId::from(id),
+                CapsuleId::from(capsule),
+                Generation(generation),
+            );
+        }
+        for (id, capsule, generation) in &world.replica_owners {
+            owners.record(
+                RawEventId::from(id.as_str()),
+                CapsuleId::from(capsule.as_str()),
+                Generation(*generation),
+            );
+        }
         Source {
             store,
             replicas: world
@@ -132,7 +151,14 @@ impl<'store> Source<'store> {
                 .iter()
                 .map(|replica| (replica.id.clone(), replica.clone()))
                 .collect(),
+            owners,
         }
+    }
+}
+
+impl SourceOwnership for Source<'_> {
+    fn owners(&self, id: &RawEventId) -> Vec<(CapsuleId, Generation)> {
+        self.owners.owners(id)
     }
 }
 
@@ -213,5 +239,29 @@ mod tests {
             .raw_event(&RawEventId::from("raw-fab-0000"))
             .is_none());
         assert!(store.append_raw(replica.clone()).is_err());
+    }
+
+    #[test]
+    fn every_real_event_has_exactly_the_owner_the_generator_gave_it_and_a_replica_its_original() {
+        let world = world();
+        let store = Source::store_of(&world).expect("a store");
+        let source = Source::new(&store, &world);
+        let mut events = 0;
+        for (id, _, capsule, generation) in world.owned_events() {
+            events += 1;
+            assert_eq!(
+                source.owners(&RawEventId::from(id)),
+                vec![(CapsuleId::from(capsule), Generation(generation))],
+                "{id}"
+            );
+        }
+        assert!(events > world.capsules.len());
+        assert_eq!(world.replica_owners.len(), world.replicas.len());
+        for (id, capsule, generation) in &world.replica_owners {
+            assert_eq!(
+                source.owners(&RawEventId::from(id.as_str())),
+                vec![(CapsuleId::from(capsule.as_str()), Generation(*generation))]
+            );
+        }
     }
 }

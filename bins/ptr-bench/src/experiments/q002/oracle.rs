@@ -6,26 +6,35 @@
 //! the quote in the pristine event text, string equality with the canonical rendering of the
 //! claim, the generator's own lifecycle table, and a scan of the live events of healthy
 //! capsules for the answer. A hit is eligible here iff the quote occurs in the pristine event
-//! exactly at the cited span, the quote is the canonical affirmative statement of the claim,
-//! and the generator says the capsule generation is the live generation of a healthy capsule.
-//! A disagreement with a label is an `oracle_label_mismatches`.
+//! exactly at the cited span, the span is a whole line of the event, the quote is the canonical
+//! affirmative statement of the claim, the event is the one the generator wrote for the hit's
+//! capsule and generation, and the generator says that generation is the live generation of a
+//! healthy capsule. A disagreement with a label is an `oracle_label_mismatches`.
+//!
+//! What it is independent of is the code under test, not of the generator: it shares `render`,
+//! the `World` data and the lifecycle table with it, and it checks the labels (`eligible`, the
+//! authoritative answers), not the refusal reasons (`Hit::expected`), which are checked only
+//! against the generator's table by `wrong_refusal_reason`.
 
 use super::world::{render, Hit, Question, World};
 
 /// Whether a hit is promotable by the naive reading of the corpus.
 pub fn naive_eligible(world: &World, hit: &Hit) -> bool {
-    let pristine = world
-        .capsules
-        .iter()
-        .flat_map(|capsule| &capsule.generations)
-        .find(|event| event.raw_id == hit.citation.raw_id.0);
-    let Some(event) = pristine else { return false };
+    let Some((text, owner, generation)) = world.event_owner(&hit.citation.raw_id.0) else {
+        return false;
+    };
     let quote = hit.citation.quote.as_str();
-    let at_span = event
-        .text
+    let (start, end) = (hit.citation.start, hit.citation.end);
+    let at_span = text
         .match_indices(quote)
-        .any(|(at, _)| at == hit.citation.start && at + quote.len() == hit.citation.end);
+        .any(|(at, _)| at == start && at + quote.len() == end);
     if !at_span {
+        return false;
+    }
+    // The span is a whole line of the event: it starts the event or follows a newline, and it
+    // ends the event or precedes a newline.
+    let bytes = text.as_bytes();
+    if !(start == 0 || bytes[start - 1] == b'\n') || !(end == bytes.len() || bytes[end] == b'\n') {
         return false;
     }
     let canonical = render(
@@ -37,7 +46,11 @@ pub fn naive_eligible(world: &World, hit: &Hit) -> bool {
     if quote != canonical {
         return false;
     }
-    world.generator_says_live(&hit.capsule, hit.generation)
+    // The event belongs to the capsule generation the hit names, and that is the live
+    // generation of a healthy capsule.
+    owner == hit.capsule
+        && generation == hit.generation
+        && world.generator_says_live(&hit.capsule, hit.generation)
 }
 
 /// The authoritative answer of a question by scanning the live events of healthy capsules for
@@ -58,7 +71,9 @@ pub fn naive_answer(world: &World, question: &Question) -> Option<String> {
             }
             match &found {
                 None => found = Some(rest.to_owned()),
-                // Two live statements of one fact: no authoritative answer.
+                // The same statement twice is one statement.
+                Some(seen) if seen == rest => {}
+                // Two live statements of one fact that differ: no authoritative answer.
                 Some(_) => return None,
             }
         }

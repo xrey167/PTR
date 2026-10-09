@@ -42,17 +42,32 @@ quota_p4_lookalike_subject = 48
 quota_p5_contradicting_value = 30
 quota_p5_negation = 30
 quota_p6_superseded = 60
+# More ways to be wrong inside the classes above, and the label that lies: an empty span, a span of two statements and a
+# span with a newline next to the statement (P2); a claim with another predicate, a subject that differs by ASCII case
+# (P4); a span that stops after `not` (P5); a live label on an exact event of another generation or capsule (P9).
+quota_p2_empty_span = 24
+quota_p2_two_line_span = 24
+quota_p2_padded_span = 24
+quota_p4_predicate_only = 24
+quota_p4_case_only = 24
+quota_p5_truncated_negation = 24
+quota_p9_relabelled_superseded = 30
+quota_p9_relabelled_quarantined = 30
+# Honest hits that are hard to read, per kind (multibyte value, value containing `not`, statement repeated in its event,
+# one-line event, span at the start of the event, span at the end of it): refusing one is a hard failure.
+hard_honest_per_variant = 6
 honest_score_min = 400
 honest_score_max = 900
 poison_score_min = 300
 poison_score_max = 950
-# Adversarial attempts at the API boundary, per kind (K1..K10).
+# Adversarial attempts at the API boundary, per kind (K1..K5, K6a, K6b, K7..K11).
 stage_skip_attempts_per_kind = 24
 # Coverage prerequisites (a run that misses one is vacuous).
 min_poison_attempts_per_class = 20
 min_true_claims = 100
 min_unanswerable_questions = 50
 min_stage_skip_attempts_per_kind = 20
+min_hard_honest_presented = 30
 min_false_known_baseline_direct = 1
 min_false_known_gen_filter_only = 1
 min_false_known_bool_trust = 1
@@ -65,11 +80,12 @@ max_stage_skip_unexpected = 0
 max_stale_or_revoked_promoted = 0
 max_wrong_refusal_reason = 0
 max_product_panics = 0
+max_hard_honest_refused = 0
 min_recall_permille = 950
 timing_gated = false
 # The SHA-256 of the generated corpus of each seed at the pinned shape, as measured at the freeze commit.
-corpus_digest_seed_17 = "0822b295f09f746b15fb7c4370425fe5df30236c19fae70505837fbbcd6ffc4b"
-corpus_digest_seed_29 = "d7c099236e0f7cb0a917bcdaf9893c2f8c8c0747ed5f3f24f24e9e3c0da56caa"
-corpus_digest_seed_43 = "ddb572e7cde6fcf98f6681c6075e369af6b14e2ddb65c77d7e4a3fb1eafb5348"
-corpus_digest_seed_71 = "c5fbcc29ecc34e31caaea007d4aa787c5d60e6aae2da53b36145dc148be85235"
-corpus_digest_seed_101 = "d759d0454e593f496e327d16e9979a7e2e5ac7910c3179229c08b493745b0b59"
+corpus_digest_seed_17 = "f4057e61ddf1736e13d988607e014f49dc74fb300f8e90cd513e61a2e2dd48b0"
+corpus_digest_seed_29 = "d4df6e680dd55be21eb9a5972d1d441f512cf7dfb785eaef963048d5bd61b413"
+corpus_digest_seed_43 = "52d000e8d03207717d21fd1eac79cf6fa3b6928f86081425511f0eaef7eafa7e"
+corpus_digest_seed_71 = "9389830e75c361d1f443616977bfbeb4608c344ca400267742541df206ad9814"
+corpus_digest_seed_101 = "a0bda1f8e89570385480cd9af8925e01bc77662fddb15dc6472bd71c6dd337cc"

@@ -5,8 +5,8 @@
 //! authority does not hold live (`retain_live`) and takes the top survivor; B2 runs the staged
 //! API with the caller's word for the source and the verification (`observe(.., true)`,
 //! `promote_verified(true)`, today's API fed `true`); M is the mechanism, the typed path:
-//! `ExactSourceResolver`, `observe_resolved` against the lifecycle authority, `verify_claim`
-//! and `promote_verified_with`. B0 and B2 are the negative controls: if neither produces a
+//! `ExactSourceResolver` (with the ownership the generator wrote down), `observe_resolved`
+//! against the lifecycle authority, `verify_claim` and `promote_verified_with`. B0 and B2 are the negative controls: if neither produces a
 //! false Known on this corpus the corpus cannot show the hallucination it is made to show.
 //!
 //! A Known is false when the hit's generator label is not eligible (`Class::eligible`). The
@@ -24,9 +24,11 @@ use ptr_search::{
 use ptr_types::{CapsuleId, Generation};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-/// The kinds of adversarial attempt on the API boundary, in the order of `STAGE_SKIP_KINDS`.
-pub const STAGE_SKIP_KINDS: [&str; 10] =
-    ["K1", "K2", "K3", "K4", "K5", "K6", "K7", "K8", "K9", "K10"];
+/// The kinds of adversarial attempt on the API boundary. K6a pairs an observed hit with the
+/// proof of another event, K6b with the proof of another span of the same event.
+pub const STAGE_SKIP_KINDS: [&str; 12] = [
+    "K1", "K2", "K3", "K4", "K5", "K6a", "K6b", "K7", "K8", "K9", "K10", "K11",
+];
 
 /// What the mechanism did with one hit.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +69,7 @@ pub fn from_promotion(error: &EvidencePromotionError) -> Refusal {
         EvidencePromotionError::SourceNotResolved => Refusal::SourceNotResolved,
         EvidencePromotionError::VerificationFailed => Refusal::VerificationFailed,
         EvidencePromotionError::ClaimProofMismatch => Refusal::ClaimProofMismatch,
+        EvidencePromotionError::SourceNotOwnedByHit => Refusal::SourceNotOwnedByHit,
     }
 }
 
@@ -104,6 +107,53 @@ fn search_hit(spec: &Hit) -> SearchHit {
         spec.score_milli as f32 / 1000.0,
         format!("h{}", spec.id),
     )
+}
+
+/// The honest hits an attempt pairs with the hit `a`.
+struct Peers<'a> {
+    /// Another span of the same raw event as `a`.
+    sibling: Option<&'a Hit>,
+    /// A hit of another capsule: of the same generation number on even attempts when there is
+    /// one, so that the generation alone cannot tell the two capsules apart.
+    other_capsule: Option<&'a Hit>,
+}
+
+/// The index of an honest hit that is not `a` and cites another raw event.
+fn b_index(honest: &[&Hit], a_index: usize, i: usize) -> usize {
+    let a = honest[a_index];
+    let mut b = (a_index + 1 + i % 7) % honest.len();
+    while honest[b].citation.raw_id == a.citation.raw_id {
+        b = (b + 1) % honest.len();
+    }
+    b
+}
+
+fn sibling<'a>(honest: &[&'a Hit], a: &Hit, i: usize) -> Option<&'a Hit> {
+    let siblings: Vec<&Hit> = honest
+        .iter()
+        .copied()
+        .filter(|h| h.citation.raw_id == a.citation.raw_id && h.citation.start != a.citation.start)
+        .collect();
+    (!siblings.is_empty()).then(|| siblings[i % siblings.len()])
+}
+
+fn other_capsule<'a>(honest: &[&'a Hit], a: &Hit, i: usize) -> Option<&'a Hit> {
+    let others: Vec<&Hit> = honest
+        .iter()
+        .copied()
+        .filter(|h| h.capsule != a.capsule)
+        .collect();
+    let same_generation: Vec<&Hit> = others
+        .iter()
+        .copied()
+        .filter(|h| h.generation == a.generation)
+        .collect();
+    let pool = if i.is_multiple_of(2) && !same_generation.is_empty() {
+        same_generation
+    } else {
+        others
+    };
+    (!pool.is_empty()).then(|| pool[(i / 2) % pool.len()])
 }
 
 /// One run of the arms over a world.
@@ -250,7 +300,7 @@ impl<'a> Arms<'a> {
         }
         self.tally.add("resolver_calls", 1);
         let resolved = match guarded(&mut self.tally, || {
-            ExactSourceResolver::new(source).resolve(&spec.citation)
+            ExactSourceResolver::new(source, source).resolve(&spec.citation)
         }) {
             None => return Verdict::Panicked,
             Some(Err(error)) => return Verdict::Refused(from_source(&error)),
@@ -309,6 +359,11 @@ impl<'a> Arms<'a> {
         if class.eligible() {
             self.tally.add("true_claims", 1);
         }
+        if class == Class::HardHonest {
+            self.tally.add("hard_honest_presented", 1);
+        }
+        self.tally
+            .add(&format!("hits_by_variant.{:?}", hit.variant), 1);
         match verdict {
             Verdict::Panicked => {}
             Verdict::Promoted(_) => {
@@ -321,7 +376,7 @@ impl<'a> Arms<'a> {
                     if hit.claim_untrue {
                         self.tally.add("false_known_untrue_mechanism", 1);
                     }
-                    if class.is_lifecycle() {
+                    if class.is_stale_source() {
                         self.tally.add("stale_or_revoked_promoted", 1);
                     }
                 }
@@ -330,9 +385,24 @@ impl<'a> Arms<'a> {
                 if class.eligible() {
                     self.tally
                         .add(&format!("honest_refused.{}", refusal.name()), 1);
+                    if class == Class::HardHonest {
+                        self.tally.add("hard_honest_refused", 1);
+                        self.tally.add(
+                            &format!("hard_honest_refused_by_variant.{:?}", hit.variant),
+                            1,
+                        );
+                    }
                 } else if hit.expected == Some(*refusal) {
                     self.tally
                         .add(&format!("poison_attempts.{}", class.name()), 1);
+                    self.tally.add(
+                        &format!(
+                            "poison_attempts_by_variant.{}.{:?}",
+                            class.name(),
+                            hit.variant
+                        ),
+                        1,
+                    );
                 } else {
                     self.tally.add("wrong_refusal_reason", 1);
                     self.tally.add(
@@ -350,7 +420,7 @@ impl<'a> Arms<'a> {
     fn proofs(&mut self, spec: &Hit) -> Option<(ResolvedSource, ptr_search::ClaimProof)> {
         let source = self.source;
         let outcome = guarded(&mut self.tally, || {
-            let resolved = ExactSourceResolver::new(source)
+            let resolved = ExactSourceResolver::new(source, source)
                 .resolve(&spec.citation)
                 .ok()?;
             let proof = verify_claim(&spec.claim, &resolved).ok()?;
@@ -455,15 +525,18 @@ impl<'a> Arms<'a> {
         for (k, kind) in STAGE_SKIP_KINDS.iter().enumerate() {
             for i in 0..super::params::STAGE_SKIP_ATTEMPTS_PER_KIND {
                 let a_index = (i * 5 + k * 11) % honest.len();
-                let b_index = (a_index + 1 + i % 7) % honest.len();
-                let (a, b) = (honest[a_index], honest[b_index]);
+                let (a, b) = (honest[a_index], honest[b_index(&honest, a_index, i)]);
                 let l = lifecycle[(i * 3 + k) % lifecycle.len()];
-                self.attempt(kind, a, b, l, i);
+                let peers = Peers {
+                    sibling: sibling(&honest, a, i),
+                    other_capsule: other_capsule(&honest, a, i),
+                };
+                self.attempt(kind, a, b, l, i, &peers);
             }
         }
     }
 
-    fn attempt(&mut self, kind: &str, a: &Hit, b: &Hit, l: &Hit, i: usize) {
+    fn attempt(&mut self, kind: &str, a: &Hit, b: &Hit, l: &Hit, i: usize, peers: &Peers) {
         let authority = self.authority;
         match kind {
             // Promote a retrieval candidate, or a hit never observed, with a valid proof.
@@ -483,12 +556,13 @@ impl<'a> Arms<'a> {
                 let outcome = guarded(&mut self.tally, || hit.promote_verified_with(proof));
                 self.record(kind, outcome, Refusal::WrongStage, &before, &hit);
             }
-            // Observe a candidate that was never marked possible.
+            // Observe a candidate that was never marked possible, with the hit's own source: only
+            // the stage rule can refuse it.
             "K3" => {
                 let Some(mut hit) = self.hit_at(a, EvidenceStage::SearchCandidate) else {
                     return;
                 };
-                let Some((resolved, _)) = self.proofs(b) else {
+                let Some((resolved, _)) = self.proofs(a) else {
                     return;
                 };
                 let before = snapshot(&hit);
@@ -497,12 +571,17 @@ impl<'a> Arms<'a> {
                 });
                 self.record(kind, outcome, Refusal::WrongStage, &before, &hit);
             }
-            // Swap the resolved source of a hit that is already observed.
+            // Swap the resolved source of a hit that is already observed for another span of the
+            // same event, which the hit owns as well: only the stage rule can refuse it.
             "K4" => {
                 let Some(mut hit) = self.hit_at(a, EvidenceStage::Observed) else {
                     return;
                 };
-                let Some((resolved, _)) = self.proofs(b) else {
+                let Some(other) = peers.sibling else {
+                    self.setup_failed();
+                    return;
+                };
+                let Some((resolved, _)) = self.proofs(other) else {
                     return;
                 };
                 let before = snapshot(&hit);
@@ -525,17 +604,51 @@ impl<'a> Arms<'a> {
                 let outcome = guarded(&mut self.tally, || hit.mark_possible());
                 self.record(kind, outcome, Refusal::WrongStage, &before, &hit);
             }
-            // Promote an observed hit with a valid proof made for another source.
-            "K6" => {
+            // Promote an observed hit with a valid proof made for another source: another event
+            // (K6a), or another span of the same event (K6b).
+            "K6a" | "K6b" => {
                 let Some(mut hit) = self.hit_at(a, EvidenceStage::Observed) else {
                     return;
                 };
-                let Some((_, foreign)) = self.proofs(b) else {
+                let other = if kind == "K6a" {
+                    Some(b)
+                } else {
+                    peers.sibling
+                };
+                let Some(other) = other else {
+                    self.setup_failed();
+                    return;
+                };
+                let Some((_, foreign)) = self.proofs(other) else {
                     return;
                 };
                 let before = snapshot(&hit);
                 let outcome = guarded(&mut self.tally, || hit.promote_verified_with(foreign));
                 self.record(kind, outcome, Refusal::ClaimProofMismatch, &before, &hit);
+            }
+            // Observe an honest, live-labelled hit with the exact, intact source of another
+            // capsule's event (preferably one of the same generation number).
+            "K11" => {
+                let mut hit = search_hit(a);
+                if !matches!(
+                    guarded(&mut self.tally, || hit.mark_possible()),
+                    Some(Ok(()))
+                ) {
+                    self.setup_failed();
+                    return;
+                }
+                let Some(other) = peers.other_capsule else {
+                    self.setup_failed();
+                    return;
+                };
+                let Some((resolved, _)) = self.proofs(other) else {
+                    return;
+                };
+                let before = snapshot(&hit);
+                let outcome = guarded(&mut self.tally, || {
+                    hit.observe_resolved(resolved, |c, g| authority.validity(c, g))
+                });
+                self.record(kind, outcome, Refusal::SourceNotOwnedByHit, &before, &hit);
             }
             // Replay a promotion on a hit that is already known.
             "K7" => {

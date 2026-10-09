@@ -3,27 +3,33 @@
 # by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
 # that show the defect: a run that fails only on others does not count as detecting it.
 #
-# The first nineteen mutations plant defects in `ptr-search` (the exact-source resolver, the claim
-# verifier, the lifecycle step shared by both observe paths and the stage rules of
-# `SearchHit`); the last five plant defects in the harness itself, to show that its lifecycle
-# wiring, its label table, its stage-skip driver, its generator and its table of expected
-# refusals are not vacuous: each makes the counter its plan names fire without any defect in
-# the product. Every hard counter is expected by at least one mutation, so that `killed == total`
-# also shows each of the nine can fire (a test in bins/ptr-bench checks this list against the
-# harness).
+# The first mutations plant defects in `ptr-search` (the exact-source resolver, the claim
+# verifier, the lifecycle and ownership steps of the observe paths and the stage rules of
+# `SearchHit`); the last six plant defects in the harness itself, to show that its lifecycle
+# wiring, its label table, its stage-skip driver, its generator, its table of expected
+# refusals and its task-success bookkeeping are not vacuous: each makes the counter its plan
+# names fire without any defect in the product. Every hard counter is expected by at least one
+# mutation, so that `killed == total` also shows each of the eleven can fire (a test in
+# bins/ptr-bench checks this list against the harness).
 #
-# Defence in depth. The resolver vouches that the quote is the source's bytes at the span and the
-# verifier vouches that the claim is what the quote states: each is the only barrier of the
-# classes named in its mutations (the proof carries the quote, which a resolver that wrongly
-# resolves has not checked against the bytes; the claim is checked against the proof's text).
-# A mutation that weakens one barrier and leaves the other intact would be absorbed by it; the
-# list contains only mutations the harness's poison classes reach through exactly one barrier.
+# Defence in depth. The resolver vouches that the quote is the source's bytes at the span, the
+# verifier that the claim is what the quote states and `observe_resolved` that the event is the
+# hit's own: each is the only barrier of the classes named in its mutations (the proof carries the
+# quote, which a resolver that wrongly resolves has not checked against the bytes; the claim is
+# checked against the proof's text; a corrupt replica is recorded as a copy of its original, so
+# only the digest check refuses it). A mutation that weakens one barrier and leaves another intact
+# would be absorbed by it; the list contains only mutations the harness's poison classes reach
+# through exactly one barrier, or whose absorption by the next barrier changes the typed refusal
+# (the unknown-raw-event mutation: the ownership check refuses with another reason, which is
+# `wrong_refusal_reason`).
 #
 # Not listed, on purpose: removing `retain_live` or the lifecycle filter of B1 (a baseline, not
 # the mechanism); making `promote_verified` (the boolean path) stricter (it is the trusted-caller
-# path and the B2 control); the empty-span and span-past-the-end refusals as acceptances (an
-# empty or out-of-range span cannot equal a non-empty quote's bytes, so `QuoteMismatch` absorbs
-# them).
+# path and the B2 control); the span-past-the-end refusal as an acceptance (an out-of-range span
+# cannot equal a non-empty quote's bytes, so `QuoteMismatch` absorbs it); a mutated lifecycle
+# closure or source-of-truth (the closure, the raw event source and the ownership record are
+# trust roots, not code under test); a hit that carries the retriever's own claim (the hit has
+# none).
 #
 # The mutation run is invoked as `ptr-bench evidence-promotion <cases> 17`: `cases` is the number
 # of capsules (36 is the pinned world, so the corpus digest is compared; the result says
@@ -41,7 +47,9 @@ hard_counters = [
     "stage_skip_unexpected",
     "wrong_refusal_reason",
     "product_panics",
+    "hard_honest_refused",
     "recall_violation",
+    "task_success_violation",
     "oracle_label_mismatches",
     "corpus_selection_digest_mismatches",
 ]
@@ -94,8 +102,8 @@ replace = '''
 
 [[mutation]]
 name = "resolver-accepts-unknown-raw-events"
-description = "A citation of a raw event the source does not hold resolves to its own quote (P1)."
-expect = ["false_known_mechanism"]
+description = "A citation of a raw event the source does not hold resolves to its own quote, with no owner (P1): the ownership check of observe_resolved refuses it, but with another reason than the unknown raw event the class expects."
+expect = ["wrong_refusal_reason"]
 file = "crates/ptr-search/src/source.rs"
 find = '''
         let event = self.source.raw_event(&citation.raw_id).ok_or_else(|| {
@@ -112,6 +120,7 @@ replace = '''
                 end: citation.end,
                 digest: [0; 32],
                 text: citation.quote.clone(),
+                owners: self.ownership.owners(&citation.raw_id),
             });
         };
 '''
@@ -323,6 +332,160 @@ replace = '''
 '''
 
 [[mutation]]
+name = "observe-ignores-the-source-owner"
+description = "observe_resolved does not hold the resolved source's owners against the hit's own capsule and generation: a live-labelled hit that cites an exact event of a superseded generation or of a revoked or disputed capsule is observed (P9), and so is an honest hit given another capsule's source (K11)."
+expect = ["stale_or_revoked_promoted", "false_known_mechanism", "stage_skip_accepted"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+        if !source.is_owned_by(&self.capsule, self.generation) {
+'''
+replace = '''
+        if false && !source.is_owned_by(&self.capsule, self.generation) {
+'''
+
+[[mutation]]
+name = "owner-is-compared-on-the-capsule-only"
+description = "The ownership test compares the capsule and ignores the generation: a live-labelled hit citing the exact event of a superseded generation of its own capsule is observed (P9 superseded)."
+expect = ["stale_or_revoked_promoted", "false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+            .any(|(owner, owned)| owner == capsule && *owned == generation)
+'''
+replace = '''
+            .any(|(owner, _)| owner == capsule)
+'''
+
+[[mutation]]
+name = "owner-is-compared-on-the-generation-only"
+description = "The ownership test compares the generation number and ignores the capsule: a live-labelled hit citing the exact event of a revoked or disputed capsule that has the same generation number is observed (P9 quarantined, K11)."
+expect = ["stale_or_revoked_promoted", "false_known_mechanism", "stage_skip_accepted"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+            .any(|(owner, owned)| owner == capsule && *owned == generation)
+'''
+replace = '''
+            .any(|(_, owned)| *owned == generation)
+'''
+
+[[mutation]]
+name = "promote-compares-the-proof-by-raw-id-only"
+description = "promote_verified_with holds the proof against the observed source by the raw event id only, so a proof made for another span of the same event promotes the hit (K6b)."
+expect = ["stage_skip_accepted"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+        if proof.source() != source {
+'''
+replace = '''
+        if proof.source().raw_id() != source.raw_id() {
+'''
+
+[[mutation]]
+name = "verifier-skips-the-predicate-compare"
+description = "The verifier does not compare the statement's predicate with the claim's, so a statement about another predicate of the same subject and value verifies the claim (P4 predicate only)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+    if statement.predicate != claim.predicate {
+'''
+replace = '''
+    if false && statement.predicate != claim.predicate {
+'''
+
+[[mutation]]
+name = "verifier-folds-the-ascii-case-of-the-subject"
+description = "The verifier compares the subject without ASCII case, so ENT-0012 verifies a statement about ent-0012 (P4 case only)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+    if statement.subject != claim.subject {
+'''
+replace = '''
+    if !statement.subject.eq_ignore_ascii_case(&claim.subject) {
+'''
+
+[[mutation]]
+name = "verifier-reads-only-the-first-line"
+description = "The verifier parses the first line of the resolved text only, so a span of two statements, or a statement with a newline after it, verifies the first statement's claim (P2 two-line and padded spans)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+    let parts: Vec<&str> = text.split(' ').collect();
+'''
+replace = '''
+    let parts: Vec<&str> = text.lines().next().unwrap_or("").split(' ').collect();
+'''
+
+[[mutation]]
+name = "verifier-trims-the-statement"
+description = "The verifier trims the resolved text before parsing it, so a statement with a newline next to it verifies (P2 padded span)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+    let parts: Vec<&str> = text.split(' ').collect();
+'''
+replace = '''
+    let parts: Vec<&str> = text.trim().split(' ').collect();
+'''
+
+[[mutation]]
+name = "verifier-accepts-a-bare-not-value"
+description = "The verifier reads `x: p is not` as the value `not`, so a span cut off after `not` verifies the claim with the value not (P5 truncated negation)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+        [_, _, "is", "not"] => return Err(ClaimError::MalformedStatement),
+'''
+replace = '''
+        // mutated: a bare `not` is a value
+'''
+
+[[mutation]]
+name = "verifier-rejects-non-ascii-tokens"
+description = "The verifier treats a token with a non-ASCII character as malformed, which refuses every honest hit with a multibyte value (hard honest) and every claim about a Cyrillic twin."
+expect = ["hard_honest_refused"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+    !token.is_empty() && !token.chars().any(char::is_whitespace)
+'''
+replace = '''
+    !token.is_empty() && token.is_ascii() && !token.chars().any(char::is_whitespace)
+'''
+
+[[mutation]]
+name = "resolver-drops-the-empty-span-check"
+description = "The resolver no longer refuses an empty span: an empty quote at an empty span resolves to the empty text, which the verifier refuses as malformed, so the empty span gets another reason than EmptySpan (P2 empty span)."
+expect = ["wrong_refusal_reason"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+        if citation.start >= citation.end {
+            return Err(SourceError::EmptySpan {
+                start: citation.start,
+                end: citation.end,
+            });
+        }
+'''
+replace = '''
+        let _ = (citation.start, citation.end);
+'''
+
+[[mutation]]
+name = "resolver-binds-the-first-occurrence-of-the-quote"
+description = "The resolver accepts the quote only where it first occurs in the event, whatever span is cited: the second of two identical statements no longer resolves at its own offset (hard honest, repeated statement)."
+expect = ["hard_honest_refused"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+        if event.content[citation.start..citation.end] != *citation.quote.as_bytes() {
+'''
+replace = '''
+        if event
+            .content
+            .windows(citation.quote.len())
+            .position(|window| window == citation.quote.as_bytes())
+            != Some(citation.start)
+        {
+'''
+
+[[mutation]]
 name = "harness-authority-revokes-the-wrong-generation"
 description = "Harness self-defect: the world builder commits the revocation of a revoked capsule for a generation it never had, so the runtime answers Live for the revoked live generation and the mechanism is shown P7."
 expect = ["stale_or_revoked_promoted"]
@@ -340,19 +503,19 @@ description = "Harness self-defect: the generator's label table calls a lookalik
 expect = ["oracle_label_mismatches"]
 file = "bins/ptr-bench/src/experiments/q002/world.rs"
 find = '''
-        matches!(self, Self::Honest)
+        matches!(self, Self::Honest | Self::HardHonest)
 '''
 replace = '''
-        matches!(self, Self::Honest | Self::P4)
+        matches!(self, Self::Honest | Self::HardHonest | Self::P4)
 '''
 
 [[mutation]]
 name = "harness-stage-skip-driver-uses-the-hits-own-proof"
-description = "Harness self-defect: the foreign-proof attempt (K6) promotes the observed hit with its own proof instead of another source's, which the API rightly accepts."
+description = "Harness self-defect: the foreign-proof attempts (K6a, K6b) promote the observed hit with its own proof instead of another source's, which the API rightly accepts."
 expect = ["stage_skip_accepted"]
 file = "bins/ptr-bench/src/experiments/q002/arms.rs"
 find = '''
-                let Some((_, foreign)) = self.proofs(b) else {
+                let Some((_, foreign)) = self.proofs(other) else {
 '''
 replace = '''
                 let Some((_, foreign)) = self.proofs(a) else {
@@ -380,4 +543,18 @@ find = '''
 '''
 replace = '''
                 Status::Revoked => (Class::P7, Refusal::StaleGeneration),
+'''
+
+[[mutation]]
+name = "harness-mechanism-drops-the-promoted-answers"
+description = "Harness self-defect: the mechanism's answer is never set from a promoted hit, so it abstains on every question and gets fewer right than the lifecycle filter and the boolean API (the task-success corollaries)."
+expect = ["task_success_violation"]
+file = "bins/ptr-bench/src/experiments/q002/arms.rs"
+find = '''
+            if let Verdict::Promoted(claim) = &verdict {
+                if answer == Answer::Abstain {
+'''
+replace = '''
+            if let Verdict::Promoted(claim) = &verdict {
+                if false && answer == Answer::Abstain {
 '''

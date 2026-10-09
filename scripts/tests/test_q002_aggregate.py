@@ -28,6 +28,7 @@ MANIFEST = tomllib.loads((HERE / "experiment.toml").read_text(encoding="utf-8"))
 MUTATIONS = tomllib.loads((HERE / "tests" / "mutations.toml").read_text(encoding="utf-8"))
 SEEDS = MANIFEST["seeds"]
 PASSED: list[dict] = []  # this experiment names no static evidence
+INTEGRITY_COUNTERS = ("oracle_label_mismatches", "corpus_selection_digest_mismatches")
 PLANNED = len(MUTATIONS["mutation"])
 KILLED = {"killed": PLANNED, "total": PLANNED}
 
@@ -115,6 +116,9 @@ class CriteriaFileTests(unittest.TestCase):
         self.assertIn("stale_or_revoked_promoted <= 0", CRITERIA["falsifiers"])
         self.assertIn("recall_permille >= 950", CRITERIA["falsifiers"])
         self.assertIn("task_success_mechanism >= task_success_baseline", CRITERIA["falsifiers"])
+        self.assertIn("task_success_mechanism >= task_success_gen_filter_only", CRITERIA["falsifiers"])
+        self.assertIn("task_success_mechanism >= task_success_bool_trust", CRITERIA["falsifiers"])
+        self.assertIn("hard_honest_refused <= 0", CRITERIA["falsifiers"])
         self.assertNotIn("static_evidence", CRITERIA)
 
     def test_the_thresholds_of_config_toml_are_the_rules_literals(self):
@@ -214,11 +218,43 @@ class VerdictTests(unittest.TestCase):
     def test_an_unmet_coverage_rule_makes_the_run_vacuous_and_falsified(self):
         for rule in CRITERIA["coverage"]:
             left, op, right = aggregate.parse_rule(rule)
+            if left in INTEGRITY_COUNTERS:
+                continue  # a harness-integrity guard: INVALID, see the test below
             results = clean_seeds()
             put(results[101], left, int(right) - 1 if op == ">=" else int(right) + 1)
             verdict = self.verdict(results, {101: 1})
             self.assertEqual(verdict["verdict"], aggregate.FALSIFIED, rule)
             self.assertEqual(verdict["vacuous_seeds"], [101], rule)
+
+    def test_a_harness_integrity_failure_is_invalid_never_falsified(self):
+        """A label or corpus-digest mismatch is a harness defect: it says nothing about the hypothesis, although the
+        harness also judges it as a coverage rule (the mutation checker wants a named counter and exit 1)."""
+        for counter in INTEGRITY_COUNTERS:
+            self.assertIn(f"{counter} <= 0", CRITERIA["coverage"])
+            for count in (1, 7):
+                results = clean_seeds()
+                put(results[71], counter, count)
+                judgement = judged(results, {71: 1})[SEEDS.index(71)]
+                self.assertFalse(judgement["valid"], counter)
+                self.assertTrue(any(counter in reason for reason in judgement["invalid"]), counter)
+                verdict = self.verdict(results, {71: 1})
+                self.assertEqual(verdict["verdict"], aggregate.INVALID, counter)
+                self.assertEqual(verdict["invalid_seeds"], [71])
+                self.assertEqual(verdict["vacuous_seeds"], [])
+                self.assertEqual(verdict["falsified_seeds"], [])
+                self.assertIsNone(verdict["recommended_status"])
+
+    def test_a_mismatch_counter_that_is_zero_leaves_the_seed_valid_and_a_real_falsification_still_wins(self):
+        for counter in INTEGRITY_COUNTERS:
+            results = clean_seeds()
+            put(results[17], counter, 0)
+            self.assertTrue(judged(results)[SEEDS.index(17)]["valid"])
+            put(results[29], counter, 1)  # harness defect on one seed ...
+            put(results[43], "false_known_mechanism", 1)  # ... and a falsification on another
+            verdict = self.verdict(results, {29: 1, 43: 1})
+            self.assertEqual(verdict["verdict"], aggregate.FALSIFIED)
+            self.assertEqual(verdict["falsified_seeds"], [43])
+            self.assertEqual(verdict["invalid_seeds"], [29])
 
     def test_a_missing_seed_is_invalid(self):
         results = clean_seeds()
@@ -362,8 +398,10 @@ class Q002Tests(unittest.TestCase):
     def test_the_recall_floor_is_the_owner_decision_and_the_answerable_only_reading_is_not_judged(self):
         self.assertIn("recall_permille >= 950", CRITERIA["falsifiers"])
         judged_text = " ".join(CRITERIA["coverage"] + CRITERIA["falsifiers"])
-        for descriptive in ("answerable_success", "task_success_gen_filter_only", "abstentions_correct", "_ns"):
+        for descriptive in ("answerable_success", "abstentions_correct", "_ns"):
             self.assertNotIn(descriptive, judged_text)
+        # The two corollaries of the owner's task-success rule are judged against the other two arms.
+        self.assertIn("task_success_mechanism >= task_success_gen_filter_only", CRITERIA["falsifiers"])
 
     def test_an_unfrozen_experiment_is_not_aggregated(self):
         if "preregistration" not in CONFIG:
@@ -375,7 +413,11 @@ class Q002Tests(unittest.TestCase):
         self.assertIn("synthetic structured world", text)
         self.assertIn("Disputed is not a state of PtrRuntime::generation_validity", text)
         self.assertIn("corrupt replicas", text)
-        self.assertIn("does not tie the raw event to the capsule", text)
+        self.assertIn("three trust roots", text)
+        self.assertIn("RawEventSource", text)
+        self.assertIn("SourceOwnership", text)
+        self.assertIn("truthful", text)
+        self.assertIn("independent of the code under test, not of the generator", text)
         self.assertIn("trusted-caller path", text)
         self.assertIn("byte-exact", aggregate.SCOPE)
         self.assertIn("lifecycle", aggregate.SCOPE)
@@ -401,3 +443,30 @@ class ReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PinCorpusTests(unittest.TestCase):
+    """The committed re-pin script rewrites exactly the pins of params.rs and config.toml."""
+
+    @classmethod
+    def setUpClass(cls):
+        pin_spec = importlib.util.spec_from_file_location("q002_pin_corpus", HERE / "tests" / "pin_corpus.py")
+        cls.pin = importlib.util.module_from_spec(pin_spec)
+        pin_spec.loader.exec_module(cls.pin)
+
+    def test_the_declared_seeds_are_the_manifests(self):
+        self.assertEqual(list(self.pin.SEEDS), SEEDS)
+
+    def test_the_pins_of_the_committed_files_are_found_once_per_seed_and_replaced(self):
+        new = {seed: f"{seed:02x}" * 32 for seed in SEEDS}
+        params = self.pin.pin_params(self.pin.PARAMS.read_text(encoding="utf-8"), new)
+        config = self.pin.pin_config(self.pin.CONFIG.read_text(encoding="utf-8"), new)
+        for seed, digest in new.items():
+            self.assertEqual(params.count(digest), 1)
+            self.assertEqual(config.count(f'corpus_digest_seed_{seed} = "{digest}"'), 1)
+
+    def test_a_pin_that_is_missing_is_refused(self):
+        with self.assertRaises(SystemExit):
+            self.pin.pin_config("x = 1\n", {17: "0" * 64})
+        with self.assertRaises(SystemExit):
+            self.pin.pin_params("pub const X: u8 = 1;\n", {17: "0" * 64})

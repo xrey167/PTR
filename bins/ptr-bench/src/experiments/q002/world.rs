@@ -10,16 +10,18 @@
 //! facts no capsule states at all.
 //!
 //! The retriever's hits are generated per question: an honest hit cites the live statement of
-//! the owner of a fact, a poison hit is one of the classes P1..P8 below. The generator knows
-//! what each hit is and what a correct mechanism says to it (`Hit::expected`); nothing here
-//! calls the code under test.
+//! the owner of a fact, a hard honest hit is an honest hit whose value, event or span is
+//! awkward (a multibyte value, a value that contains `not`, a statement repeated in its
+//! event, a one-line event, a span at the start or at the end of the event), a poison hit is
+//! one of the classes P1..P9 below. The generator knows what each hit is and what a correct
+//! mechanism says to it (`Hit::expected`); nothing here calls the code under test.
 
 use super::params::{self, Shape};
 use crate::experiments::rng::Rng;
 use ptr_memory::RawEvent;
 use ptr_search::{Claim, SourceCitation};
 use ptr_types::{EventRole, RawEventId, SessionId, Timestamp};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The lifecycle state the generator gave a capsule.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -39,6 +41,8 @@ pub enum Origin {
     Mirror,
     /// A negated statement about a fact the (healthy) capsule owns.
     Negation,
+    /// The second occurrence of an own statement that the event states twice.
+    Repeat,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,6 +69,15 @@ pub fn render(subject: &str, predicate: &str, negated: bool, value: &str) -> Str
     format!("{subject}: {predicate} is {not}{value}")
 }
 
+/// A raw event of one statement that a capsule generation admitted besides its main event.
+#[derive(Clone, Debug)]
+pub struct Note {
+    pub raw_id: String,
+    pub text: String,
+    /// The statement: the whole event.
+    pub line: Statement,
+}
+
 /// One raw event: one generation of one capsule.
 #[derive(Clone, Debug)]
 pub struct GenerationEvent {
@@ -72,6 +85,9 @@ pub struct GenerationEvent {
     pub raw_id: String,
     pub text: String,
     pub lines: Vec<Statement>,
+    /// One-statement events of this generation (only the live generation of a healthy capsule
+    /// has any).
+    pub notes: Vec<Note>,
 }
 
 #[derive(Clone, Debug)]
@@ -111,10 +127,13 @@ pub struct Question {
     pub expected: Option<String>,
 }
 
-/// The poison classes and the honest hit.
+/// The poison classes and the honest hits.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Class {
     Honest,
+    /// An honest hit that is awkward to resolve or verify (see [`Variant`]); promoting it is
+    /// exact, so refusing one is a hard failure.
+    HardHonest,
     /// A source id no store holds.
     P1,
     /// A span that is not the quote: shifted, past the end, or a doctored quote.
@@ -131,10 +150,13 @@ pub enum Class {
     P7,
     /// A hit of a disputed generation.
     P8,
+    /// A hit labelled with the live generation of a healthy capsule that cites an exact,
+    /// intact event of another generation or another capsule.
+    P9,
 }
 
 impl Class {
-    pub const POISON: [Class; 8] = [
+    pub const POISON: [Class; 9] = [
         Self::P1,
         Self::P2,
         Self::P3,
@@ -143,11 +165,13 @@ impl Class {
         Self::P6,
         Self::P7,
         Self::P8,
+        Self::P9,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Honest => "H",
+            Self::HardHonest => "HH",
             Self::P1 => "P1",
             Self::P2 => "P2",
             Self::P3 => "P3",
@@ -156,12 +180,13 @@ impl Class {
             Self::P6 => "P6",
             Self::P7 => "P7",
             Self::P8 => "P8",
+            Self::P9 => "P9",
         }
     }
 
     /// The generator's label: whether a correct mechanism may promote a hit of this class.
     pub fn eligible(self) -> bool {
-        matches!(self, Self::Honest)
+        matches!(self, Self::Honest | Self::HardHonest)
     }
 
     /// Whether the class is refused by the lifecycle authority (the other poison classes
@@ -169,17 +194,68 @@ impl Class {
     pub fn is_lifecycle(self) -> bool {
         matches!(self, Self::P6 | Self::P7 | Self::P8)
     }
+
+    /// Whether a promoted hit of the class launders the text of a superseded, revoked or
+    /// disputed generation: the classes whose lifecycle label is not live (P6 to P8) and
+    /// the one that relabels such a text as live (P9).
+    pub fn is_stale_source(self) -> bool {
+        matches!(self, Self::P6 | Self::P7 | Self::P8 | Self::P9)
+    }
 }
 
-/// The variant of a class (P2 and P5 have several).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The variant of a class (several classes have more than one).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Variant {
     Plain,
+    // P2: the span or the quote is wrong.
     ShiftedSpan,
     SpanPastEnd,
     ForgedQuote,
+    /// An empty span (`start == end`) with the empty quote.
+    EmptySpan,
+    /// A span of two statements, claimed with the first one's claim.
+    TwoLineSpan,
+    /// A span that is the statement plus its neighbouring newline.
+    PaddedSpan,
+    // P4: the statement is about something else than the claim says.
+    /// The claim has another predicate than the cited statement.
+    PredicateOnly,
+    /// The claim's subject differs from the statement's by ASCII case only.
+    CaseOnly,
+    // P5: the statement does not state the claim.
     ContradictingValue,
     Negation,
+    /// A span that stops after `not`, claimed as the value `not`.
+    TruncatedNegation,
+    // P9: the label is live, the cited event is not the hit's.
+    RelabelledSuperseded,
+    RelabelledQuarantined,
+    // HH: honest hits that are hard to read.
+    /// The value has multibyte characters.
+    Multibyte,
+    /// The value is a token that contains `not`.
+    NotToken,
+    /// The event states the statement twice; the hit cites the second occurrence.
+    RepeatedLine,
+    /// The event is the statement and nothing else.
+    OneLineEvent,
+    /// The span starts at byte 0 of the event.
+    EventStart,
+    /// The span ends at the last byte of the event.
+    EventEnd,
+}
+
+impl Variant {
+    /// The variants of the hard honest class (the tests walk them).
+    #[cfg(test)]
+    pub const HARD: [Variant; 6] = [
+        Self::Multibyte,
+        Self::NotToken,
+        Self::RepeatedLine,
+        Self::OneLineEvent,
+        Self::EventStart,
+        Self::EventEnd,
+    ];
 }
 
 /// What a correct mechanism says to a hit: the refusal it must give, or `None` to promote.
@@ -204,6 +280,7 @@ pub enum Refusal {
     SourceNotResolved,
     VerificationFailed,
     ClaimProofMismatch,
+    SourceNotOwnedByHit,
 }
 
 impl Refusal {
@@ -228,6 +305,7 @@ impl Refusal {
             Self::SourceNotResolved => "source_not_resolved",
             Self::VerificationFailed => "verification_failed",
             Self::ClaimProofMismatch => "claim_proof_mismatch",
+            Self::SourceNotOwnedByHit => "source_not_owned_by_hit",
         }
     }
 }
@@ -263,6 +341,10 @@ pub struct World {
     pub by_question: Vec<Vec<usize>>,
     /// Corrupt replicas of raw events: the bytes changed, the digest of the original kept.
     pub replicas: Vec<RawEvent>,
+    /// The capsule generation each replica is a damaged copy of: replica id, capsule,
+    /// generation. A damaged copy is still recorded as the original's, so the digest is the
+    /// only barrier of P3.
+    pub replica_owners: Vec<(String, String, u64)>,
 }
 
 pub fn entity(index: usize) -> String {
@@ -305,7 +387,75 @@ struct Fact {
 struct Pools {
     own_live: Vec<(usize, usize)>,
     negations: Vec<(usize, usize)>,
+    repeats: Vec<(usize, usize)>,
     older: Vec<(usize, usize, usize)>,
+}
+
+/// The facts the generator makes hard for the honest hits: a value that is multibyte or that
+/// contains `not`, a statement the live event repeats, a statement that has an event of its
+/// own. Which spans sit at the start or the end of their event is decided when the hits are
+/// made.
+struct HardPlan {
+    values: BTreeMap<(usize, String, String), Variant>,
+    repeated: BTreeSet<(usize, usize)>,
+    one_line: BTreeSet<(usize, usize)>,
+}
+
+impl HardPlan {
+    fn build(statuses: &[Status], owned: &[Vec<Fact>], live_values: &mut [Vec<String>]) -> Self {
+        const STEMS: [&str; 6] = ["notable", "knot", "cannot", "not-yet", "nothing", "note"];
+        let mut plan = HardPlan {
+            values: BTreeMap::new(),
+            repeated: BTreeSet::new(),
+            one_line: BTreeSet::new(),
+        };
+        let healthy: Vec<usize> = (0..statuses.len())
+            .filter(|i| statuses[*i] == Status::Healthy)
+            .collect();
+        let per = params::HARD_HONEST_PER_VARIANT;
+        let kinds = [
+            Variant::Multibyte,
+            Variant::NotToken,
+            Variant::RepeatedLine,
+            Variant::OneLineEvent,
+        ];
+        let mut taken: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for (v, kind) in kinds.iter().enumerate() {
+            for j in 0..per {
+                if taken.len() >= healthy.len() * params::FACTS_PER_CAPSULE {
+                    return plan;
+                }
+                let slot = v * per + j;
+                let capsule = healthy[(slot * 5 + 3) % healthy.len()];
+                let mut fact_index = (slot * 7 + 1) % params::FACTS_PER_CAPSULE;
+                while !taken.insert((capsule, fact_index)) {
+                    fact_index = (fact_index + 1) % params::FACTS_PER_CAPSULE;
+                }
+                let fact = &owned[capsule][fact_index];
+                let predicate = params::PREDICATES[fact.predicate].to_string();
+                let key = (capsule, fact.subject.clone(), predicate);
+                match kind {
+                    Variant::Multibyte => {
+                        live_values[capsule][fact_index] =
+                            format!("v\u{e9}\u{4e2d}{}{slot:02}", fact.predicate);
+                        plan.values.insert(key, *kind);
+                    }
+                    Variant::NotToken => {
+                        live_values[capsule][fact_index] =
+                            format!("{}{}{slot:02}", STEMS[j % STEMS.len()], fact.predicate);
+                        plan.values.insert(key, *kind);
+                    }
+                    Variant::RepeatedLine => {
+                        plan.repeated.insert((capsule, fact_index));
+                    }
+                    _ => {
+                        plan.one_line.insert((capsule, fact_index));
+                    }
+                }
+            }
+        }
+        plan
+    }
 }
 
 impl World {
@@ -378,6 +528,7 @@ impl World {
                     .collect(),
             );
         }
+        let hard = HardPlan::build(&statuses, &owned, &mut live_values);
         let mut truth: BTreeMap<FactKey, String> = BTreeMap::new();
         for (capsule, status) in statuses.iter().enumerate() {
             if *status == Status::Healthy {
@@ -413,20 +564,32 @@ impl World {
             for generation in 1..=count {
                 let live = generation == count;
                 let mut lines: Vec<(String, String, bool, String, Origin)> = Vec::new();
-                for (fact, live_value) in owned[index].iter().zip(&live_values[index]) {
+                for (fact_index, (fact, live_value)) in
+                    owned[index].iter().zip(&live_values[index]).enumerate()
+                {
                     let shown =
                         if live || event_rng.below(1000) >= params::STALE_VALUE_CHANGE_PERMILLE {
                             live_value.clone()
                         } else {
                             pick_other(&mut event_rng, fact.predicate, live_value)
                         };
-                    lines.push((
+                    let own = (
                         fact.subject.clone(),
                         params::PREDICATES[fact.predicate].to_string(),
                         false,
                         shown,
                         Origin::Own,
-                    ));
+                    );
+                    if live && hard.repeated.contains(&(index, fact_index)) {
+                        lines.push((
+                            own.0.clone(),
+                            own.1.clone(),
+                            false,
+                            own.3.clone(),
+                            Origin::Repeat,
+                        ));
+                    }
+                    lines.push(own);
                 }
                 if *status != Status::Healthy {
                     for _ in 0..params::MIRRORS_PER_QUARANTINED_EVENT {
@@ -458,6 +621,25 @@ impl World {
                     }
                 }
                 shuffle(&mut event_rng, &mut lines);
+                // Of a statement the event states twice, the later occurrence is the repeat.
+                for repeat in 0..lines.len() {
+                    if lines[repeat].4 != Origin::Repeat {
+                        continue;
+                    }
+                    let own = lines
+                        .iter()
+                        .position(|l| {
+                            l.4 == Origin::Own
+                                && l.0 == lines[repeat].0
+                                && l.1 == lines[repeat].1
+                                && l.3 == lines[repeat].3
+                        })
+                        .expect("a repeated statement has its own twin");
+                    if own > repeat {
+                        lines[own].4 = Origin::Repeat;
+                        lines[repeat].4 = Origin::Own;
+                    }
+                }
                 let mut text = String::new();
                 let mut statements = Vec::new();
                 for (subject, predicate, negated, shown, origin) in lines {
@@ -476,11 +658,34 @@ impl World {
                         end: text.len(),
                     });
                 }
+                let mut notes = Vec::new();
+                for (fact_index, (fact, live_value)) in
+                    owned[index].iter().zip(&live_values[index]).enumerate()
+                {
+                    if live && hard.one_line.contains(&(index, fact_index)) {
+                        let predicate = params::PREDICATES[fact.predicate].to_string();
+                        let note_text = render(&fact.subject, &predicate, false, live_value);
+                        notes.push(Note {
+                            raw_id: format!("raw-{id}-g{generation}-note-{fact_index}"),
+                            line: Statement {
+                                subject: fact.subject.clone(),
+                                predicate,
+                                negated: false,
+                                value: live_value.clone(),
+                                origin: Origin::Own,
+                                start: 0,
+                                end: note_text.len(),
+                            },
+                            text: note_text,
+                        });
+                    }
+                }
                 generations.push(GenerationEvent {
                     generation: generation as u64,
                     raw_id: format!("raw-{id}-g{generation}"),
                     text,
                     lines: statements,
+                    notes,
                 });
             }
             capsules.push(Capsule {
@@ -533,9 +738,10 @@ impl World {
             hits: Vec::new(),
             by_question: Vec::new(),
             replicas: Vec::new(),
+            replica_owners: Vec::new(),
         };
         world.by_question = vec![Vec::new(); world.questions.len()];
-        world.generate_hits(&mut root.fork(7), &by_fact, &truth, twin_pairs)?;
+        world.generate_hits(&mut root.fork(7), &by_fact, &truth, twin_pairs, &hard)?;
         Ok(world)
     }
 
@@ -543,6 +749,7 @@ impl World {
         let mut own_live = Vec::new();
         let mut negations = Vec::new();
         let mut older = Vec::new();
+        let mut repeats = Vec::new();
         for (c, capsule) in self.capsules.iter().enumerate() {
             let last = capsule.generations.len() - 1;
             for (g, event) in capsule.generations.iter().enumerate() {
@@ -553,6 +760,7 @@ impl World {
                         match line.origin {
                             Origin::Own => own_live.push((c, l)),
                             Origin::Negation => negations.push((c, l)),
+                            Origin::Repeat => repeats.push((c, l)),
                             Origin::Mirror => {}
                         }
                     }
@@ -562,6 +770,7 @@ impl World {
         Pools {
             own_live,
             negations,
+            repeats,
             older,
         }
     }
@@ -572,6 +781,7 @@ impl World {
         by_fact: &BTreeMap<FactKey, usize>,
         truth: &BTreeMap<FactKey, String>,
         twin_pairs: usize,
+        hard: &HardPlan,
     ) -> Result<(), String> {
         let pools = self.pools();
         let question_of = |subject: &str, predicate: &str| -> Result<usize, String> {
@@ -588,19 +798,58 @@ impl World {
         };
         let mut hits: Vec<Hit> = Vec::new();
         let mut replicas: Vec<RawEvent> = Vec::new();
+        let mut replica_owners: Vec<(String, String, u64)> = Vec::new();
 
-        // Honest: one hit per answerable question, citing the owner's live statement.
+        // Honest: one hit per answerable question, citing the owner's live statement. The
+        // hard ones are the facts whose value is awkward and the statements at the start or
+        // the end of their event.
         let mut honest_rng = rng.fork(10);
+        let mut hard_lines: BTreeMap<(usize, usize), Variant> = BTreeMap::new();
+        for (c, l) in &pools.own_live {
+            let line = &self.capsules[*c].live().lines[*l];
+            if let Some(kind) = hard
+                .values
+                .get(&(*c, line.subject.clone(), line.predicate.clone()))
+            {
+                hard_lines.insert((*c, *l), *kind);
+            }
+        }
+        let (mut starts, mut ends) = (0, 0);
+        for (c, capsule) in self.capsules.iter().enumerate() {
+            if capsule.status != Status::Healthy {
+                continue;
+            }
+            let lines = &capsule.live().lines;
+            let last = lines.len() - 1;
+            if starts < params::HARD_HONEST_PER_VARIANT
+                && lines[0].origin == Origin::Own
+                && !hard_lines.contains_key(&(c, 0))
+            {
+                hard_lines.insert((c, 0), Variant::EventStart);
+                starts += 1;
+            }
+            if ends < params::HARD_HONEST_PER_VARIANT
+                && lines[last].origin == Origin::Own
+                && !hard_lines.contains_key(&(c, last))
+            {
+                hard_lines.insert((c, last), Variant::EventEnd);
+                ends += 1;
+            }
+        }
         for (c, l) in &pools.own_live {
             let capsule = &self.capsules[*c];
             let event = capsule.live();
             let line = &event.lines[*l];
             let claim = Claim::new(&line.subject, &line.predicate, &line.value);
+            let (class, variant) = match hard_lines.get(&(*c, *l)) {
+                Some(kind) => (Class::HardHonest, *kind),
+                None => (Class::Honest, Variant::Plain),
+            };
             hits.push(Hit {
                 id: 0,
                 question: question_of(&line.subject, &line.predicate)?,
-                class: Class::Honest,
-                variant: Variant::Plain,
+                class,
+                variant,
                 capsule: capsule.id.clone(),
                 generation: capsule.live_generation(),
                 citation: self.citation(event, line),
@@ -609,6 +858,55 @@ impl World {
                 expected: None,
                 claim_untrue: untrue(&claim),
             });
+        }
+        // The statements an event states twice (the hit cites the second occurrence) and the
+        // statements that have an event of their own (the hit cites all of it).
+        for (c, l) in &pools.repeats {
+            let capsule = &self.capsules[*c];
+            let event = capsule.live();
+            let line = &event.lines[*l];
+            let claim = Claim::new(&line.subject, &line.predicate, &line.value);
+            hits.push(Hit {
+                id: 0,
+                question: question_of(&line.subject, &line.predicate)?,
+                class: Class::HardHonest,
+                variant: Variant::RepeatedLine,
+                capsule: capsule.id.clone(),
+                generation: capsule.live_generation(),
+                citation: self.citation(event, line),
+                claim: claim.clone(),
+                score_milli: honest_rng.range(params::HONEST_SCORE_MIN, params::HONEST_SCORE_MAX),
+                expected: None,
+                claim_untrue: untrue(&claim),
+            });
+        }
+        for capsule in self
+            .capsules
+            .iter()
+            .filter(|capsule| capsule.status == Status::Healthy)
+        {
+            for note in &capsule.live().notes {
+                let claim = Claim::new(&note.line.subject, &note.line.predicate, &note.line.value);
+                hits.push(Hit {
+                    id: 0,
+                    question: question_of(&note.line.subject, &note.line.predicate)?,
+                    class: Class::HardHonest,
+                    variant: Variant::OneLineEvent,
+                    capsule: capsule.id.clone(),
+                    generation: capsule.live_generation(),
+                    citation: SourceCitation {
+                        raw_id: RawEventId::from(note.raw_id.as_str()),
+                        start: 0,
+                        end: note.text.len(),
+                        quote: note.text.clone(),
+                    },
+                    claim: claim.clone(),
+                    score_milli: honest_rng
+                        .range(params::HONEST_SCORE_MIN, params::HONEST_SCORE_MAX),
+                    expected: None,
+                    claim_untrue: untrue(&claim),
+                });
+            }
         }
 
         // P1: a source id no store holds. Every absent question gets one, then random ones.
@@ -771,6 +1069,11 @@ impl World {
             // The bytes changed, the digest is the original's.
             replica.digest = RawEvent::digest_for(event.text.as_bytes());
             replicas.push(replica);
+            replica_owners.push((
+                replica_id.clone(),
+                capsule.id.clone(),
+                capsule.live_generation(),
+            ));
             let quote = render(&line.subject, &line.predicate, false, &tampered_value);
             hits.push(self.poison(
                 &mut p2_rng,
@@ -778,14 +1081,88 @@ impl World {
                 Class::P3,
                 Variant::Plain,
                 question_of(&line.subject, &line.predicate)?,
+                // The replica holds the quote at the cited span, so only its digest is wrong.
                 SourceCitation {
                     raw_id: RawEventId::from(replica_id.as_str()),
                     start: line.start,
-                    end: line.end,
+                    end: line.start + quote.len(),
                     quote,
                 },
                 Claim::new(&line.subject, &line.predicate, &tampered_value),
                 Refusal::DigestMismatch,
+                &untrue,
+            ));
+        }
+
+        // P2, more ways to cite the wrong bytes: an empty span, a span of two statements and a
+        // span that includes the newline next to the statement.
+        for (c, l) in take(params::QUOTA_P2_EMPTY_SPAN) {
+            let capsule = &self.capsules[c];
+            let event = capsule.live();
+            let line = &event.lines[l];
+            hits.push(self.poison(
+                &mut p2_rng,
+                capsule,
+                Class::P2,
+                Variant::EmptySpan,
+                question_of(&line.subject, &line.predicate)?,
+                SourceCitation {
+                    raw_id: RawEventId::from(event.raw_id.as_str()),
+                    start: line.start,
+                    end: line.start,
+                    quote: String::new(),
+                },
+                Claim::new(&line.subject, &line.predicate, &line.value),
+                Refusal::EmptySpan,
+                &untrue,
+            ));
+        }
+        for (c, l) in take(params::QUOTA_P2_TWO_LINE_SPAN) {
+            let capsule = &self.capsules[c];
+            let event = capsule.live();
+            let first = if l + 1 < event.lines.len() { l } else { l - 1 };
+            let (a, b) = (&event.lines[first], &event.lines[first + 1]);
+            hits.push(self.poison(
+                &mut p2_rng,
+                capsule,
+                Class::P2,
+                Variant::TwoLineSpan,
+                question_of(&a.subject, &a.predicate)?,
+                SourceCitation {
+                    raw_id: RawEventId::from(event.raw_id.as_str()),
+                    start: a.start,
+                    end: b.end,
+                    quote: event.text[a.start..b.end].to_owned(),
+                },
+                Claim::new(&a.subject, &a.predicate, &a.value),
+                Refusal::MalformedStatement,
+                &untrue,
+            ));
+        }
+        for (c, l) in take(params::QUOTA_P2_PADDED_SPAN) {
+            let capsule = &self.capsules[c];
+            let event = capsule.live();
+            let line = &event.lines[l];
+            // The newline after the statement, else the one before it.
+            let (start, end) = if line.end < event.text.len() {
+                (line.start, line.end + 1)
+            } else {
+                (line.start - 1, line.end)
+            };
+            hits.push(self.poison(
+                &mut p2_rng,
+                capsule,
+                Class::P2,
+                Variant::PaddedSpan,
+                question_of(&line.subject, &line.predicate)?,
+                SourceCitation {
+                    raw_id: RawEventId::from(event.raw_id.as_str()),
+                    start,
+                    end,
+                    quote: event.text[start..end].to_owned(),
+                },
+                Claim::new(&line.subject, &line.predicate, &line.value),
+                Refusal::MalformedStatement,
                 &untrue,
             ));
         }
@@ -824,6 +1201,61 @@ impl World {
                 q,
                 self.citation(event, line),
                 Claim::new(&question.subject, &line.predicate, &line.value),
+                Refusal::SubjectMismatch,
+                &untrue,
+            ));
+        }
+
+        // P4, the statement is right but the claim is not about it: another predicate, a
+        // subject that differs by ASCII case only.
+        let mut predicate_pool = pools.own_live.clone();
+        shuffle(&mut p4_rng, &mut predicate_pool);
+        predicate_pool.truncate(params::QUOTA_P4_PREDICATE_ONLY);
+        for (c, l) in predicate_pool {
+            let capsule = &self.capsules[c];
+            let event = capsule.live();
+            let line = &event.lines[l];
+            let predicate = params::PREDICATES
+                .iter()
+                .position(|p| *p == line.predicate)
+                .expect("a known predicate");
+            let other = params::PREDICATES[(predicate + 1) % params::PREDICATES.len()];
+            hits.push(self.poison(
+                &mut p4_rng,
+                capsule,
+                Class::P4,
+                Variant::PredicateOnly,
+                question_of(&line.subject, &line.predicate)?,
+                self.citation(event, line),
+                Claim::new(&line.subject, other, &line.value),
+                Refusal::PredicateMismatch,
+                &untrue,
+            ));
+        }
+        let mut case_pool: Vec<(usize, usize)> = pools
+            .own_live
+            .iter()
+            .filter(|(c, l)| self.capsules[*c].live().lines[*l].subject.is_ascii())
+            .copied()
+            .collect();
+        shuffle(&mut p4_rng, &mut case_pool);
+        case_pool.truncate(params::QUOTA_P4_CASE_ONLY);
+        for (c, l) in case_pool {
+            let capsule = &self.capsules[c];
+            let event = capsule.live();
+            let line = &event.lines[l];
+            hits.push(self.poison(
+                &mut p4_rng,
+                capsule,
+                Class::P4,
+                Variant::CaseOnly,
+                question_of(&line.subject, &line.predicate)?,
+                self.citation(event, line),
+                Claim::new(
+                    line.subject.to_ascii_uppercase(),
+                    &line.predicate,
+                    &line.value,
+                ),
                 Refusal::SubjectMismatch,
                 &untrue,
             ));
@@ -875,6 +1307,33 @@ impl World {
             ));
         }
 
+        // P5, a span that stops after `not`, claimed as the value `not`.
+        let mut truncated_pool = pools.negations.clone();
+        shuffle(&mut p5_rng, &mut truncated_pool);
+        truncated_pool.truncate(params::QUOTA_P5_TRUNCATED_NEGATION);
+        for (c, l) in truncated_pool {
+            let capsule = &self.capsules[c];
+            let event = capsule.live();
+            let line = &event.lines[l];
+            let prefix = format!("{}: {} is not", line.subject, line.predicate);
+            hits.push(self.poison(
+                &mut p5_rng,
+                capsule,
+                Class::P5,
+                Variant::TruncatedNegation,
+                question_of(&line.subject, &line.predicate)?,
+                SourceCitation {
+                    raw_id: RawEventId::from(event.raw_id.as_str()),
+                    start: line.start,
+                    end: line.start + prefix.len(),
+                    quote: prefix,
+                },
+                Claim::new(&line.subject, &line.predicate, "not"),
+                Refusal::MalformedStatement,
+                &untrue,
+            ));
+        }
+
         // P6: statements of superseded generations.
         let mut p6_rng = rng.fork(15);
         let mut older = pools.older.clone();
@@ -919,6 +1378,71 @@ impl World {
             }
         }
 
+        // P9: the label is the live generation of a healthy capsule, the citation is an exact,
+        // intact event that is not that generation's: an older generation of the same
+        // capsule, or the live event of a revoked or disputed capsule (preferably one whose
+        // generation number is the label's, so that only the capsule tells them apart).
+        let mut p9_rng = rng.fork(17);
+        let mut stale: Vec<(usize, usize, usize)> = pools
+            .older
+            .iter()
+            .filter(|(c, _, _)| self.capsules[*c].status == Status::Healthy)
+            .copied()
+            .collect();
+        shuffle(&mut p9_rng, &mut stale);
+        stale.truncate(params::QUOTA_P9_RELABELLED_SUPERSEDED);
+        for (c, g, l) in stale {
+            let capsule = &self.capsules[c];
+            let event = &capsule.generations[g];
+            let line = &event.lines[l];
+            hits.push(self.poison(
+                &mut p9_rng,
+                capsule,
+                Class::P9,
+                Variant::RelabelledSuperseded,
+                question_of(&line.subject, &line.predicate)?,
+                self.citation(event, line),
+                Claim::new(&line.subject, &line.predicate, &line.value),
+                Refusal::SourceNotOwnedByHit,
+                &untrue,
+            ));
+        }
+        let mut quarantined: Vec<(usize, usize)> = Vec::new();
+        for (c, capsule) in self.capsules.iter().enumerate() {
+            if capsule.status != Status::Healthy {
+                quarantined.extend((0..capsule.live().lines.len()).map(|l| (c, l)));
+            }
+        }
+        shuffle(&mut p9_rng, &mut quarantined);
+        quarantined.truncate(params::QUOTA_P9_RELABELLED_QUARANTINED);
+        for (c, l) in quarantined {
+            let owner = &self.capsules[c];
+            let event = owner.live();
+            let line = &event.lines[l];
+            let same_generation: Vec<usize> = healthy
+                .iter()
+                .copied()
+                .filter(|h| self.capsules[*h].live_generation() == owner.live_generation())
+                .collect();
+            let pool = if same_generation.is_empty() {
+                &healthy
+            } else {
+                &same_generation
+            };
+            let host = &self.capsules[pool[p9_rng.index(pool.len())]];
+            hits.push(self.poison(
+                &mut p9_rng,
+                host,
+                Class::P9,
+                Variant::RelabelledQuarantined,
+                question_of(&line.subject, &line.predicate)?,
+                self.citation(event, line),
+                Claim::new(&line.subject, &line.predicate, &line.value),
+                Refusal::SourceNotOwnedByHit,
+                &untrue,
+            ));
+        }
+
         for (id, hit) in hits.iter_mut().enumerate() {
             hit.id = id;
         }
@@ -932,6 +1456,7 @@ impl World {
         self.hits = hits;
         self.by_question = by_question;
         self.replicas = replicas;
+        self.replica_owners = replica_owners;
         Ok(())
     }
 
@@ -1009,14 +1534,40 @@ impl World {
         })
     }
 
-    /// The raw events as the store of record holds them: id and text.
+    /// The raw events as the store of record holds them: id and text (the main event of each
+    /// generation, then its one-statement events).
     pub fn events(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.owned_events().map(|(id, text, _, _)| (id, text))
+    }
+
+    /// Every raw event with the capsule generation that admitted it: id, text, capsule id,
+    /// generation.
+    pub fn owned_events(&self) -> impl Iterator<Item = (&str, &str, &str, u64)> {
         self.capsules.iter().flat_map(|capsule| {
-            capsule
-                .generations
-                .iter()
-                .map(|event| (event.raw_id.as_str(), event.text.as_str()))
+            capsule.generations.iter().flat_map(move |event| {
+                std::iter::once((
+                    event.raw_id.as_str(),
+                    event.text.as_str(),
+                    capsule.id.as_str(),
+                    event.generation,
+                ))
+                .chain(event.notes.iter().map(move |note| {
+                    (
+                        note.raw_id.as_str(),
+                        note.text.as_str(),
+                        capsule.id.as_str(),
+                        event.generation,
+                    )
+                }))
+            })
         })
+    }
+
+    /// The raw event with this id: its text, and the capsule and generation that admitted it.
+    pub fn event_owner(&self, raw_id: &str) -> Option<(&str, &str, u64)> {
+        self.owned_events()
+            .find(|(id, _, _, _)| *id == raw_id)
+            .map(|(_, text, capsule, generation)| (text, capsule, generation))
     }
 
     /// The raw event of the store of record as a store entry.
@@ -1058,6 +1609,13 @@ impl World {
                     event.generation,
                     event.text.replace('\n', "|")
                 );
+                for note in &event.notes {
+                    let _ = writeln!(
+                        out,
+                        "note {} g{} {}",
+                        note.raw_id, event.generation, note.text
+                    );
+                }
             }
         }
         for replica in &self.replicas {
@@ -1187,13 +1745,34 @@ mod tests {
                     class.name()
                 );
             }
+            // One main honest hit per answerable question; a repeated statement and a
+            // one-line event add a second one.
             let honest = world
                 .hits
                 .iter()
-                .filter(|h| h.class == Class::Honest)
+                .filter(|h| h.class.eligible())
+                .filter(|h| !matches!(h.variant, Variant::RepeatedLine | Variant::OneLineEvent))
                 .count();
-            assert_eq!(honest, world.answerable());
-            assert!(honest as i64 >= params::MIN_TRUE_CLAIMS);
+            assert_eq!(honest, world.answerable(), "seed {seed}");
+            let eligible = world.hits.iter().filter(|h| h.class.eligible()).count();
+            assert!(eligible as i64 >= params::MIN_TRUE_CLAIMS);
+            let hard = world
+                .hits
+                .iter()
+                .filter(|h| h.class == Class::HardHonest)
+                .count();
+            assert!(
+                hard as i64 >= params::MIN_HARD_HONEST_PRESENTED,
+                "seed {seed}: {hard}"
+            );
+            for kind in Variant::HARD {
+                let count = world
+                    .hits
+                    .iter()
+                    .filter(|h| h.class == Class::HardHonest && h.variant == kind)
+                    .count();
+                assert!(count >= 4, "seed {seed} {kind:?}: {count}");
+            }
         }
     }
 
@@ -1222,19 +1801,55 @@ mod tests {
                 .find(|c| c.id == hit.capsule)
                 .expect("a capsule");
             match hit.class {
-                Class::Honest => {
+                Class::Honest | Class::HardHonest => {
                     assert_eq!(hit.expected, None);
                     assert_eq!(capsule.status, Status::Healthy);
                     assert_eq!(hit.generation, capsule.live_generation());
                     assert!(!hit.claim_untrue);
+                    let (_, owner, generation) = world
+                        .event_owner(&hit.citation.raw_id.0)
+                        .expect("an honest hit cites a real event");
+                    assert_eq!((owner, generation), (hit.capsule.as_str(), hit.generation));
+                }
+                Class::P9 => {
+                    assert_eq!(capsule.status, Status::Healthy);
+                    assert_eq!(hit.generation, capsule.live_generation());
+                    let (text, owner, generation) = world
+                        .event_owner(&hit.citation.raw_id.0)
+                        .expect("a relabelled hit cites a real event");
+                    assert_ne!((owner, generation), (hit.capsule.as_str(), hit.generation));
+                    // Exact bytes of an intact event: only the label lies.
+                    assert_eq!(
+                        &text.as_bytes()[hit.citation.start..hit.citation.end],
+                        hit.citation.quote.as_bytes()
+                    );
+                    match hit.variant {
+                        Variant::RelabelledSuperseded => {
+                            assert_eq!(owner, hit.capsule);
+                            assert!(generation < hit.generation);
+                        }
+                        Variant::RelabelledQuarantined => {
+                            assert_ne!(owner, hit.capsule);
+                            let owner = world.capsules.iter().find(|c| c.id == owner).unwrap();
+                            assert_ne!(owner.status, Status::Healthy);
+                        }
+                        other => panic!("{other:?}"),
+                    }
                 }
                 Class::P1 => assert!(world.events().all(|(id, _)| id != hit.citation.raw_id.0)),
                 Class::P3 => {
                     assert!(world.events().all(|(id, _)| id != hit.citation.raw_id.0));
-                    assert!(world
+                    let replica = world
                         .replicas
                         .iter()
-                        .any(|r| r.id == hit.citation.raw_id && r.validate_digest().is_err()));
+                        .find(|r| r.id == hit.citation.raw_id)
+                        .expect("a replica");
+                    assert!(replica.validate_digest().is_err());
+                    // The bytes at the cited span are the quote: the digest is the only defect.
+                    assert_eq!(
+                        &replica.content[hit.citation.start..hit.citation.end],
+                        hit.citation.quote.as_bytes()
+                    );
                     assert!(hit.claim_untrue);
                 }
                 Class::P6 => assert!(hit.generation < capsule.live_generation()),
@@ -1280,6 +1895,28 @@ mod tests {
                     );
                     assert!(hit.claim_untrue);
                 }
+                Variant::EmptySpan => {
+                    assert_eq!(hit.citation.start, hit.citation.end);
+                    assert!(hit.citation.quote.is_empty());
+                }
+                Variant::TwoLineSpan => {
+                    // Exact bytes of two whole statements.
+                    assert_eq!(
+                        &bytes[hit.citation.start..hit.citation.end],
+                        hit.citation.quote.as_bytes()
+                    );
+                    assert_eq!(hit.citation.quote.matches('\n').count(), 1);
+                }
+                Variant::PaddedSpan => {
+                    assert_eq!(
+                        &bytes[hit.citation.start..hit.citation.end],
+                        hit.citation.quote.as_bytes()
+                    );
+                    assert_eq!(hit.citation.quote.matches('\n').count(), 1);
+                    assert!(
+                        hit.citation.quote.starts_with('\n') || hit.citation.quote.ends_with('\n')
+                    );
+                }
                 other => panic!("{other:?}"),
             }
         }
@@ -1287,6 +1924,152 @@ mod tests {
             assert!(hit.citation.quote.contains(" is not "));
             assert!(hit.claim_untrue);
         }
+    }
+
+    #[test]
+    fn the_new_poison_variants_are_what_they_say_and_each_has_its_quota() {
+        for seed in params::SEEDS {
+            let world = pinned(seed);
+            let count = |class: Class, variant: Variant| {
+                world
+                    .hits
+                    .iter()
+                    .filter(|h| h.class == class && h.variant == variant)
+                    .count()
+            };
+            for (class, variant, quota) in [
+                (Class::P2, Variant::EmptySpan, params::QUOTA_P2_EMPTY_SPAN),
+                (
+                    Class::P2,
+                    Variant::TwoLineSpan,
+                    params::QUOTA_P2_TWO_LINE_SPAN,
+                ),
+                (Class::P2, Variant::PaddedSpan, params::QUOTA_P2_PADDED_SPAN),
+                (
+                    Class::P4,
+                    Variant::PredicateOnly,
+                    params::QUOTA_P4_PREDICATE_ONLY,
+                ),
+                (Class::P4, Variant::CaseOnly, params::QUOTA_P4_CASE_ONLY),
+                (
+                    Class::P5,
+                    Variant::TruncatedNegation,
+                    params::QUOTA_P5_TRUNCATED_NEGATION,
+                ),
+                (
+                    Class::P9,
+                    Variant::RelabelledSuperseded,
+                    params::QUOTA_P9_RELABELLED_SUPERSEDED,
+                ),
+                (
+                    Class::P9,
+                    Variant::RelabelledQuarantined,
+                    params::QUOTA_P9_RELABELLED_QUARANTINED,
+                ),
+            ] {
+                assert_eq!(count(class, variant), quota, "seed {seed} {variant:?}");
+            }
+            for hit in &world.hits {
+                let (text, _, _) = world
+                    .event_owner(&hit.citation.raw_id.0)
+                    .unwrap_or(("", "", 0));
+                match hit.variant {
+                    Variant::PredicateOnly => {
+                        assert!(text.contains(&hit.citation.quote));
+                        assert!(!hit
+                            .citation
+                            .quote
+                            .contains(&format!(": {} is", hit.claim.predicate)));
+                    }
+                    Variant::CaseOnly => {
+                        let cited = hit.citation.quote.split(':').next().unwrap();
+                        assert_ne!(hit.claim.subject, cited);
+                        assert!(hit.claim.subject.eq_ignore_ascii_case(cited));
+                    }
+                    Variant::TruncatedNegation => {
+                        assert!(hit.citation.quote.ends_with(" is not"));
+                        assert_eq!(hit.claim.value, "not");
+                        let end = hit.citation.end;
+                        assert_eq!(&text[hit.citation.start..end], hit.citation.quote);
+                        // Cut short: the event goes on after `not`.
+                        assert_eq!(text.as_bytes()[end], b' ');
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hard_honest_hits_are_exact_and_really_hard() {
+        for seed in params::SEEDS {
+            let world = pinned(seed);
+            for hit in world.hits.iter().filter(|h| h.class == Class::HardHonest) {
+                let (text, _, _) = world
+                    .event_owner(&hit.citation.raw_id.0)
+                    .expect("a real event");
+                let (start, end) = (hit.citation.start, hit.citation.end);
+                assert_eq!(&text[start..end], hit.citation.quote);
+                assert_eq!(
+                    hit.citation.quote,
+                    render(
+                        &hit.claim.subject,
+                        &hit.claim.predicate,
+                        false,
+                        &hit.claim.value
+                    )
+                );
+                match hit.variant {
+                    Variant::Multibyte => assert!(!hit.claim.value.is_ascii()),
+                    Variant::NotToken => {
+                        assert!(hit.claim.value.contains("not") && hit.claim.value != "not")
+                    }
+                    Variant::RepeatedLine => {
+                        let occurrences: Vec<usize> = text
+                            .match_indices(&hit.citation.quote)
+                            .map(|(at, _)| at)
+                            .collect();
+                        assert!(occurrences.len() >= 2);
+                        assert_eq!(occurrences.last(), Some(&start), "the later occurrence");
+                    }
+                    Variant::OneLineEvent => {
+                        assert_eq!((start, end), (0, text.len()));
+                        assert!(!text.contains('\n'));
+                    }
+                    Variant::EventStart => assert_eq!(start, 0),
+                    Variant::EventEnd => assert_eq!(end, text.len()),
+                    other => panic!("{other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_event_has_exactly_one_owner_and_the_notes_are_events_of_their_own() {
+        let world = pinned(17);
+        let mut ids = BTreeSet::new();
+        for (id, _, capsule, generation) in world.owned_events() {
+            assert!(ids.insert(id.to_string()), "{id} twice");
+            assert!(world.capsules.iter().any(
+                |c| c.id == capsule && c.generations.iter().any(|e| e.generation == generation)
+            ));
+        }
+        let notes = world
+            .capsules
+            .iter()
+            .flat_map(|c| &c.generations)
+            .map(|e| e.notes.len())
+            .sum::<usize>();
+        assert_eq!(notes, params::HARD_HONEST_PER_VARIANT);
+        assert_eq!(
+            ids.len(),
+            world
+                .capsules
+                .iter()
+                .map(|c| c.generations.len())
+                .sum::<usize>()
+                + notes
+        );
     }
 
     #[test]

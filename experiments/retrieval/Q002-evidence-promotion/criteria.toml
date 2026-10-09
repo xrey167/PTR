@@ -13,10 +13,15 @@
 # A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a failed rule).
 # A reference compared with an integer literal or another reference must be a JSON integer (not a
 # boolean, not a float). Exact comparisons.
-# The manifest's "< N" prerequisites are written ">= N", its "> N" violations "<= N". One rule reads a second counter
-# instead of a literal: task_success_mechanism >= task_success_baseline (counts of questions answered correctly or
-# correctly abstained on, over all questions; the answerable-only reading, answerable_success_permille and
-# answerable_success_baseline_permille, is reported and not judged).
+# The manifest's "< N" prerequisites are written ">= N", its "> N" violations "<= N". Three rules read a second counter
+# instead of a literal: task_success_mechanism >= task_success_baseline (the owner's rule), and its two corollaries
+# task_success_mechanism >= task_success_gen_filter_only and task_success_mechanism >= task_success_bool_trust (counts of
+# questions answered correctly or correctly abstained on, over all questions; the answerable-only reading,
+# answerable_success_permille and answerable_success_baseline_permille, is reported and not judged).
+#
+# The poison classes are P1 to P9; P9 is the live label on an exact event of another generation or capsule (the product's
+# SourceNotOwnedByHit). The hard honest hits (hits_by_class.HH, hard_honest_presented) are exact hits with an awkward value,
+# event or span: refusing one is hard_honest_refused, with zero tolerance.
 #
 # poison_attempts.Pk counts the class-k poison hits the mechanism refused with the refusal the generator expects for class k
 # (a hit promoted is false_known_mechanism, a hit refused for another reason is wrong_refusal_reason);
@@ -25,10 +30,15 @@
 #
 # Rules that hold by construction or duplicate another (named so a reader does not mistake them for evidence):
 # unanswerable_questions >= 50 is a count of generated questions (it checks the generator, not the mechanism);
-# true_claims >= 100 counts the generated honest hits the mechanism was shown; oracle_label_mismatches <= 0 and
-# corpus_selection_digest_mismatches <= 0 are harness-integrity guards (a disagreement between the generator's labels
-# and the naive reading, or a corpus that is not the pinned one, is a harness defect, which the grammar can only express
-# as a failed coverage rule: the seed is vacuous and the run counts as falsified until the harness is fixed);
+# true_claims >= 100 and hard_honest_presented >= 30 count the generated honest hits the mechanism was shown (so does the
+# presented count hits_by_class.HH); oracle_label_mismatches <= 0 and corpus_selection_digest_mismatches <= 0 are
+# harness-integrity guards (a disagreement between the generator's labels and the naive reading, or a corpus that is not
+# the pinned one, is a harness defect, which the grammar can only express as a failed coverage rule; aggregate.py judges a
+# seed that trips either INVALID, not falsified: it says nothing about the hypothesis);
+# task_success_mechanism >= task_success_gen_filter_only and ... >= task_success_bool_trust are corollaries, not independent
+# evidence: with false_known_mechanism = 0 and recall at 1000 the mechanism answers every answerable question, so each
+# holds by construction; they are kept because a defect that drops promoted answers trips them (task_success_violation
+# restates the three rules as a count for the mutation checker);
 # false_known_baseline_direct, false_known_gen_filter_only and false_known_bool_trust are the negative controls and the
 # contrast (the harness also exits 2 when B0 or B2 produce no false Known); recall_permille >= 950 is restated as the
 # count recall_violation for the mutation checker; the hard counters stale_or_revoked_promoted and false_known_mechanism
@@ -36,8 +46,8 @@
 # coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
 # falsifiers: a rule that does not hold falsifies Q002 on that seed.
 # Decision: every seed must hold every coverage rule and every falsifier rule, and the mutation evidence must be complete;
-# COMPLETED iff so, INVALID if a seed is missing, unresolvable, or its record does not describe the frozen run, or the
-# mutation evidence is missing or incomplete, FALSIFIED otherwise.
+# COMPLETED iff so, INVALID if a seed is missing, unresolvable, or its record does not describe the frozen run, or reports a
+# label or corpus-digest mismatch, or the mutation evidence is missing or incomplete, FALSIFIED otherwise.
 version = 1
 experiment = "Q002"
 seed_aggregation = "every_seed_must_pass"
@@ -51,18 +61,22 @@ coverage = [
   "poison_attempts.P6 >= 20",
   "poison_attempts.P7 >= 20",
   "poison_attempts.P8 >= 20",
+  "poison_attempts.P9 >= 20",
   "true_claims >= 100",
+  "hard_honest_presented >= 30",
   "unanswerable_questions >= 50",
   "stage_skip_by_kind.K1 >= 20",
   "stage_skip_by_kind.K2 >= 20",
   "stage_skip_by_kind.K3 >= 20",
   "stage_skip_by_kind.K4 >= 20",
   "stage_skip_by_kind.K5 >= 20",
-  "stage_skip_by_kind.K6 >= 20",
+  "stage_skip_by_kind.K6a >= 20",
+  "stage_skip_by_kind.K6b >= 20",
   "stage_skip_by_kind.K7 >= 20",
   "stage_skip_by_kind.K8 >= 20",
   "stage_skip_by_kind.K9 >= 20",
   "stage_skip_by_kind.K10 >= 20",
+  "stage_skip_by_kind.K11 >= 20",
   "false_known_baseline_direct >= 1",
   "false_known_gen_filter_only >= 1",
   "false_known_bool_trust >= 1",
@@ -77,6 +91,9 @@ falsifiers = [
   "stage_skip_unexpected <= 0",
   "wrong_refusal_reason <= 0",
   "product_panics <= 0",
+  "hard_honest_refused <= 0",
   "recall_permille >= 950",
   "task_success_mechanism >= task_success_baseline",
+  "task_success_mechanism >= task_success_gen_filter_only",
+  "task_success_mechanism >= task_success_bool_trust",
 ]

@@ -11,7 +11,7 @@ pub use fusion::{
 };
 pub use source::{
     verify_claim, Claim, ClaimError, ClaimProof, ExactSourceResolver, RawEventSource,
-    ResolvedSource, SourceCitation, SourceError,
+    ResolvedSource, SourceCitation, SourceError, SourceOwners, SourceOwnership,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +45,10 @@ pub enum EvidencePromotionError {
     VerificationFailed,
     /// The claim proof is about another source than the one this hit was observed with.
     ClaimProofMismatch,
+    /// The resolved source is a raw event of another capsule or another generation than
+    /// the one the hit names, however intact the event and however live the hit's own
+    /// generation.
+    SourceNotOwnedByHit,
 }
 
 impl EvidencePromotionError {
@@ -59,6 +63,7 @@ impl EvidencePromotionError {
             Self::SourceNotResolved => "PTR_SEARCH_SOURCE_NOT_RESOLVED",
             Self::VerificationFailed => "PTR_SEARCH_VERIFICATION_FAILED",
             Self::ClaimProofMismatch => "PTR_SEARCH_CLAIM_PROOF_MISMATCH",
+            Self::SourceNotOwnedByHit => "PTR_SEARCH_SOURCE_NOT_OWNED_BY_HIT",
         }
     }
 }
@@ -75,6 +80,9 @@ impl fmt::Display for EvidencePromotionError {
             Self::VerificationFailed => "verification of the observed hit failed",
             Self::ClaimProofMismatch => {
                 "the claim proof is about another source than the hit was observed with"
+            }
+            Self::SourceNotOwnedByHit => {
+                "the resolved source does not belong to the capsule generation the hit names"
             }
         })
     }
@@ -113,7 +121,9 @@ impl std::error::Error for EvidencePromotionError {}
 /// The typed path ([`SearchHit::observe_resolved`], [`SearchHit::promote_verified_with`])
 /// takes proofs that only [`ExactSourceResolver`] and [`verify_claim`] can make, so the
 /// caller cannot assert a step it did not take. It is the path for anything a retriever
-/// returned.
+/// returned. Its guarantee is conditional on the roots it is given: a truthful
+/// [`RawEventSource`] and [`SourceOwnership`] for the resolver, and a `validity` closure
+/// that answers truthfully; none of them is checked here.
 ///
 /// The boolean path ([`SearchHit::observe`], [`SearchHit::promote_verified`]) takes the
 /// caller's word that the source was resolved and the verification passed. It is the
@@ -121,7 +131,8 @@ impl std::error::Error for EvidencePromotionError {}
 /// tests; nothing in it checks them, and a hit promoted through it carries no source or
 /// claim ([`SearchHit::resolved_source`] and [`SearchHit::verified_claim`] are `None`).
 /// Handing it values taken from a retriever's output is the "boolean trust" baseline of
-/// experiment Q002, not a safe use.
+/// experiment Q002, not a safe use. It is a trusted-caller path in the strict sense: a hit
+/// reaches `VerifiedKnown` through it with no raw bytes at all.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
     capsule: CapsuleId,
@@ -235,15 +246,19 @@ impl SearchHit {
     /// hit ([`SearchHit::resolved_source`]) and is what [`SearchHit::promote_verified_with`]
     /// later holds a claim proof against. The lifecycle is asked as in
     /// [`SearchHit::observe`], once, about this hit's own capsule and generation, and
-    /// before the proof is kept: a refused hit keeps no source. The proof is not tied to
-    /// the hit's capsule, because the store does not record which capsule a raw event
-    /// belongs to; the retriever's index owns that mapping.
+    /// before the proof is kept: a refused hit keeps no source. The source must also
+    /// belong to the capsule generation the hit names ([`ResolvedSource::is_owned_by`],
+    /// answered by the resolver's [`SourceOwnership`]): the retriever's label says which
+    /// generation was asked about, and a live label must not launder an event of a
+    /// superseded or revoked one.
     ///
     /// # Errors
     /// `WrongStage` unless the hit is `PossibleEvidence` (then `validity` is not called);
     /// `StaleGeneration`, `RevokedGeneration`, `DisputedGeneration` or
-    /// `UnknownGeneration` as for [`SearchHit::observe`]. A refused step leaves the hit
-    /// at its stage.
+    /// `UnknownGeneration` as for [`SearchHit::observe`], in that order of precedence; then
+    /// `SourceNotOwnedByHit` when the source does not belong to this hit's capsule and
+    /// generation (an event nothing admitted belongs to none). A refused step leaves the
+    /// hit at its stage.
     pub fn observe_resolved<F>(
         &mut self,
         source: ResolvedSource,
@@ -253,6 +268,9 @@ impl SearchHit {
         F: FnOnce(&CapsuleId, Generation) -> Option<Validity>,
     {
         self.check_lifecycle(validity)?;
+        if !source.is_owned_by(&self.capsule, self.generation) {
+            return Err(EvidencePromotionError::SourceNotOwnedByHit);
+        }
         self.source = Some(source);
         self.stage = EvidenceStage::Observed;
         Ok(())

@@ -55,12 +55,23 @@ pub const QUOTA_P4_LOOKALIKE_SUBJECT: usize = 48;
 pub const QUOTA_P5_CONTRADICTING_VALUE: usize = 30;
 pub const QUOTA_P5_NEGATION: usize = 30;
 pub const QUOTA_P6_SUPERSEDED: usize = 60;
+pub const QUOTA_P2_EMPTY_SPAN: usize = 24;
+pub const QUOTA_P2_TWO_LINE_SPAN: usize = 24;
+pub const QUOTA_P2_PADDED_SPAN: usize = 24;
+pub const QUOTA_P4_PREDICATE_ONLY: usize = 24;
+pub const QUOTA_P4_CASE_ONLY: usize = 24;
+pub const QUOTA_P5_TRUNCATED_NEGATION: usize = 24;
+pub const QUOTA_P9_RELABELLED_SUPERSEDED: usize = 30;
+pub const QUOTA_P9_RELABELLED_QUARANTINED: usize = 30;
+/// How many honest hits of each hard kind the world has (multibyte value, value containing
+/// `not`, repeated statement, one-line event, span at the event start, span at the event end).
+pub const HARD_HONEST_PER_VARIANT: usize = 6;
 pub const HONEST_SCORE_MIN: u64 = 400;
 pub const HONEST_SCORE_MAX: u64 = 900;
 pub const POISON_SCORE_MIN: u64 = 300;
 pub const POISON_SCORE_MAX: u64 = 950;
 
-/// The adversarial stage-skip attempts of each kind.
+/// The adversarial stage-skip attempts of each kind (K1..K5, K6a, K6b, K7..K11).
 pub const STAGE_SKIP_ATTEMPTS_PER_KIND: usize = 24;
 
 /// Coverage prerequisites (a run that misses one is vacuous) and falsifier bounds.
@@ -68,6 +79,8 @@ pub const MIN_POISON_ATTEMPTS_PER_CLASS: i64 = 20;
 pub const MIN_TRUE_CLAIMS: i64 = 100;
 pub const MIN_UNANSWERABLE_QUESTIONS: i64 = 50;
 pub const MIN_STAGE_SKIP_ATTEMPTS_PER_KIND: i64 = 20;
+pub const MIN_HARD_HONEST_PRESENTED: i64 = 30;
+pub const MAX_HARD_HONEST_REFUSED: i64 = 0;
 pub const MIN_FALSE_KNOWN_BASELINE_DIRECT: i64 = 1;
 pub const MIN_FALSE_KNOWN_GEN_FILTER_ONLY: i64 = 1;
 pub const MIN_FALSE_KNOWN_BOOL_TRUST: i64 = 1;
@@ -87,23 +100,23 @@ pub const MIN_RECALL_PERMILLE: i64 = 950;
 pub const CORPUS_DIGESTS: [(u64, &str); 5] = [
     (
         17,
-        "0822b295f09f746b15fb7c4370425fe5df30236c19fae70505837fbbcd6ffc4b",
+        "f4057e61ddf1736e13d988607e014f49dc74fb300f8e90cd513e61a2e2dd48b0",
     ),
     (
         29,
-        "d7c099236e0f7cb0a917bcdaf9893c2f8c8c0747ed5f3f24f24e9e3c0da56caa",
+        "d4df6e680dd55be21eb9a5972d1d441f512cf7dfb785eaef963048d5bd61b413",
     ),
     (
         43,
-        "ddb572e7cde6fcf98f6681c6075e369af6b14e2ddb65c77d7e4a3fb1eafb5348",
+        "52d000e8d03207717d21fd1eac79cf6fa3b6928f86081425511f0eaef7eafa7e",
     ),
     (
         71,
-        "c5fbcc29ecc34e31caaea007d4aa787c5d60e6aae2da53b36145dc148be85235",
+        "9389830e75c361d1f443616977bfbeb4608c344ca400267742541df206ad9814",
     ),
     (
         101,
-        "d759d0454e593f496e327d16e9979a7e2e5ac7910c3179229c08b493745b0b59",
+        "a0bda1f8e89570385480cd9af8925e01bc77662fddb15dc6472bd71c6dd337cc",
     ),
 ];
 
@@ -261,6 +274,30 @@ pub fn compiled() -> Vec<(String, Leaf)> {
         ),
         ("quota_p5_negation".into(), int(QUOTA_P5_NEGATION)),
         ("quota_p6_superseded".into(), int(QUOTA_P6_SUPERSEDED)),
+        ("quota_p2_empty_span".into(), int(QUOTA_P2_EMPTY_SPAN)),
+        ("quota_p2_two_line_span".into(), int(QUOTA_P2_TWO_LINE_SPAN)),
+        ("quota_p2_padded_span".into(), int(QUOTA_P2_PADDED_SPAN)),
+        (
+            "quota_p4_predicate_only".into(),
+            int(QUOTA_P4_PREDICATE_ONLY),
+        ),
+        ("quota_p4_case_only".into(), int(QUOTA_P4_CASE_ONLY)),
+        (
+            "quota_p5_truncated_negation".into(),
+            int(QUOTA_P5_TRUNCATED_NEGATION),
+        ),
+        (
+            "quota_p9_relabelled_superseded".into(),
+            int(QUOTA_P9_RELABELLED_SUPERSEDED),
+        ),
+        (
+            "quota_p9_relabelled_quarantined".into(),
+            int(QUOTA_P9_RELABELLED_QUARANTINED),
+        ),
+        (
+            "hard_honest_per_variant".into(),
+            int(HARD_HONEST_PER_VARIANT),
+        ),
         ("honest_score_min".into(), int(HONEST_SCORE_MIN)),
         ("honest_score_max".into(), int(HONEST_SCORE_MAX)),
         ("poison_score_min".into(), int(POISON_SCORE_MIN)),
@@ -281,6 +318,14 @@ pub fn compiled() -> Vec<(String, Leaf)> {
         (
             "min_stage_skip_attempts_per_kind".into(),
             int(MIN_STAGE_SKIP_ATTEMPTS_PER_KIND),
+        ),
+        (
+            "min_hard_honest_presented".into(),
+            int(MIN_HARD_HONEST_PRESENTED),
+        ),
+        (
+            "max_hard_honest_refused".into(),
+            int(MAX_HARD_HONEST_REFUSED),
         ),
         (
             "min_false_known_baseline_direct".into(),

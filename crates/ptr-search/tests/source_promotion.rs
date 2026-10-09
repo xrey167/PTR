@@ -7,6 +7,7 @@ use ptr_memory::{KnowledgeStore, RawEvent};
 use ptr_search::{
     verify_claim, Claim, ClaimError, ClaimProof, EvidencePromotionError, EvidenceStage,
     ExactSourceResolver, RawEventSource, ResolvedSource, SearchHit, SourceCitation, SourceError,
+    SourceOwners,
 };
 use ptr_types::{CapsuleId, EventRole, Generation, RawEventId, SessionId, Timestamp, Validity};
 
@@ -26,6 +27,25 @@ fn store() -> KnowledgeStore {
             .expect("a well-formed raw event");
     }
     store
+}
+
+/// Which capsule generations admitted which event: `raw-a` belongs to generations 2 and 3 of
+/// capsule `c` (the later one cites the sources of the earlier), `raw-b` to generation 1 of `d`.
+fn owners() -> SourceOwners {
+    let mut owners = SourceOwners::default();
+    for generation in [2, 3] {
+        owners.record(
+            RawEventId::from("raw-a"),
+            CapsuleId::from("c"),
+            Generation(generation),
+        );
+    }
+    owners.record(
+        RawEventId::from("raw-b"),
+        CapsuleId::from("d"),
+        Generation(1),
+    );
+    owners
 }
 
 fn line_citation(raw_id: &str, body: &str, line: &str) -> SourceCitation {
@@ -85,7 +105,7 @@ fn possible(capsule: &str, generation: u64) -> SearchHit {
 }
 
 fn resolve(store: &KnowledgeStore, citation: &SourceCitation) -> ResolvedSource {
-    ExactSourceResolver::new(store)
+    ExactSourceResolver::new(store, &owners())
         .resolve(citation)
         .expect("the citation resolves")
 }
@@ -135,7 +155,8 @@ fn a_cited_claimed_and_live_hit_is_promoted_through_every_stage() {
 #[test]
 fn every_resolver_refusal_is_a_distinct_typed_error() {
     let store = store();
-    let resolver = ExactSourceResolver::new(&store);
+    let owners = owners();
+    let resolver = ExactSourceResolver::new(&store, &owners);
     let line = "ent-0003: color is red";
     let good = line_citation("raw-a", BODY, line);
     assert!(resolver.resolve(&good).is_ok());
@@ -211,7 +232,7 @@ fn a_source_that_breaks_the_stores_digest_invariant_is_refused() {
         quote: line,
     };
     assert_eq!(
-        ExactSourceResolver::new(&source).resolve(&citation),
+        ExactSourceResolver::new(&source, &owners()).resolve(&citation),
         Err(SourceError::DigestMismatch {
             raw_id: RawEventId::from("raw-c")
         })
@@ -444,12 +465,126 @@ fn the_boolean_path_stays_the_trusted_callers_and_leaves_no_evidence() {
 }
 
 #[test]
-fn the_new_refusal_has_its_own_stable_code() {
+fn the_new_refusals_have_their_own_stable_codes() {
     assert_eq!(
         EvidencePromotionError::ClaimProofMismatch.code(),
         "PTR_SEARCH_CLAIM_PROOF_MISMATCH"
     );
-    assert!(!EvidencePromotionError::ClaimProofMismatch
-        .to_string()
-        .is_empty());
+    assert_eq!(
+        EvidencePromotionError::SourceNotOwnedByHit.code(),
+        "PTR_SEARCH_SOURCE_NOT_OWNED_BY_HIT"
+    );
+    for error in [
+        EvidencePromotionError::ClaimProofMismatch,
+        EvidencePromotionError::SourceNotOwnedByHit,
+    ] {
+        assert!(!error.to_string().is_empty());
+    }
+}
+
+/// A hit that names one capsule generation must be observed with an event of that very
+/// generation: an intact, exact, live-labelled citation of another capsule's event, of the
+/// same capsule's other generation or of a revoked capsule's event is refused, whatever the
+/// lifecycle says about the hit's own label (here it says live for every label, so only the
+/// ownership can refuse).
+#[test]
+fn a_source_of_another_capsule_or_generation_is_not_observed() {
+    let store = store();
+    let live = |_: &CapsuleId, _: Generation| Some(Validity::Live);
+    let a = resolve(
+        &store,
+        &line_citation("raw-a", BODY, "ent-0001: status is active"),
+    );
+    let b = resolve(
+        &store,
+        &line_citation(
+            "raw-b",
+            "ent-0009: status is idle",
+            "ent-0009: status is idle",
+        ),
+    );
+    // Another capsule with a generation that matches; the right capsule with another
+    // generation; neither matches.
+    for (capsule, generation, source) in [
+        ("d", 2, &a),
+        ("d", 3, &a),
+        ("c", 1, &a),
+        ("c", 4, &a),
+        ("c", 1, &b),
+        ("c", 2, &b),
+        ("d", 2, &b),
+        ("zz", 1, &b),
+    ] {
+        let mut hit = possible(capsule, generation);
+        assert_eq!(
+            hit.observe_resolved(source.clone(), live),
+            Err(EvidencePromotionError::SourceNotOwnedByHit),
+            "{capsule}@{generation}"
+        );
+        assert_eq!(hit.stage(), EvidenceStage::PossibleEvidence);
+        assert_eq!(hit.resolved_source(), None);
+    }
+    // A label that does own the event observes it, and promotes.
+    for (capsule, generation, source) in [("c", 3, &a), ("c", 2, &a), ("d", 1, &b)] {
+        let mut hit = possible(capsule, generation);
+        hit.observe_resolved(source.clone(), live)
+            .unwrap_or_else(|error| panic!("{capsule}@{generation}: {error}"));
+        assert_eq!(hit.stage(), EvidenceStage::Observed);
+    }
+}
+
+#[test]
+fn the_lifecycle_refusal_takes_precedence_over_the_ownership_refusal() {
+    let store = store();
+    let mut lifecycle = Lifecycle::new(&[("c", 3), ("d", 1)]);
+    lifecycle
+        .revoked
+        .push((CapsuleId::from("d"), Generation(1)));
+    // raw-a belongs to c, not to d@1 or c@2; the lifecycle's answer still comes first.
+    let a = resolve(
+        &store,
+        &line_citation("raw-a", BODY, "ent-0001: status is active"),
+    );
+    let mut revoked = possible("d", 1);
+    assert_eq!(
+        revoked.observe_resolved(a.clone(), |c, g| lifecycle.validity(c, g)),
+        Err(EvidencePromotionError::RevokedGeneration)
+    );
+    let mut owner_c2 = possible("c", 2);
+    assert_eq!(
+        owner_c2.observe_resolved(a, |c, g| lifecycle.validity(c, g)),
+        Err(EvidencePromotionError::StaleGeneration)
+    );
+}
+
+#[test]
+fn an_event_nothing_admitted_is_resolved_but_never_observed() {
+    let store = store();
+    let lifecycle = Lifecycle::new(&[("c", 2)]);
+    let nobody = SourceOwners::default();
+    let orphan = ExactSourceResolver::new(&store, &nobody)
+        .resolve(&line_citation("raw-a", BODY, "ent-0001: status is active"))
+        .expect("an intact event resolves without an owner");
+    assert!(orphan.owners().is_empty());
+    let mut hit = possible("c", 2);
+    assert_eq!(
+        hit.observe_resolved(orphan, |c, g| lifecycle.validity(c, g)),
+        Err(EvidencePromotionError::SourceNotOwnedByHit)
+    );
+    assert_eq!(hit.stage(), EvidenceStage::PossibleEvidence);
+}
+
+#[test]
+fn a_truncated_negation_does_not_verify_the_bare_value_not() {
+    let store = store();
+    // The span stops after `not`: the bytes are a prefix of a negated statement.
+    let prefix = "ent-0002: tier is not";
+    let source = resolve(&store, &line_citation("raw-a", BODY, prefix));
+    for value in ["not", "gold"] {
+        assert_eq!(
+            verify_claim(&Claim::new("ent-0002", "tier", value), &source).err(),
+            Some(ClaimError::MalformedStatement),
+            "{value}"
+        );
+    }
 }

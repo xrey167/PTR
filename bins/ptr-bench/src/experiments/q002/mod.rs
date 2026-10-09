@@ -106,7 +106,8 @@ fn control(tally: &Tally, counter: &str) -> Json {
 }
 
 fn class_breakdown(tally: &Tally) -> Json {
-    let rows: Vec<(String, Json)> = std::iter::once(Class::Honest)
+    let rows: Vec<(String, Json)> = [Class::Honest, Class::HardHonest]
+        .into_iter()
         .chain(Class::POISON)
         .map(|class| {
             let name = class.name();
@@ -271,6 +272,14 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
             (
                 "lifecycle",
                 note("generation validity is PtrRuntime::generation_validity over a ledger the harness committed (CapsuleCommitted, CapsuleSuperseded, Revoked), except P8: the runtime never answers Disputed, so the generations the generator marked disputed are answered Disputed by the harness's overlay and every other by the runtime"),
+            ),
+            (
+                "ownership",
+                note("the source double owns the ownership record: every raw event belongs to the capsule generation the generator wrote it for, a corrupt replica to the one of the event it damages (so the digest stays the only barrier of P3); the ownership is the generator's table, a trust root of the resolver like the source itself, and P9 and K11 show that a hit is observed only with an event of its own capsule generation"),
+            ),
+            (
+                "hard_honest",
+                note("hard honest hits are exact and must be promoted: a multibyte value, a value containing `not`, a statement an event states twice (the second occurrence is cited), a one-line event, a span at the start or at the end of the event; hard_honest_refused is a zero-tolerance falsifier beside the 950 per mille recall floor"),
             ),
             (
                 "tampered_digest",
@@ -561,8 +570,8 @@ mod tests {
                 "{rule}: no '{sentence}' in the text"
             );
         }
-        assert_eq!(metrics::falsifiers().len(), 8);
-        assert_eq!(metrics::coverage().len(), 25);
+        assert_eq!(metrics::falsifiers().len(), 11);
+        assert_eq!(metrics::coverage().len(), 29);
     }
 
     #[test]
@@ -653,6 +662,8 @@ mod tests {
             assert_eq!(int(json, "stale_or_revoked_promoted"), 0);
             assert_eq!(int(json, "wrong_refusal_reason"), 0);
             assert_eq!(int(json, "oracle_label_mismatches"), 0);
+            assert_eq!(int(json, "hard_honest_refused"), 0);
+            assert_eq!(int(json, "task_success_violation"), 0);
             assert!(int(json, "recall_permille") >= 950);
             assert!(int(json, "task_success_mechanism") >= int(json, "task_success_baseline"));
             assert_eq!(int(json, "product_panics"), 0);

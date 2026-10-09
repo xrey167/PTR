@@ -15,7 +15,7 @@ use super::world::Class;
 use crate::experiments::layered_kv::emit::{MetricList, Tally};
 
 /// The metrics of the manifest, in its order (a test compares them with the file).
-pub const METRIC_NAMES: [&str; 31] = [
+pub const METRIC_NAMES: [&str; 34] = [
     "questions",
     "answerable_questions",
     "unanswerable_questions",
@@ -25,6 +25,8 @@ pub const METRIC_NAMES: [&str; 31] = [
     "true_known_promoted",
     "recall_permille",
     "recall_violation",
+    "hard_honest_presented",
+    "hard_honest_refused",
     "false_known_mechanism",
     "false_known_baseline_direct",
     "false_known_gen_filter_only",
@@ -40,6 +42,7 @@ pub const METRIC_NAMES: [&str; 31] = [
     "task_success_baseline",
     "task_success_gen_filter_only",
     "task_success_bool_trust",
+    "task_success_violation",
     "answerable_success_permille",
     "answerable_success_baseline_permille",
     "abstentions_correct",
@@ -50,17 +53,19 @@ pub const METRIC_NAMES: [&str; 31] = [
 ];
 
 /// The counters whose sum is `hard_failures` and that `tests/mutations.toml` names. Each is a
-/// metric above; the first six and `oracle_label_mismatches` and
-/// `corpus_selection_digest_mismatches` are rules on their own, `recall_violation` restates the
-/// recall rule as a count.
-pub const HARD_COUNTERS: [&str; 9] = [
+/// metric above; the first six, `hard_honest_refused`, `oracle_label_mismatches` and
+/// `corpus_selection_digest_mismatches` are rules on their own, `recall_violation` restates
+/// the recall rule as a count and `task_success_violation` the three task-success rules.
+pub const HARD_COUNTERS: [&str; 11] = [
     "false_known_mechanism",
     "stale_or_revoked_promoted",
     "stage_skip_accepted",
     "stage_skip_unexpected",
     "wrong_refusal_reason",
     "product_panics",
+    "hard_honest_refused",
     "recall_violation",
+    "task_success_violation",
     "oracle_label_mismatches",
     "corpus_selection_digest_mismatches",
 ];
@@ -70,9 +75,10 @@ pub const LIST: MetricList = MetricList {
     grouped: &["hits_by_class", "poison_attempts", "stage_skip_by_kind"],
 };
 
-/// The class names of the grouped metrics: the honest hit and the eight poison classes.
+/// The class names of the grouped metrics: the honest hits and the nine poison classes.
 pub fn class_names() -> Vec<&'static str> {
-    std::iter::once(Class::Honest)
+    [Class::Honest, Class::HardHonest]
+        .into_iter()
         .chain(Class::POISON)
         .map(Class::name)
         .collect()
@@ -91,6 +97,10 @@ pub fn coverage() -> Vec<String> {
         })
         .collect();
     rules.push(format!("true_claims >= {}", params::MIN_TRUE_CLAIMS));
+    rules.push(format!(
+        "hard_honest_presented >= {}",
+        params::MIN_HARD_HONEST_PRESENTED
+    ));
     rules.push(format!(
         "unanswerable_questions >= {}",
         params::MIN_UNANSWERABLE_QUESTIONS
@@ -145,8 +155,11 @@ pub fn falsifiers() -> Vec<String> {
             params::MAX_WRONG_REFUSAL_REASON
         ),
         format!("product_panics <= {}", params::MAX_PRODUCT_PANICS),
+        format!("hard_honest_refused <= {}", params::MAX_HARD_HONEST_REFUSED),
         format!("recall_permille >= {}", params::MIN_RECALL_PERMILLE),
         "task_success_mechanism >= task_success_baseline".to_string(),
+        "task_success_mechanism >= task_success_gen_filter_only".to_string(),
+        "task_success_mechanism >= task_success_bool_trust".to_string(),
     ]
 }
 
@@ -175,6 +188,15 @@ pub fn fill(tally: &mut Tally, questions: i64, answerable: i64) {
         "recall_violation",
         i64::from(recall < params::MIN_RECALL_PERMILLE),
     );
+    let mechanism = tally.get("task_success_mechanism");
+    tally.set(
+        "task_success_violation",
+        i64::from(
+            mechanism < tally.get("task_success_baseline")
+                || mechanism < tally.get("task_success_gen_filter_only")
+                || mechanism < tally.get("task_success_bool_trust"),
+        ),
+    );
     tally.set(
         "answerable_success_permille",
         permille(tally.get("answerable_success_mechanism"), answerable, 0),
@@ -202,6 +224,8 @@ pub fn fill(tally: &mut Tally, questions: i64, answerable: i64) {
         "stage_skip_unexpected",
         "true_claims",
         "true_known_promoted",
+        "hard_honest_presented",
+        "hard_honest_refused",
         "abstentions_correct",
         "task_success_mechanism",
         "task_success_baseline",
@@ -277,6 +301,7 @@ mod tests {
         );
         for (name, value) in [
             ("true_claims", params::MIN_TRUE_CLAIMS),
+            ("hard_honest_presented", params::MIN_HARD_HONEST_PRESENTED),
             ("unanswerable_questions", params::MIN_UNANSWERABLE_QUESTIONS),
             ("false_known_baseline_direct", 1),
             ("false_known_gen_filter_only", 1),
@@ -351,7 +376,8 @@ mod tests {
                 };
                 with(&passing(), tokens[0], Json::Int(violating))
             } else {
-                with(&passing(), tokens[0], Json::Int(4))
+                // Three rules share the mechanism's counter: raise the one they differ in.
+                with(&passing(), tokens[2], Json::Int(6))
             };
             assert_eq!(
                 failing(&broken, &falsifiers()),
@@ -401,10 +427,30 @@ mod tests {
         let mut tally = Tally::new(LIST);
         tally.set("true_claims", 100);
         tally.set("true_known_promoted", 94);
+        tally.set("task_success_mechanism", 200);
+        tally.set("task_success_baseline", 100);
+        tally.set("task_success_gen_filter_only", 200);
+        tally.set("task_success_bool_trust", 200);
         fill(&mut tally, 256, 156);
         assert_eq!(tally.get("recall_permille"), 940);
         assert_eq!(tally.get("recall_violation"), 1);
+        assert_eq!(tally.get("task_success_violation"), 0);
         assert_eq!(tally.get("unanswerable_questions"), 100);
         assert_eq!(hard_failures(&tally), 1);
+    }
+
+    #[test]
+    fn the_task_success_violation_counts_a_mechanism_below_any_one_arm() {
+        for (baseline, gen_filter, bool_trust) in
+            [(201, 200, 200), (200, 201, 200), (200, 200, 201)]
+        {
+            let mut tally = Tally::new(LIST);
+            tally.set("task_success_mechanism", 200);
+            tally.set("task_success_baseline", baseline);
+            tally.set("task_success_gen_filter_only", gen_filter);
+            tally.set("task_success_bool_trust", bool_trust);
+            fill(&mut tally, 256, 156);
+            assert_eq!(tally.get("task_success_violation"), 1);
+        }
     }
 }
