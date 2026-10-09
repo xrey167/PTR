@@ -89,3 +89,20 @@ corpus_digest_seed_29 = "d4df6e680dd55be21eb9a5972d1d441f512cf7dfb785eaef963048d
 corpus_digest_seed_43 = "52d000e8d03207717d21fd1eac79cf6fa3b6928f86081425511f0eaef7eafa7e"
 corpus_digest_seed_71 = "9389830e75c361d1f443616977bfbeb4608c344ca400267742541df206ad9814"
 corpus_digest_seed_101 = "a0bda1f8e89570385480cd9af8925e01bc77662fddb15dc6472bd71c6dd337cc"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "evidence-promotion"
+capsules = 36
+healthy_capsules = 26
+revoked_capsules = 5
+disputed_capsules = 5
+max_generations = 3
+facts_per_capsule = 6
+hard_honest_per_variant = 6
+recall_floor_permille = 950
+preregistration_text = "experiments/retrieval/Q002-evidence-promotion/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/retrieval/Q002-evidence-promotion/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

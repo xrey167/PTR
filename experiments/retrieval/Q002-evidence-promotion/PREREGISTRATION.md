@@ -1,4 +1,4 @@
-# Q002 evidence promotion: draft preregistration
+# Q002 evidence promotion: preregistration
 
 Pre-freeze text of the preregistration of Q002; at the freeze it becomes the `preregistration_text` file of `config.toml`'s
 `[preregistration]` table (renamed `PREREGISTRATION.md`, as S001's was) and its SHA-256 is frozen with the table. Q002 is

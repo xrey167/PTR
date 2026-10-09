@@ -428,7 +428,7 @@ mod tests {
         "../../../../../experiments/retrieval/Q002-evidence-promotion/tests/mutations.toml"
     );
     const PREREGISTRATION: &str = include_str!(
-        "../../../../../experiments/retrieval/Q002-evidence-promotion/DRAFT_PREREGISTRATION.md"
+        "../../../../../experiments/retrieval/Q002-evidence-promotion/PREREGISTRATION.md"
     );
 
     /// The shared reduced run (a small world of every capsule state).
