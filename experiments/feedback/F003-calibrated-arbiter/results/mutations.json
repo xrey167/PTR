@@ -1,0 +1,491 @@
+{
+  "experiment_id": "F003",
+  "git_sha": "a92841e6edff2551c873e2576ffaef56be633224",
+  "recorded_at": "2026-10-09T22:33:40.224479+00:00",
+  "subcommand": "calibrated-arbiter",
+  "killed": 29,
+  "total": 29,
+  "mutations": [
+    {
+      "name": "certify-no-early-stop",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2651,
+      "expected": [
+        "threshold_mismatches"
+      ],
+      "counters": {
+        "threshold_mismatches": 2651
+      }
+    },
+    {
+      "name": "certify-start-rule-dropped",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2166,
+      "expected": [
+        "threshold_mismatches"
+      ],
+      "counters": {
+        "threshold_mismatches": 2166
+      }
+    },
+    {
+      "name": "certify-ascending-scan",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2166,
+      "expected": [
+        "threshold_mismatches"
+      ],
+      "counters": {
+        "threshold_mismatches": 2166
+      }
+    },
+    {
+      "name": "certify-strict-admission",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 744,
+      "expected": [
+        "threshold_mismatches"
+      ],
+      "counters": {
+        "threshold_mismatches": 744
+      }
+    },
+    {
+      "name": "certify-point-estimate",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4756,
+      "expected": [
+        "threshold_mismatches",
+        "ltt_coverage_excess",
+        "heldout_policy_violations"
+      ],
+      "counters": {
+        "threshold_mismatches": 3860,
+        "ltt_coverage_excess": 896
+      }
+    },
+    {
+      "name": "certify-doubles-alpha",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5285,
+      "expected": [
+        "threshold_mismatches",
+        "ltt_coverage_excess",
+        "heldout_policy_violations"
+      ],
+      "counters": {
+        "threshold_mismatches": 3430,
+        "ltt_coverage_excess": 1851,
+        "heldout_policy_violations": 4
+      }
+    },
+    {
+      "name": "crc-drops-the-pseudo-sample",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 191,
+      "expected": [
+        "crc_mismatches"
+      ],
+      "counters": {
+        "crc_mismatches": 191
+      }
+    },
+    {
+      "name": "held-out-returns-the-calibration-set",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 17240,
+      "expected": [
+        "held_out_overlap",
+        "held_out_missing"
+      ],
+      "counters": {
+        "held_out_overlap": 5300,
+        "held_out_missing": 11940
+      }
+    },
+    {
+      "name": "held-out-skips-the-first-adjudication",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "held_out_missing"
+      ],
+      "counters": {
+        "held_out_missing": 1
+      }
+    },
+    {
+      "name": "calibrate-names-all-but-the-first-branch",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8,
+      "expected": [
+        "calibration_set_mismatches"
+      ],
+      "counters": {
+        "calibration_set_mismatches": 4,
+        "held_out_overlap": 4
+      }
+    },
+    {
+      "name": "triage-admits-latent-agreement",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5296,
+      "expected": [
+        "ineligible_auto_proposals"
+      ],
+      "counters": {
+        "ineligible_auto_proposals": 1795,
+        "decision_mismatches": 3495,
+        "ips_bias_violations": 2,
+        "dr_bias_violations": 4
+      }
+    },
+    {
+      "name": "triage-ignores-hard-findings",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5341,
+      "expected": [
+        "ineligible_auto_proposals"
+      ],
+      "counters": {
+        "ineligible_auto_proposals": 1804,
+        "decision_mismatches": 3531,
+        "ips_bias_violations": 2,
+        "dr_bias_violations": 4
+      }
+    },
+    {
+      "name": "triage-treats-disputed-as-pass",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5589,
+      "expected": [
+        "ineligible_auto_proposals"
+      ],
+      "counters": {
+        "ineligible_auto_proposals": 1878,
+        "decision_mismatches": 3705,
+        "ips_bias_violations": 2,
+        "dr_bias_violations": 4
+      }
+    },
+    {
+      "name": "triage-logs-propensity-one",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 72674,
+      "expected": [
+        "product_errors",
+        "decision_mismatches"
+      ],
+      "counters": {
+        "decision_mismatches": 34060,
+        "unexplained_triages": 34060,
+        "ips_bias_violations": 2,
+        "dr_bias_violations": 4,
+        "positivity_unrefused": 48,
+        "ope_errors": 1200,
+        "product_errors": 3300
+      }
+    },
+    {
+      "name": "admits-strictly-above-the-threshold",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 10,
+      "expected": [
+        "decision_mismatches"
+      ],
+      "counters": {
+        "decision_mismatches": 10
+      }
+    },
+    {
+      "name": "explains-refuses-slice-triage",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 10344,
+      "expected": [
+        "unexplained_triages"
+      ],
+      "counters": {
+        "unexplained_triages": 10344
+      }
+    },
+    {
+      "name": "calibration-draw-squared",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "slice_rate_deviation_violations"
+      ],
+      "counters": {
+        "slice_rate_deviation_violations": 6
+      }
+    },
+    {
+      "name": "adjudicate-accepts-non-slice-triages",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 26552,
+      "expected": [
+        "nonslice_adjudicated"
+      ],
+      "counters": {
+        "nonslice_adjudicated": 26552
+      }
+    },
+    {
+      "name": "adjudicate-inverts-the-label",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5818,
+      "expected": [
+        "adjudication_mismatches"
+      ],
+      "counters": {
+        "adjudication_mismatches": 3448,
+        "threshold_mismatches": 2166,
+        "crc_mismatches": 204
+      }
+    },
+    {
+      "name": "logging-probability-of-auto-is-one",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 404,
+      "expected": [
+        "ips_bias_violations",
+        "dr_bias_violations",
+        "positivity_unrefused"
+      ],
+      "counters": {
+        "ips_bias_violations": 2,
+        "dr_bias_violations": 2,
+        "positivity_unrefused": 400
+      }
+    },
+    {
+      "name": "positivity-check-never-fires",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 400,
+      "expected": [
+        "positivity_unrefused"
+      ],
+      "counters": {
+        "positivity_unrefused": 400
+      }
+    },
+    {
+      "name": "doubly-robust-residual-sign",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "dr_bias_violations"
+      ],
+      "counters": {
+        "dr_bias_violations": 4
+      }
+    },
+    {
+      "name": "ips-mean-weight-halved",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "ips_bias_violations"
+      ],
+      "counters": {
+        "ips_bias_violations": 2
+      }
+    },
+    {
+      "name": "logged-escalation-with-high-propensity-is-impossible",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2660,
+      "expected": [
+        "ope_errors"
+      ],
+      "counters": {
+        "ips_bias_violations": 2,
+        "dr_bias_violations": 4,
+        "positivity_unrefused": 254,
+        "ope_errors": 1200,
+        "product_errors": 1200
+      }
+    },
+    {
+      "name": "clopper-pearson-three-bisection-steps",
+      "file": "crates/ptr-analytics/src/binomial.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2305,
+      "expected": [
+        "bound_oracle_mismatches",
+        "threshold_mismatches"
+      ],
+      "counters": {
+        "threshold_mismatches": 2166,
+        "bound_oracle_mismatches": 139
+      }
+    },
+    {
+      "name": "triage-panics-on-high-scores",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 222328,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "ips_bias_violations": 2,
+        "dr_bias_violations": 4,
+        "product_panics": 222322
+      }
+    },
+    {
+      "name": "held-out-panics",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8500,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "calibration_set_mismatches": 4,
+        "held_out_missing": 8492,
+        "product_panics": 4
+      }
+    },
+    {
+      "name": "calibration-draw-always-one",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 7,
+      "expected": [
+        "slice_rate_deviation_violations",
+        "data_starvation"
+      ],
+      "counters": {
+        "slice_rate_deviation_violations": 6,
+        "data_starvation": 1
+      }
+    },
+    {
+      "name": "adjudicate-always-errors",
+      "file": "crates/ptr-branch/src/arbiter.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5307449,
+      "expected": [
+        "product_errors",
+        "data_starvation"
+      ],
+      "counters": {
+        "product_errors": 5307448,
+        "data_starvation": 1
+      }
+    }
+  ]
+}
