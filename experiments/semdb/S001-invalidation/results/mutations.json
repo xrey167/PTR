@@ -1,0 +1,284 @@
+{
+  "experiment_id": "S001",
+  "git_sha": "129d3542cc07755767532290fcc59d412fa4c5fc",
+  "recorded_at": "2026-10-09T01:00:02.331750+00:00",
+  "subcommand": "invalidation",
+  "killed": 16,
+  "total": 16,
+  "mutations": [
+    {
+      "name": "affected-direct-children-only",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 530677,
+      "expected": [
+        "missed_invalidations",
+        "closure_mismatches",
+        "semantic_divergences"
+      ],
+      "counters": {
+        "missed_invalidations": 179526,
+        "closure_mismatches": 45250,
+        "semantic_divergences": 305873,
+        "revision_mismatches": 22,
+        "unexpected_refusals": 6
+      }
+    },
+    {
+      "name": "affected-values-not-evicted",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 39813,
+      "expected": [
+        "missed_invalidations"
+      ],
+      "counters": {
+        "missed_invalidations": 36291,
+        "closure_mismatches": 3483,
+        "revision_mismatches": 39
+      }
+    },
+    {
+      "name": "rewired-key-not-changed",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 42766,
+      "expected": [
+        "missed_invalidations",
+        "closure_mismatches",
+        "semantic_divergences"
+      ],
+      "counters": {
+        "missed_invalidations": 19904,
+        "closure_mismatches": 1768,
+        "semantic_divergences": 21001,
+        "revision_mismatches": 93
+      }
+    },
+    {
+      "name": "cycles-accepted",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 80,
+      "expected": [
+        "cycle_unrefused"
+      ],
+      "counters": {
+        "cycle_unrefused": 80
+      }
+    },
+    {
+      "name": "revision-bumped-on-no-op",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 228,
+      "expected": [
+        "noop_revision_bumps",
+        "revision_mismatches"
+      ],
+      "counters": {
+        "noop_revision_bumps": 76,
+        "revision_mismatches": 152
+      }
+    },
+    {
+      "name": "value-change-invalidates-everything",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 866632,
+      "expected": [
+        "locality_violation",
+        "closure_mismatches"
+      ],
+      "counters": {
+        "closure_mismatches": 842838,
+        "semantic_divergences": 23272,
+        "noop_revision_bumps": 51,
+        "revision_mismatches": 324,
+        "unexpected_refusals": 146,
+        "locality_violation": 1
+      }
+    },
+    {
+      "name": "missing-input-accepted",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 55,
+      "expected": [
+        "missing_dependency_unrefused"
+      ],
+      "counters": {
+        "missing_dependency_unrefused": 55
+      }
+    },
+    {
+      "name": "input-check-over-eager",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 563,
+      "expected": [
+        "unexpected_refusals"
+      ],
+      "counters": {
+        "unexpected_refusals": 563
+      }
+    },
+    {
+      "name": "equal-upsert-counts-as-change",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 379,
+      "expected": [
+        "noop_revision_bumps",
+        "closure_mismatches"
+      ],
+      "counters": {
+        "closure_mismatches": 352,
+        "noop_revision_bumps": 9,
+        "revision_mismatches": 18
+      }
+    },
+    {
+      "name": "affected-everything-breaks-the-graph-setup",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 254244,
+      "expected": [
+        "unexpected_refusals",
+        "closure_mismatches"
+      ],
+      "counters": {
+        "closure_mismatches": 254024,
+        "noop_revision_bumps": 53,
+        "revision_mismatches": 161,
+        "unexpected_refusals": 5,
+        "locality_violation": 1
+      }
+    },
+    {
+      "name": "apply-returns-an-empty-affected-set",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 87561,
+      "expected": [
+        "closure_mismatches"
+      ],
+      "counters": {
+        "closure_mismatches": 87561
+      }
+    },
+    {
+      "name": "removed-key-keeps-its-dependency-entry",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1393,
+      "expected": [
+        "dependency_mismatches"
+      ],
+      "counters": {
+        "closure_mismatches": 315,
+        "dependency_mismatches": 1078
+      }
+    },
+    {
+      "name": "apply-refuses-its-own-preparation",
+      "file": "crates/ptr-semdb/src/lib.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1447,
+      "expected": [
+        "unexpected_refusals"
+      ],
+      "counters": {
+        "semantic_divergences": 780,
+        "revision_mismatches": 7,
+        "unexpected_refusals": 660
+      }
+    },
+    {
+      "name": "harness-oracle-closure-truncated",
+      "file": "bins/ptr-bench/src/experiments/s001/oracle.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 21363,
+      "expected": [
+        "closure_mismatches"
+      ],
+      "counters": {
+        "closure_mismatches": 21363
+      }
+    },
+    {
+      "name": "harness-oracle-forgets-multi-key-bumps",
+      "file": "bins/ptr-bench/src/experiments/s001/oracle.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 348,
+      "expected": [
+        "revision_mismatches"
+      ],
+      "counters": {
+        "noop_revision_bumps": 116,
+        "revision_mismatches": 232
+      }
+    },
+    {
+      "name": "harness-arm-skips-lossy-kinds",
+      "file": "bins/ptr-bench/src/experiments/s001/runner.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 69664,
+      "expected": [
+        "semantic_divergences"
+      ],
+      "counters": {
+        "semantic_divergences": 69557,
+        "revision_mismatches": 107
+      }
+    }
+  ]
+}
