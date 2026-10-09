@@ -1,9 +1,14 @@
-"""Registration of the A0 baseline study v1 (research/falsification/A0-baseline-v1).
+"""Registration of the A0 baseline study (research/falsification/A0-baseline-v1 and -v2).
 
-The study has three confirmatory experiments (M001-v5, M002-v10, M003-v2), one
+Study v1 has three confirmatory experiments (M001-v5, M002-v10, M003-v2), one
 validation-only learning-rate sweep experiment per study (`<id>-sweep`) and the
-deferred M004-v2. Like the A0 ablation study v2 (`scripts/a0_study.py`), every
-process of it runs through the hardened runner (`scripts/run_experiment.py`) as
+deferred M004-v2. Study v2 (M001-v6, M002-v11, M003-v3 and their sweeps) is the
+complete successor of v1 with the same protocol and a decider that accepts the
+per-seed commits of a correct run loop (`StudyVersion`); it creates no M004. A
+version is found from the experiment ids or the `name` of its criteria.toml; every
+function below takes the version from there, and the v1 module-level names
+(`STUDY_DIR`, `CRITERIA`, ...) keep their meaning. Like the A0 ablation study v2
+(`scripts/a0_study.py`), every process of it runs through the hardened runner (`scripts/run_experiment.py`) as
 a *listed* experiment (`experiments/preregistration.toml`): one frozen
 `entrypoint` per experiment whose placeholders the `[preregistration]` table of
 its `config.toml` fills, one run per seed.
@@ -54,6 +59,8 @@ STUDY_DIR = "research/falsification/A0-baseline-v1"
 CRITERIA = f"{STUDY_DIR}/criteria.toml"
 PREREGISTRATION_TEXT = f"{STUDY_DIR}/PREREGISTRATION.md"
 DECISION_SCRIPT = "scripts/aggregate_a0_baseline.py"
+STUDY_DIR_V2 = "research/falsification/A0-baseline-v2"
+DECISION_SCRIPT_V2 = "scripts/aggregate_a0_baseline_v2.py"
 HARDWARE_PROFILE = "hardware/a0-cpu-4core.toml"
 PLAIN_BASELINE = "research/baselines/plain_model/config.toml"
 IMPLEMENTATION_TREE = "model/burn-a0"
@@ -68,6 +75,7 @@ SWEEP_SEEDS = [17]
 # Successor sweeps, oldest first, per study: a sweep that spent its only seed
 # without an outcome is superseded by `<study>-sweep-r2`, that by `-r3`, ...
 SWEEP_SUCCESSORS = {"M002-v10": ("M002-v10-sweep-r2",)}
+SWEEP_SUCCESSORS_V2: dict[str, tuple[str, ...]] = {}
 SWEEP_ID = re.compile(r"(?P<study>M\d{3}-v\d+)-sweep(?:-r(?P<revision>[2-9]|[1-9]\d+))?")
 PENDING = "must-be-pinned-before-prepared"
 COMMAND_HEAD = (
@@ -142,7 +150,7 @@ TEXTS = {
     },
 }
 FALSIFICATION = (
-    "Decided only by research/falsification/A0-baseline-v1/criteria.toml and PREREGISTRATION.md. SUPPORTS "
+    "Decided only by {study_dir}/criteria.toml and PREREGISTRATION.md. SUPPORTS "
     "needs every gate: OOD accuracy delta >= 0.02 with the paired 95% interval lower bound > 0 and positive "
     "in every fold; per fold on test_ood and raw logits the NLL delta upper bound <= 0 and the ECE15 mean "
     "delta <= 0 with upper bound <= 0.02; IID accuracy lower bound >= -0.01; coverage and selective-error "
@@ -162,10 +170,78 @@ class RegistrationError(ValueError):
     """A registration, render or freeze that cannot proceed."""
 
 
+@dataclass(frozen=True)
+class StudyVersion:
+    """One version of the study: where its documents are, which decider it
+    pins, and the ids of its studies."""
+
+    label: str  # "v1" or "v2"
+    name: str  # the `name` of its criteria.toml
+    study_dir: str
+    decision_script: str
+    decision_base: str | None  # a script the decider imports, pinned beside it
+    study_ids: tuple[str, ...]
+    decider_tests: str
+    lead: str  # one sentence of the experiments' README
+
+    @property
+    def criteria(self) -> str:
+        return f"{self.study_dir}/criteria.toml"
+
+    @property
+    def preregistration_text(self) -> str:
+        return f"{self.study_dir}/PREREGISTRATION.md"
+
+    @property
+    def successors(self) -> dict[str, tuple[str, ...]]:
+        return SWEEP_SUCCESSORS if self.label == "v1" else SWEEP_SUCCESSORS_V2
+
+    @property
+    def defers_m004(self) -> bool:
+        return self.label == "v1"
+
+
+VERSIONS = (
+    StudyVersion(
+        "v1", "A0-baseline-v1", STUDY_DIR, DECISION_SCRIPT, None, ("M001-v5", "M002-v10", "M003-v2"),
+        "scripts/tests/test_aggregate_a0_baseline.py", "",
+    ),
+    StudyVersion(
+        "v2", "A0-baseline-v2", STUDY_DIR_V2, DECISION_SCRIPT_V2, DECISION_SCRIPT, ("M001-v6", "M002-v11", "M003-v3"),
+        "scripts/tests/test_aggregate_a0_baseline_v2.py",
+        " It replaces study v1 for a procedural defect of v1's decider (record identity); no v1 outcome was observed.",
+    ),
+)
+
+
+def version_of_study(study_id: str) -> StudyVersion:
+    for version in VERSIONS:
+        if study_id in version.study_ids:
+            return version
+    raise RegistrationError(f"{study_id} is a study of no version of the A0 baseline study")
+
+
+def version_of_criteria(criteria: dict) -> StudyVersion:
+    for version in VERSIONS:
+        if criteria.get("name") == version.name:
+            return version
+    raise RegistrationError(f"criteria name {criteria.get('name')!r} is no version of the A0 baseline study")
+
+
+def version_of_experiment(exp_id: str) -> StudyVersion:
+    """The version an experiment id (a study, its sweep or successor sweep, or
+    the deferred M004-v2, which belongs to v1) is registered by."""
+    match = SWEEP_ID.fullmatch(exp_id)
+    study_id = match["study"] if match else exp_id
+    if study_id == "M004-v2":
+        return VERSIONS[0]
+    return version_of_study(study_id)
+
+
 def sweep_chain(study_id: str) -> tuple[str, ...]:
     """The sweep experiments of `study_id`, the first and its successors in
     order; the last is the one whose learning-rate file the study uses."""
-    chain = (f"{study_id}-sweep", *SWEEP_SUCCESSORS.get(study_id, ()))
+    chain = (f"{study_id}-sweep", *version_of_study(study_id).successors.get(study_id, ()))
     for position, exp_id in enumerate(chain):
         match = SWEEP_ID.fullmatch(exp_id)
         wanted = None if position == 0 else str(position + 1)
@@ -211,6 +287,10 @@ class Registration:
     def listed(self) -> bool:
         return self.kind != "deferred"
 
+    @property
+    def version(self) -> StudyVersion:
+        return version_of_experiment(self.exp_id)
+
 
 def load_toml(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
@@ -237,7 +317,7 @@ def grid_text(grid: list[float]) -> str:
 
 
 def lr_file_path(study_id: str) -> str:
-    return f"{STUDY_DIR}/lr_{study_id}.tsv"
+    return f"{version_of_study(study_id).study_dir}/lr_{study_id}.tsv"
 
 
 def file_digest(root: Path, relative: str) -> str:
@@ -262,8 +342,9 @@ def tree_digest(root: Path) -> str:
 
 
 def registrations(criteria: dict) -> list[Registration]:
-    """Every experiment of the study, derived from `criteria` (the parsed
-    criteria.toml)."""
+    """Every experiment of the study version `criteria` (the parsed
+    criteria.toml) belongs to, derived from it."""
+    version = version_of_criteria(criteria)
     protocol = criteria["protocol"]
     data = criteria["data"]
     thresholds = criteria["thresholds"]
@@ -283,16 +364,17 @@ def registrations(criteria: dict) -> list[Registration]:
         "dataset_lock": data["lock"],
     }
     file_keys = {
-        "criteria": CRITERIA,
-        "preregistration_text": PREREGISTRATION_TEXT,
-        "decision_script": DECISION_SCRIPT,
+        "criteria": version.criteria,
+        "preregistration_text": version.preregistration_text,
+        "decision_script": version.decision_script,
         "decision_core": criteria["decision"]["core"],
+        **({"decision_base": version.decision_base} if version.decision_base else {}),
         **RUNNER_SOURCES,
     }
     out = []
     for study in criteria["study"]:
         study_id = study["id"]
-        text = TEXTS[study_id]
+        text = TEXTS[study["runner_study"].replace("m", "M", 1)]
         arms = ",".join(study["arms"])
         primary = next(c for c in study["contrast"] if c["role"] == "primary")
         pins = {
@@ -313,6 +395,8 @@ def registrations(criteria: dict) -> list[Registration]:
             "runner_train": "file", "runner_baseline": "file", "implementation_tree": "str",
             "implementation_tree_git_digest": "str",
         }
+        if version.decision_base:
+            common_required["decision_base"] = "file"
         tail_pins = {
             **file_keys,
             "implementation_tree": IMPLEMENTATION_TREE,
@@ -331,7 +415,7 @@ def registrations(criteria: dict) -> list[Registration]:
             hypothesis = (
                 f"Which learning rate of the fixed grid {grid_text(protocol['lr_grid'])} trains each arm of "
                 f"{study_id}, the plain baseline included, best on validation data (seed "
-                f"{protocol['sweep_seed']}, validation only)? Sweep of the A0 baseline study v1."
+                f"{protocol['sweep_seed']}, validation only)? Sweep of the A0 baseline study {version.label}."
             )
             if predecessor is not None:
                 sweep_table["supersedes"] = predecessor
@@ -392,7 +476,7 @@ def registrations(criteria: dict) -> list[Registration]:
                     "diagnostics; " + text["extra_metrics"]
                 ),
                 "baseline": text["baseline"],
-                "falsification": FALSIFICATION,
+                "falsification": FALSIFICATION.format(study_dir=version.study_dir),
                 "entrypoint": CONFIRMATORY_COMMAND,
                 "seeds": SEEDS,
             },
@@ -400,30 +484,31 @@ def registrations(criteria: dict) -> list[Registration]:
             required=confirmatory_required,
             pending=("lr_file_sha256", *pending_runner),
         ))
-    out.append(Registration(
-        exp_id="M004-v2",
-        path="model/M004-v2-operator-router",
-        kind="deferred",
-        study_id="M004-v2",
-        manifest={
-            "hypothesis": (
-                "Does a learned operator router beat the frozen router and the pinned baseline? Planned and "
-                "deferred: not run at A0 (ADR-0021 item 2); the comparison needs the pretrained LM baseline "
-                "of the GPU phase."
-            ),
-            "metrics": "regret; quality-cost utility; route accuracy (to be preregistered with the GPU-phase study)",
-            "baseline": "LLM-only + deterministic router (to be pinned in the GPU phase)",
-            "falsification": (
-                "Not run at A0 (ADR-0021 item 2). No criterion is preregistered here and none may be inferred "
-                "from M001-v5, M002-v10 or M003-v2; a successor is preregistered before any run."
-            ),
-            "entrypoint": "",
-            "seeds": SEEDS,
-        },
-        table={},
-        required={},
-        pending=(),
-    ))
+    if version.defers_m004:
+        out.append(Registration(
+            exp_id="M004-v2",
+            path="model/M004-v2-operator-router",
+            kind="deferred",
+            study_id="M004-v2",
+            manifest={
+                "hypothesis": (
+                    "Does a learned operator router beat the frozen router and the pinned baseline? Planned and "
+                    "deferred: not run at A0 (ADR-0021 item 2); the comparison needs the pretrained LM baseline "
+                    "of the GPU phase."
+                ),
+                "metrics": "regret; quality-cost utility; route accuracy (to be preregistered with the GPU-phase study)",
+                "baseline": "LLM-only + deterministic router (to be pinned in the GPU phase)",
+                "falsification": (
+                    "Not run at A0 (ADR-0021 item 2). No criterion is preregistered here and none may be inferred "
+                    "from M001-v5, M002-v10 or M003-v2; a successor is preregistered before any run."
+                ),
+                "entrypoint": "",
+                "seeds": SEEDS,
+            },
+            table={},
+            required={},
+            pending=(),
+        ))
     return out
 
 
@@ -480,7 +565,7 @@ def config_text(reg: Registration, table: dict) -> str:
         lines += [
             "",
             "# Frozen at the freeze commit (scripts/a0_baseline_study.py); every value is derived from",
-            f"# {CRITERIA}. A `must-be-pinned-before-prepared` value can only be known at the freeze.",
+            f"# {reg.version.criteria}. A `must-be-pinned-before-prepared` value can only be known at the freeze.",
             "[preregistration]",
         ]
         lines += [f"{key} = {toml_value(value)}" for key, value in table.items()]
@@ -502,10 +587,10 @@ def readme_text(reg: Registration) -> str:
         f"The confirmatory experiment of study `{reg.study_id}` (five seeds, three folds)"
     )
     return (
-        f"# {reg.exp_id}\n\n{what} of the A0 baseline study v1. It is a listed experiment: its command, "
+        f"# {reg.exp_id}\n\n{what} of the A0 baseline study {reg.version.label}. It is a listed experiment: its command, "
         "values and seeds are frozen in `config.toml` at the freeze commit, and each seed runs once through "
-        f"the hardened runner. Design and frozen text: `{STUDY_DIR}/`. Its records are A0-internal, "
-        "synthetic-data evidence only (ADR-0021).\n\nStatus `planned` until the freeze: placeholders "
+        f"the hardened runner. Design and frozen text: `{reg.version.study_dir}/`. Its records are A0-internal, "
+        f"synthetic-data evidence only (ADR-0021).{reg.version.lead}\n\nStatus `planned` until the freeze: placeholders "
         f"(`{PENDING}`) in `config.toml` are the values only known then.\n"
         + (
             f"\n## Successor of {reg.supersedes}\n\n`{reg.supersedes}` is superseded: its only seed (17) was "
@@ -513,7 +598,7 @@ def readme_text(reg: Registration) -> str:
             "`started`, no output and no exit code, and no sweep result of the study was observed by anyone. "
             "This experiment is the identical sweep (protocol, grid, arms, seed 17, selection rule, command) under "
             f"a new id, the only one whose record may feed `{lr_file_path(reg.study_id)}`. The interrupted "
-            f"record is kept as it was written. Account and procedure: `{STUDY_DIR}/DEVIATIONS.md`.\n"
+            f"record is kept as it was written. Account and procedure: `{reg.version.study_dir}/DEVIATIONS.md`.\n"
             if reg.supersedes else ""
         )
     )
@@ -542,20 +627,25 @@ def render_files(reg: Registration, root: Path) -> dict[str, str]:
         "tests/README.md": (
             f"# Tests for experiments/{reg.path}\n\nThe checks of this experiment are the study's "
             "registration and gate tests (`scripts/tests/test_a0_baseline_study.py`), the decider's tests "
-            "(`scripts/tests/test_aggregate_a0_baseline.py`) and the runner's tests "
+            f"(`{reg.version.decider_tests}`) and the runner's tests "
             "(`model/burn-a0/tests/baseline_v1.rs`).\n"
         ),
         "results/.gitkeep": "",
     }
 
 
-def render(root: Path = ROOT, ids: list[str] | None = None) -> list[str]:
-    """Create the experiments of the study below `root` (all of them, or only
-    `ids`, such as a successor sweep registered after the first render),
+def render(root: Path = ROOT, ids: list[str] | None = None, label: str = "v1") -> list[str]:
+    """Create the experiments of a study version below `root` (all of them, or
+    only `ids`, such as a successor sweep registered after the first render),
     register each (planned) in registry.toml and list it in
-    preregistration.toml. Refuses an unknown id, an id or directory that
-    exists; nothing is written then."""
-    criteria = load_toml(root / CRITERIA)
+    preregistration.toml. The version is that of `ids` when given, else `label`
+    ("v1" or "v2"). Refuses an unknown id, an id or directory that exists;
+    nothing is written then."""
+    versions = {version_of_experiment(exp_id).label for exp_id in ids} if ids else {label}
+    if len(versions) != 1 or not versions <= {version.label for version in VERSIONS}:
+        raise RegistrationError(f"cannot render ids of more than one study version: {sorted(versions)}")
+    version = next(item for item in VERSIONS if item.label in versions)
+    criteria = load_toml(root / version.criteria)
     regs = registrations(criteria)
     if ids is not None:
         unknown = sorted(set(ids) - {reg.exp_id for reg in regs})
@@ -612,7 +702,7 @@ def freeze(root: Path, exp_id: str, *, write: bool) -> dict:
     without, only return what would be written. Refuses a deferred
     experiment, one that is not `planned`, a missing learning-rate file and a
     HEAD whose `model/burn-a0` is not the committed tree to pin."""
-    criteria = load_toml(root / CRITERIA)
+    criteria = load_toml(root / version_of_experiment(exp_id).criteria)
     reg = next((r for r in registrations(criteria) if r.exp_id == exp_id), None)
     if reg is None or not reg.listed:
         raise RegistrationError(f"{exp_id} is not a listed experiment of the study")
@@ -693,6 +783,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     rendering = sub.add_parser("render", help="create the planned experiments (refuses existing ones)")
     rendering.add_argument("ids", nargs="*", help="only these experiments (a successor sweep); default: all")
+    rendering.add_argument("--study-version", default="v1", choices=[v.label for v in VERSIONS],
+                           help="the study version to render when no ids are given (default v1)")
     plan = sub.add_parser("freeze", help="pin and move one planned experiment to prepared")
     plan.add_argument("exp_id")
     plan.add_argument("--write", action="store_true", help="write the files (default: print the frozen digests)")
@@ -702,7 +794,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "render":
-            for exp_id in render(ids=args.ids or None):
+            for exp_id in render(ids=args.ids or None, label=args.study_version):
                 print(exp_id)
         elif args.command == "freeze":
             result = freeze(ROOT, args.exp_id, write=args.write)

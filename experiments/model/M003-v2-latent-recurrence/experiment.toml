@@ -1,6 +1,6 @@
 version = 1
 id = "M003-v2"
-status = "prepared"
+status = "superseded"
 hypothesis = "Does the tied latent recurrence (k=2) improve out-of-distribution routing accuracy by at least 0.02 over no recurrence (latent-0) at equal parameters in A0 on operator-routing v2, without a per-fold OOD calibration regression, and does the per-slot nonlinearity (full against latent-linear at matched parameters and FLOPs) carry the benefit? Token savings are not tested. The full A0 bundle against the pinned plain baseline is labelled bundle vs baseline, non-isolating."
 metrics = "OOD accuracy (sole primary endpoint: mean over three folds, paired over five seeds, delta_min 0.02); gated per fold on test_ood with raw logits: NLL, ECE15; IID accuracy; raw coverage and selective error; matched parameters; descriptive: total_params, flops_per_example, latent_steps, wall time, explicit_token_count, temperature-fitted diagnostics; latent_steps, explicit_token_count (non-PAD input tokens, identical across arms)"
 baseline = "latent-0 (no recurrence; isolating primary contrast) and latent-linear (affine-only recurrence; isolating secondary contrast); latent-1 is descriptive; the pinned plain baseline research/baselines/plain_model (ptr-burn-a0@matched-cross-attention-v1) for the bundle contrast"

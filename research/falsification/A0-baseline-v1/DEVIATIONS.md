@@ -66,6 +66,60 @@ the facts above.
 decider and the dataset are unchanged, which the freeze digests and the
 `implementation_tree_git_digest` equality check.
 
+## D2: M002-v10 seed 101 interrupted (container restart)
+
+**What happened.** On 2026-10-09 the confirmatory `M002-v10` seed 101 started at
+02:56:53 UTC from the clean commit c87d4a1f (`research: record M002-v10 seed 71`)
+and was killed by a container restart before any output. Its record
+`experiments/model/M002-v10-typed-attention/results/run-20261009T025653.762171Z-seed-101.json`
+has status `started`, no `stdout` and no exit code, and is committed exactly as
+the runner wrote it (commit 0d3e6060).
+
+**What was observed: nothing** of this seed. The seed is spent
+(`scripts/run_experiment.py`, `seed_runs`), so `M002-v10` can never have five
+completed records.
+
+**What was done.** Nothing in v1: D3 supersedes the study.
+
+## D3: study v1 replaced by study v2 (decider identity defect; no outcome observed)
+
+**What happened.** On 2026-10-09 the owner decided that the confirmatory v1
+studies M001-v5, M002-v10 and M003-v2 are replaced by the complete successor
+study `A0-baseline-v2` (M001-v6, M002-v11, M003-v3; sweeps repeated, all
+confirmatory runs repeated). Reason, procedural: the v1 decider
+(`scripts/aggregate_a0_baseline.py`, through the pinned core
+`scripts/aggregate_m002_v5.py`, `IDENTITY_FIELDS`, checked at about lines 455-482
+of the decider) requires all five run records to name the same `git_sha`, but
+the run protocol commits each record before the next run, so every record names
+a different commit and the decider refuses ("run records disagree in git_sha")
+before computing anything. In addition D1 and D2 (two container restarts)
+interrupted a sweep and a confirmatory seed; v1 had a procedure for the sweep
+only, and its decider would have refused an interrupted confirmatory study.
+
+**What was observed: no v1 confirmatory outcome.** The decider never ran on the
+confirmatory records, nobody opened their stdout, and only record metadata
+(status, `git_sha`, seed) was read to find the defect. The validation-only v1
+sweeps exist and are history; v2 does not use their learning-rate files and runs
+fresh sweeps.
+
+**What was done.**
+
+1. `M001-v5`, `M002-v10` and `M003-v2` were marked `superseded` (manifest status,
+   registry, `SUPERSEDED.md` in each directory with the facts and the successor).
+   Their records stay unmodified and unread. This file is not digest-pinned by
+   any experiment, so the note is made here (and in the `SUPERSEDED.md` files).
+2. The sweeps `M001-v5-sweep`, `M002-v10-sweep-r2` and `M003-v2-sweep` stay as
+   they are (their records, lr files and statuses are unchanged).
+3. `research/falsification/A0-baseline-v2/` holds the successor with the
+   protocol, arms, contrasts, gates, thresholds, seeds, lr grid and selection
+   rule of this study unchanged; its changes are the decider
+   (`scripts/aggregate_a0_baseline_v2.py`), a stated record-identity rule, an
+   interruption outcome (INCONCLUSIVE-INTERRUPTED) and the ids. M004-v3 is not
+   created; M004 stays deferred via `M004-v2`.
+
+**What the final report must say.** v1 produced no result; the verdicts are
+those of v2, and a v1 confirmatory record must not be quoted.
+
 ## Procedure: an interrupted run of a listed experiment
 
 Applies when a listed run left a record with status `started`, no `stdout`, no

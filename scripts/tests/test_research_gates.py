@@ -5155,11 +5155,14 @@ RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","
 # after the harness and the criteria are final); it is no part of the fixtures that move the six to
 # `prepared`. Once frozen it is a regular listed experiment the repository's own gate checks.
 # The A0 baseline study v1 (scripts/a0_baseline_study.py) lists its six experiments at `planned`
-# the same way; its freeze is checked by scripts/tests/test_a0_baseline_study.py.
+# the same way; its freeze is checked by scripts/tests/test_a0_baseline_study.py. Its three
+# confirmatory experiments are superseded (A0-baseline-v2 replaces the study for a decider defect).
+# The A0 baseline study v2 lists its six experiments at `planned` until the head freezes them.
 LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007",
     "M001-v5","M002-v10","M003-v2","M001-v5-sweep","M002-v10-sweep","M003-v2-sweep",
     # The successor of the interrupted M002-v10-sweep (DEVIATIONS.md of the study).
-    "M002-v10-sweep-r2")
+    "M002-v10-sweep-r2",
+    "M001-v6","M002-v11","M003-v3","M001-v6-sweep","M002-v11-sweep","M003-v3-sweep")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture

@@ -3292,47 +3292,69 @@ def m002_v9_successor_freeze_errors(root: Path, experiment: Path, manifest: dict
 
 A0_BASELINE_V1_CRITERIA="research/falsification/A0-baseline-v1/criteria.toml"
 A0_BASELINE_V1_IDS=("M001-v5","M002-v10","M003-v2")
+# The versions of the A0 baseline study: where each keeps its criteria.toml, the
+# studies it runs, the decider it pins, and the decider that decider imports
+# (v2 imports v1's and pins it as `decision_base`). v2 replaced v1 for a defect
+# of v1's decider (research/falsification/A0-baseline-v2/DESIGN.md).
+A0_BASELINE_VERSIONS=(
+    {"criteria":A0_BASELINE_V1_CRITERIA,"ids":A0_BASELINE_V1_IDS,"decision_script":"scripts/aggregate_a0_baseline.py",
+     "decision_base":None},
+    {"criteria":"research/falsification/A0-baseline-v2/criteria.toml","ids":("M001-v6","M002-v11","M003-v3"),
+     "decision_script":"scripts/aggregate_a0_baseline_v2.py","decision_base":"scripts/aggregate_a0_baseline.py"},
+)
 # A study's sweep is `<study>-sweep`; a sweep whose only seed was spent without
 # an outcome is superseded by `<study>-sweep-r2`, that by `-r3`, ...
-# (research/falsification/A0-baseline-v1/DEVIATIONS.md).
+# (research/falsification/A0-baseline-v1/DEVIATIONS.md, -v2/DEVIATIONS.md).
 A0_BASELINE_V1_ID=re.compile(r"(?P<study>M\d{3}-v\d+)(?P<sweep>-sweep(?:-r(?P<revision>[2-9]|[1-9]\d+))?)?")
 
-def a0_baseline_v1_parts(exp_id: str) -> tuple[str, bool, int] | None:
+def a0_baseline_version(study: str) -> dict | None:
+    """The version of the A0 baseline study that runs `study`, or None."""
+    return next((version for version in A0_BASELINE_VERSIONS if study in version["ids"]),None)
+
+def a0_baseline_parts(exp_id: str) -> tuple[str, bool, int] | None:
     """(study, is a sweep, revision) of an experiment id of the A0 baseline
-    study v1 (revision 1 for the first sweep and the confirmatory experiment,
-    n for `-sweep-r<n>`), or None when it is none of the study's."""
+    study (any version; revision 1 for the first sweep and the confirmatory
+    experiment, n for `-sweep-r<n>`), or None when it is none of the study's."""
     match=A0_BASELINE_V1_ID.fullmatch(exp_id)
-    if match is None or match["study"] not in A0_BASELINE_V1_IDS:
+    if match is None or a0_baseline_version(match["study"]) is None:
         return None
     return match["study"],match["sweep"] is not None,int(match["revision"] or 1)
+
+a0_baseline_v1_parts=a0_baseline_parts
 A0_BASELINE_V1_FLAGS=(
     ("--study","<study>"),("--arms","<arms>"),("--seed","<seed>"),("--steps","<steps>"),("--data","<data>"),
     ("--folds","<folds>"),("--d-model","<d_model>"),("--rank","<rank>"),("--bias-limit","<bias_limit>"),
     ("--metadata-dropout","<metadata_dropout>"),("--out","-"),
 )
 
-def a0_baseline_v1_freeze_errors(root: Path, experiment: Path, manifest: dict, exp_id: str) -> list[str]:
-    """Bind a frozen experiment of the A0 baseline study v1 (a confirmatory
-    experiment of `A0_BASELINE_V1_IDS` or its `-sweep`) to the study's
-    criteria.toml, the single source of its protocol: every pinned protocol
-    value, the fold identities, the arm set, the phase and every flag of the
-    command (so the runner never falls back to a default of its own), and the
-    `model/burn-a0` Git-tree digest at HEAD. The files the table names are
-    frozen by the generic preregistration check; a placeholder is reported
-    there and skipped here."""
+def a0_baseline_freeze_errors(root: Path, experiment: Path, manifest: dict, exp_id: str) -> list[str]:
+    """Bind a frozen experiment of the A0 baseline study (a confirmatory
+    experiment of any version in `A0_BASELINE_VERSIONS` or its `-sweep`) to
+    the criteria.toml of its version, the single source of its protocol: every
+    pinned protocol value, the fold identities, the arm set, the phase and
+    every flag of the command (so the runner never falls back to a default of
+    its own), the version's own documents and decider (v2 also pins the v1
+    decider it imports), and the `model/burn-a0` Git-tree digest at HEAD. The
+    files the table names are frozen by the generic preregistration check; a
+    placeholder is reported there and skipped here."""
     if status_of(manifest) not in FROZEN:
         return []
+    parts=a0_baseline_parts(exp_id)
+    version=None if parts is None else a0_baseline_version(parts[0])
+    if parts is None or version is None:
+        return [f"{exp_id}: is no experiment of the A0 baseline study"]
+    criteria_path=version["criteria"]
+    study_dir=criteria_path.rsplit("/",1)[0]
     try:
         config=load(experiment/"config.toml").get("preregistration",{})
-        criteria=load(root/A0_BASELINE_V1_CRITERIA)
+        criteria=load(root/criteria_path)
     except Unreadable as error:
         return [error.named(root)]
     if not isinstance(config,dict):
         return [f"{exp_id}: config.toml has no preregistration table"]
-    parts=a0_baseline_v1_parts(exp_id)
-    study=None if parts is None else next((item for item in criteria.get("study",[]) if item.get("id")==parts[0]),None)
-    if parts is None or study is None:
-        return [f"{exp_id}: {A0_BASELINE_V1_CRITERIA} names no such study"]
+    study=next((item for item in criteria.get("study",[]) if item.get("id")==parts[0]),None)
+    if study is None:
+        return [f"{exp_id}: {criteria_path} names no such study"]
     sweep,revision=parts[1],parts[2]
     protocol=criteria["protocol"]
     expected={
@@ -3342,9 +3364,12 @@ def a0_baseline_v1_freeze_errors(root: Path, experiment: Path, manifest: dict, e
         "router_mode":protocol["router_mode"],"data":criteria["data"]["dataset"],"folds":criteria["data"]["folds"],
         "dataset_lock":criteria["data"]["lock"],"sweep_seed":protocol["sweep_seed"],
         "lr_grid":",".join(str(value) for value in protocol["lr_grid"]),
-        "lr_selection_rule":protocol["lr_selection_rule"],"criteria":A0_BASELINE_V1_CRITERIA,
+        "lr_selection_rule":protocol["lr_selection_rule"],"criteria":criteria_path,
+        "preregistration_text":f"{study_dir}/PREREGISTRATION.md","decision_script":version["decision_script"],
         "decision_core":criteria["decision"]["core"],"implementation_tree":"model/burn-a0",
     }
+    if version["decision_base"] is not None:
+        expected["decision_base"]=version["decision_base"]
     errors=[]
     if revision>1:
         # A successor sweep replaces the sweep before it, which must be
@@ -3379,7 +3404,7 @@ def a0_baseline_v1_freeze_errors(root: Path, experiment: Path, manifest: dict, e
         return [*errors,f"{exp_id}: cannot load the confirmatory fold lock: {error}"]
     if config.get("folds")!=folds or criteria["data"]["folds"]!=folds:
         errors.append(f"{exp_id}: folds must bind the exact canonical evidence-temporal,evidence-tabular,claim-interventional FNV64 values")
-    target=f"research/falsification/A0-baseline-v1/lr_{study['id']}.tsv"
+    target=f"{study_dir}/lr_{study['id']}.tsv"
     key="lr_file_target" if sweep else "lr_file"
     if config.get(key)!=target:
         errors.append(f"{exp_id}: preregistration key {key} must be {target!r}")
@@ -3405,6 +3430,8 @@ def a0_baseline_v1_freeze_errors(root: Path, experiment: Path, manifest: dict, e
     elif not is_unset(digest) and directory_digest_at(root,"HEAD","model/burn-a0")!=digest:
         errors.append(f"{exp_id}: implementation tree differs from its pinned Git digest")
     return errors
+
+a0_baseline_v1_freeze_errors=a0_baseline_freeze_errors
 
 
 def m002_v5_factorized_contract(root: Path, directory: Path | None) -> tuple[dict | None, list[str]]:
@@ -3727,8 +3754,8 @@ def gate_errors(root: Path) -> list[str]:
     if "M002-v9" in experiments and "M002-v9" in directories:
         errors.extend(m002_v9_successor_freeze_errors(root,directories["M002-v9"],experiments["M002-v9"]))
     for exp_id in sorted(experiments):
-        if a0_baseline_v1_parts(exp_id) is not None and exp_id in directories:
-            errors.extend(a0_baseline_v1_freeze_errors(root,directories[exp_id],experiments[exp_id],exp_id))
+        if a0_baseline_parts(exp_id) is not None and exp_id in directories:
+            errors.extend(a0_baseline_freeze_errors(root,directories[exp_id],experiments[exp_id],exp_id))
     errors.extend(m009_lock_errors(root,experiments,directories))
     errors.extend(preregistration_errors(root,experiments,directories))
     return errors
