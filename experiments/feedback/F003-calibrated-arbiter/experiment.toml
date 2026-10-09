@@ -1,6 +1,6 @@
 version = 1
 id = "F003"
-status = "prepared"
+status = "completed"
 hypothesis = "Does the calibrated arbiter keep the harm rate of auto-proposed branches at or below alpha on held-out adjudications? The claim is scoped to the mechanism and to a low-noise regime: a simulated adjudicator with a known error rate of 2 per mille stands in for people, because at 20 per mille Learn-then-Test certifies nothing in roughly three calibrations of four (a utility limit of the start rule, reported by an ungated descriptive arm, not a violation). What is tested is that the Learn-then-Test guarantee holds in this scenario (shown empirically, not proven), that no ineligible branch is auto-proposed and that off-policy estimates are sound. Reviews saved are reported descriptively only."
 metrics = "coverage of the Learn-then-Test guarantee over Monte-Carlo replicates; per-policy exact held-out test of the adjudicated harm rate of auto-proposals, with the literal upper bound reported; ineligible auto-proposals; escalation share and reviews saved; off-policy estimate error"
 baseline = "escalate every branch; fixed uncalibrated threshold"
