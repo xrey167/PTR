@@ -3,3 +3,106 @@ kind = "workspace-area"
 name = "Q002-evidence-promotion"
 path = "experiments/retrieval/Q002-evidence-promotion"
 tests_dir = "tests"
+
+# The preregistered choices of the harness (`ptr-bench evidence-promotion`, bins/ptr-bench/src/experiments/q002/params.rs,
+# which fails its drift test if a compiled constant differs from this table). Q002 is planned, not frozen: no
+# [preregistration] table exists yet; the freeze adds it, together with the corpus digests below as measured on the
+# frozen commit.
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
+# The world: capsules (each with one to three generations, each generation one raw event of one-line statements) of
+# three lifecycle states; every fact (subject, predicate) is owned by one capsule. Questions ask for one fact: the facts
+# of healthy capsules are answerable, those of revoked and disputed capsules and `absent_questions` facts nobody
+# states are not (abstaining is the correct answer).
+capsules = 36
+healthy_capsules = 26
+revoked_capsules = 5
+disputed_capsules = 5
+max_generations = 3
+facts_per_capsule = 6
+entities = 200
+twin_pairs = 60
+predicates = ["status", "tier", "region", "owner", "color", "phase"]
+values_per_predicate = 12
+absent_questions = 40
+mirrors_per_quarantined_event = 4
+negations_per_healthy_event = 2
+stale_value_change_permille = 700
+# The retriever's hits: the quota of each poison class (P7 and P8 take every statement of the live generation of each
+# revoked or disputed capsule; a class with fewer candidates than its quota gets all of them) and the score ranges
+# (permille) that rank the hits of a question.
+quota_p1_fabricated_source = 60
+quota_p2_shifted_span = 24
+quota_p2_span_past_end = 24
+quota_p2_forged_quote = 24
+quota_p3_tampered_digest = 40
+quota_p4_lookalike_subject = 48
+quota_p5_contradicting_value = 30
+quota_p5_negation = 30
+quota_p6_superseded = 60
+# More ways to be wrong inside the classes above, and the label that lies: an empty span, a span of two statements and a
+# span with a newline next to the statement (P2); a claim with another predicate, a subject that differs by ASCII case
+# (P4); a span that stops after `not` (P5); a live label on an exact event of another generation or capsule (P9).
+quota_p2_empty_span = 24
+quota_p2_two_line_span = 24
+quota_p2_padded_span = 24
+quota_p4_predicate_only = 24
+quota_p4_case_only = 24
+quota_p5_truncated_negation = 24
+quota_p9_relabelled_superseded = 30
+quota_p9_relabelled_quarantined = 30
+# Honest hits that are hard to read, per kind (multibyte value, value containing `not`, statement repeated in its event,
+# one-line event, span at the start of the event, span at the end of it): refusing one is a hard failure.
+hard_honest_per_variant = 6
+honest_score_min = 400
+honest_score_max = 900
+poison_score_min = 300
+poison_score_max = 950
+# Adversarial attempts at the API boundary, per kind (K1..K5, K6a, K6b, K7..K11).
+stage_skip_attempts_per_kind = 24
+# Coverage prerequisites (a run that misses one is vacuous).
+min_poison_attempts_per_class = 20
+min_true_claims = 100
+min_unanswerable_questions = 50
+min_stage_skip_attempts_per_kind = 20
+min_hard_honest_presented = 30
+min_false_known_baseline_direct = 1
+min_false_known_gen_filter_only = 1
+min_false_known_bool_trust = 1
+max_oracle_label_mismatches = 0
+max_corpus_selection_digest_mismatches = 0
+# Q002 decision criteria.
+max_false_known_mechanism = 0
+max_stage_skip_accepted = 0
+max_stage_skip_unexpected = 0
+max_stale_or_revoked_promoted = 0
+max_wrong_refusal_reason = 0
+max_product_panics = 0
+max_hard_honest_refused = 0
+min_recall_permille = 950
+timing_gated = false
+# The SHA-256 of the generated corpus of each seed at the pinned shape, as measured at the freeze commit.
+corpus_digest_seed_17 = "f4057e61ddf1736e13d988607e014f49dc74fb300f8e90cd513e61a2e2dd48b0"
+corpus_digest_seed_29 = "d4df6e680dd55be21eb9a5972d1d441f512cf7dfb785eaef963048d5bd61b413"
+corpus_digest_seed_43 = "52d000e8d03207717d21fd1eac79cf6fa3b6928f86081425511f0eaef7eafa7e"
+corpus_digest_seed_71 = "9389830e75c361d1f443616977bfbeb4608c344ca400267742541df206ad9814"
+corpus_digest_seed_101 = "a0bda1f8e89570385480cd9af8925e01bc77662fddb15dc6472bd71c6dd337cc"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "evidence-promotion"
+capsules = 36
+healthy_capsules = 26
+revoked_capsules = 5
+disputed_capsules = 5
+max_generations = 3
+facts_per_capsule = 6
+hard_honest_per_variant = 6
+recall_floor_permille = 950
+preregistration_text = "experiments/retrieval/Q002-evidence-promotion/PREREGISTRATION.md"
+preregistration_text_sha256 = "c05b7eb8c0fdfc479a0ee44fb61be19b35e40015558da3e549ecc6e70f736bfc"
+criteria = "experiments/retrieval/Q002-evidence-promotion/criteria.toml"
+criteria_sha256 = "bff59865a1ae72b94fa2d67f7ced8bc4624086c81227eeea3ec927deb0696008"
