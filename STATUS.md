@@ -103,6 +103,22 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
   (`SUPERSEDED.md`). No decision exists and no positive claim, M009 unlock, or
   Learned Backend authorization follows; a further study needs a new
   preregistered successor.
+- `A0-baseline-v2` (`research/falsification/A0-baseline-v2/`, `RESULTS.md`) replaced
+  study v1 for a decider defect, not an outcome. It ran at A0 on the synthetic
+  operator-routing v2 benchmark and produced no claim: `M001-v6` is INCONCLUSIVE
+  (isolating `full` vs `no-semantic-slots-masked`: OOD accuracy +0.242, CI
+  [+0.175, +0.310], NLL and ECE gates held, the `coverage` gate failed);
+  `M002-v11` is INCONCLUSIVE (isolating pair-bias on/off: OOD accuracy +0.003, CI
+  [-0.015, +0.020], a null that missed FALSIFIES by about 0.0002 on the interval
+  upper bound); `M003-v3` is INCONCLUSIVE-INTERRUPTED (seed 71 killed by a
+  container restart, seed 101 not run, no statistic computed, never rerun;
+  `DEVIATIONS.md` D1). The bundle contrasts against `plain` are non-isolating and
+  not mechanism evidence. No NO-GO-CALIBRATION arose. `M001-v6` and `M002-v11` are
+  `completed` with outcome INCONCLUSIVE; their published `run.json` carries the
+  preregistration digests and `seed_records` the research gate requires, added
+  around the pinned decider's output without changing a metric or verdict
+  (`DEVIATIONS.md` D2, owner decision). `M003-v3` stays `prepared`; a successor
+  study is needed for M003.
 
 ## Current research/implementation gap
 

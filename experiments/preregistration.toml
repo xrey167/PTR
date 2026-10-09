@@ -529,3 +529,120 @@ class_lifecycle_permille = "int"
 max_cancel_latency_rounds_max = "int"
 preregistration_text = "file"
 criteria = "file"
+
+[experiment.M001-v5-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str" }
+
+[[experiment.M001-v5-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M001-v5]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M001-v5.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v10-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str" }
+
+[[experiment.M002-v10-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v10]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M002-v10.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v2-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str" }
+
+[[experiment.M003-v2-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v2]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M003-v2.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v10-sweep-r2]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str", supersedes = "str" }
+
+[[experiment.M002-v10-sweep-r2.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M001-v6-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file_target = "str" }
+
+[[experiment.M001-v6-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M001-v6]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M001-v6.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v11-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file_target = "str" }
+
+[[experiment.M002-v11-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v11]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M002-v11.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v3-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file_target = "str" }
+
+[[experiment.M003-v3-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v3]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M003-v3.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
