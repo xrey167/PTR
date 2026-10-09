@@ -1,3 +1,3 @@
 results_git_sha = "3947afe61f67475ce99387509e864556fbbbc188"
-stale_since = "2defb7202d5c3ec852e6f031a7cb180f4e3ba7aa"
-reason = "No code under test changed after M001-v6's seed records. 2defb720 publishes the A0 baseline v2 decisions of M001-v6, M002-v11 and M003-v3 together, sets the completed status (DEVIATIONS.md D2 binds the published run.json to the preregistration and the seed records) and e0390da4 records the result in STATUS.md, which the repository-wide provenance counts as a change. No rerun under the same preregistration follows (each seed runs once)."
+stale_since = "76ac4f1ac8838f4260694e1a6b15e9d3ff3d5b0f"
+reason = "No code under test changed after M001-v6's seed records. The three A0 baseline v2 studies share their provenance files, so the first change is the M002-v11 seed 17 record (76ac4f1a) of a sibling study of the same freeze; later, 2defb720 publishes the decisions and the completed status (DEVIATIONS.md D2) and e0390da4 records the result in STATUS.md. No rerun under the same preregistration follows (each seed runs once)."
