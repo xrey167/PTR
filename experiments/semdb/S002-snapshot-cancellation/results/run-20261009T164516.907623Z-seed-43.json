@@ -1,0 +1,114 @@
+{
+  "schema_version": 2,
+  "experiment_id": "S002",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v80",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16876494848
+  },
+  "hardware_profile_record": {
+    "path": "hardware/default.toml",
+    "sha256": "ea754cf5ddb19c70de11237e9aedab43cbba4ac2e8ff8fec15d85b18699052d6",
+    "contents": {
+      "id": "unspecified",
+      "os": "unspecified",
+      "cpu": "unspecified",
+      "ram_gib": 0,
+      "gpu": "unspecified",
+      "gpu_memory_gib": 0,
+      "notes": "Replace with an explicit measured hardware profile before publishing benchmark results."
+    },
+    "unspecified_fields": [
+      "cpu",
+      "gpu",
+      "id",
+      "os"
+    ]
+  },
+  "git_sha": "cbc1aad53940da39f8a75d2330931c0bae736f50",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "S002",
+    "status": "prepared",
+    "hypothesis": "Can stale reasoning be cancelled safely on revision changes? Cooperative, revision-granular cancellation of a steppable run before the effect boundary never weakens the hard boundary (no stale action executes or is recorded as attempted, in either arm) and a cancelled run takes no step on a replaced snapshot. Capability exercised in a harness only: no shipped host (ptr-server, ptrd) steps runs, the blocking entry points force cancellation off, and total compute (including the restarts cancellation causes) is reported, not claimed to fall.",
+    "metrics": "runs, stale_runs_by_schedule, stale_runs_observed, stale_actions_executed, stale_effect_attempts_committed, stale_checkpoint_admissions, fresh_actions_refused, stale_boundary_attempts_a0, stale_boundary_attempts_a1, stale_action_rate_permille_a0, stale_action_rate_permille_a1, boundary_refusals, boundary_refusals_a0, boundary_refusals_a1, cancelled_runs, false_cancellations, missed_cancellations, fresh_runs_completed, fresh_runs_starved, cancel_contract_violations, boundary_arm_divergences, cancel_latency_rounds_max, cancel_latency_violation, wasted_units_a0, wasted_units_a1, wasted_work_violation, total_units_a0, total_units_a1, net_units_a1_minus_a0, double_executions, executor_vs_ledger_mismatches, mirror_drift, product_panics, product_hangs, effect_kinds_covered, generation_stale_cases, injection_positions_covered, control_trips, noop_writes_observed, retries_replayed, restarted_runs",
+    "baseline": "no cancellation (arm A0: semantic.cancel_stale_revisions = false; the run goes on with its next snapshot and the hard effect boundary alone refuses what is stale)",
+    "falsification": "Any stale irreversible action is a hard failure, and so is any stale action of another effect: stale_actions_executed > 0; stale_effect_attempts_committed > 0; stale_checkpoint_admissions > 0; fresh_actions_refused > 0. Cancellation must be exact: false_cancellations > 0; missed_cancellations > 0; fresh_runs_starved > 0; cancel_contract_violations > 0; cancel_latency_rounds_max > 1. It must not change the boundary: boundary_arm_divergences > 0; double_executions > 0; executor_vs_ledger_mismatches > 0. A cancelled run takes no step on a replaced snapshot (this restates the cancellation contract that missed_cancellations checks independently; it is not a compute saving, and net_units_a1_minus_a0 is descriptive): wasted_units_a1 > wasted_units_a0; wasted_units_a1 > 0. The harness's independent model must agree with the runtime: mirror_drift > 0. A panic or a hang of the product falsifies: product_panics > 0; product_hangs > 0. A run is vacuous (and counts as falsified) when it does not exercise these: runs < 1000; stale_runs_by_schedule < 100; stale_runs_observed < 100; boundary_refusals_a0 < 1; boundary_refusals_a1 < 1; cancelled_runs < 100; effect_kinds_covered < 4; fresh_runs_completed < 100; generation_stale_cases < 50; injection_positions_covered < 5; control_trips < 5; wasted_units_a0 < 1; noop_writes_observed < 1; retries_replayed < 1; restarted_runs < 1.",
+    "hardware_profile": "hardware/default.toml",
+    "entrypoint": "cargo run --release --locked -p ptr-bench -- snapshot-cancellation <seed>",
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "preregistration_sha256": "ed35446081dd3d2488095887bcc8b92cd21140b9ef9bee777aea1a89ca0c08c8",
+    "preregistration_rules_sha256": "3bb5b5c1ad957628dcb0ed1a0461257e2ef4133234d0b27363dbc2264b7b91b4"
+  },
+  "manifest_sha256": "a16916d51b09574ba9f1345a8057b2050828e14d2825ca8f9cd8132b7d160e81",
+  "cargo_lock_sha256": "13acc7ada0ee2ad26270fb5ca84dacb7eec7e816ddfd94a9b59622929b12683a",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/default.toml",
+  "rustc": null,
+  "status": "completed",
+  "started_at": "20261009T164516.907623Z",
+  "entrypoint": "entrypoint",
+  "seed": 43,
+  "parameters": {},
+  "command": [
+    "cargo",
+    "run",
+    "--release",
+    "--locked",
+    "-p",
+    "ptr-bench",
+    "--",
+    "snapshot-cancellation",
+    "43"
+  ],
+  "environment": {
+    "PATH": "/nix/var/nix/profiles/default/bin:/root/.local/bin:/root/.cargo/bin:/usr/local/go/bin:/opt/node22/bin:/opt/maven/bin:/opt/gradle/bin:/opt/rbenv/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "LC_CTYPE": "C.UTF-8",
+    "RUSTUP_HOME": "/root/.rustup",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONPYCACHEPREFIX": "/tmp/ptr-run-S002",
+    "CARGO_TARGET_DIR": "/tmp/ptr-run-S002/cargo-target",
+    "RUSTUP_TOOLCHAIN": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu"
+  },
+  "executable": {
+    "path": "/root/.cargo/bin/rustup",
+    "sha256": "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
+  },
+  "toolchain": {
+    "rustc": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc",
+      "sha256": "f3834d26669b03f6855fa54bd2381443123e860167bc0c7a8dd137e5cf6e5e4f"
+    },
+    "cargo": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/cargo",
+      "sha256": "e951141cc55a6cd7b9876d187bd30a3720e6086b99413af95e3b8de1cdd72f14"
+    }
+  },
+  "finished_at": "2026-10-09T16:54:02.877765+00:00",
+  "exit_code": 0,
+  "stdout": "{\"benchmark\":\"snapshot-cancellation\",\"experiment\":\"S002\",\"status_note\":\"one seed of the S002 harness: evidence only when run at the pinned scale from the frozen commit and judged by aggregate.py under criteria.toml; the exit status and the coverage and falsifiers lists below are the harness's own reading of the same rules\",\"seed\":43,\"scale\":\"pinned\",\"runs\":1500,\"stale_runs_by_schedule\":734,\"stale_runs_observed\":1090,\"stale_actions_executed\":0,\"stale_effect_attempts_committed\":0,\"stale_checkpoint_admissions\":0,\"fresh_actions_refused\":0,\"stale_boundary_attempts_a0\":800,\"stale_boundary_attempts_a1\":671,\"stale_action_rate_permille_a0\":0,\"stale_action_rate_permille_a1\":0,\"boundary_refusals\":1471,\"boundary_refusals_a0\":800,\"boundary_refusals_a1\":671,\"cancelled_runs\":419,\"false_cancellations\":0,\"missed_cancellations\":0,\"fresh_runs_completed\":1998,\"fresh_runs_starved\":0,\"cancel_contract_violations\":0,\"boundary_arm_divergences\":0,\"cancel_latency_rounds_max\":1,\"cancel_latency_violation\":0,\"wasted_units_a0\":1361,\"wasted_units_a1\":0,\"wasted_work_violation\":0,\"total_units_a0\":9791,\"total_units_a1\":9889,\"net_units_a1_minus_a0\":98,\"double_executions\":0,\"executor_vs_ledger_mismatches\":0,\"mirror_drift\":0,\"product_panics\":0,\"product_hangs\":0,\"effect_kinds_covered\":4,\"generation_stale_cases\":356,\"injection_positions_covered\":5,\"control_trips\":5,\"noop_writes_observed\":346,\"retries_replayed\":2288,\"restarted_runs\":1178,\"hard_failures\":0,\"timing_ns\":{\"elapsed_ns\":800286234},\"procedure\":{\"seed_is_declared\":true,\"shape_is_pinned\":true,\"cases\":1500,\"rounds_min\":2,\"rounds_max\":6,\"positions\":[\"before-round-1\",\"mid-run\",\"just-before-action\",\"between-action-and-authorize\",\"between-prepare-and-execute\"],\"effects\":[\"Read\",\"Mutation\",\"External\",\"Irreversible\"],\"arms\":[\"A0-cancellation-off\",\"A1-cancellation-on\"],\"scheduler\":\"a deterministic virtual-time event queue ordered by (tick, seq); a run step and each boundary checkpoint is 10 ticks after the previous one and a writer acts 5 ticks before the event it precedes; no clock is read\",\"backend\":\"a scripted backend: the case's rounds of Pod requests, then an action of the case's effect stamped with the revision of the context the backend was last shown; the Pod echoes; the verifiers pass\",\"host_policy\":\"the same in both arms: a run that is cancelled, or whose action the boundary refuses as stale (revision or permit) on a live generation, is begun again once on the current revision and its action executed under the case's at-most-once key; the boundary pass calls authorize_action, prepare_execution_once and execute_prepared without stopping at the first refusal; after an execution the same key and action are offered once more and must be answered from history\",\"wasted_units\":\"steps (a Pod round, or the step that hands out the action) a run takes after a bumping foreign write replaced its snapshot, counted from the runtime's own work (the Pod's invocation count) and the step results, until the run ends; a cancelled step that did work counts its work\",\"total_units\":\"every step of every run of the arm, restarts included; net_units_a1_minus_a0 is arm A1's total minus arm A0's, with its sign (positive: cancelling and beginning again cost more steps in total than going on). Descriptive, ungated, and a headline of the result: cancelling a run that would have resumed on the new snapshot and been accepted costs the pre-write steps again\"},\"controls\":{\"bypass\":{\"required_rule\":\"stale_actions_executed <= 0\",\"required_rule_tripped\":true,\"effects\":[\"Read\",\"Mutation\",\"External\",\"Irreversible\"]},\"ledger_scan\":{\"required_rule\":\"stale_effect_attempts_committed <= 0\",\"required_rule_tripped\":true,\"clean_stale_attempts\":0,\"planted_stale_attempts\":1}},\"arms\":{\"A0\":{\"stale_boundary_attempts\":800,\"stale_executed\":0,\"boundary_refusals\":800,\"wasted_units\":1361,\"total_units\":9791},\"A1\":{\"stale_boundary_attempts\":671,\"stale_executed\":0,\"boundary_refusals\":671,\"wasted_units\":0,\"total_units\":9889}},\"cases\":{\"by_class\":{\"bump-early\":419,\"bump-late\":315,\"lifecycle\":356,\"never\":237,\"noop\":173},\"by_position\":{\"before-round-1\":273,\"between-action-and-authorize\":243,\"between-prepare-and-execute\":307,\"just-before-action\":227,\"mid-run\":213},\"by_effect\":{\"External\":375,\"Irreversible\":375,\"Mutation\":375,\"Read\":375},\"by_writer\":{\"bump\":734,\"noop\":173,\"revoke\":171,\"supersede\":185},\"cancel_latency_histogram\":{\"1\":419}},\"unsupported\":{},\"measurement_notes\":{\"mirror\":\"the harness counts the writes it makes (the run's ingest and promoted outputs, the writer's keys) and never reads the runtime's revision into its model; mirror_drift counts the checks where the runtime's revision differs from it, the runs that did not take the shape the scripted chain implies, and the cases where the schedule's label (stale or not, generation dead or not) and the mirror's observation disagree\",\"stale\":\"an action is stale at a checkpoint when its revision is not the revision of the committed ledger replayed to that point (the last committed delta's own revision), or its generation is not the live one there or was revoked; the harness' mirror is compared with that verdict at every checkpoint and a difference is mirror_drift, so stale_actions_executed and stale_checkpoint_admissions are never judged against a lagging mirror; stale_actions_executed counts executor calls made on an action the ledger replay called stale just before the call; stale_effect_attempts_committed counts the EffectAttempted records whose revision or generation was not the one live at the record's own place in a replay of the committed ledger\",\"cancel_latency_rounds_max\":\"steps started since the writer acted, up to and including the step that cancelled: 1 when the run is cancelled by the very next step\",\"gated_claim\":\"cancellation never weakens the boundary (no stale action executes or is attempted in either arm, judged against the committed ledger, and the boundary answers a post-run action identically in both arms) and a cancelled run takes no step on a replaced snapshot (wasted_units_a1 is 0: this restates the cancellation contract, missed_cancellations is its independent check, and it is not a compute saving); not claimed: that cancelling is cheaper in total (total_units_a0, total_units_a1 and net_units_a1_minus_a0 are descriptive headline numbers)\"},\"internal\":{\"cancelled_step_work_units\":0,\"executions\":2288,\"generation_boundary_refusals\":544,\"late_stale_refusals\":{\"authorize\":943,\"execute\":528,\"prepare\":0},\"retries_refused\":0,\"revision_refusals\":399,\"stale_permit_refusals\":528,\"stale_refusal_by_checkpoint\":[943,0,528]},\"coverage\":[{\"rule\":\"runs >= 1000\",\"observed\":[1500],\"status\":\"pass\"},{\"rule\":\"stale_runs_by_schedule >= 100\",\"observed\":[734],\"status\":\"pass\"},{\"rule\":\"stale_runs_observed >= 100\",\"observed\":[1090],\"status\":\"pass\"},{\"rule\":\"boundary_refusals_a0 >= 1\",\"observed\":[800],\"status\":\"pass\"},{\"rule\":\"boundary_refusals_a1 >= 1\",\"observed\":[671],\"status\":\"pass\"},{\"rule\":\"cancelled_runs >= 100\",\"observed\":[419],\"status\":\"pass\"},{\"rule\":\"effect_kinds_covered >= 4\",\"observed\":[4],\"status\":\"pass\"},{\"rule\":\"fresh_runs_completed >= 100\",\"observed\":[1998],\"status\":\"pass\"},{\"rule\":\"generation_stale_cases >= 50\",\"observed\":[356],\"status\":\"pass\"},{\"rule\":\"injection_positions_covered >= 5\",\"observed\":[5],\"status\":\"pass\"},{\"rule\":\"control_trips >= 5\",\"observed\":[5],\"status\":\"pass\"},{\"rule\":\"wasted_units_a0 >= 1\",\"observed\":[1361],\"status\":\"pass\"},{\"rule\":\"noop_writes_observed >= 1\",\"observed\":[346],\"status\":\"pass\"},{\"rule\":\"retries_replayed >= 1\",\"observed\":[2288],\"status\":\"pass\"},{\"rule\":\"restarted_runs >= 1\",\"observed\":[1178],\"status\":\"pass\"}],\"falsifiers\":[{\"rule\":\"stale_actions_executed <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"stale_effect_attempts_committed <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"stale_checkpoint_admissions <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"fresh_actions_refused <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"false_cancellations <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"missed_cancellations <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"fresh_runs_starved <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"cancel_contract_violations <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"boundary_arm_divergences <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"double_executions <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"executor_vs_ledger_mismatches <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"mirror_drift <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"cancel_latency_rounds_max <= 1\",\"observed\":[1],\"status\":\"pass\"},{\"rule\":\"wasted_units_a1 <= wasted_units_a0\",\"observed\":[0,1361],\"status\":\"pass\"},{\"rule\":\"wasted_units_a1 <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"product_panics <= 0\",\"observed\":[0],\"status\":\"pass\"},{\"rule\":\"product_hangs <= 0\",\"observed\":[0],\"status\":\"pass\"}],\"summary\":{\"coverage_unmet\":0,\"coverage_unsupported\":0,\"falsifiers_tripped\":0,\"falsifiers_unsupported\":0},\"harness_gaps\":[]}\n",
+  "stderr": "   Compiling typenum v1.20.1\n   Compiling cfg-if v1.0.5\n   Compiling proc-macro2 v1.0.107\n   Compiling unicode-ident v1.0.26\n   Compiling quote v1.0.47\n   Compiling const-oid v0.10.2\n   Compiling libc v0.2.189\n   Compiling cpufeatures v0.3.1\n   Compiling version_check v0.9.5\n   Compiling syn v2.0.119\n   Compiling generic-array v0.14.7\n   Compiling rustix v1.1.5\n   Compiling anyhow v1.0.104\n   Compiling hybrid-array v0.4.15\n   Compiling block-buffer v0.12.1\n   Compiling crypto-common v0.2.2\n   Compiling digest v0.11.3\n   Compiling getrandom v0.2.17\n   Compiling sha2 v0.11.0\n   Compiling rand_core v0.6.4\n   Compiling either v1.18.0\n   Compiling itertools v0.10.5\n   Compiling crypto-common v0.1.7\n   Compiling ptr-types v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-types)\n   Compiling equivalent v1.0.2\n   Compiling prettyplease v0.2.37\n   Compiling hashbrown v0.17.1\n   Compiling foldhash v0.1.5\n   Compiling subtle v2.6.1\n   Compiling regex-syntax v0.8.11\n   Compiling prost-derive v0.14.4\n   Compiling bytes v1.12.1\n   Compiling linux-raw-sys v0.12.1\n   Compiling bitflags v2.13.2\n   Compiling hashbrown v0.15.5\n   Compiling prost v0.14.4\n   Compiling regex-automata v0.4.18\n   Compiling indexmap v2.14.2\n   Compiling inout v0.1.4\n   Compiling syn v3.0.6\n   Compiling fixedbitset v0.5.7\n   Compiling fastrand v2.5.0\n   Compiling once_cell v1.21.4\n   Compiling semver v1.0.28\n   Compiling serde_core v1.0.229\n   Compiling regex v1.13.1\n   Compiling rustc_version v0.4.1\n   Compiling tempfile v3.27.0\n   Compiling petgraph v0.8.3\n   Compiling cipher v0.4.4\n   Compiling prost-types v0.14.4\n   Compiling multimap v0.10.1\n   Compiling protoc-bin-vendored-linux-ppcle_64 v3.2.0\n   Compiling zeroize v1.9.0\n   Compiling protoc-bin-vendored-macos-x86_64 v3.2.0\n   Compiling protoc-bin-vendored-linux-x86_64 v3.2.0\n   Compiling protoc-bin-vendored-linux-s390_64 v3.2.0\n   Compiling cpufeatures v0.2.17\n   Compiling log v0.4.34\n   Compiling protoc-bin-vendored-linux-aarch_64 v3.2.0\n   Compiling heck v0.5.0\n   Compiling protoc-bin-vendored-win32 v3.2.0\n   Compiling protoc-bin-vendored-macos-aarch_64 v3.2.0\n   Compiling protoc-bin-vendored-linux-x86_32 v3.2.0\n   Compiling prost-build v0.14.4\n   Compiling protoc-bin-vendored v3.2.0\n   Compiling curve25519-dalek v5.0.0\n   Compiling universal-hash v0.5.1\n   Compiling opaque-debug v0.3.1\n   Compiling polyval v0.6.2\n   Compiling aes v0.8.4\n   Compiling ptr-protocol v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-protocol)\n   Compiling ctr v0.9.2\n   Compiling curve25519-dalek-derive v0.1.1\n   Compiling aead v0.5.2\n   Compiling errno v0.3.14\n   Compiling signature v3.0.0\n   Compiling signal-hook-registry v1.4.8\n   Compiling ed25519 v3.0.0\n   Compiling aes-gcm-siv v0.11.1\n   Compiling tokio-macros v2.7.2\n   Compiling ptr-verifier v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-verifier)\n   Compiling mio v1.2.3\n   Compiling socket2 v0.6.5\n   Compiling pin-project-lite v0.2.17\n   Compiling tokio v1.53.1\n   Compiling ed25519-dalek v3.0.0\n   Compiling ptr-storage v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-storage)\n   Compiling zmij v1.0.23\n   Compiling serde v1.0.229\n   Compiling winnow v1.0.4\n   Compiling toml_parser v1.1.3+spec-1.1.0\n   Compiling fs4 v1.1.0\n   Compiling serde_spanned v1.1.1\n   Compiling toml_datetime v1.1.1+spec-1.1.0\n   Compiling serde_derive v1.0.229\n   Compiling serde_json v1.0.151\n   Compiling toml_writer v1.1.2+spec-1.1.0\n   Compiling toml v1.1.6+spec-1.1.0\n   Compiling ptr-ledger v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-ledger)\n   Compiling ptr-pods v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-pods)\n   Compiling ptr-semdb v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-semdb)\n   Compiling ptr-memory v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-memory)\n   Compiling memchr v2.8.3\n   Compiling ptr-analytics v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-analytics)\n   Compiling itoa v1.0.18\n   Compiling ptr-branch v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-branch)\n   Compiling ptr-router v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-router)\n   Compiling ptr-state v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-state)\n   Compiling ptr-config v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-config)\n   Compiling ptr-events v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-events)\n   Compiling ptr-core v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-core)\n   Compiling ptr-model-api v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-model-api)\n   Compiling ptr-security v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-security)\n   Compiling ptr-lineage v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-lineage)\n   Compiling ptr-exec v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-exec)\n   Compiling base64 v0.22.1\n   Compiling ptr-search v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-search)\n   Compiling ptr-runtime v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/crates/ptr-runtime)\n   Compiling ptr-bench v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-dev-s002/bins/ptr-bench)\n    Finished `release` profile [optimized] target(s) in 8m 30s\n     Running `/tmp/ptr-run-S002/cargo-target/release/ptr-bench snapshot-cancellation 43`\n",
+  "launch_error": null,
+  "duration_ns": 515633963312
+}

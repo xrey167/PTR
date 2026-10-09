@@ -1,0 +1,378 @@
+{
+  "experiment_id": "S002",
+  "git_sha": "5534feda3db5d80ac4a48527a62d7bc81b9b3466",
+  "recorded_at": "2026-10-09T19:35:04.092880+00:00",
+  "subcommand": "snapshot-cancellation",
+  "killed": 21,
+  "total": 21,
+  "mutations": [
+    {
+      "name": "revision-compare-removed",
+      "file": "crates/ptr-security/src/lib.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 420,
+      "expected": [
+        "stale_actions_executed",
+        "stale_checkpoint_admissions",
+        "stale_effect_attempts_committed"
+      ],
+      "counters": {
+        "stale_actions_executed": 105,
+        "stale_effect_attempts_committed": 105,
+        "stale_checkpoint_admissions": 210
+      }
+    },
+    {
+      "name": "revision-compare-inverted",
+      "file": "crates/ptr-security/src/lib.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2343,
+      "expected": [
+        "fresh_actions_refused",
+        "stale_actions_executed",
+        "fresh_runs_starved"
+      ],
+      "counters": {
+        "stale_actions_executed": 105,
+        "stale_effect_attempts_committed": 105,
+        "stale_checkpoint_admissions": 210,
+        "fresh_actions_refused": 1324,
+        "fresh_runs_starved": 517,
+        "mirror_drift": 82
+      }
+    },
+    {
+      "name": "generation-check-removed",
+      "file": "crates/ptr-security/src/lib.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 408,
+      "expected": [
+        "stale_actions_executed",
+        "stale_checkpoint_admissions",
+        "stale_effect_attempts_committed"
+      ],
+      "counters": {
+        "stale_actions_executed": 102,
+        "stale_effect_attempts_committed": 102,
+        "stale_checkpoint_admissions": 204
+      }
+    },
+    {
+      "name": "execution-recheck-skips-revision-for-reads",
+      "file": "crates/ptr-runtime/src/execution.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 120,
+      "expected": [
+        "stale_checkpoint_admissions",
+        "stale_actions_executed"
+      ],
+      "counters": {
+        "stale_actions_executed": 40,
+        "stale_effect_attempts_committed": 40,
+        "stale_checkpoint_admissions": 40
+      }
+    },
+    {
+      "name": "permit-epoch-and-admission-recheck-both-removed",
+      "file": "crates/ptr-runtime/src/execution.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 164,
+      "expected": [
+        "stale_actions_executed",
+        "stale_effect_attempts_committed"
+      ],
+      "counters": {
+        "stale_actions_executed": 82,
+        "stale_effect_attempts_committed": 82
+      }
+    },
+    {
+      "name": "authorize-skips-staleness-when-cancellation-is-off",
+      "file": "crates/ptr-runtime/src/lib.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 105,
+      "expected": [
+        "boundary_arm_divergences",
+        "stale_checkpoint_admissions"
+      ],
+      "counters": {
+        "stale_checkpoint_admissions": 70,
+        "boundary_arm_divergences": 35
+      }
+    },
+    {
+      "name": "executor-runs-twice",
+      "file": "crates/ptr-runtime/src/execution.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 944,
+      "expected": [
+        "double_executions",
+        "executor_vs_ledger_mismatches"
+      ],
+      "counters": {
+        "double_executions": 472,
+        "executor_vs_ledger_mismatches": 472
+      }
+    },
+    {
+      "name": "settled-key-not-answered-from-history",
+      "file": "crates/ptr-runtime/src/execution.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 472,
+      "expected": [
+        "double_executions"
+      ],
+      "counters": {
+        "double_executions": 472
+      }
+    },
+    {
+      "name": "cancel-check-removed",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 99,
+      "expected": [
+        "missed_cancellations",
+        "wasted_work_violation"
+      ],
+      "counters": {
+        "missed_cancellations": 98,
+        "wasted_work_violation": 1
+      }
+    },
+    {
+      "name": "cancel-check-inverted",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1202,
+      "expected": [
+        "false_cancellations",
+        "missed_cancellations",
+        "fresh_runs_starved"
+      ],
+      "counters": {
+        "false_cancellations": 600,
+        "missed_cancellations": 37,
+        "fresh_runs_starved": 375,
+        "cancel_latency_violation": 1,
+        "wasted_work_violation": 1,
+        "mirror_drift": 188
+      }
+    },
+    {
+      "name": "cancel-only-once-the-action-is-ready",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 64,
+      "expected": [
+        "missed_cancellations",
+        "wasted_work_violation"
+      ],
+      "counters": {
+        "missed_cancellations": 63,
+        "wasted_work_violation": 1
+      }
+    },
+    {
+      "name": "cancel-bound-not-rebased-after-own-write",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1668,
+      "expected": [
+        "false_cancellations",
+        "fresh_runs_starved"
+      ],
+      "counters": {
+        "false_cancellations": 552,
+        "fresh_runs_starved": 375,
+        "cancel_contract_violations": 563,
+        "cancel_latency_violation": 1,
+        "mirror_drift": 177
+      }
+    },
+    {
+      "name": "cancel-one-step-late",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 163,
+      "expected": [
+        "missed_cancellations",
+        "false_cancellations",
+        "cancel_latency_violation",
+        "wasted_work_violation"
+      ],
+      "counters": {
+        "false_cancellations": 63,
+        "missed_cancellations": 98,
+        "cancel_latency_violation": 1,
+        "wasted_work_violation": 1
+      }
+    },
+    {
+      "name": "cancel-after-the-pod-ran",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 99,
+      "expected": [
+        "cancel_contract_violations",
+        "wasted_work_violation"
+      ],
+      "counters": {
+        "missed_cancellations": 35,
+        "cancel_contract_violations": 63,
+        "wasted_work_violation": 1
+      }
+    },
+    {
+      "name": "cancelled-run-keeps-the-action",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 35,
+      "expected": [
+        "cancel_contract_violations"
+      ],
+      "counters": {
+        "cancel_contract_violations": 35
+      }
+    },
+    {
+      "name": "cancelled-run-swaps-bound-and-current",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 98,
+      "expected": [
+        "cancel_contract_violations"
+      ],
+      "counters": {
+        "cancel_contract_violations": 98
+      }
+    },
+    {
+      "name": "setting-ignored-cancellation-always-on",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 98,
+      "expected": [
+        "false_cancellations"
+      ],
+      "counters": {
+        "false_cancellations": 98
+      }
+    },
+    {
+      "name": "cancel-panics",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 98,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "product_panics": 98
+      }
+    },
+    {
+      "name": "cancel-hangs",
+      "file": "crates/ptr-runtime/src/stepped.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "product_hangs"
+      ],
+      "counters": {
+        "product_hangs": 1
+      }
+    },
+    {
+      "name": "harness-mirror-ignores-foreign-writes",
+      "file": "bins/ptr-bench/src/experiments/s002/world.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 7880,
+      "expected": [
+        "mirror_drift"
+      ],
+      "counters": {
+        "false_cancellations": 98,
+        "cancel_contract_violations": 98,
+        "mirror_drift": 7684
+      }
+    },
+    {
+      "name": "harness-oracle-inverts-the-cancellation-decision",
+      "file": "bins/ptr-bench/src/experiments/s002/runner.rs",
+      "cases": 300,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2126,
+      "expected": [
+        "false_cancellations",
+        "missed_cancellations"
+      ],
+      "counters": {
+        "false_cancellations": 98,
+        "missed_cancellations": 2028
+      }
+    }
+  ]
+}

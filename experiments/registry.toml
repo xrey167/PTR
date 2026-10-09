@@ -93,7 +93,7 @@ status = "completed"
 [[experiment]]
 id = "S002"
 path = "semdb/S002-snapshot-cancellation"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "R001"

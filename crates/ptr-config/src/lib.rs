@@ -204,10 +204,6 @@ impl PtrConfig {
         }
         let not_supported_yet = [
             (
-                "semantic.cancel_stale_revisions",
-                self.semantic.cancel_stale_revisions == defaults.semantic.cancel_stale_revisions,
-            ),
-            (
                 "observability.structured_tracing",
                 self.observability.structured_tracing == defaults.observability.structured_tracing,
             ),
@@ -317,7 +313,9 @@ pub const FIELD_DISPOSITIONS: &[(&str, FieldDisposition)] = &[
     ),
     (
         "semantic.cancel_stale_revisions",
-        FieldDisposition::RefusedUnlessDefault,
+        FieldDisposition::Consumed(
+            "ptr-runtime SteppedRun only; no shipped host (ptr-server, ptrd) steps runs, so no production effect",
+        ),
     ),
     (
         "semantic.retain_raw_evidence",
@@ -420,6 +418,13 @@ impl Default for RuntimeConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SemanticConfig {
+    /// Whether a stepped resumable run (`ptr_runtime::SteppedRun`) is cancelled, before the
+    /// effect boundary, when the semantic revision moved for a reason other than the run's own
+    /// writes. `false` switches the cooperative cancellation off; the hard effect boundary is
+    /// unaffected by either value. **No shipped host steps runs** (`ptr-server` and `ptrd` call
+    /// the blocking entry points, which force the cancellation off), so this setting has no
+    /// effect on any production path today; only a host that drives `step_resumable_run` itself
+    /// sees it. "Consumed" here means read by that API, not enforced anywhere in production.
     pub cancel_stale_revisions: bool,
     pub retain_raw_evidence: bool,
 }
