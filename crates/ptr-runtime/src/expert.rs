@@ -296,9 +296,20 @@
 //! The registry also keeps a fence memo: the highest epoch each expert was ever fenced at. A KV
 //! dependency whose recorded epoch is `0` or at most the memo is never live, also after a
 //! readmission, so an entry recorded before the fence (or with no epoch) is never revived.
+//!
+//! # The L3 policy
+//!
+//! [`StructurePolicy`] turns verifier statistics into [`ptr_pods::ExpertOperationRequest`]s
+//! (Birth, Merge, Prune, Freeze, Reactivate). It is pure and holds no authority: it sees no
+//! ledger, grant, gate report or verifier configuration. A request that creates an expert has no
+//! manifest digest until the host completes it with the trained one
+//! ([`StructureProposal::complete`]); only then is it an [`ExpertProposal`], which
+//! [`PtrRuntime::admit_expert_proposal`] decides on a gate report. See the `structure` module
+//! source for the operators and bounds.
 
 mod authority;
 mod dependency;
+mod structure;
 
 use crate::manifest::ManifestBindingAuthority;
 use crate::{PtrRuntime, RuntimeError};
@@ -329,6 +340,13 @@ use ptr_types::{
     Validity,
 };
 use std::collections::{BTreeMap, BTreeSet};
+pub use structure::{
+    unroutable_delta, BirthContext, BirthSite, CodeWindowStats, EnabledOps, ObservationLimits,
+    PodCodeStats, RegisteredExpert, StructureCompletionError, StructureConfigError,
+    StructureObservation, StructureObservationError, StructurePolicy, StructurePolicyConfig,
+    StructureProposal, StructureRationale, StructureReport, SubspaceOverlap, Suppression,
+    WindowObservation, MAX_COUNT,
+};
 
 /// What the host expects of the evidence behind one grant: the gate epoch it stands at, the
 /// digest of the gate configuration it requires and the digest of the evaluation manifest the
