@@ -1,0 +1,3 @@
+results_git_sha = "129d3542cc07755767532290fcc59d412fa4c5fc"
+stale_since = "8e24e17b9d5180e1d6b64984ba18ee6ac166ff70"
+reason = "No code under test changed after S001's seed records and mutation check. 8e24e17b records the completed status and the result in STATUS.md and research/novelty/CLAIMS.md and regenerates the component docs, which the repository-wide provenance counts as a change. S001 was preregistered at s001-prereg (a1c35f1b). No rerun under the same preregistration follows (each seed runs once)."
