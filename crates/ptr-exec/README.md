@@ -40,7 +40,7 @@
 
 ### Linked experiments
 
-- [R001](../../experiments/runtime/R001-mailbox-backpressure/README.md) — `planned`
+- [R001](../../experiments/runtime/R001-mailbox-backpressure/README.md) — `frozen`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
 

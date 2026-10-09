@@ -1,6 +1,6 @@
 version = 1
 id = "R001"
-status = "prepared"
+status = "completed"
 hypothesis = "Do bounded typed mailboxes give predictable overload behavior?"
 metrics = "tail latency; drops/refusals; memory"
 baseline = "unbounded/reference queue"
