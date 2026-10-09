@@ -98,7 +98,7 @@ status = "planned"
 [[experiment]]
 id = "R001"
 path = "runtime/R001-mailbox-backpressure"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "R002"
