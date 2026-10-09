@@ -158,7 +158,7 @@ status = "planned"
 [[experiment]]
 id = "M008"
 path = "model/M008-fast-weight-memory"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "L003"
