@@ -1,0 +1,451 @@
+# Defects the R001 harness must detect; run with `python scripts/mutation_check.py R001`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file
+# (checked in CI), so the list cannot drift from the code silently. `expect` names the hard
+# counters that show the defect: a run that fails only on others does not count as detecting it.
+#
+# The product mutations plant defects in crates/ptr-exec/src/mailbox.rs; the last five plant
+# defects in the harness itself, to show that its oracle, its model and its determinism check
+# are not vacuous. Every hard counter is expected by at least one mutation. A mutation of the
+# product that panics or hangs is a finding, not a harness fault: the harness contains the
+# panic (product_panics) and puts the threaded stage under a watchdog (product_hangs).
+#
+# `send-checks-len-outside-the-lock` is a real race (check, release the lock, push), only
+# visible to threads; the threaded arm repeats the exact fill thousands of times so that one run
+# kills it with overwhelming probability (the observed kill rate is in the fix report).
+# A harness defect that makes the harness refuse to run (exit 2: the reference queue failing
+# the oracle in underload, a negative control that does not trip) is the harness's own guard
+# and is not listed here, because the checker counts only exit status 1 as detected.
+#
+# `scripts/mutation_check.py` runs `ptr-bench mailbox-backpressure <cases> <seed>`; the R001
+# harness takes one seed and accepts the pair only when both are the same value, so `cases`
+# below carries the seed too (it selects no case).
+
+package = "ptr-bench"
+features = ""
+subcommand = "mailbox-backpressure"
+cases = 17
+seed = 17
+hard_counters = [
+    "silent_drops",
+    "ownership_violations",
+    "capacity_violations",
+    "fifo_violations",
+    "model_divergences",
+    "spurious_refusals",
+    "wait_bound_violations",
+    "payload_bound_violations",
+    "closed_path_mismatches",
+    "determinism_mismatches",
+    "canary_misses",
+    "product_panics",
+    "product_hangs",
+    "threaded_ledger_violations",
+    "threaded_capacity_violations",
+]
+
+[[mutation]]
+name = "capacity-plus-one"
+description = "The mailbox admits one message more than its capacity."
+expect = ["capacity_violations", "model_divergences", "payload_bound_violations", "threaded_capacity_violations"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        if state.queue.len() >= self.capacity {
+'''
+replace = '''
+        if state.queue.len() > self.capacity {
+'''
+
+[[mutation]]
+name = "capacity-doubled"
+description = "The mailbox holds twice its capacity, so its tail latency and its memory are twice the bound."
+expect = ["wait_bound_violations", "capacity_violations", "payload_bound_violations"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        if state.queue.len() >= self.capacity {
+'''
+replace = '''
+        if state.queue.len() >= self.capacity.saturating_mul(2) {
+'''
+
+[[mutation]]
+name = "full-drops-the-oldest"
+description = "A send into a full mailbox silently drops the oldest queued message and admits the new one."
+expect = ["silent_drops", "ownership_violations", "threaded_ledger_violations"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        if state.queue.len() >= self.capacity {
+            return Err(SendError::Full(value));
+        }
+'''
+replace = '''
+        if state.queue.len() >= self.capacity {
+            state.queue.pop_front();
+        }
+'''
+
+[[mutation]]
+name = "full-reported-as-closed"
+description = "A send into a full mailbox is refused as Closed, not Full."
+expect = ["model_divergences", "closed_path_mismatches"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+            return Err(SendError::Full(value));
+'''
+replace = '''
+            return Err(SendError::Closed(value));
+'''
+
+[[mutation]]
+name = "delivery-is-lifo"
+description = "The consumer receives the newest message first."
+expect = ["fifo_violations", "model_divergences", "threaded_ledger_violations"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        match state.queue.pop_front() {
+'''
+replace = '''
+        match state.queue.pop_back() {
+'''
+
+[[mutation]]
+name = "receive-loses-the-message"
+description = "A receive removes the message from the queue, drops it and reports an empty mailbox."
+expect = ["silent_drops", "ownership_violations", "threaded_ledger_violations"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+                self.depth.store(state.queue.len(), Ordering::Release);
+                Receive::Message(value)
+'''
+replace = '''
+                self.depth.store(state.queue.len(), Ordering::Release);
+                drop(value);
+                Receive::Empty
+'''
+
+[[mutation]]
+name = "refuses-one-early"
+description = "The mailbox refuses once it holds capacity - 1 messages, although a slot is free."
+expect = ["spurious_refusals", "model_divergences", "threaded_capacity_violations"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        if state.queue.len() >= self.capacity {
+'''
+replace = '''
+        if state.queue.len() + 1 >= self.capacity {
+'''
+
+[[mutation]]
+name = "depth-stale-after-receive"
+description = "The depth counter is not updated by a receive."
+expect = ["model_divergences"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+                self.depth.store(state.queue.len(), Ordering::Release);
+'''
+replace = '''
+                let _ = state.queue.len();
+'''
+
+[[mutation]]
+name = "close-does-nothing"
+description = "close() leaves the mailbox open."
+expect = ["closed_path_mismatches", "model_divergences"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        state.closed = true;
+        self.closed.store(true, Ordering::Release);
+    }
+'''
+replace = '''
+        let _ = &mut state;
+    }
+'''
+
+[[mutation]]
+name = "drained-closed-reports-empty"
+description = "A closed, drained mailbox reports Empty rather than Closed."
+expect = ["closed_path_mismatches"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+            None if state.closed => Receive::Closed,
+'''
+replace = '''
+            None if state.closed => Receive::Empty,
+'''
+
+[[mutation]]
+name = "sender-clone-forks-the-queue"
+description = "A cloned sender sends into a queue of its own that nobody receives from (only the threaded arm clones senders)."
+expect = ["threaded_ledger_violations", "threaded_capacity_violations"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+'''
+replace = '''
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::new(Shared {
+                capacity: self.shared.capacity,
+                state: Mutex::new(State {
+                    queue: VecDeque::new(),
+                    closed: false,
+                }),
+                depth: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                closed: AtomicBool::new(false),
+            }),
+'''
+
+[[mutation]]
+name = "close-reaches-only-the-owner-handle"
+description = "close() through a sender leaves the mailbox open (the owner's close still works)."
+expect = ["closed_path_mismatches", "model_divergences"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+    /// Close the mailbox for every sender (see [`Mailbox::close`]).
+    pub fn close(&self) {
+        self.shared.close();
+    }
+'''
+replace = '''
+    /// Close the mailbox for every sender (see [`Mailbox::close`]).
+    pub fn close(&self) {
+        let _ = &self.shared;
+    }
+'''
+
+[[mutation]]
+name = "send-panics-when-full"
+description = "A send into a full mailbox panics instead of returning Full(value)."
+expect = ["product_panics"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+            return Err(SendError::Full(value));
+'''
+replace = '''
+            drop(value);
+            panic!("the mailbox is full");
+'''
+
+[[mutation]]
+name = "receive-panics-when-empty"
+description = "A receive from an empty open mailbox panics instead of returning Empty."
+expect = ["product_panics"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+            None => Receive::Empty,
+'''
+replace = '''
+            None => panic!("receive on an empty mailbox"),
+'''
+
+[[mutation]]
+name = "send-hangs-in-a-producer-thread"
+description = "A send from a producer thread of the threaded arm never returns (only the threaded arm names its threads)."
+expect = ["product_hangs"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+    fn try_send(&self, value: T) -> Result<(), SendError<T>> {
+        let mut state = self.lock();
+'''
+replace = '''
+    fn try_send(&self, value: T) -> Result<(), SendError<T>> {
+        if std::thread::current()
+            .name()
+            .is_some_and(|name| name.starts_with("r001-producer"))
+        {
+            loop {
+                std::thread::park();
+            }
+        }
+        let mut state = self.lock();
+'''
+
+[[mutation]]
+name = "send-checks-len-outside-the-lock"
+description = "A send checks the length under the lock, releases it, and pushes after taking it again: two senders can both pass the check (a check-then-push race)."
+expect = ["threaded_capacity_violations"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        if state.queue.len() >= self.capacity {
+            return Err(SendError::Full(value));
+        }
+        state.queue.push_back(value);
+'''
+replace = '''
+        let full = state.queue.len() >= self.capacity;
+        drop(state);
+        if full {
+            return Err(SendError::Full(value));
+        }
+        let mut state = self.lock();
+        state.queue.push_back(value);
+'''
+
+[[mutation]]
+name = "send-ignores-close-when-queue-is-empty"
+description = "A send into a closed mailbox is admitted when the queue happens to be empty: an Ok after close() has returned."
+expect = ["threaded_ledger_violations", "closed_path_mismatches", "model_divergences"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        if state.closed {
+            return Err(SendError::Closed(value));
+        }
+'''
+replace = '''
+        if state.closed && !state.queue.is_empty() {
+            return Err(SendError::Closed(value));
+        }
+'''
+
+[[mutation]]
+name = "send-checks-full-before-closed"
+description = "A send into a closed and full mailbox answers Full: the two refusals are checked in the wrong order."
+expect = ["closed_path_mismatches", "model_divergences"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        if state.closed {
+            return Err(SendError::Closed(value));
+        }
+        if state.queue.len() >= self.capacity {
+            return Err(SendError::Full(value));
+        }
+'''
+replace = '''
+        if state.queue.len() >= self.capacity {
+            return Err(SendError::Full(value));
+        }
+        if state.closed {
+            return Err(SendError::Closed(value));
+        }
+'''
+
+[[mutation]]
+name = "receive-reports-closed-while-nonempty"
+description = "A closed mailbox reports Closed to the consumer while messages are still queued, so they are never delivered."
+expect = ["closed_path_mismatches", "silent_drops", "model_divergences"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        match state.queue.pop_front() {
+'''
+replace = '''
+        if state.closed {
+            return Receive::Closed;
+        }
+        match state.queue.pop_front() {
+'''
+
+[[mutation]]
+name = "close-clears-the-queue"
+description = "close() discards the queued messages instead of leaving them receivable."
+expect = ["silent_drops", "ownership_violations", "model_divergences"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        state.closed = true;
+        self.closed.store(true, Ordering::Release);
+    }
+'''
+replace = '''
+        state.closed = true;
+        state.queue.clear();
+        self.closed.store(true, Ordering::Release);
+    }
+'''
+
+[[mutation]]
+name = "owner-drop-does-not-close"
+description = "Dropping the owning Mailbox releases its queue but leaves the senders' mailbox open."
+expect = ["closed_path_mismatches"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+            let mut state = self.shared.lock();
+            state.closed = true;
+            self.shared.closed.store(true, Ordering::Release);
+'''
+replace = '''
+            let mut state = self.shared.lock();
+'''
+
+[[mutation]]
+name = "peak-depth-never-raised"
+description = "The mailbox's own peak-depth record is never raised (the harness compares it with the model's peak)."
+expect = ["model_divergences"]
+file = "crates/ptr-exec/src/mailbox.rs"
+find = '''
+        self.peak.fetch_max(depth, Ordering::AcqRel);
+'''
+replace = '''
+        let _ = &self.peak;
+'''
+
+[[mutation]]
+name = "ledger-blind-to-duplicates"
+description = "The ownership ledger does not count a message delivered twice."
+expect = ["canary_misses"]
+file = "bins/ptr-bench/src/experiments/r001/ledger.rs"
+find = '''
+                self.report.duplicate_deliveries += 1;
+'''
+replace = '''
+                let _ = &self.report;
+'''
+
+[[mutation]]
+name = "ledger-blind-to-mutation"
+description = "The ownership ledger does not compare a delivered payload with the one created."
+expect = ["canary_misses"]
+file = "bins/ptr-bench/src/experiments/r001/ledger.rs"
+find = '''
+        if self.expected.get(id as usize) != Some(&seen.digest) {
+            self.report.payload_mutations += 1;
+        }
+'''
+replace = '''
+        if self.expected.get(id as usize) != Some(&seen.digest) && false {
+            self.report.payload_mutations += 1;
+        }
+'''
+
+[[mutation]]
+name = "wait-bound-loose"
+description = "The analytic wait bound is twice capacity x S_max, so a mailbox of twice the capacity passes it."
+expect = ["canary_misses"]
+file = "bins/ptr-bench/src/experiments/r001/params.rs"
+find = '''
+    capacity as u64 * SERVICE_MAX
+'''
+replace = '''
+    capacity as u64 * SERVICE_MAX * 2
+'''
+
+[[mutation]]
+name = "schedule-drawn-from-the-clock"
+description = "The arrival and service draws are mixed with the wall clock, so a pass is not reproducible from its seed."
+expect = ["determinism_mismatches"]
+file = "bins/ptr-bench/src/experiments/r001/sim.rs"
+find = '''
+        let mut root = Rng::new(seed);
+'''
+replace = '''
+        let mut root = Rng::new(
+            seed ^ std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| u64::from(elapsed.subsec_nanos()))
+                .unwrap_or(0),
+        );
+'''
+
+[[mutation]]
+name = "model-ignores-the-close"
+description = "The reference model is not told when the queue is closed."
+expect = ["closed_path_mismatches", "model_divergences"]
+file = "bins/ptr-bench/src/experiments/r001/sim.rs"
+find = '''
+                queue.close();
+                shadow.close();
+'''
+replace = '''
+                queue.close();
+'''

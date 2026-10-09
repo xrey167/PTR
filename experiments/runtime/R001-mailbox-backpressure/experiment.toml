@@ -1,12 +1,14 @@
 version = 1
 id = "R001"
-status = "planned"
+status = "completed"
 hypothesis = "Do bounded typed mailboxes give predictable overload behavior?"
 metrics = "tail latency; drops/refusals; memory"
 baseline = "unbounded/reference queue"
 falsification = "Reject if bounded semantics do not cap memory/preserve ownership under load."
 hardware_profile = "hardware/default.toml"
-entrypoint = ""
+entrypoint = "cargo run --release --locked -p ptr-bench -- mailbox-backpressure <seed>"
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
-required_artifacts = ["run.json", "metrics.json"]
+required_artifacts = ["run.json", "metrics.json", "mutations.json"]
+preregistration_sha256 = "2c6668cb7050b508b324378faee8f6961dce3eea00c05d2a620cf9fe885d6a77"
+preregistration_rules_sha256 = "3d3ceda267b06e50d885013341da1a95984f0406e4e34b5ccef7f120d16097c8"

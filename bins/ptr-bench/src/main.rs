@@ -83,6 +83,10 @@ fn main() {
         "positional-reuse-oracle" => {
             experiments::r006::run(strict_or_exit(seed_arg(&args, "positional-reuse-oracle")))
         }
+        // The harness of R001: one seed per run, no default seed.
+        "mailbox-backpressure" => {
+            experiments::r001::run(strict_or_exit(experiments::r001::seed_from_args(&args)))
+        }
         // The harness of R007: one seed per run, no default seed.
         "span-forget" => experiments::r007::run(strict_or_exit(seed_arg(&args, "span-forget"))),
         // The harness of S001: `<seed>` (the pinned scale) or `<operations> <seed>` (the mutation checker's
@@ -118,9 +122,9 @@ fn main() {
 /// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
 const EXPERIMENT_COMMANDS: &str =
-    "|certified-branches|invalidation|exact-prefix-reuse|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
+    "|certified-branches|invalidation|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "|certified-branches|invalidation|exact-prefix-reuse|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
+const EXPERIMENT_COMMANDS: &str = "|certified-branches|invalidation|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)

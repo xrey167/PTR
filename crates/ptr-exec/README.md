@@ -9,18 +9,23 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 46 nonblank source lines · 1 integration-test files · 1 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-09  
+**Code footprint:** 3 Rust source files · 458 nonblank source lines · 2 integration-test files · 18 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
-- Bounded sync-channel Mailbox
-- Explicit Full(T) and Closed(T) send errors preserving ownership
+- Bounded Mailbox<T>: a mutex-guarded VecDeque with an exact capacity (the former sync-channel wrapper is gone); capacity 0 holds nothing and refuses every send with Full(T)
+- Cloneable MailboxSender<T> (Clone; Send + Sync exactly when T: Send) obtained from the Mailbox, which stays the single-owner (Send, not Sync) receiver
+- Explicit Full(T) and Closed(T) send errors preserving ownership; close() on the Mailbox or any sender, and dropping the Mailbox, make Closed(T) reachable
+- Receive<T> result of try_receive distinguishing Message, Empty and Closed (Closed only after the queue has drained); try_recv() -> Option<T> kept
+- Atomic depth mirror (written under the queue lock) with depth(), peak_depth() and capacity(); the peak is raised before the depth is published (depth read then peak read never inverts); SendError has Display and std::error::Error, Mailbox and MailboxSender have Debug; concurrency tests show no loss, duplication or depth above capacity under contention, a mid-flight close with monotone Closed per producer, and poison/panicking-destructor tolerance
 - Isolate<M> state-machine trait
 - Explicit Effect<M> and ReplayTrace scaffolds
 
 ### Missing for the target architecture
 
+- Blocking/async send and receive (only non-blocking try_send/try_receive exist); no wake-up or backpressure signal to a waiting producer
+- Multi-consumer or priority mailboxes; a RequestAdmission-level bounded queue (R001 covers Mailbox only)
 - Async scheduler and isolate task host
 - Supervision trees, restart policy and resource ownership
 - Deadline/timeout/cancellation propagation
@@ -35,7 +40,7 @@
 
 ### Linked experiments
 
-- [R001](../../experiments/runtime/R001-mailbox-backpressure/README.md) — `planned`
+- [R001](../../experiments/runtime/R001-mailbox-backpressure/README.md) — `frozen`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
 

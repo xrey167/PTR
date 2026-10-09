@@ -1,0 +1,83 @@
+# R001 decision criteria. Draft until the freeze (config.toml will name this file and its SHA-256
+# in its [preregistration] table); no rule changes after a run. They are what the harness itself
+# judges (bins/ptr-bench, r001/metrics.rs coverage() and falsifiers()); a harness test pins this
+# file to those lists, in order, and every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and
+# so a parse error: no decimal literal exists, fractions are integer counts or permille).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON
+# result object, separated by '.' (no key holds a '.', no array is indexed): "capacity_violations"
+# is a top-level key.
+# A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a
+# failed rule). A reference compared with an integer literal or another reference must be a JSON
+# integer (not a boolean, not a float). Exact comparisons.
+# The experiment's "< N" prerequisites are written ">= N", its "> 0" violations "<= 0".
+#
+# Two rules compare two measured numbers. "bounded_p99_wait_ticks <= bounded_wait_bound_ticks" is
+# the analytic wait bound of a bounded mailbox, capacity x S_max virtual ticks; the harness prints
+# the p99 and the bound of the cell whose p99 / bound is largest, so the rule holds iff it holds
+# in every capacity and payload class. "bounded_peak_payload_bytes <= bounded_payload_bytes_bound"
+# is the same for the live payload bytes, bound (capacity + 1) x body bytes.
+# Wall-clock latency and the resident set are in the harness's JSON under "descriptive" and no
+# rule reads them.
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies R001 on that seed.
+# Decision: every seed must hold every coverage rule and every falsifier rule; COMPLETED iff so
+# and the mutation evidence is complete (results/mutations.json present, killed == total == the
+# number of mutations the plan lists: a pass over a harness not shown to fail would be vacuous),
+# INVALID if a seed is missing, unresolvable, its record does not describe the frozen run, or the
+# mutation evidence is missing or incomplete, FALSIFIED otherwise (a falsification is never
+# downgraded by the mutation evidence). A panic or a hang of the product is a falsification
+# (product_panics, product_hangs: the harness contains both and exits 1); a panic in the
+# harness's own code is exit 101 and INVALID.
+#
+# Counters in the coverage rules are counted from observed events (refusals seen, the queue seen
+# full, bodies seen alive, offers refused Closed while full, messages delivered after the close,
+# outcomes seen in the threaded contended stage), not read from the configuration.
+version = 1
+experiment = "R001"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "overload_phases >= 18",
+  "refused_full >= 1",
+  "delivered >= 1",
+  "unbounded_exceeding_cells >= 6",
+  "capacities_exercised >= 3",
+  "payload_classes >= 2",
+  "recoveries_observed >= 6",
+  "closed_path_cases >= 7",
+  "closed_while_full_cells >= 4",
+  "closed_while_nonempty_cells >= 6",
+  "owner_drop_cases >= 1",
+  "threaded_fill_rounds >= 2000",
+  "threaded_round2_admitted >= 1",
+  "threaded_round2_full >= 1",
+  "threaded_round2_closed >= 1",
+  "threaded_producers_with_admissions >= 2",
+  "threaded_interleaved_fills >= 20",
+  "threaded_delivered >= 9",
+  "canary_misses <= 0",
+]
+
+falsifiers = [
+  "capacity_violations <= 0",
+  "silent_drops <= 0",
+  "ownership_violations <= 0",
+  "fifo_violations <= 0",
+  "model_divergences <= 0",
+  "spurious_refusals <= 0",
+  "bounded_p99_wait_ticks <= bounded_wait_bound_ticks",
+  "wait_bound_violations <= 0",
+  "bounded_peak_payload_bytes <= bounded_payload_bytes_bound",
+  "payload_bound_violations <= 0",
+  "determinism_mismatches <= 0",
+  "closed_path_mismatches <= 0",
+  "threaded_ledger_violations <= 0",
+  "threaded_capacity_violations <= 0",
+  "product_panics <= 0",
+  "product_hangs <= 0",
+]
