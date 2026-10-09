@@ -1,0 +1,105 @@
+version = 1
+experiment_id = "M002-v11"
+study = "A0-baseline-v2"
+headline_contrast = "M002-v11-primary"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE"
+go = false
+claim_scope = "A0 on the synthetic operator-routing v2 benchmark only (ADR-0021); no language-model claim"
+evidence_kind = "run-record"
+records_immutable = true
+paired_ci_sha256 = "672ca0599ce68a3ea2d0cb49fb70cb8f29c0ba3a50f752e5623acb68f44e4c86"
+criteria_sha256 = "88e38861c1fb323dfb1414a62112bdfe249cf90690ed66fedf7f7d155c8188e2"
+decision_script_sha256 = "0cbbcda8114f5510566662c8e67ed4af2dca3a0d1c6a4213862ee85419080db1"
+decision_core_sha256 = "8ee9539a790f44c57eaa751fa56dfa07bb0342d636bf65230650ad4f6fddb957"
+git_sha = "f91be544331aaa7d11ec0528de21a463bcbc69ca"
+
+[reporting]
+required_label = "INCONCLUSIVE"
+allow_quality_claim = false
+allow_bundle_claim_as_mechanism_evidence = false
+
+[[contrast]]
+id = "M002-v11-primary"
+role = "primary"
+isolating = true
+treatment = "factorized-v2"
+control = "factorized-v2-off"
+compute = "equal-params-flops"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE"
+reason = "neither SUPPORTS nor FALSIFIES holds"
+failing_gates = ["ood_accuracy", "positive_accuracy_each_fold", "ood_nll_each_fold", "ood_ece_each_fold", "iid_accuracy", "coverage"]
+quality_claim_allowed = false
+scope_note = "isolating contrast of one mechanism inside A0"
+claim = "factorized typed pair attention improves OOD routing over the identical computation with the pair bias zeroed, in A0 (isolating)"
+
+[contrast.gates]
+complete_finite_bound_evidence = true
+ood_accuracy = false
+positive_accuracy_each_fold = false
+ood_nll_each_fold = false
+ood_ece_each_fold = false
+iid_accuracy = false
+coverage = false
+selective_error = true
+matched_compute = true
+
+[contrast.ood_accuracy]
+mean_delta = 0.0027343750000000332
+ci95 = [-0.01470105755956705, 0.020169807559567116]
+
+[[contrast]]
+id = "M002-v11-bundle"
+role = "bundle"
+isolating = false
+treatment = "full"
+control = "plain"
+compute = "plain-params"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE"
+reason = "OOD accuracy improves but a non-calibration gate fails"
+failing_gates = ["coverage"]
+quality_claim_allowed = false
+scope_note = "bundle vs baseline, non-isolating: more than one mechanism differs"
+claim = "the A0 bundle beats the pinned plain baseline in A0; bundle vs baseline, non-isolating"
+
+[contrast.gates]
+complete_finite_bound_evidence = true
+ood_accuracy = true
+positive_accuracy_each_fold = true
+ood_nll_each_fold = true
+ood_ece_each_fold = true
+iid_accuracy = true
+coverage = false
+selective_error = true
+matched_compute = true
+
+[contrast.ood_accuracy]
+mean_delta = 0.2513020833333333
+ci95 = [0.22311887993784288, 0.2794852867288238]
+
+[[source_record]]
+path = "experiments/model/M002-v11-typed-attention/results/run-20261009T135449.937993Z-seed-17.json"
+canonical_sha256 = "45fa96b49a386a4f42201e90449eaa99ac0df0547d91d32242074f66ac98b1a3"
+
+[[source_record]]
+path = "experiments/model/M002-v11-typed-attention/results/run-20261009T144435.929952Z-seed-29.json"
+canonical_sha256 = "9c539d8eb090afb24d1ac8bc33d90edc3e3275e996cfa887c8389e05408dc860"
+
+[[source_record]]
+path = "experiments/model/M002-v11-typed-attention/results/run-20261009T153329.715223Z-seed-43.json"
+canonical_sha256 = "b5ec44f3fd6eae10fd359ee4e1390b22fcdbbee86906a2f5ead8d0b1613a6603"
+
+[[source_record]]
+path = "experiments/model/M002-v11-typed-attention/results/run-20261009T162332.002019Z-seed-71.json"
+canonical_sha256 = "9b610618559f6089bb301d0be8f93addc9cb23bdbf3c5e0493be31bf20b36cae"
+
+[[source_record]]
+path = "experiments/model/M002-v11-typed-attention/results/run-20261009T171200.629817Z-seed-101.json"
+canonical_sha256 = "5db20e17fd3fd5707d38cc73e1b8d214740eb190e4181dd3a66973347f085766"
+
+[record_identity]
+mode = "single-commit-or-linear-history-results-only"
+decision_base_sha256 = "9060d1534a7c76e6cc74959e30803cb09c748f90e54b18fb22f5b1a7e5cf350f"
+commits = ["f91be544331aaa7d11ec0528de21a463bcbc69ca", "76ac4f1ac8838f4260694e1a6b15e9d3ff3d5b0f", "fe0e0c9e71fd1be7390939164ceb2ebf17cd0ea9", "4c07d0537bcad9f027f6d31cda1098b4b79cb035", "41bfd351f0c6aac6547ac10d9b0a75f1e7a5ef46"]

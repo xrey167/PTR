@@ -11,7 +11,7 @@ This file is not part of any digest pin (check: `scripts/a0_baseline_study.py`
 pins `criteria.toml`, `PREREGISTRATION.md`, the deciders, the core, the lock and
 the runner sources, not this file), so entries are added when the events happen.
 
-Log: D1.
+Log: D1, D2.
 
 ### D1: M003-v3 seed 71 interrupted by a container restart (2026-10-09)
 
@@ -22,6 +22,14 @@ What was observed: no output of seed 71. The record holds none and no terminal, 
 Outcome by the preregistered interruption rule (`DESIGN.md`, "Interruption rule"): M003-v3 is **INCONCLUSIVE-INTERRUPTED**. No statistic is computed and the completed seeds are not read by the decider. The seed is spent, M003-v3 is not rerun, patched or completed, and seed 101 is not run. The experiment stays `prepared` until the owner registers a successor study. M001-v6 and M002-v11 are independent experiments that completed all five seeds with exit 0 and are decided separately.
 
 What `RESULTS.md` says: M003-v3 has no result, no verdict on latent recurrence and no quality claim; the outcome is INCONCLUSIVE-INTERRUPTED.
+
+### D2: the published aggregates are bound to the preregistration and the seed records (2026-10-09)
+
+Facts: the pinned v2 decider (`scripts/aggregate_a0_baseline_v2.py --publish-results`) publishes `run.json` in the v1 envelope: it names the criteria, decider and core digests and each seed record's canonical SHA-256 under `source_records`, but not the three fields `scripts/check_research_gates.py` requires on the aggregate of a listed experiment (`preregistration_sha256`, `preregistration_rules_sha256`, and `seed_records`, the SHA-256 of each seed's run record file). A first publish of M001-v6 and M002-v11 in that envelope failed the gate. It was a local, unshared commit and was discarded before anything was delivered or merged (owner decision 2026-10-09).
+
+What was done: the decider was run as preregistered and its outputs (`DECISION.toml`, `paired-ci-95.json`, `metrics.json`, `run.json`) were kept byte for byte, except that `run.json` was republished through `experiment_records.publish_aggregate` with exactly those three fields added: the two digests copied from the experiment's `experiment.toml` and `seed_records` from `experiment_records.seed_record_digests` over the committed seed records. `metrics_sha256` is recomputed over the unchanged `metrics.json`. No criterion, threshold, metric, verdict, label or seed changed, the decider and its pins were not edited, and no seed record was read for this beyond its file digest. M003-v3 publishes no aggregate (D1) and is untouched.
+
+What `RESULTS.md` says: nothing changes; the verdicts are the decider's.
 
 The story of why this study exists (the v1 decider's record-identity defect and
 the two interruptions of v1) is in `DESIGN.md`, "Why v2 replaced v1", and in

@@ -1,6 +1,6 @@
 version = 1
 id = "M002-v11"
-status = "prepared"
+status = "completed"
 hypothesis = "Does factorized typed pair attention improve out-of-distribution routing accuracy by at least 0.02 over the identical computation with the pair bias multiplied by zero (factorized-v2-off) in A0 on operator-routing v2, without a per-fold OOD calibration regression? The A0-ablations-v2 study (d_model 32) found no necessity of typed attention, so a null is plausible. The full A0 bundle against the pinned plain baseline is labelled bundle vs baseline, non-isolating."
 metrics = "OOD accuracy (sole primary endpoint: mean over three folds, paired over five seeds, delta_min 0.02); gated per fold on test_ood with raw logits: NLL, ECE15; IID accuracy; raw coverage and selective error; matched parameters; descriptive: total_params, flops_per_example, latent_steps, wall time, explicit_token_count, temperature-fitted diagnostics; equal total_params and flops_per_example of the factorized pair"
 baseline = "factorized-v2-off (identical compute, pair bias zeroed; isolating contrast); the pinned plain baseline research/baselines/plain_model (ptr-burn-a0@matched-cross-attention-v1) for the bundle contrast"

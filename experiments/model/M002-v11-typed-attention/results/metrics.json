@@ -1,0 +1,194 @@
+{
+  "experiment_id": "M002-v11",
+  "study": "A0-baseline-v2",
+  "verdict": "INCONCLUSIVE",
+  "label": "INCONCLUSIVE",
+  "contrasts": [
+    {
+      "id": "M002-v11-primary",
+      "role": "primary",
+      "isolating": true,
+      "verdict": "INCONCLUSIVE",
+      "label": "INCONCLUSIVE",
+      "failing_gates": [
+        "ood_accuracy",
+        "positive_accuracy_each_fold",
+        "ood_nll_each_fold",
+        "ood_ece_each_fold",
+        "iid_accuracy",
+        "coverage"
+      ],
+      "gates": {
+        "complete_finite_bound_evidence": true,
+        "ood_accuracy": false,
+        "positive_accuracy_each_fold": false,
+        "ood_nll_each_fold": false,
+        "ood_ece_each_fold": false,
+        "iid_accuracy": false,
+        "coverage": false,
+        "selective_error": true,
+        "matched_compute": true
+      }
+    },
+    {
+      "id": "M002-v11-bundle",
+      "role": "bundle",
+      "isolating": false,
+      "verdict": "INCONCLUSIVE",
+      "label": "INCONCLUSIVE",
+      "failing_gates": [
+        "coverage"
+      ],
+      "gates": {
+        "complete_finite_bound_evidence": true,
+        "ood_accuracy": true,
+        "positive_accuracy_each_fold": true,
+        "ood_nll_each_fold": true,
+        "ood_ece_each_fold": true,
+        "iid_accuracy": true,
+        "coverage": false,
+        "selective_error": true,
+        "matched_compute": true
+      }
+    }
+  ],
+  "arms": {
+    "factorized-v2": {
+      "lr": 0.025,
+      "total_params": 33324.0,
+      "flops_per_example": 1533888.0,
+      "latent_steps": 2,
+      "mean_ms_per_step": 168.58801267324444,
+      "test_iid": {
+        "accuracy": 0.696484375,
+        "raw_nll": 0.9493968657350867,
+        "raw_ece15": 0.1616440858941382,
+        "fitted_temperature_mean": 0.5953333333333333,
+        "fitted_temperature_saturated_cells": 0,
+        "cells": 15,
+        "explicit_token_count": {
+          "evidence-temporal": 18432,
+          "evidence-tabular": 18432,
+          "claim-interventional": 18432
+        }
+      },
+      "test_ood": {
+        "accuracy": 0.5059895833333333,
+        "raw_nll": 1.6535091576860264,
+        "raw_ece15": 0.10047916396519425,
+        "fitted_temperature_mean": 0.5953333333333333,
+        "fitted_temperature_saturated_cells": 0,
+        "cells": 15,
+        "explicit_token_count": {
+          "evidence-temporal": 18432,
+          "evidence-tabular": 18432,
+          "claim-interventional": 18432
+        }
+      },
+      "mean_latency_p95_ms": 0.26158145266666666
+    },
+    "factorized-v2-off": {
+      "lr": 0.025,
+      "total_params": 33324.0,
+      "flops_per_example": 1533888.0,
+      "latent_steps": 2,
+      "mean_ms_per_step": 164.25295692666666,
+      "test_iid": {
+        "accuracy": 0.6975260416666667,
+        "raw_nll": 0.9491452471946601,
+        "raw_ece15": 0.1650674367226894,
+        "fitted_temperature_mean": 0.596,
+        "fitted_temperature_saturated_cells": 0,
+        "cells": 15,
+        "explicit_token_count": {
+          "evidence-temporal": 18432,
+          "evidence-tabular": 18432,
+          "claim-interventional": 18432
+        }
+      },
+      "test_ood": {
+        "accuracy": 0.5032552083333334,
+        "raw_nll": 1.6538561115137922,
+        "raw_ece15": 0.10734369879530321,
+        "fitted_temperature_mean": 0.596,
+        "fitted_temperature_saturated_cells": 0,
+        "cells": 15,
+        "explicit_token_count": {
+          "evidence-temporal": 18432,
+          "evidence-tabular": 18432,
+          "claim-interventional": 18432
+        }
+      },
+      "mean_latency_p95_ms": 0.2655156753333333
+    },
+    "full": {
+      "lr": 0.025,
+      "total_params": 33324.0,
+      "flops_per_example": 1533888.0,
+      "latent_steps": 2,
+      "mean_ms_per_step": 73.1634752664,
+      "test_iid": {
+        "accuracy": 0.687890625,
+        "raw_nll": 0.9519301234569313,
+        "raw_ece15": 0.1501332772647265,
+        "fitted_temperature_mean": 0.6073333333333333,
+        "fitted_temperature_saturated_cells": 0,
+        "cells": 15,
+        "explicit_token_count": {
+          "evidence-temporal": 18432,
+          "evidence-tabular": 18432,
+          "claim-interventional": 18432
+        }
+      },
+      "test_ood": {
+        "accuracy": 0.4986979166666667,
+        "raw_nll": 1.6620296822224907,
+        "raw_ece15": 0.10929817217421507,
+        "fitted_temperature_mean": 0.6073333333333333,
+        "fitted_temperature_saturated_cells": 0,
+        "cells": 15,
+        "explicit_token_count": {
+          "evidence-temporal": 18432,
+          "evidence-tabular": 18432,
+          "claim-interventional": 18432
+        }
+      },
+      "mean_latency_p95_ms": 0.22633982906666666
+    },
+    "plain": {
+      "lr": 0.0025,
+      "total_params": 33323.0,
+      "flops_per_example": 1665216.0,
+      "latent_steps": 1,
+      "mean_ms_per_step": 25.838817367911112,
+      "test_iid": {
+        "accuracy": 0.3834635416666667,
+        "raw_nll": 2.2863470706287448,
+        "raw_ece15": 0.3112081326857356,
+        "fitted_temperature_mean": 2.5126666666666666,
+        "fitted_temperature_saturated_cells": 0,
+        "cells": 15,
+        "explicit_token_count": {
+          "evidence-temporal": 18432,
+          "evidence-tabular": 18432,
+          "claim-interventional": 18432
+        }
+      },
+      "test_ood": {
+        "accuracy": 0.24739583333333334,
+        "raw_nll": 4.857445338408111,
+        "raw_ece15": 0.42289215917129125,
+        "fitted_temperature_mean": 2.5126666666666666,
+        "fitted_temperature_saturated_cells": 0,
+        "cells": 15,
+        "explicit_token_count": {
+          "evidence-temporal": 18432,
+          "evidence-tabular": 18432,
+          "claim-interventional": 18432
+        }
+      },
+      "mean_latency_p95_ms": 0.16286598986666664
+    }
+  },
+  "mask_share": null
+}
