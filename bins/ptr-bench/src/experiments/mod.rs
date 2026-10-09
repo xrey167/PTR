@@ -16,6 +16,7 @@ pub mod l003;
 #[cfg(feature = "postgres-experiments")]
 pub mod l004;
 pub mod layered_kv;
+pub mod m008;
 #[cfg(feature = "postgres-experiments")]
 mod pg;
 pub mod q002;
@@ -27,6 +28,7 @@ pub mod r009;
 pub mod r010;
 pub mod r011;
 pub mod r012;
+pub mod rag_bridge;
 #[cfg_attr(not(feature = "postgres-experiments"), allow(dead_code))]
 mod rng;
 pub mod s001;

@@ -15,7 +15,6 @@ postgres-experiments = [
     "dep:ptr-pg",
     "ptr-pg/postgres-backend",
     "dep:ptr-state",
-    "dep:ptr-fastmem",
     "dep:tokio",
     "dep:tokio-postgres",
 ]
@@ -57,7 +56,9 @@ ptr-analytics = { workspace = true }
 # digest replay recomputes.
 ptr-branch = { workspace = true }
 ptr-state = { workspace = true, optional = true }
-ptr-fastmem = { workspace = true, optional = true }
+# L003 revokes fast-weight writes through the journal; M008 compares the memory against a recency
+# buffer and hybrid retrieval, so the memory is part of every build.
+ptr-fastmem = { workspace = true }
 tokio = { workspace = true, optional = true }
 # A raw session for the harnesses' crash injection (terminating the
 # substrate's backend) and cleanup; the same pin ptr-pg uses.

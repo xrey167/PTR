@@ -36,12 +36,12 @@
 
 ### Next milestones
 
-- Run M008 against a recency buffer and hybrid retrieval
+- M008 falsified the untrained configuration (worse than a recency buffer and live hybrid retrieval in update-aware recall@1 on the four valid seeds; results/OUTCOME.md); learned key and value projections would need a successor experiment
 - Restore from the newest checkpoint plus the journal suffix, and extend L003 to it
 
 ### Linked experiments
 
-- [M008](../../experiments/model/M008-fast-weight-memory/README.md) — `planned`
+- [M008](../../experiments/model/M008-fast-weight-memory/README.md) — `frozen`
 - [L003](../../experiments/lifecycle/L003-fastmem-revocation/README.md) — `completed`
 
 ### Technology evaluations

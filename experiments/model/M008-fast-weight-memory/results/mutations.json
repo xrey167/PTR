@@ -1,0 +1,284 @@
+{
+  "experiment_id": "M008",
+  "git_sha": "17717fd054d314447ca38782f2b598c308288cb1",
+  "recorded_at": "2026-10-09T22:14:32.996982+00:00",
+  "subcommand": "fast-weight-memory",
+  "killed": 15,
+  "total": 15,
+  "mutations": [
+    {
+      "name": "decode-min-margin-removed",
+      "file": "crates/ptr-fastmem/src/decode.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 83,
+      "expected": [
+        "decode_contract_violations"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "false_recall_violation": 1,
+        "decode_contract_violations": 80
+      }
+    },
+    {
+      "name": "decode-min-score-removed",
+      "file": "crates/ptr-fastmem/src/decode.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 293,
+      "expected": [
+        "decode_contract_violations"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "false_recall_violation": 1,
+        "decode_contract_violations": 290
+      }
+    },
+    {
+      "name": "delta-rule-sign-flipped",
+      "file": "crates/ptr-fastmem/src/state.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 984,
+      "expected": [
+        "readback_failures",
+        "gain_violation_recency",
+        "gain_violation_hybrid_live"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "product_errors": 400,
+        "readback_failures": 142,
+        "decode_contract_violations": 440
+      }
+    },
+    {
+      "name": "delta-rule-erase-term-dropped",
+      "file": "crates/ptr-fastmem/src/state.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 399,
+      "expected": [
+        "stale_residual_violations"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "false_recall_violation": 1,
+        "stale_residual_violations": 123,
+        "readback_failures": 273
+      }
+    },
+    {
+      "name": "beta-halved-in-the-fold",
+      "file": "crates/ptr-fastmem/src/state.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 642,
+      "expected": [
+        "readback_failures",
+        "stale_residual_violations"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "readback_failures": 600,
+        "decode_contract_violations": 40
+      }
+    },
+    {
+      "name": "projection-binding-check-removed",
+      "file": "crates/ptr-fastmem/src/memory.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 131,
+      "expected": [
+        "projection_mismatch_accepted"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "false_recall_violation": 1,
+        "projection_mismatch_accepted": 128
+      }
+    },
+    {
+      "name": "decode-panics",
+      "file": "crates/ptr-fastmem/src/decode.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 962,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "product_panics": 480,
+        "decode_contract_violations": 480
+      }
+    },
+    {
+      "name": "decode-refuses-a-valid-policy",
+      "file": "crates/ptr-fastmem/src/decode.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 962,
+      "expected": [
+        "product_errors"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "product_errors": 480,
+        "decode_contract_violations": 480
+      }
+    },
+    {
+      "name": "recency-window-plus-one",
+      "file": "bins/ptr-bench/src/experiments/m008/arms.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "window_budget_violations"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "false_recall_violation": 1,
+        "window_budget_violations": 1
+      }
+    },
+    {
+      "name": "hybrid-live-keeps-the-old-version",
+      "file": "bins/ptr-bench/src/experiments/m008/hybrid.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 856,
+      "expected": [
+        "stale_in_live_index"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "false_recall_violation": 1,
+        "stale_in_live_index": 853
+      }
+    },
+    {
+      "name": "ranked-list-longer-than-the-budget",
+      "file": "bins/ptr-bench/src/experiments/m008/params.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 443,
+      "expected": [
+        "token_budget_violations"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "false_recall_violation": 1,
+        "token_budget_violations": 381,
+        "decode_contract_violations": 59
+      }
+    },
+    {
+      "name": "oracle-first-write-wins",
+      "file": "bins/ptr-bench/src/experiments/m008/oracle.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1348,
+      "expected": [
+        "oracle_label_mismatches"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "stale_in_live_index": 986,
+        "oracle_label_mismatches": 360
+      }
+    },
+    {
+      "name": "projection-draw-fails",
+      "file": "crates/ptr-fastmem/src/projection.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "product_errors"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "product_errors": 1
+      }
+    },
+    {
+      "name": "projection-project-panics",
+      "file": "crates/ptr-fastmem/src/projection.rs",
+      "cases": 400,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1130,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "product_panics": 1128
+      }
+    },
+    {
+      "name": "decode-answers-every-readout",
+      "file": "crates/ptr-fastmem/src/decode.rs",
+      "cases": 32,
+      "seed": 2001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 153,
+      "expected": [
+        "false_recall_violation"
+      ],
+      "counters": {
+        "gain_violation_recency": 1,
+        "gain_violation_hybrid_live": 1,
+        "false_recall_violation": 1,
+        "decode_contract_violations": 150
+      }
+    }
+  ]
+}

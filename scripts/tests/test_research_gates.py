@@ -5146,7 +5146,7 @@ class PreregistrationGateTests(unittest.TestCase):
         )
         self.assertEqual(gate(pinned),(0,[]))
 
-ENROLLED=("Q003","R004","M008","E005")
+ENROLLED=("Q003","R004","E005")
 # The list also holds the experiments that ran or were superseded; they are no
 # part of the six this fixture moves to `prepared`.
 RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9")
@@ -5154,7 +5154,7 @@ RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","
 # Listed and held at `planned` until its freeze (its placeholders are pinned then, by the head
 # after the harness and the criteria are final); it is no part of the fixtures that move the six to
 # `prepared`. Once frozen it is a regular listed experiment the repository's own gate checks.
-LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001","R001","Q002","F001","F002","S002","C001","F003",
+LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001","R001","Q002","F001","F002","S002","C001","F003","M008",
     "M001-v5","M002-v10","M003-v2","M001-v5-sweep","M002-v10-sweep","M003-v2-sweep",
     # The successor of the interrupted M002-v10-sweep (DEVIATIONS.md of the study).
     "M002-v10-sweep-r2",
@@ -5264,12 +5264,6 @@ class EnrolledExperimentTests(unittest.TestCase):
             f"R004: preregistration key backward_transfer_min_permille is a placeholder ({pinned})",
             "R004: experiment.toml names no preregistration_sha256",
             "R004: experiment.toml names no preregistration_rules_sha256",
-            f"M008: preregistration key token_budget is a placeholder ({pinned})",
-            f"M008: preregistration key recency_window is a placeholder ({pinned})",
-            f"M008: preregistration key recency_buffer_baseline is a placeholder ({pinned})",
-            f"M008: preregistration key hybrid_retrieval_baseline is a placeholder ({pinned})",
-            "M008: experiment.toml names no preregistration_sha256",
-            "M008: experiment.toml names no preregistration_rules_sha256",
             f"E005: preregistration key token_budget is a placeholder ({pinned})",
             f"E005: preregistration key full_context_baseline is a placeholder ({pinned})",
             f"E005: preregistration key agent_memory_baselines has element 0 that is a placeholder ({pinned})",
