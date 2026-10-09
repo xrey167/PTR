@@ -1,0 +1,12 @@
+version = 1
+id = "F005"
+status = "planned"
+hypothesis = "[GPU; real models] Does routing a failed candidate to a repair expert chosen by the verifier finding class (one expert per finding class, trained on verified finding-repair-pass transitions) repair more candidates per verifier call than one generic repair expert and than regenerate-only, with no collateral edits (slots the findings do not name stay untouched, as in the F001 loop)?"
+metrics = "repair success per finding class and pooled; verifier calls per repaired task; collateral edits (hard counter, must be 0); regenerate-draw cost per success; Exhausted rate; transfer to held-out finding classes; paired differences over seeds"
+baseline = "one generic repair expert (same total parameters, trained on the same transitions); regenerate-only (fresh proposal on every Fail); finding-routed repair with a shuffled finding-to-expert map (negative control)"
+falsification = "Falsified if finding-routed repair does not beat BOTH the generic repair expert and regenerate-only on repaired tasks per verifier call by a pinned margin with a one-sided 95% paired bound over at least 5 seeds, if the shuffled-map control is not worse than the true map (the routing carries no information), or if collateral_edits or false_accepts is above 0 in any seed. Unknown and Disputed reports are never repaired (fresh proposal or escalation)."
+hardware_profile = "hardware/rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

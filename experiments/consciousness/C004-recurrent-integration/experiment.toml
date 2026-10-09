@@ -1,0 +1,12 @@
+version = 1
+id = "C004"
+status = "planned"
+hypothesis = "[CPU] Indicator RPT-1 (algorithmic recurrence) as a functional property; RPT-2 is not targeted (doc 38): does algorithmic recurrence with a persistent latent state across steps (the latent recurrence of docs/architecture/01-ptr-core.md, model/burn-a0 latent_steps) integrate multi-step evidence better than a depth-matched feed-forward stack with the same parameters and compute, on tasks whose answer depends on a state carried across steps? Extends M003 (which asks only about token savings) with an integration test, and the workspace of C001 as a recurrent variant."
+metrics = "task accuracy on held-out step counts longer than trained; accuracy against number of recurrent steps; parameter and FLOP counts per arm; state-carryover probe (does the answer change when an early step is perturbed); paired differences over seeds"
+baseline = "depth-matched feed-forward stack with unshared layers, parameter-matched and FLOP-matched; recurrent model with the carried state reset every step"
+falsification = "Falsified if the recurrent arm does not beat BOTH the depth-matched feed-forward stack and the reset-state ablation on length extrapolation by a pinned margin with a one-sided 95% paired bound over at least 5 seeds at matched parameters and FLOPs; invalid if parameter or FLOP counts differ beyond the pinned tolerance."
+hardware_profile = "hardware/a0-cpu-4core.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "F006-verifier-driven-expert-lifecycle"
+path = "experiments/feedback/F006-verifier-driven-expert-lifecycle"
+tests_dir = "tests"

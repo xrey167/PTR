@@ -440,6 +440,35 @@ control_deltas = "int"
 preregistration_text = "file"
 criteria = "file"
 
+# Design: docs/architecture/38-consciousness-indicators.md. The harness is research/consciousness/gw/harness.py;
+# its pinned values are the [pinned_thresholds] of the experiment's config.toml (a test pins this table to them).
+# learning rates are stored as integers in millionths, noise in thousandths.
+[experiment.C001.required]
+seeds = "int-list"
+harness = "str"
+n_train_modules = "int"
+ood_modules = "int-list"
+n_types = "int"
+n_values = "int"
+noise_milli = "int"
+slots = "int"
+top_k = "int"
+rounds = "int"
+d_model = "int"
+ffn_workspace = "int"
+train_size = "int"
+steps = "int"
+batch_size = "int"
+arm_lr_micro = "str"
+param_tolerance_permille = "int"
+paired_margin_permille = "int"
+sensitivity_margin_permille = "int"
+guard_floor_permille = "int"
+guard_ceiling_permille = "int"
+max_untrained_workspace_seeds = "int"
+preregistration_text = "file"
+criteria = "file"
+
 [experiment.R001.required]
 seeds = "int-list"
 harness = "str"

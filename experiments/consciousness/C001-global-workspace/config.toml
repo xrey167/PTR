@@ -1,0 +1,81 @@
+version = 1
+kind = "workspace-area"
+name = "C001-global-workspace"
+path = "experiments/consciousness/C001-global-workspace"
+tests_dir = "tests"
+
+[pinned_thresholds]
+seed_aggregation = "paired_one_sided_t_bound_three_outcomes"
+seeds = [3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010]
+pilot_seeds = [1001, 1002, 1003]
+# Task: N_train sensory modules (shared weights), n_types types, n_values values, Gaussian noise.
+n_train_modules = 8
+ood_modules = [16, 24]
+n_types = 4
+n_values = 3
+noise = 0.3
+# Model: pilot-tuned values are marked in DRAFT_PREREGISTRATION.md section 6.
+rounds = 3
+d_model = 32
+ffn_workspace = 64
+out_hidden = 64
+slots = 3
+top_k = 3
+# Training: a finite set of train_size examples, cycled; every arm sees the same data; per-arm learning rate.
+train_size = 4096
+steps = 3000
+batch_size = 64
+weight_decay = 0.0
+grad_clip = 1.0
+arm_lr = { workspace = 0.003, all_to_all = 0.003, bw_all_to_all = 0.001, no_broadcast = 0.003, no_comm = 0.003, competition_off = 0.003, capacity_off = 0.003, crippled_all_to_all = 0.001 }
+eval_every = 150
+eval_size = 2048
+min_eval_instances = 2048
+curve_eval_size = 512
+probe_size = 64
+drop_probe_size = 16
+probe_scale = 5.0
+param_tolerance_permille = 20
+chance_slack_permille = 50
+trained_margin_permille = 100
+min_arms_trained = 8
+train_stream_offset = 17
+eval_stream_offset = 500
+# Decision (criteria.toml): margin from pilot headroom, guards, sensitivity control, t quantiles for 9 degrees of freedom.
+paired_margin_permille = 50
+guard_floor_permille = 300
+guard_ceiling_permille = 900
+sensitivity_margin_permille = 50
+max_untrained_workspace_seeds = 2
+paired_t_one_sided_95_df9 = "1.833113"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml). The values restate
+# [pinned_thresholds] (a unit test compares them); digests are pinned by the head at the freeze, after the draft is renamed
+# to PREREGISTRATION.md.
+[preregistration]
+seeds = [3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010]
+harness = "c001"
+n_train_modules = 8
+ood_modules = [16, 24]
+n_types = 4
+n_values = 3
+noise_milli = 300
+slots = 3
+top_k = 3
+rounds = 3
+d_model = 32
+ffn_workspace = 64
+train_size = 4096
+steps = 3000
+batch_size = 64
+arm_lr_micro = "workspace=3000,all_to_all=3000,bw_all_to_all=1000,no_broadcast=3000,no_comm=3000,competition_off=3000,capacity_off=3000,crippled_all_to_all=1000"
+param_tolerance_permille = 20
+paired_margin_permille = 50
+sensitivity_margin_permille = 50
+guard_floor_permille = 300
+guard_ceiling_permille = 900
+max_untrained_workspace_seeds = 2
+preregistration_text = "experiments/consciousness/C001-global-workspace/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/consciousness/C001-global-workspace/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

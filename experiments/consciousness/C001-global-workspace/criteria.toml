@@ -1,0 +1,96 @@
+# C001 decision criteria (v2). Frozen with the preregistration (config.toml names this file and its SHA-256); no rule
+# changes after a run. Per-seed rules (coverage, falsifiers) are what the harness itself judges
+# (research/consciousness/gw/rules.py); the guards and the paired rules are judged by aggregate.py. A unit test pins
+# the lists to the harness, in order.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .  A token is an integer literal iff it matches -?[0-9]+; any other token is a
+# reference: a path of object keys from the root of the harness's single JSON result object, separated by '.'.
+# A reference that is missing, null, a boolean or a float makes the seed INVALID. Exact comparisons.
+#
+# coverage: a rule that does not hold makes the seed vacuous (a defect: counts as FALSIFIED, kind structural): an arm not
+#   trained, an evaluation set smaller than pinned, a probe that could not see the influence it exists to rule out.
+# falsifiers: the hard structural counters; each must be 0. They are what the mutation plan plants defects against.
+#   param_mismatch_arms: arms whose parameter count differs from the workspace arm by more than param_tolerance_permille.
+#   no_comm_leaks / no_broadcast_leaks: perturbing one sensory module's input moved the reporter in the no-communication arm,
+#       or another sensory module in the no-broadcast arm (they must be isolated).
+#   bottleneck_violations: a write-attention row with more than top_k nonzero sources (workspace, no-broadcast, capacity-off).
+#   dropped_module_leaks: a dropped module's input changed an output.
+#   n_leaks: a module count of the out-of-distribution evaluations that a TRAINING BATCH actually had (observed during training).
+#   train_eval_overlap: an evaluation instance identical to a training instance (hash of the data actually used).
+#   nondeterminism: two identical short trainings disagreed. nonfinite_arms: a non-finite loss.
+#   no_comm_above_chance: the no-communication arm beat the majority-class rate by more than chance_slack_permille (the task
+#       leaks its answer to a module that sees no input).
+# guards: validity guards. A seed that fails one is UNINFORMATIVE: the experiment is INVALID (saturated or floored), never
+#   FALSIFIED. comparator_primary_permille is the better of the all-to-all and the bandwidth-matched all-to-all on the
+#   primary metric (accuracy on sixteen modules). The band is the headroom: with the margin at most half the distance from
+#   the floor of the band... see the preregistration for how the band and the margin were set from pilots.
+#
+# [paired]: over the declared seeds (n = 10, t quantile for 9 degrees of freedom, one-sided 95%, pinned as a string),
+#   the mean paired difference of `arm` minus each comparator in `against` on `metric` (permille of accuracy):
+#   SUPPORTED (COMPLETED) iff every lower bound >= margin_permille;
+#   REFUTED (FALSIFIED, kind refuted) iff the guards hold, the sensitivity control resolves, and some UPPER bound < margin_permille;
+#   otherwise NOT_SHOWN (nothing is concluded; the status stays planned; no requirement is downgraded).
+#   sensitivity: the lower bound of (`arm` minus `crippled`) on `metric` must reach its own margin, otherwise INVALID
+#   (the pipeline cannot resolve a difference of that size at this operating point).
+#   max_untrained_workspace_seeds: more seeds on which the workspace arm did not train (ID accuracy below the no-communication
+#   arm by less than trained_margin_permille) make the experiment INVALID (an optimisation finding, reported).
+#   descriptive_metrics / descriptive_against: the same bounds, reported, never judged.
+#
+# Patterns (stated in advance):
+#   Supports: guards hold; workspace beats all_to_all, bw_all_to_all and no_broadcast by the margin on sixteen modules; (reported,
+#     not judged) the advantage grows from 16 to 24 modules; competition_off and capacity_off are worse than the workspace.
+#   Refutes: guards hold, the sensitivity control resolves, and the workspace is not better than a pairwise comparator by the margin
+#     with power (upper bound below the margin).
+#   Partial (NOT_SHOWN, reported): workspace > no_broadcast but not > all_to_all supports "broadcast matters" (GWT-3), not
+#     "the bottleneck helps" (GWT-2).
+#   Uninformative (INVALID): saturation, floor, an insensitive control, a workspace that fails to train on more than 2 of 10 seeds.
+# Decision: COMPLETED / FALSIFIED / NOT_SHOWN / INVALID as above; exit status of aggregate.py 0 / 1 / 3 / 2.
+version = 1
+experiment = "C001"
+seed_aggregation = "paired_one_sided_t_bound_three_outcomes"
+
+coverage = [
+  "arms_trained >= 8",
+  "id_eval_instances >= 2048",
+  "ood16_eval_instances >= 2048",
+  "ood24_eval_instances >= 2048",
+  "workspace_influence_hits >= 1",
+  "pairwise_influence_hits >= 1",
+  "no_broadcast_reporter_hits >= 1",
+]
+
+guards = [
+  "comparator_primary_permille >= 300",
+  "comparator_primary_permille <= 900",
+]
+
+falsifiers = [
+  "param_mismatch_arms <= 0",
+  "no_comm_leaks <= 0",
+  "no_broadcast_leaks <= 0",
+  "bottleneck_violations <= 0",
+  "dropped_module_leaks <= 0",
+  "n_leaks <= 0",
+  "train_eval_overlap <= 0",
+  "nondeterminism <= 0",
+  "nonfinite_arms <= 0",
+  "no_comm_above_chance <= 0",
+]
+
+[paired]
+metric = "ood16"
+arm = "workspace"
+against = ["all_to_all", "bw_all_to_all", "no_broadcast"]
+margin_permille = 50
+t_one_sided_95_df9 = "1.833113"
+seeds_required = 10
+max_untrained_workspace_seeds = 2
+descriptive_metrics = ["id", "ood24", "auc", "drop_irrelevant", "drop_relevant"]
+descriptive_against = ["competition_off", "capacity_off", "no_comm"]
+
+[paired.sensitivity]
+arm = "all_to_all"
+crippled = "crippled_all_to_all"
+margin_permille = 50

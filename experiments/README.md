@@ -10,6 +10,7 @@ Categories:
 - `retrieval/`
 - `feedback/`
 - `system/`
+- `consciousness/` (functional indicator properties, [doc 38](../docs/architecture/38-consciousness-indicators.md); indicators are not consciousness, and no experiment trains on self-reports)
 
 Do not silently rewrite failed results. Supersede them with a new experiment/version and record the decision in `research/decisions/`.
 
