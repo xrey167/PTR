@@ -8,7 +8,9 @@ publish = false
 [dependencies]
 ptr-types = { workspace = true }
 ptr-pods = { workspace = true }
+ptr-verifier = { workspace = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]
+ptr-feedback = { workspace = true }
 ptr-protocol = { workspace = true }

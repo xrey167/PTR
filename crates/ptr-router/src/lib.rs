@@ -1,7 +1,16 @@
+mod findings;
 mod propensity;
 mod router;
 mod sampling;
 
+pub use findings::{
+    classify, Accepted, AdmissibleScorer, CodeRoute, EligibilitySnapshot, EscalationReason,
+    Exploration, ExplorationError, FallbackAction, FallbackPolicy, FallbackReason, FindingCode,
+    FindingRegistry, FindingRouteError, FindingRouteErrorKind, FindingRouteRecord,
+    FindingRouteRequest, FindingRouter, PodEligibility, RegistryChange, RegistryError,
+    RegistryGeneration, RegistryUpdate, ReportClass, RouteClass, RouteOutcome, RouterConfig,
+    RouterLimits, ScoringContext, UniformScorer,
+};
 pub use propensity::{Propensity, PropensityError};
 pub use router::{
     route_checked, CheckedRouter, DistributionError, PolicyFailure, RouteDistribution, RouteError,
