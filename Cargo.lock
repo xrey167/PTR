@@ -4675,6 +4675,7 @@ version = "0.1.0"
 dependencies = [
  "candle-core",
  "ed25519-dalek",
+ "ptr-feedback",
  "ptr-protocol",
  "ptr-storage",
  "ptr-types",
