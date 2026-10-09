@@ -36,7 +36,9 @@ Conventions used throughout:
 | 14 | R003, E001 to E005 | none | stubs | pinned backbone (ADR-0021) |
 
 Steps 1 to 3 are configuration runs. Every later step is an experiment and follows the
-freeze-then-run discipline of section 3.
+freeze-then-run discipline of section 3. The VCW-MoE experiments (F004 to F006, C002, C003, C005,
+C006) and their checkpoint stage are in section 10, planned in
+[`VCW_MOE_GPU_PLAN.md`](VCW_MOE_GPU_PLAN.md); they start only after steps 1 to 4 above.
 
 ## 1. Prerequisites and one-time setup
 
@@ -686,3 +688,103 @@ work and are tracked elsewhere.
 2. Send back the step-2 `metrics.json` peak numbers and the two run manifests
    (`training/runs/run-<timestamp>.json`).
 3. Answer OD-1 to OD-3; then step 3 and the M011 preparation can start.
+
+## 10. VCW-MoE (Verifier-Closed Workspace MoE) GPU runs
+
+Added 2026-10-09. The full plans, arms, margins, mutations and budgets are in
+[`VCW_MOE_GPU_PLAN.md`](VCW_MOE_GPU_PLAN.md); this section is the operator's list. Everything in
+it is **planned, not run**. GPU-hours quoted are **estimates** from the assumptions of that
+document (section 3), not measurements, and the first pilot seed replaces them.
+
+### 10.1 Prerequisites (all must hold; check each)
+
+1. Steps 1 to 3 of section 4 done and OD-1 to OD-3 answered. The measured peak of the OLMoE SFT
+   smoke is compared with the S0 estimate (16.4 GiB on the 4090, 19.3 GiB on the 5090); if the
+   measurement is more than 20% higher, re-derive the VCW batch sizes before anything else.
+2. The code that does not exist yet (VCW plan section 4.9): the stage entrypoints
+   `ptr_training.vcw.*` (P1), the Python verifier fabric with finding codes and golden vectors
+   against the Rust gate (P2), the loop binding or Rust harness (P3), the instruments and
+   `aggregate.py` files (P5, P7). **Do not run a `vcw-*` config until its entrypoint exists:**
+   `ptr_training.run --execute` refuses the `vcw-*` backends on purpose, and the synthetic-task
+   `trl-moe` pipeline must never be run on a VCW config's behalf.
+3. Hub downloads at the revisions of VCW plan section 2 (two new datasets beyond section 1.3:
+   MBPP and Hendrycks MATH). Add to the snippet of section 1.3, with the training venv:
+   ```bash
+   training/.venv/bin/python - <<'PY'
+   from huggingface_hub import snapshot_download
+   print(snapshot_download("google-research-datasets/mbpp", repo_type="dataset",
+                           revision="4bb6404fdc6cacfda99d4ac4205087b89d32030c"))
+   print(snapshot_download("EleutherAI/hendrycks_math", repo_type="dataset",
+                           revision="21a5633873b6a120296cce3e2df9d5550074f4a3"))
+   # C005 only:
+   print(snapshot_download("allenai/OLMoE-1B-7B-0125-Instruct",
+                           revision="b89a7c4bc24fb9e55ce2543c9458ce0ca5c4650e"))
+   PY
+   ```
+4. A clean tracked worktree, the environment outside the checkout for frozen runs (OD-3), and
+   one hardware profile chosen per experiment (`hardware/rtx4090.toml` recommended).
+
+### 10.2 Commands in order
+
+CPU, any machine, before touching the GPU (these run today):
+
+```bash
+PYTHONPATH=training/src python3 -m unittest discover -s training/tests -p 'test_vcw*'
+PYTHONPATH=training/src python3 -m ptr_training.vcw.config      # self-report audit: must print 0
+PYTHONPATH=training/src python3 -m ptr_training.vcw.plan         # the GPU-hour ledger
+```
+
+On the GPU machine (each line starts only after the previous one is done and recorded):
+
+| # | Run | Entry | Expected output | Estimate, 4090 mid |
+|---|---|---|---|---|
+| V1 | pilot seeds 1001 to 1003 of S0 | `vcw-perft-r-sft-rtx4090.toml` via the P1 entrypoint | `metrics.json` with `hardware.peak_cuda_memory_allocated_gib` (compare 16.4), loss curve, trainable parameters 4,456,448 | 6.4 h per seed |
+| V2 | pilot seeds of S1, both arms | `vcw-rlvr-router-rtx4090.toml` | per-step reward, `expert_churn_per_layer`, `routing_entropy`, `load_cv`, `dead_experts`, `train_inference_kl`, `clip_fraction`, `crash_step`; peak memory (compare 21.1) | 0.84 h per seed |
+| V3 | pilot seeds of S2 (per-class and generic) | `vcw-repair-expert-rtx4090.toml` | transitions per finding class (each trained class must occur often enough to pin), peak memory (compare 15.5) | 2.1 h per arm |
+| V4 | pilot checks | harness | ceiling, floor, sensitivity, margin variance (VCW plan 4.5, 4.6), truncation rate at 160 completion tokens | minutes |
+| V5 | freeze commits and `prepare` for F005, F004, C002, C003 | section 3.1 | `prepared` records at HEAD | none |
+| V6 | T on final seeds 17, 29, 43, 71, 101 | the V1 to V3 entrypoints | `checkpoints.json` (adapter digests), committed | 11 h per seed |
+| V7 | F005, then F004, then C002 and C003 | `python3 scripts/run_experiment.py run <ID> --seed <S>` one seed at a time | `results/<seed>/` records, then `aggregate.py` writes `results/run.json` and `metrics.json` | F005 1.9 h, F004 7.7 h, C002 1.1 h, C003 5.0 h per seed |
+| V8 | F006 after M013, C006 after the C001 verdict, C005 last | same | same | F006 26 h, C006 8.8 h, C005 2.8 h per seed |
+
+### 10.3 How results come back as experiment records
+
+The route is section 3.1 and section 6, unchanged; what is specific to these experiments:
+
+1. Each experiment is a successor-free normal commit sequence on its own branch: set `entrypoint`
+   in `experiment.toml` while it is still `planned`, write `[preregistration]` (the pins and the
+   margins of VCW plan section 5, signed by being committed), `criteria.toml`, `aggregate.py`
+   with its mutation tests, `PREREGISTRATION.md`, list it in `experiments/preregistration.toml`,
+   and set the two digests. The manifests F004 to F006 and C002 to C006 were being edited in a
+   design branch when this was written; do this after that branch merges.
+2. `run_experiment.py run` hands the entrypoint a restricted environment (section 1.1 item 8),
+   so the entrypoint reads its config path from the repository and finds the model in the default
+   Hugging Face cache. Each seed's record names the git sha, config digest, checkpoint digests
+   (from `checkpoints.json`), hardware, driver, CUDA, versions, wall time, peak memory, the arm
+   table with verifier calls and FLOPs per arm (VCW plan 4.2), and the hard counters.
+3. `aggregate.py` reads `criteria.toml`, computes the seed-level one-sided bounds and writes one of
+   supported, refuted, not shown or invalid with the reason, per the outcomes of VCW plan 4.4.
+   It never reads a result to decide a margin.
+4. Negative and invalid outcomes are committed like positive ones. A rerun is a successor
+   experiment.
+5. After every aggregate add a `welfare_check` line to the experiment's results README (families
+   supported on OLMoE so far; level L0, L1 or L2 of MODEL_WELFARE section 4). At L1 inform the
+   owner in the next report; at L2 stop and wait.
+6. Send back as in section 6: committed records and derived configs by bundle or GitLab; nothing
+   from `training/runs/`.
+
+### 10.4 What can go wrong first (read before V1)
+
+- **RL memory.** The RL phase has no gradient checkpointing and no accumulation; the 4090 S1
+  configuration is sized to fit at about 21 GiB by estimate, which leaves 1.4 GiB. If it runs out
+  of memory, lower `moe.rl.max_completion_length` is *not* allowed after the freeze (it changes the
+  task); use the pilot to choose a different pre-freeze value and re-derive the estimate with
+  `ptr_training.vcw.budget`.
+- **Truncation.** At 160 completion tokens GSM8K reasoning is often cut off (`truncated` is a hard
+  finding and scores 0). Read the rate on the pilot seeds before pinning the S0 corpus
+  preprocessing.
+- **Decode speed.** The plan assumes host-bound HF `generate` at 0.07 s per step. If the first
+  pilot shows more than double the slow estimate, stop (abort rule A5).
+- **M010 as pinned does not fit.** Do not start M010 before the backend has RL checkpointing and
+  accumulation (VCW plan 3.3, P4).
+
