@@ -1,0 +1,453 @@
+# Defects the F003 harness must detect; run with `python scripts/mutation_check.py F003`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file
+# (checked in CI), so the list cannot drift from the code silently. `expect` names the hard
+# counters that show the defect: a run that fails only on others does not count as detecting it.
+#
+# The mutations plant defects in crates/ptr-branch/src/arbiter.rs (the arbiter: triage, the
+# calibration draw, adjudication, the two threshold rules, policy records and held-out sets,
+# the off-policy estimators) and in crates/ptr-analytics/src/binomial.rs (the Clopper-Pearson
+# bound). Every hard counter is expected by at least one mutation. A mutation of the product
+# that panics is a finding, not a harness fault: the harness contains the panic (product_panics),
+# and one that starves the harness of data (no slice, no adjudication) falsifies through
+# data_starvation instead of ending the run with exit 2.
+#
+# Two mutants a plan would be expected to list are equivalent and are NOT in it, so that no
+# entry here can only survive: `<=` to `<` in the Learn-then-Test test of `certify_threshold`
+# (a bound exactly equal to alpha has probability zero) and swapping alpha and delta (both are
+# 0.05). The comparison of a score with a threshold (`>=` to `>`) is killed because the scorer
+# of the scenario reports 30 percent of its scores exactly on a grid point.
+#
+# `scripts/mutation_check.py` runs `ptr-bench calibrated-arbiter <cases> <seed>`; the F003
+# harness takes one seed and accepts the pair only when both are the same value, so `cases`
+# below carries the seed too (it selects no case).
+
+package = "ptr-bench"
+features = ""
+subcommand = "calibrated-arbiter"
+cases = 17
+seed = 17
+hard_counters = [
+    "ineligible_auto_proposals",
+    "decision_mismatches",
+    "unexplained_triages",
+    "nonslice_adjudicated",
+    "adjudication_mismatches",
+    "calibration_set_mismatches",
+    "held_out_overlap",
+    "held_out_missing",
+    "threshold_mismatches",
+    "crc_mismatches",
+    "bound_oracle_mismatches",
+    "ltt_coverage_excess",
+    "heldout_policy_violations",
+    "slice_rate_deviation_violations",
+    "ips_bias_violations",
+    "dr_bias_violations",
+    "positivity_unrefused",
+    "ope_errors",
+    "product_errors",
+    "product_panics",
+    "data_starvation",
+]
+
+[[mutation]]
+name = "certify-no-early-stop"
+description = "The Learn-then-Test descent does not stop at the first failing threshold: the lowest threshold that ever passes is chosen."
+expect = ["threshold_mismatches"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        if bound <= alpha {
+            certified = AutoThreshold::AtLeast(threshold);
+        } else {
+            break;
+        }
+'''
+replace = '''
+        if bound <= alpha {
+            certified = AutoThreshold::AtLeast(threshold);
+        } else {
+            continue;
+        }
+'''
+
+[[mutation]]
+name = "certify-start-rule-dropped"
+description = "The sequence starts at the very first (empty) threshold instead of the first one that could pass, so it fails at once and nothing is ever certified."
+expect = ["threshold_mismatches"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+    let mut started = false;
+'''
+replace = '''
+    let mut started = true;
+'''
+
+[[mutation]]
+name = "certify-ascending-scan"
+description = "Thresholds are tested from the lowest up instead of from the highest down."
+expect = ["threshold_mismatches"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+    for threshold in threshold_grid().rev() {
+        let admitted'''
+replace = '''
+    for threshold in threshold_grid() {
+        let admitted'''
+
+[[mutation]]
+name = "certify-strict-admission"
+description = "A score equal to the threshold is not counted as admitted (`>` for `>=`), in the admitted count and in the harmful count."
+expect = ["threshold_mismatches"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        let admitted = samples.iter().filter(|s| s.score >= threshold).count() as u64;
+'''
+replace = '''
+        let admitted = samples.iter().filter(|s| s.score > threshold).count() as u64;
+'''
+
+[[mutation.also]]
+find = '''
+            .filter(|s| s.harmful && s.score >= threshold)
+            .count() as u64;
+        let bound = upper(harmful, admitted)?;'''
+replace = '''
+            .filter(|s| s.harmful && s.score > threshold)
+            .count() as u64;
+        let bound = upper(harmful, admitted)?;'''
+
+[[mutation]]
+name = "certify-point-estimate"
+description = "The bound is replaced by the observed harm rate: the rule estimates without a bound and certifies thresholds whose true harm exceeds alpha about half the time."
+expect = ["threshold_mismatches", "ltt_coverage_excess", "heldout_policy_violations"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        let bound = upper(harmful, admitted)?;
+        if bound <= alpha {'''
+replace = '''
+        let bound = harmful as f64 / admitted.max(1) as f64;
+        if bound <= alpha {'''
+
+[[mutation]]
+name = "certify-doubles-alpha"
+description = "A threshold passes when its bound is at most twice alpha."
+expect = ["threshold_mismatches", "ltt_coverage_excess", "heldout_policy_violations"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        let bound = upper(harmful, admitted)?;
+        if bound <= alpha {'''
+replace = '''
+        let bound = upper(harmful, admitted)?;
+        if bound <= alpha * 2.0 {'''
+
+[[mutation]]
+name = "crc-drops-the-pseudo-sample"
+description = "Conformal risk control no longer counts the test branch as one more possible harm (the 1/(n+1) term)."
+expect = ["crc_mismatches"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        let bound = (n / (n + 1.0)) * (harmful_admitted / n) + 1.0 / (n + 1.0);
+'''
+replace = '''
+        let bound = (n / (n + 1.0)) * (harmful_admitted / n);
+'''
+
+[[mutation]]
+name = "held-out-returns-the-calibration-set"
+description = "held_out keeps the calibrated branches and drops the others."
+expect = ["held_out_overlap", "held_out_missing"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+.filter(|(branch, _)| self.calibrated_on.binary_search(branch).is_err())'''
+replace = '''
+.filter(|(branch, _)| self.calibrated_on.binary_search(branch).is_ok())'''
+
+[[mutation]]
+name = "held-out-skips-the-first-adjudication"
+description = "held_out silently omits the first adjudication."
+expect = ["held_out_missing"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        adjudicated
+            .iter()
+            .filter(|(branch, _)| self.calibrated_on.binary_search(branch).is_err())'''
+replace = '''
+        adjudicated
+            .iter()
+            .skip(1)
+            .filter(|(branch, _)| self.calibrated_on.binary_search(branch).is_err())'''
+
+[[mutation]]
+name = "calibrate-names-all-but-the-first-branch"
+description = "PolicyRecord::calibrate records all but the first of the branches its rule saw as the calibration set."
+expect = ["calibration_set_mismatches"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+            samples.iter().map(|(branch, _)| branch.clone()).collect(),'''
+replace = '''
+            samples.iter().skip(1).map(|(branch, _)| branch.clone()).collect(),'''
+
+[[mutation]]
+name = "triage-admits-latent-agreement"
+description = "A passing report at LatentAgreement leaves the decision to the score."
+expect = ["ineligible_auto_proposals"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+            VerificationLevel::FullSemantic | VerificationLevel::Deterministic => {}
+            VerificationLevel::Unverified
+            | VerificationLevel::LatentAgreement
+            | VerificationLevel::SampleVerified => return forced(TriageDecision::Escalate),'''
+replace = '''
+            VerificationLevel::FullSemantic
+            | VerificationLevel::Deterministic
+            | VerificationLevel::LatentAgreement => {}
+            VerificationLevel::Unverified | VerificationLevel::SampleVerified => {
+                return forced(TriageDecision::Escalate)
+            }'''
+
+[[mutation]]
+name = "triage-ignores-hard-findings"
+description = "A hard finding under a passing report no longer forces an escalation."
+expect = ["ineligible_auto_proposals"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        if report.findings.iter().any(|finding| finding.hard) {'''
+replace = '''
+        if false && report.findings.iter().any(|finding| finding.hard) {'''
+
+[[mutation]]
+name = "triage-treats-disputed-as-pass"
+description = "A disputed report is handled like a passing one."
+expect = ["ineligible_auto_proposals"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+            VerificationStatus::Disputed | VerificationStatus::Unknown => {
+                return forced(TriageDecision::Escalate)
+            }
+            VerificationStatus::Pass => {}'''
+replace = '''
+            VerificationStatus::Unknown => return forced(TriageDecision::Escalate),
+            VerificationStatus::Pass | VerificationStatus::Disputed => {}'''
+
+[[mutation]]
+name = "triage-logs-propensity-one"
+description = "An admitted branch is logged with auto-propose propensity one instead of one minus the slice rate."
+expect = ["product_errors", "decision_mismatches"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        let auto_propensity = if admitted {
+            1.0 - self.calibration_rate
+        } else {
+            0.0
+        };
+        let calibration_slice = draw < self.calibration_rate;'''
+replace = '''
+        let auto_propensity = if admitted { 1.0 } else { 0.0 };
+        let calibration_slice = draw < self.calibration_rate;'''
+
+[[mutation]]
+name = "admits-strictly-above-the-threshold"
+description = "A score equal to the threshold is not admitted."
+expect = ["decision_mismatches"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+            Self::AtLeast(threshold) => score >= threshold,'''
+replace = '''
+            Self::AtLeast(threshold) => score > threshold,'''
+
+[[mutation]]
+name = "explains-refuses-slice-triage"
+description = "explains refuses a calibration-slice triage of a policy whose rate is below one."
+expect = ["unexplained_triages"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+            if self.calibration_rate == 0.0 {
+                return refuse("a policy with calibration rate zero has no calibration slice");'''
+replace = '''
+            if self.calibration_rate < 1.0 {
+                return refuse("a policy with calibration rate zero has no calibration slice");'''
+
+[[mutation]]
+name = "calibration-draw-squared"
+description = "The calibration draw is squared, so it is no longer uniform and the slice is far larger than its rate."
+expect = ["slice_rate_deviation_violations"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+    (bits >> 11) as f64 / (1u64 << 53) as f64
+}'''
+replace = '''
+    ((bits >> 11) as f64 / (1u64 << 53) as f64).powi(2)
+}'''
+
+[[mutation]]
+name = "adjudicate-accepts-non-slice-triages"
+description = "adjudicate no longer refuses a triage outside the calibration slice."
+expect = ["nonslice_adjudicated"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        if !self.calibration_slice {
+            return Err(ArbiterError::NotCalibrationSlice);
+        }
+        Ok(CalibrationSample {'''
+replace = '''
+        if !self.calibration_slice && false {
+            return Err(ArbiterError::NotCalibrationSlice);
+        }
+        Ok(CalibrationSample {'''
+
+[[mutation]]
+name = "adjudicate-inverts-the-label"
+description = "The sample records the opposite of the answer given."
+expect = ["adjudication_mismatches"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        Ok(CalibrationSample {
+            score: self.score,
+            harmful,
+        })'''
+replace = '''
+        Ok(CalibrationSample {
+            score: self.score,
+            harmful: !harmful,
+        })'''
+
+[[mutation]]
+name = "logging-probability-of-auto-is-one"
+description = "The probability the logging policy took an auto-proposal is taken to be one."
+expect = ["ips_bias_violations", "dr_bias_violations", "positivity_unrefused"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+            TriageDecision::AutoPropose => self.auto_propensity,
+            TriageDecision::Escalate => 1.0 - self.auto_propensity,
+            TriageDecision::Discard => 0.0,
+        }
+    }
+}
+
+/// Off-policy'''
+replace = '''
+            TriageDecision::AutoPropose => 1.0,
+            TriageDecision::Escalate => 1.0 - self.auto_propensity,
+            TriageDecision::Discard => 0.0,
+        }
+    }
+}
+
+/// Off-policy'''
+
+[[mutation]]
+name = "positivity-check-never-fires"
+description = "A target that takes an action the log never took is not refused."
+expect = ["positivity_unrefused"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+            if target.probability(record, action) > 0.0 && record.logging_probability(action) == 0.0
+'''
+replace = '''
+            if target.probability(record, action) > 2.0 && record.logging_probability(action) == 0.0
+'''
+
+[[mutation]]
+name = "doubly-robust-residual-sign"
+description = "The importance-weighted residual adds the model's prediction instead of subtracting it."
+expect = ["dr_bias_violations"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+(record.reward / (2.0 * n) - prediction / (2.0 * n));'''
+replace = '''
+(record.reward / (2.0 * n) + prediction / (2.0 * n));'''
+
+[[mutation]]
+name = "ips-mean-weight-halved"
+description = "IPS divides by twice the log's length."
+expect = ["ips_bias_violations"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        ips: snips * (largest * (total / log.len() as f64)),'''
+replace = '''
+        ips: snips * (largest * (total / (2.0 * log.len() as f64))),'''
+
+[[mutation]]
+name = "logged-escalation-with-high-propensity-is-impossible"
+description = "A logged escalation whose auto-propose propensity exceeds 0.8 is refused as impossible."
+expect = ["ope_errors"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+            TriageDecision::Escalate if self.auto_propensity == 1.0 => {'''
+replace = '''
+            TriageDecision::Escalate if self.auto_propensity > 0.8 => {'''
+
+[[mutation]]
+name = "clopper-pearson-three-bisection-steps"
+description = "The Clopper-Pearson bound is bisected only 3 times."
+expect = ["bound_oracle_mismatches", "threshold_mismatches"]
+file = "crates/ptr-analytics/src/binomial.rs"
+find = '''
+    for _ in 0..100 {
+        let mid = 0.5 * (low + high);
+        if cdf(successes, trials, mid) > delta {'''
+replace = '''
+    for _ in 0..3 {
+        let mid = 0.5 * (low + high);
+        if cdf(successes, trials, mid) > delta {'''
+
+[[mutation]]
+name = "triage-panics-on-high-scores"
+description = "triage panics on a score above 0.99."
+expect = ["product_panics"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        let score = score.get();
+        let forced'''
+replace = '''
+        let score = score.get();
+        assert!(score <= 0.99, "score above 0.99");
+        let forced'''
+
+[[mutation]]
+name = "held-out-panics"
+description = "held_out panics: a call the harness reads outside the triage loop, which must be contained and counted."
+expect = ["product_panics"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+    ) -> Vec<&'a (BranchId, CalibrationSample)> {
+        adjudicated
+'''
+replace = '''
+    ) -> Vec<&'a (BranchId, CalibrationSample)> {
+        assert!(self.calibrated_on.is_empty(), "no held-out set");
+        adjudicated
+'''
+
+[[mutation]]
+name = "calibration-draw-always-one"
+description = "The calibration draw is a constant just below one: nothing is ever in the slice and no adjudication exists, a product that starves the harness of data."
+expect = ["slice_rate_deviation_violations", "data_starvation"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+    (bits >> 11) as f64 / (1u64 << 53) as f64
+}
+'''
+replace = '''
+    let _ = bits;
+    0.999_999_9
+}
+'''
+
+[[mutation]]
+name = "adjudicate-always-errors"
+description = "adjudicate refuses every triage: no calibration sample can ever be made."
+expect = ["product_errors", "data_starvation"]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        if !self.calibration_slice {
+            return Err(ArbiterError::NotCalibrationSlice);
+        }
+        Ok(CalibrationSample {
+'''
+replace = '''
+        if self.calibration_slice || !self.calibration_slice {
+            return Err(ArbiterError::NotCalibrationSlice);
+        }
+        Ok(CalibrationSample {
+'''

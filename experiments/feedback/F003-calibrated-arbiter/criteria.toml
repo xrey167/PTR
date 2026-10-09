@@ -1,0 +1,100 @@
+# F003 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256);
+# no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
+# f003/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order, and every
+# counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and so a
+# parse error: no decimal literal exists, fractions are integer permille or ppm).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON result
+# object, separated by '.'. A reference that is missing, null, or of the wrong type makes the seed INVALID
+# (it is not a failed rule). A reference compared with an integer literal or another reference must be a JSON
+# integer (not a boolean, not a float). Exact comparisons.
+# The manifest's "< N" prerequisites are written ">= N", its "> N" violations "<= N".
+#
+# What each rule says (the statistics are those of the decided falsification in experiment.toml):
+# - ltt_coverage_violations <= ltt_coverage_critical is the Monte-Carlo coverage of the Learn-then-Test guarantee:
+#   over the pinned replicates, the number of certified thresholds whose exact adjudicated harm rate exceeds alpha
+#   must be at most the largest c with P(Bin(R, delta) >= c) >= 1e-3, an integer the harness derives from the exact
+#   binomial and prints. ltt_coverage_excess <= 0 restates it as a hard counter (violations beyond the critical
+#   value) for the mutation checker, which reads counters that are zero in a correct run; a correct policy has a
+#   non-zero violation count (at most delta of the replicates), so that count is no hard counter itself.
+# - heldout_policy_violations counts recorded policies whose exact one-sided binomial test of "harm <= alpha" on
+#   the held-out adjudications rejects at the Bonferroni share (familywise 0.05 over 4 policies x 5 seeds = 20
+#   tests); a violation is a held-out harm rate whose exact lower bound is above alpha. The literal rule "the upper
+#   confidence bound exceeds alpha" is printed per policy (literal_ucb_exceeds_alpha, heldout_violations_literal_ucb)
+#   and is in no rule: a correct Learn-then-Test policy fails it by construction.
+# - threshold_mismatches, crc_mismatches, bound_oracle_mismatches, held_out_overlap, held_out_missing,
+#   calibration_set_mismatches, decision_mismatches and adjudication_mismatches compare the product with independent
+#   oracles that read no product value to compute an expectation.
+# - ineligible_auto_proposals is the invariant that verification cannot be outvoted by a score (INVARIANT 11);
+#   nonslice_adjudicated counts non-slice triages that the arbiter let a person adjudicate.
+# - data_starvation is one when a product defect leaves the harness without the data its controls and counts need;
+#   it falsifies (exit 1) where an uncontrolled control would have ended the run with exit 2.
+# - positivity_unrefused counts targets below the logging threshold that an off-policy estimator did not refuse.
+#
+# slice_rate_tests counts the groups the harness observed branches in (an empty group is a violation) and
+# negative_controls_tripped the controls that tripped.
+#
+# Rules that hold by construction or restate another (named so a reader does not mistake them for evidence):
+# stream_branches >= 30000 (the generated length) and uncalibrated_true_harm_ppm >= 50001 (the model's exact harm rate at the
+# uncalibrated threshold, which gives the scenario teeth; its observed counterpart is uncalibrated_baseline_rejected);
+# ltt_coverage_excess <= 0 restates ltt_coverage_violations <= ltt_coverage_critical. Every other coverage counter is
+# counted from events the run observed (triages decided by verification alone, adjudications refused, replicates that
+# certified, logs that produced estimates, targets refused).
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies F003 on that seed.
+# Decision: every seed must hold every coverage rule and every falsifier rule; COMPLETED iff so, with the mutation
+# evidence complete; INVALID if a seed is missing, unresolvable, or its record does not describe the frozen run,
+# FALSIFIED otherwise.
+version = 1
+experiment = "F003"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "stream_branches >= 30000",
+  "eligible_branches >= 20000",
+  "adjudications >= 3000",
+  "policies_recorded >= 4",
+  "policies_certified >= 1",
+  "ineligible_kinds_seen >= 6",
+  "nonslice_probes >= 10000",
+  "mc_replicates >= 2000",
+  "mc_certified_replicates >= 1000",
+  "ope_logs >= 200",
+  "ope_estimates >= 1600",
+  "positivity_probes >= 400",
+  "slice_rate_tests >= 6",
+  "heldout_candidates_min_certified >= 100",
+  "ltt_reviews_saved_permille >= 1",
+  "uncalibrated_true_harm_ppm >= 50001",
+  "uncalibrated_baseline_rejected >= 1",
+  "negative_controls_tripped >= 4",
+]
+
+falsifiers = [
+  "ineligible_auto_proposals <= 0",
+  "decision_mismatches <= 0",
+  "unexplained_triages <= 0",
+  "nonslice_adjudicated <= 0",
+  "adjudication_mismatches <= 0",
+  "calibration_set_mismatches <= 0",
+  "held_out_overlap <= 0",
+  "held_out_missing <= 0",
+  "threshold_mismatches <= 0",
+  "crc_mismatches <= 0",
+  "bound_oracle_mismatches <= 0",
+  "ltt_coverage_violations <= ltt_coverage_critical",
+  "ltt_coverage_excess <= 0",
+  "heldout_policy_violations <= 0",
+  "slice_rate_deviation_violations <= 0",
+  "ips_bias_violations <= 0",
+  "dr_bias_violations <= 0",
+  "positivity_unrefused <= 0",
+  "ope_errors <= 0",
+  "product_errors <= 0",
+  "product_panics <= 0",
+  "data_starvation <= 0",
+]
