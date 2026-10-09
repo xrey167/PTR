@@ -32,6 +32,12 @@ jobs:
       - run: cargo +stable clippy --manifest-path templates/rust-crate/Cargo.toml --all-targets --locked -- -D warnings
       - run: cargo +stable test -p ptr-observe --features tracing-adapter --locked
       - run: cargo +stable clippy -p ptr-observe --features tracing-adapter --all-targets --locked -- -D warnings
+      # evaluations/bench/* are excluded workspaces (own Cargo.lock): the root commands
+      # above reach none of them. Add each new bench workspace here and to `make fmt`.
+      - run: cargo +stable fmt --manifest-path evaluations/bench/kit/Cargo.toml -- --check
+      - run: cargo +stable check --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked
+      - run: cargo +stable clippy --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo +stable test --manifest-path evaluations/bench/kit/Cargo.toml --locked
   rust-stable:
     strategy:
       fail-fast: false
@@ -108,6 +114,7 @@ jobs:
       - run: python scripts/check_rust_conventions.py
       - run: python scripts/run_experiment.py validate
       - run: python scripts/run_component_eval.py validate
+      - run: python scripts/check_component_protocols.py
       - run: python scripts/check_research_gates.py
       - run: python -m unittest discover -s scripts/tests
       - run: python -m unittest discover -s research/baselines/rag_reference/tests

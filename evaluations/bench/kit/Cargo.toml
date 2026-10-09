@@ -1,0 +1,20 @@
+[package]
+name = "ptr-evalkit"
+version = "0.1.0"
+edition = "2021"
+authors = ["PTR contributors"]
+license = "MIT OR Apache-2.0"
+description = "Shared measurement kit for the PTR component-evaluation benchmarks (std only)."
+publish = false
+
+# An owned workspace of its own: excluded from the root workspace by the
+# `evaluations/bench/*` entry, so candidate stacks never enter the root lockfile.
+[workspace]
+
+[lib]
+name = "evalkit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ptr-evalkit"
+path = "src/bin/ptr-evalkit.rs"
