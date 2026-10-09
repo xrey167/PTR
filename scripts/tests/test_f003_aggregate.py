@@ -183,9 +183,10 @@ class CriteriaFileTests(unittest.TestCase):
         self.assertEqual(table["harness"], "calibrated-arbiter")
         # The placeholders left are the digests of the protocol, the text and the criteria, pinned at the freeze.
         placeholders = [k for k, v in table.items() if isinstance(v, str) and v.startswith("must-be-")]
-        self.assertEqual(
+        # All three before the freeze, none after it.
+        self.assertIn(
             sorted(placeholders),
-            ["adjudication_protocol_sha256", "criteria_sha256", "preregistration_text_sha256"],
+            ([], ["adjudication_protocol_sha256", "criteria_sha256", "preregistration_text_sha256"]),
         )
 
 

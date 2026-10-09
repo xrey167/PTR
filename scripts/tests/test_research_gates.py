@@ -5300,10 +5300,10 @@ class EnrolledExperimentTests(unittest.TestCase):
             {key:table[key] for key in ("alpha_permille","delta_permille","threshold_rule","threshold_grid_steps","min_adjudications_per_policy")},
             {"alpha_permille":50,"delta_permille":50,"threshold_rule":"learn_then_test","threshold_grid_steps":1000,"min_adjudications_per_policy":59},
         )
-        # The only placeholders left are the three digests the freeze pins.
-        self.assertEqual(
+        # The only placeholders are the three digests the freeze pins: all three before it, none after.
+        self.assertIn(
             sorted(key for key,value in table.items() if isinstance(value,str) and value.startswith("must-be-pinned")),
-            ["adjudication_protocol_sha256","criteria_sha256","preregistration_text_sha256"],
+            ([],["adjudication_protocol_sha256","criteria_sha256","preregistration_text_sha256"]),
         )
         # 59 is the fewest adjudications, all without harm, whose one-sided
         # Clopper-Pearson bound at confidence 1 - delta is at most alpha.
@@ -5322,9 +5322,16 @@ class EnrolledExperimentTests(unittest.TestCase):
         write(root,"research/baselines/plain_model/config.toml",(ROOT/"research/baselines/plain_model/config.toml").read_text(encoding="utf-8"))
         for name in ("PROTOCOL.md","PREREGISTRATION.md","criteria.toml"):
             write(root,f"{directory}/{name}",(ROOT/directory/name).read_text(encoding="utf-8"))
-        manifest=(ROOT/directory/"experiment.toml").read_text(encoding="utf-8").replace('status = "planned"','status = "prepared"').replace('entrypoint = ""','entrypoint = "bench <seed>"')
+        # The repository's own manifest and table, back at their pre-freeze state (no digests named or
+        # pinned), so the fixture holds before and after the freeze.
+        manifest="".join(line for line in (ROOT/directory/"experiment.toml").read_text(encoding="utf-8").splitlines(keepends=True)
+                         if not line.startswith(("preregistration_sha256","preregistration_rules_sha256")))
+        manifest=re.sub(r'^status = "[a-z]+"$','status = "prepared"',manifest,count=1,flags=re.M)
+        manifest=re.sub(r'^entrypoint = ".*"$','entrypoint = "bench <seed>"',manifest,count=1,flags=re.M)
         config=mod.load(ROOT/directory/"config.toml")
         table=config.pop("preregistration")
+        for key in ("adjudication_protocol","preregistration_text","criteria"):
+            table[f"{key}_sha256"]="must-be-pinned-before-prepared"
         if pinned:
             for key in ("adjudication_protocol","preregistration_text","criteria"):
                 if key=="adjudication_protocol" and not protocol_digest:
