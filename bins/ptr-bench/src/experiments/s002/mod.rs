@@ -531,7 +531,7 @@ mod tests {
         "../../../../../experiments/semdb/S002-snapshot-cancellation/tests/mutations.toml"
     );
     const PREREGISTRATION: &str = include_str!(
-        "../../../../../experiments/semdb/S002-snapshot-cancellation/DRAFT_PREREGISTRATION.md"
+        "../../../../../experiments/semdb/S002-snapshot-cancellation/PREREGISTRATION.md"
     );
 
     /// The shared reduced run (a few hundred cases; well under a second in a debug build).

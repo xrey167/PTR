@@ -75,3 +75,17 @@ max_product_hangs = 0
 wall_time_gated = false
 total_units_gated = false
 owner_decision_2026_10_09_cancellation = "refactor run_resumable_inner into a steppable run (existing entry points stay wrappers, behaviour unchanged with cancellation off); coarse revision-granular cooperative cancellation before the effect boundary only; the boundary remains the safety barrier; gated claim: cancellation never weakens the boundary and cuts wasted work; coverage also requires the baseline to show at least one stale attempt reaching the boundary; invariant review before freeze; do last"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "snapshot-cancellation"
+cases_per_seed = 1500
+class_bump_early_permille = 300
+class_bump_late_permille = 200
+class_lifecycle_permille = 250
+max_cancel_latency_rounds_max = 1
+preregistration_text = "experiments/semdb/S002-snapshot-cancellation/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/semdb/S002-snapshot-cancellation/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

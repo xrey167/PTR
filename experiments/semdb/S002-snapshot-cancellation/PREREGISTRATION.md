@@ -1,4 +1,4 @@
-# S002 snapshot cancellation: draft preregistration
+# S002 snapshot cancellation: preregistration
 
 Pre-freeze text of the preregistration of S002; at the freeze it becomes the `preregistration_text` file of `config.toml`'s
 `[preregistration]` table (renamed `PREREGISTRATION.md`) and its SHA-256 is frozen with the table, as S001's was. S002 is
