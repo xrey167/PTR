@@ -9,7 +9,7 @@
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| [ptr-analytics](../../crates/ptr-analytics/README.md) | `prototype` | 8 | 1303 | 1 | 48 | 8 | 2 | F002:planned, F003:planned | analytics-mirror:open |
+| [ptr-analytics](../../crates/ptr-analytics/README.md) | `prototype` | 8 | 1303 | 1 | 48 | 8 | 2 | F002:frozen, F003:planned | analytics-mirror:open |
 | [ptr-branch](../../crates/ptr-branch/README.md) | `prototype` | 7 | 3799 | 3 | 112 | 26 | 7 | S003:frozen, F003:planned | — |
 | [ptr-cluster](../../crates/ptr-cluster/README.md) | `prototype` | 3 | 726 | 1 | 15 | 13 | 5 | — | — |
 | [ptr-config](../../crates/ptr-config/README.md) | `prototype` | 1 | 455 | 5 | 15 | 10 | 4 | E001:planned | — |
@@ -21,7 +21,7 @@
 | [ptr-feedback](../../crates/ptr-feedback/README.md) | `scaffold` | 3 | 775 | 3 | 21 | 5 | 4 | F001:frozen, E001:planned | — |
 | [ptr-ingress](../../crates/ptr-ingress/README.md) | `scaffold` | 1 | 45 | 1 | 1 | 4 | 4 | E001:planned, E004:planned | ingress-classifier:open |
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | `scaffold` | 1 | 48 | 1 | 5 | 3 | 5 | E001:planned | introspection:open |
-| [ptr-labeling](../../crates/ptr-labeling/README.md) | `prototype` | 6 | 1888 | 1 | 36 | 12 | 5 | F002:planned | label-model:open |
+| [ptr-labeling](../../crates/ptr-labeling/README.md) | `prototype` | 6 | 1888 | 1 | 36 | 12 | 5 | F002:frozen | label-model:open |
 | [ptr-ledger](../../crates/ptr-ledger/README.md) | `prototype` | 9 | 7881 | 14 | 138 | 53 | 8 | L001:running, L002:planned, E004:planned | consensus:open, ledger:open |
 | [ptr-lineage](../../crates/ptr-lineage/README.md) | `prototype` | 9 | 4573 | 7 | 120 | 11 | 6 | R004:planned | adapter-serving:open |
 | [ptr-memory](../../crates/ptr-memory/README.md) | `scaffold` | 6 | 1256 | 2 | 22 | 14 | 6 | Q002:frozen, E002:planned, E004:planned | — |

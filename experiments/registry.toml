@@ -178,7 +178,7 @@ status = "completed"
 [[experiment]]
 id = "F002"
 path = "feedback/F002-weak-supervision"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "F003"
