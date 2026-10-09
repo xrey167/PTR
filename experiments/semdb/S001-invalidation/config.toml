@@ -75,5 +75,21 @@ hub_class_gated = false
 unnecessary_invalidations_gated = false
 timing_gated = false
 
-# Owner decisions of 2026-10-09 (binding; verbatim text in DRAFT_PREREGISTRATION.md section 3).
+# Owner decisions of 2026-10-09 (binding; verbatim text in PREREGISTRATION.md section 3).
 owner_decision_2026_10_09_locality = "locality falsifier locality_ratio_permille_local <= 250 (local-change class, blast radius <= 5% of derived keys); hub class ungated control; wall time descriptive only; unnecessary invalidations descriptive only (no early cutoff in the design)"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "invalidation"
+sizes = [256, 1024, 4096]
+deltas_per_size = [150, 150, 100]
+local_class_max_closure_permille = 50
+max_locality_ratio_permille_local = 250
+min_local_class_deltas = 100
+control_size = 1024
+control_deltas = 80
+preregistration_text = "experiments/semdb/S001-invalidation/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/semdb/S001-invalidation/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

@@ -478,7 +478,7 @@ mod tests {
     const MUTATIONS: &str =
         include_str!("../../../../../experiments/semdb/S001-invalidation/tests/mutations.toml");
     const PREREGISTRATION: &str =
-        include_str!("../../../../../experiments/semdb/S001-invalidation/DRAFT_PREREGISTRATION.md");
+        include_str!("../../../../../experiments/semdb/S001-invalidation/PREREGISTRATION.md");
 
     /// The shared reduced run (small graphs of every topology class; a few seconds in a debug
     /// build).
