@@ -1,0 +1,421 @@
+# Defects the F002 harness must detect; run with `python scripts/mutation_check.py F002`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file
+# (checked in CI), so the list cannot drift from the code silently. `expect` names the hard
+# counters that show the defect: a run that fails only on others does not count as detecting it.
+#
+# The first nineteen plant defects in the product (crates/ptr-labeling and the statistics kernel
+# crates/ptr-analytics); the last six plant defects in the harness itself (the scorer that reads
+# the raw posterior, which is the trap of `evaluate` taking posteriors, a label-model arm that
+# is the majority vote, and three defects of the independent oracle), to show that the oracle,
+# the scoring path and the gain rules are not vacuous. Every hard counter is expected by at
+# least one mutation. A mutation of the product that panics is a finding, not a harness fault:
+# the harness contains the panic (product_panics). A harness defect that makes the harness
+# refuse to run (exit 2: the oracle failing its own check, a negative control that does not
+# trip) is the harness's own guard and is not listed here, because the checker counts only exit
+# status 1 as detected; the oracle defects below are therefore ones the hand-computed self-check
+# does not see (a first version of two of them was caught by the self-check, exit 2, and was
+# replaced by the present, subtler ones).
+#
+# `scripts/mutation_check.py` runs `ptr-bench weak-supervision <cases> <seed>`; the F002
+# harness takes one seed and accepts the pair only when both are the same value, so `cases`
+# below carries the seed too (it selects no case).
+
+package = "ptr-bench"
+features = ""
+subcommand = "weak-supervision"
+cases = 17
+seed = 17
+hard_counters = [
+    "veto_contradictions",
+    "model_oracle_mismatches",
+    "resolution_oracle_mismatches",
+    "metric_mismatches",
+    "active_set_calibration_reported",
+    "gold_guard_violations",
+    "acquisition_violations",
+    "sound_world_determined_errors",
+    "unexpected_refusals",
+    "determinism_mismatches",
+    "product_panics",
+    "gain_violations",
+]
+
+[[mutation]]
+name = "veto-set-emptied"
+description = "resolve_item ignores every verifier veto, so no class is ever ruled out."
+expect = ["veto_contradictions", "resolution_oracle_mismatches"]
+file = "crates/ptr-labeling/src/model.rs"
+find = '''
+            Vote::Veto(class) => Some(*class),
+'''
+replace = '''
+            Vote::Veto(_) => None,
+'''
+
+[[mutation]]
+name = "determined-wrong-class"
+description = "A class determined by elimination is reported as the next class."
+expect = ["veto_contradictions", "resolution_oracle_mismatches", "sound_world_determined_errors"]
+file = "crates/ptr-labeling/src/model.rs"
+find = '''
+            return (LabelOutcome::Determined { class: *only }, Some(certain));
+'''
+replace = '''
+            return (
+                LabelOutcome::Determined {
+                    class: (*only + 1) % classes,
+                },
+                Some(certain),
+            );
+'''
+
+[[mutation]]
+name = "disputed-item-labelled"
+description = "An item every class of which a verifier ruled out is labelled class 0."
+expect = ["veto_contradictions", "resolution_oracle_mismatches"]
+file = "crates/ptr-labeling/src/model.rs"
+find = '''
+        [] => return (LabelOutcome::Disputed { vetoed }, None),
+'''
+replace = '''
+        [] => {
+            let _ = vetoed;
+            return (
+                LabelOutcome::Estimated {
+                    class: 0,
+                    probability: 1.0,
+                },
+                Some(spread(classes, &[0], |_| 1.0)),
+            );
+        }
+'''
+
+[[mutation]]
+name = "disputed-item-becomes-unknown-without-posterior"
+description = "A disputed item is reported Unknown, with no distribution, which the ranking for annotation does not expect."
+expect = ["resolution_oracle_mismatches", "product_panics"]
+file = "crates/ptr-labeling/src/model.rs"
+find = '''
+        [] => return (LabelOutcome::Disputed { vetoed }, None),
+'''
+replace = '''
+        [] => {
+            let _ = vetoed;
+            return (LabelOutcome::Unknown, None);
+        }
+'''
+
+[[mutation]]
+name = "resolution-posterior-not-renormalised"
+description = "The distribution an item is resolved from keeps the model's raw shares of the classes left, so it no longer sums to one."
+expect = ["resolution_oracle_mismatches", "unexpected_refusals"]
+file = "crates/ptr-labeling/src/model.rs"
+find = '''
+    let left = spread(classes, &remaining, |class| posterior[class] / mass);
+'''
+replace = '''
+    let left = spread(classes, &remaining, |class| posterior[class] + 0.0 * mass);
+'''
+
+[[mutation]]
+name = "probability-threshold-ignored"
+description = "Every item whose best class has any probability is Estimated, whatever min_probability says."
+expect = ["resolution_oracle_mismatches"]
+file = "crates/ptr-labeling/src/model.rs"
+find = '''
+    let outcome = if probability >= min_probability {
+'''
+replace = '''
+    let outcome = if probability >= 0.0 * min_probability {
+'''
+
+[[mutation]]
+name = "confusion-rows-unnormalised"
+description = "The M-step keeps the smoothed counts of a confusion matrix without dividing by their row totals."
+expect = ["model_oracle_mismatches"]
+file = "crates/ptr-labeling/src/model.rs"
+find = '''
+            *table = counts.into_iter().map(normalize).collect();
+'''
+replace = '''
+            *table = counts;
+'''
+
+[[mutation]]
+name = "prior-smoothing-dropped"
+description = "The M-step forgets the additive smoothing of the class priors."
+expect = ["model_oracle_mismatches"]
+file = "crates/ptr-labeling/src/model.rs"
+find = '''
+        let mut prior_counts = vec![params.smoothing; classes];
+'''
+replace = '''
+        let mut prior_counts = vec![0.0; classes];
+'''
+
+[[mutation]]
+name = "evidence-halved"
+description = "The E-step counts every function's evidence at half its log-likelihood."
+expect = ["model_oracle_mismatches"]
+file = "crates/ptr-labeling/src/model.rs"
+find = '''
+                        *log += table[truth][voted].ln();
+'''
+replace = '''
+                        *log += 0.5 * table[truth][voted].ln();
+'''
+
+[[mutation]]
+name = "fit-reads-the-clock"
+description = "The initial posteriors depend on the clock, so two fits of one matrix differ."
+expect = ["determinism_mismatches", "model_oracle_mismatches"]
+file = "crates/ptr-labeling/src/model.rs"
+find = '''
+            let mut counts = vec![params.smoothing; classes];
+'''
+replace = '''
+            let jitter = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos() % 97)
+                .unwrap_or(0);
+            let mut counts = vec![params.smoothing + f64::from(jitter) * 1e-3; classes];
+'''
+
+[[mutation]]
+name = "evaluate-accuracy-inverted"
+description = "evaluate counts the predictions that miss the gold class as correct."
+expect = ["metric_mismatches"]
+file = "crates/ptr-labeling/src/gold.rs"
+find = '''
+                == Some(t)
+'''
+replace = '''
+                != Some(t)
+'''
+
+[[mutation]]
+name = "evaluate-brier-halved"
+description = "evaluate reports half the Brier score of the posteriors."
+expect = ["metric_mismatches"]
+file = "crates/ptr-labeling/src/gold.rs"
+find = '''
+            brier: brier_score(&predicted, &truth)?,
+'''
+replace = '''
+            brier: brier_score(&predicted, &truth)? * 0.5,
+'''
+
+[[mutation]]
+name = "evaluate-reports-calibration-on-an-active-set"
+description = "evaluate reports calibration for an actively sampled gold set, which is a biased sample."
+expect = ["active_set_calibration_reported"]
+file = "crates/ptr-labeling/src/gold.rs"
+find = '''
+        GoldSampling::Active => None,
+'''
+replace = '''
+        GoldSampling::Active => Some(Calibration {
+            brier: 0.0,
+            expected_calibration_error: 0.0,
+        }),
+'''
+
+[[mutation]]
+name = "duplicate-gold-item-accepted"
+description = "EvaluationSet::push accepts a second label for an item."
+expect = ["gold_guard_violations"]
+file = "crates/ptr-labeling/src/gold.rs"
+find = '''
+        if !self.items.insert(label.item) {
+'''
+replace = '''
+        if !self.items.insert(label.item) && false {
+'''
+
+[[mutation]]
+name = "function-accuracy-counts-every-vote"
+description = "function_accuracy scores every class vote as correct."
+expect = ["metric_mismatches"]
+file = "crates/ptr-labeling/src/gold.rs"
+find = '''
+                if *class == label.class {
+'''
+replace = '''
+                if true {
+'''
+
+[[mutation]]
+name = "acquisition-proposes-determined-items"
+description = "rank_for_annotation proposes items the verifiers already determined."
+expect = ["acquisition_violations"]
+file = "crates/ptr-labeling/src/acquisition.rs"
+find = '''
+            LabelOutcome::Determined { .. } => {}
+'''
+replace = '''
+            LabelOutcome::Determined { .. } => disputed.push(item),
+'''
+
+[[mutation]]
+name = "acquisition-ranks-disputes-last"
+description = "rank_for_annotation scores disputed items like the rest instead of proposing them first."
+expect = ["acquisition_violations"]
+file = "crates/ptr-labeling/src/acquisition.rs"
+find = '''
+            LabelOutcome::Disputed { .. } => disputed.push(item),
+'''
+replace = '''
+            LabelOutcome::Disputed { .. } => scored.push((f64::NEG_INFINITY, item)),
+'''
+
+[[mutation]]
+name = "alpha-denominator-sign"
+description = "Krippendorff's alpha adds the marginal pair term to its denominator instead of subtracting it."
+expect = ["metric_mismatches"]
+file = "crates/ptr-analytics/src/agreement.rs"
+find = '''
+    let denominator = n * (n - 1.0) - marginal_pairs;
+'''
+replace = '''
+    let denominator = n * (n - 1.0) + marginal_pairs;
+'''
+
+[[mutation]]
+name = "ece-absolute-value-dropped"
+description = "The expected calibration error sums signed gaps, so over- and underconfident bins cancel."
+expect = ["metric_mismatches"]
+file = "crates/ptr-analytics/src/calibration.rs"
+find = '''
+            (size / n) * (accuracy - confidence).abs()
+'''
+replace = '''
+            (size / n) * (accuracy - confidence)
+'''
+
+[[mutation]]
+name = "harness-scorer-reads-the-raw-posterior"
+description = "The harness hands the scorer the model's raw posterior instead of the resolution's (the trap)."
+expect = ["veto_contradictions"]
+file = "bins/ptr-bench/src/experiments/f002/runner.rs"
+find = '''
+    let ds_scoring: Vec<Vec<f64>> = pipeline.scoring_vectors();
+'''
+replace = '''
+    let ds_scoring: Vec<Vec<f64>> = pipeline.model.posteriors().to_vec();
+'''
+
+[[mutation]]
+name = "harness-label-model-arm-is-the-majority-vote"
+description = "The harness scores the majority vote's posteriors as the label model's."
+expect = ["gain_violations", "veto_contradictions"]
+file = "bins/ptr-bench/src/experiments/f002/runner.rs"
+find = '''
+    let ds_scoring: Vec<Vec<f64>> = pipeline.scoring_vectors();
+'''
+replace = '''
+    let ds_scoring: Vec<Vec<f64>> = generated
+        .class_votes
+        .iter()
+        .map(|votes| majority_posterior(votes, None))
+        .collect();
+'''
+
+[[mutation]]
+name = "harness-oracle-brier-truncated"
+description = "The independent Brier score is truncated to six decimals (the hand-computed self-check values are exact in six decimals, so only real data shows it)."
+expect = ["metric_mismatches"]
+file = "bins/ptr-bench/src/experiments/f002/oracle.rs"
+find = '''
+    total / truth.len() as f64
+'''
+replace = '''
+    (total / truth.len() as f64 * 1e6).floor() / 1e6
+'''
+
+[[mutation]]
+name = "harness-oracle-prior-smoothing-dropped"
+description = "The independent EM forgets the smoothing of the class priors."
+expect = ["model_oracle_mismatches"]
+file = "bins/ptr-bench/src/experiments/f002/oracle.rs"
+find = '''
+        let mut weight = vec![smoothing; classes];
+'''
+replace = '''
+        let mut weight = vec![0.0; classes];
+'''
+
+[[mutation]]
+name = "harness-oracle-ignores-many-vetoes"
+description = "The independent expected resolution ignores the vetoes of an item that has more than two (those that determine or dispute it; the self-check fixtures have at most two)."
+expect = ["resolution_oracle_mismatches"]
+file = "bins/ptr-bench/src/experiments/f002/oracle.rs"
+find = '''
+    let remaining: Vec<usize> = (0..classes).filter(|c| !vetoed.contains(c)).collect();
+'''
+replace = '''
+    let remaining: Vec<usize> = (0..classes)
+        .filter(|c| vetoed.len() > 2 || !vetoed.contains(c))
+        .collect();
+'''
+
+[[mutation]]
+name = "harness-oracle-ece-sorts-descending"
+description = "The independent ECE orders the confidences from high to low before it cuts the bins."
+expect = ["metric_mismatches"]
+file = "bins/ptr-bench/src/experiments/f002/oracle.rs"
+find = '''
+    scored.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("finite confidence"));
+'''
+replace = '''
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("finite confidence"));
+'''
+
+[[mutation]]
+name = "vote-matrix-rejects-a-verifier-veto"
+description = "VoteMatrix::new refuses the veto of a verifier, so the product refuses a valid matrix."
+expect = ["unexpected_refusals"]
+file = "crates/ptr-labeling/src/votes.rs"
+find = '''
+                    (Vote::Veto(_), FunctionKind::Verifier)
+'''
+replace = '''
+                    (Vote::Veto(_), FunctionKind::Heuristic)
+'''
+
+[[mutation]]
+name = "harness-brier-gain-sign-flipped"
+description = "The paired bootstrap of the Brier gain subtracts the majority vote from the label model, so the lower bound of the gain (and with it the Brier gate) is negative."
+expect = ["gain_violations"]
+file = "bins/ptr-bench/src/experiments/f002/runner.rs"
+find = '''
+            oracle::brier(&sample_mv, &sample_truth) - oracle::brier(&sample_ds, &sample_truth)
+'''
+replace = '''
+            oracle::brier(&sample_ds, &sample_truth) - oracle::brier(&sample_mv, &sample_truth)
+'''
+
+[[mutation]]
+name = "harness-ece-gain-lower-bound-collapsed"
+description = "The paired bootstrap of the ECE gain resamples the label model against itself, so its lower bound is zero and the ECE gate fails."
+expect = ["gain_violations"]
+file = "bins/ptr-bench/src/experiments/f002/runner.rs"
+find = '''
+        ece_gains.push(ppm(oracle::ece_equal_mass(
+            &sample_mv,
+'''
+replace = '''
+        ece_gains.push(ppm(oracle::ece_equal_mass(
+            &sample_ds,
+'''
+
+[[mutation]]
+name = "harness-baseline-census-accuracy-is-the-veto-aware-vote"
+description = "The census accuracy of the majority-vote arm is that of the veto-aware vote, which the label model does not beat on this seed, so the accuracy gate fails."
+expect = ["gain_violations"]
+file = "bins/ptr-bench/src/experiments/f002/runner.rs"
+find = '''
+            ("mv", &mv_scoring),
+'''
+replace = '''
+            ("mv", &mvp_scoring),
+'''

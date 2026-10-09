@@ -5,6 +5,7 @@
 
 // Only the PostgreSQL harnesses use the two shared modules until another
 // harness builds without the feature.
+pub mod f002;
 #[cfg_attr(not(feature = "postgres-experiments"), allow(dead_code))]
 mod json;
 pub mod kv_reuse_smoke;
