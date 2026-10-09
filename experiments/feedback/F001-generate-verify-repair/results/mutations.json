@@ -1,0 +1,419 @@
+{
+  "experiment_id": "F001",
+  "git_sha": "ab0a0eed85a4390df6a26a263c381d27394ae51e",
+  "recorded_at": "2026-10-09T17:40:37.059408+00:00",
+  "subcommand": "generate-verify-repair",
+  "killed": 24,
+  "total": 24,
+  "mutations": [
+    {
+      "name": "accept-on-score",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4429,
+      "expected": [
+        "false_accepts"
+      ],
+      "counters": {
+        "false_accepts": 1472,
+        "exhausted_as_success": 1472,
+        "expectation_violations": 13,
+        "selection_mismatches": 1472
+      }
+    },
+    {
+      "name": "hard-finding-check-removed",
+      "file": "crates/ptr-feedback/src/candidate.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1085,
+      "expected": [
+        "false_accepts"
+      ],
+      "counters": {
+        "false_accepts": 539,
+        "exhausted_as_success": 539,
+        "expectation_violations": 7
+      }
+    },
+    {
+      "name": "level-check-removed",
+      "file": "crates/ptr-feedback/src/candidate.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 548,
+      "expected": [
+        "false_accepts"
+      ],
+      "counters": {
+        "false_accepts": 271,
+        "exhausted_as_success": 271,
+        "expectation_violations": 6
+      }
+    },
+    {
+      "name": "status-check-removed",
+      "file": "crates/ptr-feedback/src/candidate.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 469,
+      "expected": [
+        "false_accepts"
+      ],
+      "counters": {
+        "false_accepts": 231,
+        "exhausted_as_success": 231,
+        "expectation_violations": 7
+      }
+    },
+    {
+      "name": "budget-off-by-one",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5982,
+      "expected": [
+        "budget_violations"
+      ],
+      "counters": {
+        "budget_violations": 5964,
+        "expectation_violations": 18
+      }
+    },
+    {
+      "name": "premature-exhaustion",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3933,
+      "expected": [
+        "premature_exhaustions"
+      ],
+      "counters": {
+        "expectation_violations": 13,
+        "premature_exhaustions": 3918,
+        "repair_gain_shortfalls": 1,
+        "draws_gain_shortfalls": 1
+      }
+    },
+    {
+      "name": "repaired-candidates-not-reverified",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 16798,
+      "expected": [
+        "unverified_returns"
+      ],
+      "counters": {
+        "false_accepts": 1449,
+        "unverified_returns": 3834,
+        "exhausted_as_success": 3834,
+        "verifier_call_mismatches": 3834,
+        "expectation_violations": 12,
+        "trajectory_mismatches": 3834,
+        "repair_gain_shortfalls": 1
+      }
+    },
+    {
+      "name": "exhaustion-returns-the-last-failure",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 23856,
+      "expected": [
+        "exhausted_as_success"
+      ],
+      "counters": {
+        "false_accepts": 5964,
+        "exhausted_as_success": 5964,
+        "trajectory_mismatches": 5964,
+        "selection_mismatches": 5964
+      }
+    },
+    {
+      "name": "critique-names-only-the-first-issue",
+      "file": "crates/ptr-feedback/src/candidate.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 7968,
+      "expected": [
+        "trajectory_mismatches"
+      ],
+      "counters": {
+        "expectation_violations": 8,
+        "trajectory_mismatches": 7960
+      }
+    },
+    {
+      "name": "stale-critique",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6996,
+      "expected": [
+        "collateral_edits"
+      ],
+      "counters": {
+        "collateral_edits": 2017,
+        "expectation_violations": 4,
+        "trajectory_mismatches": 4975
+      }
+    },
+    {
+      "name": "wrong-verifier-call-count",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 7236,
+      "expected": [
+        "verifier_call_mismatches"
+      ],
+      "counters": {
+        "verifier_call_mismatches": 7236
+      }
+    },
+    {
+      "name": "accepted-candidate-confirmed-twice",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 23285,
+      "expected": [
+        "double_verifications",
+        "calls_after_acceptance"
+      ],
+      "counters": {
+        "double_verifications": 7236,
+        "budget_violations": 1554,
+        "expectation_violations": 23,
+        "calls_after_acceptance": 7236,
+        "trajectory_mismatches": 7236
+      }
+    },
+    {
+      "name": "rewrite-fallback-panics",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4548,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "expectation_violations": 19,
+        "product_panics": 4529
+      }
+    },
+    {
+      "name": "acceptance-needs-a-deeper-level",
+      "file": "crates/ptr-feedback/src/candidate.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 45787,
+      "expected": [
+        "missed_acceptances"
+      ],
+      "counters": {
+        "expectation_violations": 30,
+        "calls_after_acceptance": 38513,
+        "missed_acceptances": 7236,
+        "repair_gain_shortfalls": 4,
+        "draws_gain_shortfalls": 4
+      }
+    },
+    {
+      "name": "accepted-step-not-recorded",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 14472,
+      "expected": [
+        "trajectory_mismatches",
+        "selection_mismatches"
+      ],
+      "counters": {
+        "trajectory_mismatches": 7236,
+        "selection_mismatches": 7236
+      }
+    },
+    {
+      "name": "best-verified-ignores-the-acceptance-rule",
+      "file": "crates/ptr-feedback/src/candidate.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5964,
+      "expected": [
+        "selection_mismatches"
+      ],
+      "counters": {
+        "selection_mismatches": 5964
+      }
+    },
+    {
+      "name": "nothing-is-repairable",
+      "file": "crates/ptr-feedback/src/candidate.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 10583,
+      "expected": [
+        "expectation_violations",
+        "repair_gain_shortfalls",
+        "draws_gain_shortfalls"
+      ],
+      "counters": {
+        "expectation_violations": 12,
+        "trajectory_mismatches": 10563,
+        "repair_gain_shortfalls": 4,
+        "draws_gain_shortfalls": 4
+      }
+    },
+    {
+      "name": "fabric-ignores-hard-findings",
+      "file": "crates/ptr-verifier/src/lib.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 210,
+      "expected": [
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "verdict_mismatches": 210
+      }
+    },
+    {
+      "name": "fabric-level-is-the-strongest",
+      "file": "crates/ptr-verifier/src/lib.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2544,
+      "expected": [
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "verdict_mismatches": 2544
+      }
+    },
+    {
+      "name": "contract-verifier-skips-the-utf8-check",
+      "file": "crates/ptr-verifier/src/lib.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 15762,
+      "expected": [
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "false_accepts": 2605,
+        "verdict_mismatches": 13139,
+        "expectation_violations": 18
+      }
+    },
+    {
+      "name": "harness-analytic-model-ignores-the-noise",
+      "file": "bins/ptr-bench/src/experiments/f001/dp.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5,
+      "expected": [
+        "expectation_violations"
+      ],
+      "counters": {
+        "expectation_violations": 5
+      }
+    },
+    {
+      "name": "harness-boundary-forges-nothing",
+      "file": "bins/ptr-bench/src/experiments/f001/stub.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 583,
+      "expected": [
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "verdict_mismatches": 583
+      }
+    },
+    {
+      "name": "repairer-is-never-called",
+      "file": "crates/ptr-feedback/src/repair.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 7710,
+      "expected": [
+        "repair_gain_shortfalls",
+        "draws_gain_shortfalls"
+      ],
+      "counters": {
+        "verifier_call_mismatches": 7690,
+        "expectation_violations": 12,
+        "repair_gain_shortfalls": 4,
+        "draws_gain_shortfalls": 4
+      }
+    },
+    {
+      "name": "harness-stub-hands-out-another-action",
+      "file": "bins/ptr-bench/src/experiments/f001/stub.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 45153,
+      "expected": [
+        "altered_candidates"
+      ],
+      "counters": {
+        "expectation_violations": 24,
+        "altered_candidates": 45129
+      }
+    }
+  ]
+}
