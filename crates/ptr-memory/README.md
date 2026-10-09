@@ -46,7 +46,7 @@
 
 ### Linked experiments
 
-- [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `planned`
+- [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `frozen`
 - [E002](../../experiments/system/E002-rag-baselines/README.md) — `planned`
 - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
 

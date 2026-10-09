@@ -29,6 +29,9 @@ ed25519-dalek = { workspace = true }
 ptr-config = { workspace = true }
 ptr-core = { workspace = true }
 ptr-semdb = { workspace = true }
+# Q002 resolves citations against a KnowledgeStore's raw events and promotes search hits.
+ptr-memory = { workspace = true }
+ptr-search = { workspace = true }
 ptr-exec = { workspace = true }
 ptr-ledger = { workspace = true }
 # R010 admits, retires, supersedes and fences MoE experts through the runtime's real path and

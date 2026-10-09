@@ -36,7 +36,7 @@
 ### Linked experiments
 
 - [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
-- [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `planned`
+- [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `frozen`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
 ### Technology evaluations

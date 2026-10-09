@@ -5154,7 +5154,7 @@ RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","
 # Listed and held at `planned` until its freeze (its placeholders are pinned then, by the head
 # after the harness and the criteria are final); it is no part of the fixtures that move the six to
 # `prepared`. Once frozen it is a regular listed experiment the repository's own gate checks.
-LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001","R001","F003")
+LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001","R001","Q002","F003")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture
@@ -5255,7 +5255,6 @@ class EnrolledExperimentTests(unittest.TestCase):
             f"Q003: preregistration key baseline_strong_rag_sha256 is a placeholder ({pinned})",
             "Q003: experiment.toml names no preregistration_sha256",
             "Q003: experiment.toml names no preregistration_rules_sha256",
-            "Q003: baseline research/baselines/rag_reference/config.toml: hybrid.embedding_model is a placeholder ('must-be-pinned-before-reported-run')",
             *strong_errors("Q003"),
             f"R004: preregistration key public_regression_gate_permille is a placeholder ({pinned})",
             f"R004: preregistration key backward_transfer_min_permille is a placeholder ({pinned})",
