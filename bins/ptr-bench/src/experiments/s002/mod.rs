@@ -682,7 +682,12 @@ mod tests {
         let entrypoint = manifest["entrypoint"].as_str().expect("entrypoint");
         assert!(entrypoint.is_empty() || entrypoint == params::ENTRYPOINT);
         assert!(PREREGISTRATION.contains(params::ENTRYPOINT));
-        assert_eq!(manifest["status"].as_str(), Some("planned"));
+        // Planned before the freeze, prepared after it, completed once the seeds and the
+        // mutation evidence are recorded.
+        assert!(matches!(
+            manifest["status"].as_str(),
+            Some("planned" | "prepared" | "completed")
+        ));
     }
 
     #[test]
