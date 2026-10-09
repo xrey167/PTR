@@ -1,0 +1,70 @@
+{
+  "experiment_id": "F001",
+  "status": "prepared",
+  "scope": "mechanism of the generate-verify-repair loop (ptr_feedback::RepairLoop and Population::best_verified over the real VerifierFabric and ActionContractVerifier), shown with a seeded stub generator on a synthetic verifiable task with seven independent defect slots: the loop accepts a candidate only if the fabric passed it at Deterministic level with no hard finding, verifies every candidate once, stays within its budget, repairs only what the report's hard findings name, rewrites what it cannot repair, returns Exhausted instead of a best-effort failure and keeps a trajectory that agrees with the verifier's log; measured against an independent oracle, a call-counting boundary and an exact analytic expectation. No claim about the quality of any model's generations.",
+  "git_sha": "ea6da1af7cd757d0bbd31a6a795f8a50be9e2bee",
+  "aggregated_at_git_sha": "c63cb6829769b294b04440405042570d0e85d644",
+  "recorded_at": "2026-10-09T17:40:41.323605+00:00",
+  "preregistration_sha256": "1bce0643f5c4bc9bc6e03052eb94481105a529c0a72c88a1b2f766ee525fa6e2",
+  "preregistration_rules_sha256": "4b8c6331b0df2d669862f048e9fc02ea90608734ac7697a7e5907a009bbcf294",
+  "criteria_sha256": "10b1319236deea1703df9e0a4f96077bbc8f01f08705065ab6a9efb248bc3fa3",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- generate-verify-repair <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261009T150517.128867Z-seed-17.json",
+      "git_sha": "ea6da1af7cd757d0bbd31a6a795f8a50be9e2bee",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261009T151431.596101Z-seed-29.json",
+      "git_sha": "35a21601754eb27929b47d1114911c30c935ba1e",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261009T152427.953100Z-seed-43.json",
+      "git_sha": "269e80db3579600918fb3f1371842501878430e4",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261009T153437.814914Z-seed-71.json",
+      "git_sha": "726e98e56267921bb657d41830efbe76e83b51b7",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261009T154459.743720Z-seed-101.json",
+      "git_sha": "676e382b9e24fa5e952010e34c6a9a7a9dee3c9c",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "dc730f85fdbe9bf51d55c5e606d71c031d762df775569d877ea964d8b82dd4c0",
+    "29": "c978ed7ea2cc4594f2ad915887fd04931cf2084401d7199fbf1c742a15a0e3fe",
+    "43": "d7d1a8941988d5ab0c721b528d3de45f984997021bb31c8cde4c10ec43d417b7",
+    "71": "7f3da8a0966f2392f0aec91e36bbbf98dbab7c1e95e511a062e634544fd84d5d",
+    "101": "5fbe3af04eafc34c5d66d8ce98ea06df370c771ef77af688fcdf3edeca54d1d3"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 24,
+    "total": 24,
+    "git_sha": "ab0a0eed85a4390df6a26a263c381d27394ae51e",
+    "sha256": "c0ba8604e3271060ced7c5b3bbd3e52373a0360eb0f093be960fb4d5ab8f39df"
+  },
+  "limitations": [
+    "the generator and the repairer are seeded stubs with a stated per-slot skill; the strict comparative rules (repair gains at least one success and saves at least one milli-draw per success over rewrite-only at every budget above one; the analytic gains are thousands) are consequences of that stated skill and test the loop's use of verdicts and critiques, not that any model repairs better than it rewrites",
+    "the task is synthetic: seven independent defect slots of an ActionIr against a fixed ActionContract; real generations have correlated, partial and unnamed defects, and a real repair is not a redraw of the named slot",
+    "the verifier noise (Unknown, Disputed, shallow, lying, forged) is scripted per call from the seed and independent of the candidate; the real learned and statistical verifiers are not exercised, and a verifier that lies by reporting a clean Pass for a defective candidate cannot be detected by the loop (only a self-contradicting Pass is refused)",
+    "the cost measure is the number of slot draws and verifier calls, not tokens, latency or money; one verifier call costs the same whatever it verifies",
+    "the negative controls run the harness' own reference loop, not the product: they show the counters can fail, not that a defective product is caught; that evidence is the mutation plan",
+    "the expectation check uses 5 standard deviations because it makes several hundred comparisons per seed; a defect that shifts a success, call or draw count by less than that is not detected by it, only by the other counters",
+    "all arms of a task share their random draws (common random numbers) so that the comparative rules are tight; the arms are therefore not independent samples"
+  ],
+  "metrics_sha256": "108634ac27d9e018080e54a8c1882c25abf0135fd01bff6e554ddc9d88e9d974"
+}
