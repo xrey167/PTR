@@ -1,0 +1,69 @@
+{
+  "schema_version": 2,
+  "experiment_id": "F003",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v80",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16876494848
+  },
+  "hardware_profile_record": {
+    "path": "hardware/default.toml",
+    "sha256": "ea754cf5ddb19c70de11237e9aedab43cbba4ac2e8ff8fec15d85b18699052d6",
+    "contents": {
+      "id": "unspecified",
+      "os": "unspecified",
+      "cpu": "unspecified",
+      "ram_gib": 0,
+      "gpu": "unspecified",
+      "gpu_memory_gib": 0,
+      "notes": "Replace with an explicit measured hardware profile before publishing benchmark results."
+    },
+    "unspecified_fields": [
+      "cpu",
+      "gpu",
+      "id",
+      "os"
+    ]
+  },
+  "git_sha": "d40c1dc7dd73de2380fe7bd74d093ae404632a56",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "F003",
+    "status": "prepared",
+    "hypothesis": "Does the calibrated arbiter keep the harm rate of auto-proposed branches at or below alpha on held-out adjudications? The claim is scoped to the mechanism and to a low-noise regime: a simulated adjudicator with a known error rate of 2 per mille stands in for people, because at 20 per mille Learn-then-Test certifies nothing in roughly three calibrations of four (a utility limit of the start rule, reported by an ungated descriptive arm, not a violation). What is tested is that the Learn-then-Test guarantee holds in this scenario (shown empirically, not proven), that no ineligible branch is auto-proposed and that off-policy estimates are sound. Reviews saved are reported descriptively only.",
+    "metrics": "coverage of the Learn-then-Test guarantee over Monte-Carlo replicates; per-policy exact held-out test of the adjudicated harm rate of auto-proposals, with the literal upper bound reported; ineligible auto-proposals; escalation share and reviews saved; off-policy estimate error",
+    "baseline": "escalate every branch; fixed uncalibrated threshold",
+    "falsification": "F003 is falsified on a seed if any of the following holds. (1) Any ineligible branch is auto-proposed, or any triage differs from the independent oracle's decision. (2) Coverage: over the Monte-Carlo replicates, the number of certified thresholds whose true adjudicated harm rate exceeds alpha is above the critical value of the exact binomial test of 'at most delta of the replicates' at level 1e-3. (3) Held-out: for any recorded policy, the exact one-sided binomial test of 'the harm rate of the branches the policy would auto-propose is at most alpha' on the held-out adjudications rejects at the Bonferroni share (familywise 0.05 over the policies and seeds); that is, a held-out harm rate whose exact lower bound is above alpha. The literal rule 'the upper confidence bound on held-out adjudications exceeds alpha' is reported for each policy and is not a falsifier, because a correct Learn-then-Test policy fails it by construction. (4) A threshold, held-out set, conformal threshold or Clopper-Pearson bound that differs from the independent oracle's, a non-slice triage that can be adjudicated, an off-policy estimate whose mean error over the logs is outside four standard errors of zero, a target below the logging threshold that is not refused, or a panic of the arbiter.",
+    "hardware_profile": "hardware/default.toml",
+    "entrypoint": "cargo run --release --locked -p ptr-bench -- calibrated-arbiter <seed>",
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "design": "../../../docs/architecture/35-agentic-substrate.md",
+    "preregistration_sha256": "1f2dd4813570ad823abdd635d39b4508154dbf6e39f21b23c9944d9fd7b2475d",
+    "preregistration_rules_sha256": "410d00ce8e2870a79fd0a11b8b0b7c55748f2419950ce55c3abbf4ae161e8078"
+  },
+  "manifest_sha256": "439d7fb6d94c3e84f619311f51aea65eae0f4ec5bc50fdfc23b97d0df614c5ae",
+  "cargo_lock_sha256": "018f256100d208f7d234f08b81fff486e8f5de365804cdbe1301b256abed6ceb",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/default.toml",
+  "status": "prepared",
+  "prepared_at": "20261009T171756.452743Z"
+}
