@@ -1,8 +1,14 @@
+mod attention_schema;
 mod findings;
 mod propensity;
 mod router;
 mod sampling;
+mod self_model;
 
+pub use attention_schema::{
+    AttentionSchema, BalanceStrength, ControlArm, ControlConfig, ControlledScorer, SchemaError,
+    SchemaLimits, SchemaReport, TargetPower,
+};
 pub use findings::{
     classify, Accepted, AdmissibleScorer, CodeRoute, EligibilitySnapshot, EscalationReason,
     Exploration, ExplorationError, FallbackAction, FallbackPolicy, FallbackReason, FindingCode,
@@ -17,6 +23,13 @@ pub use router::{
     RouteFeatures, RouteRequest, RoutedChoice, RoutedError, Router,
 };
 pub use sampling::{DecisionNonce, NonceExhausted, NonceSequence, SamplingKey};
+pub use self_model::{
+    evaluate_prequential, shuffled_labels, BinReport, CalibrationError, CalibrationReport,
+    CalibrationTracker, CodeOutcome, ContextKey, FeatureMask, GlobalRateProbe, HintPolicy,
+    LinearProbe, LoggedPrediction, LookupTableProbe, PodRef, PrequentialReport, ReliabilityBin,
+    SelfContext, SelfModel, SelfModelHint, SelfModelLimits, SelfModelReport, SelfOutcome,
+    SelfPrediction, SelfRole, SelfTraceStep, TraceLearner, OVERSIZED_CODE,
+};
 
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, PodId, Probability, ProjectId, TypeId};

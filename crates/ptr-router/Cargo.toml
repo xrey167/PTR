@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+ptr-analytics = { workspace = true }
 ptr-types = { workspace = true }
 ptr-pods = { workspace = true }
 ptr-verifier = { workspace = true }
