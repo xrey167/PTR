@@ -1,0 +1,383 @@
+# Defects the Q002 harness must detect; run with `python3 scripts/mutation_check.py Q002`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file (checked
+# by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
+# that show the defect: a run that fails only on others does not count as detecting it.
+#
+# The first nineteen mutations plant defects in `ptr-search` (the exact-source resolver, the claim
+# verifier, the lifecycle step shared by both observe paths and the stage rules of
+# `SearchHit`); the last five plant defects in the harness itself, to show that its lifecycle
+# wiring, its label table, its stage-skip driver, its generator and its table of expected
+# refusals are not vacuous: each makes the counter its plan names fire without any defect in
+# the product. Every hard counter is expected by at least one mutation, so that `killed == total`
+# also shows each of the nine can fire (a test in bins/ptr-bench checks this list against the
+# harness).
+#
+# Defence in depth. The resolver vouches that the quote is the source's bytes at the span and the
+# verifier vouches that the claim is what the quote states: each is the only barrier of the
+# classes named in its mutations (the proof carries the quote, which a resolver that wrongly
+# resolves has not checked against the bytes; the claim is checked against the proof's text).
+# A mutation that weakens one barrier and leaves the other intact would be absorbed by it; the
+# list contains only mutations the harness's poison classes reach through exactly one barrier.
+#
+# Not listed, on purpose: removing `retain_live` or the lifecycle filter of B1 (a baseline, not
+# the mechanism); making `promote_verified` (the boolean path) stricter (it is the trusted-caller
+# path and the B2 control); the empty-span and span-past-the-end refusals as acceptances (an
+# empty or out-of-range span cannot equal a non-empty quote's bytes, so `QuoteMismatch` absorbs
+# them).
+#
+# The mutation run is invoked as `ptr-bench evidence-promotion <cases> 17`: `cases` is the number
+# of capsules (36 is the pinned world, so the corpus digest is compared; the result says
+# `"scale":"custom"` and is no evidence).
+
+package = "ptr-bench"
+features = ""
+subcommand = "evidence-promotion"
+cases = 36
+seed = 17
+hard_counters = [
+    "false_known_mechanism",
+    "stale_or_revoked_promoted",
+    "stage_skip_accepted",
+    "stage_skip_unexpected",
+    "wrong_refusal_reason",
+    "product_panics",
+    "recall_violation",
+    "oracle_label_mismatches",
+    "corpus_selection_digest_mismatches",
+]
+
+[[mutation]]
+name = "resolver-skips-the-digest-check"
+description = "The resolver reads the event's bytes without re-checking them against the digest the event carries: a corrupt replica whose span and quote agree resolves (P3)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+        event
+            .validate_digest()
+            .map_err(|_| SourceError::DigestMismatch {
+                raw_id: citation.raw_id.clone(),
+            })?;
+'''
+replace = '''
+        let _ = event;
+'''
+
+[[mutation]]
+name = "resolver-compares-only-the-quote-prefix"
+description = "The resolver compares the span with the first eight bytes of the quote only, so a doctored tail resolves and the doctored quote becomes the resolved text (P2 forged quote)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+        if event.content[citation.start..citation.end] != *citation.quote.as_bytes() {
+'''
+replace = '''
+        if !event.content[citation.start..citation.end]
+            .starts_with(&citation.quote.as_bytes()[..citation.quote.len().min(8)])
+        {
+'''
+
+[[mutation]]
+name = "resolver-ignores-the-offset"
+description = "The resolver looks for the quote anywhere in the event instead of at the cited span, so a shifted span resolves (P2 shifted span)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+        if event.content[citation.start..citation.end] != *citation.quote.as_bytes() {
+'''
+replace = '''
+        if !event
+            .content
+            .windows(citation.quote.len())
+            .any(|window| window == citation.quote.as_bytes())
+        {
+'''
+
+[[mutation]]
+name = "resolver-accepts-unknown-raw-events"
+description = "A citation of a raw event the source does not hold resolves to its own quote (P1)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+        let event = self.source.raw_event(&citation.raw_id).ok_or_else(|| {
+            SourceError::UnknownRawEvent {
+                raw_id: citation.raw_id.clone(),
+            }
+        })?;
+'''
+replace = '''
+        let Some(event) = self.source.raw_event(&citation.raw_id) else {
+            return Ok(ResolvedSource {
+                raw_id: citation.raw_id.clone(),
+                start: citation.start,
+                end: citation.end,
+                digest: [0; 32],
+                text: citation.quote.clone(),
+            });
+        };
+'''
+
+[[mutation]]
+name = "resolver-panics-on-a-span-past-the-end"
+description = "The resolver reads the last byte of the span before it checks the span against the event: a span past the end panics (caught and counted by the harness)."
+expect = ["product_panics"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+        if citation.end > event.content.len() {
+'''
+replace = '''
+        if citation.end > event.content.len() {
+            let _ = event.content[citation.end - 1];
+'''
+
+[[mutation]]
+name = "verifier-skips-the-subject-compare"
+description = "The verifier does not compare the statement's subject with the claim's, so a statement about a lookalike subject verifies the claim (P4)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+    if statement.subject != claim.subject {
+'''
+replace = '''
+    if false && statement.subject != claim.subject {
+'''
+
+[[mutation]]
+name = "verifier-skips-the-value-compare"
+description = "The verifier does not compare the statement's value with the claim's, so a statement that gives another value verifies the claim (P5 contradicting value)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+    if statement.value != claim.value {
+        return Err(ClaimError::ValueMismatch);
+    }
+'''
+replace = '''
+    if false && statement.value != claim.value {
+        return Err(ClaimError::ValueMismatch);
+    }
+'''
+
+[[mutation]]
+name = "verifier-treats-negation-as-a-match"
+description = "The verifier ignores the negation of a statement, so `x: p is not v` verifies the claim x p v (P5 negation)."
+expect = ["false_known_mechanism"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+    if statement.negated {
+'''
+replace = '''
+    if false && statement.negated {
+'''
+
+[[mutation]]
+name = "verifier-reports-a-subject-mismatch-as-a-value-mismatch"
+description = "A statement about another subject is refused, but as a value mismatch: the typed refusal is wrong (P4 gets another reason than the one the generator expects)."
+expect = ["wrong_refusal_reason"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+        return Err(ClaimError::SubjectMismatch);
+'''
+replace = '''
+        return Err(ClaimError::ValueMismatch);
+'''
+
+[[mutation]]
+name = "verifier-over-refuses-honest-claims"
+description = "The verifier refuses every claim whose value ends in 3 or 7 (a sixth of the honest hits): recall falls below the floor."
+expect = ["recall_violation"]
+file = "crates/ptr-search/src/source.rs"
+find = '''
+    if statement.value != claim.value {
+        return Err(ClaimError::ValueMismatch);
+    }
+'''
+replace = '''
+    if statement.value != claim.value || claim.value.ends_with(['3', '7']) {
+        return Err(ClaimError::ValueMismatch);
+    }
+'''
+
+[[mutation]]
+name = "observe-accepts-revoked"
+description = "observe_resolved (and observe) accept a generation the lifecycle answers Revoked, which is still the capsule's live one (P7)."
+expect = ["stale_or_revoked_promoted", "false_known_mechanism"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+            Some(Validity::Revoked) => Err(EvidencePromotionError::RevokedGeneration),
+'''
+replace = '''
+            Some(Validity::Revoked) => Ok(()),
+'''
+
+[[mutation]]
+name = "observe-accepts-disputed"
+description = "observe_resolved (and observe) accept a disputed generation (P8)."
+expect = ["stale_or_revoked_promoted", "false_known_mechanism"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+            Some(Validity::Disputed) => Err(EvidencePromotionError::DisputedGeneration),
+'''
+replace = '''
+            Some(Validity::Disputed) => Ok(()),
+'''
+
+[[mutation]]
+name = "observe-accepts-superseded"
+description = "observe_resolved (and observe) accept a superseded generation (P6)."
+expect = ["stale_or_revoked_promoted", "false_known_mechanism"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+            Some(Validity::Superseded) => Err(EvidencePromotionError::StaleGeneration),
+'''
+replace = '''
+            Some(Validity::Superseded) => Ok(()),
+'''
+
+[[mutation]]
+name = "observe-misreports-the-wrong-stage"
+description = "A step out of order is refused as a stale generation instead of WrongStage: the typed refusal of the stage rules is wrong."
+expect = ["stage_skip_unexpected"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+        if self.stage != EvidenceStage::PossibleEvidence {
+            return Err(EvidencePromotionError::WrongStage);
+        }
+        match validity(&self.capsule, self.generation) {
+'''
+replace = '''
+        if self.stage != EvidenceStage::PossibleEvidence {
+            return Err(EvidencePromotionError::StaleGeneration);
+        }
+        match validity(&self.capsule, self.generation) {
+'''
+
+[[mutation]]
+name = "observe-without-the-stage-check"
+description = "observe_resolved (and observe) accept a hit at any stage: a candidate is observed without being possible evidence, an observed hit is observed again."
+expect = ["stage_skip_accepted"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+        if self.stage != EvidenceStage::PossibleEvidence {
+            return Err(EvidencePromotionError::WrongStage);
+        }
+        match validity(&self.capsule, self.generation) {
+'''
+replace = '''
+        match validity(&self.capsule, self.generation) {
+'''
+
+[[mutation]]
+name = "mark-possible-without-the-stage-check"
+description = "mark_possible accepts a hit at any stage, so an observed or known hit steps back to possible evidence."
+expect = ["stage_skip_accepted"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+        if self.stage != EvidenceStage::SearchCandidate {
+            return Err(EvidencePromotionError::WrongStage);
+        }
+        self.stage = EvidenceStage::PossibleEvidence;
+'''
+replace = '''
+        self.stage = EvidenceStage::PossibleEvidence;
+'''
+
+[[mutation]]
+name = "promote-with-a-proof-without-the-stage-check"
+description = "promote_verified_with accepts a hit at any stage: a candidate or a possible hit is promoted, a known hit promoted again."
+expect = ["stage_skip_accepted"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+        if self.stage != EvidenceStage::Observed {
+            return Err(EvidencePromotionError::WrongStage);
+        }
+        let Some(source) = self.source.as_ref() else {
+'''
+replace = '''
+        let Some(source) = self.source.as_ref() else {
+'''
+
+[[mutation]]
+name = "promote-ignores-the-proof-source"
+description = "promote_verified_with does not hold the proof against the source the hit was observed with: a proof made for another source promotes the hit."
+expect = ["stage_skip_accepted"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+        if proof.source() != source {
+'''
+replace = '''
+        if false && proof.source() != source {
+'''
+
+[[mutation]]
+name = "promote-without-a-held-source"
+description = "promote_verified_with promotes a hit that holds no resolved source (observed on the caller's word) with whatever proof it is given."
+expect = ["stage_skip_accepted"]
+file = "crates/ptr-search/src/lib.rs"
+find = '''
+        let Some(source) = self.source.as_ref() else {
+            return Err(EvidencePromotionError::SourceNotResolved);
+        };
+'''
+replace = '''
+        let source = self.source.as_ref().unwrap_or_else(|| proof.source());
+'''
+
+[[mutation]]
+name = "harness-authority-revokes-the-wrong-generation"
+description = "Harness self-defect: the world builder commits the revocation of a revoked capsule for a generation it never had, so the runtime answers Live for the revoked live generation and the mechanism is shown P7."
+expect = ["stale_or_revoked_promoted"]
+file = "bins/ptr-bench/src/experiments/q002/authority.rs"
+find = '''
+                            generation: Generation(capsule.live_generation()),
+'''
+replace = '''
+                            generation: Generation(capsule.live_generation() + 1),
+'''
+
+[[mutation]]
+name = "harness-label-table-trusts-lookalike-subjects"
+description = "Harness self-defect: the generator's label table calls a lookalike-subject hit (P4) eligible, so the naive reading disagrees with the labels."
+expect = ["oracle_label_mismatches"]
+file = "bins/ptr-bench/src/experiments/q002/world.rs"
+find = '''
+        matches!(self, Self::Honest)
+'''
+replace = '''
+        matches!(self, Self::Honest | Self::P4)
+'''
+
+[[mutation]]
+name = "harness-stage-skip-driver-uses-the-hits-own-proof"
+description = "Harness self-defect: the foreign-proof attempt (K6) promotes the observed hit with its own proof instead of another source's, which the API rightly accepts."
+expect = ["stage_skip_accepted"]
+file = "bins/ptr-bench/src/experiments/q002/arms.rs"
+find = '''
+                let Some((_, foreign)) = self.proofs(b) else {
+'''
+replace = '''
+                let Some((_, foreign)) = self.proofs(a) else {
+'''
+
+[[mutation]]
+name = "harness-generator-drifts-from-the-pinned-corpus"
+description = "Harness self-defect: the generator shuffles the twin facts with another stream, so the corpus is not the pinned one."
+expect = ["corpus_selection_digest_mismatches"]
+file = "bins/ptr-bench/src/experiments/q002/world.rs"
+find = '''
+        shuffle(&mut root.fork(3), &mut twin_facts);
+'''
+replace = '''
+        shuffle(&mut root.fork(33), &mut twin_facts);
+'''
+
+[[mutation]]
+name = "harness-expects-the-wrong-refusal-for-revoked-hits"
+description = "Harness self-defect: the generator's table expects StaleGeneration for the P7 hits, which the lifecycle refuses as RevokedGeneration."
+expect = ["wrong_refusal_reason"]
+file = "bins/ptr-bench/src/experiments/q002/world.rs"
+find = '''
+                Status::Revoked => (Class::P7, Refusal::RevokedGeneration),
+'''
+replace = '''
+                Status::Revoked => (Class::P7, Refusal::StaleGeneration),
+'''
