@@ -21,3 +21,4 @@ ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 safetensors = "=0.8.0"
+ptr-feedback = { workspace = true }
