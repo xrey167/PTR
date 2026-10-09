@@ -641,7 +641,11 @@ mod tests {
         let manifest = experiment_file("experiment.toml");
         let names: Vec<&str> = manifest["metrics"].as_str().unwrap().split(", ").collect();
         assert_eq!(names, metrics::METRIC_NAMES);
-        assert_eq!(manifest["status"].as_str(), Some("planned"));
+        // Planned before the freeze, prepared after it, then completed or falsified.
+        assert!(matches!(
+            manifest["status"].as_str(),
+            Some("planned" | "prepared" | "completed" | "falsified")
+        ));
         let seeds: Vec<u64> = manifest["seeds"]
             .as_array()
             .unwrap()
