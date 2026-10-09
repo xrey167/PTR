@@ -3,3 +3,67 @@ kind = "workspace-area"
 name = "F001-generate-verify-repair"
 path = "experiments/feedback/F001-generate-verify-repair"
 tests_dir = "tests"
+
+# The preregistered choices of the harness (`ptr-bench generate-verify-repair`,
+# bins/ptr-bench/src/experiments/f001/params.rs, which fails its drift test if a compiled constant differs from this
+# table). F001 is planned, not frozen: no [preregistration] table exists yet; the freeze adds it, together with the
+# [experiment.F001.required] entry's digests. The profiles are chosen by design, not tuned on results.
+[pinned_thresholds]
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
+# The verifier-call budgets of the rewrite-only and repair arms (the single-shot arm is a budget of 1).
+budgets = [1, 2, 4, 8, 16]
+tasks_per_profile = 2000
+# The negative controls run this many tasks per profile.
+control_tasks_per_profile = 300
+# The task: an ActionIr meeting an ActionContract with seven independent defect slots.
+slots = 7
+slot_codes = ["target", "operation", "capability", "input-type", "effect", "payload-size", "payload-utf8"]
+# The stub generator's skill: the probability (per mille) that each of the seven slots is right in a fresh draw, by profile
+# (name=p,p,p,p,p,p,p;...). The probability that all seven slots of a fresh draw are right is 478, 108 and 23 per mille.
+profiles = "uniform=900,900,900,900,900,900,900;heterogeneous=950,900,900,800,700,500,500;hard=650,650,600,600,550,550,500"
+# The probability (per mille) that the repair stub fixes one slot its critique names.
+repair_q = 800
+# The verifier noise: the share (per mille) of verifier calls on which a stub of the fabric answers Unknown (at
+# LatentAgreement), Disputed (at Deterministic), Pass at LatentAgreement, or lies (a Pass with a hard finding), and on which the
+# boundary rewrites a Fail into a Pass that keeps its hard findings. The rest of the calls are clean.
+mode_unknown_permille = 40
+mode_disputed_permille = 30
+mode_shallow_permille = 30
+mode_lying_permille = 30
+mode_forged_permille = 20
+required_level = "Deterministic"
+# The stub-frequency self-tests (a failure is exit 2) allow this many standard deviations. A measured cell is an
+# expectation violation when the exact tail probability (binomial for the success count, Bernstein bound for the verifier
+# calls and slot draws) of its measured value under the analytic expectation is below this many per billion (573 per
+# billion is the two-sided tail of five standard deviations).
+expectation_sigma = 5
+expectation_alpha_per_billion = 573
+# Draws of each stub-frequency self-test (a failure is exit 2, not a falsifier).
+selftest_samples = 40000
+# Coverage prerequisites (a run that misses one is vacuous).
+min_tasks_per_profile = 1000
+min_status_seen = 1
+min_initial_fail_tasks = 500
+min_repaired_successes = 100
+min_exhausted_runs = 50
+min_lying_refused = 10
+min_shallow_refused = 1
+# Falsifiers: every hard counter must be at most this.
+max_hard_counter = 0
+# Strict comparative rules: at each budget above one, repair beats rewrite-only by at least this much (successes; milli-draws per
+# success). The analytic expectation gives gains of thousands (preregistration section 4).
+min_gain = 1
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "generate-verify-repair"
+profiles = "uniform=900,900,900,900,900,900,900;heterogeneous=950,900,900,800,700,500,500;hard=650,650,600,600,550,550,500"
+budgets = [1, 2, 4, 8, 16]
+tasks_per_profile = 2000
+repair_q = 800
+preregistration_text = "experiments/feedback/F001-generate-verify-repair/PREREGISTRATION.md"
+preregistration_text_sha256 = "2d659c8e8742c4fb1281f96120bee3e3684f19b4966f95054d06f9dd2a769c4e"
+criteria = "experiments/feedback/F001-generate-verify-repair/criteria.toml"
+criteria_sha256 = "10b1319236deea1703df9e0a4f96077bbc8f01f08705065ab6a9efb248bc3fa3"

@@ -37,7 +37,7 @@
 ### Linked experiments
 
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
-- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
+- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `frozen`
 
 ### Technology evaluations
 

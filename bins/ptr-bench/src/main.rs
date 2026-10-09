@@ -92,6 +92,9 @@ fn main() {
         // The harness of S001: `<seed>` (the pinned scale) or `<operations> <seed>` (the mutation checker's
         // form); no default seed, and a typo stops the run.
         "invalidation" => experiments::s001::run(&args[2..]),
+        // The harness of F001: `<seed>` (the pinned scale) or `<tasks> <seed>` (the mutation checker's
+        // form); no default seed, and a typo stops the run.
+        "generate-verify-repair" => experiments::f001::run(&args[2..]),
         // The harness of Q002: `<seed>` (the pinned scale) or `<capsules> <seed>` (the mutation checker's
         // form); no default seed, and a typo stops the run.
         "evidence-promotion" => experiments::q002::run(&args[2..]),
@@ -125,9 +128,9 @@ fn main() {
 /// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
 const EXPERIMENT_COMMANDS: &str =
-    "|evidence-promotion|certified-branches|invalidation|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
+    "|evidence-promotion|certified-branches|invalidation|generate-verify-repair|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "|evidence-promotion|certified-branches|invalidation|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
+const EXPERIMENT_COMMANDS: &str = "|evidence-promotion|certified-branches|invalidation|generate-verify-repair|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)

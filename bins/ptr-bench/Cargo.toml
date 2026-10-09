@@ -42,8 +42,11 @@ ptr-runtime = { workspace = true }
 # backend and the chain derivation directly for the cases the backend does not carry.
 ptr-model-api = { workspace = true }
 ptr-pods = { workspace = true }
-# The two verifiers of S003's grant judge a runtime's semantic changes.
+# The two verifiers of S003's grant judge a runtime's semantic changes; F001 drives the real
+# fabric and ActionContractVerifier through the generate-verify-repair loop.
 ptr-verifier = { workspace = true }
+# F001 runs the generate-verify-repair loop and the population selection of ptr-feedback.
+ptr-feedback = { workspace = true }
 ptr-pg = { workspace = true, optional = true }
 # S003 opens and merges branches, and L004 writes merge records whose plan
 # digest replay recomputes.

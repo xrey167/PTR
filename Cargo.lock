@@ -4461,6 +4461,7 @@ dependencies = [
  "ptr-core",
  "ptr-exec",
  "ptr-fastmem",
+ "ptr-feedback",
  "ptr-ledger",
  "ptr-lineage",
  "ptr-memory",

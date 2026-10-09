@@ -9,31 +9,33 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 44 nonblank source lines · 2 integration-test files · 2 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-09  
+**Code footprint:** 3 Rust source files · 775 nonblank source lines · 3 integration-test files · 21 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
-- Candidate<T>, Critique and Population<T> domain structures
-- Population insertion
-- Pass-status-aware best_verified selection over candidates carrying reports
+- Candidate<T>, Critique and Population<T> domain structures; Population insertion
+- Candidate::passes(required): the one acceptance rule, mirroring TriagePolicy::triage in ptr-branch (a report must exist, its status must be Pass, no finding may be hard, its level must be at least the required one; a score never decides). RepairLoop and Population::best_verified(required) both accept only through it, which closes the earlier gap where best_verified trusted the Pass status alone and so selected a forged Pass that carried a hard finding
+- Critique::from_report: the issues are the codes of the report's hard findings (each once, in order); it is repairable only for a Fail that names at least one hard finding. Unknown, Disputed, a Pass that contradicts itself with a hard finding, and a Fail without a hard finding are not repairable and are rewritten, not repaired
+- RepairLoop (generate-verify-repair state machine) over any Verifier<T>: traits Generator<T> and Repairer<T> (a repairer may decline), RepairBudget {max_verifier_calls, max_rounds} validated to be positive, RepairPolicy {required_level, budget}; every candidate is verified exactly once, at most max_verifier_calls verifier calls and 1 + max_rounds candidates are spent, a run that spends its budget returns Outcome::Exhausted {reason} and never a best-effort failure, and the run keeps a Trajectory of every candidate (rejected ones included) with its report, critique, origin (Initial, Repaired, Rewritten) and the loop's decision, plus a Usage record of the calls it claims
+- Experiment F001 (ptr-bench generate-verify-repair) exercises this mechanism against an independent oracle, a call-counting boundary and an exact analytic expectation with a seeded stub generator; it is completed (preregistered at f001-prereg; 5 seeds, mutation check 24 of 24) and makes no claim about model generation quality
 
 ### Missing for the target architecture
 
 - Candidate diversity/dedup clustering
-- Patch/rewrite operators
 - Tournament/Pareto selection
-- Trajectory archive with critique/repair provenance
+- A learned or model-backed Generator and Repairer (only seeded stubs exist, in the F001 harness)
+- Persisting trajectories for training and GEPA
 
 ### Next milestones
 
 - Add multi-verifier/Pareto selection beyond single passing score
-- Implement generate→verify→critique→repair state machine
+- Measure repair against rewrite with a real generator once one exists (F001 covers the mechanism with a seeded stub)
 - Persist full trajectories for training and GEPA
 
 ### Linked experiments
 
-- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
+- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `frozen`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
 ### Technology evaluations
@@ -47,6 +49,8 @@
 ### Current automated checks
 
 - failed high-score candidate cannot beat passing candidate test
+- regression: a forged Pass that carries a hard finding, a Pass below the required level, an Unknown, a Disputed and an unverified candidate are never selected by best_verified
+- unit and integration tests of the loop: acceptance only through Candidate::passes, each candidate verified once, the call and round budgets, Exhausted returns no candidate, Unknown/Disputed/contradicting reports are rewritten, a declined repair becomes a fresh draw, trajectory content, with the real ActionContractVerifier
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
