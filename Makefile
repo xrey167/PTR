@@ -194,6 +194,9 @@ ci-repository-invariants:
 	$(PYTHON) -m unittest discover -s scripts/tests
 	$(PYTHON) -m unittest discover -s research/baselines/rag_reference/tests
 	$(PYTHON) -m unittest discover -s research/baselines/strong_rag/tests
+	$(PYTHON) -m unittest discover -s research/baselines/strong_retrieval/tests
+	$(PYTHON) -m unittest discover -s research/embeddings/tests
+	$(PYTHON) research/embeddings/verify_manifest.py --regenerate
 	$(PYTHON) -m unittest discover -s docs-site/tests
 	$(PYTHON) benchmarks/operator-routing/generator.py
 	$(PYTHON) -m unittest discover -s benchmarks/operator-routing/tests
