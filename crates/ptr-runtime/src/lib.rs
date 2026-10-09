@@ -28,6 +28,7 @@ pub mod semantic;
 pub mod stepped;
 pub mod tensor_kv;
 pub mod tier;
+pub mod vcw;
 
 pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
 pub use directory::{InMemoryPodDirectory, PodDirectory};

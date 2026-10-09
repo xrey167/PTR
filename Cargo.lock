@@ -4736,6 +4736,7 @@ dependencies = [
  "ptr-core",
  "ptr-events",
  "ptr-exec",
+ "ptr-feedback",
  "ptr-ledger",
  "ptr-lineage",
  "ptr-memory",
