@@ -5,7 +5,7 @@
 
 **Component count:** 33  
 **Maturity distribution:** `foundation`: 1, `prototype`: 21, `research-scaffold`: 1, `scaffold`: 10  
-**Rust footprint:** 213 source files · 103660 nonblank source lines · 210 integration-test files · 2536 test markers (`#[test]`, `#[tokio::test]`)
+**Rust footprint:** 214 source files · 104635 nonblank source lines · 211 integration-test files · 2559 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -32,7 +32,7 @@
 | [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 31 | 16202 | 24 | 290 | 46 | 8 | R002:planned, E001:planned | environment-runtime:open |
 | [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 4 | 3385 | 3 | 46 | 29 | 8 | — | — |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 2 | 121 | 2 | 19 | 6 | 4 | R002:planned, E001:planned | network-codec:open, local-serialization:open |
-| [ptr-router](../../crates/ptr-router/README.md) | `scaffold` | 4 | 1111 | 2 | 53 | 11 | 9 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
+| [ptr-router](../../crates/ptr-router/README.md) | `scaffold` | 5 | 2086 | 3 | 76 | 16 | 10 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
 | [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 32 | 35415 | 80 | 945 | 126 | 38 | E001:planned, E003:planned, E004:planned, R011:frozen, R012:frozen | — |
 | [ptr-search](../../crates/ptr-search/README.md) | `prototype` | 3 | 1696 | 4 | 55 | 10 | 6 | Q001:planned, Q002:frozen, E002:planned, E003:planned | lexical-search:open, local-vector-search:open, gpu-vector-search:open, distributed-search:open, structural-code-search:open |
 | [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 1 | 126 | 2 | 8 | 6 | 4 | L001:running, E001:planned | security-context:open |
