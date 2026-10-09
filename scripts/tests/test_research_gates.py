@@ -5263,7 +5263,6 @@ class EnrolledExperimentTests(unittest.TestCase):
             f"Q003: preregistration key baseline_strong_rag_sha256 is a placeholder ({pinned})",
             "Q003: experiment.toml names no preregistration_sha256",
             "Q003: experiment.toml names no preregistration_rules_sha256",
-            "Q003: baseline research/baselines/rag_reference/config.toml: hybrid.embedding_model is a placeholder ('must-be-pinned-before-reported-run')",
             *strong_errors("Q003"),
             f"R004: preregistration key public_regression_gate_permille is a placeholder ({pinned})",
             f"R004: preregistration key backward_transfer_min_permille is a placeholder ({pinned})",
