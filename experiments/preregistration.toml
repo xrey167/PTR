@@ -213,12 +213,29 @@ seeds = "int-list"
 public_regression_gate_permille = "int"
 backward_transfer_min_permille = "int"
 
+# The harness (bins/ptr-bench, m008) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text. The
+# pool and the vectors are the frozen artifact of research/embeddings. The recency buffer is configured
+# here (it has no baseline directory); the hybrid retrieval is the rag_reference baseline.
 [experiment.M008.required]
 seeds = "int-list"
+harness = "str"
 token_budget = "int"
 recency_window = "int"
 recency_buffer_baseline = "str"
 hybrid_retrieval_baseline = "str"
+embedding_model = "str"
+embedding_revision = "str"
+embedding_vectors_sha256 = "str"
+pool_sha256 = "str"
+preregistration_text = "file"
+criteria = "file"
+
+[[experiment.M008.baseline]]
+name = "rag_reference"
+path = "research/baselines/rag_reference/config.toml"
+keys = ["hybrid.embedding_model"]
+status_key = "status"
 
 [experiment.E005.required]
 seeds = "int-list"

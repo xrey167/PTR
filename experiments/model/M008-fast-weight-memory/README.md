@@ -1,21 +1,23 @@
 # M008-fast-weight-memory
 
 ## Hypothesis
-Does a revocable fast-weight working memory improve recall of recent and updated facts within a session over a recency buffer and plain retrieval at an equal token budget?
+Does a revocable fast-weight working memory improve recall of recent and updated facts within a session over a recency buffer and plain retrieval at an equal token budget? The operational form is in `experiment.toml`: `ptr_fastmem`'s gated delta-rule memory, keyed by the projected frozen MiniLM embedding of a cue and valued by the identifier code of a fact, against a recency buffer of the last 39 writes and the pinned `rag_reference` hybrid retrieval, on seeded synthetic sessions with updates, at the 512-token budget and at a matched abstention operating point.
 
 ## Primary metrics
-update-aware recall@1; Unknown rate; false recall rate; tokens; latency
+Update-aware recall@1 (a fact counts only if it is the current version of the queried cue), false recall rate, Unknown rate, tokens presented and latency, plus the memory's contract counters (`experiment.toml` lists all 62 metrics). Wall-clock times are descriptive and never judged.
 
 ## Baseline
-recency buffer of the last N facts; hybrid retrieval over the same facts (Q003 stack)
+A recency buffer of the last N facts (N = floor(512 / 13) = 39, answered by cosine on the frozen vectors) and hybrid retrieval over the same facts (the Q003 stack: `research/baselines/rag_reference`, BM25 + cosine, RRF k=60) over the live facts (gated) and over an append-only index (reported, not gated).
 
 ## Falsification
-No gain in update-aware recall at equal tokens, or a false recall rate above the recency baseline, rejects the memory as a default.
-
-## Design
-Mechanism and threat model: [35 — Agentic substrate](../../../docs/architecture/35-agentic-substrate.md).
-
-The `[preregistration]` table of `config.toml` is frozen before M008 leaves `planned` (`experiments/preregistration.toml`, `scripts/check_research_gates.py`): the token budget, the recency window and both baselines, which have no configuration in `research/baselines/`. All are still placeholders, so the gate holds M008 in `planned`.
+See `experiment.toml` and [criteria.toml](criteria.toml): ten falsifier rules and twenty-two coverage rules; every seed must pass and COMPLETED needs complete mutation evidence. In short: no positive lower bound of the paired-bootstrap recall gain over either gated baseline, or a false recall rate above the recency buffer's, rejects the memory as a default.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.
+
+## Status of this directory
+M008 is `planned` and listed in `experiments/preregistration.toml` (unfrozen): the harness (`bins/ptr-bench/src/experiments/m008/`, subcommand `fast-weight-memory <seed>`; the Python bridge `bins/ptr-bench/src/experiments/rag_bridge.rs`), [PREREGISTRATION.md](PREREGISTRATION.md), `criteria.toml`, `aggregate.py` and the mutation plan ([tests/mutations.toml](tests/mutations.toml)) are in place, and `config.toml` holds the `[preregistration]` table with every decided value; the head pins the two text digests, sets the entrypoint and runs the full mutation check at the freeze. `[pinned_thresholds]` holds the choices the harness compiles in (a drift test compares them), among them the memory shape and the abstention thresholds that were set on the **pilot seeds 1001..1005 only**.
+
+**What the pilot says (not a result; pilot seeds only).** Scope: 400 cues written per session, 8 heads x key_dim 32 x value_dim 64 (pilot shapes up to 16 heads and key_dim 384), untrained seeded random projections of frozen MiniLM vectors, cue-text keys, a synthetic pool. At the matched operating point (at most 5 percent of the unanswerable pilot queries answered) pooled recall@1 is 18 per mille at the plan's shape and at most 36 at any shape tried, against 60 for the recency buffer and 536 for live hybrid retrieval ([tests/pilot_calibration.json](tests/pilot_calibration.json)). The loss does not depend on that point: without any abstention the memory recalls 56 per mille (50 when asked with the cue text itself) against 65 for the recency buffer and 828 for live hybrid retrieval. The capacity table (pilot seed 1001, unthresholded recall@1 per mille, 16 / 32 / 64 / 128 / 400 cues) is 750 / 541 / 360 / 147 / 56 for the memory, against 750 / 750 / 360 / 225 / 65 for the recency buffer and 833 / 1000 / 1000 / 941 / 828 for live hybrid retrieval: the memory holds its cues while they stay near the key dimension per head, decays smoothly beyond it, ; on seed 1002 it is ahead of the recency buffer at 16 cues (916 against 583, about a dozen queries, so noisy) and at or below it from 64 cues up on both seeds. A negative result at 400 cues is therefore the expected outcome, and it is reported as one. The limit at larger shapes is `key_dim <= 384` (the embedding width) and the effective rank of the templated keys, not the state bound. Mean-centring, learned projections and per-channel decay were not tried. The three descriptive blocks (unthresholded recall, the cue-text query, a threshold sweep and the capacity table) are part of every run, so they are frozen with it.
+
+Stated limits: a synthetic templated English pool; the memory is given a cue extractor (keyed by the cue text) that the baselines lack, while hybrid_live is told which document an update supersedes; random untrained projections, one draw of the projection and codebook seeds; a re-implementation of the decode rule in the harness (a shared defect would not be seen); one machine profile; vectors pinned from one CPU run; the false-recall rule is weak (abstaining passes it); the gain falsifiers have no discriminating mutation because no run made had a clean gain counter (the memory is below live hybrid retrieval at every size and seed tried; the gain bounds over the recency buffer were negative on every run); the positive control and a unit test show the path can pass.
