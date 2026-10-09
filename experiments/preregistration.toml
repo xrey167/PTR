@@ -92,7 +92,11 @@ nondeterminism_rerun_case = "int"
 low_cells = "str-list"
 
 # The four owner decisions (calibration_set_rule, adjudicators_see_intent,
-# harm_breakdown_namespaces, adjudication_protocol) block until signed.
+# harm_breakdown_namespaces, adjudication_protocol) were signed on 2026-10-09; what still
+# blocks is the protocol's digest, pinned at the freeze. The keys after
+# `adjudication_protocol` are the sizes of the simulated stream, the Monte-Carlo coverage
+# test, the held-out tests and the off-policy evaluation (PREREGISTRATION.md derives
+# each).
 [experiment.F003.required]
 seeds = "int-list"
 alpha_permille = "int"
@@ -105,6 +109,20 @@ calibration_set_rule = "str"
 adjudicators_see_intent = "bool"
 harm_breakdown_namespaces = "str"
 adjudication_protocol = "file"
+harness = "str"
+stream_branches = "int"
+slice_rate_permille = "int"
+adjudicator_error_permille = "int"
+policy_sizes = "int-list"
+mc_replicates = "int"
+coverage_test_level_ppm = "int"
+heldout_familywise_permille = "int"
+heldout_tests = "int"
+ope_logs = "int"
+ope_log_branches = "int"
+ope_bias_sigmas = "int"
+preregistration_text = "file"
+criteria = "file"
 
 [experiment.Q003.required]
 seeds = "int-list"

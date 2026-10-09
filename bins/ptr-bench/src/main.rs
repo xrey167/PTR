@@ -91,6 +91,11 @@ fn main() {
         "weak-supervision" => {
             experiments::f002::run(strict_or_exit(experiments::f002::seed_from_args(&args)))
         }
+        // The harness of F003: `<seed>` or the mutation checker's `<n> <seed>` with the same seed
+        // twice; no default seed, and a typo stops the run.
+        "calibrated-arbiter" => {
+            experiments::f003::run(strict_or_exit(experiments::f003::seed_from_args(&args)))
+        }
         // The harness of R007: one seed per run, no default seed.
         "span-forget" => experiments::r007::run(strict_or_exit(seed_arg(&args, "span-forget"))),
         // The harness of S001: `<seed>` (the pinned scale) or `<operations> <seed>` (the mutation checker's

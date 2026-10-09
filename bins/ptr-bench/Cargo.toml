@@ -51,6 +51,8 @@ ptr-verifier = { workspace = true }
 # F001 runs the generate-verify-repair loop and the population selection of ptr-feedback.
 ptr-feedback = { workspace = true }
 ptr-pg = { workspace = true, optional = true }
+# F003 compares the arbiter's Clopper-Pearson bound with the harness's own.
+ptr-analytics = { workspace = true }
 # S003 opens and merges branches, and L004 writes merge records whose plan
 # digest replay recomputes.
 ptr-branch = { workspace = true }
