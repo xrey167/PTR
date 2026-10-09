@@ -1,6 +1,6 @@
 version = 1
 id = "F003"
-status = "planned"
+status = "prepared"
 hypothesis = "Does the calibrated arbiter keep the harm rate of auto-proposed branches at or below alpha on held-out adjudications? The claim is scoped to the mechanism and to a low-noise regime: a simulated adjudicator with a known error rate of 2 per mille stands in for people, because at 20 per mille Learn-then-Test certifies nothing in roughly three calibrations of four (a utility limit of the start rule, reported by an ungated descriptive arm, not a violation). What is tested is that the Learn-then-Test guarantee holds in this scenario (shown empirically, not proven), that no ineligible branch is auto-proposed and that off-policy estimates are sound. Reviews saved are reported descriptively only."
 metrics = "coverage of the Learn-then-Test guarantee over Monte-Carlo replicates; per-policy exact held-out test of the adjudicated harm rate of auto-proposals, with the literal upper bound reported; ineligible auto-proposals; escalation share and reviews saved; off-policy estimate error"
 baseline = "escalate every branch; fixed uncalibrated threshold"
@@ -11,3 +11,5 @@ seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json", "mutations.json"]
 design = "../../../docs/architecture/35-agentic-substrate.md"
+preregistration_sha256 = "1f2dd4813570ad823abdd635d39b4508154dbf6e39f21b23c9944d9fd7b2475d"
+preregistration_rules_sha256 = "410d00ce8e2870a79fd0a11b8b0b7c55748f2419950ce55c3abbf4ae161e8078"

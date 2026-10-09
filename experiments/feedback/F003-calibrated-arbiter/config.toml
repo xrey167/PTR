@@ -72,7 +72,7 @@ adjudicators_see_intent = false
 harm_breakdown_namespaces = "first ':'-separated segment of each changed key; descriptive only"
 adjudication_protocol = "experiments/feedback/F003-calibrated-arbiter/PROTOCOL.md"
 # The protocol's SHA-256, pinned at the freeze once PROTOCOL.md is final.
-adjudication_protocol_sha256 = "must-be-pinned-before-prepared"
+adjudication_protocol_sha256 = "ff3d4ae9657c2da5ab3605a8a6c964bdadca957dfcc9d2ee8a4a7126f41b1a67"
 # The simulated stream: branches per seed, the share of eligible branches reserved for
 # adjudication (the calibration slice), the simulated adjudicator's error rate, and the
 # adjudications after which a policy is recorded.
@@ -94,6 +94,6 @@ ope_log_branches = 4000
 ope_bias_sigmas = 4
 # The preregistration text and the decision rule, frozen with the table.
 preregistration_text = "experiments/feedback/F003-calibrated-arbiter/PREREGISTRATION.md"
-preregistration_text_sha256 = "must-be-pinned-before-prepared"
+preregistration_text_sha256 = "b776ec4e04e30302e4394222ecfaa61f71242e40d65110ce3ea8d90c1b412c3a"
 criteria = "experiments/feedback/F003-calibrated-arbiter/criteria.toml"
-criteria_sha256 = "must-be-pinned-before-prepared"
+criteria_sha256 = "2f9d32e0748b853d04c50722b0b0f10087a09fc6e88872509b35d3b655f93a21"

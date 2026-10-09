@@ -183,7 +183,7 @@ status = "planned"
 [[experiment]]
 id = "F003"
 path = "feedback/F003-calibrated-arbiter"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "R004"
