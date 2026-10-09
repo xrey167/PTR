@@ -51,7 +51,7 @@
 
 ### Linked experiments
 
-- [S001](../../experiments/semdb/S001-invalidation/README.md) — `planned`
+- [S001](../../experiments/semdb/S001-invalidation/README.md) — `frozen`
 - [S002](../../experiments/semdb/S002-snapshot-cancellation/README.md) — `planned`
 - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
 

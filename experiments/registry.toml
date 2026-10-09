@@ -88,7 +88,7 @@ status = "planned"
 [[experiment]]
 id = "S001"
 path = "semdb/S001-invalidation"
-status = "prepared"
+status = "completed"
 
 [[experiment]]
 id = "S002"
