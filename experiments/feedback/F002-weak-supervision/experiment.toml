@@ -1,6 +1,6 @@
 version = 1
 id = "F002"
-status = "planned"
+status = "prepared"
 hypothesis = "Does a verifier-precedence Dawid-Skene label model produce better calibrated and more accurate labels than majority vote at the same annotation budget?"
 metrics = "accuracy on uniform gold; Brier score; ECE; Unknown and Disputed rates; Krippendorff alpha"
 baseline = "majority vote; verifier-only labels"
@@ -11,3 +11,5 @@ seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json", "mutations.json"]
 design = "../../../docs/architecture/35-agentic-substrate.md"
+preregistration_sha256 = "2fd0fe4cd909d06d9b27c1b6cf1685701c7fe7ed3759cb5c928b4d237fa60813"
+preregistration_rules_sha256 = "284c3dc30e1a612f488e06489a9da367eca02f47ee6b224655d5d393692976de"
