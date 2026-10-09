@@ -133,7 +133,7 @@ status = "completed"
 [[experiment]]
 id = "F001"
 path = "feedback/F001-generate-verify-repair"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "E001"
