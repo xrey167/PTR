@@ -12,7 +12,7 @@ pub const CONFIG_TOML: &str =
 pub const EXPERIMENT_TOML: &str =
     include_str!("../../../../../experiments/runtime/R001-mailbox-backpressure/experiment.toml");
 pub const DRAFT_TEXT: &str = include_str!(
-    "../../../../../experiments/runtime/R001-mailbox-backpressure/DRAFT_PREREGISTRATION.md"
+    "../../../../../experiments/runtime/R001-mailbox-backpressure/PREREGISTRATION.md"
 );
 
 /// The subcommand of the harness (`ptr-bench <BENCHMARK> <seed>`).

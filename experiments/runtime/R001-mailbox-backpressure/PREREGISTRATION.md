@@ -1,4 +1,4 @@
-# R001 mailbox-backpressure: draft preregistration
+# R001 mailbox-backpressure: preregistration
 
 Pre-freeze text of the preregistration of R001; at the freeze it becomes the `preregistration_text` file of
 `config.toml`'s `[preregistration]` table and its SHA-256 is frozen with the table, as R007's was. R001 is `planned`:

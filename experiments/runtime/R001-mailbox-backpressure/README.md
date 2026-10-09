@@ -11,7 +11,7 @@ Record matched baselines, hardware, seeds and negative results. Do not change su
 
 ## Draft status and scope (2026-10-09)
 R001 is still `planned`: the harness, the criteria, the aggregator and the mutation plan are built, but nothing is frozen and
-no run is evidence. The draft text is [DRAFT_PREREGISTRATION.md](DRAFT_PREREGISTRATION.md) (it becomes the preregistration
+no run is evidence. The draft text is [PREREGISTRATION.md](PREREGISTRATION.md) (it becomes the preregistration
 at the freeze, together with a `[preregistration]` table in `config.toml` and an entry in
 `experiments/preregistration.toml`); the decision rules are [criteria.toml](criteria.toml), applied by
 [aggregate.py](aggregate.py); the defects the harness must detect are [tests/mutations.toml](tests/mutations.toml).

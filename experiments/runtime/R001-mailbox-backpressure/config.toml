@@ -26,3 +26,18 @@ close_before_id = 80
 control_capacity = 8
 threaded = { producers = 4, capacity = 8, fill_rounds = 2000, fill_per_producer = 16, contend_per_producer = 20000, closed_per_producer = 64, close_after_received = 10000 }
 seed_aggregation = "every_seed_must_pass"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "mailbox-backpressure"
+capacities = [1, 8, 128]
+service_min_ticks = 16
+service_max_ticks = 32
+control_capacity = 8
+threaded_producers = 4
+threaded_fill_rounds = 2000
+preregistration_text = "experiments/runtime/R001-mailbox-backpressure/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/runtime/R001-mailbox-backpressure/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

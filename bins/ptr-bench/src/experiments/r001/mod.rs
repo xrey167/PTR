@@ -1,5 +1,5 @@
 //! Experiment R001, mailbox backpressure, as a harness: `ptr-bench mailbox-backpressure <seed>`
-//! runs the cases C1 to C9 of the experiment's draft preregistration once for one seed and
+//! runs the cases C1 to C9 of the experiment's preregistration once for one seed and
 //! prints exactly one JSON object on stdout.
 //!
 //! One run is one seed's evidence, judged mechanically by the experiment's `aggregate.py`
