@@ -1,6 +1,6 @@
 version = 1
 id = "S002"
-status = "planned"
+status = "prepared"
 hypothesis = "Can stale reasoning be cancelled safely on revision changes? Cooperative, revision-granular cancellation of a steppable run before the effect boundary never weakens the hard boundary (no stale action executes or is recorded as attempted, in either arm) and a cancelled run takes no step on a replaced snapshot. Capability exercised in a harness only: no shipped host (ptr-server, ptrd) steps runs, the blocking entry points force cancellation off, and total compute (including the restarts cancellation causes) is reported, not claimed to fall."
 metrics = "runs, stale_runs_by_schedule, stale_runs_observed, stale_actions_executed, stale_effect_attempts_committed, stale_checkpoint_admissions, fresh_actions_refused, stale_boundary_attempts_a0, stale_boundary_attempts_a1, stale_action_rate_permille_a0, stale_action_rate_permille_a1, boundary_refusals, boundary_refusals_a0, boundary_refusals_a1, cancelled_runs, false_cancellations, missed_cancellations, fresh_runs_completed, fresh_runs_starved, cancel_contract_violations, boundary_arm_divergences, cancel_latency_rounds_max, cancel_latency_violation, wasted_units_a0, wasted_units_a1, wasted_work_violation, total_units_a0, total_units_a1, net_units_a1_minus_a0, double_executions, executor_vs_ledger_mismatches, mirror_drift, product_panics, product_hangs, effect_kinds_covered, generation_stale_cases, injection_positions_covered, control_trips, noop_writes_observed, retries_replayed, restarted_runs"
 baseline = "no cancellation (arm A0: semantic.cancel_stale_revisions = false; the run goes on with its next snapshot and the hard effect boundary alone refuses what is stale)"
@@ -10,3 +10,5 @@ entrypoint = "cargo run --release --locked -p ptr-bench -- snapshot-cancellation
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json", "mutations.json"]
+preregistration_sha256 = "ed35446081dd3d2488095887bcc8b92cd21140b9ef9bee777aea1a89ca0c08c8"
+preregistration_rules_sha256 = "3bb5b5c1ad957628dcb0ed1a0461257e2ef4133234d0b27363dbc2264b7b91b4"
