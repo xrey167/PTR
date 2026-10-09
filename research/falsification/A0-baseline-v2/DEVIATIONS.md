@@ -11,7 +11,17 @@ This file is not part of any digest pin (check: `scripts/a0_baseline_study.py`
 pins `criteria.toml`, `PREREGISTRATION.md`, the deciders, the core, the lock and
 the runner sources, not this file), so entries are added when the events happen.
 
-Log: (empty; no run of this study has started.)
+Log: D1.
+
+### D1: M003-v3 seed 71 interrupted by a container restart (2026-10-09)
+
+Facts, from the record metadata only (`experiments/model/M003-v3-latent-recurrence/results/run-20261009T201837.952950Z-seed-71.json`, committed alone as `542fd559`): `status` is `started`, there is no `exit_code`, no `finished_at`, and no `stdout` or `stderr` key. The container hosting the run was restarted while the seed was running. M003-v3 seeds 17, 29 and 43 had completed with exit 0 and are committed (`50a429fd`, `8fedda14`, `c47fce9e`). Seed 101 was never started: the runner stops a study after a seed that did not complete.
+
+What was observed: no output of seed 71. The record holds none and no terminal, log or partial row file showed rows. The record's contents beyond that metadata were not read, and the rows of seeds 17, 29 and 43 were not read for this entry.
+
+Outcome by the preregistered interruption rule (`DESIGN.md`, "Interruption rule"): M003-v3 is **INCONCLUSIVE-INTERRUPTED**. No statistic is computed and the completed seeds are not read by the decider. The seed is spent, M003-v3 is not rerun, patched or completed, and seed 101 is not run. The experiment stays `prepared` until the owner registers a successor study. M001-v6 and M002-v11 are independent experiments that completed all five seeds with exit 0 and are decided separately.
+
+What `RESULTS.md` says: M003-v3 has no result, no verdict on latent recurrence and no quality claim; the outcome is INCONCLUSIVE-INTERRUPTED.
 
 The story of why this study exists (the v1 decider's record-identity defect and
 the two interruptions of v1) is in `DESIGN.md`, "Why v2 replaced v1", and in
