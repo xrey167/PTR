@@ -1,6 +1,6 @@
 version = 1
 id = "M001-v6"
-status = "planned"
+status = "prepared"
 hypothesis = "Do typed semantic slots improve out-of-distribution routing accuracy by at least 0.02 over index-tagged raw binding (no-semantic-slots-masked) in A0 on operator-routing v2, without a per-fold OOD calibration regression? The full A0 bundle against the pinned plain baseline is decided separately and labelled bundle vs baseline, non-isolating."
 metrics = "OOD accuracy (sole primary endpoint: mean over three folds, paired over five seeds, delta_min 0.02); gated per fold on test_ood with raw logits: NLL, ECE15; IID accuracy; raw coverage and selective error; matched parameters; descriptive: total_params, flops_per_example, latent_steps, wall time, explicit_token_count, temperature-fitted diagnostics; mask share (masked minus unmasked accuracy, diagnostic arm no-semantic-slots)"
 baseline = "no-semantic-slots-masked (index-tagged raw binding; isolating contrast); the pinned plain baseline research/baselines/plain_model (ptr-burn-a0@matched-cross-attention-v1) for the bundle contrast"
@@ -10,3 +10,5 @@ entrypoint = "cargo +1.95.0 run --release --locked --quiet --manifest-path model
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json"]
+preregistration_sha256 = "eb2f088e29a0a4098bdeb6f270d632594c4e984bb2e9aa9ee741ac767d402fed"
+preregistration_rules_sha256 = "956a1704f03ffe424b80729b0df6204e9978b9bc44d20bba66a7263c297d5d2f"

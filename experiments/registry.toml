@@ -428,7 +428,7 @@ status = "prepared"
 [[experiment]]
 id = "M001-v6"
 path = "model/M001-v6-semantic-slots"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "M002-v11-sweep"
@@ -438,7 +438,7 @@ status = "prepared"
 [[experiment]]
 id = "M002-v11"
 path = "model/M002-v11-typed-attention"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "M003-v3-sweep"
@@ -448,4 +448,4 @@ status = "prepared"
 [[experiment]]
 id = "M003-v3"
 path = "model/M003-v3-latent-recurrence"
-status = "planned"
+status = "prepared"
