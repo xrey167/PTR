@@ -1,0 +1,46 @@
+version = 1
+name = "strong_retrieval"
+status = "pinned-retrieval-only"
+tests_dir = "tests"
+
+# Retrieval only. There is deliberately no [answer] section: this baseline ranks
+# documents and generates nothing. strong_rag (answer generator, E002/E005) stays
+# blocked and is not unblocked by this directory.
+
+[lexical]
+backend = "bm25"
+implementation = "research/baselines/rag_reference/runner.py"
+k1 = 1.5
+b = 0.75
+top_k = 100
+
+[dense]
+model = "BAAI/bge-m3"
+revision = "5617a9f61b028005a4858fdac845db406aefb181"
+mode = "dense-only"
+dimension = 1024
+pooling = "cls"
+normalize = true
+max_length = 512
+top_k = 100
+# The vectors come from research/embeddings (pinned file); the driver never embeds.
+vectors = "research/embeddings/vectors-q003-bge-m3.f16"
+pool = "research/embeddings/pool-q003.jsonl"
+
+[fusion]
+method = "rrf"
+k = 60.0
+
+[reranker]
+model = "BAAI/bge-reranker-v2-m3"
+revision = "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+top_k = 50
+max_length = 512
+batch_size = 16
+device = "cpu"
+dtype = "float32"
+# Score = the single logit of the sequence-classification head over (query, passage).
+
+[driver]
+protocol = 1
+entry = "research/baselines/strong_retrieval/driver.py"
