@@ -1,0 +1,173 @@
+# Defects the C001 harness must detect. `python scripts/mutation_check.py C001 --check` verifies the anchors (every `find`
+# occurs exactly once in its file, so the plan cannot drift from the code silently). The mutations are RUN by
+# `research/consciousness/gw/run_mutations.py` (planted in a throwaway copy, never in the working tree), not by
+# scripts/mutation_check.py, which builds a Cargo package and cannot plant a defect in a Python entrypoint (gap reported in
+# the C001 README). The keys `package`, `features`, `subcommand`, `cases` and `seed` exist only because the checker's plan loader
+# requires them; `subcommand` is the benchmark name the aggregator checks in results/mutations.json.
+#
+# A mutation is killed when the harness, run at the reduced scale of `runner_args` with the defect planted, exits 1 and an
+# expected hard counter is above zero (or an expected coverage counter fails), or exits 2 because an expected negative control
+# did not trip (`expect` entries "control:<name>"). A defect of the PRODUCT arm (the workspace) must reach a counter and exit 1,
+# never exit 2: the negative controls run on doctored inputs or on the all-to-all net, not on the arm under test, so a broken
+# workspace cannot preempt its own falsifier. Every hard counter is expected by at least one mutation (a unit test checks it).
+#
+# Not listed, on purpose: changes that alter accuracy only (the activation inside the update network, the optimiser). They
+# are judged by the paired rule across seeds, not by a per-seed structural counter. The statistics (bounds, margin, sign,
+# quantile, seed count, the three outcomes) are mutated in scripts/tests/test_c001_aggregate.py.
+
+package = "c001-gw"
+features = ""
+subcommand = "c001"
+cases = 200
+seed = 1002
+runner_args = ["--set", "steps=200", "--set", "eval_every=100"]
+hard_counters = [
+    "param_mismatch_arms",
+    "no_comm_leaks",
+    "no_broadcast_leaks",
+    "bottleneck_violations",
+    "dropped_module_leaks",
+    "n_leaks",
+    "train_eval_overlap",
+    "nondeterminism",
+    "nonfinite_arms",
+    "no_comm_above_chance",
+    # Not hard counters of the harness: a coverage counter and negative controls, listed because
+    # scripts/mutation_check.py requires every expected name to be in this list.
+    "workspace_influence_hits",
+    "control:n_leak",
+    "control:overlap",
+    "control:param_mismatch",
+    "control:isolation_probe",
+    "control:bottleneck",
+    "control:dropout_probe",
+]
+
+[[mutation]]
+name = "topk-write-not-applied"
+file = "research/consciousness/gw/model.py"
+find = 'masked = torch.full_like(scores, float("-inf")).scatter(-1, top.indices, top.values)'
+replace = "masked = scores"
+expect = ["bottleneck_violations"]
+
+[[mutation]]
+name = "broadcast-reaches-sensory-modules-in-no-broadcast-arm"
+file = "research/consciousness/gw/model.py"
+find = "msg = msg * keep"
+replace = "msg = msg"
+expect = ["no_broadcast_leaks"]
+
+[[mutation]]
+name = "no-comm-arm-communicates"
+file = "research/consciousness/gw/model.py"
+find = 'if scheme == "all_to_all":'
+replace = 'if scheme in ("all_to_all", "no_comm"):'
+expect = ["no_comm_leaks"]
+
+[[mutation.also]]
+find = '''elif self.scheme == "all_to_all":
+                h = h + self._pairwise(h, alive)'''
+replace = '''elif self.scheme in ("all_to_all", "no_comm"):
+                h = h + self._pairwise(h, alive)'''
+
+[[mutation]]
+name = "reporter-pools-sensory-inputs"
+file = "research/consciousness/gw/model.py"
+find = "h = torch.cat([h_s, self.reporter_init.expand(b, 1, self.d)], dim=1)"
+replace = "h = torch.cat([h_s, h_s.mean(dim=1, keepdim=True)], dim=1)"
+expect = ["no_comm_leaks", "no_comm_above_chance"]
+
+[[mutation]]
+name = "dropped-module-still-writes"
+file = "research/consciousness/gw/model.py"
+find = "h_s = torch.nn.functional.gelu(self.encoder(x * alive[:, :n, None]))"
+replace = "h_s = torch.nn.functional.gelu(self.encoder(x))"
+expect = ["dropped_module_leaks"]
+
+[[mutation.also]]
+find = 'scores = scores.masked_fill(~alive[:, None, :n], float("-inf"))'
+replace = "scores = scores"
+
+[[mutation]]
+name = "workspace-arm-does-not-broadcast"
+file = "research/consciousness/gw/model.py"
+find = "h = h + self._read(h, ws, only_reporter=False)"
+replace = "h = h + self._read(h, ws, only_reporter=True)"
+expect = ["workspace_influence_hits"]
+
+[[mutation]]
+name = "training-uses-sixteen-modules"
+file = "research/consciousness/gw/harness.py"
+find = 'train_data = make_batch(torch.Generator().manual_seed(train_seed), cfg["train_size"], n_train, cfg)'
+replace = 'train_data = make_batch(torch.Generator().manual_seed(train_seed), cfg["train_size"], 16, cfg)'
+expect = ["n_leaks"]
+
+[[mutation]]
+name = "id-evaluation-uses-training-examples"
+file = "research/consciousness/gw/harness.py"
+find = 'id_batch = make_batch(gens["id"], cfg["eval_size"], n_train, cfg)'
+replace = 'id_batch = {k: v[: cfg["eval_size"]] for k, v in train_data.items()}'
+expect = ["train_eval_overlap"]
+
+[[mutation]]
+name = "ablation-width-not-matched"
+file = "research/consciousness/gw/harness.py"
+find = "widths[name] = gwmodel.match_width(name, cfg, target)"
+replace = 'widths[name] = cfg["ffn_workspace"]'
+expect = ["param_mismatch_arms"]
+
+[[mutation]]
+name = "unseeded-initialisation"
+file = "research/consciousness/gw/harness.py"
+find = 'torch.manual_seed(arm_seed(seed, "determinism"))'
+replace = "torch.manual_seed(time.time_ns() % (2**31))"
+expect = ["nondeterminism"]
+
+[[mutation]]
+name = "loss-goes-nonfinite"
+file = "research/consciousness/gw/harness.py"
+find = "last_loss = float(loss)"
+replace = 'last_loss = float("nan")'
+expect = ["nonfinite_arms"]
+
+[[mutation]]
+name = "bottleneck-check-counts-nothing"
+file = "research/consciousness/gw/harness.py"
+find = 'return sum(int(((attn > 0).sum(dim=-1) > limit).sum()) for name, attn in trace.items() if name.startswith("write"))'
+replace = "return 0"
+expect = ["control:bottleneck"]
+
+[[mutation]]
+name = "n-leak-check-counts-nothing"
+file = "research/consciousness/gw/harness.py"
+find = "return len(set(observed_train_n) & set(ood_n))"
+replace = "return 0"
+expect = ["control:n_leak"]
+
+[[mutation]]
+name = "overlap-check-counts-nothing"
+file = "research/consciousness/gw/harness.py"
+find = "return sum(1 for h in row_hashes(eval_x) if h in train_hashes)"
+replace = "return 0"
+expect = ["control:overlap"]
+
+[[mutation]]
+name = "param-match-check-counts-nothing"
+file = "research/consciousness/gw/harness.py"
+find = "return sum(1 for arm, n in counts.items() if arm != reference and 1000 * abs(n - ref) > tolerance_permille * ref)"
+replace = "return 0"
+expect = ["control:param_mismatch"]
+
+[[mutation]]
+name = "influence-probe-sees-nothing"
+file = "research/consciousness/gw/harness.py"
+find = "bumped[:, source] = bumped[:, source] + scale"
+replace = "bumped[:, source] = bumped[:, source] + 0.0 * scale"
+expect = ["control:isolation_probe"]
+
+[[mutation]]
+name = "dropout-probe-sees-nothing"
+file = "research/consciousness/gw/harness.py"
+find = "bumped[:, 0] = bumped[:, 0] + scale"
+replace = "bumped[:, 0] = bumped[:, 0] + 0.0 * scale"
+expect = ["control:dropout_probe"]

@@ -32,6 +32,9 @@ service, one consulted once per request can. Placement changes how an expert is
 called, never what it is, so the same lifecycle, gates and revocation rules apply
 at every level.
 
+The closed-loop form of this principle, in which every L2 output is a proposal accepted only
+through the verifier fabric and verifier findings are the primary routing signal, is section 11.
+
 ## 2. Three levels
 
 | Level | Unit | Where it runs | Router | Evaluation / decision |
@@ -358,6 +361,15 @@ distillation data and held-out status are pinned; compute matching is on trainin
 FLOPs with `compute_relative_tolerance = 0.01` (preregistered), training_flops is
 declared per arm, and a mismatch makes the run invalid.
 
+**Indicator arms (later; added with [38](38-consciousness-indicators.md), no existing claim or
+criterion above changes).** After the arms above have a baseline on OLMoE, the consciousness-indicator
+experiments of the C series run as *later arms* on the same infrastructure: C006 (workspace-gated
+Pod routing, run as a new test on Pods, built only if the CPU mechanism test C001 is supported; see doc 38 section 6), C002 stage B (a self-model Pod
+that predicts the MoE's own errors against an external probe), C003 stage B (attention-schema
+routing control) and C004 stage B (recurrent integration against a depth-matched feed-forward
+stack). They use the same pins, seeds and fail-closed rules as M010-M015, add no reward term, and
+train on no statement about consciousness or experience.
+
 ## 6. Rust binding
 
 `bindings/ptr-py` is **merged** (#123): a PyO3/maturin crate `ptr_py` in its own
@@ -411,7 +423,7 @@ Sources were checked; corrections to common readings are in the notes.
 | MixLoRA | 2404.15159 | Makes a dense model an MoE; about 2x latency |
 | Mixture of Routers | 2503.23362 | +0.4 to 1.2 points; not tested on real pretrained MoEs |
 | RA-MoE | 2605.28306 | About **multilingual** adaptation |
-| Aux-loss-free balancing (DeepSeek) | 2408.15664 | Bias only for top-k selection; u = 1e-3 sign update |
+| Aux-loss-free balancing (Wang et al.; adopted by DeepSeek-V3, 2412.19437) | 2408.15664 | Bias only for top-k selection; u = 1e-3 sign update |
 | Aux-free theory | 2512.03915 | First posted December 2025, not 2026; regret bound only with a diminishing step; its own experiments show slightly **worse** balance than aux loss |
 | φ-Balancing | 2605.15403 | |
 | CL theory | 2406.16437 | ICLR 2025; per-task routing, terminate gate updates, more experts only delay convergence |
@@ -483,3 +495,188 @@ The policy has no edge into `GATES`: it only proposes.
 - The L3 policy must never gain write access to gates, thresholds or the verifier.
   This is the claim R011 tries to falsify, and it holds only as long as
   `ExpertProposal` stays free of such parameters.
+
+## 10. Indicator capability requirements (cross-reference)
+
+The functional indicator properties of [38](38-consciousness-indicators.md) are stated there as
+explicit capability requirements of the three levels. They are requirements to be tested, not
+properties of any implemented Pod-MoE (nothing in this document is implemented as one), and
+none of them is evidence about consciousness. In short:
+
+| Level | Requirement, in one line | Experiment |
+|---|---|---|
+| L1 token experts | A shared, capacity-limited bottleneck between expert groups, written competitively and read back (GWT); a recurrent state across steps (RPT); load and entropy prediction used to control routing (AST) | C006 stage L1, C004 stage B, C003 stage B |
+| L2 segment or request Pods | A limited-capacity typed workspace (the `ptr-pods::workspace` contract) that Pods compete to write and whose content is broadcast to all Pods and conditions the next routing query (GWT); a self-model Pod that predicts the MoE's errors, uncertainty and expert choices from routing traces, calibrated against verifier outcomes (HOT); a model of the router's own routing used to control routing (AST) | C001 then C006; C002; C003 |
+| L3 meta operators | Read access to the workspace and to the self-model like any Pod; proposals that respond to the self-model's output and learn from verified outcomes (HOT-3, AE-1) | C002 stage B; M013 |
+
+Binding constraints, unchanged from sections 3 and 9: the workspace, the self-model and the
+schema are derived and non-authoritative; they observe and propose and have no edge into the
+gates, thresholds or the verifier (invariants 4, 5, 11); the L3 policy never gains write access
+to them; queues and workspace capacity are bounded (invariant 8). C001 tests a
+learned-attention analogue of the workspace, not the deterministic `ptr-pods::workspace` contract, so
+its outcome does not validate or refute that contract. The decision rule is three-way: supported means
+the L2 prototype (C006) is built and tested on Pods; refuted with power (the upper bound below the
+margin, with the guards holding) downgrades the learned-workspace requirements GW-L1 and GW-L2 to
+exploratory; not shown or invalid changes nothing.
+
+## 11. Verifier-closed Pod-MoE (central design)
+
+Status: **design**. The one measured piece is the loop mechanism of F001 (generate, verify,
+repair; completed, preregistered at `f001-prereg`, five seeds, 24 of 24 planted defects detected):
+a seeded stub generator on a synthetic ActionContract task with seven independent defect slots,
+checked against an exact analytic model. It supports the mechanism (acceptance only through the
+verifier, budgets, no collateral edits, `Exhausted` instead of a best-effort failure) and makes
+**no claim about any model**: its gains over rewrite-only are consequences of the stated stub
+skill. Nothing in this section is implemented as a Pod-MoE.
+
+**Prior art, and what is not claimed.** Routing from verifier verdicts is not new: ORACLE
+(Raj, Kundu, Joshi and Krishna, arXiv:2607.22465, read via alphaXiv) is a training-free feedback
+loop over any model-selection policy that picks a task-appropriate verifier per task type,
+feeds the verified outcome back to a contextual bandit (LinUCB) with delayed feedback, and adds a
+KV-aware dispatch scheduler; it reports up to 7 percentage points higher accuracy at matched cost
+than single-verifier feedback on SWE-bench, tau2-bench and Terminal-Bench. Using verifier
+findings as a routing signal is therefore **not** claimed as new here. Four more routing/verifier
+papers were found by search and are **not read**: RouteAudit (arXiv:2610.02808), CoVeR
+(arXiv:2609.26086), arXiv:2609.34634 and arXiv:2609.33505. What is claimed is the
+**combination** and only as a design to be tested: verifier-closed acceptance (nothing accepted
+without `Candidate::passes`, a score never decides) + finding-routed role Pods + a gated
+workspace with findings broadcast to all Pods + self-observation (self-model and schema, observe
+and propose only) + gated L3 restructuring driven by verifier statistics, all under the closure
+invariants (4, 5, 7, 8, 11, 12) and logged propensities. ORACLE routes between whole models; it has
+no acceptance gate with hard findings, no workspace, no expert lifecycle and no unroutable-finding
+signal for Birth.
+
+### 11.1 Principle
+
+1. **Every expert output at L2 is a typed proposal** submitted to the shared workspace, the
+   bounded, verifier-gated, broadcast blackboard of `ptr-pods::workspace`
+   (`crates/ptr-pods/src/workspace/`, [38](38-consciousness-indicators.md) GW-L2). That contract is
+   deterministic and learns nothing; persisting workspace content in SemDB or a branch overlay is
+   **not** what was built. A proposal is never an answer, an effect or a state change by itself.
+2. **Nothing is accepted without passing the verifier fabric**: status `Pass`, no hard finding,
+   and a verification level at or above the task's required level, judged on the *weakest*
+   per-verifier level (doc 37 section 5; F001's `Candidate::passes`). A score never decides; a
+   learned score cannot override a deterministic contradiction (invariant 11).
+3. **Verifier findings are broadcast to all Pods** (the global-workspace link: GWT-3) and are the
+   **primary routing signal** for what happens next: which repair expert, which retriever,
+   whether to escalate.
+4. **Nothing becomes authoritative until committed** (invariant 4); workspace content, critiques
+   and self-model output are derived (invariant 5).
+5. **Unknown and Disputed are outcomes, not failures to repair** (invariant 12): they lead to a
+   fresh proposal or to escalation, never to repair of a candidate nobody found a defect in.
+
+### 11.2 Expert roles as Pods
+
+| Role | Level | Does | Authority | Exists today | Missing |
+|---|---|---|---|---|---|
+| Generator / proposer | L2 | Produces a typed proposal | none | `Generator` trait (`crates/ptr-feedback/src/repair.rs:23`) with a stub; `Pod` (`crates/ptr-pods/src/lib.rs:183` on the integration line) | OLMoE-class generator Pods behind the loop |
+| Retriever | L2 | Supplies evidence candidates | none; evidence promotion is separate (invariant 6) | `ptr-search`, `ptr-memory` | Retriever Pods that read the workspace |
+| Planner | L2 | Decomposes a task into typed sub-proposals | none | Operator router scaffold (`crates/ptr-core/src/operator_router.rs:12`) | Planner Pod |
+| Learned critic | L2 | Predicts whether a proposal will pass | **advisory only**; cannot accept or veto against the verifier | none | Critic Pod; the guard test that it has no accept path |
+| Finding-routed repair expert | L2 | Repairs the slots a finding class names (one expert per finding class) | none; output is a new proposal | `Repairer` (`repair.rs:29`) and `Critique::from_report` (`candidate.rs:68`) with a stub; routing to repair-role Pods per hard finding code by `FindingRouter` (`crates/ptr-router/src/findings.rs:773`) over a `FindingRegistry` (`:137`) | Real repair experts per finding class (F005) |
+| Verifier fabric | L2 | `Pass`/`Fail`/`Disputed`/`Unknown` with findings and level | **decides acceptance** | `VerificationReport` (`crates/ptr-verifier/src/lib.rs:19`), `VerifierFabric` | none for the contract; more verifiers per domain |
+| Self-model Pod | L2 | Predicts the MoE's own errors, findings and routing from routing traces (the HOT-2/3 indicator, doc 38) | observe and propose only | none | The Pod (C002) |
+| Attention-schema model of the router | L2/L1 | Predicts and controls the router's own routing (AST-1) | observe and propose only | none | The model (C003) |
+| Structural-operator policy | L3 | Proposes Birth, Merge, Split, Freeze, Reactivate, Prune | **proposes only**; gates decide | `ExpertProposal` (`crates/ptr-pods/src/expert.rs:1020`), R011 gate path | Verifier-statistics-driven policy (F006) |
+
+### 11.3 The loop
+
+```mermaid
+flowchart LR
+    REQ[request] --> RT[L2 router<br/>typed state + findings + self-model]
+    RT -->|route, propensity logged| GEN[generator / retriever / planner Pods]
+    GEN -->|typed proposal| WS[(workspace<br/>ptr-pods::workspace)]
+    WS --> VF[verifier fabric]
+    VF -->|Pass, no hard finding, level ok| ACC[accept]
+    VF -->|findings broadcast| WS
+    VF -->|Fail with findings| RT
+    VF -->|Unknown / Disputed| FRESH[fresh proposal or escalate]
+    ACC --> GATE[commit path<br/>ledger event]
+    SELF[self-model Pod] -. predicts, advises .-> RT
+    CRIT[learned critic] -. advisory .-> RT
+    VF -->|statistics| L3[L3 operator policy<br/>proposals only]
+    L3 --> GATES[ForgettingGate + interference + verifier]
+    GATES --> GATE
+```
+
+The critic, the self-model and the L3 policy have no edge into acceptance or into the gates.
+
+### 11.4 Routing at each level
+
+* **L1 (token experts)** stays a learned router for latency. Router and expert *training* use
+  verifier-derived rewards (RLVR, section 5, reward from `VerificationReport`) and the routing
+  metrics already listed there; the router never sees a verifier at inference time.
+* **L2 (Pods)** routes on typed workspace state, the verifier findings of the current
+  proposals and the self-model's predictions. Every decision logs its propensity
+  (`RoutedChoice`, `crates/ptr-router/src/router.rs:81`, produced only by `route_checked`,
+  `router.rs:627`; the generic policy is `Router::policy`, `router.rs:608`). Finding-conditioned
+  routing logs a `FindingRouteRecord` (`findings.rs:492`) with the same quantised propensity,
+  conditional on the currently eligible Pods. Router policies can then be evaluated off-policy
+  with the categorical estimator that section 2 specifies (the arbiter's `evaluate_off_policy`,
+  `crates/ptr-branch/src/arbiter.rs:1027`, and `doubly_robust`, `:1091`, are the template).
+* **L3 (structural operators)** is driven by verifier statistics, still only as proposals:
+  Birth when a finding class has no expert that clears it; Merge when two experts clear the
+  same findings with overlapping subspaces (`measure_interference`,
+  `crates/ptr-lineage/src/subspace.rs:1123`); Prune by AIMER (`aimer_score`,
+  `crates/ptr-lineage/src/aimer.rs:42`) together with usage; Freeze and Reactivate by recent
+  clearance. Every proposal passes the ForgettingGate (`crates/ptr-lineage/src/forgetting.rs:133`),
+  the interference test and the verifier, and is committed only as a ledger event (section 3).
+
+### 11.5 Budgets and termination
+
+Each request carries a verifier-call budget and a round budget, as in F001 (`RepairBudget`,
+`repair.rs:37`). Exhausting either returns `Exhausted` (`Outcome`, `repair.rs:150`), never the
+best failed candidate. Every candidate is verified exactly once. A repair touches only the slots
+the hard findings name. `Unknown` and `Disputed` reports yield a fresh proposal or an
+escalation (to a stronger verifier or a human), never a repair.
+
+### 11.6 Training signal
+
+Every verified `(finding, repair, pass)` transition is a verifiable training example for the
+finding-routed repair expert and, through RLVR, for the router. Rewards come from the verifier
+only. No statement a model makes about itself, in particular none about consciousness or
+experience, is a target, reward or filter (principle 2 of doc 38).
+
+### 11.7 Status
+
+| Piece | Exists (file:line) | Missing | CPU / GPU | Evidence level |
+|---|---|---|---|---|
+| Acceptance gate, budgets, repair of named slots, `Exhausted` | `Candidate::passes` (`crates/ptr-feedback/src/candidate.rs:18`), `RepairLoop` (`repair.rs:166`) | model-backed generators and repairers | CPU | F001: mechanism with a seeded stub, no model claim |
+| Workspace contract: bounded slots, bid competition after the verifier gate, bounded-mailbox broadcast, findings broadcast as refusals, staleness, redaction | `Workspace` (`crates/ptr-pods/src/workspace/mod.rs:360`), `run_cycle` (`cycle.rs:109`), `check_verification_gate` (`gate.rs:26`, the rule of `Candidate::passes`), `WorkspaceConfig` (`config.rs:138`); deterministic order: effective bid, then SHA-256 of (seed, revision, id), then id | a learned or state-conditioned write, a model-backed Pod behind it, persistence of workspace content in SemDB or `Branch` (`crates/ptr-branch/src/branch.rs:48`, `SemanticHost` `crates/ptr-semdb/src/lib.rs:472`), and any evidence that the contract helps a task | CPU for the contract; GPU at Pod level | tests of the contract only (on the integration line); no task evidence |
+| Findings as routing signal | `FindingRouter` (`crates/ptr-router/src/findings.rs:773`), `classify` (`:352`, `Accept` only for `Pass` with no hard finding at the level), `FindingRegistry` (`:137`), `FallbackPolicy` (`:272`), `AdmissibleScorer` (`:649`; a learned scorer sees only verifier-admissible Pods and cannot name `Accept`), `FindingRouteRecord` (`:492`, propensities); the unroutable-code counter is the Birth signal | finding-conditioned routing with real Pods, off-policy evaluation of it, a learned scorer | CPU for the router; GPU with models | tests of the router only; no model evidence |
+| Propensity logging and off-policy evaluation | `route_checked`, arbiter estimators | the categorical L2 estimator and contextual log (section 2) | CPU | the arbiter estimators are tested for triage only |
+| Verifier-statistics L3 operators | lifecycle types and gates (`crates/ptr-pods/src/expert.rs`), R011 gate path | the statistics-driven policy | GPU | R011: gate path only |
+| Self-model, schema, critic | none | all | CPU toy, GPU on OLMoE | none |
+
+### 11.8 Experiments (all planned)
+
+* **F004 `verifier-closed-pod-moe` (GPU).** The verifier-closed Pod-MoE against a standard
+  learned-gate MoE (same total and active parameters), a single generator with self-refinement
+  and, decisively, **best-of-N sampling from the same MoE filtered by the same verifier at the same
+  verifier calls and FLOPs** (verifier access alone must not be able to win the claim), and the
+  same loop with a generic router and an ORACLE-style verifier-conditioned bandit router, at matched compute: verified success, verifier calls, false
+  accepts (must be 0), latency.
+* **F005 `finding-routed-repair-experts` (GPU, real models).** One repair expert per finding class
+  against one generic repair expert and regenerate-only, with a shuffled-map control.
+* **F006 `verifier-driven-expert-lifecycle` (GPU).** Birth and merge driven by verifier
+  statistics against a static expert set and the M013 heuristic, extending M013.
+* The indicator experiments of [38](38-consciousness-indicators.md) (C001-C006) plug into
+  this loop as the workspace (C001, C006), the self-model (C002), the schema (C003) and
+  recurrence (C004).
+
+Each has hypothesis, metrics, baseline and falsification in its `experiment.toml`; all share the
+fail-closed rules and pins of section 5. F004-F006 run only after the arms of section 5 have a
+baseline on OLMoE.
+
+### 11.9 Limits
+
+* F001's gains are a consequence of its stub's per-slot skill; a model-backed result is
+  F004/F005.
+* Each ingredient has prior art (verifier-conditioned routing: ORACLE; best-of-N with a verifier;
+  mixtures of experts; workspaces); a result for the combination is not a result for any single
+  ingredient, which is why F004 includes best-of-N with the same verifier as a baseline.
+* The loop is as good as the verifiers: a domain with only weak verifiers (`LatentAgreement`)
+  cannot clear a `Deterministic` required level and returns `Exhausted`, by design.
+* Verifier cost is part of the budget; a loop that wins only by calling the verifier far more
+  often is not a win at matched compute (F004 matches verifier calls).
+

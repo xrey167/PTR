@@ -379,3 +379,48 @@ status = "completed"
 id = "R013"
 path = "runtime/R013-deferred-self-modification-authority"
 status = "planned"
+
+[[experiment]]
+id = "C001"
+path = "consciousness/C001-global-workspace"
+status = "planned"
+
+[[experiment]]
+id = "C002"
+path = "consciousness/C002-metacognitive-self-model"
+status = "planned"
+
+[[experiment]]
+id = "C003"
+path = "consciousness/C003-attention-schema-routing"
+status = "planned"
+
+[[experiment]]
+id = "C004"
+path = "consciousness/C004-recurrent-integration"
+status = "planned"
+
+[[experiment]]
+id = "C005"
+path = "consciousness/C005-self-report-reliability"
+status = "planned"
+
+[[experiment]]
+id = "C006"
+path = "consciousness/C006-workspace-gated-pod-routing"
+status = "planned"
+
+[[experiment]]
+id = "F004"
+path = "feedback/F004-verifier-closed-pod-moe"
+status = "planned"
+
+[[experiment]]
+id = "F005"
+path = "feedback/F005-finding-routed-repair-experts"
+status = "planned"
+
+[[experiment]]
+id = "F006"
+path = "feedback/F006-verifier-driven-expert-lifecycle"
+status = "planned"

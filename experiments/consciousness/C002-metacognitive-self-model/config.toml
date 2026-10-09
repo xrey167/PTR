@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "C002-metacognitive-self-model"
+path = "experiments/consciousness/C002-metacognitive-self-model"
+tests_dir = "tests"
