@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-28  
-**Code footprint:** 1 Rust source files · 399 nonblank source lines · 2 integration-test files · 11 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-09  
+**Code footprint:** 1 Rust source files · 415 nonblank source lines · 2 integration-test files · 12 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -19,6 +19,7 @@
 - Generic Verifier<T> contract
 - NamedVerifier + VerifierFabric aggregate reports with Fail > Disputed > Unknown > Pass precedence
 - VerifierFabric implements Verifier<T>: its level is the WEAKEST level of its reports (a weaker verifier must not let the fabric satisfy a stronger requirement; the runtime's SemanticGrant applies the same rule, ADR-0020), its status is the worst one, and any hard finding forces Fail so a deterministic contradiction dominates learned scores; an empty fabric is Unknown/Unverified
+- VerifierFabric implements Default for any T (a derive would have required T: Default, which ActionIr does not implement), so a fabric of ActionContractVerifier plus further verifiers can be built for ActionIr
 - ActionContractVerifier (named action-contract) is a deterministic Verifier<ActionIr> over an ActionContract (target, operation, capability, input type, effect, payload size, PayloadEncoding): each violation is one hard finding with a stable code (target, operation, capability, input-type, effect, payload-size, payload-utf8), Fail/Deterministic/score 0, else Pass/Deterministic/score 1
 
 ### Missing for the target architecture
@@ -31,11 +32,11 @@
 ### Next milestones
 
 - Add a revision/generation verifier fed with live runtime state
-- Connect verifier output to F001 repair loop
+- Extend F001-style evidence to real generators (F001, completed, drove the fabric and the ActionContractVerifier through the ptr-feedback RepairLoop)
 
 ### Linked experiments
 
-- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
+- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `frozen`
 - [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `frozen`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
@@ -52,6 +53,7 @@
 ### Current automated checks
 
 - verifier-fabric deterministic failure precedence test
+- unit test: a fabric can be built for a type without a Default
 - unit tests: one hard finding per ActionContractVerifier code, several findings at once, fabric weakest-level rule, hard finding forcing Fail, empty fabric Unknown
 - workspace fmt/check/test/clippy
 

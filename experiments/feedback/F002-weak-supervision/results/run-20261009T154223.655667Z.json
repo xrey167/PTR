@@ -1,0 +1,69 @@
+{
+  "schema_version": 2,
+  "experiment_id": "F002",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v80",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16876494848
+  },
+  "hardware_profile_record": {
+    "path": "hardware/default.toml",
+    "sha256": "ea754cf5ddb19c70de11237e9aedab43cbba4ac2e8ff8fec15d85b18699052d6",
+    "contents": {
+      "id": "unspecified",
+      "os": "unspecified",
+      "cpu": "unspecified",
+      "ram_gib": 0,
+      "gpu": "unspecified",
+      "gpu_memory_gib": 0,
+      "notes": "Replace with an explicit measured hardware profile before publishing benchmark results."
+    },
+    "unspecified_fields": [
+      "cpu",
+      "gpu",
+      "id",
+      "os"
+    ]
+  },
+  "git_sha": "0911c72062d3fc1a9f3384e43981503623bd5770",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "F002",
+    "status": "prepared",
+    "hypothesis": "Does a verifier-precedence Dawid-Skene label model produce better calibrated and more accurate labels than majority vote at the same annotation budget?",
+    "metrics": "accuracy on uniform gold; Brier score; ECE; Unknown and Disputed rates; Krippendorff alpha",
+    "baseline": "majority vote; verifier-only labels",
+    "falsification": "Scope: the calibration comparison is against the naive vote-share posterior (n_c + 1) / (n + C) of the majority vote and does not isolate Dawid-Skene or verifier precedence; calibrated vote shares are descriptive. Rejected on a seed if any label or resolved distribution contradicts a verifier veto (veto_contradictions > 0); if the fitted model, the resolution or the metrics differ from an independent oracle (model_oracle_mismatches, resolution_oracle_mismatches or metric_mismatches > 0); if a guard on gold labels or actively sampled evaluation sets fails (gold_guard_violations, active_set_calibration_reported or acquisition_violations > 0); if the label model is not better calibrated than the majority vote on the uniform gold sample of the world with sound verifiers (the lower end of the paired bootstrap interval of the Brier gain, w1_brier_gain_lower_ppm, or of the ECE gain, w1_ece_gain_lower_ppm, below 1 ppm) or produces less accurate labels than the plain majority vote for the items of that world (w1_census_accuracy_ds_permille below w1_census_accuracy_mv_permille); or if the product panics or refuses a valid input (product_panics, unexpected_refusals > 0). A run that does not reach its coverage minima is vacuous and counts as falsified. The contaminated-verifier world, the homogeneous control world and the calibrated-vote arms are descriptive and gate nothing but the veto and oracle checks; losing to a calibrated vote is a recorded negative result, not a falsification.",
+    "hardware_profile": "hardware/default.toml",
+    "entrypoint": "cargo run --release --locked -p ptr-bench -- weak-supervision <seed>",
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "design": "../../../docs/architecture/35-agentic-substrate.md",
+    "preregistration_sha256": "2fd0fe4cd909d06d9b27c1b6cf1685701c7fe7ed3759cb5c928b4d237fa60813",
+    "preregistration_rules_sha256": "284c3dc30e1a612f488e06489a9da367eca02f47ee6b224655d5d393692976de"
+  },
+  "manifest_sha256": "eb6861bb92f3f56a9c0b5259f5389153f0db7df2b7e551eec55f20ab60862742",
+  "cargo_lock_sha256": "41b6a5f3347f854182cb201e2bba468b0c84ca9d3a7c896f4a703e1a9a6e6523",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/default.toml",
+  "status": "prepared",
+  "prepared_at": "20261009T154223.655667Z"
+}

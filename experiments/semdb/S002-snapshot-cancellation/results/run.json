@@ -1,0 +1,71 @@
+{
+  "experiment_id": "S002",
+  "status": "prepared",
+  "scope": "cooperative cancellation of a steppable resumable run of ptr-runtime when the semantic revision moves under it for a reason other than the run's own writes, before the effect boundary, and the hard effect boundary that stays the only safety barrier; 1500 scheduled cases per seed (a scripted run of 2 to 6 rounds ending in an action of each of the four effects, and at most one writer: a host write that moves the revision, one that does not, a generation superseded or revoked) interleaved by a deterministic cooperative scheduler at five positions of the run's life, executed on a fresh runtime in arm A0 (semantic.cancel_stale_revisions = false, the baseline) and arm A1 (cancellation on); an independent revision mirror and an independent scan of the committed ledger decide what must happen. Claimed: no stale action executes or is recorded as attempted in either arm (judged against the committed ledger, not the harness' mirror), the boundary answers the same action identically in both arms, the cancellation is exact (the next step, no action handed out, never on a run that only wrote itself), and a cancelled run takes no step on a replaced snapshot; capability exercised in a harness only: no shipped host steps runs",
+  "git_sha": "498f6a6801234d7005d1e58ab67068ea482a80fc",
+  "aggregated_at_git_sha": "fd3bbd7852692cf1a87a3d911b55c8bd25bab5d7",
+  "recorded_at": "2026-10-09T19:35:06.439552+00:00",
+  "preregistration_sha256": "ed35446081dd3d2488095887bcc8b92cd21140b9ef9bee777aea1a89ca0c08c8",
+  "preregistration_rules_sha256": "3bb5b5c1ad957628dcb0ed1a0461257e2ef4133234d0b27363dbc2264b7b91b4",
+  "criteria_sha256": "bf2b4e441524ee532b58cc37bbac01085ab7d7cedca6635828967ccc54d22d88",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- snapshot-cancellation <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261009T162631.754406Z-seed-17.json",
+      "git_sha": "498f6a6801234d7005d1e58ab67068ea482a80fc",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261009T163702.851545Z-seed-29.json",
+      "git_sha": "e5ee9e5abe12499149c7674ecee1322335418993",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261009T164516.907623Z-seed-43.json",
+      "git_sha": "cbc1aad53940da39f8a75d2330931c0bae736f50",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261009T165414.643411Z-seed-71.json",
+      "git_sha": "552061e6781c02471ac6242985c3c60b24b56844",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261009T170534.363161Z-seed-101.json",
+      "git_sha": "40604935511696ffa5ef6d24e05313f2fee14a65",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "4dd2f40c313d914d00305de4dbc80c85580357e769aacefa6d5ba5f6435f6fa9",
+    "29": "cca169c37ad7c3457e2fd0b59c54479e855583922ffddc524ed2d7b0474dc4eb",
+    "43": "15970ccb17eeef4d2f179f68641091b7d63fcac34cbee5281a4bed1a4f8d5787",
+    "71": "75ce46bc55015bb438a07cf7d998cb4d147933ecd168f436844409442e26bb8b",
+    "101": "cfe5dfb42dbf886c9c5f0ab4c8eb03c40fdd4ce2720a0409bc386bbc2f835088"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 21,
+    "total": 21,
+    "git_sha": "5534feda3db5d80ac4a48527a62d7bc81b9b3466",
+    "sha256": "1213005371d499556741102ae65194c68af36d8518a056f491e0c1c9bfb92db8"
+  },
+  "limitations": [
+    "wasted_units counts the steps a run takes after a bumping foreign write replaced its snapshot until it ends; a cancelled run takes none by design, so wasted_units_a1 = 0 restates the cancellation contract (missed_cancellations is its independent check; the two wasted rules are named duplicates) and is not a compute saving; total compute is not claimed to fall: net_units_a1_minus_a0 (total_units_a1 - total_units_a0, a headline number, descriptive) is positive when arm A1 discards the steps taken before the write and begins again, and in the baseline a mid-run write usually still ends in an accepted action because the scripted backend re-reads its snapshot",
+    "no shipped host (ptr-server, ptrd) steps runs: the blocking wrappers force the cancellation off, so semantic.cancel_stale_revisions has no effect on any production path today; S002 makes no multi-run or interleaving claim",
+    "the cancellation is coarse and revision-granular: any write the run did not make cancels it, including another run's output on the same runtime, so runs interleaved on one runtime cancel each other (a runtime test shows it; the harness runs one run at a time per runtime) and a host that keeps beginning runs can starve all the older ones (livelock)",
+    "the cancellation is cooperative and before the effect boundary only: a run that is never stepped is never cancelled, the check is at the top of a step, a write after the last step is the boundary's to refuse, a step is not interruptible, and nothing is recalled after EffectAttempted",
+    "a lifecycle record (a superseded or revoked generation) moves no semantic revision, so it cancels nothing and the boundary alone refuses the action; a cancelled run writes no semantic state and appends no cancellation record, only an in-memory RuntimeEvent (for Approximate-taint input it records the taint, as any returned run does)",
+    "synthetic: a scripted backend, one echoing Pod, passing verifiers, small semantic state, one target and capability, one writer per case, one process, one machine profile; ptr-server and ptrd still call the blocking wrappers and do not interleave or cancel runs",
+    "the negative controls test the harness' oracle (the executor log's staleness judgement and the ledger scan), not the boundary, which the real executor cannot be bypassed to test; the mutation evidence shows the harness sees planted defects of the boundary, the cancellation and its own mirror and oracle; removing only the permit epoch check or only the admission re-check of execute_prepared are equivalent mutants (defense in depth) and are not in the plan",
+    "wall-clock times (timing_ns) are recorded and never judged; absolute revision numbers are checked against a mirror of 'bumps iff the state changes' and are specified nowhere else"
+  ],
+  "metrics_sha256": "c6075f0d19167ac8f0c08d59155e730310c7fbc172cbf8bf0d907c2f1ca1b623"
+}

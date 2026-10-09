@@ -35,6 +35,15 @@ pub enum RuntimeEvent {
         kind: ScopeLifecycleKind,
     },
     RequestFinished(RequestId),
+    /// A stepped resumable run was ended before its next round because the semantic revision
+    /// moved for a reason other than the run's own writes: it was bound to `bound` and the
+    /// store was at `current`. It is a saving of work; the effect boundary still refuses every
+    /// stale action by itself.
+    RunCancelled {
+        request: RequestId,
+        bound: Revision,
+        current: Revision,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

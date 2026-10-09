@@ -482,3 +482,38 @@ hard_honest_per_variant = "int"
 recall_floor_permille = "int"
 preregistration_text = "file"
 criteria = "file"
+
+# F001 (generate-verify-repair): mechanism scope with a seeded stub generator on a synthetic verifiable task (owner
+# decision 2026-10-09); no claim about the quality of any model's generations. `profiles` is the stub's per-slot skill
+# (per mille, name=p,...;name=p,...), `repair_q` the repair stub's per-slot success (per mille).
+[experiment.F001.required]
+seeds = "int-list"
+harness = "str"
+profiles = "str"
+budgets = "int-list"
+tasks_per_profile = "int"
+repair_q = "int"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.F002.required]
+seeds = "int-list"
+harness = "str"
+items = "int"
+gold_items = "int"
+contamination_permille = "int"
+bootstrap_interval_permille = "int"
+mvc_beta_milli = "int"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.S002.required]
+seeds = "int-list"
+harness = "str"
+cases_per_seed = "int"
+class_bump_early_permille = "int"
+class_bump_late_permille = "int"
+class_lifecycle_permille = "int"
+max_cancel_latency_rounds_max = "int"
+preregistration_text = "file"
+criteria = "file"

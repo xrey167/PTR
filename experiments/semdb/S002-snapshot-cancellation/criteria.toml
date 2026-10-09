@@ -1,0 +1,91 @@
+# S002 decision criteria. Draft until the freeze (config.toml will name this file and its SHA-256 in its [preregistration]
+# table); no rule changes after a run. They are what the harness itself judges (bins/ptr-bench, s002/metrics.rs coverage() and
+# falsifiers()); a harness test pins this file to those lists, in order, and every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and so a
+# parse error: no decimal literal exists, fractions are integer permille).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON result
+# object, separated by '.' (no key holds a '.', no array is indexed): "runs" is a top-level key.
+# A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a failed rule).
+# A reference compared with an integer literal or another reference must be a JSON integer (not a
+# boolean, not a float). Exact comparisons.
+# The manifest's "< N" prerequisites are written ">= N" and its "> N" violations "<= N".
+#
+# What the counters are (the definitions are in PREREGISTRATION; the harness is bins/ptr-bench/src/experiments/s002/):
+# every counter is counted from events the harness observed in the runtime, judged by the harness's own model (an independent
+# revision mirror and an independent scan of the committed ledger), never read from the configuration. A "stale" action is one
+# whose revision is not the mirror's, or whose generation is not the live one or was revoked.
+#
+# Staleness at the boundary is judged against the committed ledger replayed to that point (the last committed delta's own
+# revision, the capsule records and revocations), never against the harness' revision mirror; the mirror is compared with that
+# verdict and a difference is mirror_drift. So stale_actions_executed and stale_checkpoint_admissions are interpretable on their
+# own, and a runtime write outside the harness' view is still caught.
+#
+# "wasted_units_a1 <= wasted_units_a0" and "wasted_units_a1 <= 0" restate the cancellation contract (a cancelled run takes no
+# step on a replaced snapshot); missed_cancellations is the independent check of the same contract, so these two rules are NAMED
+# DUPLICATES and not independent evidence, and they are not a claim that cancelling saves compute. total_units_a0, total_units_a1
+# and net_units_a1_minus_a0 (every step of every run of the arm, restarts included, and their difference with its sign) are the
+# descriptive headline numbers and are in no rule: cancelling a run that would have resumed on the new snapshot and been accepted
+# costs its pre-write steps again, and S002 does not claim otherwise. "cancel_latency_rounds_max <= 1": steps started since the
+# writer acted, the cancelling step included. Wall-clock times are descriptive too.
+#
+# Rules that hold by construction or duplicate another (named so a reader does not mistake them for evidence): runs >= 1000 (the
+# number of scheduled cases), stale_runs_by_schedule >= 100 (the schedule's own count; stale_runs_observed is the mirror's),
+# injection_positions_covered >= 5 and effect_kinds_covered >= 4 (observed, but the schedule draws every position and effect in
+# every seed), control_trips >= 5 (one per effect kind and the ledger scan), cancel_latency_violation and wasted_work_violation
+# restate cancel_latency_rounds_max <= 1 and the two (duplicate) wasted_units rules as counts for the mutation checker, and
+# boundary_refusals_a0 >= 1 is the owner's requirement that the baseline show a stale attempt reaching the boundary.
+#
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies S002 on that seed. A panic or a hang of the product is a falsification
+# (product_panics, product_hangs: the harness contains both and exits 1); a panic in the harness's own code is exit 101 and
+# INVALID.
+# Decision: every seed must hold every coverage rule and every falsifier rule; COMPLETED iff so and the mutation evidence is
+# complete (results/mutations.json present, killed == total == the number of mutations the plan lists: a pass over a harness
+# not shown to fail would be vacuous), INVALID if a seed is missing, unresolvable, its record does not describe the frozen run,
+# or the mutation evidence is missing or incomplete, FALSIFIED otherwise (a falsification is never downgraded by the mutation
+# evidence).
+version = 1
+experiment = "S002"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "runs >= 1000",
+  "stale_runs_by_schedule >= 100",
+  "stale_runs_observed >= 100",
+  "boundary_refusals_a0 >= 1",
+  "boundary_refusals_a1 >= 1",
+  "cancelled_runs >= 100",
+  "effect_kinds_covered >= 4",
+  "fresh_runs_completed >= 100",
+  "generation_stale_cases >= 50",
+  "injection_positions_covered >= 5",
+  "control_trips >= 5",
+  "wasted_units_a0 >= 1",
+  "noop_writes_observed >= 1",
+  "retries_replayed >= 1",
+  "restarted_runs >= 1",
+]
+
+falsifiers = [
+  "stale_actions_executed <= 0",
+  "stale_effect_attempts_committed <= 0",
+  "stale_checkpoint_admissions <= 0",
+  "fresh_actions_refused <= 0",
+  "false_cancellations <= 0",
+  "missed_cancellations <= 0",
+  "fresh_runs_starved <= 0",
+  "cancel_contract_violations <= 0",
+  "boundary_arm_divergences <= 0",
+  "double_executions <= 0",
+  "executor_vs_ledger_mismatches <= 0",
+  "mirror_drift <= 0",
+  "cancel_latency_rounds_max <= 1",
+  "wasted_units_a1 <= wasted_units_a0",
+  "wasted_units_a1 <= 0",
+  "product_panics <= 0",
+  "product_hangs <= 0",
+]

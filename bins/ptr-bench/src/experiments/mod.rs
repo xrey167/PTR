@@ -3,8 +3,10 @@
 //! string from `PTR_PG_EXPERIMENT_DSN`; S003 and R005 run in memory, and they and the
 //! seeded generator and the JSON helper every harness shares are always built.
 
+pub mod f001;
 // Only the PostgreSQL harnesses use the two shared modules until another
 // harness builds without the feature.
+pub mod f002;
 #[cfg_attr(not(feature = "postgres-experiments"), allow(dead_code))]
 mod json;
 pub mod kv_reuse_smoke;
@@ -29,5 +31,6 @@ pub mod rag_bridge;
 #[cfg_attr(not(feature = "postgres-experiments"), allow(dead_code))]
 mod rng;
 pub mod s001;
+pub mod s002;
 pub mod s003;
 mod vtime;

@@ -8,8 +8,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-04  
-**Code footprint:** 1 Rust source files · 455 nonblank source lines · 5 integration-test files · 15 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-09  
+**Code footprint:** 1 Rust source files · 460 nonblank source lines · 5 integration-test files · 16 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -22,14 +22,14 @@
 - ServerConfig::data_dir (default data) and a new ModelConfig::backend section (default reference-echo), overridable by PTR_DATA_DIR/--data-dir and PTR_MODEL_BACKEND/--backend, with the same file→environment→CLI precedence
 - PtrConfig::validate_daemon, a stricter check for the standalone daemon boundary on top of validate: only runtime.mode standalone, only a loopback server.bind, an explicit server.data_dir that already exists as a directory, and an explicit model.backend. Nothing in the workspace outside ptr-config calls it yet
 - Every configuration section refuses unknown keys (deny_unknown_fields), so a misspelled key or section fails the load instead of silently falling back to a default, and PtrConfig::from_path validates the loaded configuration before returning it
-- PtrConfig::check_supported_settings (run by validate, so file, environment and CLI loads all go through it) refuses with the typed UnsupportedSetting any value the system cannot honour: semantic.retain_raw_evidence=false (raw is never replaced by typed state) and a non-default value of the settings no component reads yet (semantic.cancel_stale_revisions, observability.structured_tracing, observability.async_backtrace, research.allow_unlocked_components, research.require_experiment_manifest, runtime.max_parallel_candidates; 'not supported yet'). FIELD_DISPOSITIONS lists every leaf field as Consumed or RefusedUnlessDefault and a test fails when a new field is missing from it
+- PtrConfig::check_supported_settings (run by validate, so file, environment and CLI loads all go through it) refuses with the typed UnsupportedSetting any value the system cannot honour: semantic.retain_raw_evidence=false (raw is never replaced by typed state) and a non-default value of the settings no component reads yet (observability.structured_tracing, observability.async_backtrace, research.allow_unlocked_components, research.require_experiment_manifest, runtime.max_parallel_candidates; 'not supported yet'). FIELD_DISPOSITIONS lists every leaf field as Consumed or RefusedUnlessDefault (semantic.cancel_stale_revisions is Consumed by ptr-runtime's steppable run API only: false is accepted from file and environment and switches the cooperative stale-revision cancellation off, true is the default; NO SHIPPED HOST (ptr-server, ptrd) STEPS RUNS and the blocking entry points force the cancellation off, so the setting has no effect on any production path today) and a test fails when a new field is missing from it
 
 ### Missing for the target architecture
 
 - Per-backend typed configuration sections
 - Secret/reference types instead of plaintext secret values
 - Config schema generation and migration/version policy
-- The six refused-unless-default settings stay inert: wiring a consumer (and then lifting the refusal) is open work in ptr-runtime and the observability setup
+- The five refused-unless-default settings (observability.structured_tracing, observability.async_backtrace, research.allow_unlocked_components, research.require_experiment_manifest, runtime.max_parallel_candidates; semantic.retain_raw_evidence is refused for the invariant, not for want of a consumer) stay inert: wiring a consumer (and then lifting the refusal) is open work in ptr-runtime and the observability setup
 
 ### Next milestones
 
@@ -59,7 +59,7 @@
 - daemon_validation_rejects_non_loopback_and_missing_persistence (validate_daemon refuses 0.0.0.0 and a missing data_dir, accepts loopback with an existing directory)
 - a_misspelled_key_is_refused_instead_of_silently_ignored and loading_from_a_path_validates_the_result
 - workspace fmt/check/test/clippy
-- tests/unsupported.rs: field table matches the serialized default config, every refused field accepts its default and refuses a changed value with a field-specific error, plus file, environment and CLI paths and retain_raw_evidence=false
+- tests/unsupported.rs: field table matches the serialized default config, every refused field accepts its default and refuses a changed value with a field-specific error, plus file, environment and CLI paths and retain_raw_evidence=false; stale_revision_cancellation_can_be_switched_off_by_file_and_environment (semantic.cancel_stale_revisions=false is accepted and the field is Consumed)
 
 <!-- PTR:STATUS:END -->
 

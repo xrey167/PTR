@@ -4456,11 +4456,14 @@ name = "ptr-bench"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "ptr-analytics",
  "ptr-branch",
  "ptr-config",
  "ptr-core",
  "ptr-exec",
  "ptr-fastmem",
+ "ptr-feedback",
+ "ptr-labeling",
  "ptr-ledger",
  "ptr-lineage",
  "ptr-memory",
@@ -4672,6 +4675,7 @@ version = "0.1.0"
 dependencies = [
  "candle-core",
  "ed25519-dalek",
+ "ptr-feedback",
  "ptr-protocol",
  "ptr-storage",
  "ptr-types",
@@ -4712,9 +4716,11 @@ dependencies = [
 name = "ptr-router"
 version = "0.1.0"
 dependencies = [
+ "ptr-feedback",
  "ptr-pods",
  "ptr-protocol",
  "ptr-types",
+ "ptr-verifier",
  "sha2 0.11.0",
 ]
 

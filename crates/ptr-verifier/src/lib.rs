@@ -46,9 +46,18 @@ pub trait NamedVerifier<T>: Verifier<T> + Send + Sync {
 /// With no verifier the report is `Unknown` at `Unverified` with score 0. The
 /// fabric implements [`Verifier`], so it can be installed wherever a single
 /// verifier is expected.
-#[derive(Default)]
 pub struct VerifierFabric<T> {
     verifiers: Vec<Box<dyn NamedVerifier<T>>>,
+}
+
+// Not derived: a derive would require `T: Default`, and a fabric holds no `T`, so it could not
+// be built for a type such as `ActionIr`.
+impl<T> Default for VerifierFabric<T> {
+    fn default() -> Self {
+        Self {
+            verifiers: Vec::new(),
+        }
+    }
 }
 
 impl<T> VerifierFabric<T> {
@@ -424,6 +433,15 @@ mod tests {
             false,
         ));
         assert_eq!(fabric.verify(&0).status, VerificationStatus::Disputed);
+    }
+
+    #[test]
+    fn a_fabric_can_be_built_for_a_type_without_a_default() {
+        let mut fabric = VerifierFabric::<ActionIr>::default();
+        assert!(fabric.is_empty());
+        fabric.push(ActionContractVerifier::new(contract()));
+        assert!(!fabric.is_empty());
+        assert_eq!(fabric.verify(&action()).status, VerificationStatus::Pass);
     }
 
     #[test]

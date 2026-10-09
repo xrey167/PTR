@@ -1,0 +1,87 @@
+# F002 decision criteria. Draft until the freeze (config.toml will name this file and its SHA-256
+# in its [preregistration] table); no rule changes after a run. They are what the harness itself
+# judges (bins/ptr-bench, f002/metrics.rs coverage() and falsifiers()); a harness test pins this
+# file to those lists, in order, and every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and
+# so a parse error: no decimal literal exists, fractions are integer counts, permille or parts per
+# million).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON
+# result object, separated by '.' (no key holds a '.', no array is indexed): "veto_contradictions"
+# is a top-level key.
+# A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a
+# failed rule). A reference compared with an integer literal or another reference must be a JSON
+# integer (not a boolean, not a float). Exact comparisons.
+# The experiment's "< N" prerequisites are written ">= N", its "> 0" violations "<= 0".
+#
+# One rule compares two measured numbers: "w1_census_accuracy_ds_permille >= w1_census_accuracy_mv_permille"
+# (accuracy of the labels the label model and the majority vote produce for all items of world W1,
+# in permille; the census has no gold-sampling noise, the form was decided on the pilot seeds, see
+# PREREGISTRATION.md section 7; the accuracy on the 600-item gold sample is reported and gates
+# nothing). The gain rules read the lower end of a paired bootstrap interval over the gold items
+# (2000 resamples, seed 20261009, 2.5th percentile) of the gain of the label model over the
+# majority vote, in parts per million, for Brier score and for expected calibration error. The
+# baseline is the NAIVE vote-share posterior (n_c + 1) / (n + C): these rules support "better
+# calibrated than that posterior" and do not isolate Dawid-Skene or verifier precedence.
+# gain_violations restates the three gain rules as a count (the mutation checker needs a counter
+# that is a hard failure), so the three rules are named in the mutation plan through it. The
+# calibrated vote shares (mvc, mvcp) are descriptive and appear in no rule.
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies F002 on that seed.
+# Decision: every seed must hold every coverage rule and every falsifier rule; COMPLETED iff so
+# and the mutation evidence is complete (results/mutations.json present, killed == total == the
+# number of mutations the plan lists: a pass over a harness not shown to fail would be vacuous),
+# INVALID if a seed is missing, unresolvable, its record does not describe the frozen run, or the
+# mutation evidence is missing or incomplete, FALSIFIED otherwise (a falsification is never
+# downgraded by the mutation evidence). A panic of the product is a falsification
+# (product_panics: the harness contains it and exits 1); a panic in the harness's own code is
+# exit 101 and INVALID.
+#
+# Counters in the coverage rules are counted from observed events: the outcomes the product
+# returned (determined_seen .. disputed_seen), the warnings it returned (few_function_warnings),
+# the vote matrix it was given (vetoed_items, budget_cells_seen, correlated_pair_items,
+# contaminated_vetoes), the refusals it gave to the guard probes (gold_guard_probes), the
+# actively sampled evaluations it answered (active_set_probes) and the items it ranked
+# (acquisition_items). worlds_run and gold_items count the run's own work (gold_items is the
+# size of the smallest gold evaluation set the product holds); they are by construction.
+version = 1
+experiment = "F002"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "worlds_run >= 3",
+  "determined_seen >= 1",
+  "estimated_seen >= 1",
+  "unknown_seen >= 1",
+  "disputed_seen >= 1",
+  "vetoed_items >= 200",
+  "gold_items >= 500",
+  "few_function_warnings >= 1",
+  "budget_cells_seen >= 3",
+  "correlated_pair_items >= 50",
+  "contaminated_vetoes >= 1",
+  "active_set_probes >= 1",
+  "gold_guard_probes >= 4",
+  "acquisition_items >= 1",
+]
+
+falsifiers = [
+  "veto_contradictions <= 0",
+  "model_oracle_mismatches <= 0",
+  "resolution_oracle_mismatches <= 0",
+  "metric_mismatches <= 0",
+  "active_set_calibration_reported <= 0",
+  "gold_guard_violations <= 0",
+  "acquisition_violations <= 0",
+  "sound_world_determined_errors <= 0",
+  "unexpected_refusals <= 0",
+  "determinism_mismatches <= 0",
+  "product_panics <= 0",
+  "gain_violations <= 0",
+  "w1_brier_gain_lower_ppm >= 1",
+  "w1_ece_gain_lower_ppm >= 1",
+  "w1_census_accuracy_ds_permille >= w1_census_accuracy_mv_permille",
+]

@@ -1,0 +1,684 @@
+{
+  "experiment_id": "F001",
+  "scope": "mechanism of the generate-verify-repair loop (ptr_feedback::RepairLoop and Population::best_verified over the real VerifierFabric and ActionContractVerifier), shown with a seeded stub generator on a synthetic verifiable task with seven independent defect slots: the loop accepts a candidate only if the fabric passed it at Deterministic level with no hard finding, verifies every candidate once, stays within its budget, repairs only what the report's hard findings name, rewrites what it cannot repair, returns Exhausted instead of a best-effort failure and keeps a trajectory that agrees with the verifier's log; measured against an independent oracle, a call-counting boundary and an exact analytic expectation. No claim about the quality of any model's generations.",
+  "verdict": "COMPLETED",
+  "decision": {
+    "verdict": "COMPLETED",
+    "vacuous_seeds": [],
+    "falsified_seeds": [],
+    "invalid_seeds": [],
+    "static_evidence_failed": [],
+    "problems": [],
+    "recommended_status": "completed"
+  },
+  "seeds": [
+    {
+      "seed": 17,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "tasks": 6000,
+        "runs": 66000,
+        "success": {
+          "single": 1053,
+          "rewrite": {
+            "b1": 1053,
+            "b2": 1739,
+            "b4": 2561,
+            "b8": 3337,
+            "b16": 4158
+          },
+          "repair": {
+            "b1": 1053,
+            "b2": 3652,
+            "b4": 5483,
+            "b8": 5965,
+            "b16": 6000
+          }
+        },
+        "verifier_calls": {
+          "single": 6000,
+          "rewrite": {
+            "b1": 6000,
+            "b2": 10947,
+            "b4": 18998,
+            "b8": 31431,
+            "b16": 49491
+          },
+          "repair": {
+            "b1": 6000,
+            "b2": 10947,
+            "b4": 14304,
+            "b8": 15281,
+            "b16": 15346
+          }
+        },
+        "generator_draws": {
+          "single": 42000,
+          "rewrite": {
+            "b1": 42000,
+            "b2": 76629,
+            "b4": 132986,
+            "b8": 220017,
+            "b16": 346437
+          },
+          "repair": {
+            "b1": 42000,
+            "b2": 54203,
+            "b4": 62310,
+            "b8": 64959,
+            "b16": 65125
+          }
+        },
+        "draws_per_success": {
+          "rewrite": {
+            "b1": 39886,
+            "b2": 44064,
+            "b4": 51927,
+            "b8": 65932,
+            "b16": 83318
+          },
+          "repair": {
+            "b1": 39886,
+            "b2": 14842,
+            "b4": 11364,
+            "b8": 10890,
+            "b16": 10854
+          }
+        },
+        "repair_gain": {
+          "b2": 1913,
+          "b4": 2922,
+          "b8": 2628,
+          "b16": 1842
+        },
+        "draws_gain": {
+          "b2": 29222,
+          "b4": 40563,
+          "b8": 55042,
+          "b16": 72464
+        },
+        "false_accepts": 0,
+        "unverified_returns": 0,
+        "double_verifications": 0,
+        "budget_violations": 0,
+        "collateral_edits": 0,
+        "exhausted_as_success": 0,
+        "verdict_mismatches": 0,
+        "verifier_call_mismatches": 0,
+        "expectation_violations": 0,
+        "product_panics": 0,
+        "calls_after_acceptance": 0,
+        "premature_exhaustions": 0,
+        "missed_acceptances": 0,
+        "trajectory_mismatches": 0,
+        "selection_mismatches": 0,
+        "repair_gain_shortfalls": 0,
+        "draws_gain_shortfalls": 0,
+        "altered_candidates": 0,
+        "status_pass": 40023,
+        "status_fail": 141887,
+        "status_unknown": 1620,
+        "status_disputed": 1215,
+        "initial_fail_tasks": 4947,
+        "repaired_successes": 4793,
+        "exhausted_runs": 29946,
+        "lying_refused": 7908,
+        "shallow_refused": 1294,
+        "profiles": {
+          "uniform": {
+            "tasks": 2000
+          },
+          "heterogeneous": {
+            "tasks": 2000
+          },
+          "hard": {
+            "tasks": 2000
+          }
+        }
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "falsifiers_tripped": 0
+      }
+    },
+    {
+      "seed": 29,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "tasks": 6000,
+        "runs": 66000,
+        "success": {
+          "single": 1047,
+          "rewrite": {
+            "b1": 1047,
+            "b2": 1751,
+            "b4": 2583,
+            "b8": 3360,
+            "b16": 4143
+          },
+          "repair": {
+            "b1": 1047,
+            "b2": 3732,
+            "b4": 5540,
+            "b8": 5969,
+            "b16": 6000
+          }
+        },
+        "verifier_calls": {
+          "single": 6000,
+          "rewrite": {
+            "b1": 6000,
+            "b2": 10953,
+            "b4": 19001,
+            "b8": 31371,
+            "b16": 49522
+          },
+          "repair": {
+            "b1": 6000,
+            "b2": 10953,
+            "b4": 14195,
+            "b8": 15034,
+            "b16": 15111
+          }
+        },
+        "generator_draws": {
+          "single": 42000,
+          "rewrite": {
+            "b1": 42000,
+            "b2": 76671,
+            "b4": 133007,
+            "b8": 219597,
+            "b16": 346654
+          },
+          "repair": {
+            "b1": 42000,
+            "b2": 54177,
+            "b4": 62065,
+            "b8": 64311,
+            "b16": 64518
+          }
+        },
+        "draws_per_success": {
+          "rewrite": {
+            "b1": 40114,
+            "b2": 43786,
+            "b4": 51493,
+            "b8": 65356,
+            "b16": 83672
+          },
+          "repair": {
+            "b1": 40114,
+            "b2": 14516,
+            "b4": 11203,
+            "b8": 10774,
+            "b16": 10753
+          }
+        },
+        "repair_gain": {
+          "b2": 1981,
+          "b4": 2957,
+          "b8": 2609,
+          "b16": 1857
+        },
+        "draws_gain": {
+          "b2": 29270,
+          "b4": 40290,
+          "b8": 54582,
+          "b16": 72919
+        },
+        "false_accepts": 0,
+        "unverified_returns": 0,
+        "double_verifications": 0,
+        "budget_violations": 0,
+        "collateral_edits": 0,
+        "exhausted_as_success": 0,
+        "verdict_mismatches": 0,
+        "verifier_call_mismatches": 0,
+        "expectation_violations": 0,
+        "product_panics": 0,
+        "calls_after_acceptance": 0,
+        "premature_exhaustions": 0,
+        "missed_acceptances": 0,
+        "trajectory_mismatches": 0,
+        "selection_mismatches": 0,
+        "repair_gain_shortfalls": 0,
+        "draws_gain_shortfalls": 0,
+        "altered_candidates": 0,
+        "status_pass": 40231,
+        "status_fail": 141085,
+        "status_unknown": 1633,
+        "status_disputed": 1191,
+        "initial_fail_tasks": 4953,
+        "repaired_successes": 4780,
+        "exhausted_runs": 29781,
+        "lying_refused": 7990,
+        "shallow_refused": 1345,
+        "profiles": {
+          "uniform": {
+            "tasks": 2000
+          },
+          "heterogeneous": {
+            "tasks": 2000
+          },
+          "hard": {
+            "tasks": 2000
+          }
+        }
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "falsifiers_tripped": 0
+      }
+    },
+    {
+      "seed": 43,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "tasks": 6000,
+        "runs": 66000,
+        "success": {
+          "single": 1093,
+          "rewrite": {
+            "b1": 1093,
+            "b2": 1777,
+            "b4": 2558,
+            "b8": 3338,
+            "b16": 4057
+          },
+          "repair": {
+            "b1": 1093,
+            "b2": 3642,
+            "b4": 5486,
+            "b8": 5969,
+            "b16": 6000
+          }
+        },
+        "verifier_calls": {
+          "single": 6000,
+          "rewrite": {
+            "b1": 6000,
+            "b2": 10907,
+            "b4": 18887,
+            "b8": 31293,
+            "b16": 49733
+          },
+          "repair": {
+            "b1": 6000,
+            "b2": 10907,
+            "b4": 14322,
+            "b8": 15230,
+            "b16": 15287
+          }
+        },
+        "generator_draws": {
+          "single": 42000,
+          "rewrite": {
+            "b1": 42000,
+            "b2": 76349,
+            "b4": 132209,
+            "b8": 219051,
+            "b16": 348131
+          },
+          "repair": {
+            "b1": 42000,
+            "b2": 54201,
+            "b4": 62571,
+            "b8": 65014,
+            "b16": 65181
+          }
+        },
+        "draws_per_success": {
+          "rewrite": {
+            "b1": 38426,
+            "b2": 42965,
+            "b4": 51684,
+            "b8": 65623,
+            "b16": 85809
+          },
+          "repair": {
+            "b1": 38426,
+            "b2": 14882,
+            "b4": 11405,
+            "b8": 10891,
+            "b16": 10863
+          }
+        },
+        "repair_gain": {
+          "b2": 1865,
+          "b4": 2928,
+          "b8": 2631,
+          "b16": 1943
+        },
+        "draws_gain": {
+          "b2": 28083,
+          "b4": 40279,
+          "b8": 54732,
+          "b16": 74946
+        },
+        "false_accepts": 0,
+        "unverified_returns": 0,
+        "double_verifications": 0,
+        "budget_violations": 0,
+        "collateral_edits": 0,
+        "exhausted_as_success": 0,
+        "verdict_mismatches": 0,
+        "verifier_call_mismatches": 0,
+        "expectation_violations": 0,
+        "product_panics": 0,
+        "calls_after_acceptance": 0,
+        "premature_exhaustions": 0,
+        "missed_acceptances": 0,
+        "trajectory_mismatches": 0,
+        "selection_mismatches": 0,
+        "repair_gain_shortfalls": 0,
+        "draws_gain_shortfalls": 0,
+        "altered_candidates": 0,
+        "status_pass": 40017,
+        "status_fail": 141688,
+        "status_unknown": 1526,
+        "status_disputed": 1335,
+        "initial_fail_tasks": 4907,
+        "repaired_successes": 4719,
+        "exhausted_runs": 29894,
+        "lying_refused": 8080,
+        "shallow_refused": 1190,
+        "profiles": {
+          "uniform": {
+            "tasks": 2000
+          },
+          "heterogeneous": {
+            "tasks": 2000
+          },
+          "hard": {
+            "tasks": 2000
+          }
+        }
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "falsifiers_tripped": 0
+      }
+    },
+    {
+      "seed": 71,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "tasks": 6000,
+        "runs": 66000,
+        "success": {
+          "single": 1054,
+          "rewrite": {
+            "b1": 1054,
+            "b2": 1740,
+            "b4": 2532,
+            "b8": 3282,
+            "b16": 4086
+          },
+          "repair": {
+            "b1": 1054,
+            "b2": 3718,
+            "b4": 5497,
+            "b8": 5971,
+            "b16": 6000
+          }
+        },
+        "verifier_calls": {
+          "single": 6000,
+          "rewrite": {
+            "b1": 6000,
+            "b2": 10946,
+            "b4": 19009,
+            "b8": 31588,
+            "b16": 50213
+          },
+          "repair": {
+            "b1": 6000,
+            "b2": 10946,
+            "b4": 14270,
+            "b8": 15199,
+            "b16": 15261
+          }
+        },
+        "generator_draws": {
+          "single": 42000,
+          "rewrite": {
+            "b1": 42000,
+            "b2": 76622,
+            "b4": 133063,
+            "b8": 221116,
+            "b16": 351491
+          },
+          "repair": {
+            "b1": 42000,
+            "b2": 54085,
+            "b4": 62460,
+            "b8": 64883,
+            "b16": 65045
+          }
+        },
+        "draws_per_success": {
+          "rewrite": {
+            "b1": 39848,
+            "b2": 44035,
+            "b4": 52552,
+            "b8": 67372,
+            "b16": 86023
+          },
+          "repair": {
+            "b1": 39848,
+            "b2": 14546,
+            "b4": 11362,
+            "b8": 10866,
+            "b16": 10840
+          }
+        },
+        "repair_gain": {
+          "b2": 1978,
+          "b4": 2965,
+          "b8": 2689,
+          "b16": 1914
+        },
+        "draws_gain": {
+          "b2": 29489,
+          "b4": 41190,
+          "b8": 56506,
+          "b16": 75183
+        },
+        "false_accepts": 0,
+        "unverified_returns": 0,
+        "double_verifications": 0,
+        "budget_violations": 0,
+        "collateral_edits": 0,
+        "exhausted_as_success": 0,
+        "verdict_mismatches": 0,
+        "verifier_call_mismatches": 0,
+        "expectation_violations": 0,
+        "product_panics": 0,
+        "calls_after_acceptance": 0,
+        "premature_exhaustions": 0,
+        "missed_acceptances": 0,
+        "trajectory_mismatches": 0,
+        "selection_mismatches": 0,
+        "repair_gain_shortfalls": 0,
+        "draws_gain_shortfalls": 0,
+        "altered_candidates": 0,
+        "status_pass": 40060,
+        "status_fail": 142419,
+        "status_unknown": 1648,
+        "status_disputed": 1305,
+        "initial_fail_tasks": 4946,
+        "repaired_successes": 4782,
+        "exhausted_runs": 30012,
+        "lying_refused": 8209,
+        "shallow_refused": 1202,
+        "profiles": {
+          "uniform": {
+            "tasks": 2000
+          },
+          "heterogeneous": {
+            "tasks": 2000
+          },
+          "hard": {
+            "tasks": 2000
+          }
+        }
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "falsifiers_tripped": 0
+      }
+    },
+    {
+      "seed": 101,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "tasks": 6000,
+        "runs": 66000,
+        "success": {
+          "single": 1091,
+          "rewrite": {
+            "b1": 1091,
+            "b2": 1777,
+            "b4": 2599,
+            "b8": 3360,
+            "b16": 4139
+          },
+          "repair": {
+            "b1": 1091,
+            "b2": 3683,
+            "b4": 5511,
+            "b8": 5976,
+            "b16": 6000
+          }
+        },
+        "verifier_calls": {
+          "single": 6000,
+          "rewrite": {
+            "b1": 6000,
+            "b2": 10909,
+            "b4": 18877,
+            "b8": 31218,
+            "b16": 49247
+          },
+          "repair": {
+            "b1": 6000,
+            "b2": 10909,
+            "b4": 14220,
+            "b8": 15068,
+            "b16": 15122
+          }
+        },
+        "generator_draws": {
+          "single": 42000,
+          "rewrite": {
+            "b1": 42000,
+            "b2": 76363,
+            "b4": 132139,
+            "b8": 218526,
+            "b16": 344729
+          },
+          "repair": {
+            "b1": 42000,
+            "b2": 54109,
+            "b4": 62077,
+            "b8": 64312,
+            "b16": 64477
+          }
+        },
+        "draws_per_success": {
+          "rewrite": {
+            "b1": 38496,
+            "b2": 42972,
+            "b4": 50842,
+            "b8": 65037,
+            "b16": 83287
+          },
+          "repair": {
+            "b1": 38496,
+            "b2": 14691,
+            "b4": 11264,
+            "b8": 10761,
+            "b16": 10746
+          }
+        },
+        "repair_gain": {
+          "b2": 1906,
+          "b4": 2912,
+          "b8": 2616,
+          "b16": 1861
+        },
+        "draws_gain": {
+          "b2": 28281,
+          "b4": 39578,
+          "b8": 54276,
+          "b16": 72541
+        },
+        "false_accepts": 0,
+        "unverified_returns": 0,
+        "double_verifications": 0,
+        "budget_violations": 0,
+        "collateral_edits": 0,
+        "exhausted_as_success": 0,
+        "verdict_mismatches": 0,
+        "verifier_call_mismatches": 0,
+        "expectation_violations": 0,
+        "product_panics": 0,
+        "calls_after_acceptance": 0,
+        "premature_exhaustions": 0,
+        "missed_acceptances": 0,
+        "trajectory_mismatches": 0,
+        "selection_mismatches": 0,
+        "repair_gain_shortfalls": 0,
+        "draws_gain_shortfalls": 0,
+        "altered_candidates": 0,
+        "status_pass": 40303,
+        "status_fail": 140525,
+        "status_unknown": 1660,
+        "status_disputed": 1082,
+        "initial_fail_tasks": 4909,
+        "repaired_successes": 4755,
+        "exhausted_runs": 29682,
+        "lying_refused": 8235,
+        "shallow_refused": 1104,
+        "profiles": {
+          "uniform": {
+            "tasks": 2000
+          },
+          "heterogeneous": {
+            "tasks": 2000
+          },
+          "hard": {
+            "tasks": 2000
+          }
+        }
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "falsifiers_tripped": 0
+      }
+    }
+  ],
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 24,
+    "total": 24,
+    "git_sha": "ab0a0eed85a4390df6a26a263c381d27394ae51e",
+    "sha256": "c0ba8604e3271060ced7c5b3bbd3e52373a0360eb0f093be960fb4d5ab8f39df"
+  },
+  "report": "# F001 generate-verify-repair: COMPLETED\n\nSeeds: 17, 29, 43, 71, 101. Every seed must hold every coverage and falsifier rule.\n\n- seed 17: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 29: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 43: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 71: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 101: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n\n- mutation check: 24 of 24 killed\n\nLimitations: the generator and the repairer are seeded stubs with a stated per-slot skill; the strict comparative rules (repair gains at least one success and saves at least one milli-draw per success over rewrite-only at every budget above one; the analytic gains are thousands) are consequences of that stated skill and test the loop's use of verdicts and critiques, not that any model repairs better than it rewrites; the task is synthetic: seven independent defect slots of an ActionIr against a fixed ActionContract; real generations have correlated, partial and unnamed defects, and a real repair is not a redraw of the named slot; the verifier noise (Unknown, Disputed, shallow, lying, forged) is scripted per call from the seed and independent of the candidate; the real learned and statistical verifiers are not exercised, and a verifier that lies by reporting a clean Pass for a defective candidate cannot be detected by the loop (only a self-contradicting Pass is refused); the cost measure is the number of slot draws and verifier calls, not tokens, latency or money; one verifier call costs the same whatever it verifies; the negative controls run the harness' own reference loop, not the product: they show the counters can fail, not that a defective product is caught; that evidence is the mutation plan; the expectation check uses 5 standard deviations because it makes several hundred comparisons per seed; a defect that shifts a success, call or draw count by less than that is not detected by it, only by the other counters; all arms of a task share their random draws (common random numbers) so that the comparative rules are tight; the arms are therefore not independent samples.\n"
+}

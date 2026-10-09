@@ -1,4 +1,4 @@
-.PHONY: check test fmt py-bindings a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
+.PHONY: check test fmt bench-check py-bindings a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
 	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke release-package \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
@@ -30,6 +30,7 @@ check:
 fmt:
 	cargo fmt --all -- --check
 	cargo fmt --manifest-path model/burn-a0/Cargo.toml -- --check
+	cargo fmt --manifest-path evaluations/bench/kit/Cargo.toml -- --check
 
 # `bindings/ptr-py` is a PyO3 extension in its own excluded workspace, built with
 # maturin into a venv kept inside it (gitignored). Not a CI job: nothing in
@@ -120,6 +121,16 @@ experiments-check:
 
 evals-check:
 	python3 scripts/run_component_eval.py validate
+	python3 scripts/check_component_protocols.py
+
+# The component-evaluation bench workspaces (evaluations/bench/*) are excluded from the
+# root workspace, so `make check`/`make test` reach none of them. Same commands as the
+# bench steps of CI's `quality` job.
+bench-check:
+	cargo fmt --manifest-path evaluations/bench/kit/Cargo.toml -- --check
+	cargo check --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked
+	cargo clippy --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked -- -D warnings
+	cargo test --manifest-path evaluations/bench/kit/Cargo.toml --locked
 
 msrv:
 	cargo +1.99.0 check --workspace --all-targets --locked
@@ -157,6 +168,10 @@ ci-quality:
 	cargo +stable clippy --manifest-path templates/rust-crate/Cargo.toml --all-targets --locked -- -D warnings
 	cargo +stable test -p ptr-observe --features tracing-adapter --locked
 	cargo +stable clippy -p ptr-observe --features tracing-adapter --all-targets --locked -- -D warnings
+	cargo +stable fmt --manifest-path evaluations/bench/kit/Cargo.toml -- --check
+	cargo +stable check --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked
+	cargo +stable clippy --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked -- -D warnings
+	cargo +stable test --manifest-path evaluations/bench/kit/Cargo.toml --locked
 
 ci-rust-stable:
 	cargo +stable check --workspace --all-targets --locked
@@ -190,6 +205,7 @@ ci-repository-invariants:
 	$(PYTHON) scripts/check_rust_conventions.py
 	$(PYTHON) scripts/run_experiment.py validate
 	$(PYTHON) scripts/run_component_eval.py validate
+	$(PYTHON) scripts/check_component_protocols.py
 	$(PYTHON) scripts/check_research_gates.py
 	$(PYTHON) -m unittest discover -s scripts/tests
 	$(PYTHON) -m unittest discover -s research/baselines/rag_reference/tests

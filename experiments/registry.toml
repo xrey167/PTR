@@ -93,7 +93,7 @@ status = "completed"
 [[experiment]]
 id = "S002"
 path = "semdb/S002-snapshot-cancellation"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "R001"
@@ -133,7 +133,7 @@ status = "completed"
 [[experiment]]
 id = "F001"
 path = "feedback/F001-generate-verify-repair"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "E001"
@@ -178,7 +178,7 @@ status = "completed"
 [[experiment]]
 id = "F002"
 path = "feedback/F002-weak-supervision"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "F003"

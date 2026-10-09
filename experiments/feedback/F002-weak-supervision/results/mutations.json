@@ -1,0 +1,469 @@
+{
+  "experiment_id": "F002",
+  "git_sha": "de62f1bde7475fe7d114646272dc8dfd4276e555",
+  "recorded_at": "2026-10-09T18:50:47.908729+00:00",
+  "subcommand": "weak-supervision",
+  "killed": 29,
+  "total": 29,
+  "mutations": [
+    {
+      "name": "veto-set-emptied",
+      "file": "crates/ptr-labeling/src/model.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 10645,
+      "expected": [
+        "veto_contradictions",
+        "resolution_oracle_mismatches"
+      ],
+      "counters": {
+        "veto_contradictions": 5319,
+        "resolution_oracle_mismatches": 5319,
+        "acquisition_violations": 6,
+        "gain_violations": 1
+      }
+    },
+    {
+      "name": "determined-wrong-class",
+      "file": "crates/ptr-labeling/src/model.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1215,
+      "expected": [
+        "veto_contradictions",
+        "resolution_oracle_mismatches",
+        "sound_world_determined_errors"
+      ],
+      "counters": {
+        "veto_contradictions": 573,
+        "resolution_oracle_mismatches": 573,
+        "sound_world_determined_errors": 69
+      }
+    },
+    {
+      "name": "disputed-item-labelled",
+      "file": "crates/ptr-labeling/src/model.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 32,
+      "expected": [
+        "veto_contradictions",
+        "resolution_oracle_mismatches"
+      ],
+      "counters": {
+        "veto_contradictions": 15,
+        "resolution_oracle_mismatches": 15,
+        "acquisition_violations": 2
+      }
+    },
+    {
+      "name": "disputed-item-becomes-unknown-without-posterior",
+      "file": "crates/ptr-labeling/src/model.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 17,
+      "expected": [
+        "resolution_oracle_mismatches",
+        "product_panics"
+      ],
+      "counters": {
+        "resolution_oracle_mismatches": 15,
+        "product_panics": 2
+      }
+    },
+    {
+      "name": "resolution-posterior-not-renormalised",
+      "file": "crates/ptr-labeling/src/model.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4547,
+      "expected": [
+        "resolution_oracle_mismatches",
+        "unexpected_refusals"
+      ],
+      "counters": {
+        "resolution_oracle_mismatches": 4538,
+        "unexpected_refusals": 6,
+        "gain_violations": 3
+      }
+    },
+    {
+      "name": "probability-threshold-ignored",
+      "file": "crates/ptr-labeling/src/model.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1147,
+      "expected": [
+        "resolution_oracle_mismatches"
+      ],
+      "counters": {
+        "resolution_oracle_mismatches": 1147
+      }
+    },
+    {
+      "name": "confusion-rows-unnormalised",
+      "file": "crates/ptr-labeling/src/model.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8024,
+      "expected": [
+        "model_oracle_mismatches"
+      ],
+      "counters": {
+        "model_oracle_mismatches": 8021,
+        "gain_violations": 3
+      }
+    },
+    {
+      "name": "prior-smoothing-dropped",
+      "file": "crates/ptr-labeling/src/model.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8021,
+      "expected": [
+        "model_oracle_mismatches"
+      ],
+      "counters": {
+        "model_oracle_mismatches": 8021
+      }
+    },
+    {
+      "name": "evidence-halved",
+      "file": "crates/ptr-labeling/src/model.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8027,
+      "expected": [
+        "model_oracle_mismatches"
+      ],
+      "counters": {
+        "model_oracle_mismatches": 8025,
+        "gain_violations": 2
+      }
+    },
+    {
+      "name": "fit-reads-the-clock",
+      "file": "crates/ptr-labeling/src/model.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "determinism_mismatches",
+        "model_oracle_mismatches"
+      ],
+      "counters": {
+        "determinism_mismatches": 4
+      }
+    },
+    {
+      "name": "evaluate-accuracy-inverted",
+      "file": "crates/ptr-labeling/src/gold.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 31,
+      "expected": [
+        "metric_mismatches"
+      ],
+      "counters": {
+        "metric_mismatches": 30,
+        "gain_violations": 1
+      }
+    },
+    {
+      "name": "evaluate-brier-halved",
+      "file": "crates/ptr-labeling/src/gold.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 30,
+      "expected": [
+        "metric_mismatches"
+      ],
+      "counters": {
+        "metric_mismatches": 30
+      }
+    },
+    {
+      "name": "evaluate-reports-calibration-on-an-active-set",
+      "file": "crates/ptr-labeling/src/gold.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "active_set_calibration_reported"
+      ],
+      "counters": {
+        "active_set_calibration_reported": 3
+      }
+    },
+    {
+      "name": "duplicate-gold-item-accepted",
+      "file": "crates/ptr-labeling/src/gold.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "gold_guard_violations"
+      ],
+      "counters": {
+        "gold_guard_violations": 3
+      }
+    },
+    {
+      "name": "function-accuracy-counts-every-vote",
+      "file": "crates/ptr-labeling/src/gold.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 15,
+      "expected": [
+        "metric_mismatches"
+      ],
+      "counters": {
+        "metric_mismatches": 15
+      }
+    },
+    {
+      "name": "acquisition-proposes-determined-items",
+      "file": "crates/ptr-labeling/src/acquisition.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "acquisition_violations"
+      ],
+      "counters": {
+        "acquisition_violations": 6
+      }
+    },
+    {
+      "name": "acquisition-ranks-disputes-last",
+      "file": "crates/ptr-labeling/src/acquisition.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "acquisition_violations"
+      ],
+      "counters": {
+        "acquisition_violations": 2
+      }
+    },
+    {
+      "name": "alpha-denominator-sign",
+      "file": "crates/ptr-analytics/src/agreement.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "metric_mismatches"
+      ],
+      "counters": {
+        "metric_mismatches": 3
+      }
+    },
+    {
+      "name": "ece-absolute-value-dropped",
+      "file": "crates/ptr-analytics/src/calibration.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 40,
+      "expected": [
+        "metric_mismatches"
+      ],
+      "counters": {
+        "metric_mismatches": 40
+      }
+    },
+    {
+      "name": "harness-scorer-reads-the-raw-posterior",
+      "file": "bins/ptr-bench/src/experiments/f002/runner.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3648,
+      "expected": [
+        "veto_contradictions"
+      ],
+      "counters": {
+        "veto_contradictions": 3647,
+        "gain_violations": 1
+      }
+    },
+    {
+      "name": "harness-label-model-arm-is-the-majority-vote",
+      "file": "bins/ptr-bench/src/experiments/f002/runner.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3649,
+      "expected": [
+        "gain_violations",
+        "veto_contradictions"
+      ],
+      "counters": {
+        "veto_contradictions": 3647,
+        "gain_violations": 2
+      }
+    },
+    {
+      "name": "harness-oracle-brier-truncated",
+      "file": "bins/ptr-bench/src/experiments/f002/oracle.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 60,
+      "expected": [
+        "metric_mismatches"
+      ],
+      "counters": {
+        "metric_mismatches": 60
+      }
+    },
+    {
+      "name": "harness-oracle-prior-smoothing-dropped",
+      "file": "bins/ptr-bench/src/experiments/f002/oracle.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8021,
+      "expected": [
+        "model_oracle_mismatches"
+      ],
+      "counters": {
+        "model_oracle_mismatches": 8021
+      }
+    },
+    {
+      "name": "harness-oracle-ignores-many-vetoes",
+      "file": "bins/ptr-bench/src/experiments/f002/oracle.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 588,
+      "expected": [
+        "resolution_oracle_mismatches"
+      ],
+      "counters": {
+        "resolution_oracle_mismatches": 588
+      }
+    },
+    {
+      "name": "harness-oracle-ece-sorts-descending",
+      "file": "bins/ptr-bench/src/experiments/f002/oracle.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 28,
+      "expected": [
+        "metric_mismatches"
+      ],
+      "counters": {
+        "metric_mismatches": 28
+      }
+    },
+    {
+      "name": "vote-matrix-rejects-a-verifier-veto",
+      "file": "crates/ptr-labeling/src/votes.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5,
+      "expected": [
+        "unexpected_refusals"
+      ],
+      "counters": {
+        "unexpected_refusals": 3,
+        "gain_violations": 2
+      }
+    },
+    {
+      "name": "harness-brier-gain-sign-flipped",
+      "file": "bins/ptr-bench/src/experiments/f002/runner.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "gain_violations"
+      ],
+      "counters": {
+        "gain_violations": 1
+      }
+    },
+    {
+      "name": "harness-ece-gain-lower-bound-collapsed",
+      "file": "bins/ptr-bench/src/experiments/f002/runner.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "gain_violations"
+      ],
+      "counters": {
+        "gain_violations": 1
+      }
+    },
+    {
+      "name": "harness-baseline-census-accuracy-is-the-veto-aware-vote",
+      "file": "bins/ptr-bench/src/experiments/f002/runner.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "gain_violations"
+      ],
+      "counters": {
+        "gain_violations": 1
+      }
+    }
+  ]
+}
