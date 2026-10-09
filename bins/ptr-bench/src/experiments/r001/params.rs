@@ -11,9 +11,8 @@ pub const CONFIG_TOML: &str =
     include_str!("../../../../../experiments/runtime/R001-mailbox-backpressure/config.toml");
 pub const EXPERIMENT_TOML: &str =
     include_str!("../../../../../experiments/runtime/R001-mailbox-backpressure/experiment.toml");
-pub const DRAFT_TEXT: &str = include_str!(
-    "../../../../../experiments/runtime/R001-mailbox-backpressure/PREREGISTRATION.md"
-);
+pub const DRAFT_TEXT: &str =
+    include_str!("../../../../../experiments/runtime/R001-mailbox-backpressure/PREREGISTRATION.md");
 
 /// The subcommand of the harness (`ptr-bench <BENCHMARK> <seed>`).
 pub const BENCHMARK: &str = "mailbox-backpressure";
