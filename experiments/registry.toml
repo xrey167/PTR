@@ -423,7 +423,7 @@ status = "prepared"
 [[experiment]]
 id = "M001-v6-sweep"
 path = "model/M001-v6-sweep"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "M001-v6"
@@ -433,7 +433,7 @@ status = "planned"
 [[experiment]]
 id = "M002-v11-sweep"
 path = "model/M002-v11-sweep"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "M002-v11"
@@ -443,7 +443,7 @@ status = "planned"
 [[experiment]]
 id = "M003-v3-sweep"
 path = "model/M003-v3-sweep"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "M003-v3"
