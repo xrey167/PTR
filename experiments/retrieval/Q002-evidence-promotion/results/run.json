@@ -1,0 +1,72 @@
+{
+  "experiment_id": "Q002",
+  "status": "prepared",
+  "scope": "evidence promotion of search hits by exact-source verification: ptr_search's typed promotion path (ExactSourceResolver, SearchHit::observe_resolved against the lifecycle authority and the source ownership, verify_claim, SearchHit::promote_verified_with) must promote a retrieved hit to VerifiedKnown only if its citation is the byte-exact quote at the cited span of an intact raw event that belongs to the capsule generation the hit names, its claim is what that one statement states (subject, predicate and value byte for byte, not negated) and the lifecycle authority (PtrRuntime::generation_validity, with a harness overlay for the one state the runtime cannot answer, Disputed) holds the hit's generation live; the raw event source, the ownership record and the lifecycle closure are trust roots taken from the generator's table; seeded synthetic worlds of 36 capsules of one to three generations (healthy, revoked, disputed), 156 answerable, 60 quarantined and 40 absent questions, and a noisy retriever whose hits include nine classes of poison (fabricated source id, wrong or empty or two-statement or newline-padded span or doctored quote, tampered digest, lookalike subject or other predicate or subject differing by case, contradicting value or negation or truncated negation, superseded, revoked-but-live and disputed generations, and a live label on the exact event of another generation or capsule) and hard honest hits (multibyte value, value containing not, repeated statement, one-line event, spans at the event edges); the mechanism must promote none of the poison, refuse none of the hard honest hits, accept none of the adversarial stage skips at the API boundary, promote at least 950 per mille of the honest hits and get at least as many questions right (correct answer or correct abstention) as direct retrieval-to-answer, the lifecycle filter alone and the boolean API fed true; direct retrieval (B0) and the boolean API (B2) are the negative controls and the lifecycle filter alone (B1) a contrast",
+  "git_sha": "d1836c12becdf0437c72f8b15d75846d2f6264dc",
+  "aggregated_at_git_sha": "e4670ecb742a84bc6787945738de84f27c6cef75",
+  "recorded_at": "2026-10-09T10:56:43.718024+00:00",
+  "preregistration_sha256": "647714286c7fe34ee04daac274703d88366fe4bc57383945d0b3bc1e3e321f02",
+  "preregistration_rules_sha256": "137798b3dd34dabca859444bd09393b5312ecb320f2899362886e6bfaa3ab1a8",
+  "criteria_sha256": "bff59865a1ae72b94fa2d67f7ced8bc4624086c81227eeea3ec927deb0696008",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- evidence-promotion <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261009T101412.858576Z-seed-17.json",
+      "git_sha": "d1836c12becdf0437c72f8b15d75846d2f6264dc",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261009T101616.377746Z-seed-29.json",
+      "git_sha": "83c637f703483c3e22026a65caedaeec117414a6",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261009T101827.282042Z-seed-43.json",
+      "git_sha": "37fc142e4b68472af31a25e913e210aff1548b23",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261009T102122.404575Z-seed-71.json",
+      "git_sha": "6983eea955c881167346ab8da8a42837687579bd",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261009T102337.419659Z-seed-101.json",
+      "git_sha": "aef54e4441df924a9f3ccdfd54952977cdbd1d4d",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "f09f6ae45d2236b6f84f3aea930fa2d458c9a4ddc9ac34e4f0195980ff713f92",
+    "29": "6cd95b53452db9a76041548b8c60fef9f43d988a2224527ed74548f8c8d838f4",
+    "43": "bdf33255df4d30bf40f31d041468d65fdd30d9108260601744df60a1ddbc86e4",
+    "71": "f524fb9e7d2893af9392964d400166a1d43e867a76da3065b895d328e717a041",
+    "101": "302241dc5a73eda0bcd5895e867f96a2bee4f84f5ba85c4c74b6e6d95232f6f6"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 37,
+    "total": 37,
+    "git_sha": "5e138c9c9be2234e39257db8d4e8bec0a543bb4e",
+    "sha256": "0d38f1f1bbfbd07a2984acc3676fb6b0977553222fab77c3ab3f5581fe10f07a"
+  },
+  "limitations": [
+    "the claim is about a synthetic structured world: every fact is one statement of the fixed format `subject: predicate is [not ]value` in a raw event the generator wrote; nothing is claimed about free text, paraphrase, statements that span lines, units, dates or a real retriever, all of which the verifier refuses rather than interprets",
+    "the honest hits are exact by construction (their citation and claim are the statement itself), so recall_permille measures that the mechanism does not over-refuse well-formed evidence (the hard honest class, with its zero-tolerance falsifier, is where that is tested), not that it recovers hits a real retriever garbles; a recall of 1000 is the expected value",
+    "the typed path's guarantee holds given three trust roots, each taken from the generator's table and none checked by the code under test: the RawEventSource (the digest check shows internal consistency, not that the source is the store of record; the trait is open and the P3 double is such an implementation), the SourceOwnership (which capsule generation admitted which raw event; it must come from the admitting record, not from the retriever's index) and the lifecycle closure (a truthful validity answer); what P9 and K11 show is that, given a truthful ownership, a live label cannot launder an event of another generation or capsule, not that an ownership record can be derived from KnowledgeStore (it cannot yet)",
+    "the claim a proof is made for is the caller's: a SearchHit carries no assertion of the retriever's own, so nothing ties the claim verified to a claim the retriever made; the boolean observe/promote_verified path reaches VerifiedKnown with no raw bytes at all and is the documented trusted-caller path (baseline B2), not restricted by this experiment",
+    "Disputed is not a state of PtrRuntime::generation_validity and the runtime is never wired to answer it: P8 tests the contract that observe_resolved refuses a Disputed answer of the validity closure (the harness overlay, with the mutation observe-accepts-disputed), not that a PtrRuntime-backed system refuses disputed generations; P6 and P7 use the real runtime (a ledger of CapsuleCommitted, CapsuleSuperseded and Revoked events)",
+    "a KnowledgeStore cannot hold an event whose bytes disagree with its digest, so P3 cites corrupt replicas served beside the store by a RawEventSource double, recorded as copies of their originals; P3 shows the resolver's defence in depth against a source that violates the store's invariant, not that the store is tamper-evident, and no honest hit reads a replica",
+    "a Known is false by the generator's label (eligible: exact source, exact claim, own live generation); the baselines are counted once per question and the mechanism on every hit it promotes; a P2 hit whose claim is true in the world but whose span is wrong still counts as a false Known (false_known_untrue_* reports the subset whose claim is also false); the generator's labels are checked against a naive reading of the corpus that is independent of the code under test, not of the generator (it shares the rendering, the world data and the lifecycle table with it) and that checks labels, not refusal reasons, which are checked only by wrong_refusal_reason against the generator's table",
+    "the lifecycle is read once per hit at observation time (a revocation committed after observe_resolved is not seen by promote_verified_with), one process, one machine profile, no concurrency; the boolean path observe/promote_verified is the documented trusted-caller path and is not restricted",
+    "the stage-skip attempts are a fixed list of twelve kinds (K6 split into another event and another span of the same event, K11 an honest hit given another capsule's source) on honest and lifecycle-ineligible hits through the public API; a caller that can construct a ResolvedSource or ClaimProof is excluded by privacy of their fields (compile-fail doctests), which this experiment does not test; wall-clock times (timing_ns) are recorded and never judged"
+  ],
+  "metrics_sha256": "c173523acfbc0085ec903154ef7f4630a849afadb3ce713b7fd0778c0f2d4072"
+}
