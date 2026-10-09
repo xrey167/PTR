@@ -22,7 +22,7 @@ missing = [
 
 next = [
   "Add a revision/generation verifier fed with live runtime state",
-  "Run F001 (the ptr-feedback RepairLoop drives the fabric and the ActionContractVerifier in its harness; the experiment is planned, not frozen)",
+  "Extend F001-style evidence to real generators (F001, completed, drove the fabric and the ActionContractVerifier through the ptr-feedback RepairLoop)",
 ]
 
 experiments = [

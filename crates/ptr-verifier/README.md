@@ -32,11 +32,11 @@
 ### Next milestones
 
 - Add a revision/generation verifier fed with live runtime state
-- Run F001 (the ptr-feedback RepairLoop drives the fabric and the ActionContractVerifier in its harness; the experiment is planned, not frozen)
+- Extend F001-style evidence to real generators (F001, completed, drove the fabric and the ActionContractVerifier through the ptr-feedback RepairLoop)
 
 ### Linked experiments
 
-- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
+- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `frozen`
 - [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `frozen`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
