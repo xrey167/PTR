@@ -445,7 +445,7 @@ mod tests {
         "../../../../../experiments/feedback/F001-generate-verify-repair/tests/mutations.toml"
     );
     const PREREGISTRATION: &str = include_str!(
-        "../../../../../experiments/feedback/F001-generate-verify-repair/DRAFT_PREREGISTRATION.md"
+        "../../../../../experiments/feedback/F001-generate-verify-repair/PREREGISTRATION.md"
     );
 
     /// The shared reduced run.

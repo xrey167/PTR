@@ -54,3 +54,16 @@ max_hard_counter = 0
 # Strict comparative rules: at each budget above one, repair beats rewrite-only by at least this much (successes; milli-draws per
 # success). The analytic expectation gives gains of thousands (preregistration section 4).
 min_gain = 1
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "generate-verify-repair"
+profiles = "uniform=900,900,900,900,900,900,900;heterogeneous=950,900,900,800,700,500,500;hard=650,650,600,600,550,550,500"
+budgets = [1, 2, 4, 8, 16]
+tasks_per_profile = 2000
+repair_q = 800
+preregistration_text = "experiments/feedback/F001-generate-verify-repair/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/feedback/F001-generate-verify-repair/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"
