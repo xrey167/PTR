@@ -3,3 +3,26 @@ kind = "workspace-area"
 name = "R001-mailbox-backpressure"
 path = "experiments/runtime/R001-mailbox-backpressure"
 tests_dir = "tests"
+
+# Preregistered choices for this experiment (no code default exists). Draft only: R001 is
+# planned, not frozen, and no [preregistration] table exists yet.
+[pinned_thresholds]
+capacities = [1, 8, 128]
+payload_class_bytes = { small = 64, large = 4096 }
+service_ticks_min = 16
+service_ticks_max = 32
+phases = [
+  { name = "underload", count = 200, gap_lo = 33, gap_hi = 40 },
+  { name = "overload_x2", count = 400, gap_lo = 8, gap_hi = 16 },
+  { name = "overload_x8", count = 800, gap_lo = 2, gap_hi = 4 },
+  { name = "burst", count = 300, gap_lo = 1, gap_hi = 1 },
+  { name = "recovery", count = 600, gap_lo = 33, gap_hi = 40 },
+]
+closed_phases = [
+  { name = "underload", count = 10, gap_lo = 33, gap_hi = 40 },
+  { name = "overload_x8", count = 140, gap_lo = 2, gap_hi = 4 },
+]
+close_before_id = 80
+control_capacity = 8
+threaded = { producers = 4, capacity = 8, fill_rounds = 2000, fill_per_producer = 16, contend_per_producer = 20000, closed_per_producer = 64, close_after_received = 10000 }
+seed_aggregation = "every_seed_must_pass"

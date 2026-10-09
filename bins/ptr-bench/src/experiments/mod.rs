@@ -15,6 +15,7 @@ pub mod l004;
 pub mod layered_kv;
 #[cfg(feature = "postgres-experiments")]
 mod pg;
+pub mod r001;
 pub mod r005;
 pub mod r006;
 pub mod r007;
@@ -25,3 +26,4 @@ pub mod r012;
 #[cfg_attr(not(feature = "postgres-experiments"), allow(dead_code))]
 mod rng;
 pub mod s003;
+mod vtime;
