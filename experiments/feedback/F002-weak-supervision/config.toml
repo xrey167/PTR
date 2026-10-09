@@ -64,3 +64,17 @@ min_gold_guard_probes = 4
 min_acquisition_items = 1
 max_violations = 0
 min_gain_ppm = 1
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "weak-supervision"
+items = 2000
+gold_items = 600
+contamination_permille = 80
+bootstrap_interval_permille = 950
+mvc_beta_milli = 1700
+preregistration_text = "experiments/feedback/F002-weak-supervision/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/feedback/F002-weak-supervision/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"
