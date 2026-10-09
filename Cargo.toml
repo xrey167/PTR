@@ -4,7 +4,7 @@ resolver = "2"
 # than left to a glob that silently omits them. `check_repo.py` asserts that every
 # binary here is a member or an exclusion, so the next one cannot fall through.
 members = ["crates/ptr-*", "bins/ptr-*", "bins/ptrctl", "bins/ptrd"]
-exclude = ["bindings/ptr-py", "fuzz", "model/burn-a0", "vendor/*"]
+exclude = ["bindings/ptr-py", "evaluations/bench/*", "fuzz", "model/burn-a0", "vendor/*"]
 
 [workspace.package]
 version = "0.1.0"
