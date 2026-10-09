@@ -1,4 +1,5 @@
 mod fusion;
+mod source;
 
 use std::fmt;
 
@@ -7,6 +8,10 @@ use ptr_types::{CapsuleId, Generation, Validity};
 pub use fusion::{
     check_rank_fusion, convex_score_fusion, retain_live, weighted_rank_fusion, FusedHit,
     FusionError, WeightedList, MAX_TOTAL_WEIGHT,
+};
+pub use source::{
+    verify_claim, Claim, ClaimError, ClaimProof, ExactSourceResolver, RawEventSource,
+    ResolvedSource, SourceCitation, SourceError, SourceOwners, SourceOwnership,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,6 +43,12 @@ pub enum EvidencePromotionError {
     SourceNotResolved,
     /// Verification of the observed hit failed.
     VerificationFailed,
+    /// The claim proof is about another source than the one this hit was observed with.
+    ClaimProofMismatch,
+    /// The resolved source is a raw event of another capsule or another generation than
+    /// the one the hit names, however intact the event and however live the hit's own
+    /// generation.
+    SourceNotOwnedByHit,
 }
 
 impl EvidencePromotionError {
@@ -51,6 +62,8 @@ impl EvidencePromotionError {
             Self::UnknownGeneration => "PTR_SEARCH_UNKNOWN_GENERATION",
             Self::SourceNotResolved => "PTR_SEARCH_SOURCE_NOT_RESOLVED",
             Self::VerificationFailed => "PTR_SEARCH_VERIFICATION_FAILED",
+            Self::ClaimProofMismatch => "PTR_SEARCH_CLAIM_PROOF_MISMATCH",
+            Self::SourceNotOwnedByHit => "PTR_SEARCH_SOURCE_NOT_OWNED_BY_HIT",
         }
     }
 }
@@ -65,6 +78,12 @@ impl fmt::Display for EvidencePromotionError {
             Self::UnknownGeneration => "the lifecycle authority knows no such generation",
             Self::SourceNotResolved => "the hit's exact source was not resolved",
             Self::VerificationFailed => "verification of the observed hit failed",
+            Self::ClaimProofMismatch => {
+                "the claim proof is about another source than the hit was observed with"
+            }
+            Self::SourceNotOwnedByHit => {
+                "the resolved source does not belong to the capsule generation the hit names"
+            }
         })
     }
 }
@@ -96,6 +115,24 @@ impl std::error::Error for EvidencePromotionError {}
 ///
 /// `score` and `backend` describe the retrieval, not the evidence, and stay
 /// public.
+///
+/// # Two ways to promote
+///
+/// The typed path ([`SearchHit::observe_resolved`], [`SearchHit::promote_verified_with`])
+/// takes proofs that only [`ExactSourceResolver`] and [`verify_claim`] can make, so the
+/// caller cannot assert a step it did not take. It is the path for anything a retriever
+/// returned. Its guarantee is conditional on the roots it is given: a truthful
+/// [`RawEventSource`] and [`SourceOwnership`] for the resolver, and a `validity` closure
+/// that answers truthfully; none of them is checked here.
+///
+/// The boolean path ([`SearchHit::observe`], [`SearchHit::promote_verified`]) takes the
+/// caller's word that the source was resolved and the verification passed. It is the
+/// trusted-caller path, for a caller that has done those steps by other means and for
+/// tests; nothing in it checks them, and a hit promoted through it carries no source or
+/// claim ([`SearchHit::resolved_source`] and [`SearchHit::verified_claim`] are `None`).
+/// Handing it values taken from a retriever's output is the "boolean trust" baseline of
+/// experiment Q002, not a safe use. It is a trusted-caller path in the strict sense: a hit
+/// reaches `VerifiedKnown` through it with no raw bytes at all.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
     capsule: CapsuleId,
@@ -103,6 +140,8 @@ pub struct SearchHit {
     pub score: f32,
     pub backend: String,
     stage: EvidenceStage,
+    source: Option<ResolvedSource>,
+    claim: Option<Claim>,
 }
 
 impl SearchHit {
@@ -118,6 +157,8 @@ impl SearchHit {
             score,
             backend: backend.into(),
             stage: EvidenceStage::SearchCandidate,
+            source: None,
+            claim: None,
         }
     }
 
@@ -136,6 +177,20 @@ impl SearchHit {
         self.stage
     }
 
+    /// The resolved source this hit was observed with through
+    /// [`SearchHit::observe_resolved`]; `None` before that, and for a hit observed through
+    /// the boolean [`SearchHit::observe`].
+    pub fn resolved_source(&self) -> Option<&ResolvedSource> {
+        self.source.as_ref()
+    }
+
+    /// The claim this hit was promoted with through [`SearchHit::promote_verified_with`];
+    /// `None` before that, and for a hit promoted through the boolean
+    /// [`SearchHit::promote_verified`].
+    pub fn verified_claim(&self) -> Option<&Claim> {
+        self.claim.as_ref()
+    }
+
     pub fn mark_possible(&mut self) -> Result<(), EvidencePromotionError> {
         if self.stage != EvidenceStage::SearchCandidate {
             return Err(EvidencePromotionError::WrongStage);
@@ -146,6 +201,10 @@ impl SearchHit {
 
     /// Move a possible-evidence hit to `Observed`: the lifecycle authority
     /// holds its generation live and its exact source was resolved.
+    ///
+    /// This is the trusted-caller path: `exact_source_resolved` is the caller's word.
+    /// For a hit a retriever returned, use [`SearchHit::observe_resolved`], which takes
+    /// the proof [`ExactSourceResolver::resolve`] makes instead.
     ///
     /// `validity` is asked once about this hit's capsule and generation,
     /// which no caller can change afterwards, and answers as
@@ -172,16 +231,7 @@ impl SearchHit {
     where
         F: FnOnce(&CapsuleId, Generation) -> Option<Validity>,
     {
-        if self.stage != EvidenceStage::PossibleEvidence {
-            return Err(EvidencePromotionError::WrongStage);
-        }
-        match validity(&self.capsule, self.generation) {
-            Some(Validity::Live) => {}
-            Some(Validity::Superseded) => return Err(EvidencePromotionError::StaleGeneration),
-            Some(Validity::Revoked) => return Err(EvidencePromotionError::RevokedGeneration),
-            Some(Validity::Disputed) => return Err(EvidencePromotionError::DisputedGeneration),
-            None => return Err(EvidencePromotionError::UnknownGeneration),
-        }
+        self.check_lifecycle(validity)?;
         if !exact_source_resolved {
             return Err(EvidencePromotionError::SourceNotResolved);
         }
@@ -189,7 +239,66 @@ impl SearchHit {
         Ok(())
     }
 
+    /// Move a possible-evidence hit to `Observed` with the proof that its exact source
+    /// was resolved.
+    ///
+    /// `source` can only come from [`ExactSourceResolver::resolve`]. It is kept with the
+    /// hit ([`SearchHit::resolved_source`]) and is what [`SearchHit::promote_verified_with`]
+    /// later holds a claim proof against. The lifecycle is asked as in
+    /// [`SearchHit::observe`], once, about this hit's own capsule and generation, and
+    /// before the proof is kept: a refused hit keeps no source. The source must also
+    /// belong to the capsule generation the hit names ([`ResolvedSource::is_owned_by`],
+    /// answered by the resolver's [`SourceOwnership`]): the retriever's label says which
+    /// generation was asked about, and a live label must not launder an event of a
+    /// superseded or revoked one.
+    ///
+    /// # Errors
+    /// `WrongStage` unless the hit is `PossibleEvidence` (then `validity` is not called);
+    /// `StaleGeneration`, `RevokedGeneration`, `DisputedGeneration` or
+    /// `UnknownGeneration` as for [`SearchHit::observe`], in that order of precedence; then
+    /// `SourceNotOwnedByHit` when the source does not belong to this hit's capsule and
+    /// generation (an event nothing admitted belongs to none). A refused step leaves the
+    /// hit at its stage.
+    pub fn observe_resolved<F>(
+        &mut self,
+        source: ResolvedSource,
+        validity: F,
+    ) -> Result<(), EvidencePromotionError>
+    where
+        F: FnOnce(&CapsuleId, Generation) -> Option<Validity>,
+    {
+        self.check_lifecycle(validity)?;
+        if !source.is_owned_by(&self.capsule, self.generation) {
+            return Err(EvidencePromotionError::SourceNotOwnedByHit);
+        }
+        self.source = Some(source);
+        self.stage = EvidenceStage::Observed;
+        Ok(())
+    }
+
+    /// The step shared by both observe paths: the hit is possible evidence and the
+    /// lifecycle authority answers live for its own capsule generation.
+    fn check_lifecycle<F>(&self, validity: F) -> Result<(), EvidencePromotionError>
+    where
+        F: FnOnce(&CapsuleId, Generation) -> Option<Validity>,
+    {
+        if self.stage != EvidenceStage::PossibleEvidence {
+            return Err(EvidencePromotionError::WrongStage);
+        }
+        match validity(&self.capsule, self.generation) {
+            Some(Validity::Live) => Ok(()),
+            Some(Validity::Superseded) => Err(EvidencePromotionError::StaleGeneration),
+            Some(Validity::Revoked) => Err(EvidencePromotionError::RevokedGeneration),
+            Some(Validity::Disputed) => Err(EvidencePromotionError::DisputedGeneration),
+            None => Err(EvidencePromotionError::UnknownGeneration),
+        }
+    }
+
     /// Move an observed hit to `VerifiedKnown` once its verification passed.
+    ///
+    /// This is the trusted-caller path: `verification_passed` is the caller's word. For a
+    /// hit observed through [`SearchHit::observe_resolved`], use
+    /// [`SearchHit::promote_verified_with`].
     ///
     /// The generation promoted is the one [`SearchHit::observe`] asked the
     /// lifecycle about, since a hit's capsule and generation cannot change.
@@ -209,6 +318,38 @@ impl SearchHit {
         if !verification_passed {
             return Err(EvidencePromotionError::VerificationFailed);
         }
+        self.stage = EvidenceStage::VerifiedKnown;
+        Ok(())
+    }
+
+    /// Move an observed hit to `VerifiedKnown` with the proof that a claim is what its
+    /// resolved source states.
+    ///
+    /// `proof` can only come from [`verify_claim`]. It must be about the very source
+    /// this hit was observed with through [`SearchHit::observe_resolved`]: a proof made
+    /// for another source, however valid, is refused. The proof's claim is kept with the
+    /// hit ([`SearchHit::verified_claim`]). Like [`SearchHit::promote_verified`] this does
+    /// not ask the lifecycle again.
+    ///
+    /// # Errors
+    /// `WrongStage` unless the hit is `Observed`; `SourceNotResolved` when it was
+    /// observed through the boolean [`SearchHit::observe`] and so holds no source; and
+    /// `ClaimProofMismatch` when the proof is about another source. A refused step leaves
+    /// the hit at its stage.
+    pub fn promote_verified_with(
+        &mut self,
+        proof: ClaimProof,
+    ) -> Result<(), EvidencePromotionError> {
+        if self.stage != EvidenceStage::Observed {
+            return Err(EvidencePromotionError::WrongStage);
+        }
+        let Some(source) = self.source.as_ref() else {
+            return Err(EvidencePromotionError::SourceNotResolved);
+        };
+        if proof.source() != source {
+            return Err(EvidencePromotionError::ClaimProofMismatch);
+        }
+        self.claim = Some(proof.claim().clone());
         self.stage = EvidenceStage::VerifiedKnown;
         Ok(())
     }
