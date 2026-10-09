@@ -1,0 +1,6 @@
+# baseline-v1-select: study=m002-v10 seed=17; best mean val accuracy, tie lower mean val NLL, tie smaller lr
+arm	lr	val_accuracy	val_nll
+factorized-v2	0.025	0.7018229166666666	0.9669344509463368
+factorized-v2-off	0.025	0.6770833333333334	1.0074235815363715
+full	0.025	0.6861979166666666	0.9458736584107005
+plain	0.0025	0.390625	2.281900834379006
