@@ -1,12 +1,12 @@
 version = 1
 id = "S002"
 status = "planned"
-hypothesis = "Can stale reasoning be cancelled safely on revision changes?"
-metrics = "stale action rate; wasted compute; cancellation latency"
-baseline = "no cancellation"
-falsification = "Any stale irreversible action is a hard failure."
+hypothesis = "Can stale reasoning be cancelled safely on revision changes? Cooperative, revision-granular cancellation of a steppable run before the effect boundary never weakens the hard boundary (no stale action executes or is recorded as attempted, in either arm) and a cancelled run takes no step on a replaced snapshot. Capability exercised in a harness only: no shipped host (ptr-server, ptrd) steps runs, the blocking entry points force cancellation off, and total compute (including the restarts cancellation causes) is reported, not claimed to fall."
+metrics = "runs, stale_runs_by_schedule, stale_runs_observed, stale_actions_executed, stale_effect_attempts_committed, stale_checkpoint_admissions, fresh_actions_refused, stale_boundary_attempts_a0, stale_boundary_attempts_a1, stale_action_rate_permille_a0, stale_action_rate_permille_a1, boundary_refusals, boundary_refusals_a0, boundary_refusals_a1, cancelled_runs, false_cancellations, missed_cancellations, fresh_runs_completed, fresh_runs_starved, cancel_contract_violations, boundary_arm_divergences, cancel_latency_rounds_max, cancel_latency_violation, wasted_units_a0, wasted_units_a1, wasted_work_violation, total_units_a0, total_units_a1, net_units_a1_minus_a0, double_executions, executor_vs_ledger_mismatches, mirror_drift, product_panics, product_hangs, effect_kinds_covered, generation_stale_cases, injection_positions_covered, control_trips, noop_writes_observed, retries_replayed, restarted_runs"
+baseline = "no cancellation (arm A0: semantic.cancel_stale_revisions = false; the run goes on with its next snapshot and the hard effect boundary alone refuses what is stale)"
+falsification = "Any stale irreversible action is a hard failure, and so is any stale action of another effect: stale_actions_executed > 0; stale_effect_attempts_committed > 0; stale_checkpoint_admissions > 0; fresh_actions_refused > 0. Cancellation must be exact: false_cancellations > 0; missed_cancellations > 0; fresh_runs_starved > 0; cancel_contract_violations > 0; cancel_latency_rounds_max > 1. It must not change the boundary: boundary_arm_divergences > 0; double_executions > 0; executor_vs_ledger_mismatches > 0. A cancelled run takes no step on a replaced snapshot (this restates the cancellation contract that missed_cancellations checks independently; it is not a compute saving, and net_units_a1_minus_a0 is descriptive): wasted_units_a1 > wasted_units_a0; wasted_units_a1 > 0. The harness's independent model must agree with the runtime: mirror_drift > 0. A panic or a hang of the product falsifies: product_panics > 0; product_hangs > 0. A run is vacuous (and counts as falsified) when it does not exercise these: runs < 1000; stale_runs_by_schedule < 100; stale_runs_observed < 100; boundary_refusals_a0 < 1; boundary_refusals_a1 < 1; cancelled_runs < 100; effect_kinds_covered < 4; fresh_runs_completed < 100; generation_stale_cases < 50; injection_positions_covered < 5; control_trips < 5; wasted_units_a0 < 1; noop_writes_observed < 1; retries_replayed < 1; restarted_runs < 1."
 hardware_profile = "hardware/default.toml"
 entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
-required_artifacts = ["run.json", "metrics.json"]
+required_artifacts = ["run.json", "metrics.json", "mutations.json"]

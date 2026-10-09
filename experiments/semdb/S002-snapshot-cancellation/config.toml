@@ -3,3 +3,75 @@ kind = "workspace-area"
 name = "S002-snapshot-cancellation"
 path = "experiments/semdb/S002-snapshot-cancellation"
 tests_dir = "tests"
+
+# The preregistered choices of the harness (`ptr-bench snapshot-cancellation`,
+# bins/ptr-bench/src/experiments/s002/params.rs, which fails its drift test if a compiled constant differs from this
+# table). S002 is planned, not frozen: no [preregistration] table exists yet; the freeze adds it, after the invariant
+# review of the cancellation (crates/ptr-runtime/src/stepped.rs) the owner decisions of 2026-10-09 below require.
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
+# The cases of one seed: a case is one scheduled run (rounds, effect, writer, position), executed once in each arm on a fresh
+# runtime. The rounds are the Pod requests a run makes before it asks for its action.
+cases_per_seed = 1500
+effects = ["Read", "Mutation", "External", "Irreversible"]
+rounds_min = 2
+rounds_max = 6
+# The cooperative scheduler's virtual clock: a run step (and each boundary checkpoint) is scheduled this many ticks after the
+# previous one; a writer acts half a step before the step it precedes.
+step_ticks = 10
+# The class of each case, per mille of the cases of a seed: no writer; a writer that moves the revision before the run has
+# finished (before round 1, mid-run, just before the action); a writer that moves it after (between ActionReady and
+# authorize_action, between prepare_execution and execute_prepared); a writer that rewrites a key to the value it holds
+# (the revision does not move, so nothing is stale); a lifecycle writer (the target's generation is superseded or revoked; no
+# semantic revision moves).
+class_never_permille = 150
+class_bump_early_permille = 300
+class_bump_late_permille = 200
+class_noop_permille = 100
+class_lifecycle_permille = 250
+lifecycle_revoke_permille = 500
+positions = ["before-round-1", "mid-run", "just-before-action", "between-action-and-authorize", "between-prepare-and-execute"]
+arms = ["A0-cancellation-off", "A1-cancellation-on"]
+controls = ["bypass", "ledger_scan"]
+# The watchdog: a run of the harness whose case counter does not move for this many seconds is a product hang (a case takes
+# milliseconds).
+hang_seconds = 60
+# Coverage prerequisites (a run that misses one is vacuous).
+min_runs = 1000
+min_stale_runs_by_schedule = 100
+min_stale_runs_observed = 100
+min_boundary_refusals_a0 = 1
+min_boundary_refusals_a1 = 1
+min_cancelled_runs = 100
+min_effect_kinds_covered = 4
+min_fresh_runs_completed = 100
+min_generation_stale_cases = 50
+min_injection_positions_covered = 5
+min_control_trips = 5
+min_wasted_units_a0 = 1
+min_noop_writes_observed = 1
+min_retries_replayed = 1
+min_restarted_runs = 1
+# Falsifiers (a run that trips one falsifies S002 on that seed).
+max_stale_actions_executed = 0
+max_stale_effect_attempts_committed = 0
+max_stale_checkpoint_admissions = 0
+max_fresh_actions_refused = 0
+max_false_cancellations = 0
+max_missed_cancellations = 0
+max_fresh_runs_starved = 0
+max_cancel_contract_violations = 0
+max_boundary_arm_divergences = 0
+max_double_executions = 0
+max_executor_vs_ledger_mismatches = 0
+max_mirror_drift = 0
+max_cancel_latency_rounds_max = 1
+max_wasted_units_a1 = 0
+max_product_panics = 0
+max_product_hangs = 0
+# What is gated and what is not.
+wall_time_gated = false
+total_units_gated = false
+owner_decision_2026_10_09_cancellation = "refactor run_resumable_inner into a steppable run (existing entry points stay wrappers, behaviour unchanged with cancellation off); coarse revision-granular cooperative cancellation before the effect boundary only; the boundary remains the safety barrier; gated claim: cancellation never weakens the boundary and cuts wasted work; coverage also requires the baseline to show at least one stale attempt reaching the boundary; invariant review before freeze; do last"

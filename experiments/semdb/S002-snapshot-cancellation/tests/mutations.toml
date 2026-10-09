@@ -1,0 +1,403 @@
+# Defects the S002 harness must detect; run with `python3 scripts/mutation_check.py S002` (`--check` verifies the anchors only).
+# Each `find` must occur exactly once in its file (checked by `--check`), so the list cannot drift from the code silently.
+# `expect` names the hard counters that show the defect: a run that fails only on others does not count as detecting it.
+#
+# The first eight mutations plant defects in the hard effect boundary (ptr-security's authorization and ptr-runtime's execution
+# path: the revision and generation comparisons, the re-check of prepare/execute for reads, the permit epoch, the at-most-once
+# answer, the executor dispatch, and a boundary that answers differently when cancellation is off); the next ten plant defects in
+# the new cancellation (crates/ptr-runtime/src/stepped.rs: the check removed, inverted, late, early, after the work, on the
+# wrong side of the rebase, ignoring its setting, the cancelled run's contents, a panic, a hang); the last two plant defects in the
+# harness itself, to show that its revision mirror and its cancellation oracle are not vacuous: each makes the harness' own
+# cross-check fire. Every hard counter is expected by at least one (a test in bins/ptr-bench checks this list against the harness).
+#
+# Not listed, on purpose: removing only the permit epoch check of execute_prepared, or only the re-check of the action in
+# admit_effect. Either alone is an equivalent mutant: every commit and every change of the permissions retires the permits
+# prepared before it (the epoch), so a permit cannot outlive a write, and the re-check of the action in admit_effect then sees
+# the same state the epoch already guarded; only both together let a stale permit execute, which is the one compound mutation
+# `permit-epoch-and-admission-recheck-both-removed` above. (The same holds for the harness: a mirror fed the runtime's revision
+# would agree with a correct runtime by construction, so "the mirror shares the runtime's revision source" is not a mutation of
+# a correct runtime; it is covered by `harness-mirror-ignores-foreign-writes`, which breaks the mirror the other way.)
+#
+# `execution-recheck-skips-revision-for-reads` only matters for the Read effect (the authorization always requires the current
+# revision of Mutation, External and Irreversible), and only because the harness' host drives prepare_execution_once and
+# execute_prepared after authorize_action has refused, as a careless host would.
+#
+# The mutation run is invoked as `ptr-bench snapshot-cancellation <cases> 17`: `cases` is the number of cases (the result says
+# "scale":"custom" and is no evidence).
+
+package = "ptr-bench"
+features = ""
+subcommand = "snapshot-cancellation"
+cases = 300
+seed = 17
+hard_counters = [
+    "stale_actions_executed",
+    "stale_effect_attempts_committed",
+    "stale_checkpoint_admissions",
+    "fresh_actions_refused",
+    "false_cancellations",
+    "missed_cancellations",
+    "fresh_runs_starved",
+    "cancel_contract_violations",
+    "boundary_arm_divergences",
+    "double_executions",
+    "executor_vs_ledger_mismatches",
+    "mirror_drift",
+    "cancel_latency_violation",
+    "wasted_work_violation",
+    "product_panics",
+    "product_hangs",
+]
+
+[[mutation]]
+name = "revision-compare-removed"
+description = "The authorization no longer compares the action's revision with the current one: a stale action is admitted by authorize_action, prepare_execution and execute_prepared alike."
+expect = ["stale_actions_executed", "stale_checkpoint_admissions", "stale_effect_attempts_committed"]
+file = "crates/ptr-security/src/lib.rs"
+find = '''
+            && request.action_revision != request.current_revision
+'''
+replace = '''
+            && false
+'''
+
+[[mutation]]
+name = "revision-compare-inverted"
+description = "The authorization refuses an action whose revision is the current one and admits every other."
+expect = ["fresh_actions_refused", "stale_actions_executed", "fresh_runs_starved"]
+file = "crates/ptr-security/src/lib.rs"
+find = '''
+            && request.action_revision != request.current_revision
+'''
+replace = '''
+            && request.action_revision == request.current_revision
+'''
+
+[[mutation]]
+name = "generation-check-removed"
+description = "The authorization no longer checks that the action's generation is live and not revoked: an action on a superseded or revoked generation is admitted."
+expect = ["stale_actions_executed", "stale_checkpoint_admissions", "stale_effect_attempts_committed"]
+file = "crates/ptr-security/src/lib.rs"
+find = '''
+        if hard_boundary || request.require_live_generation {
+'''
+replace = '''
+        if false {
+'''
+
+[[mutation]]
+name = "execution-recheck-skips-revision-for-reads"
+description = "The re-check prepare_execution and execute_prepared make no longer requires the current revision of an action that is not a hard-boundary effect, so a stale Read passes there (authorize_action still refuses it; the harness' host does not stop at the first refusal)."
+expect = ["stale_checkpoint_admissions", "stale_actions_executed"]
+file = "crates/ptr-runtime/src/execution.rs"
+find = '''
+            require_current_revision: true,
+'''
+replace = '''
+            require_current_revision: false,
+'''
+
+[[mutation]]
+name = "permit-epoch-and-admission-recheck-both-removed"
+description = "A permit prepared before a write is no longer retired by it (the epoch check) and admit_effect no longer re-checks the action against the current state: a permit prepared on a fresh action executes after the revision moved. Either removal alone is an equivalent mutant (see the header)."
+expect = ["stale_actions_executed", "stale_effect_attempts_committed"]
+file = "crates/ptr-runtime/src/execution.rs"
+find = '''
+        if !Arc::ptr_eq(&self.execution.epoch, &permit.epoch) {
+            return Err(ExecutionError::StalePermit);
+        }
+'''
+replace = ''
+
+[[mutation.also]]
+find = '''
+        self.check_execution_action(&grant.scope.project, &permit.action)?;
+'''
+replace = ''
+
+[[mutation]]
+name = "authorize-skips-staleness-when-cancellation-is-off"
+description = "authorize_action admits a stale revision when semantic.cancel_stale_revisions is false: the boundary answers differently in the two arms."
+expect = ["boundary_arm_divergences", "stale_checkpoint_admissions"]
+file = "crates/ptr-runtime/src/lib.rs"
+find = '''
+            AuthorizationDecision::Deny(AuthorizationDenial::StaleRevision { action, current }) => {
+                Err(RuntimeError::StaleRevision { action, current })
+            }
+'''
+replace = '''
+            AuthorizationDecision::Deny(AuthorizationDenial::StaleRevision { action, current }) => {
+                if !self.config.semantic.cancel_stale_revisions {
+                    return Ok(());
+                }
+                Err(RuntimeError::StaleRevision { action, current })
+            }
+'''
+
+[[mutation]]
+name = "executor-runs-twice"
+description = "execute_prepared hands the dispatch to the executor twice."
+expect = ["double_executions", "executor_vs_ledger_mismatches"]
+file = "crates/ptr-runtime/src/execution.rs"
+find = '''
+        let output = match executor.execute(VerifiedDispatch {
+'''
+replace = '''
+        let _ = executor.execute(VerifiedDispatch {
+            action: &attempted.action,
+            principal: &attempted.principal,
+            project: &attempted.grant.scope.project,
+        });
+        let output = match executor.execute(VerifiedDispatch {
+'''
+
+[[mutation]]
+name = "settled-key-not-answered-from-history"
+description = "A permit under a key whose attempt applied is no longer answered from that attempt: the effect runs again."
+expect = ["double_executions"]
+file = "crates/ptr-runtime/src/execution.rs"
+find = '''
+                Some(SettledOutcome::Applied {
+                    attempt, response, ..
+                }) => {
+                    return Ok(Admission::Replayed {
+                        attempt: *attempt,
+                        response: response.clone(),
+                    })
+                }
+'''
+replace = '''
+                Some(SettledOutcome::Applied {
+                    attempt, response, ..
+                }) => {
+                    let _ = (attempt, response);
+                }
+'''
+
+[[mutation]]
+name = "cancel-check-removed"
+description = "A stale run is never cancelled."
+expect = ["missed_cancellations", "wasted_work_violation"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+            if current != run.bound {
+'''
+replace = '''
+            if false && current != run.bound {
+'''
+
+[[mutation]]
+name = "cancel-check-inverted"
+description = "A run is cancelled when its revision is the current one and not otherwise."
+expect = ["false_cancellations", "missed_cancellations", "fresh_runs_starved"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+            if current != run.bound {
+'''
+replace = '''
+            if current == run.bound {
+'''
+
+[[mutation]]
+name = "cancel-only-once-the-action-is-ready"
+description = "A stale run is cancelled only when the backend has already produced its action (cancellation after the action is built)."
+expect = ["missed_cancellations", "wasted_work_violation"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+            if current != run.bound {
+'''
+replace = '''
+            if current != run.bound
+                && run
+                    .pending
+                    .iter()
+                    .any(|event| matches!(event, ModelEvent::ActionReady(_)))
+            {
+'''
+
+[[mutation]]
+name = "cancel-bound-not-rebased-after-own-write"
+description = "A run's own promoted output does not rebase its bound: its own writes make it stale."
+expect = ["false_cancellations", "fresh_runs_starved"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+        run.bound = revision;
+'''
+replace = '''
+        let _ = revision;
+'''
+
+[[mutation]]
+name = "cancel-one-step-late"
+description = "A stale run is noticed at the step that follows the one that should have cancelled it: that step does its work and the run is cancelled one step later."
+expect = ["missed_cancellations", "false_cancellations", "cancel_latency_violation", "wasted_work_violation"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+            if current != run.bound {
+                return self.cancel_run(run, current);
+            }
+'''
+replace = '''
+            if current != run.bound || run.deferred {
+                if run.deferred {
+                    return self.cancel_run(run, current);
+                }
+                run.deferred = true;
+            }
+'''
+
+[[mutation.also]]
+find = '''
+    policy: CancelPolicy,
+    ended: bool,
+}
+'''
+replace = '''
+    policy: CancelPolicy,
+    ended: bool,
+    deferred: bool,
+}
+'''
+
+[[mutation.also]]
+find = '''
+            policy,
+            ended: false,
+        })
+'''
+replace = '''
+            policy,
+            ended: false,
+            deferred: false,
+        })
+'''
+
+[[mutation]]
+name = "cancel-after-the-pod-ran"
+description = "The check sits after the round's work instead of before it: the Pod runs and its output is promoted, then the run is cancelled."
+expect = ["cancel_contract_violations", "wasted_work_violation"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+            if current != run.bound {
+'''
+replace = '''
+            if false && current != run.bound {
+'''
+
+[[mutation.also]]
+find = '''
+        run.bound = revision;
+'''
+replace = '''
+        if run.policy == CancelPolicy::StaleRevision && revision.0 != run.bound.0 + 1 {
+            return self.cancel_run(run, revision);
+        }
+        run.bound = revision;
+'''
+
+[[mutation]]
+name = "cancelled-run-keeps-the-action"
+description = "A run cancelled before the step that would have handed out its action still carries that action."
+expect = ["cancel_contract_violations"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+        run.pending.clear();
+        let mut partial = std::mem::take(&mut run.run);
+        partial.action = None;
+'''
+replace = '''
+        let mut partial = std::mem::take(&mut run.run);
+        partial.action = run.pending.iter().find_map(|event| match event {
+            ModelEvent::ActionReady(action) => Some(action.clone()),
+            _ => None,
+        });
+        run.pending.clear();
+'''
+
+[[mutation]]
+name = "cancelled-run-swaps-bound-and-current"
+description = "The cancelled run reports the store's revision as its bound and its bound as the current one."
+expect = ["cancel_contract_violations"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+            bound: run.bound,
+            current,
+            run: partial,
+'''
+replace = '''
+            bound: current,
+            current: run.bound,
+            run: partial,
+'''
+
+[[mutation]]
+name = "setting-ignored-cancellation-always-on"
+description = "semantic.cancel_stale_revisions = false still selects the cancelling policy."
+expect = ["false_cancellations"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+        if cancel_stale_revisions {
+'''
+replace = '''
+        if cancel_stale_revisions || true {
+'''
+
+[[mutation]]
+name = "cancel-panics"
+description = "Cancelling a run panics."
+expect = ["product_panics"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+        run.pending.clear();
+        let mut partial = std::mem::take(&mut run.run);
+        partial.action = None;
+'''
+replace = '''
+        panic!("S002 planted panic in cancel_run");
+        run.pending.clear();
+        let mut partial = std::mem::take(&mut run.run);
+        partial.action = None;
+'''
+
+[[mutation]]
+name = "cancel-hangs"
+description = "Cancelling a run never returns."
+expect = ["product_hangs"]
+file = "crates/ptr-runtime/src/stepped.rs"
+find = '''
+        run.pending.clear();
+        let mut partial = std::mem::take(&mut run.run);
+        partial.action = None;
+'''
+replace = '''
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        run.pending.clear();
+        let mut partial = std::mem::take(&mut run.run);
+        partial.action = None;
+'''
+
+[[mutation]]
+name = "harness-mirror-ignores-foreign-writes"
+description = "The harness' revision mirror is not told about the writer's host writes: it falls behind the runtime."
+expect = ["mirror_drift"]
+file = "bins/ptr-bench/src/experiments/s002/world.rs"
+find = '''
+        self.with_mirror(|mirror| mirror.foreign_write(key, value));
+'''
+replace = '''
+        let _ = (key, value);
+'''
+
+[[mutation]]
+name = "harness-oracle-inverts-the-cancellation-decision"
+description = "The oracle expects arm A1 to cancel exactly the runs that are not stale."
+expect = ["false_cancellations", "missed_cancellations"]
+file = "bins/ptr-bench/src/experiments/s002/runner.rs"
+find = '''
+        let should_cancel = self.arm == A1 && stale_before;
+'''
+replace = '''
+        let should_cancel = self.arm == A1 && !stale_before;
+'''
