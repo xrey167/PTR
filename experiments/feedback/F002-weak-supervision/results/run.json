@@ -1,0 +1,75 @@
+{
+  "experiment_id": "F002",
+  "status": "prepared",
+  "scope": "weak supervision with verifier precedence on synthetic labelling worlds with known truth: the Dawid-Skene label model of ptr-labeling with verifier vetoes (and the statistics kernel of ptr-analytics it scores with) against a majority vote at the same annotation budget; no label or distribution ever contradicts a verifier veto, the model, the resolution and the metrics equal an independent oracle, the guards on gold labels and active sets hold, the label model's posteriors are better calibrated than the NAIVE vote-share posterior (n_c + 1) / (n + C) (Brier score and expected calibration error, paired bootstrap lower bound on a uniform gold sample) and its labels are not less accurate than the plain majority vote (census of the world with sound verifiers); this does not isolate Dawid-Skene or verifier precedence, and calibrated vote shares are descriptive; gold is GoldSource::Oracle, a mechanism experiment, not a claim about real annotators or model labellers",
+  "git_sha": "de1f0373f5af6fe7b86891ef4b6fc723cafab0c5",
+  "aggregated_at_git_sha": "c4d28671a8ffd7475e511dadcd68f62f61e60dd1",
+  "recorded_at": "2026-10-09T18:50:51.033880+00:00",
+  "preregistration_sha256": "2fd0fe4cd909d06d9b27c1b6cf1685701c7fe7ed3759cb5c928b4d237fa60813",
+  "preregistration_rules_sha256": "284c3dc30e1a612f488e06489a9da367eca02f47ee6b224655d5d393692976de",
+  "criteria_sha256": "df23d868be06b4d22ca873080668b0596123f4273476959bc3b3930f20fcdc64",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- weak-supervision <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261009T154242.462770Z-seed-17.json",
+      "git_sha": "de1f0373f5af6fe7b86891ef4b6fc723cafab0c5",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261009T155322.007586Z-seed-29.json",
+      "git_sha": "b7892b154b2477980fad056cd12a99aa284dfa2a",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261009T160401.892131Z-seed-43.json",
+      "git_sha": "3ad7824171ce1808cbc4ef8a93d749ad1cc401ad",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261009T161353.576570Z-seed-71.json",
+      "git_sha": "49696074005fee3b85d2f8c30f67a99ba13ced59",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261009T162337.389220Z-seed-101.json",
+      "git_sha": "f789bf497aa54e519046d935a84bf46e056235ac",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "5686713e96b7616f1aee67972ff969498a22587a44bd53c4c31726f6b74c6b77",
+    "29": "0a70fc7e9f2abcecc0fb75d362e9c7b08c97b06d412b9d05f2df0079e0232592",
+    "43": "7865a9e84a41c72bd6ef6b3274c1847d04ee4aefd0b0f6dd13f4b6884e21b502",
+    "71": "f7d71bafd8205b098b6993f97a3f4348fb3036d1e942d016fb9f9c1f4fd06162",
+    "101": "82940dd3f768f80461ff1277db4665b9fbe73cc6e5ec431f05fbed063a65ed53"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 29,
+    "total": 29,
+    "git_sha": "de62f1bde7475fe7d114646272dc8dfd4276e555",
+    "sha256": "e5f4346e50e6ac43e3572fc3de882817362b01e416424d23f462e9f813c089fd"
+  },
+  "limitations": [
+    "gold is the known truth of a synthetic world (GoldSource::Oracle) and the labelling functions are seeded stand-ins with known confusion matrices; nothing here is a claim about real annotators, LLM labellers or real verifiers",
+    "the majority-vote baseline carries the naive posterior (n_c + 1) / (n + C), which is far from calibrated by itself: the world with homogeneous accuracies and no verifier (w3, a descriptive control) shows a Brier and ECE gain of the same size as the one in w1, so the calibration gate supports only 'better calibrated than the naive vote-share posterior', not that Dawid-Skene or verifier precedence produces the gain; the descriptive calibrated vote shares (mvc, mvcp: true priors and a sharpening exponent fitted on pilot seeds) tie with the label model in w3 and beat it in w1 when they respect the vetoes (mvcp), which is a recorded negative result about the label model and gates nothing",
+    "the label model is not more accurate than a veto-aware majority vote in these worlds (descriptive: w1_census_accuracy_ds_permille against w1_census_accuracy_mvp_permille); the accuracy rule (census of w1) compares it with the plain majority vote only, which ignores the verifiers",
+    "verifier precedence is only as good as the verifiers: in the contaminated world (w2, 8% of the votes of a firing verifier rule out the true class) the label model is less accurate than the majority vote and an item the verifiers rule out entirely is Disputed; w2 is used for the hard veto check and the Disputed rate, and its accuracy and calibration gains are descriptive and not gated",
+    "a disputed item has no distribution, so every arm's scorer is given the uniform distribution over the classes for it; the veto check exempts exactly that substitute",
+    "the argmax of a distribution is its last maximal class and equal-mass calibration bins cut a stable sort of the confidences, so ties in confidence fall in the gold order; the majority vote carries a 1e-9 per-class-rank epsilon so that its ties go to the lowest class, which is generous to the baseline",
+    "the independent oracle is a second implementation of the same documented algorithm: it shows the product implements Dawid-Skene, resolution and the metrics as documented, not that the documentation is the only sound choice",
+    "correlated labelling functions are in the worlds (one pair) and make the posteriors overconfident, which the calibration rule measures and does not correct",
+    "the gain rules gate on the lower end of a paired bootstrap interval over the gold items; the world itself is regenerated per seed, so a seed is one world, and five seeds are five worlds, not a population statement",
+    "the mutation checker's evidence (results/mutations.json) is about the harness, not the label model; COMPLETED requires it (every planned mutation killed) as a precondition of trusting a pass, so without it the verdict is INVALID, and it says nothing about the label model itself",
+    "a panic of the product is a falsification (product_panics), contained by the harness; a panic in harness code itself is a harness fault (INVALID)",
+    "timings come from one shared cloud container; no capacity claim"
+  ],
+  "metrics_sha256": "ca3735f248d807912dd60992e3d7f4421a9d8d2c9f54debb191c7584f2d0adcc"
+}

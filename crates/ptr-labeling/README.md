@@ -37,12 +37,12 @@
 
 ### Next milestones
 
-- Run F002 against majority vote on uniform gold
+- Compare against real annotators or LLM labelling functions (F002, completed, covers synthetic labelling functions with known truth)
 - Add a labeling adapter to ptr-pg over the existing work schema
 
 ### Linked experiments
 
-- [F002](../../experiments/feedback/F002-weak-supervision/README.md) — `planned`
+- [F002](../../experiments/feedback/F002-weak-supervision/README.md) — `frozen`
 
 ### Technology evaluations
 
