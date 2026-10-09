@@ -99,6 +99,9 @@ fn main() {
         // The harness of F001: `<seed>` (the pinned scale) or `<tasks> <seed>` (the mutation checker's
         // form); no default seed, and a typo stops the run.
         "generate-verify-repair" => experiments::f001::run(&args[2..]),
+        // The harness of S002: `<seed>` (the pinned scale) or `<cases> <seed>` (the mutation checker's form);
+        // no default seed, and a typo stops the run.
+        "snapshot-cancellation" => experiments::s002::run(&args[2..]),
         // The harness of Q002: `<seed>` (the pinned scale) or `<capsules> <seed>` (the mutation checker's
         // form); no default seed, and a typo stops the run.
         "evidence-promotion" => experiments::q002::run(&args[2..]),
