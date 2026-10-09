@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "experiment_id": "S001",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v80",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16876494848
+  },
+  "hardware_profile_record": {
+    "path": "hardware/default.toml",
+    "sha256": "ea754cf5ddb19c70de11237e9aedab43cbba4ac2e8ff8fec15d85b18699052d6",
+    "contents": {
+      "id": "unspecified",
+      "os": "unspecified",
+      "cpu": "unspecified",
+      "ram_gib": 0,
+      "gpu": "unspecified",
+      "gpu_memory_gib": 0,
+      "notes": "Replace with an explicit measured hardware profile before publishing benchmark results."
+    },
+    "unspecified_fields": [
+      "cpu",
+      "gpu",
+      "id",
+      "os"
+    ]
+  },
+  "git_sha": "a1c35f1bd36e905c0720a84bc9a0b0091b5ff6f1",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "S001",
+    "status": "prepared",
+    "hypothesis": "Dependency-aware invalidation avoids unnecessary recomputation while preserving exact semantics: SemanticHost::prepare_delta marks the transitive reverse closure of a change, over the old and the new dependency edges (the definition of the oracle's structural closure; the harness cannot tell the two walks apart), as affected, hands back exactly that set from apply_prepared and apply_delta, keeps the dependency sets the oracle's edges prescribe, and evicts the affected derived values, so that arm A (evaluate the harness-supplied derivation only for the derived keys marked affected, write the results back) leaves the host in the same committed state, key by key, as arm G (global recomputation of every derived key after every delta) and as an independent oracle, while on the local-change class (deltas whose oracle structural closure holds at least one derived key and at most 5% of the derived keys) evaluating at most 250 per mille as many derived keys as arm G. Graphs: seeded DAGs of 256, 1024 and 4096 keys of five topology classes (layered fan-in, deep chains, diamonds, hub-and-spoke, lossy min/parity derivations); update streams: leaf edits, hub edits, rewiring, key removal, no-op writes, mixed batches, cycle-creating attempts and MissingDependency probes. The recomputation is a pure derivation supplied by the harness (ptr-semdb has no query engine); the hub class is an ungated control; unnecessary invalidations (a recomputed key whose value did not change) are descriptive beyond a floor of one (a coverage prerequisite that shows the lossy derivations absorbed changes), because SemDB has no early cutoff; overinvalidation_local_permille (arm A's evaluations over the closure of the local-change deltas, 1000 for an exact host) and wall-clock times are descriptive.",
+    "metrics": "deltas, affected_total, structural_closure_total, value_changed_total, missed_invalidations, closure_mismatches, dependency_mismatches, semantic_divergences, recall_permille, precision_structural_permille, precision_value_permille, unnecessary_invalidations, evals_global, evals_incremental, locality_ratio_permille_local, locality_ratio_permille_hub, overinvalidation_local_permille, noop_revision_bumps, revision_mismatches, unexpected_refusals, cycle_attempts, cycle_refusals, cycle_unrefused, missing_dependency_probes, missing_dependency_refusals, missing_dependency_unrefused, locality_violation, max_closure_depth, rewires, removals, noop_writes, hub_deltas, lossy_class_deltas, local_class_deltas, topology_classes",
+    "baseline": "global recomputation of every derived key after every delta",
+    "falsification": "The run is invalid (vacuous) and counts as falsified if any coverage prerequisite is unmet: deltas < 1000, topology_classes < 5, max_closure_depth < 4, rewires < 1, removals < 1, noop_writes < 1, cycle_attempts < 1, missing_dependency_probes < 1, hub_deltas < 1, lossy_class_deltas < 1, local_class_deltas < 100 (the local-change class is empty), value_changed_total < 1, unnecessary_invalidations < 1 or evals_global < 1. Falsified if any of: missed_invalidations > 0 (a derived key whose fresh value changed that the host did not mark affected, or a derived value still present after prepare_delta whose fresh oracle value differs); closure_mismatches > 0 (the host's affected set differs from the oracle's structural closure over the old and the new edges, or the set apply_prepared / apply_delta returns differs from the preparation's affected set (phase 1) or from the oracle's closure of the recomputed keys (phase 2)); dependency_mismatches > 0 (after a delta, or after loading a graph, the host stores a dependency set the oracle's edges do not prescribe, for some key); semantic_divergences > 0 (the host's committed state after both phases differs from the global recomputation's, by key or by value); noop_revision_bumps > 0 (a delta that changes nothing advanced the revision); revision_mismatches > 0 (the host's revision after either phase is not the oracle's); unexpected_refusals > 0 (the host refused, while loading a graph, in prepare_delta, in apply_prepared or in phase 2, a delta the oracle accepts, with an error that only a host defect can produce); cycle_attempts != cycle_refusals (a cycle-creating delta was not refused as CyclicDependency); missing_dependency_probes != missing_dependency_refusals (an upsert of a key with an input that holds nothing was not refused as MissingDependency); locality_ratio_permille_local > 250 (on the local-change class, arm A evaluated more than 250 per mille as many derived keys as arm G); any one of the 5 listed seeds misses any criterion above (every seed must pass). locality_ratio_permille_hub, overinvalidation_local_permille, the number of unnecessary invalidations beyond the floor, precision_value_permille and every wall-clock time are descriptive and never judged.",
+    "hardware_profile": "hardware/default.toml",
+    "entrypoint": "cargo run --release --locked -p ptr-bench -- invalidation <seed>",
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "preregistration_sha256": "faed067069a326f7433d775925efd2df3c0f9ab48e271ab9462b1b156a10df44",
+    "preregistration_rules_sha256": "a1f4cef4e443059635faf8a53584f7d6506a2c69ce9f85d7f87a6ba31bf47cc9"
+  },
+  "manifest_sha256": "19ca8a8347df197fe6ab93c20c7df70f3cd03ede8d1acd8d221de1699cf1e245",
+  "cargo_lock_sha256": "b6aae57ccfbc83db4e455d209fc46f0dfd713754d36e34d841b4f35110eb868e",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/default.toml",
+  "status": "prepared",
+  "prepared_at": "20261009T002236.262525Z"
+}

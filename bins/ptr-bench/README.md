@@ -60,6 +60,22 @@ result. It prints one JSON line on stdout, progress and notes on stderr, and exi
 hard failure. A case takes seconds at the small contention levels and about a minute at the
 largest state, in a release build; a debug build is much slower.
 
+## S001 invalidation
+
+`cargo run --release -p ptr-bench -- invalidation <seed>` runs the harness of
+[S001](../../experiments/semdb/S001-invalidation/README.md) once for one seed. It needs no
+PostgreSQL and is built in every configuration: it drives a real `ptr_semdb::SemanticHost`
+(`prepare_delta` and its affected set) beside an independent oracle (no code shared with
+`DependencyGraph`) and a global recomputation, over seeded DAGs of 256, 1024 and 4096 keys of five
+topology classes, under update streams of leaf and hub edits, rewiring, key removal, no-op writes,
+mixed batches, cycle-creating attempts and MissingDependency probes. The recomputation is a
+harness-supplied derivation (the crate has no query engine). It prints one JSON line on stdout
+(integer metrics, `timing_ns` apart), exits 1 when a coverage prerequisite is unmet or a falsifier
+trips, and 2 when the harness itself cannot run (a generated delta the oracle contradicts, an error only a wrong harness delta can cause, a negative control that does not trip); any other error of the host, also while a graph is loaded, is a counted refusal that falsifies.
+`invalidation <operations> <seed>` is the form the mutation checker uses (the pinned sizes with
+that many operations per graph; the result says `"scale":"custom"` and is no evidence). A seed takes
+about ten seconds in a release build.
+
 `ledger-recovery` and `ledger-process-crash` exit with status 1 when any of their
 hard-invariant counters (`false_accepts`, `recovery_errors`, `tail_trim_errors`,
 and for the process probe `child_exit_errors`) is nonzero, after printing the

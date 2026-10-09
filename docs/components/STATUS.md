@@ -36,7 +36,7 @@
 | [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 32 | 35415 | 80 | 945 | 126 | 38 | E001:planned, E003:planned, E004:planned, R011:frozen, R012:frozen | — |
 | [ptr-search](../../crates/ptr-search/README.md) | `prototype` | 2 | 652 | 3 | 24 | 8 | 5 | Q001:planned, Q002:planned, E002:planned, E003:planned | lexical-search:open, local-vector-search:open, gpu-vector-search:open, distributed-search:open, structural-code-search:open |
 | [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 1 | 126 | 2 | 8 | 6 | 4 | L001:running, E001:planned | security-context:open |
-| [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 2 | 864 | 4 | 37 | 20 | 5 | S001:planned, S002:planned, E004:planned | semantic-db:open |
+| [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 2 | 864 | 4 | 37 | 20 | 5 | S001:frozen, S002:planned, E004:planned | semantic-db:open |
 | [ptr-server](../../crates/ptr-server/README.md) | `prototype` | 1 | 912 | 6 | 30 | 12 | 5 | E001:planned, E003:planned | — |
 | [ptr-state](../../crates/ptr-state/README.md) | `prototype` | 1 | 1150 | 3 | 17 | 18 | 4 | L001:running, L002:planned, E004:planned | materialized-state:open |
 | [ptr-storage](../../crates/ptr-storage/README.md) | `prototype` | 4 | 1565 | 5 | 19 | 12 | 4 | E004:planned | object-storage:open |

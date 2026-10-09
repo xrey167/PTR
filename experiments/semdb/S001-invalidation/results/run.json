@@ -1,0 +1,70 @@
+{
+  "experiment_id": "S001",
+  "status": "prepared",
+  "scope": "dependency-aware invalidation of the semantic store: SemanticHost::prepare_delta marks the transitive reverse closure of a change (over the old and the new edges) as affected and evicts the affected derived values; seeded DAGs of 256, 1024 and 4096 keys of five topology classes under update streams (leaf and hub edits, rewiring, removal, no-op writes, mixed batches, cycle attempts, MissingDependency probes); the affected set is held equal to an independent oracle's structural closure, the committed state after recomputing only that set equal to a global recomputation's, and on changes whose closure holds at most 5% of the derived keys the recomputation must evaluate at most 250 per mille as many derived keys as the global one; the recomputation is a harness-supplied pure derivation (the crate has no query engine)",
+  "git_sha": "718267eeb93ffebe63ddb96af2fe164818cb3fb4",
+  "aggregated_at_git_sha": "d2ca99106f27fc62294adec4df778d918b29e5ad",
+  "recorded_at": "2026-10-09T01:00:03.496127+00:00",
+  "preregistration_sha256": "faed067069a326f7433d775925efd2df3c0f9ab48e271ab9462b1b156a10df44",
+  "preregistration_rules_sha256": "a1f4cef4e443059635faf8a53584f7d6506a2c69ce9f85d7f87a6ba31bf47cc9",
+  "criteria_sha256": "17583b707b619ba0099f3556134279b99b78749e39661115a80c592713973bd9",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- invalidation <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261009T002243.220892Z-seed-17.json",
+      "git_sha": "718267eeb93ffebe63ddb96af2fe164818cb3fb4",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261009T002503.732535Z-seed-29.json",
+      "git_sha": "cab78b6f75fdc8ffcdd0e96cfe735fada0393d0b",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261009T002718.162707Z-seed-43.json",
+      "git_sha": "2635fed39d263c332b6788b89bb7175f0a843586",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261009T002933.358908Z-seed-71.json",
+      "git_sha": "c03c64c977f1faff15f453743a48c6a1f2909082",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261009T003139.073595Z-seed-101.json",
+      "git_sha": "77c380634e46e941bc9093398b3a4d980024a699",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "22a57eb2e8be0734627d4f6aeac678dc98966d3c8eda39fee1666d56d5626a6e",
+    "29": "5e46fb3df71a95f176306ce471e11e45e0765e37b62bc7a89927604b91661472",
+    "43": "f3a5be510114a40b3033c06e0fd9d69ccbe549347861ab89fe8bdcfe82b08d15",
+    "71": "214b1a1d5b546d3d1c4317a4fb1939fd75e7858be9ccd46566741218dabb7f6f",
+    "101": "7f04ee36e6d4582244fef2ba3625998a005affc6fdc5f2142966a7a34f132d89"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 16,
+    "total": 16,
+    "git_sha": "129d3542cc07755767532290fcc59d412fa4c5fc",
+    "sha256": "2b2018f9a40c43015a9ca314556667a2f6c22d4c93d62117ce5e11cc503e571d"
+  },
+  "limitations": [
+    "recompute is a harness-supplied derivation evaluated for the keys SemDB marks affected; the crate has no query engine, so nothing is claimed about a real derivation or its cost",
+    "prepare_delta clones the whole state and affected_by rebuilds the reverse map per call (O(edges)): the invalidation step is not O(affected); only the recomputation has locality, and wall-clock time grows with the graph whatever the blast radius",
+    "with a correct host the affected set equals the structural closure, so the locality ratio on the local-change class is bounded by the class (50 per mille) and the 250 threshold only catches a host that over-invalidates by more than a factor of five; exactness is closure_mismatches",
+    "SemDB has no early cutoff: precision against the value-changed set (precision_value_permille, the number of unnecessary_invalidations beyond the coverage floor of one) is descriptive and low on lossy derivations by design",
+    "synthetic seeded DAGs of up to 4096 keys with small integer values, one process, one machine profile; deltas above MAX_DELTA_ITEMS, the ConflictingOperation refusal, removal with dangling dependents, StalePreparation and the journal encoding are not exercised",
+    "prepare_delta computes the closure over the old and over the new graph, and the two calls are redundant with each other: dropping either is an equivalent mutant and neither is in the mutation plan; 'over the old and the new edges' is the oracle's definition, not a tested distinction",
+    "the hub class is an ungated control; the negative controls doctor the set after the host produced it (they show the criteria can fail; the mutation evidence shows a defective host is caught); arm G is the harness derivation over the oracle's graph held equal to the oracle's own pass, not a third independent opinion; wall-clock times (timing_ns) are recorded and never judged"
+  ],
+  "metrics_sha256": "2f204f87b1c60decf78aaef589bd0ae48f1cc38ae5dd49fddeb5be108b2ef43e"
+}
