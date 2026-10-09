@@ -64,9 +64,11 @@ pub const MIN_HUB_DELTAS: i64 = 1;
 pub const MIN_LOSSY_CLASS_DELTAS: i64 = 1;
 pub const MIN_LOCAL_CLASS_DELTAS: i64 = 100;
 pub const MIN_VALUE_CHANGED_TOTAL: i64 = 1;
+pub const MIN_UNNECESSARY_INVALIDATIONS: i64 = 1;
 pub const MIN_EVALS_GLOBAL: i64 = 1;
 pub const MAX_MISSED_INVALIDATIONS: i64 = 0;
 pub const MAX_CLOSURE_MISMATCHES: i64 = 0;
+pub const MAX_DEPENDENCY_MISMATCHES: i64 = 0;
 pub const MAX_SEMANTIC_DIVERGENCES: i64 = 0;
 pub const MAX_NOOP_REVISION_BUMPS: i64 = 0;
 pub const MAX_REVISION_MISMATCHES: i64 = 0;
@@ -232,9 +234,14 @@ pub fn compiled() -> Vec<(&'static str, Leaf)> {
         ("min_lossy_class_deltas", int(MIN_LOSSY_CLASS_DELTAS)),
         ("min_local_class_deltas", int(MIN_LOCAL_CLASS_DELTAS)),
         ("min_value_changed_total", int(MIN_VALUE_CHANGED_TOTAL)),
+        (
+            "min_unnecessary_invalidations",
+            int(MIN_UNNECESSARY_INVALIDATIONS),
+        ),
         ("min_evals_global", int(MIN_EVALS_GLOBAL)),
         ("max_missed_invalidations", int(MAX_MISSED_INVALIDATIONS)),
         ("max_closure_mismatches", int(MAX_CLOSURE_MISMATCHES)),
+        ("max_dependency_mismatches", int(MAX_DEPENDENCY_MISMATCHES)),
         ("max_semantic_divergences", int(MAX_SEMANTIC_DIVERGENCES)),
         ("max_noop_revision_bumps", int(MAX_NOOP_REVISION_BUMPS)),
         ("max_revision_mismatches", int(MAX_REVISION_MISMATCHES)),

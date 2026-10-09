@@ -3,18 +3,27 @@
 # by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
 # that show the defect: a run that fails only on others does not count as detecting it.
 #
-# The first nine mutations plant defects in `ptr-semdb` (`SemanticHost::prepare_delta` and the
-# dependency graph); the last three plant defects in the harness itself, to show that its oracle,
-# its revision model and its arm A are not vacuous: each makes the harness's own cross-check fire.
-# Every hard counter is expected by at least one mutation, so that `killed == total` also shows
-# each of the nine can fire (a test in bins/ptr-bench checks this list against the harness).
+# The first thirteen mutations plant defects in `ptr-semdb` (`SemanticHost::prepare_delta`,
+# `apply_prepared` and the dependency graph); the last three plant defects in the harness itself,
+# to show that its oracle, its revision model and its arm A are not vacuous: each makes the
+# harness's own cross-check fire. Every hard counter is expected by at least one mutation, so that
+# `killed == total` also shows each of the ten can fire (a test in bins/ptr-bench checks this list
+# against the harness).
 #
 # Not listed, on purpose: skipping the closure over the OLD graph in `prepare_delta`
-# (`self.state.dependencies.affected_by(changed...)`). It is an equivalent mutant: every edge the
-# delta removes ends at a key whose dependency set changed, that key is itself in `changed`, and
-# so the closure over the new graph from `changed` already contains everything the old graph
-# reached. No stream can tell the two apart; the oracle takes the closure over both graphs only
-# because the manifest defines it so.
+# (`self.state.dependencies.affected_by(changed...)`) or, equally, over the NEW graph
+# (`next.dependencies.affected_by(changed)`). Both are equivalent mutants and each call is
+# redundant with the other: an edge the delta removes ends at a key whose dependency set changed,
+# that key is itself in `changed`, so the closure over the new graph from `changed` contains
+# everything the old graph reached; by the mirror argument (the last edge the delta adds) the
+# closure over the old graph contains the new one. Dropping the new-graph call was run on seed 17
+# at the pinned scale: identical affected and closure totals and zero hard counters. No stream can
+# tell the two apart; the phrase "over the old and the new edges" in the hypothesis is the
+# definition of the oracle's structural closure, not a distinction S001 tests.
+#
+# `value-change-invalidates-everything` leaves the graph loadable (the setup deltas declare their
+# dependencies), `affected-everything-breaks-the-graph-setup` does not: a host that refuses to
+# load a graph is a counted `unexpected_refusals`, never exit 2.
 #
 # The mutation run is invoked as `ptr-bench invalidation <cases> 17`: `cases` is the number of
 # operations per graph (the pinned graph sizes, so the run is no evidence, and its scale is
@@ -28,6 +37,7 @@ seed = 17
 hard_counters = [
     "missed_invalidations",
     "closure_mismatches",
+    "dependency_mismatches",
     "semantic_divergences",
     "noop_revision_bumps",
     "revision_mismatches",
@@ -153,6 +163,61 @@ replace = '''
 '''
 
 [[mutation]]
+name = "affected-everything-breaks-the-graph-setup"
+description = "Every delta marks every derived key of the old state affected: the later chunks of a graph being loaded evict the derived values of the earlier chunks and are then refused as MissingDependency (the host refuses to load the graph)."
+expect = ["unexpected_refusals", "closure_mismatches"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+        let mut affected = self.state.dependencies.affected_by(changed.iter().cloned());
+'''
+replace = '''
+        let mut affected: BTreeSet<String> = self.state.dependencies.inputs.keys().cloned().collect();
+'''
+
+[[mutation]]
+name = "apply-returns-an-empty-affected-set"
+description = "apply_prepared (and so apply_delta) hands back an empty set although the preparation holds the affected keys."
+expect = ["closure_mismatches"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+        Ok((self.revision(), prepared.affected))
+'''
+replace = '''
+        Ok((self.revision(), BTreeSet::new()))
+'''
+
+[[mutation]]
+name = "removed-key-keeps-its-dependency-entry"
+description = "Removing a key leaves its dependency entry behind, so the stored dependency sets differ from the edges the oracle holds."
+expect = ["dependency_mismatches"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+            if next.dependencies.inputs.remove(key).is_some() {
+'''
+replace = '''
+            if next.dependencies.inputs.contains_key(key) {
+'''
+
+[[mutation]]
+name = "apply-refuses-its-own-preparation"
+description = "apply_prepared refuses some fresh preparations (every seventh revision) as StalePreparation although host and revision match."
+expect = ["unexpected_refusals"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+            return Err(SemanticError::StalePreparation);
+        }
+        self.state = prepared.next;
+'''
+replace = '''
+            return Err(SemanticError::StalePreparation);
+        }
+        if prepared.next.revision.0 % 7 == 0 {
+            return Err(SemanticError::StalePreparation);
+        }
+        self.state = prepared.next;
+'''
+
+[[mutation]]
 name = "harness-oracle-closure-truncated"
 description = "Harness self-defect: the oracle's walk stops expanding after four keys, so its closure is too small."
 expect = ["closure_mismatches"]
@@ -167,15 +232,15 @@ replace = '''
 '''
 
 [[mutation]]
-name = "harness-oracle-expects-bump-on-no-op"
-description = "Harness self-defect: the oracle expects every valid delta to advance the revision."
+name = "harness-oracle-forgets-multi-key-bumps"
+description = "Harness self-defect: the oracle expects a delta that changes two or more keys not to advance the revision (its revision model is wrong). The converse defect, an oracle that expects a bump on a no-op, is not listed: the harness catches it earlier as exit 2 (a generated NoOp the oracle says changes the state)."
 expect = ["revision_mismatches"]
 file = "bins/ptr-bench/src/experiments/s001/oracle.rs"
 find = '''
             bumps_revision: verdict == Verdict::Valid && !changed.is_empty(),
 '''
 replace = '''
-            bumps_revision: verdict == Verdict::Valid,
+            bumps_revision: verdict == Verdict::Valid && changed.len() == 1,
 '''
 
 [[mutation]]

@@ -18,6 +18,17 @@
 //! A delta meant to be refused (a cycle attempt, a write whose input holds nothing) is judged
 //! only on the host's verdict.
 //!
+//! What the host returns is read as well as what it keeps: the set `apply_prepared` and
+//! `apply_delta` hand back is compared with `prepared.affected()` (phase 1) and with the oracle's
+//! closure of the recomputed keys (phase 2), and after every delta the host's dependency sets
+//! are compared with the oracle's edges.
+//!
+//! An `Err` from the host is **never** exit 2 unless a semantic defect cannot produce it
+//! ([`blame`]): a refusal of a delta the oracle accepts (while loading a graph, in phase 1,
+//! in `apply_prepared`, in phase 2) is a counted `unexpected_refusals` that falsifies, with the
+//! error variant kept in the internal `refusal_variants` map. Exit 2 is the oracle disagreeing
+//! with the harness, `rank_monotone`, and errors that only a wrong harness delta can cause.
+//!
 //! The same code runs the negative controls: a [`Mode`] other than `Mechanism` doctors the set
 //! of keys arm A treats as affected, after the host has produced it.
 
@@ -26,7 +37,9 @@ use super::generator::{self, Dag, Op, OpKind, Stream};
 use super::oracle::{Change, Oracle, Rule, Verdict};
 use super::params::{self, Topology};
 use crate::experiments::rng::Rng;
-use ptr_semdb::{SemanticDelta, SemanticError, SemanticHost, SemanticValue};
+use ptr_semdb::{
+    PreparedDelta, SemanticDelta, SemanticError, SemanticHost, SemanticSnapshot, SemanticValue,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
@@ -56,6 +69,7 @@ pub struct Counters {
     pub unnecessary_invalidations: i64,
     pub missed_invalidations: i64,
     pub closure_mismatches: i64,
+    pub dependency_mismatches: i64,
     pub semantic_divergences: i64,
     pub noop_revision_bumps: i64,
     pub revision_mismatches: i64,
@@ -75,6 +89,7 @@ pub struct Counters {
     pub evals_incremental: i64,
     pub local_incremental: i64,
     pub local_global: i64,
+    pub local_closure_derived: i64,
     pub hub_incremental: i64,
     pub hub_global: i64,
     // Internal counters, never judged.
@@ -84,6 +99,127 @@ pub struct Counters {
     pub value_changed_deltas: i64,
     pub changed_keys: i64,
     pub lossy_evaluations: i64,
+    /// Graphs whose loading the host refused (the graph is skipped).
+    pub setup_refusals: i64,
+    /// Keys on which `apply_prepared` / `apply_delta` returned another set than the one the
+    /// preparation (phase 1) or the oracle (phase 2) holds; also counted in `closure_mismatches`.
+    pub returned_set_mismatches: i64,
+    /// Keys dropped by the DropOne control.
+    pub dropped_keys: i64,
+    /// Host errors by `context/step/variant` (and unexpected outcomes of refused deltas).
+    pub refusal_variants: BTreeMap<String, i64>,
+}
+
+/// Who is to blame when the host returns an error for a delta the harness generated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Blame {
+    /// A semantic defect of the host can produce the error: a counted falsifier.
+    Host,
+    /// Only a wrong harness delta (too large, conflicting, malformed, a stale handle) can
+    /// produce it: the harness cannot run (exit 2).
+    Harness,
+}
+
+/// The step of a publication that returned the error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Step {
+    Prepare,
+    Apply,
+}
+
+impl Step {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Prepare => "prepare",
+            Self::Apply => "apply",
+        }
+    }
+}
+
+/// Classify an error the host returned for a delta the oracle accepts (or, for a delta meant
+/// to be refused, an error of the wrong kind). `apply_prepared` on the host's own fresh
+/// preparation can only fail through an owner or revision defect of the host.
+pub fn blame(step: Step, error: &SemanticError) -> Blame {
+    match (step, error) {
+        (Step::Apply, _) => Blame::Host,
+        (
+            Step::Prepare,
+            SemanticError::CyclicDependency
+            | SemanticError::MissingDependency { .. }
+            | SemanticError::RevisionMismatch { .. }
+            | SemanticError::NoChangeRecord,
+        ) => Blame::Host,
+        (
+            Step::Prepare,
+            SemanticError::LimitExceeded
+            | SemanticError::InvalidEncoding
+            | SemanticError::InvalidKey
+            | SemanticError::ConflictingOperation
+            | SemanticError::RevisionExhausted
+            | SemanticError::StalePreparation,
+        ) => Blame::Harness,
+    }
+}
+
+/// The name of an error's variant, without its fields.
+fn variant(error: &SemanticError) -> String {
+    format!("{error:?}")
+        .chars()
+        .take_while(|c| c.is_alphanumeric())
+        .collect()
+}
+
+impl Counters {
+    fn note_variant(&mut self, context: &str, step: Step, variant: &str) {
+        *self
+            .refusal_variants
+            .entry(format!("{context}/{}/{variant}", step.name()))
+            .or_insert(0) += 1;
+    }
+
+    /// The host returned `error` for a delta the oracle accepts. A host defect is counted into
+    /// `unexpected_refusals` (and the variant noted); an error that only a wrong harness delta
+    /// can cause is a harness failure.
+    fn host_refused(
+        &mut self,
+        context: &str,
+        step: Step,
+        error: &SemanticError,
+    ) -> Result<(), String> {
+        match blame(step, error) {
+            Blame::Harness => Err(format!(
+                "{context}: the host returned {error:?} at {}; a semantic defect cannot produce it, so the harness delta is wrong",
+                step.name()
+            )),
+            Blame::Host => {
+                self.unexpected_refusals += 1;
+                self.note_variant(context, step, &variant(error));
+                Ok(())
+            }
+        }
+    }
+
+    /// The host did not refuse a delta meant to be refused with the expected error: the
+    /// attempt stays unrefused (a falsifier) and the outcome is noted; an error only a wrong
+    /// delta can cause is a harness failure.
+    fn other_outcome(
+        &mut self,
+        context: &str,
+        outcome: &Result<PreparedDelta, SemanticError>,
+    ) -> Result<(), String> {
+        match outcome {
+            Ok(_) => self.note_variant(context, Step::Prepare, "Accepted"),
+            Err(error) => {
+                if blame(Step::Prepare, error) == Blame::Harness {
+                    return Err(format!(
+                        "{context}: the host returned {error:?}; a semantic defect cannot produce it, so the harness delta is wrong"
+                    ));
+                }
+                self.note_variant(context, Step::Prepare, &variant(error));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The per-graph descriptive counters.
@@ -95,6 +231,7 @@ pub struct ClassStats {
     pub local_class_deltas: i64,
     pub local_incremental: i64,
     pub local_global: i64,
+    pub local_closure_derived: i64,
     pub closure_derived_total: i64,
     pub derived_keys: i64,
 }
@@ -147,12 +284,78 @@ fn count(items: impl Iterator<Item = bool>) -> i64 {
     items.filter(|hit| *hit).count() as i64
 }
 
+/// `prepare_delta` then `apply_prepared`, naming the step that failed.
+fn publish(
+    host: &mut SemanticHost,
+    delta: SemanticDelta,
+) -> Result<(ptr_types::Revision, BTreeSet<String>), (Step, SemanticError)> {
+    let prepared = host
+        .prepare_delta(delta)
+        .map_err(|error| (Step::Prepare, error))?;
+    host.apply_prepared(prepared)
+        .map_err(|error| (Step::Apply, error))
+}
+
+/// The number of keys whose dependency set the host stores differently from the oracle's
+/// edges (`table` is the oracle's `inputs_table()`): a key with a set on one side only, or
+/// another set.
+fn dependency_mismatches(
+    snapshot: &SemanticSnapshot,
+    oracle: &Oracle,
+    table: &[Vec<usize>],
+) -> i64 {
+    let host: BTreeMap<&str, BTreeSet<&str>> = snapshot
+        .derived_keys()
+        .map(|key| (key, snapshot.inputs(key).collect()))
+        .collect();
+    let truth: BTreeMap<&str, BTreeSet<&str>> = table
+        .iter()
+        .enumerate()
+        .filter(|(_, inputs)| !inputs.is_empty())
+        .map(|(id, inputs)| {
+            (
+                oracle.name(id),
+                inputs.iter().map(|input| oracle.name(*input)).collect(),
+            )
+        })
+        .collect();
+    let keys: BTreeSet<&str> = host.keys().chain(truth.keys()).copied().collect();
+    keys.iter()
+        .filter(|key| host.get(*key) != truth.get(*key))
+        .count() as i64
+}
+
+/// The keys of `change.inputs` whose dependency set the delta replaces by another one, in a
+/// delta that removes nothing (a rewire proper; the dependents a removal re-points are not
+/// counted), judged by the oracle's current edges.
+fn rewired(oracle: &Oracle, change: &Change) -> i64 {
+    if !change.removals.is_empty() {
+        return 0;
+    }
+    count(change.inputs.iter().map(|(key, new)| {
+        let old: BTreeSet<String> = oracle
+            .id(key)
+            .map(|id| {
+                oracle
+                    .inputs_of(id)
+                    .into_iter()
+                    .map(|input| oracle.name(input).to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        old != *new
+    }))
+}
+
 /// Load a graph into a fresh host (in chunks, below the delta limits) and into the oracle.
+/// `Ok(None)`: the host refused the loading (counted into `unexpected_refusals`), the graph is
+/// skipped.
 fn setup(
     dag: &Dag,
     host: &mut SemanticHost,
     oracle: &mut Oracle,
-) -> Result<BTreeMap<String, Kind>, String> {
+    counters: &mut Counters,
+) -> Result<Option<BTreeMap<String, Kind>>, String> {
     let mut values: Vec<u64> = vec![0; dag.nodes.len()];
     let mut kinds = BTreeMap::new();
     for chunk_start in (0..dag.nodes.len()).step_by(params::SETUP_CHUNK_KEYS) {
@@ -183,8 +386,11 @@ fn setup(
                 .upserts
                 .insert(name, SemanticValue::Text(derive::text(values[index])));
         }
-        host.apply_delta(delta)
-            .map_err(|error| format!("the setup of {:?} was refused: {error}", dag.topology))?;
+        if let Err((step, error)) = publish(host, delta) {
+            counters.host_refused("setup", step, &error)?;
+            counters.setup_refusals += 1;
+            return Ok(None);
+        }
     }
     oracle.sync_revision(host.revision().0);
     let fresh = oracle.fresh();
@@ -200,7 +406,9 @@ fn setup(
     if !oracle.rank_monotone() {
         return Err("a generated graph has an edge that does not run to a higher index".into());
     }
-    Ok(kinds)
+    counters.dependency_mismatches +=
+        dependency_mismatches(&host.snapshot(), oracle, &oracle.inputs_table());
+    Ok(Some(kinds))
 }
 
 struct GraphRun<'a> {
@@ -235,8 +443,10 @@ impl GraphRun<'_> {
                 counters.cycle_attempts += 1;
                 if matches!(outcome, Err(SemanticError::CyclicDependency)) {
                     counters.cycle_refusals += 1;
+                    Ok(())
+                } else {
+                    counters.other_outcome("cycle_attempt", &outcome)
                 }
-                Ok(())
             }
             (OpKind::MissingDependency, Verdict::MissingInput { derived, input }) => {
                 counters.missing_dependency_probes += 1;
@@ -245,8 +455,10 @@ impl GraphRun<'_> {
                     Err(SemanticError::MissingDependency { derived: d, input: i }) if d == derived && i == input
                 ) {
                     counters.missing_dependency_refusals += 1;
+                    Ok(())
+                } else {
+                    counters.other_outcome("missing_dependency_probe", &outcome)
                 }
-                Ok(())
             }
             (kind, verdict) => Err(format!(
                 "the generator's {kind:?} is {verdict:?} for the oracle: {:?}",
@@ -272,18 +484,30 @@ impl GraphRun<'_> {
             ));
         }
         let started = Instant::now();
+        if op.kind == OpKind::NoOp && plan.bumps_revision {
+            return Err(format!(
+                "the generator's NoOp changes the oracle's state: {:?}",
+                op.change
+            ));
+        }
         let prepared = match self.host.prepare_delta(to_semantic(&op.change)) {
             Ok(prepared) => prepared,
-            Err(_) => {
+            Err(error) => {
                 // The host refuses a delta the oracle accepts: the oracle does not commit it,
                 // so the two stay in step.
-                self.pass.counters.unexpected_refusals += 1;
+                self.pass
+                    .counters
+                    .host_refused("delta", Step::Prepare, &error)?;
                 return Ok(());
             }
         };
         let prepare_ns = started.elapsed().as_nanos() as u64;
 
-        // The oracle's side of the delta.
+        // The oracle's side of the delta (kept apart, so that a host that refuses to publish
+        // its own preparation leaves the two in step).
+        let rewires = rewired(&self.oracle, &op.change);
+        let removals = op.change.removals.intersection(&plan.changed).count() as i64;
+        let oracle_before = self.oracle.clone();
         self.oracle.commit(&op.change, &plan);
         let fresh_after = self.oracle.fresh();
         let derived_ids = self.oracle.derived_ids();
@@ -315,7 +539,8 @@ impl GraphRun<'_> {
         let expected_phase_two = expected_phase_one + u64::from(closure_derived > 0);
 
         // The set of keys arm A treats as affected.
-        let mut used: BTreeSet<String> = prepared.affected().clone();
+        let host_affected: BTreeSet<String> = prepared.affected().clone();
+        let mut used: BTreeSet<String> = host_affected.clone();
         match self.mode {
             Mode::Mechanism => {}
             Mode::DropOne => {
@@ -327,6 +552,7 @@ impl GraphRun<'_> {
                     if let Some(victim) = victim {
                         used.remove(&victim);
                         self.dropped = true;
+                        self.pass.counters.dropped_keys += 1;
                     }
                 }
             }
@@ -392,22 +618,56 @@ impl GraphRun<'_> {
         drop(local);
 
         let apply_started = Instant::now();
-        let (revision_one, _) = self
-            .host
-            .apply_prepared(prepared)
-            .map_err(|error| format!("apply_prepared refused its own preparation: {error}"))?;
+        let (revision_one, returned_one) = match self.host.apply_prepared(prepared) {
+            Ok(done) => done,
+            Err(error) => {
+                // The host refused its own fresh preparation: a defect, counted; nothing was
+                // published, so the oracle goes back to where the host is.
+                self.oracle = oracle_before;
+                self.pass
+                    .counters
+                    .host_refused("delta", Step::Apply, &error)?;
+                return Ok(());
+            }
+        };
+        let returned_mismatch = returned_one.symmetric_difference(&host_affected).count() as i64;
         let phase_one_ns = prepare_ns + apply_started.elapsed().as_nanos() as u64;
 
         // Arm A, phase 2: the recomputed values go back as explicit upserts.
         let phase_two_started = Instant::now();
         let mut phase_two_refused = 0;
+        let mut phase_two_mismatch = 0;
         if !upserts.is_empty() {
+            let upserted: Vec<String> = upserts.keys().cloned().collect();
             let delta = SemanticDelta {
                 upserts,
                 ..SemanticDelta::default()
             };
-            if self.host.apply_delta(delta).is_err() {
-                phase_two_refused = 1;
+            match publish(&mut self.host, delta) {
+                Ok((_, returned)) => {
+                    // Every recomputed key is new to the host (phase 1 evicted it), so the
+                    // oracle's closure of them is what a correct host reports. The doctored
+                    // controls upsert keys the host may already hold: not compared there.
+                    if self.mode == Mode::Mechanism {
+                        let mut expected: BTreeSet<String> = BTreeSet::new();
+                        for name in &upserted {
+                            if let Some(id) = self.oracle.id(name) {
+                                expected.extend(
+                                    self.oracle
+                                        .descendants(id)
+                                        .into_iter()
+                                        .map(|d| self.oracle.name(d).to_string()),
+                                );
+                            }
+                        }
+                        phase_two_mismatch =
+                            returned.symmetric_difference(&expected).count() as i64;
+                    }
+                }
+                Err((step, error)) => {
+                    self.pass.counters.host_refused("phase_two", step, &error)?;
+                    phase_two_refused = 1;
+                }
             }
         }
         let phase_two_ns = phase_two_started.elapsed().as_nanos() as u64;
@@ -470,6 +730,7 @@ impl GraphRun<'_> {
         }
         let extra = snapshot.keys().count() as i64 - present;
         divergences += extra;
+        let dependency_gap = dependency_mismatches(&snapshot, &self.oracle, &table);
 
         // Scoring.
         let missed: BTreeSet<&String> = value_changed
@@ -503,23 +764,22 @@ impl GraphRun<'_> {
         counters.stale_survivors += survivors.len() as i64;
         counters.changed_keys += plan.changed.len() as i64;
         counters.lossy_evaluations += lossy;
-        counters.closure_mismatches += used.symmetric_difference(&plan.closure).count() as i64;
+        counters.closure_mismatches += used.symmetric_difference(&plan.closure).count() as i64
+            + returned_mismatch
+            + phase_two_mismatch;
+        counters.returned_set_mismatches += returned_mismatch + phase_two_mismatch;
+        counters.dependency_mismatches += dependency_gap;
         counters.semantic_divergences += divergences;
         counters.noop_revision_bumps +=
             i64::from(!plan.bumps_revision && revision_one.0 != revision_before);
         counters.revision_mismatches += i64::from(revision_one.0 != expected_phase_one)
             + i64::from(revision_two != expected_phase_two);
-        counters.unexpected_refusals += phase_two_refused;
         counters.phase_two_refusals += phase_two_refused;
         counters.unsatisfied_recomputes += unsatisfied;
         counters.max_closure_depth = counters.max_closure_depth.max(depth);
-        counters.rewires += op.rewires as i64;
-        counters.removals += if op.kind == OpKind::Remove {
-            op.change.removals.len() as i64
-        } else {
-            0
-        };
-        counters.noop_writes += i64::from(op.kind == OpKind::NoOp);
+        counters.rewires += rewires;
+        counters.removals += removals;
+        counters.noop_writes += i64::from(!plan.bumps_revision);
         counters.value_changed_deltas += i64::from(!value_changed.is_empty());
         counters.lossy_class_deltas += i64::from(self.topology == Topology::Lossy);
         counters.evals_global += evals_global;
@@ -528,6 +788,7 @@ impl GraphRun<'_> {
             counters.local_class_deltas += 1;
             counters.local_incremental += evaluated;
             counters.local_global += evals_global;
+            counters.local_closure_derived += closure_derived;
         }
         if hub_class {
             counters.hub_deltas += 1;
@@ -545,6 +806,7 @@ impl GraphRun<'_> {
             stats.local_class_deltas += 1;
             stats.local_incremental += evaluated;
             stats.local_global += evals_global;
+            stats.local_closure_derived += closure_derived;
         }
         let timing = &mut self.pass.timing;
         let size = timing.by_size.entry(self.size).or_default();
@@ -637,7 +899,9 @@ fn run_graph(
     let dag = generator::build(topology, size, &mut rng.fork(1));
     let mut host = SemanticHost::default();
     let mut oracle = Oracle::new(0);
-    let kinds = setup(&dag, &mut host, &mut oracle)?;
+    let Some(kinds) = setup(&dag, &mut host, &mut oracle, &mut pass.counters)? else {
+        return Ok(());
+    };
     let hub = dag
         .hub
         .or_else(|| oracle.largest_cone_leaf())
@@ -758,6 +1022,273 @@ mod tests {
         );
     }
 
+    fn text(value: &str) -> SemanticValue {
+        SemanticValue::Text(value.into())
+    }
+
+    fn names(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    /// A loaded graph of `topology` (seed 5) ready for `accepted`.
+    fn loaded<'a>(pass: &'a mut Pass, topology: Topology, size: usize, mode: Mode) -> GraphRun<'a> {
+        let mut rng = Rng::new(5).fork(1);
+        let dag = generator::build(topology, size, &mut rng.fork(1));
+        let mut host = SemanticHost::default();
+        let mut oracle = Oracle::new(0);
+        let kinds = setup(&dag, &mut host, &mut oracle, &mut pass.counters)
+            .expect("no harness failure")
+            .expect("the host loads the graph");
+        let fresh = oracle.fresh();
+        GraphRun {
+            topology,
+            size,
+            mode,
+            host,
+            oracle,
+            kinds,
+            fresh,
+            dropped: false,
+            pass,
+        }
+    }
+
+    #[test]
+    fn only_errors_a_wrong_harness_delta_can_cause_are_blamed_on_the_harness() {
+        let missing = SemanticError::MissingDependency {
+            derived: "a".into(),
+            input: "b".into(),
+        };
+        let mismatch = SemanticError::RevisionMismatch {
+            expected: ptr_types::Revision(1),
+            actual: ptr_types::Revision(2),
+        };
+        let harness = [
+            SemanticError::LimitExceeded,
+            SemanticError::InvalidEncoding,
+            SemanticError::InvalidKey,
+            SemanticError::ConflictingOperation,
+            SemanticError::RevisionExhausted,
+            SemanticError::StalePreparation,
+        ];
+        let host = [
+            SemanticError::CyclicDependency,
+            missing,
+            mismatch,
+            SemanticError::NoChangeRecord,
+        ];
+        for error in &harness {
+            assert_eq!(blame(Step::Prepare, error), Blame::Harness, "{error:?}");
+            // `apply_prepared` on the host's own fresh preparation is the host's to get right.
+            assert_eq!(blame(Step::Apply, error), Blame::Host, "{error:?}");
+        }
+        for error in &host {
+            assert_eq!(blame(Step::Prepare, error), Blame::Host, "{error:?}");
+            assert_eq!(blame(Step::Apply, error), Blame::Host, "{error:?}");
+        }
+    }
+
+    #[test]
+    fn a_host_error_is_counted_with_its_variant_and_a_harness_error_is_exit_two() {
+        let mut counters = Counters::default();
+        counters
+            .host_refused("delta", Step::Prepare, &SemanticError::CyclicDependency)
+            .expect("counted");
+        counters
+            .host_refused("delta", Step::Apply, &SemanticError::StalePreparation)
+            .expect("counted");
+        counters
+            .host_refused(
+                "setup",
+                Step::Prepare,
+                &SemanticError::MissingDependency {
+                    derived: "a".into(),
+                    input: "b".into(),
+                },
+            )
+            .expect("counted");
+        assert_eq!(counters.unexpected_refusals, 3);
+        assert_eq!(
+            counters.refusal_variants,
+            BTreeMap::from([
+                ("delta/prepare/CyclicDependency".to_string(), 1),
+                ("delta/apply/StalePreparation".to_string(), 1),
+                ("setup/prepare/MissingDependency".to_string(), 1),
+            ])
+        );
+        let message = counters
+            .host_refused("delta", Step::Prepare, &SemanticError::ConflictingOperation)
+            .expect_err("a conflict from a harness delta");
+        assert!(message.contains("ConflictingOperation"), "{message}");
+        assert_eq!(
+            counters.unexpected_refusals, 3,
+            "an exit-2 error is no counter"
+        );
+    }
+
+    #[test]
+    fn a_wrong_outcome_of_a_refused_delta_is_noted_and_a_harness_error_is_exit_two() {
+        let mut counters = Counters::default();
+        counters
+            .other_outcome("cycle_attempt", &Err(SemanticError::LimitExceeded))
+            .expect_err("a limit error from a harness delta");
+        counters
+            .other_outcome("cycle_attempt", &Err(SemanticError::CyclicDependency))
+            .expect("noted");
+        let host = SemanticHost::default();
+        counters
+            .other_outcome("probe", &host.prepare_delta(SemanticDelta::default()))
+            .expect("noted");
+        assert_eq!(
+            counters.refusal_variants,
+            BTreeMap::from([
+                ("cycle_attempt/prepare/CyclicDependency".to_string(), 1),
+                ("probe/prepare/Accepted".to_string(), 1),
+            ])
+        );
+        assert_eq!(counters.unexpected_refusals, 0);
+    }
+
+    #[test]
+    fn a_host_that_refuses_to_load_a_graph_is_a_counted_refusal_and_the_graph_is_skipped() {
+        let mut rng = Rng::new(5).fork(1);
+        let dag = generator::build(Topology::Diamonds, 32, &mut rng.fork(1));
+        let mut host = SemanticHost::default();
+        // The host already holds n00000 -> n00001, so the graph's n00001 -> n00000 closes a cycle.
+        host.apply_delta(SemanticDelta {
+            upserts: [
+                ("n00000".to_string(), text("0")),
+                ("n00001".to_string(), text("1")),
+            ]
+            .into(),
+            dependencies: [("n00000".to_string(), names(&["n00001"]))].into(),
+            ..SemanticDelta::default()
+        })
+        .expect("a valid preload");
+        let mut oracle = Oracle::new(0);
+        let mut counters = Counters::default();
+        let outcome = setup(&dag, &mut host, &mut oracle, &mut counters);
+        assert!(matches!(outcome, Ok(None)), "{outcome:?}");
+        assert_eq!(counters.unexpected_refusals, 1);
+        assert_eq!(counters.setup_refusals, 1);
+        assert_eq!(
+            counters.refusal_variants,
+            BTreeMap::from([("setup/prepare/CyclicDependency".to_string(), 1)])
+        );
+        // The pass skips such a graph instead of failing: a pass is Ok and the counter stands.
+    }
+
+    #[test]
+    fn a_host_refusal_of_a_valid_delta_is_counted_and_both_sides_stay_in_step() {
+        let mut pass = Pass::default();
+        let mut run = loaded(&mut pass, Topology::Diamonds, 32, Mode::Mechanism);
+        // The host alone gains n00013 -> n00012; the oracle's rewire n00012 -> n00013 is valid for
+        // the oracle and closes a cycle for the host.
+        run.host
+            .apply_delta(SemanticDelta {
+                dependencies: [("n00013".to_string(), names(&["n00012"]))].into(),
+                ..SemanticDelta::default()
+            })
+            .expect("a valid host-only edge");
+        run.oracle.sync_revision(run.host.revision().0);
+        let revision = run.host.revision();
+        let op = Op {
+            kind: OpKind::Rewire,
+            change: Change {
+                inputs: [("n00012".to_string(), names(&["n00013"]))].into(),
+                ..Change::default()
+            },
+        };
+        run.accepted(&op).expect("a host defect is no exit 2");
+        assert_eq!(run.host.revision(), revision);
+        let c = &run.pass.counters;
+        assert_eq!((c.unexpected_refusals, c.deltas), (1, 0));
+        assert_eq!(
+            c.refusal_variants,
+            BTreeMap::from([("delta/prepare/CyclicDependency".to_string(), 1)])
+        );
+    }
+
+    #[test]
+    fn a_generated_no_op_that_the_oracle_says_changes_the_state_is_exit_two() {
+        let mut pass = Pass::default();
+        let mut run = loaded(&mut pass, Topology::Diamonds, 32, Mode::Mechanism);
+        let mut change = Change::default();
+        change.leaves.insert("n00000".to_string(), 123_456);
+        let op = Op {
+            kind: OpKind::NoOp,
+            change,
+        };
+        let message = run.accepted(&op).expect_err("a mislabelled no-op");
+        assert!(message.contains("NoOp"), "{message}");
+    }
+
+    #[test]
+    fn rewires_removals_and_no_ops_are_read_from_the_oracle_not_from_the_label() {
+        let mut oracle = Oracle::new(0);
+        oracle.define_leaf("a", 5);
+        oracle.define_leaf("b", 9);
+        oracle.define_derived("c", Rule::Min, &["a", "b"]);
+        let inputs = |set: &[&str]| Change {
+            inputs: [("c".to_string(), names(set))].into(),
+            ..Change::default()
+        };
+        assert_eq!(rewired(&oracle, &inputs(&["a", "b"])), 0, "the same set");
+        assert_eq!(rewired(&oracle, &inputs(&["a"])), 1);
+        let mut with_removal = inputs(&["a"]);
+        with_removal.removals.insert("b".to_string());
+        assert_eq!(
+            rewired(&oracle, &with_removal),
+            0,
+            "a removal re-points, it does not rewire"
+        );
+        let removal = Change {
+            removals: names(&["b", "absent"]),
+            ..Change::default()
+        };
+        let plan = oracle.plan(&removal);
+        assert_eq!(removal.removals.intersection(&plan.changed).count(), 1);
+        let same = Change {
+            leaves: [("a".to_string(), 5)].into(),
+            ..Change::default()
+        };
+        assert!(!oracle.plan(&same).bumps_revision);
+    }
+
+    #[test]
+    fn dependency_sets_that_differ_from_the_oracles_edges_are_counted_per_key() {
+        let mut oracle = Oracle::new(0);
+        oracle.define_leaf("a", 5);
+        oracle.define_leaf("b", 9);
+        oracle.define_derived("c", Rule::Min, &["a", "b"]);
+        let table = oracle.inputs_table();
+        let host_with = |inputs: &[(&str, &[&str])]| {
+            let mut host = SemanticHost::default();
+            host.apply_delta(SemanticDelta {
+                upserts: ["a", "b", "c", "d"]
+                    .iter()
+                    .map(|k| (k.to_string(), text("1")))
+                    .collect(),
+                dependencies: inputs
+                    .iter()
+                    .map(|(k, set)| (k.to_string(), names(set)))
+                    .collect(),
+                ..SemanticDelta::default()
+            })
+            .expect("a valid host");
+            host.snapshot()
+        };
+        let count = |snapshot: &SemanticSnapshot| dependency_mismatches(snapshot, &oracle, &table);
+        assert_eq!(count(&host_with(&[("c", &["a", "b"])])), 0);
+        assert_eq!(count(&host_with(&[("c", &["a"])])), 1, "another set");
+        assert_eq!(count(&host_with(&[])), 1, "a set the host lost");
+        assert_eq!(
+            count(&host_with(&[("c", &["a", "b"]), ("d", &["a"])])),
+            1,
+            "a set the oracle does not have"
+        );
+    }
+
     #[test]
     fn the_dependency_order_puts_every_key_after_its_inputs() {
         let names: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
@@ -803,6 +1334,20 @@ mod tests {
         assert_eq!(c.affected_total, c.structural_closure_total);
         assert!(c.cycle_attempts > 0 && c.missing_dependency_probes > 0 && c.deltas > 300);
         assert_eq!(c.stale_survivors, 0);
+        assert_eq!(
+            (
+                c.dependency_mismatches,
+                c.returned_set_mismatches,
+                c.setup_refusals
+            ),
+            (0, 0, 0)
+        );
+        assert!(c.refusal_variants.is_empty());
+        assert!(c.rewires > 0 && c.removals > 0 && c.noop_writes > 0);
+        assert_eq!(
+            c.local_incremental, c.local_closure_derived,
+            "an exact host"
+        );
         assert!(c.evals_incremental < c.evals_global);
     }
 
@@ -810,6 +1355,7 @@ mod tests {
     fn dropping_one_changed_key_is_counted_as_a_miss_and_leaves_the_host_behind_arm_g() {
         let plan = vec![(Topology::DeepChains, 128, 80)];
         let result = pass(5, Mode::DropOne, &plan);
+        assert_eq!(result.counters.dropped_keys, 1, "once per graph");
         assert!(result.counters.missed_invalidations >= 1);
         assert!(result.counters.closure_mismatches >= 1);
         assert!(result.counters.semantic_divergences >= 1);

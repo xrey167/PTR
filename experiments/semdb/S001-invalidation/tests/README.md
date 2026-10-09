@@ -4,7 +4,7 @@ The harness is `ptr-bench invalidation`
 ([`bins/ptr-bench/src/experiments/s001/`](../../../../bins/ptr-bench/src/experiments/s001/mod.rs)), built in every
 configuration. It runs in memory and needs nothing but `ptr-semdb`. Its unit tests (`cargo test -p ptr-bench`) cover the
 oracle (closure, cycles, conflicts, missing inputs, no-ops, commits), the generator (every topology is a rank-ordered DAG,
-every operation valid by construction), the arms against the oracle on every topology, the two negative controls, the rule
+every operation valid by construction), the arms against the oracle on every topology, the host-error classification (a refusal of a valid delta, also while a graph is loaded, is a counted falsifier; only errors a wrong harness delta can cause are exit 2), the two negative controls (also at reduced scale for all five seeds), the rule
 lists (pinned to `criteria.toml` in order, every rule resolving to an integer in a reduced run's JSON, every rule able to
 fail when the emitted counter is set to a violation), determinism (the same seed gives the same JSON apart from the timings)
 and the compiled parameters against `config.toml`. `scripts/tests/test_s001_aggregate.py` holds the aggregator's verdicts.

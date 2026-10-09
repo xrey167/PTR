@@ -13,13 +13,14 @@ use super::runner::Counters;
 use crate::experiments::layered_kv::emit::{MetricList, Tally};
 
 /// The metrics of the manifest, in its order (a test compares them with the file).
-pub const METRIC_NAMES: [&str; 33] = [
+pub const METRIC_NAMES: [&str; 35] = [
     "deltas",
     "affected_total",
     "structural_closure_total",
     "value_changed_total",
     "missed_invalidations",
     "closure_mismatches",
+    "dependency_mismatches",
     "semantic_divergences",
     "recall_permille",
     "precision_structural_permille",
@@ -29,6 +30,7 @@ pub const METRIC_NAMES: [&str; 33] = [
     "evals_incremental",
     "locality_ratio_permille_local",
     "locality_ratio_permille_hub",
+    "overinvalidation_local_permille",
     "noop_revision_bumps",
     "revision_mismatches",
     "unexpected_refusals",
@@ -50,11 +52,12 @@ pub const METRIC_NAMES: [&str; 33] = [
 ];
 
 /// The counters whose sum is `hard_failures` and that `tests/mutations.toml` names. Each is a
-/// metric above; the first six are falsifier rules on their own, the others restate a rule
+/// metric above; the first seven are falsifier rules on their own, the others restate a rule
 /// that compares two counters (`cycle_attempts == cycle_refusals`) or a ratio as a count.
-pub const HARD_COUNTERS: [&str; 9] = [
+pub const HARD_COUNTERS: [&str; 10] = [
     "missed_invalidations",
     "closure_mismatches",
+    "dependency_mismatches",
     "semantic_divergences",
     "noop_revision_bumps",
     "revision_mismatches",
@@ -87,6 +90,10 @@ pub fn coverage() -> Vec<String> {
         format!("lossy_class_deltas >= {}", params::MIN_LOSSY_CLASS_DELTAS),
         format!("local_class_deltas >= {}", params::MIN_LOCAL_CLASS_DELTAS),
         format!("value_changed_total >= {}", params::MIN_VALUE_CHANGED_TOTAL),
+        format!(
+            "unnecessary_invalidations >= {}",
+            params::MIN_UNNECESSARY_INVALIDATIONS
+        ),
         format!("evals_global >= {}", params::MIN_EVALS_GLOBAL),
     ]
 }
@@ -99,6 +106,10 @@ pub fn falsifiers() -> Vec<String> {
             params::MAX_MISSED_INVALIDATIONS
         ),
         format!("closure_mismatches <= {}", params::MAX_CLOSURE_MISMATCHES),
+        format!(
+            "dependency_mismatches <= {}",
+            params::MAX_DEPENDENCY_MISMATCHES
+        ),
         format!(
             "semantic_divergences <= {}",
             params::MAX_SEMANTIC_DIVERGENCES
@@ -134,6 +145,7 @@ pub fn fill(tally: &mut Tally, c: &Counters, topology_classes: usize) {
         ("value_changed_total", c.value_changed_total),
         ("missed_invalidations", c.missed_invalidations),
         ("closure_mismatches", c.closure_mismatches),
+        ("dependency_mismatches", c.dependency_mismatches),
         ("semantic_divergences", c.semantic_divergences),
         (
             "recall_permille",
@@ -154,6 +166,10 @@ pub fn fill(tally: &mut Tally, c: &Counters, topology_classes: usize) {
         (
             "locality_ratio_permille_hub",
             permille(c.hub_incremental, c.hub_global, 0),
+        ),
+        (
+            "overinvalidation_local_permille",
+            permille(c.local_incremental, c.local_closure_derived, 0),
         ),
         ("noop_revision_bumps", c.noop_revision_bumps),
         ("revision_mismatches", c.revision_mismatches),
@@ -212,6 +228,7 @@ mod tests {
                     "locality_ratio_permille_local" => params::MAX_LOCALITY_RATIO_PERMILLE_LOCAL,
                     "missed_invalidations"
                     | "closure_mismatches"
+                    | "dependency_mismatches"
                     | "semantic_divergences"
                     | "noop_revision_bumps"
                     | "revision_mismatches"

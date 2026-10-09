@@ -58,16 +58,19 @@ min_hub_deltas = 1
 min_lossy_class_deltas = 1
 min_local_class_deltas = 100
 min_value_changed_total = 1
+min_unnecessary_invalidations = 1
 min_evals_global = 1
 # Falsifiers.
 max_missed_invalidations = 0
 max_closure_mismatches = 0
+max_dependency_mismatches = 0
 max_semantic_divergences = 0
 max_noop_revision_bumps = 0
 max_revision_mismatches = 0
 max_unexpected_refusals = 0
 max_locality_ratio_permille_local = 250
-# Descriptive only (never gated): the hub class, the unnecessary invalidations and every wall-clock time.
+# Descriptive only (never gated): the hub class, the number of unnecessary invalidations (only a floor of 1 is a coverage
+# prerequisite, to show the lossy derivations absorbed changes), overinvalidation_local_permille and every wall-clock time.
 hub_class_gated = false
 unnecessary_invalidations_gated = false
 timing_gated = false

@@ -228,12 +228,12 @@ pub enum OpKind {
     MissingDependency,
 }
 
-/// One operation: a delta in the oracle's vocabulary and how many rewires it holds.
+/// One operation: a delta in the oracle's vocabulary and the kind it was drawn as (what it
+/// really does is the oracle's to say).
 #[derive(Clone, Debug)]
 pub struct Op {
     pub kind: OpKind,
     pub change: Change,
-    pub rewires: usize,
 }
 
 /// The update stream of one graph.
@@ -474,18 +474,14 @@ impl Stream {
     /// The next operation, chosen from the oracle's model of the graph.
     pub fn next_op(&mut self, oracle: &Oracle) -> Op {
         let leaves = oracle.leaf_ids();
-        let single = |change: Change, kind: OpKind, rewires: usize| Op {
-            kind,
-            change,
-            rewires,
-        };
+        let single = |change: Change, kind: OpKind| Op { kind, change };
         let leaf_edit = |this: &mut Self| {
             let (name, value) = this
                 .leaf_edit(oracle, &leaves)
                 .expect("a graph has ground keys");
             let mut change = Change::default();
             change.leaves.insert(name, value);
-            single(change, OpKind::LeafEdit, 0)
+            single(change, OpKind::LeafEdit)
         };
         match self.pick_kind() {
             OpKind::LeafEdit => leaf_edit(self),
@@ -495,21 +491,21 @@ impl Stream {
                 change
                     .leaves
                     .insert(oracle.name(self.hub).to_string(), value);
-                single(change, OpKind::HubEdit, 0)
+                single(change, OpKind::HubEdit)
             }
             OpKind::Rewire => match self.rewire(oracle) {
                 Some((name, inputs)) => {
                     let mut change = Change::default();
                     change.inputs.insert(name, inputs);
-                    single(change, OpKind::Rewire, 1)
+                    single(change, OpKind::Rewire)
                 }
                 None => leaf_edit(self),
             },
             OpKind::Remove => match self.removal(oracle) {
-                Some(change) => single(change, OpKind::Remove, 0),
+                Some(change) => single(change, OpKind::Remove),
                 None => leaf_edit(self),
             },
-            OpKind::NoOp => single(self.no_op(oracle), OpKind::NoOp, 0),
+            OpKind::NoOp => single(self.no_op(oracle), OpKind::NoOp),
             OpKind::Mixed => {
                 let mut change = Change::default();
                 let count = 2 + self.rng.index(params::MIXED_MAX_LEAF_EDITS - 1);
@@ -517,21 +513,17 @@ impl Stream {
                     let value = self.other_value(oracle.leaf_value(id));
                     change.leaves.insert(oracle.name(id).to_string(), value);
                 }
-                let mut rewires = 0;
                 if self.rng.below(2) == 0 {
                     if let Some((name, inputs)) = self.rewire(oracle) {
                         change.inputs.insert(name, inputs);
-                        rewires = 1;
                     }
                 }
-                single(change, OpKind::Mixed, rewires)
+                single(change, OpKind::Mixed)
             }
-            OpKind::CycleAttempt => single(self.cycle_attempt(oracle), OpKind::CycleAttempt, 0),
-            OpKind::MissingDependency => single(
-                self.missing_dependency(oracle),
-                OpKind::MissingDependency,
-                0,
-            ),
+            OpKind::CycleAttempt => single(self.cycle_attempt(oracle), OpKind::CycleAttempt),
+            OpKind::MissingDependency => {
+                single(self.missing_dependency(oracle), OpKind::MissingDependency)
+            }
         }
     }
 }

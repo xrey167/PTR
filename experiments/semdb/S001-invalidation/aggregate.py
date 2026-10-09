@@ -75,10 +75,10 @@ LIMITATIONS = [
     "recompute is a harness-supplied derivation evaluated for the keys SemDB marks affected; the crate has no query engine, so nothing is claimed about a real derivation or its cost",
     "prepare_delta clones the whole state and affected_by rebuilds the reverse map per call (O(edges)): the invalidation step is not O(affected); only the recomputation has locality, and wall-clock time grows with the graph whatever the blast radius",
     "with a correct host the affected set equals the structural closure, so the locality ratio on the local-change class is bounded by the class (50 per mille) and the 250 threshold only catches a host that over-invalidates by more than a factor of five; exactness is closure_mismatches",
-    "SemDB has no early cutoff: precision against the value-changed set (precision_value_permille, unnecessary_invalidations) is descriptive and low on lossy derivations by design",
-    "synthetic seeded DAGs of up to 4096 keys with small integer values, one process, one machine profile; deltas above MAX_DELTA_ITEMS, StalePreparation and the journal encoding are not exercised",
-    "skipping the closure over the old graph in prepare_delta is an equivalent mutant (every removed edge ends at a changed key) and is not in the mutation plan",
-    "the hub class is an ungated control; wall-clock times (timing_ns) are recorded and never judged",
+    "SemDB has no early cutoff: precision against the value-changed set (precision_value_permille, the number of unnecessary_invalidations beyond the coverage floor of one) is descriptive and low on lossy derivations by design",
+    "synthetic seeded DAGs of up to 4096 keys with small integer values, one process, one machine profile; deltas above MAX_DELTA_ITEMS, the ConflictingOperation refusal, removal with dangling dependents, StalePreparation and the journal encoding are not exercised",
+    "prepare_delta computes the closure over the old and over the new graph, and the two calls are redundant with each other: dropping either is an equivalent mutant and neither is in the mutation plan; 'over the old and the new edges' is the oracle's definition, not a tested distinction",
+    "the hub class is an ungated control; the negative controls doctor the set after the host produced it (they show the criteria can fail; the mutation evidence shows a defective host is caught); arm G is the harness derivation over the oracle's graph held equal to the oracle's own pass, not a third independent opinion; wall-clock times (timing_ns) are recorded and never judged",
 ]
 
 

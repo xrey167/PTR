@@ -17,8 +17,10 @@
 //! (`internal`), and the two judgements (`coverage` and `falsifiers`). The exit status is 1 when
 //! a coverage prerequisite is unmet, a falsifier is tripped or a metric has no value and no
 //! declared reason, and 2 when the harness itself cannot run: the oracle and the global
-//! baseline disagree, the generator produced a delta the oracle does not call what it meant, or
-//! a negative control does not trip.
+//! baseline disagree, the generator produced a delta the oracle does not call what it meant, the
+//! host returned an error that only a wrong harness delta can cause, or a negative control does
+//! not trip. Any other error of the host, at any point (also while a graph is loaded), is a
+//! counted refusal that falsifies.
 
 pub mod derive;
 pub mod generator;
@@ -121,6 +123,14 @@ fn classes_json(pass: &Pass) -> Json {
                             "locality_ratio_permille_local",
                             Json::Int(metrics::permille(s.local_incremental, s.local_global, 0)),
                         ),
+                        (
+                            "overinvalidation_local_permille",
+                            Json::Int(metrics::permille(
+                                s.local_incremental,
+                                s.local_closure_derived,
+                                0,
+                            )),
+                        ),
                     ]),
                 )
             })
@@ -130,9 +140,21 @@ fn classes_json(pass: &Pass) -> Json {
 
 /// One negative control: the same graph and stream with a doctored affected set, judged by the
 /// same falsifier rules; the rule it exists to trip must fail, else the harness cannot see the
-/// defect and the run is not valid.
-fn control(seed: u64, mode: Mode, required_rule: &str) -> Result<(Json, i64), String> {
-    let pass = runner::run_pass(seed, &runner::control_plan(), mode)?;
+/// defect and the run is not valid. The controls doctor the set after the host has produced it:
+/// they show that the criteria arithmetic can fail, not that a defective host is caught (the
+/// mutation plan does that).
+fn control(
+    seed: u64,
+    mode: Mode,
+    required_rule: &str,
+    plan: &runner::Plan,
+) -> Result<(Json, i64), String> {
+    let pass = runner::run_pass(seed, plan, mode)?;
+    if mode == Mode::DropOne && pass.counters.dropped_keys == 0 {
+        return Err(format!(
+            "the negative control {mode:?} found no changed derived key to drop for seed {seed}: it cannot trip {required_rule:?}"
+        ));
+    }
     let tally = tally_of(&pass);
     let root = metric_object(&tally);
     let checks = judge(&root, &[], &metrics::falsifiers());
@@ -170,6 +192,10 @@ fn control(seed: u64, mode: Mode, required_rule: &str) -> Result<(Json, i64), St
                     Json::Int(tally.get("closure_mismatches")),
                 ),
                 (
+                    "dependency_mismatches",
+                    Json::Int(tally.get("dependency_mismatches")),
+                ),
+                (
                     "semantic_divergences",
                     Json::Int(tally.get("semantic_divergences")),
                 ),
@@ -194,11 +220,13 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
     let shape = scale.shape();
     let plan = runner::plan_of(&shape);
     let pass = runner::run_pass(seed, &plan, Mode::Mechanism)?;
-    let (drop_one, _) = control(seed, Mode::DropOne, "missed_invalidations <= 0")?;
+    let controls = runner::control_plan();
+    let (drop_one, _) = control(seed, Mode::DropOne, "missed_invalidations <= 0", &controls)?;
     let (everything, _) = control(
         seed,
         Mode::Everything,
         "locality_ratio_permille_local <= 250",
+        &controls,
     )?;
     let mut tally = tally_of(&pass);
     let c: &Counters = &pass.counters;
@@ -213,6 +241,9 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
     tally.set("recomputed_total", c.recomputed_total);
     tally.set("changed_keys", c.changed_keys);
     tally.set("lossy_evaluations", c.lossy_evaluations);
+    tally.set("setup_refusals", c.setup_refusals);
+    tally.set("returned_set_mismatches", c.returned_set_mismatches);
+    tally.set("local_closure_derived", c.local_closure_derived);
     let hard = metrics::hard_failures(&tally);
 
     let (printed, gaps) = tally.metrics();
@@ -274,7 +305,19 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
             ),
             (
                 "closure_mismatches",
-                note("the keys on which the host's affected() (the set arm A uses) and the oracle's structural closure over the old and the new edges differ, summed over deltas"),
+                note("the keys on which the host's affected() (the set arm A uses) and the oracle's structural closure differ, summed over deltas (the oracle takes the closure over the old and the new edges, which is the manifest's definition: the two walks are redundant in the host and no stream can tell them apart); also the keys on which the set apply_prepared / apply_delta returns differs from prepared.affected() (phase 1) or from the oracle's closure of the recomputed keys (phase 2)"),
+            ),
+            (
+                "dependency_mismatches",
+                note("after every delta (and after loading a graph), the keys whose dependency set the host stores differently from the oracle's edges (a set on one side only, or another set)"),
+            ),
+            (
+                "overinvalidation_local_permille",
+                note("descriptive, in no rule: 1000 * (derivation evaluations of arm A on the local-change class) / (the oracle's derived keys in the closure of those deltas); an exact host gives exactly 1000. The gate on locality_ratio_permille_local is a tripwire beyond exactness, not a claim"),
+            ),
+            (
+                "counted_from_the_oracle",
+                note("rewires (keys whose dependency set a delta without removals replaces by another), removals (keys removed while present) and noop_writes (accepted deltas that change nothing) are read from the oracle's plan, not from the generator's label; a generated NoOp that the oracle says changes the state is exit 2"),
             ),
             (
                 "missed_invalidations",
@@ -282,7 +325,7 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
             ),
             (
                 "semantic_divergences",
-                note("after both phases, the keys on which the host's committed state and arm G's full recomputation differ (missing, extra or another value), summed over deltas"),
+                note("after both phases, the keys on which the host's committed state and arm G's full recomputation differ (missing, extra or another value), summed over deltas; arm G is the harness derivation evaluated over the oracle's graph and held equal to the oracle's own bottom-up pass (a cross-check of derive.rs against the oracle), so this is the host's final state against the oracle's truth, not a third independent opinion"),
             ),
             (
                 "precision",
@@ -294,7 +337,20 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
             ),
         ]),
     ));
-    pairs.push(("internal".to_string(), tally.internal()));
+    let mut internal = match tally.internal() {
+        Json::Obj(pairs) => pairs,
+        other => vec![("counters".to_string(), other)],
+    };
+    internal.push((
+        "refusal_variants".to_string(),
+        Json::Obj(
+            c.refusal_variants
+                .iter()
+                .map(|(name, n)| (name.clone(), Json::Int(*n)))
+                .collect(),
+        ),
+    ));
+    pairs.push(("internal".to_string(), Json::Obj(internal)));
     let root = Json::Obj(pairs.clone());
     let coverage = judge(&root, &unsupported_names, &metrics::coverage());
     let falsifiers = judge(&root, &unsupported_names, &metrics::falsifiers());
@@ -558,7 +614,8 @@ mod tests {
                 "{rule}: no '{sentence}' in the text"
             );
         }
-        assert_eq!(metrics::falsifiers().len(), 9);
+        assert_eq!(metrics::falsifiers().len(), 10);
+        assert_eq!(metrics::coverage().len(), 14);
     }
 
     #[test]
@@ -717,8 +774,64 @@ mod tests {
     #[test]
     fn a_control_that_does_not_trip_is_a_harness_failure() {
         // The mechanism does not trip the missed-invalidation rule: as a "control" it is invalid.
-        let outcome = control(17, Mode::Mechanism, "missed_invalidations <= 0");
+        let outcome = control(
+            17,
+            Mode::Mechanism,
+            "missed_invalidations <= 0",
+            &runner::control_plan(),
+        );
         assert!(outcome.is_err());
+    }
+
+    /// The controls at reduced scale, for every declared seed: each doctored set trips the rule
+    /// it exists for (so no seed can end in exit 2 for a control that finds nothing to doctor).
+    #[test]
+    fn both_negative_controls_trip_their_rules_for_all_five_seeds_at_reduced_scale() {
+        let plan: runner::Plan = vec![(Topology::Diamonds, 128, 80)];
+        for seed in params::SEEDS {
+            let (drop_one, tripped) =
+                control(seed, Mode::DropOne, "missed_invalidations <= 0", &plan)
+                    .unwrap_or_else(|reason| panic!("seed {seed}: {reason}"));
+            assert!(tripped >= 1, "seed {seed}");
+            assert!(
+                int(&drop_one, "counters.missed_invalidations") >= 1,
+                "seed {seed}"
+            );
+            assert!(
+                int(&drop_one, "counters.closure_mismatches") >= 1,
+                "seed {seed}"
+            );
+            let (everything, tripped) = control(
+                seed,
+                Mode::Everything,
+                "locality_ratio_permille_local <= 250",
+                &plan,
+            )
+            .unwrap_or_else(|reason| panic!("seed {seed}: {reason}"));
+            assert!(tripped >= 1, "seed {seed}");
+            assert_eq!(
+                int(&everything, "counters.locality_ratio_permille_local"),
+                1000,
+                "seed {seed}"
+            );
+        }
+    }
+
+    /// An exact host evaluates exactly the closure of the local-change deltas.
+    #[test]
+    fn an_exact_host_gives_exactly_1000_overinvalidation_on_the_local_class_and_the_control_does_not(
+    ) {
+        let json = &reduced_report().json;
+        assert_eq!(int(json, "overinvalidation_local_permille"), 1000);
+        assert_eq!(int(json, "dependency_mismatches"), 0);
+        assert!(int(json, "unnecessary_invalidations") >= 1);
+        assert!(int(json, "controls.everything.counters.local_class_deltas") >= 1);
+        assert_eq!(int(json, "internal.setup_refusals"), 0);
+        assert_eq!(int(json, "internal.returned_set_mismatches"), 0);
+        assert!(matches!(
+            emit::resolve(json, "internal.refusal_variants"),
+            Some(Json::Obj(variants)) if variants.is_empty()
+        ));
     }
 
     #[test]
