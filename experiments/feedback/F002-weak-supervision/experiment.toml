@@ -1,6 +1,6 @@
 version = 1
 id = "F002"
-status = "prepared"
+status = "completed"
 hypothesis = "Does a verifier-precedence Dawid-Skene label model produce better calibrated and more accurate labels than majority vote at the same annotation budget?"
 metrics = "accuracy on uniform gold; Brier score; ECE; Unknown and Disputed rates; Krippendorff alpha"
 baseline = "majority vote; verifier-only labels"

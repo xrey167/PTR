@@ -27,7 +27,7 @@ missing = [
 ]
 
 next = [
-  "Run F002 against majority vote on uniform gold",
+  "Compare against real annotators or LLM labelling functions (F002, completed, covers synthetic labelling functions with known truth)",
   "Add a labeling adapter to ptr-pg over the existing work schema",
 ]
 
