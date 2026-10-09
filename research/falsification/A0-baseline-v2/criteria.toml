@@ -1,0 +1,267 @@
+# Preregistered decision criteria of the A0 baseline study v2:
+#   M001-v6 / M002-v11 / M003-v3 against the pinned plain baseline.
+#
+# v2 is the complete successor of study v1 (M001-v5 / M002-v10 / M003-v2),
+# replaced for a procedural defect of its decider (no v1 outcome was observed).
+# Every value below is IDENTICAL to A0-baseline-v1/criteria.toml; the only
+# differences are the experiment and contrast ids (the version bump of each
+# study) and the name. The decider is scripts/aggregate_a0_baseline_v2.py. See
+# DESIGN.md (Why v1 was replaced) and PREREGISTRATION.md.
+#
+# This file is the SINGLE source of every threshold, protocol pin and contrast
+# of the study. scripts/aggregate_a0_baseline_v2.py reads it and nothing else for
+# numbers; the experiments' config.toml files freeze its SHA-256. Every
+# comparison is exact (>=, >, <=) on float64 values; nothing is rounded before a
+# comparison. The reasoning is in DESIGN.md, the frozen text in PREREGISTRATION.md.
+version = 1
+name = "A0-baseline-v2"
+seeds = [17, 29, 43, 71, 101]
+# Two-sided 95% Student-t quantile, 4 degrees of freedom (five paired seeds).
+# The decider uses the unrounded value of the immutable core
+# (scripts/aggregate_m002_v5.py, 2.7764451...), which is slightly wider, and
+# refuses to run if it differs from this printed value by more than 0.001.
+t_critical = 2.776
+
+[decision]
+# The immutable paired-interval core that the decider imports unmodified.
+core = "scripts/aggregate_m002_v5.py"
+core_sha256 = "8ee9539a790f44c57eaa751fa56dfa07bb0342d636bf65230650ad4f6fddb957"
+# v2 decider = v1 decider (statistics, gates, rules, reused by import and pinned
+# unchanged) + the record-identity rule and the interruption outcome below.
+base = "scripts/aggregate_a0_baseline.py"
+base_sha256 = "9060d1534a7c76e6cc74959e30803cb09c748f90e54b18fb22f5b1a7e5cf350f"
+
+[data]
+dataset = "datasets/generated/operator_routing_v2"
+lock = "benchmarks/operator-routing-v2/splits.lock.json"
+lock_sha256 = "6a001b37e4adb81bae66f8abc50c9a461f07eea918c905179300cc8d353266a1"
+# name=FNV64 tokens, exactly as in experiments/model/M002-v9-*/config.toml.
+folds = "evidence-temporal=8c3bc2324e0eb770,evidence-tabular=9ff1e487932c4638,claim-interventional=fd11dbf9270b2f39"
+# v2 folds have exactly these two test splits; the OOD split of a fold is test_ood.
+iid_split = "test_iid"
+ood_split = "test_ood"
+
+[protocol]
+d_model = 48
+steps = 1500
+batch_size = 128
+rank = 8
+bias_limit = 1.0
+metadata_dropout = 0.0
+router_mode = "calibrated-cosine-v2"
+# Defaults for every A0 arm; [study.pins.<arm>] overrides them.
+label_smoothing = 0.0
+consistency_weight = 0.0
+latent_nonlinearity = true
+# The plain baseline trains without label smoothing and without a recurrence.
+plain_latent_steps = 1
+# Learning-rate sweep: one sweep per study at seed 17, validation only, over
+# this fixed grid, for every arm including plain.
+sweep_seed = 17
+lr_grid = [0.0025, 0.005, 0.0125, 0.025]
+lr_selection_rule = "best mean validation accuracy over folds; tie lower mean validation NLL; tie smaller lr; a diverged grid point is ineligible"
+
+[columns]
+# Gates read RAW logits (temperature 1). fitted_* columns are diagnostics only.
+accuracy = "accuracy"
+nll = "raw_nll"
+ece = "raw_ece15"
+coverage = "raw_coverage"
+selective_error = "raw_selective_error"
+diagnostic_nll = "fitted_nll"
+diagnostic_ece = "fitted_ece15"
+temperature = "fitted_temperature"
+# The temperature fit grid ends here; a fitted temperature at the cap is saturated.
+temperature_cap = 4.0
+
+[thresholds]
+# Primary endpoint: OOD accuracy, mean over folds, paired over seeds.
+delta_min = 0.02
+ood_accuracy_ci_lower_gt = 0.0
+# Positive OOD accuracy delta (mean over seeds) in every fold.
+positive_accuracy_each_fold_gt = 0.0
+# Calibration, PER FOLD on test_ood, raw logits.
+ood_nll_ci_upper_le = 0.0
+ood_ece_mean_le = 0.0
+ood_ece_ci_upper_le = 0.02
+# IID accuracy, mean over folds, paired over seeds.
+iid_accuracy_ci_lower_ge = -0.01
+# Selective prediction of the treatment arm at the validation-fit raw threshold.
+coverage_iid_ge = 0.90
+coverage_ood_ge = 0.80
+selective_error_mean_le = 0.0
+# Matched compute against plain: relative total_params difference.
+plain_param_tolerance = 0.01
+# FALSIFIES needs both arms learnable: mean IID accuracy over seeds and folds.
+learnable_min_iid_accuracy = 0.30
+
+[decision_rules]
+# A gate in calibration_gates failing while the primary holds is NO-GO-CALIBRATION
+# (recorded as INCONCLUSIVE with that label; forbids any quality claim).
+calibration_gates = ["ood_nll_each_fold", "ood_ece_each_fold"]
+# Order in which gates are evaluated and reported.
+gate_order = [
+    "complete_finite_bound_evidence",
+    "ood_accuracy",
+    "positive_accuracy_each_fold",
+    "ood_nll_each_fold",
+    "ood_ece_each_fold",
+    "iid_accuracy",
+    "coverage",
+    "selective_error",
+    "matched_compute",
+]
+# v2 (change c): an interrupted confirmatory seed (run record with status "started",
+# no stdout and no exit code) makes the study this named outcome. It is reported,
+# computes no statistic, and is never rerun. It is not SUPPORTS, FALSIFIES or
+# HARMFUL and it forbids any quality claim.
+interrupted_label = "INCONCLUSIVE-INTERRUPTED"
+# Compute modes of a contrast (see DESIGN.md): "plain-params" = total_params within
+# plain_param_tolerance (FLOP columns descriptive: the A0 and plain helpers are not
+# comparable); "equal-params-flops" = equal total_params and equal flops_per_example
+# (A0-vs-A0 isolating pairs); "equal-params" = equal total_params, flops_per_example
+# descriptive (the arms differ in compute by construction or by diagnostic design).
+
+[record_identity]
+# v2 (change b). The hardened runner commits each seed's record before the next
+# run, so the five records of a study name five different commits (the git_sha of
+# a record is HEAD when its run started). The records are one build iff
+#   1. every git_sha is identical, or
+#   2. all git_sha values are commits of HEAD's history, each (in run order,
+#      started_at) an ancestor of the next or equal to it, and
+#      `git diff` between the earliest and the latest record commit touches only
+#      files directly inside the results/ directory of an experiment of this study
+#      (experiments/model/<study id>-<slug>/results/ and the -sweep ones).
+# Every other identity field must still be identical across the five records.
+mode = "single-commit-or-linear-history-results-only"
+identical_fields = [
+    "manifest_sha256", "parameters", "rustc", "toolchain", "environment", "executable", "host",
+    "cargo_lock_sha256", "uv_lock_sha256", "manifest.preregistration_sha256",
+    "manifest.preregistration_rules_sha256",
+]
+
+# ---------------------------------------------------------------- M001-v6
+[[study]]
+id = "M001-v6"
+runner_study = "m001-v5"
+headline = "M001-v6-primary"
+arms = ["full", "no-semantic-slots-masked", "no-semantic-slots", "plain"]
+# mask share = masked - unmasked accuracy (A0-v2 definition), needs the unmasked arm.
+require_mask_share = true
+
+[study.pins.full]
+latent_steps = 2
+[study.pins.no-semantic-slots-masked]
+latent_steps = 2
+batch = "content-free-masked"
+[study.pins.no-semantic-slots]
+latent_steps = 2
+batch = "content-free"
+
+[[study.contrast]]
+id = "M001-v6-primary"
+role = "primary"
+isolating = true
+treatment = "full"
+control = "no-semantic-slots-masked"
+compute = "equal-params"
+claim = "typed slot content improves OOD routing over index-tagged raw binding in A0 (isolating)"
+
+[[study.contrast]]
+id = "M001-v6-bundle"
+role = "bundle"
+isolating = false
+treatment = "full"
+control = "plain"
+compute = "plain-params"
+claim = "the A0 bundle (typed slots + typed attention + latent recurrence + calibrated router) beats the pinned plain baseline in A0; bundle vs baseline, non-isolating"
+
+# ---------------------------------------------------------------- M002-v11
+[[study]]
+id = "M002-v11"
+runner_study = "m002-v10"
+headline = "M002-v11-primary"
+arms = ["factorized-v2", "factorized-v2-off", "full", "plain"]
+require_mask_share = false
+
+[study.pins.factorized-v2]
+typed_attention_mode = "factorized-v2"
+latent_steps = 2
+label_smoothing = 0.05
+consistency_weight = 0.10
+[study.pins.factorized-v2-off]
+typed_attention_mode = "off"
+latent_steps = 2
+label_smoothing = 0.05
+consistency_weight = 0.10
+[study.pins.full]
+latent_steps = 2
+
+[[study.contrast]]
+id = "M002-v11-primary"
+role = "primary"
+isolating = true
+treatment = "factorized-v2"
+control = "factorized-v2-off"
+compute = "equal-params-flops"
+claim = "factorized typed pair attention improves OOD routing over the identical computation with the pair bias zeroed, in A0 (isolating)"
+
+[[study.contrast]]
+id = "M002-v11-bundle"
+role = "bundle"
+isolating = false
+treatment = "full"
+control = "plain"
+compute = "plain-params"
+claim = "the A0 bundle beats the pinned plain baseline in A0; bundle vs baseline, non-isolating"
+
+# ---------------------------------------------------------------- M003-v3
+[[study]]
+id = "M003-v3"
+runner_study = "m003-v2"
+headline = "M003-v3-primary"
+arms = ["full", "latent-0", "latent-1", "latent-linear", "plain"]
+require_mask_share = false
+
+[study.pins.full]
+latent_steps = 2
+[study.pins.latent-0]
+latent_steps = 0
+[study.pins.latent-1]
+latent_steps = 1
+[study.pins.latent-linear]
+latent_steps = 2
+latent_nonlinearity = false
+
+[[study.contrast]]
+id = "M003-v3-primary"
+role = "primary"
+isolating = true
+treatment = "full"
+control = "latent-0"
+compute = "equal-params"
+claim = "the tied latent recurrence (k=2) improves OOD routing over no recurrence at equal parameters in A0 (compute differs by the recurrence itself)"
+
+[[study.contrast]]
+id = "M003-v3-nonlinearity"
+role = "secondary"
+isolating = true
+treatment = "full"
+control = "latent-linear"
+compute = "equal-params-flops"
+claim = "the per-slot nonlinearity, not the extra affine parameters, carries the recurrence benefit in A0 (isolating)"
+
+[[study.contrast]]
+id = "M003-v3-bundle"
+role = "bundle"
+isolating = false
+treatment = "full"
+control = "plain"
+compute = "plain-params"
+claim = "the A0 bundle beats the pinned plain baseline in A0; bundle vs baseline, non-isolating"
+
+# ---------------------------------------------------------------- deferred
+[[deferred]]
+id = "M004-v2"
+status = "planned, not run at A0"
+reason = "ADR-0021 item 2: the operator router comparison needs the pretrained LM baseline, deferred to the GPU phase"
