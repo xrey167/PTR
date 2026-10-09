@@ -128,7 +128,7 @@ status = "planned"
 [[experiment]]
 id = "Q002"
 path = "retrieval/Q002-evidence-promotion"
-status = "prepared"
+status = "completed"
 
 [[experiment]]
 id = "F001"

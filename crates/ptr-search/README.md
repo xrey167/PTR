@@ -43,7 +43,7 @@
 ### Linked experiments
 
 - [Q001](../../experiments/retrieval/Q001-fusion/README.md) — `planned`
-- [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `planned`
+- [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `frozen`
 - [E002](../../experiments/system/E002-rag-baselines/README.md) — `planned`
 - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
 
