@@ -1,0 +1,120 @@
+# Q003 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256);
+# no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
+# q003/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order, and every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and so a
+# parse error: no decimal literal exists, fractions are integer permille).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON result
+# object, separated by '.' (no key holds a '.', no array is indexed): "answerable_queries" is a top-level key,
+# "retrieval_hits.lexical" the member lexical of the object retrieval_hits.
+# A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a failed rule).
+# A reference compared with an integer literal or another reference must be a JSON integer (not a
+# boolean, not a float). Exact comparisons.
+# The manifest's "< N" prerequisites are written ">= N", its "> N" violations "<= N".
+#
+# recall10_pg_deficit_vs_<baseline>_permille is max(0, baseline recall@10 - fused recall@10) over the answerable queries, in
+# integer permille; the margin it is held to (30) is recall_margin_permille of config.toml, three paired standard errors of
+# the difference at 1000 queries (about 900 answerable) and recall about 0.9; the pilot (seeds outside the confirmatory five)
+# measured the paired standard error against rag_reference and the query count was raised until it was at most 10 per mille (8, 10 and 9 on the three pilot seeds, which draw from the same 2000-cue pool as the confirmatory seeds);
+# every run reports its own (recall_paired_se_vs_*_permille, descriptive, no rule reads it: a noisy estimate must not be able to
+# make a seed vacuous). recall_violation_vs_<baseline> restates the deficit rule as a count for the mutation checker.
+# The strong baseline answers a seeded subset of 200 of the ANSWERABLE queries, stratified like them by checkpoint and live
+# generation (its cross-encoder costs about 8 CPU-seconds a query on an idle machine, 16 to 46 under load), and is NEVER GATED:
+# its metrics are descriptive, reported with the subset size (strong_queries), compared with the product on the same queries
+# (recall10_pg_on_strong_subset_permille, ndcg10_pg_on_strong_subset_permille; recall10_pg_deficit_vs_strong_permille is
+# max(0, recall10_strong_permille - recall10_pg_on_strong_subset_permille)) and given a discordance count and a 95 percent upper
+# bound on the share of discordant queries (strong_discordant_queries, strong_discordance_bound_permille; a standard error would
+# read 0 at the ceiling). The only rule that touches it is strong_queries >= 200, which says the arm ran.
+#
+# The gating baseline is rag_reference (BM25 + cosine + RRF over the same MiniLM vectors the product indexes); strong_retrieval
+# (BM25 + bge-m3 dense + RRF + bge-reranker-v2-m3, retrieval only) is reported. Both are rebuilt from the harness's live table at
+# each checkpoint.
+# aggregate.py judges a seed INVALID unless it ran at the pinned scale with the full strong arm (procedure.strong_arm.mode ==
+# "full"); a development run without or with a reduced strong arm is no evidence.
+#
+# The recall leg has two rules. recall10_pg_deficit_vs_reference_permille <= 30 is a SANITY FLOOR against gross failure: the reference
+# is a BM25-OR hybrid that on this templated corpus is worse than plain dense retrieval, so the rule trips only far below the
+# product (912 to 918 for a product near 984). recall10_pg_deficit_vs_exact_permille <= 30 is the SENSITIVITY CONTROL: the deficit
+# of the product's fused recall against the harness's own exact dense search over the live set (code shared with nothing under
+# test); the pilot seeds 1001-1003 and the dry runs showed no deficit at all (the HNSW list equalled the exact search), so 30 per
+# mille is clear of noise and catches a mid-severity regression (a smaller candidate list, a lower ef_search, a truncated
+# embedding) that the floor would pass. live_probe_lexical_self_hits >= 45 (of 50 live probes; 50 in every run) is the only place
+# the lexical half is tested; lexical_probe_violation restates it as a count for the mutation checker.
+#
+# Verdict order in aggregate.py: a seed is UNJUDGEABLE (INVALID) if its record is missing or does not describe the frozen run
+# (digest mismatch, scale, seed, control, gaps, unsupported metrics, strong arm not full, exit status disagreeing with the rules,
+# a counter missing or mistyped). A seed whose reference recall is below its floor (recall10_reference_permille < 900) is judged
+# normally on every other rule: any other tripped falsifier or unmet coverage rule makes it FALSIFIED; if none does, the recall
+# rule against the reference is not evaluable and the seed is INVALID (a weak reference is no product defect, and it must not
+# hide a stale hit).
+#
+# What the claim is, and is not: on natural-language queries ptr-pg's lexical list is empty (plainto_tsquery ANDs every term), so
+# its fused list is effectively its halfvec HNSW dense list. The recall rule compares that list with the BM25-OR + cosine + RRF
+# reference; it does not test the quality of a working lexical half. main_query_lexical_hits counts the lexical hits of the main
+# queries (descriptive), recall10_exact_cosine_permille is the harness's exact dense search over the live set (descriptive; it
+# separates the HNSW approximation, PG vector list against exact, from the fusion effect, exact against the reference). The gate
+# trips only below the reference's recall minus 30 permille (912 for a reference at 942); the exact-search rule is what sees a
+# smaller regression of the dense list.
+#
+# Rules that hold by construction or duplicate another (named so a reader does not mistake them for evidence):
+# answerable_queries >= 800, revoked_targets_queried >= 50, superseded_targets_queried >= 400, late_write_attempts >= 50,
+# probe_queries >= 90, reference_queries >= 1000 and strong_queries >= 200 count what the generator and the drivers were asked
+# (they check the workload and the bridge, not the product); planted_stale_rows >= 200 counts the rows the harness inserted;
+# retrieval_hits.* >= 1, control_planted_returned >= 50 and control_vector_returned >= 50 are observed from the product's answers
+# and the control's SQL (the vector side is a coverage rule; the exact lexical side is enforced by exit 2);
+# recall10_reference_permille >= 900 is a floor on the baseline (a gap to a baseline that finds little means little); a weak
+# reference is not a product defect, so aggregate.py judges a seed below the floor INVALID (after every other rule, see above),
+# never FALSIFIED by that alone; workload_digest_mismatches <= 0 is a harness-integrity guard (the grammar can only express it as a
+# coverage rule; aggregate.py judges a seed that trips it INVALID, not FALSIFIED);
+# projector_residual_rows <= 0 counts rows of the derived table that are neither live nor planted by the harness (a projector that
+# leaves a superseded or revoked document behind; the search join hides such rows, so only this check sees them);
+# planted_stale_returned <= 0 is a subset of stale_hits <= 0 (the planted pairs are stale by construction), kept because it
+# names the raw-SQL plants separately and has its own counter; lifecycle_projection_mismatches <= 0 compares the product's
+# is_admissible with the harness's live table (it tests the projector as much as search).
+# retrieval_hits.lexical is observed on the probe queries: the main queries are natural-language questions that plainto_tsquery
+# ANDs term by term, so the lexical mode rarely matches them (reported, descriptive).
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies Q003 on that seed.
+# Decision: every seed must hold every coverage rule and every falsifier rule, and the mutation evidence must be complete;
+# COMPLETED iff so, INVALID if a seed is missing, unresolvable, or its record does not describe the frozen run, or reports a
+# workload-digest mismatch, a development scale or a strong arm that was not the full baseline, or the mutation evidence is
+# missing or incomplete, FALSIFIED otherwise.
+version = 1
+experiment = "Q003-v2"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "planted_stale_rows >= 200",
+  "revoked_targets_queried >= 50",
+  "superseded_targets_queried >= 400",
+  "answerable_queries >= 800",
+  "retrieval_hits.lexical >= 1",
+  "retrieval_hits.vector >= 1",
+  "retrieval_hits.fused >= 1",
+  "late_write_attempts >= 50",
+  "probe_queries >= 90",
+  "control_planted_returned >= 50",
+  "control_vector_returned >= 50",
+  "live_probe_lexical_self_hits >= 45",
+  "reference_queries >= 1000",
+  "strong_queries >= 200",
+  "recall10_reference_permille >= 900",
+  "workload_digest_mismatches <= 0",
+]
+
+falsifiers = [
+  "stale_hits <= 0",
+  "planted_stale_returned <= 0",
+  "projector_residual_rows <= 0",
+  "late_write_accepted <= 0",
+  "late_write_wrong_refusal <= 0",
+  "product_errors <= 0",
+  "lifecycle_projection_mismatches <= 0",
+  "product_panics <= 0",
+  "nondeterministic_searches <= 0",
+  "recall10_pg_deficit_vs_reference_permille <= 30",
+  "recall10_pg_deficit_vs_exact_permille <= 30",
+]

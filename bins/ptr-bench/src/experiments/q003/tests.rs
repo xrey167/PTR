@@ -2,11 +2,12 @@ use super::*;
 use crate::experiments::layered_kv::emit::{self, judge, Json, Status};
 
 const CRITERIA: &str =
-    include_str!("../../../../../experiments/retrieval/Q003-postgres-hybrid/criteria.toml");
-const MUTATIONS: &str =
-    include_str!("../../../../../experiments/retrieval/Q003-postgres-hybrid/tests/mutations.toml");
+    include_str!("../../../../../experiments/retrieval/Q003-v2-postgres-hybrid/criteria.toml");
+const MUTATIONS: &str = include_str!(
+    "../../../../../experiments/retrieval/Q003-v2-postgres-hybrid/tests/mutations.toml"
+);
 const DRAFT: &str =
-    include_str!("../../../../../experiments/retrieval/Q003-postgres-hybrid/PREREGISTRATION.md");
+    include_str!("../../../../../experiments/retrieval/Q003-v2-postgres-hybrid/PREREGISTRATION.md");
 
 fn rules(table: &toml::Table, key: &str) -> Vec<String> {
     table[key]
@@ -59,6 +60,28 @@ fn no_environment(_: &str) -> Option<String> {
 }
 
 #[test]
+fn the_manifest_is_the_successors_and_declares_the_environment_the_harness_reads() {
+    let manifest: toml::Table = params::EXPERIMENT_TOML
+        .parse()
+        .expect("experiment.toml parses");
+    assert_eq!(manifest["id"].as_str(), Some(params::EXPERIMENT_ID));
+    let declared: Vec<&str> = manifest["command_environment"]
+        .as_array()
+        .expect("command_environment is a list")
+        .iter()
+        .map(|name| name.as_str().expect("a name"))
+        .collect();
+    assert_eq!(
+        declared,
+        [
+            "PTR_PG_EXPERIMENT_DSN",
+            "PTR_Q003_STRONG_PYTHON",
+            "PTR_Q003_MODELS_ROOT"
+        ]
+    );
+}
+
+#[test]
 fn the_metric_names_are_the_manifests() {
     let manifest: toml::Table = params::EXPERIMENT_TOML
         .parse()
@@ -76,7 +99,7 @@ fn the_criteria_file_is_exactly_the_rules_the_harness_judges_in_its_order() {
     let table: toml::Table = CRITERIA.parse().expect("criteria.toml is TOML");
     assert_eq!(rules(&table, "coverage"), metrics::coverage());
     assert_eq!(rules(&table, "falsifiers"), metrics::falsifiers());
-    assert_eq!(table["experiment"].as_str(), Some("Q003"));
+    assert_eq!(table["experiment"].as_str(), Some(params::EXPERIMENT_ID));
     assert_eq!(
         table["seed_aggregation"].as_str(),
         Some(params::SEED_AGGREGATION)
@@ -439,6 +462,9 @@ fn the_arguments_are_a_seed_or_queries_and_a_seed_and_the_development_flags() {
     let custom = parse_args(&args(&["400", "17"]), &no_environment).unwrap();
     assert_eq!(custom.scale, Scale::Custom(400));
     assert_eq!(custom.options.strong, StrongMode::Off);
+    let check = parse_args(&args(&["--preflight"]), &no_environment).unwrap();
+    assert!(check.preflight && !pinned.preflight);
+    assert!(parse_args(&args(&[]), &no_environment).is_err());
     let off = parse_args(&args(&["17", "--no-strong"]), &no_environment).unwrap();
     assert_eq!(off.options.strong, StrongMode::Off);
     let flags = parse_args(

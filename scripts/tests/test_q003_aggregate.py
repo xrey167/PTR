@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-HERE = ROOT / "experiments" / "retrieval" / "Q003-postgres-hybrid"
+HERE = ROOT / "experiments" / "retrieval" / "Q003-v2-postgres-hybrid"
 sys.path.insert(0, str(ROOT / "scripts"))
 
 spec = importlib.util.spec_from_file_location("q003_aggregate", HERE / "aggregate.py")
@@ -53,7 +53,7 @@ def passing_result(seed: int) -> dict:
     """A harness result in which every rule of the criteria holds, at the boundary where it can."""
     result = {
         "benchmark": "postgres-hybrid",
-        "experiment": "Q003",
+        "experiment": "Q003-v2",
         "seed": seed,
         "scale": "pinned",
         "procedure": {

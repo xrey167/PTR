@@ -145,6 +145,46 @@ path = "research/baselines/strong_retrieval/config.toml"
 keys = ["dense.revision", "reranker.revision"]
 status_key = "status"
 
+# Q003-v2, the successor of the superseded Q003: the same required keys and baselines (the runner passes the declared
+# command_environment through). Design: experiments/retrieval/Q003-v2-postgres-hybrid/PREREGISTRATION.md. The gating baseline is rag_reference; strong_retrieval
+# (BM25 + bge-m3 + RRF + bge-reranker-v2-m3, retrieval only) is reported on a subsample and never gated, but its models are
+# pinned and its directory frozen with the table. strong_rag stays blocked and is not a baseline of Q003-v2.
+[experiment.Q003-v2.required]
+seeds = "int-list"
+harness = "str"
+capsules = "int"
+queries = "int"
+strong_queries = "int"
+recall_margin_permille = "int"
+recall_exact_margin_permille = "int"
+k = "int"
+embedding_model = "str"
+embedding_revision = "str"
+pool_sha256 = "str"
+vectors_sha256 = "str"
+strong_vectors_sha256 = "str"
+workload_digest_seed_17 = "str"
+workload_digest_seed_29 = "str"
+workload_digest_seed_43 = "str"
+workload_digest_seed_71 = "str"
+workload_digest_seed_101 = "str"
+preregistration_text = "file"
+criteria = "file"
+
+# rag_reference's reranker is "not-configured", a decided value rather than a
+# placeholder, so the keys are named one by one.
+[[experiment.Q003-v2.baseline]]
+name = "rag_reference"
+path = "research/baselines/rag_reference/config.toml"
+keys = ["hybrid.embedding_model", "hybrid.embedding_revision"]
+status_key = "status"
+
+[[experiment.Q003-v2.baseline]]
+name = "strong_retrieval"
+path = "research/baselines/strong_retrieval/config.toml"
+keys = ["dense.revision", "reranker.revision"]
+status_key = "status"
+
 # The harness (bins/ptr-bench, r005) prints one JSON object per seed; aggregate.py judges the five
 # seeds under the criteria file, which is frozen with the table, as is the preregistration text.
 [experiment.R005.required]

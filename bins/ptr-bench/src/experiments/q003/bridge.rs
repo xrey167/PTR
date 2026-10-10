@@ -2,7 +2,7 @@
 //!
 //! The reference arm (`research/baselines/rag_reference/q003_driver.py`), the strong arm
 //! (`research/baselines/strong_retrieval/driver.py`) and the BM25-only helper
-//! (`experiments/retrieval/Q003-postgres-hybrid/bm25_driver.py`) speak one protocol: one JSON
+//! (`experiments/retrieval/Q003-v2-postgres-hybrid/bm25_driver.py`) speak one protocol: one JSON
 //! object per line in, one per line out, `{"ok": true, ...}` or `{"ok": false, "error": ...}`.
 //! None of them is code under test, so every failure of the bridge (a process that does not start,
 //! a reply that does not parse, a refusal, a timeout, an end of file) is the harness's: the caller

@@ -1536,7 +1536,7 @@ another by idea.
 | Id | Question | Hard failure |
 |---|---|---|
 | [L004](../../experiments/lifecycle/L004-projection-equivalence/README.md) | Is a replayed PostgreSQL projection always equal to the reference, and is every foreign history refused? | any divergence or accepted foreign history |
-| [Q003](../../experiments/retrieval/Q003-postgres-hybrid/README.md) | Does generation-joined hybrid retrieval match the reference stack's recall? | any stale-generation hit |
+| [Q003-v2](../../experiments/retrieval/Q003-v2-postgres-hybrid/README.md) (successor of the superseded [Q003](../../experiments/retrieval/Q003-postgres-hybrid/README.md)) | Does generation-joined hybrid retrieval match the reference stack's recall? | any stale-generation hit |
 | [S003](../../experiments/semdb/S003-certified-branches/README.md) | Do certified branches avoid lost updates and phantoms while beating serial execution? | any lost update or undetected phantom |
 | [F003](../../experiments/feedback/F003-calibrated-arbiter/README.md) | Does the arbiter keep the auto-proposal harm rate at or below α? | upper bound above α on held-out adjudications |
 | [M008](../../experiments/model/M008-fast-weight-memory/README.md) | Does fast memory improve update-aware recall at equal tokens? | false recall above the recency baseline |

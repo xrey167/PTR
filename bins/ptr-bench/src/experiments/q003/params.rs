@@ -2,7 +2,7 @@
 //!
 //! The constants mirror the keys of `[pinned_thresholds]` in the experiment's `config.toml`, which
 //! is read at compile time; the drift test fails when a constant differs from the file and when the
-//! file holds a key no constant mirrors. Q003 is `planned`: nothing here is frozen.
+//! file holds a key no constant mirrors. The harness serves Q003-v2, the successor of the superseded Q003.
 
 // The thresholds complete the compiled table the drift test compares with the file; the harness
 // evaluates most of them in `metrics`, and the rest only echo the table.
@@ -10,11 +10,15 @@
 
 /// The experiment's configuration file, read at compile time.
 pub const CONFIG_TOML: &str =
-    include_str!("../../../../../experiments/retrieval/Q003-postgres-hybrid/config.toml");
+    include_str!("../../../../../experiments/retrieval/Q003-v2-postgres-hybrid/config.toml");
 
 /// The experiment's manifest, read at compile time (the metric names come from it).
 pub const EXPERIMENT_TOML: &str =
-    include_str!("../../../../../experiments/retrieval/Q003-postgres-hybrid/experiment.toml");
+    include_str!("../../../../../experiments/retrieval/Q003-v2-postgres-hybrid/experiment.toml");
+
+/// The experiment this harness runs for: the id in the result's `experiment` field, which
+/// `aggregate.py` and `criteria.toml` name. Q003-v2 succeeds Q003 (superseded) and keeps its harness.
+pub const EXPERIMENT_ID: &str = "Q003-v2";
 
 /// The subcommand of the harness (`ptr-bench <BENCHMARK> <seed>`).
 pub const BENCHMARK: &str = "postgres-hybrid";

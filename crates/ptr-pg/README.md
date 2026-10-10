@@ -80,13 +80,14 @@
 ### Next milestones
 
 - Run L004 against PostgreSQL 16 and 17 and with readers concurrent with the projector
-- Run Q003 against the reference retrieval baselines
+- Run Q003-v2 (successor of the superseded Q003) against the reference retrieval baselines
 - Add TLS and separate projector, reader and migrator roles
 
 ### Linked experiments
 
 - [L004](../../experiments/lifecycle/L004-projection-equivalence/README.md) — `completed`
-- [Q003](../../experiments/retrieval/Q003-postgres-hybrid/README.md) — `planned`
+- [Q003](../../experiments/retrieval/Q003-postgres-hybrid/README.md) — `superseded`
+- [Q003-v2](../../experiments/retrieval/Q003-v2-postgres-hybrid/README.md) — `planned`
 
 ### Technology evaluations
 

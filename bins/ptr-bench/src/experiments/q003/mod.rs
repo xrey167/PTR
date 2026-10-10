@@ -27,6 +27,7 @@ pub mod metrics;
 pub mod oracle;
 pub mod params;
 pub mod pgarm;
+pub mod preflight;
 pub mod resume;
 pub mod runner;
 pub mod workload;
@@ -140,7 +141,7 @@ pub fn execute(seed: u64, scale: Scale, options: &Options) -> Result<Report, Str
     let strong_ran = options.strong != StrongMode::Off;
     let mut pairs: Vec<(String, Json)> = vec![
         ("benchmark".to_string(), Json::str(params::BENCHMARK)),
-        ("experiment".to_string(), Json::str("Q003")),
+        ("experiment".to_string(), Json::str(params::EXPERIMENT_ID)),
         (
             "status_note".to_string(),
             note("one seed of the Q003 harness: evidence only when run at the pinned scale with the full strong arm from the frozen commit and judged by aggregate.py under criteria.toml; the exit status and the coverage and falsifiers lists below are the harness's own reading of the same rules"),
@@ -363,6 +364,8 @@ pub struct Parsed {
     pub scale: Scale,
     pub options: Options,
     pub digest_only: bool,
+    /// `--preflight`: check the environment on a tiny world instead of running a seed.
+    pub preflight: bool,
 }
 
 /// `<seed>` (the pinned scale) or `<queries> <seed>` (the mutation checker's form), with the
@@ -379,6 +382,7 @@ pub fn parse_args(
     let mut positional = Vec::new();
     let mut no_strong = false;
     let mut digest_only = false;
+    let mut preflight = false;
     let mut strong_python = environment("PTR_Q003_STRONG_PYTHON").filter(|value| !value.is_empty());
     let mut models_root = environment("PTR_Q003_MODELS_ROOT")
         .filter(|value| !value.is_empty())
@@ -398,6 +402,7 @@ pub fn parse_args(
         match argument.as_str() {
             "--no-strong" => no_strong = true,
             "--print-workload-digest" => digest_only = true,
+            "--preflight" => preflight = true,
             "--strong-python" => strong_python = Some(value_of("--strong-python")?),
             "--strong-resume-dir" => {
                 resume_dir = Some(PathBuf::from(value_of("--strong-resume-dir")?))
@@ -413,8 +418,9 @@ pub fn parse_args(
             other => positional.push(other.to_string()),
         }
     }
-    let usage = "usage: postgres-hybrid <seed> | postgres-hybrid <queries> <seed> [--no-strong] [--strong-python PATH] [--models-root DIR] [--strong-threads N] [--strong-resume-dir DIR] [--print-workload-digest]";
+    let usage = "usage: postgres-hybrid <seed> | postgres-hybrid <queries> <seed> [--no-strong] [--strong-python PATH] [--models-root DIR] [--strong-threads N] [--strong-resume-dir DIR] [--print-workload-digest] | postgres-hybrid --preflight";
     let (seed, scale) = match positional.as_slice() {
+        [] if preflight => (0, Scale::Pinned),
         [seed] => (number(seed, "seed")?, Scale::Pinned),
         [queries, seed] => (
             number(seed, "seed")?,
@@ -440,6 +446,7 @@ pub fn parse_args(
             resume_dir,
         },
         digest_only,
+        preflight,
     })
 }
 
@@ -453,6 +460,15 @@ pub fn run(args: &[String]) {
             std::process::exit(2);
         }
     };
+    if parsed.preflight {
+        match preflight::run(&parsed.options, &|name| std::env::var(name).ok()) {
+            Ok(()) => return,
+            Err(reason) => {
+                eprintln!("{} preflight failed: {reason}", params::BENCHMARK);
+                std::process::exit(2);
+            }
+        }
+    }
     if parsed.digest_only {
         let result = parsed
             .scale

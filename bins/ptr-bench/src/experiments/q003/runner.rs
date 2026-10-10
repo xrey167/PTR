@@ -106,6 +106,26 @@ fn python_bridge(
     Bridge::spawn(name, program, args, root, REPLY_TIMEOUT)
 }
 
+/// Start the reference driver exactly as a seed does (`python3` from `PATH`, same arguments).
+pub(super) fn spawn_reference(root: &std::path::Path) -> Result<Bridge, String> {
+    python_bridge(
+        "reference",
+        "python3",
+        &["research/baselines/rag_reference/q003_driver.py".to_string()],
+        root,
+    )
+}
+
+/// Start the BM25 driver exactly as a seed does (`python3` from `PATH`, same arguments).
+pub(super) fn spawn_bm25(root: &std::path::Path) -> Result<Bridge, String> {
+    python_bridge(
+        "bm25",
+        "python3",
+        &["experiments/retrieval/Q003-v2-postgres-hybrid/bm25_driver.py".to_string()],
+        root,
+    )
+}
+
 impl<'a> Run<'a> {
     pub fn open(
         seed: u64,
@@ -117,12 +137,7 @@ impl<'a> Run<'a> {
     ) -> Result<Self, String> {
         let root = repo_root();
         let mut hellos = Vec::new();
-        let mut reference = python_bridge(
-            "reference",
-            "python3",
-            &["research/baselines/rag_reference/q003_driver.py".to_string()],
-            &root,
-        )?;
+        let mut reference = spawn_reference(&root)?;
         let hello = reference.hello()?;
         if crate::experiments::layered_kv::emit::resolve(&hello, "embedding_model")
             != Some(&Json::str(params::EMBEDDING_MODEL))
@@ -133,12 +148,7 @@ impl<'a> Run<'a> {
             ));
         }
         hellos.push(("reference".to_string(), hello));
-        let mut bm25 = python_bridge(
-            "bm25",
-            "python3",
-            &["experiments/retrieval/Q003-postgres-hybrid/bm25_driver.py".to_string()],
-            &root,
-        )?;
+        let mut bm25 = spawn_bm25(&root)?;
         hellos.push(("bm25".to_string(), bm25.hello()?));
         let strong = match options.strong {
             StrongMode::Off => None,
