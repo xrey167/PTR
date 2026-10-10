@@ -8,6 +8,8 @@ publish = false
 [features]
 default = []
 candle-cuda = ["ptr-pods/candle-cuda"]
+# Enables the `vcw_qwen` example: real CPU language-model experts behind ptr_pods::TextGenerator.
+qwen-cpu = ["ptr-pods/qwen-cpu"]
 oidc-http = ["dep:reqwest", "dep:rustls"]
 
 [dependencies]
@@ -46,3 +48,7 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 # Search hits are filtered against this runtime's lifecycle answers; the test
 # composes the two public APIs the way a caller does.
 ptr-search = { workspace = true }
+
+[[example]]
+name = "vcw_qwen"
+required-features = ["qwen-cpu"]

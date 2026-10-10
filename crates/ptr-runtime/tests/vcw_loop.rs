@@ -1571,6 +1571,20 @@ fn a_birth_request_is_surfaced_completed_admitted_and_seen_by_the_next_request()
     assert!(matches!(record.class(), RouteClass::Repair(c) if c == &code("newcode")));
 }
 
+/// Every `.rs` file under `dir`, including those of submodule directories.
+fn rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(rust_sources(&path));
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            found.push(path);
+        }
+    }
+    found
+}
+
 #[test]
 fn the_loop_holds_no_handle_that_could_admit_commit_or_change_a_gate() {
     // The structure step takes a read-only projection: its signature has no runtime in it.
@@ -1602,8 +1616,7 @@ fn the_loop_holds_no_handle_that_could_admit_commit_or_change_a_gate() {
         "&mut self.runtime",
     ];
     let mut files = 0;
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
+    for path in rust_sources(&dir) {
         let text = std::fs::read_to_string(&path).unwrap();
         files += 1;
         let source: String = text
@@ -1611,7 +1624,13 @@ fn the_loop_holds_no_handle_that_could_admit_commit_or_change_a_gate() {
             .filter(|line| !line.trim_start().starts_with("//"))
             .map(|line| format!("{line}\n"))
             .collect();
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        // Exemptions are by path relative to `src/vcw`, so a same-named file in a subdirectory
+        // does not inherit them.
+        let name = path
+            .strip_prefix(&dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         for token in forbidden {
             // The one place that holds the runtime mutably is the output-admission bridge.
             if name == "admit.rs" && token == "&mut PtrRuntime" {

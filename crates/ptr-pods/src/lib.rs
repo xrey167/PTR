@@ -22,11 +22,14 @@ mod output;
 mod paged_kv;
 mod protocol;
 mod qwen;
+#[cfg(feature = "qwen-cpu")]
+mod qwen_cpu;
 mod qwen_lora;
 mod qwen_moe;
 mod qwen_stack;
 mod runtime;
 mod semantic;
+mod text_generator;
 mod tier_storage;
 mod transport;
 mod turns;
@@ -94,6 +97,11 @@ pub use qwen::{
     Qwen2Activation, Qwen2DecoderInput, Qwen2DecoderOutput, Qwen2DecoderWeights, Qwen2LayerConfig,
     Qwen2LinearWeights, Qwen2PagedDecoder, Qwen2RopeRegime, Qwen2RopeScaling,
 };
+#[cfg(feature = "qwen-cpu")]
+pub use qwen_cpu::{
+    chat_prompt, QwenCpu, QwenCpuError, QwenCpuOptions, QwenCpuStats, QwenDigests, QwenModelConfig,
+    DEFAULT_MAX_WEIGHTS_BYTES,
+};
 pub use qwen_lora::{
     Qwen2Adapter, Qwen2AdapterError, Qwen2AdapterKind, Qwen2AdapterLayer, Qwen2AdapterProjection,
     Qwen2AdapterSpec, Qwen2LoraPair, QWEN2_ADAPTER_PINNED_RANK, QWEN2_ADAPTER_PINNED_SCALE,
@@ -114,6 +122,10 @@ pub use runtime::{
 pub use semantic::{
     ManifestError, ModelVariant, PodKind, PodResourceProfile, PodSemanticManifest,
     SemanticPodLifecycle,
+};
+pub use text_generator::{
+    GenerationError, GenerationOutput, GenerationRequest, ModelIdentity, StopReason, TextGenerator,
+    MAX_NEW_TOKENS_LIMIT,
 };
 pub use tier_storage::{
     ArtifactTierAdapter, ArtifactTierBinding, KvTierAdapter, KvTierBinding, ModelWeightTierAdapter,
