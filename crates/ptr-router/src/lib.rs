@@ -4,6 +4,7 @@ mod propensity;
 mod router;
 mod sampling;
 mod self_model;
+mod verifier_roles;
 
 pub use attention_schema::{
     AttentionSchema, BalanceStrength, ControlArm, ControlConfig, ControlledScorer, SchemaError,
@@ -30,6 +31,7 @@ pub use self_model::{
     SelfContext, SelfModel, SelfModelHint, SelfModelLimits, SelfModelReport, SelfOutcome,
     SelfPrediction, SelfRole, SelfTraceStep, TraceLearner, OVERSIZED_CODE,
 };
+pub use verifier_roles::{finding_codes_for_role, RepairRoleAssignments};
 
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, PodId, Probability, ProjectId, TypeId};

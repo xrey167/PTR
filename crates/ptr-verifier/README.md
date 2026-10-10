@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-10-09  
-**Code footprint:** 1 Rust source files · 415 nonblank source lines · 2 integration-test files · 12 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-10  
+**Code footprint:** 6 Rust source files · 4184 nonblank source lines · 2 integration-test files · 65 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -21,12 +21,18 @@
 - VerifierFabric implements Verifier<T>: its level is the WEAKEST level of its reports (a weaker verifier must not let the fabric satisfy a stronger requirement; the runtime's SemanticGrant applies the same rule, ADR-0020), its status is the worst one, and any hard finding forces Fail so a deterministic contradiction dominates learned scores; an empty fabric is Unknown/Unverified
 - VerifierFabric implements Default for any T (a derive would have required T: Default, which ActionIr does not implement), so a fabric of ActionContractVerifier plus further verifiers can be built for ActionIr
 - ActionContractVerifier (named action-contract) is a deterministic Verifier<ActionIr> over an ActionContract (target, operation, capability, input type, effect, payload size, PayloadEncoding): each violation is one hard finding with a stable code (target, operation, capability, input-type, effect, payload-size, payload-utf8), Fail/Deterministic/score 0, else Pass/Deterministic/score 1
+- Four deterministic task verifiers implement Verifier<String> (Verifier<Vec<FactClaim>> for facts) and NamedVerifier, all at Deterministic level, Pass only on exact success (score 1) and bounded in input size (oversize input is a hard finding, never a panic): ArithmeticVerifier (task = integer expression with + - * / and parentheses, evaluated by an independent bounded exact-rational i128 evaluator, no eval; candidate = integer or a/b; undecidable task is Unknown), JsonSchemaVerifier (in-house pinned JSON Schema subset type/required/properties/additionalProperties/enum/minimum/maximum/minLength/maxLength/items, strict RFC 8259 parser with depth and byte bounds, numbers are exact decimals (no float: 2^53+1 differs from 2^53, 1e-400 is positive), objects are indexed so duplicate-key and equality checks are O(n log n), enum capped at 256 members, one finding per violated keyword with an RFC 6901 pointer cut at 256 bytes, finding cap of 32 with a json.truncated marker only when a further violation exists), CodeTestVerifier (candidate = program in an embedded pure integer language run under hard fuel (CPU; names resolved to frame slots at parse time so each step is O(1), a call pays its frame size), call-depth, memory and output bounds with no I/O, tests supplied by the task and hidden by default: a failing hidden test's finding names the id only, a visible test states expected and got; timeouts and resource exhaustion are findings), FactVerifier (FactVerifier::new takes the snapshot and the live revision, without_staleness_check is the documented host-duty constructor; claims checked read-only against one ptr-semdb SemanticSnapshot; names the snapshot revision in each finding and in verify_bound; a missing fact is Unknown, a stale snapshot is Unknown and judges nothing)
+- One finding-code table (codes::CODE_TABLE, mirrored in the codes module doc and a test that keeps the two equal): every code is hard or soft and hard codes map to a RepairRole (format, value, schema, code, resource, fact); ptr-router::RepairRoleAssignments builds the FindingRouter registry and the runtime Roster from it. Codes: arith.format arith.oversize arith.value arith.bounds (soft arith.task); json.parse json.oversize json.depth json.type json.required json.enum json.range json.length json.extra (soft json.truncated json.schema); code.syntax code.oversize code.test_failed code.timeout code.resource (soft code.task); fact.contradicted fact.malformed fact.oversize (soft fact.unknown fact.stale_snapshot)
 
 ### Missing for the target architecture
 
 - Revision/generation deterministic verifier (the runtime's authorize_action still owns that check)
 - Source/evidence promotion verifier
-- Compiler/test/GritQL/Sentrux adapters
+- Compiler/GritQL/Sentrux adapters (CodeTestVerifier runs only the embedded integer language, not real-language test suites)
+- Process-isolated execution of real-language candidates (ptr-exec offers isolates and bounded mailboxes, not process isolation)
+- ArithmeticVerifier coverage limit: every reduced intermediate must stay within 10^30 and every unreduced product or sum within i128, so a legitimate task such as 10^20 * 10^20 / 10^20 is Unknown (arith.task), never a wrong Pass; a big-integer evaluator would lift it
+- Structured snapshot revision through the Verifier trait (VerificationReport has no field for it; it is in each fact finding message and in FactVerifier::verify_bound)
+- Calibration of the task verifiers on real task distributions (they are deterministic; their coverage of real tasks is unmeasured)
 - Calibration/statistical and learned semantic verifiers
 
 ### Next milestones
@@ -52,6 +58,10 @@
 
 ### Current automated checks
 
+- unit tests per task verifier: positive and negative case for every finding code, oversize input, adversarial input (deep nesting, huge numbers, infinite loops and unbounded recursion in code), determinism (same input, identical report)
+- unit tests for the review fixes: i128::MIN intermediates never panic (debug build, overflow checks on), exact Int/Float and enum comparison beyond 2^53, 1e-400 is not zero, 32 vs 33 violations with and without the truncation marker, pointer truncation, enum cap, hidden/visible test messages, call frames charged as fuel, maximal recursion and nesting on a 512 KiB stack, 007 and -0 accepted as numerals
+- unit test: the code table has unique, short codes, hard iff it has a repair role, and the module doc table lists exactly the table
+- crates/ptr-runtime/tests/vcw_real_verifiers.rs: VcwLoop over each real verifier with stub RolePods: wrong candidate, finding, routed to the table's repair role, repaired and accepted; unrepairable task Exhausted; every soft code (arith.task, json.schema, code.task, fact.unknown, fact.stale_snapshot) is Unknown, classified as the Unknown fallback, regenerates and is never repaired or accepted; fact.malformed/fact.oversize go to format-repair, code.resource to resource-repair, arith.bounds to value-repair
 - verifier-fabric deterministic failure precedence test
 - unit test: a fabric can be built for a type without a Default
 - unit tests: one hard finding per ActionContractVerifier code, several findings at once, fabric weakest-level rule, hard finding forcing Fail, empty fabric Unknown
