@@ -21,10 +21,11 @@
 
 use std::fmt;
 
+use ptr_events::RuntimeEvent;
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
 use ptr_router::PodEligibility;
-use ptr_types::{Generation, PodId};
+use ptr_types::{Digest, Generation, PodId, RequestId};
 use ptr_verifier::Verifier;
 
 use super::{RuntimeStanding, VerifiedAnswer};
@@ -135,4 +136,23 @@ where
     runtime
         .admit_pod_output(request, verifier)
         .map_err(VcwAdmitError::Runtime)
+}
+
+impl PtrRuntime {
+    /// Record, as a [`RuntimeEvent::VcwFinished`], how a verifier-closed request ended and the
+    /// digest of its trace. Observability only: nothing is committed and no state changes; an
+    /// accepted answer reaches the ledger through [`admit_verified_answer`], and an exhausted or
+    /// escalated request leaves no committed answer at all.
+    pub fn record_vcw_finished(
+        &mut self,
+        request: &RequestId,
+        outcome: &str,
+        trace_digest: Digest,
+    ) {
+        self.emit(RuntimeEvent::VcwFinished {
+            request: request.clone(),
+            outcome: outcome.to_owned(),
+            trace_digest,
+        });
+    }
 }

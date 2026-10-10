@@ -44,6 +44,15 @@ pub enum RuntimeEvent {
         bound: Revision,
         current: Revision,
     },
+    /// A verifier-closed workspace request ended. `outcome` is `verified`, `exhausted`,
+    /// `escalated` or `failed`; `trace_digest` is the digest of the run's trace (a function of
+    /// the seeds, the Pods' answers and the verifier's reports). Observability only: it carries
+    /// no authority, and an accepted answer is committed by the output admission, not by this.
+    VcwFinished {
+        request: RequestId,
+        outcome: String,
+        trace_digest: [u8; 32],
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
