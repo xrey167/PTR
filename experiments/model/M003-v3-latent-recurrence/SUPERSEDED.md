@@ -1,0 +1,9 @@
+# M003-v3 supersession record
+
+M003-v3 is `superseded`. Its outcome is **INCONCLUSIVE-INTERRUPTED**: seeds 17, 29 and 43 ran to exit code 0 and are committed (50a429fd, 8fedda14, c47fce9e); seed 71 was killed by a container restart (record `results/run-20261009T201837.952950Z-seed-71.json`, committed alone as 542fd559, status `started`, no `stdout`, no exit code); seed 101 was never started. `results/DECISION.toml` and `results/paired-ci-95.json` record the outcome (no statistic computed, `go = false`, `rerun_allowed = false`). Account: `research/falsification/A0-baseline-v2/DEVIATIONS.md` D1.
+
+The reason for superseding is **an interruption, not an outcome**. By the interruption rule of the study (`research/falsification/A0-baseline-v2/DESIGN.md`) the study is never rerun, patched or completed, and a successor study with new ids, a new directory, preregistration and freeze is created by the owner if the question is still wanted. The owner decided on 2026-10-10 that it is. The manifest and the configuration are not amended and the `results/` directory is untouched: only this status and its registry entry move (the digest-pinned files, the criteria and the decider stay as frozen).
+
+Successor: **M003-v4** of the A0 baseline study v3-m003 (`research/falsification/A0-baseline-v3-m003/`; D3 in the v2 `DEVIATIONS.md`): the same protocol, arms, contrasts, gates, thresholds, seeds, learning-rate grid and selection rule, all five seeds run anew. It reuses the learning-rate selection of the completed validation-only `M003-v3-sweep` (`research/falsification/A0-baseline-v2/lr_M003-v3.tsv`, copied byte for byte), which stays `prepared` and is not superseded. The completed seeds of M003-v3 are recorded as unobserved, are not read for the successor, and are not pooled with it.
+
+This status is not evidence and says nothing about latent recurrence.

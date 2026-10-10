@@ -117,8 +117,10 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
   `completed` with outcome INCONCLUSIVE; their published `run.json` carries the
   preregistration digests and `seed_records` the research gate requires, added
   around the pinned decider's output without changing a metric or verdict
-  (`DEVIATIONS.md` D2, owner decision). `M003-v3` stays `prepared`; a successor
-  study is needed for M003.
+  (`DEVIATIONS.md` D2, owner decision). `M003-v3` is `superseded` (owner decision
+  2026-10-10, `DEVIATIONS.md` D3) by the successor study `A0-baseline-v3-m003`
+  (`M003-v4`, registered `planned`, not yet frozen or run; it reuses the
+  `M003-v3-sweep` learning rates and does not pool any M003-v3 seed).
 
 ## Current research/implementation gap
 
