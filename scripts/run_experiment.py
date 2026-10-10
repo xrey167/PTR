@@ -38,6 +38,39 @@ PLACEHOLDER = experiment_records.PLACEHOLDER
 # the command, so no `PYTHONPATH`, `LD_PRELOAD`, `RUSTC_WRAPPER`,
 # `RUSTUP_TOOLCHAIN` or `RUSTFLAGS` loads code the commit does not hold,
 # and no credential or network setting reaches it.
+#
+# One exception, by declaration: a listed experiment's manifest may name
+# further variables in `command_environment` (each `PTR_[A-Z0-9_]+`, at most
+# eight; `check_research_gates.command_environment_errors`), which the runner
+# passes through from its own environment to the command. That is how a
+# credential (a database DSN) or a machine-local path reaches a harness that
+# needs one: only by a name the frozen manifest declares, which is bound like
+# the rest of the manifest, and never recorded. The record names each
+# declared variable and whether it was set (`command_environment`), never its
+# value, nor a hash of it (a DSN carries a password, and a hash of a guessable
+# secret is the secret).
+#
+# The real rule is that a harness never prints a declared value. Redaction
+# is best-effort defence in depth and no more: a value of at least
+# `MIN_REDACTED_LENGTH` characters that appears in the command's output as
+# it is, JSON-escaped (inside a JSON string) or percent-encoded is replaced
+# by `<NAME redacted>` in the record; a part of it (a password out of a DSN)
+# or any other encoding is not. A shorter value is not redacted at all
+# (replacing `1` would corrupt the evidence the output carries), and the
+# record says so (`redaction`: `skipped-short-value`), never the value.
+#
+# A declared variable the runner's environment does not set (or sets empty,
+# or with whitespace at either end) refuses the run before its seed is
+# reserved (`missing_declared_environment`, `unusable_declared_environment`),
+# so no seed is spent on a run that could not start. So does a failing
+# `preflight`, a command the manifest may declare (without placeholders, the
+# entrypoint's own program) that the runner runs in exactly the command's
+# environment before it reserves anything (`execute_preflight`).
+#
+# The declared values are in the environment of the whole command, so of
+# every build script the command's `cargo run` builds, vendored ones
+# included: declare only a credential that may be exposed so (a loopback
+# test database).
 COMMAND_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE", "CARGO_HOME", "RUSTUP_HOME")
 # What the runner sets in that environment whatever the runner's holds:
 # Python reads no packages from the user's own site directory under `HOME`,
@@ -855,6 +888,156 @@ def command_parameters(
     return values
 
 
+def missing_declared_environment(data: dict) -> list[str]:
+    """The variables the manifest `data` declares in `command_environment`
+    that the runner's environment does not set (or sets to the empty
+    string), in the order declared."""
+    return [
+        name for name in check_research_gates.declared_command_environment(data) if not os.environ.get(name)
+    ]
+
+
+def unusable_declared_environment(data: dict) -> list[str]:
+    """The declared variables the runner's environment sets to a value with
+    whitespace at either end, which a program would read as another value
+    than the one the operator typed."""
+    return [
+        name
+        for name in check_research_gates.declared_command_environment(data)
+        if os.environ.get(name) and os.environ[name] != os.environ[name].strip()
+    ]
+
+
+def passed_environment(data: dict) -> dict[str, str]:
+    """The declared variables with their values, to start the command with
+    and never to record: the value of each variable the manifest declares in
+    `command_environment`, taken from the runner's environment."""
+    return {name: os.environ[name] for name in check_research_gates.declared_command_environment(data)}
+
+
+# A declared value shorter than this is not redacted: it is no credential,
+# and replacing it (`1`, `true`) would corrupt the output the record keeps.
+MIN_REDACTED_LENGTH = 8
+
+
+def redaction_forms(value: str) -> list[str]:
+    """The forms of `value` that `redacted` replaces: as it is, as it reads
+    inside a JSON string (with and without `\\uXXXX` escapes of non-ASCII
+    characters) and percent-encoded, longest first."""
+    forms = {
+        value,
+        json.dumps(value)[1:-1],
+        json.dumps(value, ensure_ascii=False)[1:-1],
+        urllib.parse.quote(value, safe=""),
+    }
+    return sorted((form for form in forms if form), key=lambda form: -len(form))
+
+
+def redaction_state(value: str) -> str:
+    """Whether the runner redacts `value` in the output it records
+    (`applied`), or leaves it as it is because it is too short to be a
+    credential (`skipped-short-value`)."""
+    return "applied" if len(value) >= MIN_REDACTED_LENGTH else "skipped-short-value"
+
+
+def redacted(text: str, secrets: dict[str, str]) -> str:
+    """`text` with each secret value replaced by `<NAME redacted>` in every
+    form `redaction_forms` lists, so a declared variable's value that the
+    command printed does not enter a record (best effort: see the comment at
+    the top of this file). A value shorter than `MIN_REDACTED_LENGTH` is
+    left alone."""
+    forms = sorted(
+        ((form, name) for name, value in secrets.items() if redaction_state(value) == "applied"
+         for form in redaction_forms(value)),
+        key=lambda item: -len(item[0]),
+    )
+    for form, name in forms:
+        text = text.replace(form, f"<{name} redacted>")
+    return text
+
+
+def execute_preflight(
+    exp_id: str,
+    data: dict,
+    environment: dict[str, str],
+    passthrough: dict[str, str],
+    found: str | None,
+    scratch: Path,
+) -> int:
+    """Run the manifest's `preflight` command, if it declares one, from the
+    repository's root in `environment` with the declared variables
+    (`passthrough`), as the entrypoint will run, and return 0 when it exits 0
+    (or there is none) and 2 otherwise, printing why. It writes no record
+    and reserves nothing; what it prints is the refusal, with the declared
+    values redacted as the recorded output is. `scratch` is the directory the
+    command builds in, made and removed by the call as a run's is."""
+    command = check_research_gates.declared_preflight(data)
+    if command is None:
+        return 0
+    if found is None or Path(found).name != Path(command[0]).name:
+        print(f"ERROR: refusing to run {exp_id}: the launch found no program for its preflight {command[0]!r}", file=sys.stderr)
+        return 2
+    print(f"{exp_id}: running its preflight ({' '.join(command)})", file=sys.stderr)
+    execution = execute_command(command, {**environment, **passthrough}, None if has_slash(command[0]) else found, scratch)
+    if execution["exit_code"] == 0:
+        print(f"{exp_id}: its preflight passed", file=sys.stderr)
+        return 0
+    detail = execution["launch_error"] or f"exit status {execution['exit_code']}"
+    tail = redacted((execution["stderr"] or "")[-2000:], passthrough)
+    print(
+        f"ERROR: refusing to run {exp_id}: its preflight failed ({redacted(str(detail), passthrough)}); nothing was "
+        f"reserved or recorded\n{tail}",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def preflight(exp_id: str) -> int:
+    """`run_experiment.py preflight <id>`: run only the manifest's
+    `preflight` in the environment a listed run of `exp_id` has (the allowed
+    environment, the declared variables, a fresh scratch directory), and
+    record nothing. It decides nothing about the freeze: it works on a
+    planned experiment, to check the machine before the freeze is made.
+    Unlike a run, it takes no repository lock, skips program stamping and does
+    not pin RUSTUP_TOOLCHAIN (the toolchain of the caller's PATH builds the
+    harness). Returns 0 when the preflight passes."""
+    _, _, data = resolve(exp_id)
+    if unrecordable_manifest(exp_id, data):
+        return 2
+    errors = check_research_gates.command_errors(exp_id, data, {})
+    errors = [error for error in errors if "placeholder" not in error and "<seed>" not in error]
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    if check_research_gates.declared_preflight(data) is None:
+        print(f"ERROR: {exp_id} declares no preflight", file=sys.stderr)
+        return 2
+    missing = missing_declared_environment(data)
+    unusable = unusable_declared_environment(data)
+    if missing or unusable:
+        print(
+            f"ERROR: refusing to run {exp_id}'s preflight: {', '.join(missing + unusable)} is unset, empty or has "
+            "whitespace at either end of its value",
+            file=sys.stderr,
+        )
+        return 2
+    environment = command_environment()
+    relative = relative_directories(environment)
+    outside = outside_cargo_configurations(environment)
+    if relative or outside:
+        print(f"ERROR: refusing to run {exp_id}'s preflight: {', '.join(relative + outside)} (see a run's refusal)", file=sys.stderr)
+        return 2
+    scratch = scratch_directory(exp_id, environment)
+    if os.path.lexists(scratch):
+        print(f"ERROR: refusing to run {exp_id}'s preflight: {scratch} exists", file=sys.stderr)
+        return 2
+    environment = {**environment, **scratch_variables(str(scratch), True)}
+    command = check_research_gates.declared_preflight(data)
+    found = found_program(command, environment)
+    return execute_preflight(exp_id, data, environment, passed_environment(data), found, scratch)
+
+
 def command_environment() -> dict[str, str]:
     """The environment a listed experiment's command runs in: the variables
     `COMMAND_ENVIRONMENT` names that the runner's environment sets, and
@@ -885,6 +1068,10 @@ def relative_directories(environment: dict[str, str]) -> list[str]:
     return found
 
 
+# What the seeds of a listed experiment share outside the commit.
+KEYS_OF_ONE_RUN = ("executable", "toolchain", "environment", "command_environment")
+
+
 def earlier_run_problems(exp_id: str, results: Path, head: str, record: dict) -> list[str]:
     """Why a listed run of `exp_id` at `head`, whose record would be
     `record`, could not be one more seed of the runs its results directory
@@ -905,10 +1092,10 @@ def earlier_run_problems(exp_id: str, results: Path, head: str, record: dict) ->
     if not earlier:
         return []
     problems = []
-    ran = json.dumps([record.get(key) for key in ("executable", "toolchain", "environment")], sort_keys=True)
+    ran = json.dumps([record.get(key) for key in KEYS_OF_ONE_RUN], sort_keys=True)
     others = [
         name for _, name, held in earlier
-        if json.dumps([held.get(key) for key in ("executable", "toolchain", "environment")], sort_keys=True) != ran
+        if json.dumps([held.get(key) for key in KEYS_OF_ONE_RUN], sort_keys=True) != ran
     ]
     if others:
         problems.append(
@@ -1712,7 +1899,34 @@ def launch_and_record(
     # program it starts and the Rust toolchain, which lie outside what the
     # commit holds.
     environment = command_environment() if listed else None
+    passthrough: dict[str, str] = {}
     if listed:
+        # Before anything is reserved or written: a declared variable the
+        # runner's environment does not set would fail the harness after
+        # its seed was spent.
+        missing = missing_declared_environment(data)
+        if missing:
+            print(
+                f"ERROR: refusing to run {exp_id}: its manifest declares command_environment "
+                f"{', '.join(missing)}, which the runner's environment does not set (or sets empty); set "
+                "it for the run, which reserves no seed until it is",
+                file=sys.stderr,
+            )
+            return 2
+        unusable = unusable_declared_environment(data)
+        if unusable:
+            print(
+                f"ERROR: refusing to run {exp_id}: {', '.join(unusable)} has whitespace at either end of its value, "
+                "which a program would read as another value than the one typed; set it without",
+                file=sys.stderr,
+            )
+            return 2
+        passthrough = passed_environment(data)
+        declared = check_research_gates.declared_command_environment(data)
+        if declared:
+            record["command_environment"] = [
+                {"name": name, "set": True, "redaction": redaction_state(passthrough[name])} for name in declared
+            ]
         relative = relative_directories(environment)
         if relative:
             print(
@@ -1836,6 +2050,13 @@ def launch_and_record(
                 file=sys.stderr,
             )
             return 2
+        # Before anything is reserved: a command that checks what the run
+        # needs from its environment (a server, an interpreter, a models
+        # directory) in the environment the run will have, so a seed is not
+        # spent on a run that fails in the first seconds.
+        refused = execute_preflight(exp_id, data, environment, passthrough, found, scratch)
+        if refused:
+            return refused
         record.update({"environment": environment, "executable": executable, "toolchain": tools})
         # A record git would ignore could not be committed as written, and
         # would read as a file the command could have run.
@@ -1925,7 +2146,18 @@ def launch_and_record(
     else:
         # The name as the process would find it, so a script reads its own
         # name as it would (`$0`); a name with a slash it reads as given.
-        execution = execute_command(command, environment, None if has_slash(command[0]) else found, scratch)
+        execution = execute_command(
+            command, {**environment, **passthrough}, None if has_slash(command[0]) else found, scratch
+        )
+        if passthrough:
+            execution = {
+                **execution,
+                **{
+                    key: redacted(execution[key], passthrough)
+                    for key in ("stdout", "stderr", "launch_error")
+                    if isinstance(execution.get(key), str)
+                },
+            }
     exit_code = execution["exit_code"]
     launched = exit_code is not None
     record.update(
@@ -2061,6 +2293,9 @@ def main():
     prep = sub.add_parser("prepare")
     prep.add_argument("id")
 
+    pre = sub.add_parser("preflight")
+    pre.add_argument("id")
+
     run = sub.add_parser("run")
     run.add_argument("id")
     run.add_argument("--seed", type=int, required=True)
@@ -2097,6 +2332,8 @@ def main():
         return
     if args.cmd == "prepare":
         raise SystemExit(prepare(args.id))
+    if args.cmd == "preflight":
+        raise SystemExit(preflight(args.id))
     if args.cmd == "run":
         try:
             params = parse_params(args.params)
