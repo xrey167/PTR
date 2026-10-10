@@ -103,6 +103,10 @@ fn main() {
         "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(
             &args, 2, 8, "requests",
         ))),
+        // The harness of Q003: `<seed>` (the pinned scale, the full strong arm) or `<queries> <seed>`
+        // (the mutation checker's form); no default seed, and a typo stops the run.
+        #[cfg(feature = "postgres-experiments")]
+        "postgres-hybrid" => experiments::q003::run(&args[2..]),
         #[cfg(feature = "postgres-experiments")]
         "fastmem-revocation" => {
             experiments::l003::run(parse_usize(&args, 2, 20), parse_u64(&args, 3, 17))
@@ -125,7 +129,7 @@ fn main() {
 /// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
 const EXPERIMENT_COMMANDS: &str =
-    "|evidence-promotion|certified-branches|invalidation|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
+    "|evidence-promotion|certified-branches|invalidation|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence|postgres-hybrid";
 #[cfg(not(feature = "postgres-experiments"))]
 const EXPERIMENT_COMMANDS: &str = "|evidence-promotion|certified-branches|invalidation|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
 

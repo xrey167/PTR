@@ -5146,7 +5146,7 @@ class PreregistrationGateTests(unittest.TestCase):
         )
         self.assertEqual(gate(pinned),(0,[]))
 
-ENROLLED=("F003","Q003","R004","M008","E005")
+ENROLLED=("F003","R004","M008","E005")
 # The list also holds the experiments that ran or were superseded; they are no
 # part of the six this fixture moves to `prepared`.
 RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9")
@@ -5154,7 +5154,7 @@ RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","
 # Listed and held at `planned` until its freeze (its placeholders are pinned then, by the head
 # after the harness and the criteria are final); it is no part of the fixtures that move the six to
 # `prepared`. Once frozen it is a regular listed experiment the repository's own gate checks.
-LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001","R001","Q002")
+LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001","R001","Q002","Q003")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture
@@ -5256,14 +5256,6 @@ class EnrolledExperimentTests(unittest.TestCase):
             f"F003: preregistration key adjudication_protocol_sha256 is a placeholder ({pinned})",
             "F003: experiment.toml names no preregistration_sha256",
             "F003: experiment.toml names no preregistration_rules_sha256",
-            f"Q003: preregistration key recall_margin_permille is a placeholder ({pinned})",
-            f"Q003: preregistration key embedding_model is a placeholder ({pinned})",
-            f"Q003: preregistration key embedding_revision is a placeholder ({pinned})",
-            f"Q003: preregistration key baseline_rag_reference_sha256 is a placeholder ({pinned})",
-            f"Q003: preregistration key baseline_strong_rag_sha256 is a placeholder ({pinned})",
-            "Q003: experiment.toml names no preregistration_sha256",
-            "Q003: experiment.toml names no preregistration_rules_sha256",
-            *strong_errors("Q003"),
             f"R004: preregistration key public_regression_gate_permille is a placeholder ({pinned})",
             f"R004: preregistration key backward_transfer_min_permille is a placeholder ({pinned})",
             "R004: experiment.toml names no preregistration_sha256",

@@ -15,8 +15,10 @@ pub mod l004;
 pub mod layered_kv;
 #[cfg(feature = "postgres-experiments")]
 mod pg;
-pub mod r001;
 pub mod q002;
+#[cfg(feature = "postgres-experiments")]
+pub mod q003;
+pub mod r001;
 pub mod r005;
 pub mod r006;
 pub mod r007;
