@@ -53,6 +53,31 @@ pub enum RuntimeEvent {
         outcome: String,
         trace_digest: [u8; 32],
     },
+    /// The host changed the routing policy of a verifier-closed loop: `action` is `promoted` or
+    /// `rolled_back`, `from` and `to` are policy digests, and `evidence` is the digest of the
+    /// off-policy evidence a promotion rested on (`None` for a rollback). The record of a host
+    /// action, not an authority: routing never changes except through that host action, and
+    /// this event is in memory like [`RuntimeEvent::VcwFinished`] (not committed to the ledger).
+    VcwPolicyChanged {
+        scope: String,
+        sequence: u64,
+        action: String,
+        from: [u8; 32],
+        to: [u8; 32],
+        evidence: Option<[u8; 32]>,
+    },
+    /// An off-policy estimate logged by a verifier-closed loop that learns in shadow mode
+    /// (`[vcw] learning = "shadow"`): the paired value difference of a learned candidate over the
+    /// routing policy actually in use, estimated by the doubly robust estimator on `records`
+    /// decisions logged after the candidate was frozen, with its one-sided 95% lower bound.
+    /// Observability only: routing is never changed by this event or by the mode.
+    VcwShadowEstimate {
+        scope: String,
+        candidate: [u8; 32],
+        records: u64,
+        difference: f64,
+        lower_bound: f64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

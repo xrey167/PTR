@@ -61,6 +61,20 @@ pub enum VcwHintMode {
     ApplyToSchema,
 }
 
+/// Whether the loop learns from the verifier's verdicts.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VcwLearning {
+    /// Nothing is learned (the default).
+    #[default]
+    Off,
+    /// Each served kind learns a routing policy from the verdicts on its routed Pods and logs
+    /// off-policy estimates of how that policy would have done; routing stays uniform. Nothing
+    /// learned is ever used to route by this setting: promoting a policy is a host action that
+    /// has no configuration.
+    Shadow,
+}
+
 /// Which experts answer the loop's calls.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -256,6 +270,10 @@ pub struct VcwServiceConfig {
     /// Attempts after the first one request may make.
     pub max_rounds: u32,
     pub hint_mode: VcwHintMode,
+    /// `off` (default) or `shadow`: learn a routing policy from verdicts and log off-policy
+    /// estimates, without routing by it. `shadow` needs `exploration_floor > 0`, because the
+    /// estimates rest on the positivity the floor guarantees.
+    pub learning: VcwLearning,
     /// Wall-clock deadline of one request, in milliseconds, checked between loop steps (never
     /// inside a model call or a verifier run). After it the loop is given no further candidate and
     /// the request ends `exhausted` with reason `Deadline`. In `1..=MAX_VCW_REQUEST_MS`.
@@ -276,6 +294,7 @@ impl Default for VcwServiceConfig {
             max_verifier_calls: 8,
             max_rounds: 4,
             hint_mode: VcwHintMode::TraceOnly,
+            learning: VcwLearning::Off,
             max_request_ms: 30_000,
             exploration_floor: 0.05,
             pods: VcwPods::default(),
@@ -341,6 +360,9 @@ impl VcwServiceConfig {
         let floor = self.exploration_floor;
         if !(floor == 0.0 || (floor.is_finite() && (1e-6..=1.0).contains(&floor))) {
             return Err("vcw.exploration_floor must be 0 or in 1e-6..=1".into());
+        }
+        if self.learning == VcwLearning::Shadow && floor == 0.0 {
+            return Err("vcw.learning = \"shadow\" needs vcw.exploration_floor above 0".into());
         }
         if self.pods.generation == 0 {
             return Err("vcw.pods.generation must be at least 1".into());

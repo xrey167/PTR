@@ -1,5 +1,5 @@
 use ptr_config::{
-    CliOverrides, PtrConfig, VcwBackend, VcwHintMode, VcwTaskKind, MAX_VCW_BUDGET,
+    CliOverrides, PtrConfig, VcwBackend, VcwHintMode, VcwLearning, VcwTaskKind, MAX_VCW_BUDGET,
     MAX_VCW_REQUEST_MS,
 };
 
@@ -10,6 +10,11 @@ fn the_vcw_path_is_off_by_default_and_the_repository_default_says_so() {
     assert_eq!(config.vcw.experts.backend, None, "no implicit backend");
     assert_eq!(config.vcw.max_request_ms, 30_000);
     assert_eq!(config.vcw.hint_mode, VcwHintMode::TraceOnly);
+    assert_eq!(
+        config.vcw.learning,
+        VcwLearning::Off,
+        "nothing is learned by default"
+    );
     assert_eq!(config.vcw.kinds, VcwTaskKind::ALL.to_vec());
     let text = include_str!("../../../config/default.toml");
     let from_file = PtrConfig::from_toml_str(text).unwrap();
@@ -79,6 +84,7 @@ fn unknown_keys_are_refused_at_every_level_of_the_section() {
         "[vcw.experts.qwen_cpu]\nmodel = \"x\"\n",
         "[vcw]\nkinds = [\"poetry\"]\n",
         "[vcw]\nhint_mode = \"learn\"\n",
+        "[vcw]\nlearning = \"online\"\n",
         "[vcw.experts]\nbackend = \"gpt\"\n",
     ] {
         assert!(PtrConfig::from_toml_str(text).is_err(), "{text}");
@@ -93,6 +99,8 @@ fn invalid_values_fail_validation_even_while_the_section_is_off() {
         "[vcw]\nmax_request_ms = 0\n".to_owned(),
         format!("[vcw]\nmax_request_ms = {}\n", MAX_VCW_REQUEST_MS + 1),
         "[vcw]\nexploration_floor = 3.0\n".to_owned(),
+        // Shadow learning rests on the positivity the floor guarantees.
+        "[vcw]\nlearning = \"shadow\"\nexploration_floor = 0.0\n".to_owned(),
         "[vcw.pods]\nproposer = \"\"\n".to_owned(),
         "[vcw.pods]\nvalue_repair = \"vcw-proposer\"\n".to_owned(),
         "[vcw.experts.simulated]\ndefault_repair_success = 2.0\n".to_owned(),
@@ -158,4 +166,12 @@ fn an_enabled_section_must_name_its_backend() {
         .unwrap()
         .validate()
         .unwrap();
+}
+
+#[test]
+fn shadow_learning_is_opt_in_and_needs_the_exploration_floor() {
+    let config = PtrConfig::from_toml_str("[vcw]\nlearning = \"shadow\"\n").unwrap();
+    assert_eq!(config.vcw.learning, VcwLearning::Shadow);
+    config.validate().unwrap();
+    assert_eq!(PtrConfig::default().vcw.learning, VcwLearning::Off);
 }

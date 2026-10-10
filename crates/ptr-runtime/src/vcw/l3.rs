@@ -48,10 +48,13 @@ pub(crate) struct RequestTally {
 }
 
 impl RequestTally {
-    /// Count the routed Pods of one attempt. `cleared` is whether the candidate they produced
-    /// was accepted (a repair, then a pass).
-    pub(super) fn note(&mut self, records: &[FindingRouteRecord], cleared: bool) {
-        for record in records {
+    /// Count the routed Pods of one attempt. `cleared[i]` is whether the verifier's verdict on
+    /// the repaired candidate shows that `records[i]` cleared the code it was routed (see
+    /// `VcwLoop::judge`): the whole candidate is not the unit, because a code that was repaired
+    /// is not "uncleared" merely because another code of the same candidate is still defective.
+    pub(super) fn note(&mut self, records: &[FindingRouteRecord], cleared: &[bool]) {
+        for (index, record) in records.iter().enumerate() {
+            let cleared = cleared.get(index).copied().unwrap_or(false);
             let used = self.usage.entry(record.pod().clone()).or_default();
             *used = used.saturating_add(1);
             if let RouteClass::Repair(code) = record.class() {
@@ -384,6 +387,15 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
             results,
             holds,
         })
+    }
+
+    /// Forget an unresolved request by the request the policy made, for a host that could not
+    /// even complete it (training failed, the held-out suite could not run).
+    pub fn withdraw_structure_request(&mut self, request: &StructureProposal) -> bool {
+        self.outstanding
+            .by_operation
+            .remove(request.request().operation_id().as_bytes())
+            .is_some()
     }
 
     /// Forget an unresolved request (the host dropped it or its gate failed).

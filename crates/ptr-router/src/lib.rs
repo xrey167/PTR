@@ -1,5 +1,8 @@
 mod attention_schema;
 mod findings;
+mod learning;
+mod ope;
+mod policy_book;
 mod propensity;
 mod router;
 mod sampling;
@@ -18,6 +21,15 @@ pub use findings::{
     RegistryGeneration, RegistryUpdate, ReportClass, RouteClass, RouteOutcome, RouterConfig,
     RouterLimits, ScoringContext, UniformScorer,
 };
+pub use learning::{
+    ArmCounts, LearnedPolicy, LearnerConfig, LearningError, LoggedDecision, RewardModel,
+    RoutingLearner, VerifierReward, MAX_ARMS, MAX_DRAWS, MAX_LOG,
+};
+pub use ope::{
+    compare_policies, estimate_policy, Assessment, Comparison, Confidence, Estimator, OpeError,
+    PolicyEstimate, PromotionEvidence, PromotionGate, PromotionRefusal, PromotionRule, Verdict,
+};
+pub use policy_book::{ActiveScorer, PolicyAction, PolicyBook, PolicyBookError, PolicyEvent};
 pub use propensity::{Propensity, PropensityError};
 pub use router::{
     route_checked, CheckedRouter, DistributionError, PolicyFailure, RouteDistribution, RouteError,

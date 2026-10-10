@@ -909,40 +909,17 @@ impl<S: AdmissibleScorer> FindingRouter<S> {
         admissible: Vec<PodId>,
     ) -> Result<FindingRouteRecord, FindingRouteError> {
         let fail = |kind| FindingRouteError::new(request, kind);
-        let weights = self
-            .scorer
-            .weights(&ScoringContext {
+        let distribution = mixed_distribution(
+            &self.scorer,
+            &ScoringContext {
                 class: &class,
                 admissible: &admissible,
                 request_id: request.request_id,
                 request_digest: request.request_digest,
-            })
-            .map_err(|error| fail(FindingRouteErrorKind::Scorer(error)))?;
-        if let Some((pod, _)) = weights.iter().find(|(pod, _)| !admissible.contains(pod)) {
-            return Err(fail(FindingRouteErrorKind::OutsideAdmissibleSet {
-                pod: pod.clone(),
-            }));
-        }
-        let scored = RouteDistribution::new(weights)
-            .map_err(|error| fail(FindingRouteErrorKind::Distribution(error)))?;
-        if scored.is_empty() {
-            return Err(fail(FindingRouteErrorKind::NoMass));
-        }
-        // Router-owned exploration floor: mix the scorer's quantized distribution with uniform.
-        let epsilon = self.config.exploration.epsilon();
-        let uniform = 1.0 / admissible.len() as f64;
-        let mixed: Vec<(PodId, f64)> = admissible
-            .iter()
-            .map(|pod| {
-                let scorer_mass = scored.probability(pod);
-                (
-                    pod.clone(),
-                    (1.0 - epsilon) * scorer_mass + epsilon * uniform,
-                )
-            })
-            .collect();
-        let distribution = RouteDistribution::new(mixed)
-            .map_err(|error| fail(FindingRouteErrorKind::Distribution(error)))?;
+            },
+            self.config.exploration.epsilon(),
+        )
+        .map_err(fail)?;
         let nonce = self
             .nonces
             .next_nonce()
@@ -993,6 +970,46 @@ impl<S: AdmissibleScorer> FindingRouter<S> {
             generation: self.registry.generation(),
         })
     }
+}
+
+/// The distribution a router samples from for one class: the scorer's weights over the
+/// admissible Pods, quantized, mixed with the uniform distribution at the router-owned
+/// exploration rate `epsilon`. One function for the router and for the off-policy estimator
+/// (`ope`), so the probability an estimator assigns to a policy is the probability the router
+/// would sample with.
+///
+/// # Errors
+/// The scorer's failure, a weight on a Pod outside `context.admissible`, weights the
+/// distribution refuses, or no mass at all.
+pub(crate) fn mixed_distribution<S: AdmissibleScorer + ?Sized>(
+    scorer: &S,
+    context: &ScoringContext<'_>,
+    epsilon: f64,
+) -> Result<RouteDistribution, FindingRouteErrorKind> {
+    let admissible = context.admissible;
+    let weights = scorer
+        .weights(context)
+        .map_err(FindingRouteErrorKind::Scorer)?;
+    if let Some((pod, _)) = weights.iter().find(|(pod, _)| !admissible.contains(pod)) {
+        return Err(FindingRouteErrorKind::OutsideAdmissibleSet { pod: pod.clone() });
+    }
+    let scored = RouteDistribution::new(weights).map_err(FindingRouteErrorKind::Distribution)?;
+    if scored.is_empty() {
+        return Err(FindingRouteErrorKind::NoMass);
+    }
+    // Router-owned exploration floor: mix the scorer's quantized distribution with uniform.
+    let uniform = 1.0 / admissible.len() as f64;
+    let mixed: Vec<(PodId, f64)> = admissible
+        .iter()
+        .map(|pod| {
+            let scorer_mass = scored.probability(pod);
+            (
+                pod.clone(),
+                (1.0 - epsilon) * scorer_mass + epsilon * uniform,
+            )
+        })
+        .collect();
+    RouteDistribution::new(mixed).map_err(FindingRouteErrorKind::Distribution)
 }
 
 impl Counters {

@@ -376,6 +376,39 @@ impl<P: DefectPayload> SimulatedExperts<P> {
         Ok(())
     }
 
+    /// Set the probability that `pod` clears `code`, for a repairer that is in the roster and
+    /// repairs that code. This is how a host applies a specialist's configured skill (and the
+    /// simulated collateral of its "training" on other Pods) to the programmatic experts.
+    ///
+    /// # Errors
+    /// [`SimulationError::BadProbability`] outside `0..=1`, [`SimulationError::UnknownPod`] or
+    /// [`SimulationError::UnknownCode`] when the roster does not hold the pair.
+    pub fn set_pod_repair_success(
+        &mut self,
+        pod: &PodId,
+        code: &str,
+        probability: f64,
+    ) -> Result<(), SimulationError> {
+        if !(probability.is_finite() && (0.0..=1.0).contains(&probability)) {
+            return Err(SimulationError::BadProbability {
+                what: format!("repair success of {}/{code}", pod.0),
+            });
+        }
+        let Some(codes) = self.repairers.get(pod) else {
+            return Err(SimulationError::UnknownPod { pod: pod.0.clone() });
+        };
+        if !codes.contains(code) {
+            return Err(SimulationError::UnknownCode {
+                pod: pod.0.clone(),
+                code: code.to_owned(),
+            });
+        }
+        self.config
+            .pod_repair_success
+            .insert((pod.0.clone(), code.to_owned()), probability);
+        Ok(())
+    }
+
     /// Every `pod_repair_success` entry must name a repairer of this roster and a code it
     /// repairs: a typo would otherwise fall back to the default rate without a sign.
     ///

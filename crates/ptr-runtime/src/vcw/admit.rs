@@ -155,4 +155,41 @@ impl PtrRuntime {
             trace_digest,
         });
     }
+
+    /// Record, as a [`RuntimeEvent::VcwPolicyChanged`], that a host promoted or rolled back a
+    /// routing policy. Observability of a host action; nothing is committed and no state
+    /// changes here (the change itself is `ptr_router::PolicyBook::promote` or `rollback`).
+    pub fn record_vcw_policy_event(&mut self, event: &ptr_router::PolicyEvent) {
+        self.emit(RuntimeEvent::VcwPolicyChanged {
+            scope: event.scope.clone(),
+            sequence: event.sequence,
+            action: match event.action {
+                ptr_router::PolicyAction::Promoted => "promoted",
+                ptr_router::PolicyAction::RolledBack => "rolled_back",
+            }
+            .to_owned(),
+            from: event.from,
+            to: event.to,
+            evidence: event.evidence,
+        });
+    }
+
+    /// Record, as a [`RuntimeEvent::VcwShadowEstimate`], an off-policy estimate of a candidate
+    /// policy a loop learned in shadow mode. Observability only.
+    pub fn record_vcw_shadow_estimate(
+        &mut self,
+        scope: &str,
+        candidate: Digest,
+        records: u64,
+        difference: f64,
+        lower_bound: f64,
+    ) {
+        self.emit(RuntimeEvent::VcwShadowEstimate {
+            scope: scope.to_owned(),
+            candidate,
+            records,
+            difference,
+            lower_bound,
+        });
+    }
 }

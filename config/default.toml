@@ -36,6 +36,7 @@ kinds = ["arithmetic", "json_object", "code", "fact"]
 max_verifier_calls = 8
 max_rounds = 4
 hint_mode = "trace-only"
+learning = "off"
 max_request_ms = 30000
 exploration_floor = 0.05
 
