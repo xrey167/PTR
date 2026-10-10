@@ -7,3 +7,6 @@ publish = false
 
 [dependencies]
 ptr-types = { workspace = true }
+# FactVerifier reads one immutable SemanticSnapshot; ptr-semdb depends only on ptr-types, so this
+# edge cannot form a cycle.
+ptr-semdb = { workspace = true }
