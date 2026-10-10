@@ -3301,6 +3301,12 @@ A0_BASELINE_VERSIONS=(
      "decision_base":None},
     {"criteria":"research/falsification/A0-baseline-v2/criteria.toml","ids":("M001-v6","M002-v11","M003-v3"),
      "decision_script":"scripts/aggregate_a0_baseline_v2.py","decision_base":"scripts/aggregate_a0_baseline.py"},
+    # v3-m003: the successor study of the interrupted M003-v3. Its decider is a thin layer over
+    # v2's (the experiment pins v2's as `decision_base`; v1's is pinned by criteria.toml and by the
+    # v2 loader). It has no sweep of its own: criteria.toml `[sweep_reuse]` names the completed
+    # sweep and lr file it takes (research/falsification/A0-baseline-v3-m003/DESIGN.md).
+    {"criteria":"research/falsification/A0-baseline-v3-m003/criteria.toml","ids":("M003-v4",),
+     "decision_script":"scripts/aggregate_a0_baseline_v3.py","decision_base":"scripts/aggregate_a0_baseline_v2.py"},
 )
 # A study's sweep is `<study>-sweep`; a sweep whose only seed was spent without
 # an outcome is superseded by `<study>-sweep-r2`, that by `-r3`, ...
@@ -3357,6 +3363,10 @@ def a0_baseline_freeze_errors(root: Path, experiment: Path, manifest: dict, exp_
         return [f"{exp_id}: {criteria_path} names no such study"]
     sweep,revision=parts[1],parts[2]
     protocol=criteria["protocol"]
+    reuse=criteria.get("sweep_reuse")
+    reused=reuse if isinstance(reuse,dict) and reuse.get("study")==parts[0] else None
+    if reused is not None and sweep:
+        return [f"{exp_id}: {parts[0]} has no sweep of its own, it takes {reused.get('experiment')!r}"]
     expected={
         "seeds":[protocol["sweep_seed"]] if sweep else criteria["seeds"],
         "study":study["runner_study"],"arms":",".join(study["arms"]),"steps":protocol["steps"],
@@ -3371,6 +3381,22 @@ def a0_baseline_freeze_errors(root: Path, experiment: Path, manifest: dict, exp_
     if version["decision_base"] is not None:
         expected["decision_base"]=version["decision_base"]
     errors=[]
+    if reused is not None:
+        # A study that reuses a completed sweep names it, holds its lr file to a byte copy of the
+        # sweep's, and needs that sweep frozen (it ran before any confirmatory seed).
+        expected["sweep_experiment"]=reused.get("experiment")
+        try:
+            same_bytes=(root/reused["lr_file"]).read_bytes()==(root/f"{study_dir}/lr_{study['id']}.tsv").read_bytes()
+        except (OSError,KeyError,TypeError):
+            same_bytes=False
+        if not same_bytes:
+            errors.append(f"{exp_id}: {study_dir}/lr_{study['id']}.tsv is not a byte copy of {reused.get('lr_file')}")
+        try:
+            sweep_status=status_of(load(experiment.parent/str(reused.get("experiment"))/"experiment.toml"))
+        except Unreadable:
+            sweep_status=None
+        if sweep_status not in FROZEN:
+            errors.append(f"{exp_id}: {reused.get('experiment')}, whose learning rates it takes, is {sweep_status!r}, not frozen")
     if revision>1:
         # A successor sweep replaces the sweep before it, which must be
         # superseded (its interrupted record kept), and differs from it in

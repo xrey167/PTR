@@ -1,0 +1,60 @@
+{
+  "experiment_id": "M003-v4",
+  "status": "completed",
+  "git_sha": "d8da6c1f60086374cfe66fb0ede19a0f93509853",
+  "aggregated_at": "2026-10-10T09:47:02.583412+00:00",
+  "criteria_sha256": "c90df47aece5319be75e14817eb0bbaa16771c703d4d03698f5a91c2a9aab54b",
+  "decision_script_sha256": "733d31ecc002aa7486673acb938b3f5410610f2352087965b86a9c0d256986d3",
+  "decision_core_sha256": "8ee9539a790f44c57eaa751fa56dfa07bb0342d636bf65230650ad4f6fddb957",
+  "verdict": "INCONCLUSIVE",
+  "label": "NO-GO-CALIBRATION",
+  "seeds": [
+    {
+      "seed": 17
+    },
+    {
+      "seed": 29
+    },
+    {
+      "seed": 43
+    },
+    {
+      "seed": 71
+    },
+    {
+      "seed": 101
+    }
+  ],
+  "source_records": [
+    {
+      "path": "experiments/model/M003-v4-latent-recurrence/results/run-20261010T080839.750639Z-seed-17.json",
+      "canonical_sha256": "fc322e9ea89339678c604d66fd8bb220bfbb822e633eb7cee4cb7fdd2bca6d05"
+    },
+    {
+      "path": "experiments/model/M003-v4-latent-recurrence/results/run-20261010T083226.407449Z-seed-29.json",
+      "canonical_sha256": "36340aad39b7c169a58b36bc538495c0e0bc822a5759ebb91dafbda5ebc7d97d"
+    },
+    {
+      "path": "experiments/model/M003-v4-latent-recurrence/results/run-20261010T085338.631275Z-seed-43.json",
+      "canonical_sha256": "7c8864e2a0c00f44b189af9c797cdfe328eb403f155f324be5ef6c5c96238abe"
+    },
+    {
+      "path": "experiments/model/M003-v4-latent-recurrence/results/run-20261010T091649.341952Z-seed-71.json",
+      "canonical_sha256": "93dbf675e7079796d2964524feecbc7a219ed0c3f930f031b75603eb6c93a3b7"
+    },
+    {
+      "path": "experiments/model/M003-v4-latent-recurrence/results/run-20261010T093512.508502Z-seed-101.json",
+      "canonical_sha256": "fa54c58b82976cf06402287c275c9b72ceb01cdf2b577485a5aa9d2acedcdeb0"
+    }
+  ],
+  "preregistration_sha256": "299b0abf14d1b01e1471935b7c550245cf823c5fda2f98958a40fa7dfa00f877",
+  "preregistration_rules_sha256": "956a1704f03ffe424b80729b0df6204e9978b9bc44d20bba66a7263c297d5d2f",
+  "seed_records": {
+    "17": "dee400dc9b3138df1bb7cf51bf45d811635091dcce6524b6e97427e4938b2e5d",
+    "29": "370f03e57398e4992d6394b7183227509bb15b7a579c1477f287c5a7e45e5b04",
+    "43": "51c82a8a2da12db20e7d926557fa427727e5344e7bf5bff41816af460b97b876",
+    "71": "ca855588a0cc7f76f2901970653a29bab59fa1a2d773ebceecc47b69753e8979",
+    "101": "8235a621866c2263664243038c4df3341ff2ae20cbe9c749457f0dbe344bee14"
+  },
+  "metrics_sha256": "fb9fc71f8c0e1aad9c6d732fec941e2f4fe826f3e3223b10e1e004c9cf2a910e"
+}

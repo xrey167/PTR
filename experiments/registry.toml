@@ -493,4 +493,9 @@ status = "prepared"
 [[experiment]]
 id = "M003-v3"
 path = "model/M003-v3-latent-recurrence"
-status = "prepared"
+status = "superseded"
+
+[[experiment]]
+id = "M003-v4"
+path = "model/M003-v4-latent-recurrence"
+status = "completed"
