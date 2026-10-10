@@ -646,8 +646,25 @@ pub struct ScoringContext<'a> {
 
 /// A learned or scored re-ranking within the admissible set. It returns non-negative weights
 /// for admissible Pods only; it cannot select an outcome class.
+///
+/// # Purity
+///
+/// Off-policy estimation (`ptr_router::estimate_policy`) rebuilds a scorer's distribution on
+/// logged decisions with `request_id = "ope"` and a zero `request_digest`. A scorer used with
+/// it must therefore be a function of `class` and `admissible` (and of its own immutable state)
+/// only, and must ignore `request_id` and `request_digest`; otherwise the estimated probability
+/// of an action is not the probability the router sampled it with. `LearnedPolicy`,
+/// `UniformScorer` and `ActiveScorer` are pure in this sense.
 pub trait AdmissibleScorer {
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError>;
+
+    /// The exploration rate this scorer's evidence was computed under, if it is bound to one
+    /// (a learned policy is: its promotion evidence assumed that floor). A router refuses a
+    /// scorer whose bound rate is not its own, so a learned policy cannot be deployed without
+    /// the floor it was evaluated with. `None` for a scorer that carries no such evidence.
+    fn bound_exploration(&self) -> Option<Exploration> {
+        None
+    }
 }
 
 /// Equal weight for every admissible Pod.
@@ -663,6 +680,32 @@ impl AdmissibleScorer for UniformScorer {
             .collect())
     }
 }
+
+/// Why a router could not be built.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum RouterBuildError {
+    /// The scorer is bound to one exploration rate and the router has another (including none).
+    ExplorationMismatch {
+        scorer: Exploration,
+        router: Exploration,
+    },
+}
+
+impl fmt::Display for RouterBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExplorationMismatch { scorer, router } => write!(
+                f,
+                "the scorer is bound to exploration {} and the router uses {}",
+                scorer.epsilon(),
+                router.epsilon()
+            ),
+        }
+    }
+}
+
+impl Error for RouterBuildError {}
 
 /// Why a report could not be routed.
 #[derive(Debug)]
@@ -790,21 +833,34 @@ impl<S> fmt::Debug for FindingRouter<S> {
 }
 
 impl<S: AdmissibleScorer> FindingRouter<S> {
+    /// # Errors
+    /// [`RouterBuildError::ExplorationMismatch`] when `scorer` is bound to an exploration rate
+    /// (see [`AdmissibleScorer::bound_exploration`]) other than `config.exploration`. A learned
+    /// policy promoted with a floor of `epsilon` cannot be deployed under another floor, nor
+    /// under none.
     pub fn new(
         registry: FindingRegistry,
         config: RouterConfig,
         scorer: S,
         key: SamplingKey,
         nonces: NonceSequence,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, RouterBuildError> {
+        if let Some(bound) = scorer.bound_exploration() {
+            if bound != config.exploration {
+                return Err(RouterBuildError::ExplorationMismatch {
+                    scorer: bound,
+                    router: config.exploration,
+                });
+            }
+        }
+        Ok(Self {
             registry,
             config,
             scorer,
             key,
             nonces,
             counters: Mutex::new(Counters::default()),
-        }
+        })
     }
 
     pub fn registry(&self) -> &FindingRegistry {

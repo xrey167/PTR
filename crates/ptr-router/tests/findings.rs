@@ -113,6 +113,7 @@ fn router_cfg<S: AdmissibleScorer>(
         SamplingKey::from_bytes([7; 32]),
         NonceSequence::starting_at([1; 8], 0),
     )
+    .unwrap()
 }
 
 fn router(registry: FindingRegistry) -> FindingRouter {
@@ -550,7 +551,8 @@ fn routing_is_deterministic_for_a_fixed_key_and_nonce_sequence() {
         UniformScorer,
         SamplingKey::from_bytes([8; 32]),
         NonceSequence::starting_at([1; 8], 0),
-    );
+    )
+    .unwrap();
     let base = make();
     let differs = (0..50).any(|i| {
         route(&base, i, &hard, VerificationLevel::Deterministic).records()[0].draw()

@@ -14,7 +14,18 @@
 //!                                     |
 //!   Ok  : register the Pod, VcwLoop::sync_roster / retire_dead_experts
 //!   Err : VcwLoop::withdraw_request; nothing was committed, nothing is enrolled
+//!   Ok but the install failed: the change IS committed; the request stays outstanding in the
+//!         loop, the driver keeps a PendingInstall (observable, retried at the start of every
+//!         step and by retry_installs) and the outcome is CommittedNotInstalled, never Refused
 //! ```
+//!
+//! # What the gate subject binds
+//!
+//! The evaluation manifest in the subject is [`HeldOutSuite::manifest_digest`] of the suite the
+//! measurement was made with, so the report is bound to its proposal *and* to the suite that
+//! produced it; admission compares it with the digest in the host's grant. A suite that does not
+//! measure every code of the serving roster and of the candidate is refused before anything is
+//! bound ([`MeasurementError::Coverage`]).
 //!
 //! The driver is the host, not the loop: it holds the runtime and the admission grant, which the
 //! loop never does (the `vcw` source scan keeps the loop's module free of both). It decides
@@ -30,12 +41,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use ptr_lineage::{AdapterId, ForgettingGate, GateSubject};
-use ptr_pods::{BaseModelRef, OpKind, PodRegistrationError, PodRegistry, ProposerRef, RequestedOp};
+use ptr_pods::{
+    BaseModelRef, ExpertProposal, OpKind, PodRegistrationError, PodRegistry, ProposerRef,
+    RequestedOp,
+};
 use ptr_router::{AdmissibleScorer, FindingCode};
 use ptr_types::{CommitIndex, PodId, ProjectId};
 
 use super::holdout::{
-    gate_inputs, HeldOutSuite, MeasurementError, RosterChange, RosterView, SuiteError,
+    check_coverage, gate_inputs, HeldOutSuite, MeasurementError, RosterChange, RosterView,
+    SpecialistIdentity, SuiteError,
 };
 use super::specialist::{SpecialistTrainer, TrainedSpecialist, TrainingError, TrainingRequest};
 use crate::expert::{
@@ -75,9 +90,6 @@ pub enum Refusal {
         gate_failed: bool,
         message: String,
     },
-    /// The proposal was admitted but the host could not install it; see the message. The
-    /// expert is committed, so the host must resolve this by hand.
-    Install(String),
 }
 
 /// What became of one request.
@@ -91,6 +103,15 @@ pub enum StructureResult {
         removed: Vec<PodId>,
     },
     Refused(Refusal),
+    /// The change is committed in the ledger but the host could not finish it (register the Pod,
+    /// enrol it, or take dead experts out of routing). This is not a refusal: a committed
+    /// expert exists and is not routable (or a retired one is still routable) until the
+    /// install is retried. The driver holds a [`PendingInstall`] for it
+    /// ([`StructureDriver::pending_installs`]) and retries it at the start of every step.
+    CommittedNotInstalled {
+        commit: CommitIndex,
+        message: String,
+    },
 }
 
 /// One request and its fate.
@@ -105,6 +126,11 @@ impl StructureOutcome {
     pub fn admitted(&self) -> bool {
         matches!(self.result, StructureResult::Admitted { .. })
     }
+
+    /// Committed in the ledger but not yet installed.
+    pub fn committed_not_installed(&self) -> bool {
+        matches!(self.result, StructureResult::CommittedNotInstalled { .. })
+    }
 }
 
 /// The result of one driver step.
@@ -116,6 +142,9 @@ pub struct DriverReport {
     pub ran_policy: bool,
     pub outcomes: Vec<StructureOutcome>,
     pub suppressed: BTreeMap<Suppression, u64>,
+    /// Pods whose pending install from an earlier step was completed at the start of this one
+    /// (the specialist installed, or for a Prune the pruned ones taken out of routing).
+    pub installed_late: Vec<PodId>,
 }
 
 impl DriverReport {
@@ -126,8 +155,21 @@ impl DriverReport {
             .count()
     }
 
+    /// Outcomes that were refused (nothing committed). A committed change that is not yet
+    /// installed is not counted here.
     pub fn refused(&self) -> usize {
-        self.outcomes.iter().filter(|o| !o.admitted()).count()
+        self.outcomes
+            .iter()
+            .filter(|o| matches!(o.result, StructureResult::Refused(_)))
+            .count()
+    }
+
+    /// Outcomes committed in the ledger whose install is pending.
+    pub fn pending_install(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|o| o.committed_not_installed())
+            .count()
     }
 }
 
@@ -148,6 +190,41 @@ impl fmt::Display for DriverError {
 
 impl std::error::Error for DriverError {}
 
+/// Most pending installs the driver remembers (further ones are still reported in their
+/// outcome, but only this many are retried automatically).
+const MAX_PENDING: usize = 64;
+
+/// A change that is committed in the ledger and not yet reflected in the loop and the Pod
+/// registry. Holds what a retry needs; observable through
+/// [`StructureDriver::pending_installs`].
+#[derive(Clone, Debug)]
+pub struct PendingInstall {
+    commit: CommitIndex,
+    proposal: ExpertProposal,
+    specialist: Option<TrainedSpecialist>,
+    removed: Vec<PodId>,
+    message: String,
+}
+
+impl PendingInstall {
+    pub fn commit(&self) -> CommitIndex {
+        self.commit
+    }
+
+    /// The Pods the change is about: the specialist, or the experts being removed.
+    pub fn pods(&self) -> Vec<PodId> {
+        match &self.specialist {
+            Some(specialist) => vec![specialist.pod.clone()],
+            None => self.removed.clone(),
+        }
+    }
+
+    /// Why the last attempt failed.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 /// The host's L3 driver for one project.
 pub struct StructureDriver {
     project: ProjectId,
@@ -155,13 +232,14 @@ pub struct StructureDriver {
     base: BaseModelRef,
     site: BirthSite,
     gate: ForgettingGate,
-    eval_manifest: [u8; 32],
     processed_windows: u64,
+    pending: Vec<PendingInstall>,
 }
 
 impl StructureDriver {
-    /// `gate` is the host's gate configuration and `eval_manifest` the digest of the evaluation
-    /// manifest the admission grant expects; the driver changes neither.
+    /// `gate` is the host's gate configuration, which the driver does not change. The
+    /// evaluation manifest of every bound subject is the digest of the suite passed in
+    /// [`DriverHost`], which the host's admission grant must expect.
     #[must_use]
     pub fn new(
         project: ProjectId,
@@ -169,7 +247,6 @@ impl StructureDriver {
         base: BaseModelRef,
         site: BirthSite,
         gate: ForgettingGate,
-        eval_manifest: [u8; 32],
     ) -> Self {
         Self {
             project,
@@ -177,9 +254,46 @@ impl StructureDriver {
             base,
             site,
             gate,
-            eval_manifest,
             processed_windows: 0,
+            pending: Vec::new(),
         }
+    }
+
+    /// Committed changes whose install is still pending.
+    pub fn pending_installs(&self) -> &[PendingInstall] {
+        &self.pending
+    }
+
+    /// Retry every pending install; those that now succeed are dropped. Returns the Pods they
+    /// concerned. Idempotent.
+    pub fn retry_installs<S: AdmissibleScorer>(
+        &mut self,
+        vcw: &mut VcwLoop<S>,
+        runtime: &PtrRuntime,
+        pods: &mut PodRegistry,
+    ) -> Vec<PodId> {
+        let mut done = Vec::new();
+        let project = self.project.clone();
+        self.pending.retain_mut(|pending| {
+            match finish(
+                &project,
+                vcw,
+                runtime,
+                pods,
+                &pending.proposal,
+                pending.specialist.as_ref(),
+            ) {
+                Ok(()) => {
+                    done.extend(pending.pods());
+                    false
+                }
+                Err(message) => {
+                    pending.message = message;
+                    true
+                }
+            }
+        });
+        done
     }
 
     /// Windows already handed to the policy.
@@ -198,13 +312,6 @@ impl StructureDriver {
         vcw: &mut VcwLoop<S>,
         host: DriverHost<'_>,
     ) -> Result<DriverReport, DriverError> {
-        let closed = vcw.windows_closed();
-        if closed == self.processed_windows {
-            return Ok(DriverReport {
-                windows_closed: closed,
-                ..DriverReport::default()
-            });
-        }
         let DriverHost {
             runtime,
             pods,
@@ -213,6 +320,16 @@ impl StructureDriver {
             suite,
             aimer,
         } = host;
+        // A committed change that could not be installed last time is finished first.
+        let installed_late = self.retry_installs(vcw, runtime, pods);
+        let closed = vcw.windows_closed();
+        if closed == self.processed_windows {
+            return Ok(DriverReport {
+                windows_closed: closed,
+                installed_late,
+                ..DriverReport::default()
+            });
+        }
         let observed_at = runtime
             .committed_events()
             .last()
@@ -257,6 +374,7 @@ impl StructureDriver {
             ran_policy: true,
             outcomes,
             suppressed: report.suppressed().clone(),
+            installed_late,
         })
     }
 
@@ -284,7 +402,7 @@ impl StructureDriver {
 
     #[allow(clippy::too_many_arguments)]
     fn resolve<S: AdmissibleScorer>(
-        &self,
+        &mut self,
         vcw: &mut VcwLoop<S>,
         proposal: &StructureProposal,
         runtime: &mut PtrRuntime,
@@ -340,9 +458,10 @@ impl StructureDriver {
             _ => match proposal.ready() {
                 Some(p) => p,
                 None => {
+                    vcw.withdraw_structure_request(proposal);
                     return StructureResult::Refused(Refusal::Completion(
                         "a request without a result produced no proposal".into(),
-                    ))
+                    ));
                 }
             },
         };
@@ -356,7 +475,9 @@ impl StructureDriver {
             RequestedOp::Merge { sources, .. } => sources.iter().map(|s| s.pod().clone()).collect(),
             _ => Vec::new(),
         };
-        let change = match (proposal.kind(), &specialist) {
+        // The suite is told who the candidate is, not what the trainer says it can do.
+        let identity = specialist.as_ref().map(SpecialistIdentity::of);
+        let change = match (proposal.kind(), &identity) {
             (OpKind::Prune, _) => RosterChange::Remove(&removed_pods),
             (OpKind::Merge, Some(add)) => RosterChange::Replace {
                 remove: &removed_pods,
@@ -379,6 +500,14 @@ impl StructureDriver {
                 return StructureResult::Refused(Refusal::Suite(error));
             }
         };
+        // Every code of the serving roster and of the candidate must have been measured, in both
+        // arms: a code the suite skips would be "nothing lost".
+        if let Err(error) = check_coverage(&before, &roster, &change)
+            .and_then(|()| check_coverage(&after, &roster, &change))
+        {
+            withdraw(vcw);
+            return StructureResult::Refused(Refusal::Measurement(error));
+        }
         let inputs = match gate_inputs(&before, &after, &change.focus()) {
             Ok(inputs) => inputs,
             Err(error) => {
@@ -403,7 +532,7 @@ impl StructureDriver {
             *expert_proposal.operation_id().as_bytes(),
             artifact,
             base_digest,
-            self.eval_manifest,
+            suite.manifest_digest(),
         );
         let adapter = AdapterId::from(
             specialist
@@ -443,19 +572,27 @@ impl StructureDriver {
                 });
             }
         };
-        // 5. Committed. Install the Pod and tell the loop.
-        if let Some(specialist) = &specialist {
-            if let Err(error) = install(pods, specialist) {
-                return StructureResult::Refused(Refusal::Install(error.to_string()));
+        // 5. Committed. Install the Pod and tell the loop. A failure here is not a refusal: the
+        // change is in the ledger. The request stays outstanding in the loop, the driver keeps
+        // what a retry needs, and the outcome says so.
+        if let Err(message) = finish(
+            &self.project,
+            vcw,
+            runtime,
+            pods,
+            &expert_proposal,
+            specialist.as_ref(),
+        ) {
+            if self.pending.len() < MAX_PENDING {
+                self.pending.push(PendingInstall {
+                    commit,
+                    proposal: expert_proposal.clone(),
+                    specialist: specialist.clone(),
+                    removed: removed_pods.clone(),
+                    message: message.clone(),
+                });
             }
-            if let Err(error) =
-                vcw.sync_roster(&self.project, runtime.expert_registry(), &expert_proposal)
-            {
-                return StructureResult::Refused(Refusal::Install(error.to_string()));
-            }
-        } else if let Err(error) = vcw.retire_dead_experts(&self.project, runtime.expert_registry())
-        {
-            return StructureResult::Refused(Refusal::Install(error.to_string()));
+            return StructureResult::CommittedNotInstalled { commit, message };
         }
         StructureResult::Admitted {
             commit,
@@ -465,13 +602,40 @@ impl StructureDriver {
     }
 }
 
-/// Register the specialist's Pod; a reactivated expert takes over its own id.
+/// Finish a committed change: register the specialist's Pod and enrol it (or, for a change with
+/// no specialist, take the dead experts out of routing). Idempotent, so a retry after a partial
+/// failure completes it.
+fn finish<S: AdmissibleScorer>(
+    project: &ProjectId,
+    vcw: &mut VcwLoop<S>,
+    runtime: &PtrRuntime,
+    pods: &mut PodRegistry,
+    proposal: &ExpertProposal,
+    specialist: Option<&TrainedSpecialist>,
+) -> Result<(), String> {
+    match specialist {
+        Some(specialist) => {
+            install(pods, specialist).map_err(|error| format!("install: {error}"))?;
+            vcw.sync_roster(project, runtime.expert_registry(), proposal)
+                .map(|_| ())
+                .map_err(|error| format!("sync_roster: {error}"))
+        }
+        None => vcw
+            .retire_dead_experts(project, runtime.expert_registry())
+            .map(|_| ())
+            .map_err(|error| format!("retire_dead_experts: {error}")),
+    }
+}
+
+/// Register the specialist's Pod; a reactivated expert takes over its own id. A Pod already
+/// registered with this very manifest is left alone (a retry).
 fn install(
     pods: &mut PodRegistry,
     specialist: &TrainedSpecialist,
 ) -> Result<(), PodRegistrationError> {
     let pod = specialist.executable();
     match pods.get(&specialist.manifest.project, &specialist.pod) {
+        Some(existing) if existing.manifest().digest() == specialist.manifest.digest() => Ok(()),
         Some(existing) => pods.replace_if_current(&existing, pod).map(|_| ()),
         None => pods.register_new(pod),
     }

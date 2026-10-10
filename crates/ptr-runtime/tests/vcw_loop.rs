@@ -25,6 +25,7 @@ use ptr_router::{
     NonceSequence, PodEligibility, PodRef, RouteClass, RouterConfig, SamplingKey, SchemaLimits,
     SelfModel, SelfModelLimits, UniformScorer,
 };
+use ptr_router::{LearnerConfig, RoutingLearner};
 use ptr_runtime::expert::{
     expert_evidence_artifact_digest, expert_evidence_base_model_digest, BirthContext, BirthSite,
     EnabledOps, ExpertAdmissionGrant, StructurePolicy, StructurePolicyConfig,
@@ -93,6 +94,11 @@ impl VcwPayload for Doc {
     }
 
     fn confined_to(&self, edited: &Self, named: &[String]) -> bool {
+        // A "loose" document models a payload whose named part is the whole text: a repair may
+        // replace one defect by another (the case the L3 credit rule must not reward).
+        if self.tag.starts_with("loose") {
+            return self.tag == edited.tag;
+        }
         let rest = |d: &Doc| -> Vec<String> {
             d.defects
                 .iter()
@@ -183,6 +189,8 @@ struct Stub {
     n: u32,
     make: MakeDoc,
     fixes: BTreeMap<String, BTreeSet<String>>,
+    /// A Pod that, when it repairs, also introduces this other defect.
+    introduces: BTreeMap<String, String>,
     overreach: bool,
     none_proposals: bool,
     escalation: Option<(PodRef, Doc)>,
@@ -199,6 +207,7 @@ impl Stub {
             n: 0,
             make: Box::new(make),
             fixes: BTreeMap::new(),
+            introduces: BTreeMap::new(),
             overreach: false,
             none_proposals: false,
             escalation: None,
@@ -208,6 +217,11 @@ impl Stub {
             asked_codes: Vec::new(),
             snapshots: Vec::new(),
         }
+    }
+
+    fn introducing(mut self, pod: &str, code: &str) -> Self {
+        self.introduces.insert(pod.to_owned(), code.to_owned());
+        self
     }
 
     fn fixing(mut self, pod: &str, codes: &[&str]) -> Self {
@@ -265,6 +279,11 @@ impl RolePods<Doc> for Stub {
             edited.defects.clear();
         } else {
             edited.defects.retain(|d| d != call.code.as_str());
+        }
+        if let Some(new) = self.introduces.get(&call.pod.pod.0) {
+            if !edited.defects.contains(new) {
+                edited.defects.push(new.clone());
+            }
         }
         Some(edited)
     }
@@ -1882,6 +1901,158 @@ fn an_earlier_repairer_revoked_before_acceptance_blocks_acceptance_and_is_not_cr
     let stats = window.codes[&code("a")].pods[&pod("fix_a")];
     assert_eq!(stats.routed, 1);
     assert_eq!(stats.cleared, 0);
+}
+
+/// Total (routed, cleared) credit of `pod` for `code` over all closed windows.
+fn credit(vcw: &VcwLoop<impl AdmissibleScorer>, pod_name: &str, code_name: &str) -> (u64, u64) {
+    vcw.closed_windows()
+        .filter_map(|w| w.codes.get(&code(code_name)))
+        .filter_map(|c| c.pods.get(&pod(pod_name)))
+        .fold((0, 0), |(r, c), s| (r + s.routed, c + s.cleared))
+}
+
+fn one_request_windows() -> VcwConfig {
+    let mut config = base_config();
+    config.window_requests = 1;
+    config
+}
+
+#[test]
+fn a_pod_that_removes_the_code_but_introduces_another_is_not_credited_with_a_clearing() {
+    // fix_a removes `a` and adds `z`; nobody repairs `z`. The verifier then reports only `z`:
+    // `a` is gone from the report, but the candidate is worse in a way the routed code does not
+    // explain, so fix_a is credited with the routing and with nothing else.
+    let mut vcw = VcwLoop::new(parts_with(
+        one_request_windows(),
+        roster(&["gen"], &[("fix_a", &["a"])]),
+        RouterConfig::default(),
+        UniformScorer,
+        7,
+        None,
+    ))
+    .unwrap();
+    let mut stub = Stub::new(|_, n| doc(&format!("loose{n}"), &["a"]))
+        .fixing("fix_a", &["a"])
+        .introducing("fix_a", "z");
+    let run = run_doc(
+        &mut vcw,
+        &request("introduces", 6, 6, VerificationLevel::SampleVerified),
+        &eligibility(&["gen", "fix_a"]),
+        &DocVerifier::new(),
+        &mut stub,
+    );
+    assert!(!is_verified(&run));
+    let (routed, cleared) = credit(&vcw, "fix_a", "a");
+    assert!(routed >= 1, "fix_a was routed");
+    assert_eq!(
+        cleared, 0,
+        "a Pod that introduces a new code clears nothing"
+    );
+}
+
+#[test]
+fn a_flip_flop_between_two_codes_is_credited_to_neither_pod() {
+    // fix_a turns `a` into `z`, fix_z turns `z` into `a`: every round one code "disappears" and
+    // another appears. Neither Pod cleared anything.
+    let mut vcw = VcwLoop::new(parts_with(
+        one_request_windows(),
+        roster(&["gen"], &[("fix_a", &["a"]), ("fix_z", &["z"])]),
+        RouterConfig::default(),
+        UniformScorer,
+        7,
+        None,
+    ))
+    .unwrap();
+    let mut stub = Stub::new(|_, n| doc(&format!("loose{n}"), &["a"]))
+        .fixing("fix_a", &["a"])
+        .introducing("fix_a", "z")
+        .fixing("fix_z", &["z"])
+        .introducing("fix_z", "a");
+    let run = run_doc(
+        &mut vcw,
+        &request("flip-flop", 6, 6, VerificationLevel::SampleVerified),
+        &eligibility(&["gen", "fix_a", "fix_z"]),
+        &DocVerifier::new(),
+        &mut stub,
+    );
+    assert!(!is_verified(&run));
+    for (pod_name, code_name) in [("fix_a", "a"), ("fix_z", "z")] {
+        let (routed, cleared) = credit(&vcw, pod_name, code_name);
+        assert!(routed >= 1, "{pod_name} was routed");
+        assert_eq!(cleared, 0, "{pod_name} was credited in a flip-flop");
+    }
+}
+
+#[test]
+fn a_pod_that_clears_its_code_while_another_stays_defective_is_still_credited() {
+    // Two defects, `a` fixed by fix_a, `b` declined by fix_b: the report after the round has
+    // only `b`, which was routed, so fix_a cleared `a` and fix_b did not clear `b`.
+    let mut vcw = VcwLoop::new(parts_with(
+        one_request_windows(),
+        two_defect_roster(),
+        RouterConfig::default(),
+        UniformScorer,
+        7,
+        None,
+    ))
+    .unwrap();
+    let mut stub = Stub::new(|_, n| doc(&format!("d{n}"), &["a", "b"])).fixing("fix_a", &["a"]);
+    run_doc(
+        &mut vcw,
+        &request("partial", 3, 3, VerificationLevel::SampleVerified),
+        &two_defect_view(),
+        &DocVerifier::new(),
+        &mut stub,
+    );
+    assert_eq!(credit(&vcw, "fix_a", "a"), (1, 1));
+    let (routed, cleared) = credit(&vcw, "fix_b", "b");
+    assert!(routed >= 1);
+    assert_eq!(cleared, 0, "fix_b declined; `b` is still reported");
+}
+
+#[test]
+fn an_accepted_candidate_whose_repairer_was_revoked_is_no_reward_for_the_learner() {
+    let vcw = VcwLoop::new(parts_with(
+        one_request_windows(),
+        two_defect_roster(),
+        RouterConfig::default(),
+        UniformScorer,
+        7,
+        None,
+    ))
+    .unwrap();
+    let learner = Arc::new(RoutingLearner::new(LearnerConfig::new("docs", 3)).unwrap());
+    let mut vcw = vcw.with_learner(Arc::clone(&learner)).unwrap();
+    let view = LiveView::with(&["gen", "fix_a", "fix_b"]);
+    let mut stub = two_defect_stub();
+    {
+        let view = view.clone();
+        stub.on_repair = Some(Box::new(move |who| {
+            if who == "fix_a" {
+                view.0.borrow_mut().remove(&pod("fix_a"));
+            }
+        }));
+    }
+    run_doc(
+        &mut vcw,
+        &request("learner-revoked", 4, 4, VerificationLevel::SampleVerified),
+        &view,
+        &DocVerifier::new(),
+        &mut stub,
+    );
+    // The tally gives the revoked repairer no clearing; the learner must agree: the candidate
+    // that passed was not returned, so no route of that attempt is a reward.
+    assert_eq!(credit(&vcw, "fix_a", "a").1, 0);
+    let first_attempt: Vec<_> = learner
+        .log_from(0)
+        .into_iter()
+        .filter(
+            |d| matches!(d.class(), RouteClass::Repair(c) if c == &code("a") || c == &code("b")),
+        )
+        .take(2)
+        .collect();
+    assert_eq!(first_attempt.len(), 2);
+    assert!(first_attempt.iter().all(|d| !d.reward().passed()));
 }
 
 #[test]

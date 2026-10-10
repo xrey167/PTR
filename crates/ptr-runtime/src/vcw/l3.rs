@@ -431,15 +431,17 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
             .results
             .clone();
         Self::all_routable(registry, project, &results)?;
+        // Removal first: it is idempotent, so a failure here changes nothing a retry cannot
+        // redo, and the outstanding entry is still there. It also frees the roster slots of
+        // retired experts, so the capacity check comes after it: a host that pruned an expert
+        // to make room can retry a failed enrolment. Enrolment and the removal of the entry
+        // then follow with no fallible step in between that could lose the entry.
+        let removed = self.retire_dead_experts(project, registry)?;
         for (pod, _) in &results {
             if !self.repairers.contains_key(pod) && self.repairers.len() >= MAX_ROSTER {
                 return Err(VcwError::Config("more than 256 repair experts"));
             }
         }
-        // Removal first: it is idempotent, so a failure here changes nothing a retry cannot
-        // redo, and the outstanding entry is still there. Enrolment and the removal of the
-        // entry then follow with no fallible step in between that could lose the entry.
-        let removed = self.retire_dead_experts(project, registry)?;
         let enrolled = self.enrol(&results)?;
         self.outstanding.by_operation.remove(&key);
         Ok(RosterSync { enrolled, removed })

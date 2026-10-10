@@ -34,8 +34,10 @@ pub struct TrainingRequest {
 }
 
 /// A change to another Pod's skill that "training" this specialist caused: the simulated
-/// counterpart of catastrophic forgetting. A held-out measurement sees it; so does the live
-/// experts once the specialist is admitted.
+/// counterpart of catastrophic forgetting. The trainer's statement of it is bound into the
+/// manifest (`sim:collateral:` capabilities) so the committed record commits to what was
+/// claimed, but it is a claim: a held-out suite measures the effect itself (see
+/// `SimulatedHeldOut::with_world_of`) and never reads this field.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Collateral {
     pub pod: PodId,
@@ -48,8 +50,11 @@ pub struct Collateral {
 pub struct TrainedSpecialist {
     pub pod: PodId,
     pub codes: BTreeSet<FindingCode>,
-    /// Probability of clearing each code (simulation configuration).
+    /// Probability of clearing each code (simulation configuration). The trainer's own claim:
+    /// untrusted, not read by the held-out suite.
     pub skill: BTreeMap<String, f64>,
+    /// The collateral the trainer states. Untrusted, bound into the manifest digest, not read
+    /// by the held-out suite.
     pub collateral: Vec<Collateral>,
     pub manifest: PodManifest,
     pub manifest_digest: ManifestDigest,
@@ -162,6 +167,22 @@ impl SimulatedTrainer {
     pub fn trained(&self) -> u64 {
         self.trained
     }
+
+    /// The configured skill for codes with no entry in [`Self::configured_skills`].
+    pub fn default_skill(&self) -> f64 {
+        self.default_skill
+    }
+
+    /// The configured per-code skills (simulation configuration, for building the world a
+    /// simulated suite measures).
+    pub fn configured_skills(&self) -> &BTreeMap<String, f64> {
+        &self.skills
+    }
+
+    /// The configured collateral (simulation configuration).
+    pub fn configured_collateral(&self) -> &[Collateral] {
+        &self.collateral
+    }
 }
 
 impl SpecialistTrainer for SimulatedTrainer {
@@ -200,6 +221,18 @@ impl SpecialistTrainer for SimulatedTrainer {
             ));
             manifest.capabilities.push(CapabilityId::from(
                 format!("sim:skill:{code}:{}", (p * 1_000_000.0).round() as u64).as_str(),
+            ));
+        }
+        // The collateral the trainer states is part of what the ledger commits to.
+        for collateral in &self.collateral {
+            manifest.capabilities.push(CapabilityId::from(
+                format!(
+                    "sim:collateral:{}:{}:{}",
+                    collateral.pod.0,
+                    collateral.code,
+                    (collateral.success_after * 1_000_000.0).round() as u64
+                )
+                .as_str(),
             ));
         }
         let manifest_digest =
@@ -277,6 +310,17 @@ mod tests {
         assert_ne!(a.manifest_digest, other_seed.manifest_digest);
         let other_codes = trainer().train(&request(&["x", "y"])).unwrap();
         assert_ne!(a.manifest_digest, other_codes.manifest_digest);
+        // The collateral a trainer states is committed to as well.
+        let harmful = trainer()
+            .with_collateral("o", "x", 0.0)
+            .train(&request(&["x"]))
+            .unwrap();
+        assert_ne!(a.manifest_digest, harmful.manifest_digest);
+        let milder = trainer()
+            .with_collateral("o", "x", 0.5)
+            .train(&request(&["x"]))
+            .unwrap();
+        assert_ne!(harmful.manifest_digest, milder.manifest_digest);
         assert_eq!(repaired_codes(&a.manifest), a.codes);
         assert_eq!(a.provenance, SimulatedTrainer::PROVENANCE);
     }

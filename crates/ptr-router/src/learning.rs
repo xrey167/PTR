@@ -23,7 +23,9 @@
 //!
 //! It has no handle on anything else. The module names no gate, level, threshold, verifier,
 //! eligibility view, registry update or `Accepted` proof (a source-scan test pins this), a
-//! snapshot cannot be given to the router except through [`crate::PolicyBook`], and the router,
+//! snapshot reaches the loop's router through [`crate::PolicyBook`] (a host that wires a
+//! `LearnedPolicy` straight into its own router has not gone through the gate, and the router
+//! refuses it under any exploration rate but the one it was trained under), and the router,
 //! not the policy, owns the exploration floor and the eligibility filter: a weight on a Pod
 //! outside the admissible set is refused and every eligible Pod keeps propensity of at least
 //! `epsilon / n` whatever the policy says.
@@ -37,6 +39,33 @@
 //! whatever its score (invariant 11). When one repair attempt routed several codes, the single
 //! verdict on the repaired candidate is the reward of each of those routes (joint attribution).
 //!
+//! # Integrity of the reward and of the log
+//!
+//! A reward is a [`VerifierReward`], which is built only by [`VerifierReward::from_class`] (from
+//! the sealed output of [`classify`](crate::classify)) or is [`VerifierReward::NOT_CLEARED`]; a
+//! caller cannot state a pass. A [`LoggedDecision`] outside this crate can only come from
+//! [`RoutingLearner::settle`] (a router record plus such a reward), and
+//! [`PromotionGate::assess`](crate::PromotionGate::assess) reads the evaluation log from the
+//! learner itself and requires the candidate to come from that learner, so evidence cannot be
+//! produced from a hand-built log. The remaining trust is in the host that wires a learner to a
+//! loop: it can settle a genuine record with a genuine verdict of another request. That is an
+//! operational, not a forgeable-number, gap, and it is why `VcwPolicyChanged` is
+//! observability, not an audit record (see `ptr-events`).
+//!
+//! # Statistical assumptions the gate inherits
+//!
+//! * Decisions are treated as independent. They are not exactly: several routes of one
+//!   attempt share one verdict (joint attribution), and consecutive rounds of a request depend
+//!   on each other, so the standard errors are somewhat too small.
+//! * The estimated value is a one-step per-route clear rate (the probability that the routed
+//!   Pod's candidate is accepted), not request-level acceptance, cost or the state-dependent
+//!   multi-round value.
+//! * The gate has a fixed one-sided quantile; a host that re-assesses on a growing log is
+//!   peeking and gets an uncorrected error rate. Assess once per candidate, on a log of a size
+//!   fixed in advance, or apply a correction outside this crate.
+//! * A scorer evaluated off-policy must ignore `request_id` and `request_digest` (see
+//!   [`AdmissibleScorer`](crate::AdmissibleScorer)); the estimator passes placeholders.
+//!
 //! # Not online
 //!
 //! Learning updates posteriors; it does not change routing. Routing changes only when a host
@@ -45,6 +74,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ptr_types::PodId;
@@ -54,6 +84,10 @@ use crate::findings::{
     AdmissibleScorer, Exploration, FindingRouteRecord, ReportClass, RouteClass, ScoringContext,
 };
 use crate::router::{RouteDistribution, RouteError};
+
+/// Process-unique identity of a learner: a snapshot names the learner it came from, and the
+/// gate refuses a log from another one.
+static NEXT_LEARNER: AtomicU64 = AtomicU64::new(1);
 
 const POLICY_DOMAIN: &[u8] = b"ptr.router.learning.policy.v1";
 const STREAM_DOMAIN: &[u8] = b"ptr.router.learning.stream.v1";
@@ -73,6 +107,11 @@ const MAX_WEIGHTED_PODS: usize = 1024;
 /// // The tuple field is private: a number cannot become a reward.
 /// let reward = ptr_router::VerifierReward(true);
 /// ```
+///
+/// ```compile_fail
+/// // A caller cannot state a pass: the only constructors are `from_class` and `NOT_CLEARED`.
+/// let reward = ptr_router::VerifierReward::replayed(true);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VerifierReward(bool);
 
@@ -87,9 +126,11 @@ impl VerifierReward {
         Self(matches!(class, ReportClass::Accept(_)))
     }
 
-    /// A logged verdict replayed from a record (or a synthetic log in a test). The caller states
-    /// what the verifier said; no score is involved.
-    pub fn replayed(passed: bool) -> Self {
+    /// A verdict stated by the caller. Test-only on purpose: a reward that a caller can
+    /// state is a reward a caller can forge, and the promotion gate reads rewards from the
+    /// learner's own log. Only this crate's tests (synthetic worlds for the estimators) use it.
+    #[cfg(test)]
+    pub(crate) fn replayed(passed: bool) -> Self {
         Self(passed)
     }
 
@@ -145,6 +186,23 @@ impl fmt::Display for LearningError {
 impl std::error::Error for LearningError {}
 
 /// One routing decision with its verdict, as the off-policy estimator needs it.
+///
+/// Outside this crate a decision can only be read, never built: the log is the learner's.
+///
+/// ```compile_fail
+/// // A hand-built log (hand-written support and reward) cannot be constructed, so it cannot be
+/// // given to the promotion gate; the gate reads the learner's own log.
+/// use ptr_router::{Exploration, FindingCode, LoggedDecision, RouteClass, VerifierReward};
+/// use ptr_types::PodId;
+/// let _ = LoggedDecision::replayed(
+///     0,
+///     RouteClass::Repair(FindingCode::new("x")),
+///     vec![(PodId::from("a"), 1_u64 << 53)],
+///     PodId::from("a"),
+///     VerifierReward::NOT_CLEARED,
+///     Exploration::default(),
+/// );
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoggedDecision {
     seq: u64,
@@ -180,13 +238,17 @@ impl LoggedDecision {
         })
     }
 
-    /// A decision rebuilt from its parts: a logged record read back, or a synthetic log.
+    /// A decision rebuilt from its parts, for this crate's estimator tests. Crate-private: a
+    /// log assembled by a caller (hand-written support, hand-written rewards) must not be able
+    /// to produce promotion evidence, so the only logs outside this crate are the ones a
+    /// [`RoutingLearner`] built from router records and verifier verdicts.
     ///
     /// # Errors
     /// [`LearningError::BadSupport`] unless `support` is non-empty, in strictly ascending `PodId`
     /// order, has positive widths that sum to exactly `2^53` and contains `chosen`;
     /// [`LearningError::NoFloor`] when `floor` is not positive.
-    pub fn replayed(
+    #[cfg(test)]
+    pub(crate) fn replayed(
         seq: u64,
         class: RouteClass,
         support: Vec<(PodId, u64)>,
@@ -332,6 +394,7 @@ struct LearnerState {
 /// Counts every verdict of every routed Pod and logs the decision. Shared (`Arc`) between the
 /// loop, which settles, and the host, which snapshots.
 pub struct RoutingLearner {
+    id: u64,
     config: LearnerConfig,
     state: Mutex<LearnerState>,
 }
@@ -350,6 +413,7 @@ impl RoutingLearner {
     pub fn new(config: LearnerConfig) -> Result<Self, LearningError> {
         config.validate()?;
         Ok(Self {
+            id: NEXT_LEARNER.fetch_add(1, Ordering::Relaxed),
             config,
             state: Mutex::new(LearnerState {
                 arms: BTreeMap::new(),
@@ -363,6 +427,10 @@ impl RoutingLearner {
 
     pub fn config(&self) -> &LearnerConfig {
         &self.config
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        self.id
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, LearnerState> {
@@ -416,7 +484,17 @@ impl RoutingLearner {
         self.state().dropped_log
     }
 
-    /// The logged decisions with `seq >= from`, oldest first.
+    /// How many logged decisions have `seq >= from`, without copying them (O(1): the log is
+    /// contiguous in `seq`).
+    pub fn log_len_from(&self, from: u64) -> usize {
+        let state = self.state();
+        let first = state.log.front().map_or(state.next_seq, |d| d.seq);
+        let skipped = usize::try_from(from.saturating_sub(first)).unwrap_or(usize::MAX);
+        state.log.len().saturating_sub(skipped)
+    }
+
+    /// The logged decisions with `seq >= from`, oldest first. Copies them; use
+    /// [`Self::log_len_from`] to ask only how many there are.
     pub fn log_from(&self, from: u64) -> Vec<LoggedDecision> {
         self.state()
             .log
@@ -430,13 +508,14 @@ impl RoutingLearner {
     /// [`LearnedPolicy::cutoff`] trained it; an evaluation must use decisions from the cutoff on.
     pub fn snapshot(&self) -> LearnedPolicy {
         let state = self.state();
-        LearnedPolicy::from_parts(&self.config, state.arms.clone(), state.next_seq)
+        LearnedPolicy::from_parts(&self.config, self.id, state.arms.clone(), state.next_seq)
     }
 }
 
 /// An immutable snapshot of a learner's posteriors, usable as an [`AdmissibleScorer`].
 #[derive(Clone, Debug)]
 pub struct LearnedPolicy {
+    origin: u64,
     scope: String,
     prior: f64,
     draws: u32,
@@ -448,7 +527,12 @@ pub struct LearnedPolicy {
 }
 
 impl LearnedPolicy {
-    fn from_parts(config: &LearnerConfig, arms: BTreeMap<ArmKey, ArmCounts>, cutoff: u64) -> Self {
+    fn from_parts(
+        config: &LearnerConfig,
+        origin: u64,
+        arms: BTreeMap<ArmKey, ArmCounts>,
+        cutoff: u64,
+    ) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(POLICY_DOMAIN);
         hasher.update((config.scope.len() as u64).to_le_bytes());
@@ -468,6 +552,7 @@ impl LearnedPolicy {
             hasher.update(counts.not_cleared.to_le_bytes());
         }
         Self {
+            origin,
             scope: config.scope.clone(),
             prior: config.prior,
             draws: config.draws,
@@ -481,6 +566,11 @@ impl LearnedPolicy {
 
     pub fn scope(&self) -> &str {
         &self.scope
+    }
+
+    /// The learner this snapshot was taken from (process-unique).
+    pub(crate) fn origin(&self) -> u64 {
+        self.origin
     }
 
     /// Identity of the snapshot: scope, settings, cutoff and every posterior.
@@ -546,6 +636,10 @@ impl LearnedPolicy {
 }
 
 impl AdmissibleScorer for LearnedPolicy {
+    fn bound_exploration(&self) -> Option<Exploration> {
+        Some(self.exploration)
+    }
+
     /// Thompson sampling: the weight of a Pod is one plus the number of the `draws` posterior
     /// samples in which it had the largest sampled clear probability. It names only the Pods it
     /// was given.
@@ -752,7 +846,7 @@ mod tests {
                 )
             })
             .collect();
-        LearnedPolicy::from_parts(&config, arms, 0)
+        LearnedPolicy::from_parts(&config, 0, arms, 0)
     }
 
     #[test]

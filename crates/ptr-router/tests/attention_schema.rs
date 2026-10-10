@@ -111,6 +111,7 @@ fn router<S: AdmissibleScorer>(epsilon: f64, scorer: S) -> FindingRouter<S> {
         SamplingKey::from_bytes([9; 32]),
         NonceSequence::starting_at([3; 8], 0),
     )
+    .unwrap()
 }
 
 /// Every Pod is eligible at one generation.
@@ -909,7 +910,8 @@ fn a_hint_cannot_reinforce_itself_through_the_traffic_it_causes() {
         boosted,
         SamplingKey::from_bytes([2; 32]),
         NonceSequence::starting_at([4; 8], 0),
-    );
+    )
+    .unwrap();
     // A confident-looking but baseless hint, as a naive self-model could produce it.
     let seed_router = router(0.1, UniformScorer);
     train(&schema, &seed_router, "warm", 0..80, |_, _| true);
@@ -1051,7 +1053,8 @@ fn tables_are_bounded_duplicates_are_ignored_and_reports_are_consistent() {
         UniformScorer,
         SamplingKey::from_bytes([1; 32]),
         NonceSequence::starting_at([1; 8], 0),
-    );
+    )
+    .unwrap();
     let mut rng = Rng(3);
     let mut last = None;
     for i in 0..600u32 {

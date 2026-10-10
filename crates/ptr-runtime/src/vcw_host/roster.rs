@@ -40,7 +40,8 @@ impl fmt::Display for RosterRebuildError {
 impl std::error::Error for RosterRebuildError {}
 
 /// `base` plus every routable (`Serving` or `Frozen`) expert of `project` in `registry`, with the
-/// codes its manifest declares.
+/// codes its manifest declares. An expert that is also in `base` and whose manifest declares no
+/// code keeps its base codes.
 ///
 /// # Errors
 /// [`RosterRebuildError`] when a routable expert has no Pod in `pods` or the Pod's manifest does
@@ -66,7 +67,12 @@ pub fn rebuild_roster(
         }
         let codes: Vec<FindingCode> = repaired_codes(manifest).into_iter().collect();
         if let Some(existing) = roster.repairers.iter_mut().find(|(p, _)| *p == pod) {
-            existing.1 = codes;
+            // A Pod of the base roster whose manifest declares no `repairs:` capability keeps
+            // the codes the base roster gave it; overwriting them with nothing would leave it
+            // silently serving no code after a restart.
+            if !codes.is_empty() {
+                existing.1 = codes;
+            }
         } else {
             roster.repairers.push((pod, codes));
         }
