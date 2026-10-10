@@ -304,6 +304,12 @@ baselines with a verdict). **There is no research result for any VCW-MoE compone
 
 ### 3.2 In review on package branches (not on the integration line)
 
+> **Stale on this line.** At `8bff6fbf` the self-model (`crates/ptr-router/src/self_model.rs`), the
+> attention schema (`attention_schema.rs`) and the L3 structure policy
+> (`crates/ptr-runtime/src/expert/structure.rs`) are on the integration line and are used by
+> `VcwLoop`; the rows below describe their state when this section was written. Section 3.5 is the
+> current per-component status.
+
 | Component | Branch and file | State | Evidence |
 |---|---|---|---|
 | Self-model (trace statistics, calibration, advisory hints) | `claude/dev-pm-selfmodel`: `crates/ptr-router/src/self_model.rs` (`SelfModel`, `SelfContext`, `SelfModelHint`, `CalibrationTracker`, `HintPolicy`) | Uncommitted, in progress. The module documentation states the authority limits: `SelfModelHint` is plain advisory data and does not convert to `Accepted` or `RegistryUpdate` (`compile_fail` doctests), the model does not implement `AdmissibleScorer` | None. C002 stage A is the CPU toy test |
@@ -335,8 +341,123 @@ baselines with a verdict). **There is no research result for any VCW-MoE compone
 | M010-M015 | Base training programme on OLMoE (RLVR, PERFT-R, aux-free balancing, lifecycle) | GPU | Planned (WP8 smoke only) | Research result (if run) |
 
 F003 (calibrated arbiter, harm-rate bound for auto-proposals) and S002 (snapshot cancellation of
-resumable runs) are related substrate work that is not part of this type; neither is completed
-on the integration line at the time of writing, and neither is claimed here.
+resumable runs) are related substrate work that is not part of this type. Both are recorded as
+completed in `STATUS.md` on this line; no claim of this document rests on either (section 3.5
+says where F003 is, and is not, relevant).
+
+### 3.5 Evidence status per component
+
+State at `8bff6fbf` (`claude/dev-integration`), read from the tree, `STATUS.md` and
+`experiments/registry.toml`; nothing here is a result about a model. "Tested" names test files and
+counts `#[test]` functions (not a pass count). "Experimentally evaluated" says what an experiment
+shows and is **none** where no experiment ran. "Needs a GPU" is about the experiment that would
+evaluate the component, not about running it: no component of the loop as built needs one.
+
+| Component | Implemented | Tested | Experimentally evaluated | Needs a GPU |
+|---|---|---|---|---|
+| Workspace (bounded, verifier-gated) | `crates/ptr-pods/src/workspace/` | `crates/ptr-pods/tests/workspace.rs` (41) plus unit tests | None. C001 tests a *learned* analogue, not this contract; C001 is `planned` in `experiments/registry.toml` on this line (the package owner reports it as preparing; not visible here) | C006 (workspace at Pod level) |
+| Finding router | `crates/ptr-router/src/findings.rs` (`FindingRouter`, `FindingRouteRecord`) | `crates/ptr-router/tests/findings.rs` (21), `tests/router.rs` (45) | None on the router itself. F001 exercises the loop with a stub generator, not this router | F005 (finding-routed repair experts) |
+| Learning router and OPE | `learning.rs`, `ope.rs`, `policy_book.rs` (package VL) | `crates/ptr-router/tests/learning.rs` (14), `src/ope_tests.rs`, `crates/ptr-runtime/tests/vcw_learning.rs` (7) | None for the VCW router. F003 (completed) calibrates a different object, the `ptr-branch` arbiter, and uses IPS and doubly robust estimators on synthetic data; it is substrate evidence for estimator code of that crate, not for this learner. The difference between two repair Pods in the tests is a configured fact | F004, F005 (model-backed log) |
+| Self-model and attention schema (functional, advisory) | `self_model.rs`, `attention_schema.rs`; `SelfStepTrace` in the loop trace | `crates/ptr-router/tests/self_model.rs` (20), `tests/attention_schema.rs` (19), `tests/authority_surface.rs` (2) | None. C002 and C003 stage A (CPU toys) are `planned` in the registry. Per doc 38 these are functional indicators (prediction of the system's own failures, control inside the admissible set), not claims about experience; `hint_mode = "trace-only"` is the default | C002 / C003 stage B |
+| L3 structure driver (admission, `ForgettingGate`, ledger) | `crates/ptr-runtime/src/vcw_host/` (`StructureDriver`), `src/expert/structure.rs`, `src/expert.rs` (admission), `crates/ptr-lineage/src/forgetting.rs` | `crates/ptr-runtime/tests/vcw_structure.rs` (15), `expert_structure.rs`, `expert_admission.rs`; the specialist and the held-out suite are simulated | R011 (completed, narrowed): no bypass of the gates by an L3 policy on a pinned adversarial suite. It does not show that the policy helps. Nothing evaluates the driver with a real specialist | F006, M013 (training specialists) |
+| `VcwLoop` budgets, `Exhausted`, `Escalated` | `crates/ptr-runtime/src/vcw/closed_loop.rs`, `budget.rs`, `trace.rs` | `crates/ptr-runtime/tests/vcw_loop.rs` (42), unit tests; the demo (`make vcw-demo`) checks `Exhausted` end to end through `ptrd` | F001 (completed, mutation 24 of 24) for the *ptr-feedback* loop with a seeded stub: 0 false accepts, 0 budget violations, `Exhausted` instead of best effort. The runtime `VcwLoop` itself has no preregistered experiment (X, the whole loop with stub experts, is not registered on this line; the package owner reports it as preregistering) | No |
+| Real verifiers (arithmetic, JSON Schema subset, code tests, facts) | `crates/ptr-verifier/src/{arithmetic,json_schema,code_test,fact}.rs`, code table in `codes.rs` | 63 unit tests in the crate, `crates/ptr-runtime/tests/vcw_real_verifiers.rs` (22) | None. They are deterministic checkers; their coverage is that of their tests, not an experiment | No |
+| Experts, stage (c): programmatic specialists with a controlled error rate (`SimulatedExperts`) | `crates/ptr-runtime/src/vcw/experts/simulated.rs`, `guard.rs` (call-time eligibility), `recode.rs`; `crates/ptr-server/src/vcw/sim.rs` | `crates/ptr-runtime/tests/vcw_experts.rs` (20), unit tests (10 in `simulated.rs`) | None, and none can show model quality: the candidates are drawn from the client's own `reference` with configured error and repair rates. They exist to test the loop, the router and the admission path | No |
+| Experts, stage (a): a small open-weight model on CPU behind `TextGenerator` (`qwen-cpu`) | `crates/ptr-runtime/src/vcw/experts/llm.rs`, `crates/ptr-pods/src/qwen_cpu/`, `crates/ptr-server/src/vcw/qwen.rs` (feature `qwen-cpu`, not compiled by CI) | `crates/ptr-runtime/tests/vcw_qwen_model.rs` (2) and `crates/ptr-server/tests/vcw_qwen.rs` (1), both need a local checkpoint and are ignored without one | None. No run is reported in `STATUS.md`; the demo's optional qwen run (section 3.6) is a smoke run of one pipeline, not an evaluation | Runs on CPU; a model-backed comparison (F004) needs a GPU |
+| Experts, stage (b): small self-trained specialists | Not built (`vcw_host::specialist.rs` is a simulated trainer) | None | None | Yes (F005, F006, M013) |
+| Server path (`POST /v1/vcw/tasks`, `GET /v1/vcw/traces/{id}`, `[vcw]`) | `crates/ptr-server/src/vcw/`, `crates/ptr-config/src/vcw.rs`, `bins/ptrd/src/main.rs` (`install_vcw`) | `crates/ptr-server/tests/vcw.rs` (35, `#[test]` and `#[tokio::test]`), `crates/ptr-config/tests/vcw.rs`, `bins/ptrd/tests/vcw.rs` (5); `make vcw-demo` drives the built `ptrd` | None (not an experiment). The demo is an end-to-end smoke of the path with the stage (c) experts | No |
+
+Open items behind the table: the runtime composition is exercised only with stage (c) experts (and, once, a smoke run with stage (a));
+the demo and the tests show the *mechanism* (a failing first candidate, a routed repair, an
+accepted or exhausted request, what the ledger holds), which F001 had already shown for the
+`ptr-feedback` loop. Whether any of it helps a real model is F004 to F006, all `planned`.
+
+### 3.6 Demo: `make vcw-demo`
+
+One command, nothing downloaded, only the pinned toolchain and `python3` (standard library):
+
+```text
+make vcw-demo
+```
+
+It builds `ptrd`, starts it with `config/vcw-demo.toml` (the `[vcw]` path on, backend `simulated`,
+the real arithmetic, JSON Schema and code-test verifiers, a free loopback port, the data directory
+in a temp directory) and sends three requests through `POST /v1/vcw/tasks`. Expert stages, as the
+project names them: (a) a small open-weight model on CPU (`qwen-cpu`, optional, below), (b) small
+self-trained specialists (not built), (c) programmatic specialists with a controlled error rate
+(`SimulatedExperts`, the default here).
+
+The roster has two eligible repairers per repair role used, with different skill (configured via
+`[vcw.pods.extra_repairers]` and `pod_repair_success`): `arith.value` goes to `vcw-value-repair`
+(skill 1.0) or `vcw-generalist-repair` (0.5; it also holds the format and schema roles, so its
+coverage differs); `json.required` to `vcw-schema-repair` (1.0) or the generalist (0.5);
+`code.test_failed` to `vcw-code-repair` or `vcw-code-repair-b` (both skill 0). The finding router
+samples among the eligible Pods, so each repair decision logs a support of two Pods and a
+propensity of 0.5.
+
+1. `demo-arith-repaired`: `6*7`. The simulated proposer always plants `arith.value`, so the first
+   candidate (`43`) fails the real arithmetic verifier; the router draws a repairer, the repaired
+   candidate passes, the runtime admits it.
+2. `demo-json-repaired`: a JSON object with required `name` and `age`; the first candidate lacks a
+   field (`json.required`) and is repaired in a routed round (in the run below the generalist is
+   drawn first and fails, the schema specialist is drawn next and succeeds).
+3. `demo-code-exhausted`: a program that must square its argument, with a correct reference. The
+   proposal fails the real code tests (`code.test_failed`) and no eligible repairer can clear
+   that finding (skill 0), so the request runs out of budget: `422 exhausted`, reason
+   `VerifierCalls` (6 of 6 verifier calls, 5 of 5 rounds), no answer in the response, no
+   `PodOutputAdmitted` in the ledger (no best-effort accept). The cause is the experts' inability
+   under budget, not a corrupted reference.
+
+For each request it reads back `GET /v1/vcw/traces/{id}` (the retained trace and the ledger
+events the request committed, read from the runtime's ledger) and prints rounds, finding codes,
+the routed Pod with its propensity and support, the budget used and the events. Then it sends
+SIGTERM to `ptrd`, requires exit code 0, and exits 0 only if every expected property held. The
+properties asserted do not depend on which Pod the router drew (the routing nonce instance is
+fresh per start): the first candidate failed a real verifier with the expected code; each repair
+went to a Pod eligible for that code and its propensity is in (0, 1) and equals the logged
+support entry of the chosen Pod; an answer is returned only after a candidate passed and only
+with an admission in the ledger; the Exhausted request has the terminal reason of an exhausted
+budget dimension, no answer and no admission; the trace matches the response digest; a reused
+id is refused (409). It does not depend on luck: with seed 32 the generalist clears `arith.value` and `json.required` by its second attempt and the specialists always do, so whatever sequence the router draws, a repair is done within two repair rounds (budget 5) and the exhausted request exhausts whichever Pods are drawn; `make vcw-demo` was run ten times in a row for this. Excerpt of a real run (the full output is in the report):
+
+```text
+=== demo-json-repaired
+  round 0  origin=initial  authors=[vcw-proposer@1]
+      candidate 88bab6d8f6dc  verifier=Fail codes=['json.required']  class={"repair": ["json.required"]}
+  round 1  origin=repaired  authors=[vcw-generalist-repair@1]
+      routed Repair(FindingCode("json.required")) -> vcw-generalist-repair@1 propensity=0.5000  support=[vcw-generalist-repair:4503599627370496, vcw-schema-repair:4503599627370496]
+      candidate 88bab6d8f6dc  verifier=Fail codes=['json.required']
+  round 2  origin=repaired  authors=[vcw-schema-repair@1]
+      routed Repair(FindingCode("json.required")) -> vcw-schema-repair@1 propensity=0.5000  support=[...same...]
+      candidate fc234b36d998  verifier=Pass codes=[]  class="accept"  workspace=Admitted
+  budget: used rounds 2/5, verifier calls 3/6, pod calls 3
+  ledger: #15 SemanticDeltaCommitted  #16 PodOutputAdmitted  #17 SemanticDeltaCommitted
+=== demo-code-exhausted
+  POST /v1/vcw/tasks -> HTTP 422 {"outcome": "exhausted", ..., "reason": "VerifierCalls", "rounds": 5, "verifier_calls": 6, ...}
+  ... 6 candidates, every one verifier=Fail codes=['code.test_failed'], each repair routed with propensity 0.5 ...
+  budget: used rounds 5/5, verifier calls 6/6, pod calls 6
+  ledger: 1 event(s) from index 18: #18 SemanticDeltaCommitted
+```
+
+What the demo is not: the experts are programmatic (stage (c)) and the failures are scripted by
+error rates of 1.0; the skills are configured facts, not results. It is a smoke test of the
+mechanism (routing among several eligible Pods, repair, acceptance only after a verifier pass,
+exhaustion by inability), not evidence about a model. The round-0 "routed" line is the proposal
+(class `Regenerate(Unknown)`, a single proposer). Optional stage (a): with `PTR_VCW_QWEN_DIR` set
+to a local checkpoint directory (`model.safetensors`, `config.json`, `tokenizer.json`,
+`tokenizer_config.json`; the digests are computed at start-up) the Makefile builds `ptrd` with
+`--features qwen-cpu`, restricts the kinds to arithmetic and JSON (the model backend has no
+prompts for code) and sends the first two requests without a `reference`; only the safety property
+(an answer is returned if and only if the verifier accepted) is asserted, because repair is not
+scripted. One such run was made (CPU shared with other jobs, `max_new_tokens = 16`, a 0.5B instruction model,
+local checkpoint): `6*7` was answered `42` by the proposer on the first call and passed the real
+verifier (no repair needed, admitted). The JSON request failed its first candidate with
+`json.parse`; `json.parse` was routed to a repairer (propensity 0.5 between the format specialist
+and the generalist) but no Pod produced a candidate in the following rounds and the request ended
+`422 exhausted` with reason `Deadline` (the 30 s per-request limit, `max_request_ms`, was hit on
+the loaded CPU; 1 of 6 verifier calls used), with no answer and no admission. That is one smoke
+run of the pipeline, not an evaluation: it shows that the model backend runs through the same
+path and that the loop refuses to answer when no candidate verifies.
 
 ## 4. Related work and delimitation
 

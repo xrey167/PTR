@@ -164,9 +164,66 @@ async fn main() {
         .unwrap_or_else(|err| panic!("failed to bind {bind}: {err}"));
 
     println!("ptrd listening on http://{bind}");
-    if let Err(err) = ptr_server::serve_state(listener, state).await {
-        eprintln!("ptrd server error: {err}");
-        std::process::exit(1);
+    // SIGINT or SIGTERM stops accepting, lets the requests in flight finish, and exits 0. Every
+    // ledger commit is durable when it returns, so nothing is flushed here. The wait for the
+    // requests in flight is bounded: after `SHUTDOWN_GRACE` the process exits 1 instead of hanging
+    // on a stalled client.
+    let (signalled_tx, signalled_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = async move {
+        shutdown_signal().await;
+        let _ = signalled_tx.send(());
+    };
+    let grace = async move {
+        // A closed channel means the server ended on its own: never time out then.
+        if signalled_rx.await.is_ok() {
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::select! {
+        served = ptr_server::serve_state_until(listener, state, shutdown) => {
+            if let Err(err) = served {
+                eprintln!("ptrd server error: {err}");
+                std::process::exit(1);
+            }
+            println!("ptrd stopped cleanly");
+        }
+        () = grace => {
+            eprintln!(
+                "ptrd: requests still in flight {} s after the stop signal; exiting",
+                SHUTDOWN_GRACE.as_secs()
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// How long `ptrd` waits for requests in flight after SIGINT or SIGTERM.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Completes on SIGINT (Ctrl-C) or, on unix, SIGTERM.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(stream) => stream,
+            Err(err) => {
+                // SIGINT must still stop the daemon.
+                eprintln!("cannot listen for SIGTERM ({err}); SIGINT still stops ptrd");
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 

@@ -15,6 +15,10 @@
 //!  Exhausted / Escalated -> 422, nothing committed but the request's raw text
 //! ```
 //!
+//! * **A read-back of the last requests.** `GET /v1/vcw/traces/{id}` returns the trace of a
+//!   finished request (steps, finding codes, routed Pods with support and propensity, budget
+//!   spent) and a summary of the ledger events it committed (read from the ledger when the request finished; the runtime lock is never taken by a query); the last 64
+//!   requests are retained in memory. Observability only, no authority; `make vcw-demo` uses it.
 //! * **Off by default.** The route exists only on a [`ServerState`] given a [`VcwService`]
 //!   (`ServerState::with_vcw`); every other route, type and signature is unchanged.
 //! * **No authority path of its own.** An accepted answer is committed by the runtime's normal
@@ -53,6 +57,7 @@
 
 mod job;
 mod pods;
+mod report;
 mod service;
 mod shadow;
 mod sim;
@@ -65,6 +70,7 @@ pub use job::{
     answer_type, CODE_ANSWER_TYPE, FACT_ANSWER_TYPE, MAX_ENTRY_BYTES, MAX_INSTRUCTION_BYTES,
     MAX_REFERENCE_BYTES, MAX_TEST_ARGS,
 };
+pub use report::{MAX_REPORTED_EVENTS, MAX_RETAINED_TRACES};
 pub use service::{VcwBuildError, VcwService, VcwServiceParts};
 pub use shadow::{LearningReport, ShadowEstimate};
 pub use sim::plantable;
@@ -74,9 +80,10 @@ pub use wire::{
 };
 
 use axum::{
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Path, State},
+    http::StatusCode,
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 
@@ -91,6 +98,7 @@ pub const MAX_VCW_BODY_BYTES: usize = 256 * 1024;
 pub(crate) fn routes() -> Router<ServerState> {
     Router::new()
         .route(VCW_TASKS_PATH, post(handle))
+        .route("/v1/vcw/traces/{id}", get(read_trace))
         .layer(DefaultBodyLimit::max(MAX_VCW_BODY_BYTES))
 }
 
@@ -117,4 +125,29 @@ async fn handle(
     })
     .await
     .map_err(|error| VcwApiError::Internal(format!("request task failed: {error}")))?
+}
+
+/// `GET /v1/vcw/traces/{id}`: the trace of a finished request (rounds, finding codes, the routed
+/// Pods with their propensity, the budget spent) and a summary of the ledger events it committed
+/// (index, kind, size, digest; never their content). 404 for an unknown request or one no longer
+/// retained. It reads only the bounded in-memory store, never the runtime lock, so it answers while
+/// a long request runs and needs no admission slot (the store's own lock is held for a clone of
+/// small JSON only). Read-only; the same loopback-only caveat as the fact kind applies, because the
+/// trace names finding codes.
+async fn read_trace(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Response, VcwApiError> {
+    let service = state
+        .vcw
+        .clone()
+        .ok_or_else(|| VcwApiError::Internal("the vcw path is not installed".into()))?;
+    match service.trace_report(&id) {
+        Some(report) => Ok(Json(report).into_response()),
+        None => Ok((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "no retained trace for this request id" })),
+        )
+            .into_response()),
+    }
 }

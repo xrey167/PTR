@@ -6,7 +6,7 @@ mod vcw;
 pub use vcw::{
     VcwBackend, VcwExperts, VcwHintMode, VcwLearning, VcwPods, VcwQwenCpu, VcwServiceConfig,
     VcwSimulation, VcwTaskKind, MAX_VCW_BUDGET, MAX_VCW_NAME_BYTES, MAX_VCW_NEW_TOKENS,
-    MAX_VCW_REQUEST_MS,
+    MAX_VCW_REQUEST_MS, VCW_REPAIR_ROLES,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
