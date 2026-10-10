@@ -1,0 +1,8 @@
+{"seed": 1011, "D": 2048, "arm": "weak_dv1", "lr": 0.006, "d": 48, "ffn": 153, "id": 842, "ood16": 794, "ood24": 750, "converged": 1, "steps": 5550, "best_val": 847, "loss_w": 219911, "sec": 90}
+{"seed": 1012, "D": 2048, "arm": "weak_dv1", "lr": 0.006, "d": 48, "ffn": 153, "id": 362, "ood16": 330, "ood24": 329, "converged": 1, "steps": 2250, "best_val": 373, "loss_w": 1324707, "sec": 52}
+{"seed": 1013, "D": 2048, "arm": "weak_dv1", "lr": 0.006, "d": 48, "ffn": 153, "id": 539, "ood16": 507, "ood24": 452, "converged": 1, "steps": 2700, "best_val": 536, "loss_w": 662642, "sec": 49}
+{"seed": 1014, "D": 2048, "arm": "weak_dv1", "lr": 0.006, "d": 48, "ffn": 153, "id": 518, "ood16": 480, "ood24": 444, "converged": 1, "steps": 3000, "best_val": 516, "loss_w": 735196, "sec": 79}
+{"seed": 1015, "D": 2048, "arm": "weak_dv1", "lr": 0.006, "d": 48, "ffn": 153, "id": 538, "ood16": 503, "ood24": 479, "converged": 1, "steps": 3150, "best_val": 560, "loss_w": 543096, "sec": 78}
+{"seed": 1016, "D": 2048, "arm": "weak_dv1", "lr": 0.006, "d": 48, "ffn": 153, "id": 487, "ood16": 455, "ood24": 427, "converged": 1, "steps": 4200, "best_val": 488, "loss_w": 699428, "sec": 81}
+{"seed": 1017, "D": 2048, "arm": "weak_dv1", "lr": 0.006, "d": 48, "ffn": 153, "id": 353, "ood16": 321, "ood24": 340, "converged": 1, "steps": 1950, "best_val": 358, "loss_w": 1386162, "sec": 54}
+{"seed": 1018, "D": 2048, "arm": "weak_dv1", "lr": 0.006, "d": 48, "ffn": 153, "id": 382, "ood16": 346, "ood24": 345, "converged": 1, "steps": 2100, "best_val": 358, "loss_w": 1333298, "sec": 46}
