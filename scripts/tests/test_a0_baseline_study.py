@@ -841,7 +841,8 @@ class PlannedRegistrationV3Tests(unittest.TestCase):
         registry = {item["id"]: item for item in tomllib.loads((ROOT / "experiments/registry.toml").read_text())["experiment"]}
         status = toml_at(ROOT, self.REG, "experiment.toml")["status"]
         self.assertEqual(registry["M003-v4"], {"id": "M003-v4", "path": "model/M003-v4-latent-recurrence", "status": status})
-        self.assertIn(status, {"planned", "prepared"})
+        # Completed once its frozen run was decided (INCONCLUSIVE/NO-GO-CALIBRATION, see RESULTS.md).
+        self.assertIn(status, {"planned", "prepared", "completed"})
         for absent in ("M003-v4-sweep", "M004-v3"):
             self.assertNotIn(absent, registry)
         self.assertEqual(study.sweep_chain("M003-v4"), ())
@@ -851,10 +852,11 @@ class PlannedRegistrationV3Tests(unittest.TestCase):
     def test_committed_files_are_what_the_generator_renders(self):
         status = toml_at(ROOT, self.REG, "experiment.toml")["status"]
         files = study.render_files(self.REG, ROOT)
-        if status == "prepared":
+        if status in {"prepared", "completed"}:
             result, manifest = study.frozen_form(ROOT, self.REG)
             files["config.toml"] = study.config_text(self.REG, result["table"])
-            files["experiment.toml"] = manifest
+            # A completed manifest is the frozen one with only its status line moved on.
+            files["experiment.toml"] = manifest.replace('status = "prepared"', f'status = "{status}"', 1)
         for name, text in files.items():
             with self.subTest(file=name):
                 self.assertEqual((ROOT / "experiments" / self.REG.path / name).read_text(encoding="utf-8"), text)
