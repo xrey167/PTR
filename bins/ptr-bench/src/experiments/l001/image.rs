@@ -45,7 +45,7 @@ impl Policy {
 
     pub fn name(self) -> &'static str {
         match self {
-            Policy::None => "none",
+            Policy::None => "drop-all",
             Policy::All => "all",
             Policy::Prefix => "prefix",
             Policy::Half => "half",

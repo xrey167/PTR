@@ -235,7 +235,7 @@ pub fn compiled() -> Vec<(&'static str, Leaf)> {
         ("sync_parent_point", Leaf::Text(SYNC_PARENT_POINT.into())),
         (
             "power_loss_policies",
-            texts(&["none", "all", "prefix", "half", "holes"]),
+            texts(&["drop-all", "all", "prefix", "half", "holes"]),
         ),
         (
             "raft_scenario_kinds",

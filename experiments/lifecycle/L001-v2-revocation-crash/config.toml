@@ -30,7 +30,7 @@ hang_watchdog_ms = 60000
 child_watchdog_ms = 60000
 hang_limit = 3
 # The power-loss model: the policies applied to the bytes written after the last sync, and the size of a hole.
-power_loss_policies = ["none", "all", "prefix", "half", "holes"]
+power_loss_policies = ["drop-all", "all", "prefix", "half", "holes"]
 sector_bytes = 512
 # The failpoints (ptr-ledger's `failpoints` and `raft-engine-failpoints` features).
 log_points = ["ledger.before_record_write", "ledger.after_length_before_payload", "ledger.after_payload_before_sync", "ledger.after_sync_before_memory"]
@@ -107,7 +107,7 @@ engine_child_idx_per_point = 2
 hang_watchdog_ms = 60000
 child_watchdog_ms = 60000
 hang_limit = 3
-power_loss_policies = ["none", "all", "prefix", "half", "holes"]
+power_loss_policies = ["drop-all", "all", "prefix", "half", "holes"]
 sector_bytes = 512
 log_points = ["ledger.before_record_write", "ledger.after_length_before_payload", "ledger.after_payload_before_sync", "ledger.after_sync_before_memory"]
 anchor_points = ["anchor.after_scratch_write_before_sync", "anchor.after_scratch_sync_before_rename", "anchor.after_rename_before_dir_sync", "anchor.after_dir_sync"]
