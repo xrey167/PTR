@@ -193,7 +193,7 @@ status = "planned"
 [[experiment]]
 id = "Q003"
 path = "retrieval/Q003-postgres-hybrid"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "E005"

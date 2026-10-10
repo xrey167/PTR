@@ -37,9 +37,9 @@ workload_digest_seed_43 = "31c46173e56d6eefb2f4e5336899f34dff452bd9f81f3d704aac6
 workload_digest_seed_71 = "d98d3b3c9f7764d121191bea95d520bbf86d94894346cd08855f985d99f343e2"
 workload_digest_seed_101 = "918a27a7337e01afb733d1f757222015423418a9e91a5a35dda0f603244c47c9"
 preregistration_text = "experiments/retrieval/Q003-postgres-hybrid/PREREGISTRATION.md"
-preregistration_text_sha256 = "must-be-pinned-before-prepared"
+preregistration_text_sha256 = "b2f166b29e85dd4eea06b1f4b67c4e655ae0c17a1ff02942f7a105978c6e87af"
 criteria = "experiments/retrieval/Q003-postgres-hybrid/criteria.toml"
-criteria_sha256 = "must-be-pinned-before-prepared"
+criteria_sha256 = "c5e4186fcda934cc342ba61d3404184ed8cd74bb2b8cf6c5551ab387e5ce1e09"
 
 # The preregistered choices of the harness (`ptr-bench postgres-hybrid`, bins/ptr-bench/src/experiments/q003/params.rs,
 # which fails its drift test if a compiled constant differs from this table). Q003 is planned, not frozen: the
