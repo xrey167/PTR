@@ -4681,7 +4681,9 @@ dependencies = [
  "ptr-types",
  "ptr-verifier",
  "safetensors 0.8.0",
+ "serde_json",
  "sha2 0.11.0",
+ "tokenizers",
  "tokio",
 ]
 

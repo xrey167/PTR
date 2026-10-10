@@ -92,6 +92,7 @@ mod admit;
 mod budget;
 mod closed_loop;
 mod eligibility;
+pub mod experts;
 mod l3;
 #[cfg(test)]
 mod test_support;
