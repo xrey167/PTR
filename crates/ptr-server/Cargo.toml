@@ -5,7 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# Real CPU language-model experts for the vcw path (ptr-pods QwenCpu behind TextGenerator).
+qwen-cpu = ["ptr-runtime/qwen-cpu", "ptr-pods/qwen-cpu"]
+
 [dependencies]
+ptr-config = { workspace = true }
 ptr-types = { workspace = true }
 ptr-runtime = { workspace = true }
 ptr-model-api = { workspace = true }
@@ -18,7 +23,9 @@ axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
-ptr-config = { workspace = true }
+ptr-events = { workspace = true }
+ptr-semdb = { workspace = true }
 tower = { workspace = true }

@@ -45,6 +45,7 @@
 mod guard;
 mod llm;
 mod manifest;
+mod recode;
 mod simulated;
 mod task;
 
@@ -58,6 +59,7 @@ use ptr_types::{Generation, PodId};
 pub use guard::Guarded;
 pub use llm::{ExpertError, LlmExpertPod, LlmExpertPods, SharedGenerator};
 pub use manifest::{expert_manifest, expert_manifest_for_model, ExpertRole};
+pub use recode::{PayloadCodec, Recoded, TextCodec};
 pub use simulated::{
     DefectDoc, DefectDocVerifier, DefectPayload, SimulatedExperts, SimulatedPod, SimulationConfig,
     SimulationError,

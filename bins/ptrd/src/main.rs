@@ -6,7 +6,7 @@ use ptr_model_api::{
 use ptr_pods::PodRegistry;
 use ptr_router::SamplingKey;
 use ptr_runtime::{PtrRuntime, ReferenceKvLimits, ReferenceKvReuseBackend, ReferenceKvScope};
-use ptr_server::{KvBackend, ServerBackend};
+use ptr_server::{KvBackend, ServerBackend, ServerState, VcwService, VcwServiceParts};
 use ptr_types::{CapabilityId, CapsuleId, Generation, PrincipalId, ProjectId};
 use std::sync::Arc;
 
@@ -69,6 +69,7 @@ async fn main() {
     }
 
     let bind = config.server.bind.clone();
+    let vcw_config = config.vcw.clone();
     let ledger_path = std::path::Path::new(&config.server.data_dir).join("ledger.log");
     let backend_name = config.model.backend.clone();
     let data_dir = config.server.data_dir.clone();
@@ -142,26 +143,61 @@ async fn main() {
             .collect::<String>()
     );
     let pod_router = ptr_server::checked_pod_router(sampling_key, instance);
-    let effect_grants = ptr_server::demo_effect_grants(data_dir);
-    let listener = tokio::net::TcpListener::bind(&bind)
-        .await
-        .unwrap_or_else(|err| panic!("failed to bind {bind}: {err}"));
-
-    println!("ptrd listening on http://{bind}");
-    if let Err(err) = ptr_server::serve_with_backend(
-        listener,
+    let effect_grants = ptr_server::demo_effect_grants(data_dir.clone());
+    let mut state = ServerState::with_backend(
         runtime,
         backend,
         pod_router,
         Arc::new(PodRegistry::default()),
         ptr_server::default_verifier(),
         effect_grants,
-    )
-    .await
-    {
+    );
+    // The verifier-closed path exists only when `[vcw] enabled = true`; nothing else changes.
+    if vcw_config.enabled {
+        state = install_vcw(state, &vcw_config, std::path::Path::new(&data_dir));
+    }
+
+    // The service (and, for the model backend, the model load) is built above, so a build error
+    // exits before anything listens and a slow load leaves no accepted-then-hung connection.
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .unwrap_or_else(|err| panic!("failed to bind {bind}: {err}"));
+
+    println!("ptrd listening on http://{bind}");
+    if let Err(err) = ptr_server::serve_state(listener, state).await {
         eprintln!("ptrd server error: {err}");
         std::process::exit(1);
     }
+}
+
+/// File name of the vcw router's sampling key inside the data directory. It is a key of its
+/// own, never the Pod router's.
+const VCW_KEY_FILE: &str = "vcw-sampling.key";
+
+/// Builds the verifier-closed service from `[vcw]` and installs it, or refuses to start.
+fn install_vcw(
+    state: ServerState,
+    config: &ptr_config::VcwServiceConfig,
+    data_dir: &std::path::Path,
+) -> ServerState {
+    let refuse = |what: &str, err: &dyn std::fmt::Display| -> ! {
+        eprintln!("refusing to start ptrd: {what}: {err}");
+        std::process::exit(2);
+    };
+    let key = load_or_create_key(data_dir, VCW_KEY_FILE)
+        .unwrap_or_else(|err| refuse("vcw sampling key", &err));
+    let instance = random_bytes::<8>().unwrap_or_else(|err| refuse("vcw nonce instance", &err));
+    let service = VcwService::from_config(config, &VcwServiceParts::new(key, instance))
+        .unwrap_or_else(|err| refuse("vcw", &err));
+    let kinds: Vec<&str> = service.kinds().iter().map(|kind| kind.as_str()).collect();
+    println!(
+        "vcw path enabled: POST /v1/vcw/tasks, backend {:?}, kinds {}",
+        service.backend(),
+        kinds.join(",")
+    );
+    state
+        .with_vcw(service)
+        .unwrap_or_else(|err| refuse("vcw install", &err))
 }
 
 /// File name of the router sampling key inside the data directory.
@@ -211,7 +247,15 @@ fn random_bytes<const N: usize>() -> Result<[u8; N], String> {
 /// to provision it. On unix an existing file readable by group or others is refused. The key
 /// bytes are never printed or included in an error.
 fn load_or_create_sampling_key(data_dir: &std::path::Path) -> Result<SamplingKey, String> {
-    let path = data_dir.join(SAMPLING_KEY_FILE);
+    load_or_create_key(data_dir, SAMPLING_KEY_FILE).map(SamplingKey::from_bytes)
+}
+
+/// [`load_or_create_sampling_key`] for any key file name, returning the key bytes.
+fn load_or_create_key(
+    data_dir: &std::path::Path,
+    file_name: &str,
+) -> Result<[u8; SAMPLING_KEY_LEN], String> {
+    let path = data_dir.join(file_name);
     std::fs::create_dir_all(data_dir)
         .map_err(|err| format!("cannot create data dir {}: {err}", data_dir.display()))?;
     match read_key_file(&path) {
@@ -233,7 +277,7 @@ fn load_or_create_sampling_key(data_dir: &std::path::Path) -> Result<SamplingKey
     {
         let key = random_bytes::<SAMPLING_KEY_LEN>()?;
         match install_key_atomically(data_dir, &path, &key) {
-            Ok(()) => Ok(SamplingKey::from_bytes(key)),
+            Ok(()) => Ok(key),
             // Another process installed its key first: use that one.
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                 read_key_file(&path).map_err(|err| err.to_string())
@@ -256,7 +300,10 @@ fn install_key_atomically(
     use std::os::unix::fs::OpenOptionsExt;
     let suffix = random_bytes::<8>().map_err(std::io::Error::other)?;
     let suffix: String = suffix.iter().map(|byte| format!("{byte:02x}")).collect();
-    let tmp = dir.join(format!(".{SAMPLING_KEY_FILE}.tmp.{suffix}"));
+    let name = path
+        .file_name()
+        .map_or_else(|| SAMPLING_KEY_FILE.into(), |name| name.to_string_lossy());
+    let tmp = dir.join(format!(".{name}.tmp.{suffix}"));
     let result = (|| {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -289,7 +336,7 @@ impl std::fmt::Display for KeyFileError {
 }
 
 /// Reads and validates the key file. On unix it refuses a file that group or others can access.
-fn read_key_file(path: &std::path::Path) -> Result<SamplingKey, KeyFileError> {
+fn read_key_file(path: &std::path::Path) -> Result<[u8; SAMPLING_KEY_LEN], KeyFileError> {
     use std::io::Read;
     let unreadable = |err: std::io::Error| {
         KeyFileError::Unreadable(format!("cannot read {}: {err}", path.display()))
@@ -332,7 +379,7 @@ fn read_key_file(path: &std::path::Path) -> Result<SamplingKey, KeyFileError> {
             }
         ))
     })?;
-    Ok(SamplingKey::from_bytes(key))
+    Ok(key)
 }
 
 #[cfg(test)]

@@ -1,6 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+mod vcw;
+
+pub use vcw::{
+    VcwBackend, VcwExperts, VcwHintMode, VcwPods, VcwQwenCpu, VcwServiceConfig, VcwSimulation,
+    VcwTaskKind, MAX_VCW_BUDGET, MAX_VCW_NAME_BYTES, MAX_VCW_NEW_TOKENS, MAX_VCW_REQUEST_MS,
+};
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CliOverrides {
     pub config_path: Option<String>,
@@ -106,6 +113,8 @@ pub struct PtrConfig {
     pub observability: ObservabilityConfig,
     pub research: ResearchConfig,
     pub model: ModelConfig,
+    /// The optional verifier-closed workspace request path; off by default.
+    pub vcw: VcwServiceConfig,
 }
 
 impl PtrConfig {
@@ -167,6 +176,22 @@ impl PtrConfig {
                 "PTR_REQUIRE_EXPERIMENT_MANIFEST" => {
                     self.research.require_experiment_manifest = parse_bool(key, value)?;
                 }
+                "PTR_VCW_ENABLED" => self.vcw.enabled = parse_bool(key, value)?,
+                "PTR_VCW_QWEN_MODEL_DIR" => {
+                    self.vcw.experts.qwen_cpu.model_dir = value.to_owned();
+                }
+                "PTR_VCW_QWEN_WEIGHTS_SHA256" => {
+                    self.vcw.experts.qwen_cpu.weights_sha256 = value.to_owned();
+                }
+                "PTR_VCW_QWEN_CONFIG_SHA256" => {
+                    self.vcw.experts.qwen_cpu.config_sha256 = value.to_owned();
+                }
+                "PTR_VCW_QWEN_TOKENIZER_SHA256" => {
+                    self.vcw.experts.qwen_cpu.tokenizer_sha256 = value.to_owned();
+                }
+                "PTR_VCW_QWEN_TOKENIZER_CONFIG_SHA256" => {
+                    self.vcw.experts.qwen_cpu.tokenizer_config_sha256 = value.to_owned();
+                }
                 _ => {}
             }
         }
@@ -184,6 +209,7 @@ impl PtrConfig {
         if self.runtime.max_parallel_candidates == 0 {
             return Err("runtime.max_parallel_candidates must be greater than zero".into());
         }
+        self.vcw.validate()?;
         match self.runtime.mode.as_str() {
             "standalone" | "cluster" => Ok(()),
             other => Err(format!("unsupported runtime.mode: {other}")),
@@ -348,6 +374,110 @@ pub const FIELD_DISPOSITIONS: &[(&str, FieldDisposition)] = &[
     (
         "research.require_experiment_manifest",
         FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "vcw.enabled",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.project",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.kinds",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.max_verifier_calls",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.max_rounds",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.max_request_ms",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.hint_mode",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.exploration_floor",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.proposer",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.format_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.value_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.schema_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.code_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.resource_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.fact_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.generation",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.backend",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.simulated.seed",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.simulated.default_repair_success",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.simulated.decline_on_failure",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.model_dir",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.weights_sha256",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.config_sha256",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.tokenizer_sha256",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.tokenizer_config_sha256",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.max_new_tokens",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
     ),
 ];
 

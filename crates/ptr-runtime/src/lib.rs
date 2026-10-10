@@ -1387,6 +1387,12 @@ impl PtrRuntime {
         self.live_generations.get(target).copied()
     }
 
+    /// The project a capsule was committed under, if the lifecycle authority knows the capsule.
+    #[must_use]
+    pub fn capsule_project(&self, capsule: &str) -> Option<&str> {
+        self.capsule_projects.get(capsule).map(String::as_str)
+    }
+
     /// Every lifecycle target and its current generation, ordered by target.
     /// Revocation tombstones are exposed separately by [`Self::revoked_generations`].
     pub fn live_generations(&self) -> impl Iterator<Item = (&str, Generation)> {

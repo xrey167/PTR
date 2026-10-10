@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# Real CPU language-model experts for the vcw path (needs [vcw.experts] backend = "qwen-cpu").
+qwen-cpu = ["ptr-server/qwen-cpu"]
+
 [dependencies]
 ptr-config = { workspace = true }
 ptr-runtime = { workspace = true }
