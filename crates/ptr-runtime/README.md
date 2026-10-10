@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-09  
-**Code footprint:** 42 Rust source files · 41743 nonblank source lines · 83 integration-test files · 1064 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 42 Rust source files · 41743 nonblank source lines · 84 integration-test files · 1086 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
