@@ -87,7 +87,7 @@
 
 - [L004](../../experiments/lifecycle/L004-projection-equivalence/README.md) — `completed`
 - [Q003](../../experiments/retrieval/Q003-postgres-hybrid/README.md) — `superseded`
-- [Q003-v2](../../experiments/retrieval/Q003-v2-postgres-hybrid/README.md) — `planned`
+- [Q003-v2](../../experiments/retrieval/Q003-v2-postgres-hybrid/README.md) — `frozen`
 
 ### Technology evaluations
 
