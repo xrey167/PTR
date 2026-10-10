@@ -1,0 +1,10 @@
+{"seed": 1011, "D": 2048, "arm": "workspace", "lr": 0.003, "d": 48, "ffn": 64, "wd_micro": 0, "id": 437, "ood16": 367, "ood24": 335, "converged": 1, "steps": 4350, "best_val": 436, "loss_w": 153085, "sec": 97}
+{"seed": 1012, "D": 2048, "arm": "workspace", "lr": 0.003, "d": 48, "ffn": 64, "wd_micro": 0, "id": 813, "ood16": 767, "ood24": 738, "converged": 1, "steps": 4200, "best_val": 848, "loss_w": 80739, "sec": 86}
+{"seed": 1013, "D": 2048, "arm": "workspace", "lr": 0.003, "d": 48, "ffn": 64, "wd_micro": 0, "id": 842, "ood16": 769, "ood24": 741, "converged": 1, "steps": 6150, "best_val": 862, "loss_w": 62610, "sec": 111}
+{"seed": 1014, "D": 2048, "arm": "workspace", "lr": 0.003, "d": 48, "ffn": 64, "wd_micro": 0, "id": 855, "ood16": 792, "ood24": 764, "converged": 1, "steps": 3300, "best_val": 849, "loss_w": 76657, "sec": 62}
+{"seed": 1015, "D": 2048, "arm": "workspace", "lr": 0.003, "d": 48, "ffn": 64, "wd_micro": 0, "id": 860, "ood16": 819, "ood24": 789, "converged": 1, "steps": 3450, "best_val": 868, "loss_w": 74651, "sec": 74}
+{"seed": 1016, "D": 2048, "arm": "workspace", "lr": 0.003, "d": 48, "ffn": 64, "wd_micro": 0, "id": 850, "ood16": 813, "ood24": 769, "converged": 1, "steps": 3600, "best_val": 855, "loss_w": 71674, "sec": 72}
+{"seed": 1017, "D": 2048, "arm": "workspace", "lr": 0.003, "d": 48, "ffn": 64, "wd_micro": 0, "id": 847, "ood16": 809, "ood24": 772, "converged": 1, "steps": 5400, "best_val": 875, "loss_w": 46854, "sec": 124}
+{"seed": 1018, "D": 2048, "arm": "workspace", "lr": 0.003, "d": 48, "ffn": 64, "wd_micro": 0, "id": 856, "ood16": 769, "ood24": 734, "converged": 1, "steps": 4800, "best_val": 850, "loss_w": 67499, "sec": 111}
+{"seed": 1019, "D": 2048, "arm": "workspace", "lr": 0.003, "d": 48, "ffn": 64, "wd_micro": 0, "id": 833, "ood16": 789, "ood24": 748, "converged": 1, "steps": 5850, "best_val": 852, "loss_w": 47148, "sec": 123}
+{"seed": 1020, "D": 2048, "arm": "workspace", "lr": 0.003, "d": 48, "ffn": 64, "wd_micro": 0, "id": 819, "ood16": 773, "ood24": 726, "converged": 1, "steps": 7500, "best_val": 839, "loss_w": 51217, "sec": 181}

@@ -1,0 +1,3 @@
+{"seed": 1007, "D": 2048, "arm": "weak_all_to_all", "lr": 0.003, "d": 48, "ffn": 206, "id": 822, "ood16": 702, "ood24": 578, "converged": 1, "steps": 4800, "best_val": 846, "loss_w": 38454, "sec": 189}
+{"seed": 1007, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.003, "d": 48, "ffn": 384, "id": 408, "ood16": 367, "ood24": 347, "converged": 1, "steps": 1950, "best_val": 395, "loss_w": 1075715, "sec": 53}
+{"seed": 1007, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.001, "d": 48, "ffn": 384, "id": 390, "ood16": 342, "ood24": 332, "converged": 1, "steps": 1950, "best_val": 402, "loss_w": 1137172, "sec": 36}

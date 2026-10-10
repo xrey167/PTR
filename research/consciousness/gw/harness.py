@@ -1,11 +1,13 @@
-"""C001 harness (v2): global workspace versus parameter-matched ablations, one seed.
+"""C001 harness (v3): global workspace versus parameter-matched ablations, one seed.
 
-    python research/consciousness/gw/harness.py --benchmark c001 --seed 3001
+    python research/consciousness/gw/harness.py --benchmark c001 --seed 4001
 
 Prints one JSON object on its last line (the result the aggregator judges).
-Exit 0: every coverage rule and hard counter holds. Exit 1: one of them failed (a defect of the product
-arm, the task or the harness: structural, never a statistical comparison). Exit 2: harness integrity (the
-environment is incomplete, an exception, a negative control that did not trip, bad arguments).
+Exit 0: every coverage rule and counter holds. Exit 1: a coverage rule or a STRUCTURAL counter failed (a defect of the
+product arm or of an isolated ablation; never a statistical comparison). Exit 2: harness integrity: the environment is
+incomplete, an exception, a negative control that did not trip, bad arguments, or an INTEGRITY counter above 0 (a defect of
+the task or the harness: module counts, train/validation/evaluation overlap, parameter matching, non-finite loss, checkpoint
+or convergence bookkeeping), which makes the seed, and so the experiment, INVALID rather than FALSIFIED.
 The comparison of the arms across seeds, and the validity guards, are the aggregator's.
 
 Data regime: a FINITE training set of D examples of N_train modules (cycled), and evaluation on N_train
@@ -20,6 +22,7 @@ import argparse
 import hashlib
 import json
 import math
+import platform
 import struct
 import sys
 import time
@@ -56,6 +59,58 @@ def environment_problems() -> list[str]:
     return problems
 
 
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
+
+
+def environment_record() -> dict:
+    """What the result was computed with: recorded in every result so that the aggregator can refuse a mix. The runner
+    records only the first token of the command (env), so the interpreter, the torch build, the CPU and the lock file
+    are written here."""
+    cpu_model, flags = "unknown", ""
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("model name") and cpu_model == "unknown":
+                cpu_model = line.split(":", 1)[1].strip()
+            if line.startswith("flags") and not flags:
+                flags = line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return {
+        "python": sys.version.split()[0],
+        "torch": torch.__version__,
+        "torch_config_sha256": hashlib.sha256(torch.__config__.show().encode()).hexdigest(),
+        "cpu_model": cpu_model,
+        "cpu_flags_sha256": hashlib.sha256(flags.encode()).hexdigest(),
+        "machine": platform.machine(),
+        "threads": torch.get_num_threads(),
+        "uv_lock_sha256": file_sha256(ROOT / "research/consciousness/uv.lock"),
+        "pyproject_sha256": file_sha256(ROOT / "research/consciousness/pyproject.toml"),
+    }
+
+
+def preflight() -> int:
+    """Check the environment and run a tiny forward pass of every arm, without reading a seed or training. Run it through
+    the runner's exact environment before the runner reserves a seed: a failure there costs nothing, a failure inside a
+    recorded run spends the seed."""
+    problems = environment_problems()
+    if problems:
+        print("preflight failed: " + "; ".join(problems), file=sys.stderr)
+        return 2
+    _load_torch()
+    try:
+        cfg = load_config()
+        torch.manual_seed(0)
+        x = torch.randn(2, cfg["n_train_modules"], cfg["d_in"])
+        for name in gwmodel.ARM_SPECS:
+            gwmodel.build(name, cfg)(x)
+        print(json.dumps({"preflight": "ok", "environment": environment_record()}, sort_keys=True))
+        return 0
+    except Exception:
+        traceback.print_exc()
+        return 2
+
+
 def _load_torch():
     global torch, gwmodel, gwtask
     import torch as _torch
@@ -69,7 +124,8 @@ def _load_torch():
 
 
 sys.path.insert(0, str(HERE))
-from rules import HARD_COUNTERS, coverage_rules, falsifier_rules, guard_rules, holds, judge  # noqa: E402,F401
+import rules  # noqa: E402
+from rules import HARD_COUNTERS, coverage_rules, falsifier_rules, guard_rules, holds, integrity_failed, judge  # noqa: E402,F401
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -182,15 +238,20 @@ def evaluate(net, batch, alive=None):
     return int((pred == batch["y"]).sum()), int(batch["y"].numel())
 
 
-def train_arm(name, cfg, seed, train_data, curve_batch, steps, ffn, lr, observed_n):
+def train_arm(name, cfg, seed, train_data, val_batch, ffn, lr, observed_n):
+    """Train one arm to a plateau: evaluate on the held-out in-distribution validation set every `eval_every` steps, keep
+    the best weights, stop when the validation accuracy has not improved by `min_delta_permille` for `patience`
+    evaluations, or at `max_steps` (then the arm is UNCONVERGED, which the aggregator turns into an invalid seed)."""
     torch.manual_seed(arm_seed(seed, name))
     net = gwmodel.build(name, cfg, ffn=ffn)
-    opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=cfg["weight_decay"])
+    opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=gwmodel.arm_weight_decay(name, cfg))
     perm_gen = torch.Generator().manual_seed(seed * 1000 + cfg["train_stream_offset"] + 1)
     size = train_data["y"].shape[0]
     order, cursor = torch.randperm(size, generator=perm_gen), 0
-    curve, counts, last_loss, finite = [], [], 0.0, True
-    for step in range(1, steps + 1):
+    curve, counts, window, last_loss, finite = [], [], [], 0.0, True
+    best, best_state, since, converged, step = -1, None, 0, False, 0
+    while step < cfg["max_steps"]:
+        step += 1
         if cursor + cfg["batch_size"] > size:
             order, cursor = torch.randperm(size, generator=perm_gen), 0
         idx = order[cursor : cursor + cfg["batch_size"]]
@@ -203,13 +264,26 @@ def train_arm(name, cfg, seed, train_data, curve_batch, steps, ffn, lr, observed
         torch.nn.utils.clip_grad_norm_(net.parameters(), cfg["grad_clip"])
         opt.step()
         last_loss = float(loss)
+        window.append(last_loss)
         if not math.isfinite(last_loss):
             finite = False
         if step % cfg["eval_every"] == 0:
-            c, t = evaluate(net, curve_batch)
+            c, t = evaluate(net, val_batch)
             curve.append(permille(c, t))
             counts.append((c, t))
-    return net, (curve, counts), last_loss, finite
+            if permille(c, t) > best + cfg["min_delta_permille"]:
+                best, since = permille(c, t), 0
+                best_state = {k: v.clone() for k, v in net.state_dict().items()}
+            else:
+                since += 1
+            if since >= cfg["patience"]:
+                converged = True
+                break
+    if best_state is not None:
+        net.load_state_dict(best_state)
+    tail = window[-cfg["eval_every"] * cfg["loss_window_evals"] :]
+    return net, {"curve": curve, "counts": counts, "converged": converged, "steps": step, "best_val": best,
+                 "loss_window_micro": int(1e6 * sum(tail) / len(tail)) if finite else -1}, last_loss, finite
 
 
 def first_steps_loss(name, cfg, seed, train_data, ffn, steps=20) -> float:
@@ -291,7 +365,8 @@ def run(seed: int, overrides: dict) -> dict:
     id_batch = make_batch(gens["id"], cfg["eval_size"], n_train, cfg)
     ood16 = make_batch(gens["ood16"], cfg["eval_size"], 16, cfg)
     ood24 = make_batch(gens["ood24"], cfg["eval_size"], 24, cfg)
-    curve_batch = make_batch(gens["curve"], cfg["curve_eval_size"], n_train, cfg)
+    val_batch = make_batch(gens["curve"], cfg["curve_eval_size"], n_train, cfg)
+    val_hashes = set(row_hashes(val_batch["x"]))
     probe_x = make_batch(gens["probe"], cfg["probe_size"], n_train, cfg)["x"]
     ign_batch = make_batch(gens["ign"], cfg["probe_size"], n_train, cfg)
     drop_batch = make_batch(gens["drop"], cfg["eval_size"], n_train, cfg)
@@ -303,23 +378,38 @@ def run(seed: int, overrides: dict) -> dict:
         if name != "workspace":
             widths[name] = gwmodel.match_width(name, cfg, target)
     arms, nets, observed_n, nonfinite = {}, {}, set(), 0
+    checkpoint_mismatch = convergence_mismatch = 0
     for name in gwmodel.ARM_SPECS:
-        net, (curve, counts), loss, finite = train_arm(
-            name, cfg, seed, train_data, curve_batch, cfg["steps"], widths[name], cfg["arm_lr"][name], observed_n
+        net, run_info, loss, finite = train_arm(
+            name, cfg, seed, train_data, val_batch, widths[name], cfg["arm_lr"][name], observed_n
         )
+        curve, counts = run_info["curve"], run_info["counts"]
         nonfinite += 0 if finite else 1
+        # Audits of the training loop, independent of it: the restored weights must be the best-validation checkpoint, and the
+        # convergence flag and the step count must agree with the learning curve under the stopping rule.
+        restored = permille(*evaluate(net, val_batch))
+        checkpoint_mismatch += int(restored != run_info["best_val"])
+        stopped = rules.plateau_reached(curve, cfg["patience"], cfg["min_delta_permille"])
+        expected_steps = len(curve) * cfg["eval_every"] if stopped else cfg["max_steps"]
+        convergence_mismatch += int(stopped != run_info["converged"] or run_info["steps"] != expected_steps)
         rec = {
             "scheme": net.scheme,
             "slots": net.slots,
             "ffn": widths[name],
+            "d_model": gwmodel.arm_d(name, cfg),
             "lr_micro": round(cfg["arm_lr"][name] * 1_000_000),
+            "weight_decay_micro": round(gwmodel.arm_weight_decay(name, cfg) * 1_000_000),
+            "converged": int(run_info["converged"]),
+            "steps": run_info["steps"],
+            "best_val_permille": run_info["best_val"],
+            "train_loss_window_micro": run_info["loss_window_micro"],
             "params": gwmodel.count_params(net),
             "comm_ops_n8": gwmodel.comm_ops(name, cfg, n_train),
             "comm_ops_n16": gwmodel.comm_ops(name, cfg, 16),
             "comm_ops_n24": gwmodel.comm_ops(name, cfg, 24),
             "curve_permille": curve,
-            "auc_correct": sum(c for c, _ in counts),
-            "auc_total": sum(t for _, t in counts),
+            "auc_correct": sum(c for c, _ in (counts + [counts[-1]] * cfg["auc_evals"])[: cfg["auc_evals"]]),
+            "auc_total": sum(t for _, t in (counts + [counts[-1]] * cfg["auc_evals"])[: cfg["auc_evals"]]),
             "final_loss_micro": int(1e6 * loss) if math.isfinite(loss) else -1,
         }
         for key, batch in (("id", id_batch), ("ood16", ood16), ("ood24", ood24)):
@@ -341,7 +431,7 @@ def run(seed: int, overrides: dict) -> dict:
     a2a_reach = leak_count(nets["all_to_all"], probe_x, scale_p, "sensory")
     nb_reporter = leak_count(nets["no_broadcast"], probe_x, scale_p, "reporter")
     bott = 0
-    for name in ("workspace", "no_broadcast", "competition_off", "capacity_off"):
+    for name in ("workspace", "no_broadcast", "competition_off", "capacity_off", "sparse_all_to_all"):
         with torch.no_grad():
             nets[name](probe_x)
         bott += bottleneck_violations(dict(nets[name].trace), nets[name].top_k) if name != "competition_off" else 0
@@ -350,6 +440,7 @@ def run(seed: int, overrides: dict) -> dict:
     majority = permille(int(torch.bincount(id_batch["y"]).max()), int(id_batch["y"].numel()))
     above_chance = int(nc_id > majority + cfg["chance_slack_permille"])
     overlap = overlap_count(train_hashes, id_batch["x"]) + overlap_count(train_hashes, ood16["x"][:, :n_train]) + overlap_count(train_hashes, ood24["x"][:, :n_train])
+    val_overlap = overlap_count(val_hashes, id_batch["x"]) + overlap_count(val_hashes, ood16["x"][:, :n_train]) + overlap_count(val_hashes, ood24["x"][:, :n_train])
     n_leaks = n_leak_count(observed_n, OOD_MODULES)
     nondet = int(first_steps_loss("workspace", cfg, seed, train_data, widths["workspace"]) != first_steps_loss("workspace", cfg, seed, train_data, widths["workspace"]))
 
@@ -365,7 +456,8 @@ def run(seed: int, overrides: dict) -> dict:
         "dropout_probe": {"required_rule_tripped": dropout_probe_is_sensitive(nets["all_to_all"], probe_x, scale_p)},
     }
 
-    comparator = max(permille(arms[n]["ood16_correct"], arms[n]["ood16_total"]) for n in ("all_to_all", "bw_all_to_all"))
+    ood16_permille = {n: permille(arms[n]["ood16_correct"], arms[n]["ood16_total"]) for n in arms}
+    comparator = rules.comparator_primary_permille(ood16_permille)
     ws_id = permille(arms["workspace"]["id_correct"], arms["workspace"]["id_total"])
     result = {
         "benchmark": BENCHMARK,
@@ -387,7 +479,10 @@ def run(seed: int, overrides: dict) -> dict:
         "majority_permille": majority,
         "no_comm_id_permille": nc_id,
         "comparator_primary_permille": comparator,
-        "workspace_trained": int(ws_id >= nc_id + cfg["trained_margin_permille"]),
+        "workspace_trained": rules.workspace_trained(ws_id, nc_id, cfg["trained_margin_permille"]),
+        "unconverged_judged_arms": rules.unconverged_guard_arms({n: arms[n]["converged"] for n in arms}),
+        "unconverged_arms": [n for n in arms if not arms[n]["converged"]],
+        "environment": environment_record(),
         "workspace_influence_hits": ws_reach,
         "pairwise_influence_hits": a2a_reach,
         "no_broadcast_reporter_hits": nb_reporter,
@@ -401,6 +496,9 @@ def run(seed: int, overrides: dict) -> dict:
         "train_eval_overlap": overlap,
         "nondeterminism": nondet,
         "nonfinite_arms": nonfinite,
+        "val_eval_overlap": val_overlap,
+        "checkpoint_mismatch_arms": checkpoint_mismatch,
+        "convergence_mismatch_arms": convergence_mismatch,
         "no_comm_above_chance": above_chance,
         "controls": controls,
         "harness_gaps": [],
@@ -410,19 +508,26 @@ def run(seed: int, overrides: dict) -> dict:
     coverage_failed, falsifiers_failed = judge(result, cfg)
     result["coverage_failed"] = coverage_failed
     result["falsifiers_failed"] = falsifiers_failed
+    result["integrity_failed"] = integrity_failed(result)
     result["guards_failed"] = [r for r in guard_rules(cfg) if not holds(result, r)]
-    result["hard_failures"] = len(falsifiers_failed)
+    result["hard_failures"] = len(falsifiers_failed) + len(result["integrity_failed"])
     return result
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--benchmark", required=True, help="must be c001; the runner checks this token in the command")
-    parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--preflight", action="store_true", help="check the environment and exit; reads no seed, trains nothing")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=JSON", help="override a pinned value (scale 'custom', never evidence)")
     args = parser.parse_args()
     if args.benchmark != BENCHMARK:
         print(f"unknown benchmark {args.benchmark!r}", file=sys.stderr)
+        return 2
+    if args.preflight:
+        return preflight()
+    if args.seed is None:
+        print("--seed is required", file=sys.stderr)
         return 2
     problems = environment_problems()
     if problems:
@@ -439,9 +544,12 @@ def main() -> int:
         traceback.print_exc()
         return 2
     failed_controls = [k for k, v in result["controls"].items() if not v["required_rule_tripped"]]
+    broken = [rule.split(" ")[0] for rule in result["integrity_failed"]]
     print(json.dumps(result, sort_keys=True))
-    if failed_controls:
+    if failed_controls or broken:
+        # Exit 2 (harness integrity), never 1: a defect of the harness or the task is not a result about the product arm.
         print(f"harness integrity: negative controls did not trip: {failed_controls}", file=sys.stderr)
+        print(f"harness integrity: integrity counters above 0: {broken}", file=sys.stderr)
         return 2
     return 1 if (result["coverage_failed"] or result["falsifiers_failed"]) else 0
 
