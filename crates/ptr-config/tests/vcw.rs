@@ -103,6 +103,9 @@ fn invalid_values_fail_validation_even_while_the_section_is_off() {
         "[vcw]\nlearning = \"shadow\"\nexploration_floor = 0.0\n".to_owned(),
         "[vcw.pods]\nproposer = \"\"\n".to_owned(),
         "[vcw.pods]\nvalue_repair = \"vcw-proposer\"\n".to_owned(),
+        "[vcw.pods.extra_repairers]\npoetry = [\"p\"]\n".to_owned(),
+        "[vcw.pods.extra_repairers]\nvalue = [\"vcw-proposer\"]\n".to_owned(),
+        "[vcw.pods.extra_repairers]\nvalue = [\" x\"]\n".to_owned(),
         "[vcw.experts.simulated]\ndefault_repair_success = 2.0\n".to_owned(),
         "[vcw.experts.simulated.error_rates]\n\"a\" = -1.0\n".to_owned(),
     ] {
@@ -174,4 +177,15 @@ fn shadow_learning_is_opt_in_and_needs_the_exploration_floor() {
     assert_eq!(config.vcw.learning, VcwLearning::Shadow);
     config.validate().unwrap();
     assert_eq!(PtrConfig::default().vcw.learning, VcwLearning::Off);
+}
+
+#[test]
+fn extra_repairers_are_read_by_role_name() {
+    let config = PtrConfig::from_toml_str(
+        "[vcw.pods.extra_repairers]\nvalue = [\"a\", \"b\"]\ncode = [\"c\"]\n",
+    )
+    .unwrap();
+    config.validate().unwrap();
+    assert_eq!(config.vcw.pods.extra_repairers["value"], ["a", "b"]);
+    assert!(PtrConfig::default().vcw.pods.extra_repairers.is_empty());
 }

@@ -1,4 +1,4 @@
-.PHONY: check test fmt bench-check py-bindings a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
+.PHONY: vcw-demo check test fmt bench-check py-bindings a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
 	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke release-package \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
@@ -85,6 +85,14 @@ smoke-gpu:
 
 olmoe-sft-smoke:
 	PYTHONPATH=training/src $(TRAIN_PY) -m ptr_training.run --config $(OLMOE_SFT_CONFIG) --execute
+
+# Builds ptrd, starts it with config/vcw-demo.toml (verifier-closed path on, simulated experts, real
+# verifiers), sends a repaired and an exhausted request, prints trace, budget and ledger events read
+# back from the daemon, stops it and exits 0 only if every expected property held. With
+# PTR_VCW_QWEN_DIR set to a local checkpoint directory the CPU model is built in and used instead.
+vcw-demo:
+	cargo build -p ptrd --locked $(if $(PTR_VCW_QWEN_DIR),--features qwen-cpu)
+	$(PYTHON) scripts/vcw_demo.py
 
 a0: a0-stable a0-msrv
 

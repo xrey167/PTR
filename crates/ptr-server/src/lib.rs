@@ -485,6 +485,18 @@ pub async fn serve_state(
     axum::serve(listener, router_with_state(state)).await
 }
 
+/// Like [`serve_state`], but stops accepting and returns once `shutdown` completes and the
+/// requests in flight have finished.
+pub async fn serve_state_until(
+    listener: tokio::net::TcpListener,
+    state: ServerState,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    axum::serve(listener, router_with_state(state))
+        .with_graceful_shutdown(shutdown)
+        .await
+}
+
 pub async fn serve(listener: tokio::net::TcpListener, runtime: PtrRuntime) -> std::io::Result<()> {
     axum::serve(listener, router(runtime)).await
 }

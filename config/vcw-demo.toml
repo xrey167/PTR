@@ -1,0 +1,111 @@
+[server]
+bind = "127.0.0.1:18080"
+# The demo driver overrides bind and data_dir (--bind, --data-dir): a free port and a temp dir.
+data_dir = "data"
+
+[model]
+backend = "reference-echo"
+
+[runtime]
+mode = "standalone"
+mailbox_capacity = 128
+max_parallel_candidates = 4
+
+[semantic]
+cancel_stale_revisions = true
+retain_raw_evidence = true
+
+[action_boundary]
+require_capability = true
+require_live_generation = true
+require_current_revision = true
+
+[observability]
+structured_tracing = true
+async_backtrace = false
+
+[research]
+allow_unlocked_components = true
+require_experiment_manifest = true
+
+# The verifier-closed workspace demo (`make vcw-demo`, scripts/vcw_demo.py).
+#
+# Experts, stage (c): SIMULATED programmatic specialists with controlled error and repair rates.
+# They draw their clean candidates from the request's `reference` and plant defects at the rates
+# below; they are not a model, and a simulated answer is client-authored. The VERIFIERS are real:
+# the arithmetic evaluator, the JSON Schema checker and the code-test runner of ptr-verifier decide
+# every candidate. (Stage (a), a small open-weight model on CPU, is the optional qwen-cpu backend;
+# stage (b), small self-trained specialists, is not built.)
+#
+# Roster: every repair role used has two eligible repairers with different skill, so the finding
+# router samples among them (propensity below 1, logged with its support):
+#   value  : vcw-value-repair (skill 1.0)  and vcw-generalist-repair (skill 0.5)
+#   schema : vcw-schema-repair (skill 1.0) and vcw-generalist-repair (skill 0.5)
+#   code   : vcw-code-repair and vcw-code-repair-b, both skill 0.0 on code.test_failed
+# The generalist also holds the format role (different coverage). The routing draw uses a fresh
+# nonce instance per ptrd start, so WHICH Pod wins varies between runs; the seed below is chosen so
+# that the generalist clears the arithmetic and JSON defects within two attempts, whichever Pod is
+# drawn, so the expected properties hold on every run.
+#
+#  * Every arithmetic proposal carries `arith.value` and every JSON proposal `json.required`:
+#    the first candidate always fails the real verifier and is repaired in a routed round.
+#  * Every code proposal carries `code.test_failed` and NO repairer of that code can clear it
+#    (skill 0): the request can only end by running out of budget. Nothing about its reference is
+#    wrong; the experts are unable.
+[vcw]
+enabled = true
+project = "vcw"
+kinds = ["arithmetic", "json_object", "code"]
+max_verifier_calls = 6
+max_rounds = 5
+hint_mode = "trace-only"
+learning = "off"
+max_request_ms = 30000
+exploration_floor = 0.05
+
+[vcw.pods]
+proposer = "vcw-proposer"
+format_repair = "vcw-format-repair"
+value_repair = "vcw-value-repair"
+schema_repair = "vcw-schema-repair"
+code_repair = "vcw-code-repair"
+resource_repair = "vcw-resource-repair"
+fact_repair = "vcw-fact-repair"
+generation = 1
+
+[vcw.pods.extra_repairers]
+format = ["vcw-generalist-repair"]
+value = ["vcw-generalist-repair"]
+schema = ["vcw-generalist-repair"]
+code = ["vcw-code-repair-b"]
+
+[vcw.experts]
+backend = "simulated"
+
+[vcw.experts.simulated]
+seed = 32
+default_repair_success = 1.0
+decline_on_failure = false
+
+[vcw.experts.simulated.error_rates]
+"arith.value" = 1.0
+"json.required" = 1.0
+"code.test_failed" = 1.0
+
+[vcw.experts.simulated.pod_repair_success.vcw-generalist-repair]
+"arith.value" = 0.5
+"json.required" = 0.5
+
+[vcw.experts.simulated.pod_repair_success.vcw-code-repair]
+"code.test_failed" = 0.0
+
+[vcw.experts.simulated.pod_repair_success.vcw-code-repair-b]
+"code.test_failed" = 0.0
+
+[vcw.experts.qwen_cpu]
+model_dir = ""
+weights_sha256 = ""
+config_sha256 = ""
+tokenizer_sha256 = ""
+tokenizer_config_sha256 = ""
+max_new_tokens = 0

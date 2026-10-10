@@ -1146,3 +1146,181 @@ fn shadow_learning_without_an_exploration_floor_is_refused() {
             .is_err()
     );
 }
+
+async fn get(app: &Router, path: &str) -> (StatusCode, Value) {
+    let request = Request::get(path).body(Body::empty()).unwrap();
+    let (status, bytes) = send(app, request).await;
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn the_trace_and_ledger_events_of_a_request_can_be_read_back() {
+    let config = with_errors(enabled(), &[("arith.value", 1.0)]);
+    let (state, app) = server(&config);
+    let (status, body) = post(&app, &arithmetic("trace-1")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, report) = get(&app, "/v1/vcw/traces/trace-1").await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["outcome"], "verified");
+    assert_eq!(report["backend"], "simulated");
+    assert_eq!(report["trace"]["digest"], body["trace_digest"]);
+    let steps = report["trace"]["steps"].as_array().unwrap();
+    assert_eq!(steps[0]["candidate"]["status"], "Fail");
+    assert_eq!(steps[0]["candidate"]["hard_codes"], json!(["arith.value"]));
+    let routed = &steps[1]["routes"][0];
+    assert_eq!(routed["pod"], "vcw-value-repair");
+    assert!(routed["propensity"].as_f64().unwrap() > 0.0);
+    assert_eq!(report["trace"]["spent"]["rounds"], body["rounds"]);
+
+    // The events listed are exactly the ledger range the response reported, read from the ledger.
+    let ledger = &report["ledger"];
+    assert_eq!(ledger["first_index"], body["committed"]["first_index"]);
+    assert_eq!(ledger["count"], body["committed"]["count"]);
+    let kinds: Vec<&str> = ledger["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"PodOutputAdmitted"), "{kinds:?}");
+    let handle = state.runtime_handle();
+    let runtime = handle.lock().unwrap();
+    assert_eq!(admitted_for(&runtime, "trace-1").len(), 1);
+}
+
+#[tokio::test]
+async fn an_unanswered_request_reads_back_without_an_admission_and_an_unknown_id_is_404() {
+    // The reference is wrong, so no candidate ever verifies.
+    let config = with_errors(enabled(), &[("arith.value", 1.0)]);
+    let (_state, app) = server(&config);
+    let request = json!({"id": "trace-2", "task": {
+        "kind": "arithmetic", "expression": "(3 + 4) * 5", "reference": "30"}});
+    let (status, body) = post(&app, &request).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["outcome"], "exhausted");
+    assert!(body.get("answer").is_none());
+
+    let (status, report) = get(&app, "/v1/vcw/traces/trace-2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["outcome"], "exhausted");
+    let kinds: Vec<&str> = report["ledger"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["kind"].as_str().unwrap())
+        .collect();
+    assert!(
+        !kinds.iter().any(|kind| kind.starts_with("PodOutput")),
+        "{kinds:?}"
+    );
+    assert!(report["trace"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|step| step["candidate"].is_null() || step["candidate"]["status"] != "Pass"));
+
+    let (status, _) = get(&app, "/v1/vcw/traces/never-sent").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_trace_route_does_not_exist_without_the_vcw_path() {
+    let app = router_from_state(ServerState::new(
+        PtrRuntime::new(PtrConfig::default()).unwrap(),
+    ));
+    let (status, _) = get(&app, "/v1/vcw/traces/anything").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_second_eligible_repairer_makes_the_router_sample_with_a_propensity_below_one() {
+    let mut config = with_errors(enabled(), &[("arith.value", 1.0)]);
+    config
+        .pods
+        .extra_repairers
+        .insert("value".into(), vec!["vcw-generalist".into()]);
+    let (_state, app) = server(&config);
+    let (status, body) = post(&app, &arithmetic("two-repairers")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, report) = get(&app, "/v1/vcw/traces/two-repairers").await;
+    let repair = report["trace"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|step| step["routes"].as_array().unwrap().iter())
+        .find(|route| route["class"].as_str().unwrap().starts_with("Repair"))
+        .expect("a repair was routed");
+    let support = repair["support"].as_array().unwrap();
+    let pods: Vec<&str> = support
+        .iter()
+        .map(|entry| entry["pod"].as_str().unwrap())
+        .collect();
+    assert_eq!(pods, ["vcw-generalist", "vcw-value-repair"]);
+    let chosen = repair["pod"].as_str().unwrap();
+    let width = support.iter().find(|entry| entry["pod"] == chosen).unwrap()["width"]
+        .as_f64()
+        .unwrap();
+    let propensity = repair["propensity"].as_f64().unwrap();
+    assert!(propensity > 0.0 && propensity < 1.0);
+    assert!((propensity - width / 9_007_199_254_740_992.0).abs() < 1e-9);
+}
+
+// The guard is held across awaits on purpose: it stands in for a long request.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_reads_and_health_answer_while_a_long_request_holds_the_runtime() {
+    let config = with_errors(enabled(), &[("arith.value", 1.0)]);
+    let (state, app) = server(&config);
+    let (status, _) = post(&app, &arithmetic("held-1")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Hold the runtime lock the way a long request does, and read from more concurrent clients
+    // than there are async workers: none of them may wait for the lock.
+    let handle = state.runtime_handle();
+    let guard = handle.lock().unwrap();
+    let mut reads = Vec::new();
+    for _ in 0..8 {
+        let app = app.clone();
+        reads.push(tokio::spawn(async move {
+            get(&app, "/v1/vcw/traces/held-1").await
+        }));
+    }
+    let answered = tokio::time::timeout(Duration::from_secs(10), async {
+        let health = get(&app, "/health").await;
+        let mut statuses = Vec::new();
+        for read in reads {
+            statuses.push(read.await.unwrap().0);
+        }
+        (health.0, statuses)
+    })
+    .await
+    .expect("a trace read or /health waited for the runtime lock");
+    drop(guard);
+    assert_eq!(answered.0, StatusCode::OK);
+    assert!(answered.1.iter().all(|status| *status == StatusCode::OK));
+}
+
+#[tokio::test]
+async fn the_ledger_summary_has_no_event_content() {
+    let config = with_errors(enabled(), &[("arith.value", 1.0)]);
+    let (_state, app) = server(&config);
+    let (status, _) = post(&app, &arithmetic("summary-1")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, report) = get(&app, "/v1/vcw/traces/summary-1").await;
+    let events = report["ledger"]["events"].as_array().unwrap();
+    assert!(!events.is_empty());
+    for event in events {
+        let mut keys: Vec<&str> = event
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["bytes", "digest", "index", "kind"]);
+    }
+}
