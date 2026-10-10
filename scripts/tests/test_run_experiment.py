@@ -1566,6 +1566,298 @@ class RunWatchTests(unittest.TestCase):
         self.assertNotIn("environment", record)
         self.assertNotIn("executable", record)
 
+    SECRET = "host=127.0.0.1 port=5433 user=u password=hunter2-s3cret dbname=d"
+
+    def run_declared(self, declared: str = '["PTR_TEST_DSN", "PTR_TEST_ROOT"]', runner: dict | None = None, echo: bool = False):
+        """Run seed 17 of L900, which declares `command_environment`
+        `declared`, through a real `bench` that prints its environment as
+        JSON (and, with `echo`, the DSN itself); returns the status, the
+        record, what `bench` saw and stderr."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        bench = Path(directory.name) / "bench"
+        extra = "print('dsn is ' + os.environ['PTR_TEST_DSN'])\n" if echo else ""
+        bench.write_text(
+            "#!/usr/bin/env python3\nimport json, os\n" + extra
+            + f"expected = {{'PTR_TEST_DSN': {self.SECRET!r}, 'PTR_TEST_ROOT': '/models'}}\n"
+            + "print(json.dumps({'ptr': sorted(k for k in os.environ if k.startswith('PTR_')), "
+            + "'equal': {k: os.environ.get(k) == v for k, v in expected.items()}}))\n",
+            encoding="utf-8",
+        )
+        bench.chmod(0o755)
+        self.preregister("running", manifest_lines=f"command_environment = {declared}\n")
+        environment = {
+            "PATH": f"{directory.name}{os.pathsep}{os.environ['PATH']}",
+            "PTR_TEST_DSN": self.SECRET,
+            "PTR_TEST_ROOT": "/models",
+            "PTR_UNDECLARED": "undeclared-value",
+            **(runner or {}),
+        }
+        stderr = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, environment),
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr),
+        ):
+            status = mod.run_experiment("L900", entrypoint="entrypoint", seed=17)
+        records = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
+        if not records:
+            return status, None, None, stderr.getvalue()
+        [record] = records
+        try:
+            seen = json.loads(record["stdout"].splitlines()[-1])
+        except (IndexError, json.JSONDecodeError):
+            seen = None
+        return status, record, seen, stderr.getvalue()
+
+    def test_a_declared_variable_reaches_the_command_and_its_value_is_never_recorded(self):
+        status, record, seen, stderr = self.run_declared(echo=True)
+        self.assertEqual((status, stderr, record["status"]), (0, "", "completed"))
+        # The command sees the declared variables, and not an undeclared PTR_ one.
+        self.assertEqual(seen["equal"], {"PTR_TEST_DSN": True, "PTR_TEST_ROOT": True})
+        self.assertEqual(seen["ptr"], ["PTR_TEST_DSN", "PTR_TEST_ROOT"])
+        # The record names each by name and whether it was set, and holds no value.
+        self.assertEqual(
+            record["command_environment"],
+            [
+                {"name": "PTR_TEST_DSN", "set": True, "redaction": "applied"},
+                # "/models" is too short to be a credential: it is left as printed, and the record says so.
+                {"name": "PTR_TEST_ROOT", "set": True, "redaction": "skipped-short-value"},
+            ],
+        )
+        self.assertNotIn("PTR_TEST_DSN", record["environment"])
+        self.assertEqual(record["manifest"]["command_environment"], ["PTR_TEST_DSN", "PTR_TEST_ROOT"])
+        # Not in the record, copy or output: the command printed the DSN, and the record has it redacted.
+        written = "".join(
+            path.read_text(encoding="utf-8")
+            for path in (*self.results.glob("run-*.json"), *self.attempts().glob("run-*.json"))
+        )
+        for value in (self.SECRET, "hunter2-s3cret", hashlib.sha256(self.SECRET.encode()).hexdigest(), "undeclared-value"):
+            self.assertNotIn(value, written)
+        self.assertIn("dsn is <PTR_TEST_DSN redacted>", record["stdout"])
+
+    def test_a_listed_run_with_no_declared_variable_passes_no_ptr_variable_and_records_no_field(self):
+        status, record, seen, stderr = self.run_declared(declared="[]")
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(seen["ptr"], [])
+        self.assertNotIn("command_environment", record)
+
+    def test_a_declared_variable_that_is_unset_refuses_the_run_before_its_seed_is_reserved(self):
+        for runner in ({"PTR_TEST_ROOT": ""}, {"PTR_TEST_DSN": ""}):
+            with self.subTest(runner=runner):
+                self.tearDown()
+                self.setUp()
+                directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+                (directory / "bench").write_text("#!/bin/sh\n", encoding="utf-8")
+                (directory / "bench").chmod(0o755)
+                self.preregister("running", manifest_lines='command_environment = ["PTR_TEST_DSN", "PTR_TEST_ROOT"]\n')
+                environment = {k: v for k, v in os.environ.items() if not k.startswith("PTR_TEST_")}
+                environment.update({"PTR_TEST_DSN": "x", "PTR_TEST_ROOT": "y", **runner})
+                ran = []
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    status, records, stderr = self.run_seed(lambda: ran.append(True))
+                missing = next(name for name, value in runner.items() if not value)
+                self.assertEqual((status, records, ran, list(self.attempts().glob("run-*.json"))), (2, [], [], []))
+                self.assertIn(f"command_environment {missing}, which the runner's environment does not set", stderr)
+                self.assertFalse((Path(git(self.root, "rev-parse", "--absolute-git-dir")) / "ptr-run-L900.lock").exists())
+                # Nothing was spent: with the variable set, the seed runs.
+                with mock.patch.dict(os.environ, {"PTR_TEST_DSN": "x", "PTR_TEST_ROOT": "y"}):
+                    status, records, stderr = self.run_seed()
+                self.assertEqual((status, [r["status"] for r in records]), (0, ["completed"]))
+        # Entirely unset (not merely empty) refuses the same.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running", manifest_lines='command_environment = ["PTR_TEST_ABSENT"]\n')
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PTR_TEST_ABSENT", None)
+            status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertEqual(mod.missing_declared_environment({"command_environment": ["PTR_TEST_ABSENT"]}), ["PTR_TEST_ABSENT"])
+
+    def test_a_manifest_declaring_a_bad_variable_name_is_refused(self):
+        for declared in (
+            '["PATH"]', '["LD_PRELOAD"]', '["PYTHONPATH"]', '["RUSTFLAGS"]', '["CARGO_HOME"]', '["ptr_lower"]',
+            '["PTR_"]', '["PTR_A B"]', '["XPTR_A"]', '["PTR_A", "PTR_A"]', '"PTR_A"', "[1]",
+            str([f"PTR_V{i}" for i in range(9)]).replace("'", '"'),
+        ):
+            with self.subTest(declared=declared):
+                self.tearDown()
+                self.setUp()
+                ran = []
+                self.preregister("running", manifest_lines=f"command_environment = {declared}\n")
+                with mock.patch.dict(os.environ, {f"PTR_V{i}": "1" for i in range(9)} | {"PTR_A": "1"}):
+                    status, records, stderr = self.run_seed(lambda: ran.append(True))
+                self.assertEqual((status, records, ran), (2, [], []))
+                self.assertIn("command_environment", stderr)
+        # Eight names are allowed.
+        errors = mod.check_research_gates.command_environment_errors(
+            "X", {"command_environment": [f"PTR_V{i}" for i in range(8)]}
+        )
+        self.assertEqual(errors, [])
+
+    def test_redaction_covers_the_forms_a_value_is_printed_in_and_spares_short_values(self):
+        value = 'host=h user=u password=p"w\\x\u00e9z dbname=d'
+        secrets = {"PTR_DSN": value, "PTR_FLAG": "1"}
+        encoded = mod.json.dumps(value)[1:-1]
+        printed = [
+            value,
+            mod.json.dumps({"err": value}),
+            mod.json.dumps({"err": value}, ensure_ascii=False),
+            "postgres://u@h/db?" + mod.urllib.parse.quote(value, safe=""),
+        ]
+        for text in printed:
+            with self.subTest(text=text):
+                out = mod.redacted(text, secrets)
+                self.assertIn("<PTR_DSN redacted>", out)
+                self.assertNotIn("p\"w", out)
+                self.assertNotIn(encoded, out)
+        # A short value is left alone, so evidence that merely contains it is not corrupted.
+        self.assertEqual(mod.redacted('{"recall":905,"n":1}', secrets), '{"recall":905,"n":1}')
+        self.assertEqual(mod.redaction_state("1"), "skipped-short-value")
+        self.assertEqual(mod.redaction_state("x" * 7), "skipped-short-value")
+        self.assertEqual(mod.redaction_state("x" * 8), "applied")
+
+    def test_a_declared_value_with_whitespace_at_either_end_refuses_the_run_before_its_seed_is_reserved(self):
+        for value in (" /models/x", "/models/x\n", "\t"):
+            with self.subTest(value=value):
+                self.tearDown()
+                self.setUp()
+                self.preregister("running", manifest_lines='command_environment = ["PTR_TEST_ROOT"]\n')
+                ran = []
+                with mock.patch.dict(os.environ, {"PTR_TEST_ROOT": value}):
+                    status, records, stderr = self.run_seed(lambda: ran.append(True))
+                self.assertEqual((status, records, ran, list(self.attempts().glob("run-*.json"))), (2, [], [], []))
+                self.assertIn("PTR_TEST_ROOT has whitespace at either end", stderr)
+                self.assertNotIn(value.strip() or "\0", stderr.replace("PTR_TEST_ROOT", ""))
+
+    PREFLIGHT_BENCH = (
+        "#!/bin/sh\n"
+        'if [ "$1" = "--preflight" ]; then\n'
+        '  echo "preflight saw $PTR_TEST_DSN" >&2\n'
+        '  [ "$PTR_PREFLIGHT_FAILS" = yes ] && exit 3\n'
+        "  exit 0\n"
+        "fi\n"
+        'echo "ran seed $1"\n'
+    )
+
+    def run_with_preflight(self, fails: bool, preflight: str = "bench --preflight"):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bench = directory / "bench"
+        bench.write_text(self.PREFLIGHT_BENCH, encoding="utf-8")
+        bench.chmod(0o755)
+        self.preregister(
+            "running",
+            manifest_lines=f'command_environment = ["PTR_TEST_DSN", "PTR_PREFLIGHT_FAILS"]\npreflight = "{preflight}"\n',
+        )
+        environment = {
+            "PATH": f"{directory}{os.pathsep}{os.environ['PATH']}",
+            "PTR_TEST_DSN": self.SECRET,
+            "PTR_PREFLIGHT_FAILS": "yes" if fails else "no-failure",
+        }
+        stderr = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, environment),
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr),
+        ):
+            status = mod.run_experiment("L900", entrypoint="entrypoint", seed=17)
+        records = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
+        return status, records, stderr.getvalue()
+
+    def test_a_failing_preflight_refuses_the_run_before_a_seed_is_reserved(self):
+        status, records, stderr = self.run_with_preflight(fails=True)
+        self.assertEqual((status, records, list(self.attempts().glob("run-*.json"))), (2, [], []))
+        self.assertIn("its preflight failed (exit status 3); nothing was reserved or recorded", stderr)
+        # What the preflight printed is shown with the declared value redacted.
+        self.assertIn("preflight saw <PTR_TEST_DSN redacted>", stderr)
+        self.assertNotIn("password=", stderr)
+        self.assertFalse((Path(git(self.root, "rev-parse", "--absolute-git-dir")) / "ptr-run-L900.lock").exists())
+        # Nothing was spent: with the preflight passing, the seed runs, after the preflight.
+        self.tearDown()
+        self.setUp()
+        status, records, stderr = self.run_with_preflight(fails=False)
+        self.assertEqual((status, [r["status"] for r in records]), (0, ["completed"]))
+        self.assertIn("running its preflight (bench --preflight)", stderr)
+        self.assertEqual(records[0]["stdout"], "ran seed 17\n")
+        self.assertEqual(records[0]["manifest"]["preflight"], "bench --preflight")
+
+    def test_the_preflight_subcommand_runs_only_the_preflight_and_records_nothing(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bench = directory / "bench"
+        bench.write_text(self.PREFLIGHT_BENCH, encoding="utf-8")
+        bench.chmod(0o755)
+        # A planned experiment: the preflight checks the machine before the freeze.
+        self.preregister(
+            "planned", frozen=False,
+            manifest_lines='command_environment = ["PTR_TEST_DSN", "PTR_PREFLIGHT_FAILS"]\npreflight = "bench --preflight"\n',
+        )
+        for fails, expected in (("no", 0), ("yes", 2)):
+            with self.subTest(fails=fails):
+                environment = {"PATH": f"{directory}{os.pathsep}{os.environ['PATH']}", "PTR_TEST_DSN": self.SECRET, "PTR_PREFLIGHT_FAILS": fails}
+                with (
+                    mock.patch.dict(os.environ, environment),
+                    mock.patch.object(mod, "ROOT", self.root),
+                    mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    self.assertEqual(mod.preflight("L900"), expected)
+                self.assertEqual(list(self.results.glob("run-*.json")), [])
+                self.assertEqual(list(self.attempts().glob("run-*.json")), [])
+
+    def test_a_bad_preflight_declaration_is_refused(self):
+        gate = mod.check_research_gates
+        good = {"entrypoint": "cargo run --locked -p x -- bench <seed>", "preflight": "cargo run --locked -p x -- bench --preflight"}
+        self.assertEqual(gate.preflight_errors("X", good), [])
+        self.assertEqual(gate.declared_preflight(good)[0], "cargo")
+        for bad in (
+            {"preflight": 1},
+            {"preflight": ""},
+            {"preflight": "cargo run -- bench <seed>"},
+            {"preflight": "other --preflight"},
+            {"preflight": "cargo run --config x=y -- bench"},
+            {"preflight": "cargo run --manifest-path /elsewhere/Cargo.toml"},
+            {"preflight": "cargo 'unterminated"},
+        ):
+            with self.subTest(bad=bad):
+                manifest = {**good, **bad}
+                self.assertTrue(gate.preflight_errors("X", manifest), manifest)
+                self.assertIsNone(gate.declared_preflight(manifest))
+                self.assertTrue(gate.command_errors("X", manifest, {}))
+
+    def test_the_records_of_a_listed_experiment_must_name_the_manifests_declared_variables(self):
+        manifest = {"entrypoint": "bench <seed>", "command_environment": ["PTR_A"]}
+        record = {"seed": 17, "command": ["bench", "17"], "parameters": {}}
+        gate = mod.check_research_gates
+        errors = gate.recorded_command_errors("w", record, manifest, {}, "0" * 40)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("command_environment", errors[0])
+        record["command_environment"] = [{"name": "PTR_A", "set": True, "redaction": "applied"}]
+        self.assertEqual(gate.recorded_command_errors("w", record, manifest, {}, "0" * 40), [])
+        # A value, a missing redaction state, another name or an unset flag is not what a run records.
+        for bad in (
+            [{"name": "PTR_A", "set": True, "redaction": "applied", "value": "x"}],
+            [{"name": "PTR_A", "set": True}],
+            [{"name": "PTR_B", "set": True, "redaction": "applied"}],
+            [{"name": "PTR_A", "set": False, "redaction": "applied"}],
+            [{"name": "PTR_A", "set": True, "redaction": "maybe"}],
+        ):
+            with self.subTest(bad=bad):
+                self.assertEqual(len(gate.recorded_command_errors("w", {**record, "command_environment": bad}, manifest, {}, "0" * 40)), 1)
+        # A manifest declaring none expects no field: existing records stay valid.
+        plain = {"entrypoint": "bench <seed>"}
+        self.assertEqual(len(gate.recorded_command_errors("w", record, plain, {}, "0" * 40)), 1)
+        del record["command_environment"]
+        self.assertEqual(gate.recorded_command_errors("w", record, plain, {}, "0" * 40), [])
+        # Records that disagree on the declared set are refused by aggregation.
+        agreed = [key for key, _ in mod.experiment_records.AGREED]
+        self.assertIn("command_environment", agreed)
+        self.assertIn("command_environment", mod.KEYS_OF_ONE_RUN)
+
     def test_the_program_a_command_starts_is_found_as_the_process_finds_it(self):
         tools = self.root / "tools"
         tools.mkdir()
