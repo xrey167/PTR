@@ -1,0 +1,158 @@
+version = 1
+kind = "workspace-area"
+name = "L001-v2-revocation-crash"
+path = "experiments/lifecycle/L001-v2-revocation-crash"
+tests_dir = "tests"
+
+# The preregistered choices of the harness (`ptr-bench revocation-crash`, bins/ptr-bench/src/experiments/l001/params.rs,
+# which fails its drift test if a compiled constant differs from this table). L001-v2 is listed in experiments/preregistration.toml; the
+# [preregistration] table at the end of this file repeats these values, and the head pins its two digests at the freeze. Keys that begin with owner_decision_ or stated_limit_ are prose
+# and mirror no constant.
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
+# The workloads: 6 to 14 events over 3 or 4 subjects, a revoke-then-recommit in every history.
+events_min = 6
+events_max = 14
+# Per seed: workloads of each arm (A and B are the file and ack arms, C the engine arm) and Raft scenarios per kind.
+workloads_file = 8
+workloads_ack = 8
+workloads_engine = 3
+raft_scenarios_per_kind = 3
+raft_scenario_kinds = ["minority-leader", "term-change", "restarts", "message-faults"]
+# Appends per failpoint that are crashed for real: by an in-process panic, and by a child process that calls abort().
+unwind_idx_per_point = 2
+child_idx_per_point = 1
+engine_child_idx_per_point = 2
+# The watchdog of one recovery, of one in-process run of appends and of one child process, in milliseconds, and how many may fire before the run stops issuing recoveries.
+hang_watchdog_ms = 60000
+child_watchdog_ms = 60000
+hang_limit = 3
+# The power-loss model: the policies applied to the bytes written after the last sync, and the size of a hole.
+power_loss_policies = ["drop-all", "all", "prefix", "half", "holes"]
+sector_bytes = 512
+# The failpoints (ptr-ledger's `failpoints` and `raft-engine-failpoints` features).
+log_points = ["ledger.before_record_write", "ledger.after_length_before_payload", "ledger.after_payload_before_sync", "ledger.after_sync_before_memory"]
+anchor_points = ["anchor.after_scratch_write_before_sync", "anchor.after_scratch_sync_before_rename", "anchor.after_rename_before_dir_sync", "anchor.after_dir_sync"]
+engine_points = ["file_pipe_log::append", "log_file::write::err", "log_fd::sync::err"]
+sync_parent_point = "ledger.sync_parent"
+# The message-fault scenario, per mille of messages.
+fault_drop_permille = 120
+fault_duplicate_permille = 150
+fault_reorder_permille = 200
+# Coverage prerequisites (a run that misses one is vacuous).
+min_scenarios_checked = 10
+min_recoveries_with_acked_revocation = 700
+min_revoked_pairs_denied = 900
+min_crash_points_at_revocation = 140
+min_workloads_file = 6
+min_workloads_ack = 6
+min_workloads_engine = 2
+min_scenarios_raft = 10
+min_recoveries_file = 600
+min_recoveries_ack = 1000
+min_recoveries_engine = 250
+min_members_replayed = 70
+min_failpoint_hits = 20
+min_images_lost_bytes = 1000
+min_rename_image_pairs = 50
+min_lie_images = 100
+min_child_aborts_file = 24
+min_child_aborts_ack = 48
+min_child_aborts_engine = 12
+min_unwind_panics_observed = 144
+min_leader_changes = 4
+min_minority_proposals = 2
+min_deposed_leader_restarts = 2
+min_messages_dropped = 20
+min_messages_duplicated = 20
+min_messages_reordered = 20
+min_revoke_then_recommit_histories = 14
+min_subjects = 3
+min_events = 6
+min_probe_calibrated = 1
+min_probe_dirty_seen = 1
+min_probe_clean_checked = 400
+# The bound on the share of the recoveries of damaged power-loss images that the product refuses (per mille).
+max_refused_share_damaged_permille = 300
+# Falsifiers: every one of the fourteen hard counters must be 0.
+max_every_falsifier = 0
+# Descriptive only (never gated): wall-clock time, and the lie control of RaftEngineLedger (no anchor).
+timing_gated = false
+engine_lie_gated = false
+
+# Owner decisions of 2026-10-09 (binding) and the limits they leave, in the words of PREREGISTRATION.md.
+owner_decision_2026_10_09_l001 = "L001 is superseded by L001-v2 (experiments/registry.toml); RaftEngineLedger's missing anchor is a stated limit with a descriptive counter (undetected_rollback), no product work; power loss is a fsync-honest crash-image model, no real power cut and no dm-flakey, a stated limit"
+stated_limit_raft_engine_anchor = "RaftEngineLedger has no hash chain and no protected anchor, so after a lie that drops acknowledged bytes it opens without error on fewer records; undetected_rollback and engine_lie_stale_accepts are descriptive and no rule reads them"
+stated_limit_power_loss = "fsync-honest crash-image model: bytes synced before the crash are intact, nothing else is promised; the filesystem the scratch directory is on is recorded in environment.filesystem of every result"
+stated_limit_directory_fsync = "the durability probe sees file data pages, not directory entries: a missing directory fsync (the rename of the anchor, the creation of the log) is outside what it detects"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml). Every value is
+# [pinned_thresholds]'s; the head pins the two digests when the text and the criteria are final.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "revocation-crash"
+seed_aggregation = "every_seed_must_pass"
+events_min = 6
+events_max = 14
+workloads_file = 8
+workloads_ack = 8
+workloads_engine = 3
+raft_scenarios_per_kind = 3
+raft_scenario_kinds = ["minority-leader", "term-change", "restarts", "message-faults"]
+unwind_idx_per_point = 2
+child_idx_per_point = 1
+engine_child_idx_per_point = 2
+hang_watchdog_ms = 60000
+child_watchdog_ms = 60000
+hang_limit = 3
+power_loss_policies = ["drop-all", "all", "prefix", "half", "holes"]
+sector_bytes = 512
+log_points = ["ledger.before_record_write", "ledger.after_length_before_payload", "ledger.after_payload_before_sync", "ledger.after_sync_before_memory"]
+anchor_points = ["anchor.after_scratch_write_before_sync", "anchor.after_scratch_sync_before_rename", "anchor.after_rename_before_dir_sync", "anchor.after_dir_sync"]
+engine_points = ["file_pipe_log::append", "log_file::write::err", "log_fd::sync::err"]
+sync_parent_point = "ledger.sync_parent"
+fault_drop_permille = 120
+fault_duplicate_permille = 150
+fault_reorder_permille = 200
+min_scenarios_checked = 10
+min_recoveries_with_acked_revocation = 700
+min_revoked_pairs_denied = 900
+min_crash_points_at_revocation = 140
+min_workloads_file = 6
+min_workloads_ack = 6
+min_workloads_engine = 2
+min_scenarios_raft = 10
+min_recoveries_file = 600
+min_recoveries_ack = 1000
+min_recoveries_engine = 250
+min_members_replayed = 70
+min_failpoint_hits = 20
+min_images_lost_bytes = 1000
+min_rename_image_pairs = 50
+min_lie_images = 100
+min_child_aborts_file = 24
+min_child_aborts_ack = 48
+min_child_aborts_engine = 12
+min_unwind_panics_observed = 144
+min_leader_changes = 4
+min_minority_proposals = 2
+min_deposed_leader_restarts = 2
+min_messages_dropped = 20
+min_messages_duplicated = 20
+min_messages_reordered = 20
+min_revoke_then_recommit_histories = 14
+min_subjects = 3
+min_events = 6
+min_probe_calibrated = 1
+min_probe_dirty_seen = 1
+min_probe_clean_checked = 400
+max_refused_share_damaged_permille = 300
+max_every_falsifier = 0
+timing_gated = false
+engine_lie_gated = false
+preregistration_text = "experiments/lifecycle/L001-v2-revocation-crash/PREREGISTRATION.md"
+preregistration_text_sha256 = "0c664c82f9657cd9f7ee7cf9810905bd0f7ea9257044d893dbc221ca74bc5bc5"
+criteria = "experiments/lifecycle/L001-v2-revocation-crash/criteria.toml"
+criteria_sha256 = "fbd21d87a9cb39da0e9daea5f34d92987bbb3dfa3469ffca890aaadbbfedd4a0"

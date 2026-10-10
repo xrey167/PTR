@@ -1,0 +1,69 @@
+{
+  "experiment_id": "L001-v2",
+  "status": "prepared",
+  "scope": "revocation under crash, power-loss and leadership schedules, on one host and loopback only: PTRLOG02 FileLedger alone (arm A) and AcknowledgedLedger with its ProtectedAnchor (arm B), crashed at every failpoint of every append of seeded workloads of 6 to 14 events over 3 or 4 subjects (a revoke-then-recommit in every history), by an in-process panic, by a child process that calls abort(), and by crash images that keep the synced prefix of each file and a seeded subset of what was written after it; RaftEngineLedger over the vendored raft-engine at its own failpoints (arm C); three in-process RaftNode members on a deterministic router with isolation, drop, duplicate, reorder and restart (arm D); the history a recovery returns must be the acknowledged prefix plus at most the record in flight, the log/anchor pair must be classified as the harness's own table says, an unsafe pair must be refused, and the PtrRuntime replayed over what was recovered must agree with an independent oracle for every (subject, generation) of the history",
+  "git_sha": "ddf1aacd19b00279ea0e2c313d2d5549660ab6ab",
+  "aggregated_at_git_sha": "2522859b9e9d8c5f62cb5f9443408bbad16c1689",
+  "recorded_at": "2026-10-10T14:13:51.206349+00:00",
+  "preregistration_sha256": "451818703b33580aa9eaa65cb4571d34406a5453f9d6cccf16c5973ec8adda71",
+  "preregistration_rules_sha256": "7e734525e1d661418a68ee0c95cbc0f95f1d7d32213dd43027d451748c62045e",
+  "criteria_sha256": "fbd21d87a9cb39da0e9daea5f34d92987bbb3dfa3469ffca890aaadbbfedd4a0",
+  "entrypoint": "cargo run --release --locked -p ptr-bench --features ledger-experiments -- revocation-crash <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261010T111346.638357Z-seed-17.json",
+      "git_sha": "ddf1aacd19b00279ea0e2c313d2d5549660ab6ab",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261010T111658.263816Z-seed-29.json",
+      "git_sha": "1ed3e71a11501949e703dad992ae4750b883dbe7",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261010T112049.423777Z-seed-43.json",
+      "git_sha": "a0f3ef04408cd74beaacf609bbe22b3f30aaae80",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261010T112324.002937Z-seed-71.json",
+      "git_sha": "e829beaf23615bb1330a3da2518edf5398b8eff5",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261010T112558.560169Z-seed-101.json",
+      "git_sha": "8e0175677ba39b32068666ec4bc170c29ff061a3",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "3e7a0ad09261c0edaa2ddc1c0025e9c433a555506c45e69252d6fffa86eab87b",
+    "29": "ea4defeef5dd718287f478fb5c8c2703ac29f7ab04773a56a775f33eb74e87a7",
+    "43": "eaa117a20353ae7853ae03758065ce765557a6b4f70a03472945f654ec96ed5e",
+    "71": "c29449ce1666789be508061d1aa9f9e7e7404fba37b207b9ea712dee3e3250d0",
+    "101": "9c4bf7ff731d77e6db722322e07da1576c247cc28de7f6675fcd85c9a9afd882"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 24,
+    "total": 24,
+    "git_sha": "389f9222525f4a1aeb5d6e5ad3f2706275df670b",
+    "sha256": "43ecf18fa68f8aae66143fba1481db7490935b6fbcfa8d52cf87b8e080632e27"
+  },
+  "limitations": [
+    "power loss is a fsync-honest crash-image model: bytes synced before the crash are intact and nothing else is promised; it is not a real power cut (no dm-flakey, no pulled plug), it does not model a disk that lies about a flush other than as the control, a torn sector below the synced length, or the behaviour of another filesystem than the one recorded in environment.filesystem",
+    "RaftEngineLedger has no hash chain and no protected anchor, so after a lie that drops acknowledged bytes it opens without error on fewer records; undetected_rollback and engine_lie_stale_accepts count that and are descriptive, no rule reads them, and no product work is attempted on it (owner decision of 2026-10-09)",
+    "the durability probe sees file data pages only; a missing directory fsync (the rename of the anchor, the creation of the log) is outside what it detects, and the model takes the directory fsync on trust",
+    "the Raft members return all their messages from one call, so the order of persisting and sending inside RaftNode::drain is not exercised; Raft runs in process on a deterministic router with no sockets and no timers, so a real network, a wall-clock election and the wire are L002's, not this experiment's",
+    "a refusal of a log whose last frame is complete in length and damaged inside (a zeroed sector) is allowed and counted in refusals_corrupt_tail: the product fails closed and needs an operator; that is an availability limit and not a safety defect",
+    "synthetic seeded histories of 6 to 14 events; one process for the in-process arms, one machine profile; compaction, snapshots and retention are not crashed here"
+  ],
+  "metrics_sha256": "52ff3d2c2ff33ed645333d69deb0e9c803b1765212607b7915923a5cfab5b53e"
+}

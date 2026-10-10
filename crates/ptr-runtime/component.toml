@@ -190,7 +190,7 @@ next = [
   "Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract",
   "Wire ptrd request handling beyond bootstrap ingestion",
 ]
-experiments = ["E001", "E003", "E004", "R011", "R012"]
+experiments = ["E001", "E003", "E004", "L001-v2", "R011", "R012"]
 evaluations = []
 decisions = ["ADR-0001-rust-runtime.md", "ADR-0012-hard-effect-boundary.md", "ADR-0013-runtime-orchestrator.md", "ADR-0017-certified-agent-branches.md", "ADR-0020-only-the-runtime-merges-an-agent-branch.md"]
 checks = [

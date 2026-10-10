@@ -36,7 +36,7 @@
 
 ### Linked experiments
 
-- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `running`
+- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `superseded`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
 ### Technology evaluations
