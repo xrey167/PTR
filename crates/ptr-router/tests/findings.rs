@@ -263,6 +263,10 @@ fn forged_pass_with_a_hard_finding_is_never_accepted_or_repaired() {
 
 struct Counting<'a>(&'a Cell<u32>);
 impl AdmissibleScorer for Counting<'_> {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         self.0.set(self.0.get() + 1);
         Ok(context
@@ -618,6 +622,10 @@ fn stale_generation_registrations_are_refused_and_change_nothing() {
 
 struct Skewed;
 impl AdmissibleScorer for Skewed {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         Ok(context
             .admissible
@@ -629,6 +637,10 @@ impl AdmissibleScorer for Skewed {
 
 struct Escaping;
 impl AdmissibleScorer for Escaping {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, _: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         Ok(vec![(PodId::from("not-admitted"), 1.0)])
     }
@@ -636,6 +648,10 @@ impl AdmissibleScorer for Escaping {
 
 struct Silent;
 impl AdmissibleScorer for Silent {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, _: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         Ok(Vec::new())
     }
@@ -706,6 +722,10 @@ fn a_scorer_reranks_inside_the_admissible_set_only() {
 
 struct EscapingBox(Box<dyn AdmissibleScorer>);
 impl AdmissibleScorer for EscapingBox {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         self.0.weights(context)
     }
@@ -798,6 +818,10 @@ fn classify_matches_ptr_feedback_over_the_full_matrix() {
 type Seen = std::cell::RefCell<Vec<(RouteClass, Vec<PodId>)>>;
 struct Recording<'a>(&'a Seen);
 impl AdmissibleScorer for Recording<'_> {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         self.0
             .borrow_mut()
@@ -1005,6 +1029,10 @@ fn registry_capacity_is_bounded() {
 
 struct OnlyA;
 impl AdmissibleScorer for OnlyA {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, _: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         Ok(vec![(PodId::from("a"), 1.0)])
     }

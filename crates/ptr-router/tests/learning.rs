@@ -583,6 +583,10 @@ fn a_candidate_is_never_evaluated_on_decisions_it_was_trained_on() {
 struct Fixed(Vec<(&'static str, f64)>);
 
 impl AdmissibleScorer for Fixed {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         Ok(context
             .admissible
@@ -606,6 +610,10 @@ fn a_scorer_cannot_choose_an_ineligible_pod_or_remove_the_floor() {
     // A scorer that names a pod the eligibility view does not list is refused.
     struct Everyone;
     impl AdmissibleScorer for Everyone {
+        fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+            None
+        }
+
         fn weights(&self, _: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
             Ok(vec![(pod("a"), 1.0), (pod("b"), 1.0)])
         }
@@ -631,6 +639,10 @@ fn a_scorer_cannot_choose_an_ineligible_pod_or_remove_the_floor() {
     // A learned policy wrapped so that it also names a third pod is refused too.
     struct Padded(LearnedPolicy);
     impl AdmissibleScorer for Padded {
+        fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+            None
+        }
+
         fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
             let mut weights = self.0.weights(context)?;
             weights.push((pod("not-admissible"), 5.0));

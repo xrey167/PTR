@@ -17,6 +17,10 @@
 //!   Ok but the install failed: the change IS committed; the request stays outstanding in the
 //!         loop, the driver keeps a PendingInstall (observable, retried at the start of every
 //!         step and by retry_installs) and the outcome is CommittedNotInstalled, never Refused
+//!   A pending install that cannot finish is not retried forever: when the loop no longer holds
+//!         its request or it is older than the loop's outstanding_ttl_windows, the driver
+//!         abandons it (DriverReport::abandoned_installs) and records the expert as stranded in
+//!         the loop, so its codes are neither uncovered nor born twice until the host retires it
 //! ```
 //!
 //! # What the gate subject binds
@@ -84,6 +88,12 @@ pub enum Refusal {
     Measurement(MeasurementError),
     /// The gate could not be evaluated or bound.
     Gate(String),
+    /// The driver holds as many pending installs as it tracks; a new structural step would be a
+    /// commit it could not keep track of. Nothing was committed and no pending install was
+    /// dropped. Resolve (or let the driver abandon) the pending ones first.
+    PendingInstallsFull {
+        pending: usize,
+    },
     /// The runtime's admission refused the proposal.
     Admission {
         /// The refusal was the gate report not passing.
@@ -145,6 +155,8 @@ pub struct DriverReport {
     /// Pods whose pending install from an earlier step was completed at the start of this one
     /// (the specialist installed, or for a Prune the pruned ones taken out of routing).
     pub installed_late: Vec<PodId>,
+    /// Pending installs the driver gave up on at the start of this step.
+    pub abandoned_installs: Vec<AbandonedInstall>,
 }
 
 impl DriverReport {
@@ -190,9 +202,52 @@ impl fmt::Display for DriverError {
 
 impl std::error::Error for DriverError {}
 
-/// Most pending installs the driver remembers (further ones are still reported in their
-/// outcome, but only this many are retried automatically).
-const MAX_PENDING: usize = 64;
+/// Most pending installs the driver tracks by default. At this many the driver refuses new
+/// structural requests ([`Refusal::PendingInstallsFull`]); it never stops tracking one.
+pub const MAX_PENDING: usize = 64;
+
+/// Why the driver gave up on a pending install.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum AbandonReason {
+    /// The install kept failing for at least `outstanding_ttl_windows` windows.
+    Expired { windows: u64 },
+    /// The loop no longer holds the request (it expired or was withdrawn) and the expert is not
+    /// in the roster, so `sync_roster` can never succeed.
+    RequestLost,
+}
+
+/// A committed expert whose install the driver gave up on. The change is in the ledger; the
+/// expert is not routable. Its codes are held in the loop
+/// ([`VcwLoop::stranded_experts`]) so the policy neither births a second expert for them nor
+/// treats them as uncovered. The host ends the hold by retiring the expert through
+/// `admit_expert_proposal` (the next structure step sees it gone).
+#[derive(Clone, Debug)]
+pub struct AbandonedInstall {
+    pub commit: CommitIndex,
+    pub pods: Vec<PodId>,
+    pub codes: BTreeSet<FindingCode>,
+    pub reason: AbandonReason,
+    /// The last install failure.
+    pub message: String,
+}
+
+/// What [`StructureDriver::retry_installs`] did.
+#[derive(Clone, Debug, Default)]
+pub struct InstallRetry {
+    /// Pods of the installs that completed.
+    pub installed: Vec<PodId>,
+    /// Installs given up on.
+    pub abandoned: Vec<AbandonedInstall>,
+}
+
+/// Why one install attempt failed.
+enum InstallFailure {
+    /// Try again later.
+    Retry(String),
+    /// The loop lost the request and the expert is not enrolled: never going to succeed.
+    RequestLost(String),
+}
 
 /// A change that is committed in the ledger and not yet reflected in the loop and the Pod
 /// registry. Holds what a retry needs; observable through
@@ -203,6 +258,10 @@ pub struct PendingInstall {
     proposal: ExpertProposal,
     specialist: Option<TrainedSpecialist>,
     removed: Vec<PodId>,
+    /// The codes the created expert is for (empty for a change that creates none).
+    codes: BTreeSet<FindingCode>,
+    /// The loop's closed-window count when the commit happened.
+    since_window: u64,
     message: String,
 }
 
@@ -217,6 +276,11 @@ impl PendingInstall {
             Some(specialist) => vec![specialist.pod.clone()],
             None => self.removed.clone(),
         }
+    }
+
+    /// The codes the change created an expert for.
+    pub fn codes(&self) -> &BTreeSet<FindingCode> {
+        &self.codes
     }
 
     /// Why the last attempt failed.
@@ -234,6 +298,7 @@ pub struct StructureDriver {
     gate: ForgettingGate,
     processed_windows: u64,
     pending: Vec<PendingInstall>,
+    max_pending: usize,
 }
 
 impl StructureDriver {
@@ -256,7 +321,15 @@ impl StructureDriver {
             gate,
             processed_windows: 0,
             pending: Vec::new(),
+            max_pending: MAX_PENDING,
         }
+    }
+
+    /// Track at most `max` pending installs (at least 1, at most [`MAX_PENDING`]).
+    #[must_use]
+    pub fn with_max_pending(mut self, max: usize) -> Self {
+        self.max_pending = max.clamp(1, MAX_PENDING);
+        self
     }
 
     /// Committed changes whose install is still pending.
@@ -264,18 +337,24 @@ impl StructureDriver {
         &self.pending
     }
 
-    /// Retry every pending install; those that now succeed are dropped. Returns the Pods they
-    /// concerned. Idempotent.
+    /// Retry every pending install. Those that now succeed are dropped; one that cannot ever
+    /// succeed (the loop lost its request) or has failed for `outstanding_ttl_windows` windows
+    /// is abandoned: the loop records the expert as stranded and the abandonment is returned.
+    /// A change that creates no expert (a Prune) is never abandoned: abandoning it would leave a
+    /// retired expert routable, so it is retried until it succeeds. Idempotent.
     pub fn retry_installs<S: AdmissibleScorer>(
         &mut self,
         vcw: &mut VcwLoop<S>,
         runtime: &PtrRuntime,
         pods: &mut PodRegistry,
-    ) -> Vec<PodId> {
-        let mut done = Vec::new();
+    ) -> InstallRetry {
+        let mut result = InstallRetry::default();
         let project = self.project.clone();
-        self.pending.retain_mut(|pending| {
-            match finish(
+        let ttl = u64::from(vcw.outstanding_ttl_windows());
+        let now = vcw.windows_closed();
+        let mut kept = Vec::new();
+        for mut pending in std::mem::take(&mut self.pending) {
+            let failure = match finish(
                 &project,
                 vcw,
                 runtime,
@@ -284,16 +363,44 @@ impl StructureDriver {
                 pending.specialist.as_ref(),
             ) {
                 Ok(()) => {
-                    done.extend(pending.pods());
-                    false
+                    result.installed.extend(pending.pods());
+                    continue;
                 }
-                Err(message) => {
-                    pending.message = message;
-                    true
-                }
+                Err(failure) => failure,
+            };
+            let age = now.saturating_sub(pending.since_window);
+            let (message, reason) = match failure {
+                InstallFailure::RequestLost(message) => (message, Some(AbandonReason::RequestLost)),
+                InstallFailure::Retry(message) => (
+                    message,
+                    (pending.specialist.is_some() && age >= ttl)
+                        .then_some(AbandonReason::Expired { windows: age }),
+                ),
+            };
+            pending.message = message;
+            let Some(reason) = reason else {
+                kept.push(pending);
+                continue;
+            };
+            let experts = pending.pods();
+            if vcw
+                .strand_committed(&pending.proposal, &experts, &pending.codes)
+                .is_err()
+            {
+                // Could not record the hold: keep tracking, report on the next attempt.
+                kept.push(pending);
+                continue;
             }
-        });
-        done
+            result.abandoned.push(AbandonedInstall {
+                commit: pending.commit,
+                pods: experts,
+                codes: pending.codes,
+                reason,
+                message: pending.message,
+            });
+        }
+        self.pending = kept;
+        result
     }
 
     /// Windows already handed to the policy.
@@ -321,12 +428,16 @@ impl StructureDriver {
             aimer,
         } = host;
         // A committed change that could not be installed last time is finished first.
-        let installed_late = self.retry_installs(vcw, runtime, pods);
+        let InstallRetry {
+            installed: installed_late,
+            abandoned: abandoned_installs,
+        } = self.retry_installs(vcw, runtime, pods);
         let closed = vcw.windows_closed();
         if closed == self.processed_windows {
             return Ok(DriverReport {
                 windows_closed: closed,
                 installed_late,
+                abandoned_installs,
                 ..DriverReport::default()
             });
         }
@@ -375,6 +486,7 @@ impl StructureDriver {
             outcomes,
             suppressed: report.suppressed().clone(),
             installed_late,
+            abandoned_installs,
         })
     }
 
@@ -412,6 +524,15 @@ impl StructureDriver {
         suite: &dyn HeldOutSuite,
     ) -> StructureResult {
         let creates = proposal.needs_training();
+        // 0. Nothing is committed that the driver could not keep track of. (A code with a
+        // committed, not installed expert is not proposed again: the loop holds its codes while
+        // the request is outstanding and, once abandoned, while the expert is stranded.)
+        if self.pending.len() >= self.max_pending {
+            vcw.withdraw_structure_request(proposal);
+            return StructureResult::Refused(Refusal::PendingInstallsFull {
+                pending: self.pending.len(),
+            });
+        }
         // 1. The expert, if the request creates one.
         let specialist = if creates {
             let result_pods: Vec<PodId> = proposal
@@ -572,6 +693,11 @@ impl StructureDriver {
                 });
             }
         };
+        let committed_codes = if creates {
+            Self::codes_of(vcw, proposal.rationale())
+        } else {
+            BTreeSet::new()
+        };
         // 5. Committed. Install the Pod and tell the loop. A failure here is not a refusal: the
         // change is in the ledger. The request stays outstanding in the loop, the driver keeps
         // what a retry needs, and the outcome says so.
@@ -583,15 +709,19 @@ impl StructureDriver {
             &expert_proposal,
             specialist.as_ref(),
         ) {
-            if self.pending.len() < MAX_PENDING {
-                self.pending.push(PendingInstall {
-                    commit,
-                    proposal: expert_proposal.clone(),
-                    specialist: specialist.clone(),
-                    removed: removed_pods.clone(),
-                    message: message.clone(),
-                });
-            }
+            // Room was checked before the commit, so this never drops a tracked install.
+            let message = match message {
+                InstallFailure::Retry(message) | InstallFailure::RequestLost(message) => message,
+            };
+            self.pending.push(PendingInstall {
+                commit,
+                proposal: expert_proposal.clone(),
+                specialist: specialist.clone(),
+                removed: removed_pods.clone(),
+                codes: committed_codes,
+                since_window: vcw.windows_closed(),
+                message: message.clone(),
+            });
             return StructureResult::CommittedNotInstalled { commit, message };
         }
         StructureResult::Admitted {
@@ -604,7 +734,8 @@ impl StructureDriver {
 
 /// Finish a committed change: register the specialist's Pod and enrol it (or, for a change with
 /// no specialist, take the dead experts out of routing). Idempotent, so a retry after a partial
-/// failure completes it.
+/// failure completes it. If the loop no longer holds the request (it expired) the expert counts
+/// as installed only when the loop already enrolled it; otherwise it can never be enrolled.
 fn finish<S: AdmissibleScorer>(
     project: &ProjectId,
     vcw: &mut VcwLoop<S>,
@@ -612,18 +743,33 @@ fn finish<S: AdmissibleScorer>(
     pods: &mut PodRegistry,
     proposal: &ExpertProposal,
     specialist: Option<&TrainedSpecialist>,
-) -> Result<(), String> {
+) -> Result<(), InstallFailure> {
     match specialist {
         Some(specialist) => {
-            install(pods, specialist).map_err(|error| format!("install: {error}"))?;
+            install(pods, specialist)
+                .map_err(|error| InstallFailure::Retry(format!("install: {error}")))?;
+            if !vcw.is_outstanding(proposal) {
+                return if vcw.repairers().contains_key(&specialist.pod) {
+                    Ok(())
+                } else {
+                    Err(InstallFailure::RequestLost(
+                        "sync_roster: the loop no longer holds the request".into(),
+                    ))
+                };
+            }
             vcw.sync_roster(project, runtime.expert_registry(), proposal)
                 .map(|_| ())
-                .map_err(|error| format!("sync_roster: {error}"))
+                .map_err(|error| match error {
+                    VcwError::UnknownOperation => {
+                        InstallFailure::RequestLost(format!("sync_roster: {error}"))
+                    }
+                    other => InstallFailure::Retry(format!("sync_roster: {other}")),
+                })
         }
         None => vcw
             .retire_dead_experts(project, runtime.expert_registry())
             .map(|_| ())
-            .map_err(|error| format!("retire_dead_experts: {error}")),
+            .map_err(|error| InstallFailure::Retry(format!("retire_dead_experts: {error}"))),
     }
 }
 

@@ -218,6 +218,10 @@ fn controlled<S: AdmissibleScorer>(
 #[derive(Debug)]
 struct Fixed(Vec<(&'static str, f64)>);
 impl AdmissibleScorer for Fixed {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         Ok(context
             .admissible
@@ -237,6 +241,10 @@ impl AdmissibleScorer for Fixed {
 type Seen = RefCell<Vec<(Vec<PodId>, Vec<(PodId, f64)>)>>;
 struct Recording<'a, S>(&'a S, &'a Seen);
 impl<S: AdmissibleScorer> AdmissibleScorer for Recording<'_, S> {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        self.0.bound_exploration()
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         let weights = self.0.weights(context)?;
         self.1
@@ -388,6 +396,10 @@ fn class_decisions_are_unchanged_for_every_arm_status_level_and_finding() {
 #[derive(Debug)]
 struct Rogue;
 impl AdmissibleScorer for Rogue {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         let mut weights: Vec<(PodId, f64)> = context
             .admissible

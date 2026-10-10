@@ -43,7 +43,8 @@ use crate::router::RouteError;
 use ptr_types::PodId;
 
 const UNIFORM_DOMAIN: &[u8] = b"ptr.router.policy.uniform.v1";
-/// Most installed policies a book retains (the active one and its predecessors).
+/// Most installed policies a book retains: the pinned uniform baseline, the active policy and
+/// the learned predecessors in between (the oldest of those fall out first).
 pub const MAX_VERSIONS: usize = 16;
 /// Most events a book retains; older ones are dropped and counted.
 pub const MAX_EVENTS: usize = 1024;
@@ -191,7 +192,7 @@ pub struct PolicyBook {
     exploration: Exploration,
     active: ActiveScorer,
     /// The retained installed policies, oldest first (at most [`MAX_VERSIONS`]); the last is
-    /// active.
+    /// active and the first is always the uniform baseline.
     stack: Vec<Arc<Installed>>,
     events: Vec<PolicyEvent>,
     next_sequence: u64,
@@ -311,9 +312,10 @@ impl PolicyBook {
         let to = candidate.digest();
         let installed = Arc::new(Installed::Learned(candidate));
         if self.stack.len() >= MAX_VERSIONS {
-            // The oldest retained policy falls out; the active one and its predecessor, which
-            // is all a rollback needs, stay.
-            self.stack.remove(0);
+            // The uniform baseline (index 0) is pinned: a chain of any length can still be
+            // rolled back to the safe policy. The oldest learned one after it falls out; the
+            // active one and its predecessor, which is all a rollback needs, stay.
+            self.stack.remove(1);
         }
         self.stack.push(Arc::clone(&installed));
         self.install(installed);
@@ -329,7 +331,9 @@ impl PolicyBook {
     }
 
     /// Returns to the policy that was active before the last promotion and hands the event to
-    /// `sink`. It never fails for want of room.
+    /// `sink`. It never fails for want of room, and the uniform baseline stays reachable after
+    /// any number of promotions (with more than [`MAX_VERSIONS`] chained, the oldest learned
+    /// policies are skipped on the way back).
     ///
     /// # Errors
     /// [`PolicyBookError::NothingToRollBack`] when no earlier policy is retained.
@@ -355,5 +359,61 @@ impl PolicyBook {
             evidence: None,
         };
         Ok(self.push_event(event, sink))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::learning::{LearnerConfig, RoutingLearner};
+
+    fn distinct_policy(seed: u64) -> LearnedPolicy {
+        RoutingLearner::new(LearnerConfig::new("s", seed))
+            .unwrap()
+            .snapshot()
+    }
+
+    fn promote_fresh(book: &mut PolicyBook, seed: u64, sink: &mut Vec<PolicyEvent>) {
+        let candidate = distinct_policy(seed);
+        let evidence = PromotionEvidence::sealed_for_test(candidate.digest(), book.active_digest());
+        book.promote(candidate, evidence, sink).unwrap();
+    }
+
+    #[test]
+    fn rollback_reaches_the_uniform_baseline_after_more_promotions_than_the_stack_holds() {
+        let mut book = PolicyBook::new("s", Exploration::default()).unwrap();
+        let baseline = book.active_digest();
+        let mut sink = Vec::new();
+        let mut seed = 0;
+        // More chained promotions than versions, repeated until well over MAX_EVENTS events.
+        let mut rounds = 0;
+        while sink.len() <= MAX_EVENTS + 64 {
+            for _ in 0..(MAX_VERSIONS + 4) {
+                seed += 1;
+                promote_fresh(&mut book, seed, &mut sink);
+            }
+            assert!(book.is_learned());
+            let mut last = None;
+            while let Ok(event) = book.rollback(&mut sink) {
+                last = Some(event);
+            }
+            assert_eq!(last.unwrap().to, baseline, "round {rounds}");
+            assert_eq!(book.active_digest(), baseline);
+            assert!(!book.is_learned());
+            assert_eq!(
+                book.rollback(&mut sink),
+                Err(PolicyBookError::NothingToRollBack)
+            );
+            rounds += 1;
+        }
+        assert!(sink.len() > MAX_EVENTS);
+        assert!(book.dropped_events() > 0);
+        // The stack stayed bounded, with the baseline at the bottom throughout.
+        for _ in 0..(MAX_VERSIONS * 3) {
+            seed += 1;
+            promote_fresh(&mut book, seed, &mut sink);
+            assert!(book.stack.len() <= MAX_VERSIONS);
+            assert_eq!(book.stack[0].digest(), baseline);
+        }
     }
 }

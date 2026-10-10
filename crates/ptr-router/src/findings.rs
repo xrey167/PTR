@@ -662,9 +662,10 @@ pub trait AdmissibleScorer {
     /// (a learned policy is: its promotion evidence assumed that floor). A router refuses a
     /// scorer whose bound rate is not its own, so a learned policy cannot be deployed without
     /// the floor it was evaluated with. `None` for a scorer that carries no such evidence.
-    fn bound_exploration(&self) -> Option<Exploration> {
-        None
-    }
+    ///
+    /// Required, not defaulted: a wrapper scorer must forward its inner scorer's answer, or the
+    /// router's floor check would be silently skipped for it.
+    fn bound_exploration(&self) -> Option<Exploration>;
 }
 
 /// Equal weight for every admissible Pod.
@@ -672,6 +673,10 @@ pub trait AdmissibleScorer {
 pub struct UniformScorer;
 
 impl AdmissibleScorer for UniformScorer {
+    fn bound_exploration(&self) -> Option<Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         Ok(context
             .admissible

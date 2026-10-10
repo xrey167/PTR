@@ -40,6 +40,10 @@ impl World {
 struct Fixed(Vec<(&'static str, f64)>);
 
 impl AdmissibleScorer for Fixed {
+    fn bound_exploration(&self) -> Option<crate::findings::Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         Ok(context
             .admissible
@@ -203,6 +207,10 @@ fn estimation_refuses_what_it_cannot_trust() {
     // A policy that names a Pod outside the logged admissible set.
     struct Escaping;
     impl AdmissibleScorer for Escaping {
+        fn bound_exploration(&self) -> Option<crate::findings::Exploration> {
+            None
+        }
+
         fn weights(&self, _: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
             Ok(vec![(PodId::from("zzz"), 1.0)])
         }
@@ -215,6 +223,10 @@ fn estimation_refuses_what_it_cannot_trust() {
     // A policy with no mass at all.
     struct Silent;
     impl AdmissibleScorer for Silent {
+        fn bound_exploration(&self) -> Option<crate::findings::Exploration> {
+            None
+        }
+
         fn weights(&self, _: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
             Ok(Vec::new())
         }

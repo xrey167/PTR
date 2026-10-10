@@ -23,8 +23,8 @@ mod roster;
 mod specialist;
 
 pub use driver::{
-    DriverError, DriverHost, DriverReport, PendingInstall, Refusal, StructureDriver,
-    StructureOutcome, StructureResult,
+    AbandonReason, AbandonedInstall, DriverError, DriverHost, DriverReport, InstallRetry,
+    PendingInstall, Refusal, StructureDriver, StructureOutcome, StructureResult, MAX_PENDING,
 };
 pub use holdout::{
     check_coverage, gate_inputs, HeldOutSuite, MeasurementError, RosterChange, RosterView,

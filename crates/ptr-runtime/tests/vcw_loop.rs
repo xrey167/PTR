@@ -2123,6 +2123,10 @@ fn every_escalation_goes_through_the_escalation_target() {
 struct Rogue(Cell<u32>);
 
 impl AdmissibleScorer for Rogue {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, ctx: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         self.0.set(self.0.get() + 1);
         if self.0.get() == 1 {

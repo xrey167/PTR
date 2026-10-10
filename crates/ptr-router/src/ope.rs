@@ -581,6 +581,24 @@ pub struct PromotionEvidence {
     cutoff: u64,
 }
 
+#[cfg(test)]
+impl PromotionEvidence {
+    /// Evidence for a chain-length test of the policy book, which has no use for the estimate.
+    pub(crate) fn sealed_for_test(candidate: [u8; 32], incumbent: [u8; 32]) -> Self {
+        Self {
+            candidate,
+            incumbent,
+            log_digest: [0; 32],
+            estimator: Estimator::Snips,
+            records: 0,
+            difference: 0.0,
+            lcb: 0.0,
+            margin: 0.0,
+            cutoff: 0,
+        }
+    }
+}
+
 impl PromotionEvidence {
     pub fn candidate(&self) -> &[u8; 32] {
         &self.candidate

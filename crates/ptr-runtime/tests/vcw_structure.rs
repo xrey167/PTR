@@ -36,9 +36,9 @@ use ptr_runtime::vcw::{
     VcwParts, VcwRequest,
 };
 use ptr_runtime::vcw_host::{
-    rebuild_roster, DriverHost, DriverReport, HeldOutSuite, MeasurementError, Refusal,
-    RosterRebuildError, SimulatedHeldOut, SimulatedTrainer, SpecialistTrainer, StructureDriver,
-    StructureResult, TrainedSpecialist, TrainingRequest,
+    rebuild_roster, AbandonReason, DriverHost, DriverReport, HeldOutSuite, MeasurementError,
+    Refusal, RosterRebuildError, SimulatedHeldOut, SimulatedTrainer, SpecialistTrainer,
+    StructureDriver, StructureResult, TrainedSpecialist, TrainingRequest,
 };
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_types::{
@@ -471,6 +471,42 @@ impl World {
         report
     }
 
+    /// Retire `name` the way a host does: a Prune proposal with a passing seed report.
+    fn prune_via_admission(&mut self, name: &str) {
+        let entry = self
+            .rt
+            .expert_registry()
+            .get(&project(), &pod(name))
+            .unwrap()
+            .clone();
+        let target = ExpertTarget::new(ExpertTargetInit {
+            project: project(),
+            pod: pod(name),
+            generation: entry.generation,
+            level: entry.level,
+            base_model: entry.base_model,
+            manifest_digest: entry.manifest_digest,
+            state: entry.state,
+            state_version: entry.state_version,
+        })
+        .unwrap();
+        let prune = ExpertProposal::new(
+            project(),
+            proposer(),
+            CommitIndex(1),
+            StructuralOp::Prune {
+                targets: vec![target],
+            },
+            RationaleDigest::new([8; 32]).unwrap(),
+        )
+        .unwrap();
+        let evidence = seed_report(&prune, None);
+        let grant = grant_for(&self.rt);
+        self.rt
+            .admit_expert_proposal(&prune, &evidence, &grant)
+            .unwrap();
+    }
+
     fn structural_commits(&self) -> usize {
         self.rt
             .committed_events()
@@ -797,41 +833,7 @@ fn a_committed_expert_that_cannot_be_installed_is_reported_kept_and_retried() {
 
     // The host frees a slot by pruning e_old through admission; the next step completes the
     // install on its own.
-    let target = ExpertTarget::new({
-        let entry = world
-            .rt
-            .expert_registry()
-            .get(&project(), &pod("e_old"))
-            .unwrap()
-            .clone();
-        ExpertTargetInit {
-            project: project(),
-            pod: pod("e_old"),
-            generation: entry.generation,
-            level: entry.level,
-            base_model: entry.base_model,
-            manifest_digest: entry.manifest_digest,
-            state: entry.state,
-            state_version: entry.state_version,
-        }
-    })
-    .unwrap();
-    let prune = ExpertProposal::new(
-        project(),
-        proposer(),
-        CommitIndex(1),
-        StructuralOp::Prune {
-            targets: vec![target],
-        },
-        RationaleDigest::new([8; 32]).unwrap(),
-    )
-    .unwrap();
-    let evidence = seed_report(&prune, None);
-    let grant = grant_for(&world.rt);
-    world
-        .rt
-        .admit_expert_proposal(&prune, &evidence, &grant)
-        .unwrap();
+    world.prune_via_admission("e_old");
     let healed = world.l3_with(&canned, canned.manifest_digest());
     assert_eq!(healed.installed_late, vec![born.clone()]);
     assert!(world.driver.pending_installs().is_empty());
@@ -842,6 +844,151 @@ fn a_committed_expert_that_cannot_be_installed_is_reported_kept_and_retried() {
         world.vcw.router().registry().repair_pods(&code("newcode")),
         vec![born]
     );
+}
+
+/// A world whose loop roster is full (256 repairers), so every Birth commits and cannot be
+/// enrolled, with a suite that returns a clear rate for every code.
+fn full_roster_world(codes: &[&'static str]) -> (World, Canned) {
+    let mut error_rates = vec![("a", 0.5)];
+    error_rates.extend(codes.iter().map(|c| (*c, 1.0)));
+    let mut held_out_codes = vec!["a", "old"];
+    held_out_codes.extend(codes.iter().copied());
+    let world = World::new(Opts {
+        error_rates,
+        fixer_a_skill: 0.95,
+        seeds: vec![Seed {
+            name: "e_old",
+            codes: &["old"],
+            skill: 0.9,
+            with_inputs: false,
+        }],
+        structure: birth_only(),
+        window_requests: 4,
+        held_out_codes,
+        trainer: trainer(0.95),
+        learn: false,
+        filler: 254,
+    });
+    assert_eq!(world.vcw.repairers().len(), 256);
+    let mut rates: BTreeMap<FindingCode, f64> = world
+        .vcw
+        .repairers()
+        .values()
+        .flatten()
+        .map(|c| (c.clone(), 0.9))
+        .collect();
+    for c in codes {
+        rates.insert(code(c), 0.9);
+    }
+    (world, Canned(rates))
+}
+
+#[test]
+fn a_pending_install_is_abandoned_when_it_outlives_the_ttl_and_never_retried_forever() {
+    let (mut world, canned) = full_roster_world(&["newcode"]);
+    world.serve("before", 24);
+    let digest = canned.manifest_digest();
+    let first = world.l3_with(&canned, digest);
+    assert!(first.outcomes[0].committed_not_installed(), "{first:?}");
+    let born = world.driver.pending_installs()[0].pods()[0].clone();
+    let commits = world.structural_commits();
+    assert_eq!(world.vcw.outstanding_requests(), 1);
+    assert!(first.abandoned_installs.is_empty());
+
+    // Past outstanding_ttl_windows (16 windows of 4 requests) the roster is still full. The
+    // driver retries first, fails, and gives up; the step itself still runs.
+    world.serve("later", 80);
+    assert!(world.vcw.windows_closed() >= 6 + u64::from(world.vcw.outstanding_ttl_windows()));
+    let report = world.l3_with(&canned, digest);
+    assert_eq!(report.abandoned_installs.len(), 1, "{report:?}");
+    let abandoned = &report.abandoned_installs[0];
+    assert_eq!(abandoned.pods, vec![born.clone()]);
+    assert_eq!(abandoned.codes, BTreeSet::from([code("newcode")]));
+    assert!(
+        matches!(abandoned.reason, AbandonReason::Expired { windows } if windows >= 16),
+        "{abandoned:?}"
+    );
+    assert!(abandoned.message.contains("sync_roster"), "{abandoned:?}");
+    assert!(world.driver.pending_installs().is_empty());
+    assert_eq!(world.vcw.outstanding_requests(), 0);
+    // The committed expert is neither routable nor forgotten: the loop holds its code, so the
+    // policy does not birth a second expert for it, now or in later windows.
+    assert!(world.vcw.stranded_experts().contains_key(&born));
+    assert!(!world.vcw.repairers().contains_key(&born));
+    assert!(report.outcomes.is_empty(), "{report:?}");
+    world.serve("again", 24);
+    let next = world.l3_with(&canned, digest);
+    assert!(next.ran_policy && next.outcomes.is_empty(), "{next:?}");
+    assert!(next.abandoned_installs.is_empty());
+    assert_eq!(world.structural_commits(), commits, "no second Birth");
+
+    // The host retires the stranded expert through admission; the next step releases the hold.
+    world.prune_via_admission(born.0.as_str());
+    world.serve("last", 8);
+    world.l3_with(&canned, digest);
+    assert!(world.vcw.stranded_experts().is_empty());
+}
+
+#[test]
+fn a_code_with_a_pending_install_is_not_born_again_while_the_install_is_pending() {
+    let (mut world, canned) = full_roster_world(&["newcode"]);
+    world.serve("before", 24);
+    let digest = canned.manifest_digest();
+    let first = world.l3_with(&canned, digest);
+    assert!(first.outcomes[0].committed_not_installed(), "{first:?}");
+    let commits = world.structural_commits();
+    // Windows keep closing (well inside the TTL) and `newcode` stays unroutable.
+    for round in 0..3 {
+        world.serve(&format!("more{round}"), 8);
+        let report = world.l3_with(&canned, digest);
+        assert!(report.ran_policy, "{report:?}");
+        assert!(report.outcomes.is_empty(), "{report:?}");
+        assert_eq!(world.driver.pending_installs().len(), 1);
+    }
+    assert_eq!(world.structural_commits(), commits);
+}
+
+#[test]
+fn at_the_pending_cap_new_structural_steps_are_refused_and_nothing_is_dropped() {
+    let (mut world, canned) = full_roster_world(&["newcode", "newcode2"]);
+    world.driver = StructureDriver::new(
+        project(),
+        proposer(),
+        base(),
+        BirthSite::Token {
+            layer: LAYER,
+            slots: 16,
+        },
+        gate(),
+    )
+    .with_max_pending(1);
+    world.serve("before", 24);
+    let seeded = world.structural_commits();
+    let report = world.l3_with(&canned, canned.manifest_digest());
+    assert_eq!(report.outcomes.len(), 2, "{report:?}");
+    let pending = report
+        .outcomes
+        .iter()
+        .filter(|o| o.committed_not_installed())
+        .count();
+    assert_eq!(pending, 1, "{report:?}");
+    let refused: Vec<_> = report
+        .outcomes
+        .iter()
+        .filter_map(|o| match &o.result {
+            StructureResult::Refused(refusal) => Some(refusal.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        refused,
+        vec![Refusal::PendingInstallsFull { pending: 1 }],
+        "{report:?}"
+    );
+    // Only the first was committed, and it is still tracked; the refused request is not held.
+    assert_eq!(world.structural_commits(), seeded + 1);
+    assert_eq!(world.driver.pending_installs().len(), 1);
+    assert_eq!(world.vcw.outstanding_requests(), 1);
 }
 
 // --- (d) no commit without admission --------------------------------------------------------
