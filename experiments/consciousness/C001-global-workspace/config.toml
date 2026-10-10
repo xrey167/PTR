@@ -114,6 +114,6 @@ arm_d_list = "workspace=48,all_to_all=48,bw_all_to_all=48,sparse_all_to_all=48,n
 paired_t_support = "1.729133"
 paired_t_refute = "2.294392"
 preregistration_text = "experiments/consciousness/C001-global-workspace/PREREGISTRATION.md"
-preregistration_text_sha256 = "must-be-pinned-before-prepared"
+preregistration_text_sha256 = "58765e6f5cc7df5f331bec55e61e5b2a02bc8db260a33dffea8dd1710b2af8c9"
 criteria = "experiments/consciousness/C001-global-workspace/criteria.toml"
-criteria_sha256 = "must-be-pinned-before-prepared"
+criteria_sha256 = "896e692fef7dadc6d192d71d58b87dc183f39d0af64bbc748b35cb711b3ff0fb"
