@@ -109,7 +109,7 @@ cognitive crates hold about **8%** (1,397).
 | `model/` | `burn-a0` (separate Cargo workspace), configs, MOD-001..012 hypothesis docs, empty `reference_torch/`, `kernels/`, `artifacts/`, `checkpoints/` | burn-a0 ≈2.5k lines; 43 tests *run* | A0 probe real; everything else is specification or placeholder (§9) |
 | `training/` | Python package `ptr_training`, run/stage configs, track directories | ≈600 lines; 32 tests *run* | Manifests, provenance and seal checks only; **no training code** |
 | `datasets/` | registry (4 entries), cards, JSON schemas, 2 zip bundles, samples, `generated/codebook.json` | 2 bundles ≈1.2 MB | 2 bundles imported and hash-checked; 2 entries planned with no artifact |
-| `experiments/` | 21 experiment manifests (+ results for L001, M001 pilot) | | 20 `planned`, 1 `running` (L001) |
+| `experiments/` | 21 experiment manifests (+ results for L001, M001 pilot) | | at the time of writing 20 `planned`, 1 `running` (L001); since then L001 is `superseded` by the planned L001-v2 and none is `running` |
 | `evaluations/` | 27 technology slots, 81 candidates | | 7 `evaluating`, 74 `to-evaluate`; no two candidates ever compared |
 | `benchmarks/` | 10 suites | 165 lines | Metric-name lists only; no data, scorer or harness |
 | `research/` | 15 ADRs, falsification, novelty claims, 3 baselines, 4 catalogs | | 14 ADRs Accepted, 1 Proposed; prior-art matrix empty |
@@ -596,7 +596,7 @@ confirms that the test *names* they cite exist (`scripts/check_contract_citation
 | Model | M001 typed slots → OOD fidelity · M002 typed biases → constraint retention · M003 latent steps → fewer tokens · M004 learned routing vs LLM-only · M005 epistemic states → less false certainty · M006 PTR-Diff vs autoregressive · M007 interleaved model/runtime execution | all planned (M001 has only the synthetic pilot) |
 | SemDB | S001 dependency-aware invalidation · S002 safe cancellation of stale runs | planned |
 | Runtime/Pods | R001 bounded mailboxes · R002 unseen Pod names · R003 continued pretraining trust gate (ADR-0015) | planned |
-| Lifecycle | **L001 revoked generations never resurrect across crashes** · L002 cluster convergence after partitions | **L001 running** (pre-PTRLOG02 evidence) · L002 planned |
+| Lifecycle | **L001 revoked generations never resurrect across crashes** · L002 cluster convergence after partitions | **L001 superseded** by L001-v2 (planned; L001's evidence is pre-PTRLOG02) · L002 planned |
 | Retrieval | Q001 retrieval mixtures · Q002 exact-source verification | planned |
 | Feedback | F001 repair vs rewrite vs single shot | planned |
 | System | E001 full pipeline vs backbone · E002 vs strong RAG/GraphRAG · E003 quality per token · E004 long-horizon state fidelity | planned |

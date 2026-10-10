@@ -1,5 +1,18 @@
 # L001-revocation-crash
 
+## Superseded by L001-v2
+
+L001 is `superseded`. Its probes check one subject and one stale action (`stale_action_accepted`)
+and compare only the number of recovered events, against the v1 journal format, with no
+independent oracle, no preregistration, no criteria and no mutation evidence. The experiment
+that replaces it is [L001-v2-revocation-crash](../L001-v2-revocation-crash/README.md): the same
+claim over every enumerated crash, power-loss and leadership schedule, with an independent oracle
+for every (subject, generation) of a seeded history, baselines, controls and a mutation plan.
+
+Nothing below is changed or retracted: the numbers are still what they were, evidence about the
+earlier v1 journal format and the scoped probes named here, and `results/` is untouched. They
+support no claim about the current journal format, and L001-v2 does not reuse them.
+
 ## Hypothesis
 Can revoked generations ever resurrect across injected crashes?
 
