@@ -185,10 +185,12 @@ class CriteriaFileTests(unittest.TestCase):
             if key in pinned:
                 self.assertEqual(value, pinned[key], key)
         self.assertEqual(table["harness"], aggregate.BENCHMARK)
-        self.assertEqual(
-            sorted(key for key, value in table.items() if str(value).startswith("must-be-")),
-            ["criteria_sha256", "preregistration_text_sha256"],
-        )
+        # Two placeholders before the freeze; none after it, when both are SHA-256 digests.
+        placeholders = sorted(key for key, value in table.items() if str(value).startswith("must-be-"))
+        self.assertIn(placeholders, (["criteria_sha256", "preregistration_text_sha256"], []))
+        if not placeholders:
+            for key in ("criteria_sha256", "preregistration_text_sha256"):
+                self.assertRegex(table[key], r"^[0-9a-f]{64}$")
         for key in ("preregistration_text", "criteria"):
             self.assertTrue((ROOT / table[key]).is_file(), key)
 
