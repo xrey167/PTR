@@ -118,7 +118,7 @@ status = "superseded"
 [[experiment]]
 id = "L001-v2"
 path = "lifecycle/L001-v2-revocation-crash"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "L002"

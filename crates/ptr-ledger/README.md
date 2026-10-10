@@ -91,7 +91,7 @@
 ### Linked experiments
 
 - [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `superseded`
-- [L001-v2](../../experiments/lifecycle/L001-v2-revocation-crash/README.md) — `planned`
+- [L001-v2](../../experiments/lifecycle/L001-v2-revocation-crash/README.md) — `frozen`
 - [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
 - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
 
