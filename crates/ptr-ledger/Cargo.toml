@@ -8,6 +8,10 @@ publish = false
 [features]
 default = []
 failpoints = ["dep:fail", "fail/failpoints"]
+# Test-only: forwards to the vendored raft-engine's own `failpoints` feature so a
+# harness can hit `file_pipe_log::append`, `log_file::write::err` and
+# `log_fd::sync::err` while RaftEngineLedger appends. Instrumentation only.
+raft-engine-failpoints = ["failpoints", "raft-engine-backend", "raft-engine/failpoints"]
 raft-engine-backend = ["dep:raft-engine"]
 raft-rs-backend = ["dep:raft", "dep:slog"]
 
@@ -24,6 +28,11 @@ slog = { version = "2.7", optional = true }
 name = "failpoints"
 path = "tests/failpoints.rs"
 required-features = ["failpoints"]
+
+[[test]]
+name = "engine_failpoints"
+path = "tests/engine_failpoints.rs"
+required-features = ["raft-engine-failpoints"]
 
 [[test]]
 name = "raft_engine"

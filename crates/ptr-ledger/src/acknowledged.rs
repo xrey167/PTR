@@ -94,8 +94,13 @@ pub struct TailRecovery {
     pub acknowledged_records: usize,
     /// Durable records above the previous anchor that were removed.
     pub discarded_records: usize,
-    /// Whether a partial trailing frame was truncated.
+    /// Whether an incomplete tail was truncated: a partial trailing frame, and also a pure
+    /// all-zero tail (no frame at all); `trimmed_zero_tail_bytes > 0` tells the two apart.
     pub incomplete_frame_removed: bool,
+    /// Bytes of an all-zero tail that were trimmed (0 when none): the file had been extended
+    /// and none of the new data reached the disk, so no frame, acknowledged or not, was in it.
+    /// Never silent: it is part of this report, which [`AcknowledgedLedger::recovery`] keeps.
+    pub trimmed_zero_tail_bytes: usize,
     /// The log's tail after repair.
     pub tail: LogAnchor,
     /// The origin derivable from the repaired log, when it still holds index 1.
@@ -181,6 +186,8 @@ pub struct AcknowledgedLedger {
     anchors: AnchorStore,
     paths: LogPaths,
     fenced: bool,
+    /// What the repair at open did, when this ledger came from `open`.
+    recovery: Option<TailRecovery>,
 }
 
 impl AcknowledgedLedger {
@@ -198,6 +205,7 @@ impl AcknowledgedLedger {
             anchors,
             paths: paths.clone(),
             fenced: false,
+            recovery: None,
         })
     }
 
@@ -258,6 +266,7 @@ impl AcknowledgedLedger {
                 anchors,
                 paths: paths.clone(),
                 fenced: false,
+                recovery: Some(recovery),
             },
             split,
         ))
@@ -285,6 +294,12 @@ impl AcknowledgedLedger {
             .acknowledge(tail, origin.unwrap_or(ChainOrigin::UNSET))?;
         self.fenced = false;
         Ok(index)
+    }
+
+    /// What the repair at open did (a trimmed partial frame or zero tail, kept or discarded
+    /// records); `None` for a ledger that was created, not opened.
+    pub fn recovery(&self) -> Option<TailRecovery> {
+        self.recovery
     }
 
     /// Committed events currently retained by the live log.

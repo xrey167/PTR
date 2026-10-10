@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-08  
-**Code footprint:** 9 Rust source files · 7881 nonblank source lines · 14 integration-test files · 138 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 7946 nonblank source lines · 15 integration-test files · 152 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -49,7 +49,9 @@
 - Ledger trait and in-memory reference implementation, with an optional compaction-floor offset so restored records keep their committed indices
 - CompactionBarrier scaffold
 - Durable reference FileLedger with checked versioned frames, file synchronization and anchor-required tail recovery
+- Directed recovery trims a tail that is all zero (a file extended whose data never reached the disk, the usual state after a power loss with delayed allocation) as it trims a partial frame: only when every byte from the end of the last complete, valid frame to the end of the file is zero, only in the anchor-directed recovery (AcknowledgedLedger::open, RecoverableLog::repair, FileLedger::recover_unacknowledged_tail), only when the anchor (or the trusted tail anchor) is a boundary of the complete prefix (an anchor beyond the zero region is a lost suffix and is refused as before), and under TailPolicy::Refuse it is refused with every byte left in place. Strict open and decode still refuse it, and a zero gap followed by written bytes, a partially written frame followed by zeros up to its length, zeros inside a frame and zeros before a frame keep being refused. Whole valid frames followed by zeros are not damage: they are the ordinary unacknowledged records (kept, discarded or refused by TailPolicy exactly as without the zeros) and only the zero region after the last complete valid frame is trimmed (incomplete_frame_removed is also true for a pure zero tail; trimmed_zero_tail_bytes > 0 tells it apart from a torn frame). The trim is reported (TailRecovery::trimmed_zero_tail_bytes, AcknowledgedLedger::recovery, FileLedger::recover_unacknowledged_tail_reporting), truncates and syncs the file (the directory entry does not change, so no directory sync is needed) and is idempotent across a crash between the truncation and its sync (failpoint ledger.trim_after_truncate_before_sync). Found by the L001-v2 pilot 1001 before the freeze: every recovery of a zero tail was refused
 - Feature-gated fail-rs injection points around record write/payload/fsync/memory-commit boundaries
+- Test-only failpoints in the anchor's publication, one after each step (anchor.after_scratch_write_before_sync, anchor.after_scratch_sync_before_rename, anchor.after_rename_before_dir_sync, anchor.after_dir_sync) and one at each directory synchronization (ledger.sync_parent, so a harness can count them) behind the same `failpoints` feature, and a `raft-engine-failpoints` feature that forwards to the vendored raft-engine's own `failpoints` (file_pipe_log::append, log_file::write::err, log_fd::sync::err are then reachable while RaftEngineLedger appends); instrumentation only, compiled out without the feature so the default build is unchanged. tests/failpoints.rs and tests/engine_failpoints.rs check that each point fires once per publication or append in order, that a panic at any anchor point leaves the old or the new anchor and never a blend, and that the scratch file of an interrupted publication is never authoritative. The L001-v2 harness (bins/ptr-bench, `ledger-experiments`) drives them
 - Feature-gated raft-engine 0.4.2 durable adapter stores ordered PTR ledger events with synchronous writes and reopen validation, and propagates a refused batch put instead of recording an event it never wrote
 - Feature-gated raft-rs 0.7 single-node consensus harness proposes and commits PTR LedgerEvents through RawNode, over durable state rather than MemStorage: a reopened node replays its committed prefix and tells raft what it already applied
 - Snapshot transfer: a member records its application state at a committed position and the log below it is discarded, a member the leader cannot replay to is sent that payload verbatim, and applying anything further is refused until the application has accounted for what the payload covers
@@ -70,7 +72,8 @@
 
 ### Missing for the target architecture
 
-- Hardware power-loss evidence; anchor key custody, rotation and hardware-backed sealing
+- Hardware power-loss evidence; anchor key custody, rotation and hardware-backed sealing. L001-v2 models power loss as fsync-honest crash images (the synced prefix of each file plus a seeded subset of what was written after it), not a real power cut, and its durability probe sees file data pages only, so a missing directory fsync is not detected
+- RaftEngineLedger has no hash chain and no protected anchor, so it cannot detect that it lost acknowledged records: its default recovery mode drops a torn tail and reports success (L001-v2 counts this as undetected_rollback, descriptive, and attempts no product work on it)
 - A composition of RaftNode over ptr-net transport on ALPN_RAFT: the group is driven by a test's queue, so there is no framing, no authenticated sender, no bound on what a peer may send and no evidence a real connection carries these messages; ptr-ledger must not depend on transport, so the composition needs its own home
 - Membership changes beyond one voter at a time, and any discovery of where a joining voter can be reached: propose_membership adds or removes a single voter, and a joiner must still be given an address out of band
 - Any relation between raft's own log floor and the ledger's retention floor: a snapshot can be recorded and transferred, but the two floors are still independent. The consequence that had teeth is closed elsewhere — a compacted snapshot now carries the at-most-once obligations the raised floor removes — so what is left here is the structural relation, not a lost guarantee
@@ -83,11 +86,12 @@
 
 - Define storage/consensus interfaces around existing Ledger contract
 - Benchmark FileLedger against raft-engine, then connect raft-rs RawNode to raft-engine persistence and network transport
-- Expand L001 failpoint matrix to process-abort and durable-backend cases, then run L002 cluster recovery
+- Run L001-v2 (revocation under crash, power-loss and leadership schedules; it supersedes L001) through its mutation check and freeze, then run L002 cluster recovery
 
 ### Linked experiments
 
-- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `running`
+- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `superseded`
+- [L001-v2](../../experiments/lifecycle/L001-v2-revocation-crash/README.md) — `planned`
 - [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
 - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
 

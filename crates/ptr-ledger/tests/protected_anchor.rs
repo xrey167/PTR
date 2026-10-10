@@ -380,6 +380,282 @@ fn an_incomplete_frame_is_never_a_record_under_any_policy() {
     }
 }
 
+/// The log of `records` revocations followed by `tail`, written over the live log.
+fn write_log_with_tail(tmp: &Temp, records: u64, tail: &[u8]) -> Vec<u8> {
+    let events: Vec<_> = (1..=records).map(committed).collect();
+    let mut bytes = encode_log(&events).unwrap();
+    bytes.extend_from_slice(tail);
+    std::fs::write(tmp.log(), &bytes).unwrap();
+    bytes
+}
+
+/// The bytes of frame `n` of a log of `n` records.
+fn frame(n: u64) -> Vec<u8> {
+    let events: Vec<_> = (1..=n).map(committed).collect();
+    let full = encode_log(&events).unwrap();
+    let before = encode_log(&events[..events.len() - 1]).unwrap();
+    full[before.len()..].to_vec()
+}
+
+#[test]
+fn a_tail_of_zeros_is_trimmed_and_reported_under_every_policy_that_allows_a_tail() {
+    for policy in [TailPolicy::Acknowledge, TailPolicy::Discard] {
+        let tmp = Temp::new();
+        let ledger = make_ledger(&tmp, 3);
+        let before = ledger.anchor();
+        drop(ledger);
+        let complete = snapshot(&tmp.log());
+        // The file was extended and none of the new data reached the disk.
+        write_log_with_tail(&tmp, 3, &vec![0u8; 700]);
+
+        let (split, _) = AcknowledgedLedger::inspect(&tmp.paths(), key(), 0).unwrap();
+        assert_eq!(
+            split,
+            Split::Unacknowledged {
+                complete_records: 0,
+                incomplete_frame: true,
+                tail: before.log,
+            }
+        );
+        let (repaired, _) =
+            AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, policy).unwrap();
+        // The valid frames are kept, the zeros are gone, and the report says so.
+        assert_eq!(
+            subjects(repaired.events()),
+            ["subject:1", "subject:2", "subject:3"]
+        );
+        assert_eq!(repaired.anchor(), before);
+        let recovery = repaired.recovery().unwrap();
+        assert_eq!(recovery.trimmed_zero_tail_bytes, 700);
+        assert!(recovery.incomplete_frame_removed);
+        drop(repaired);
+        assert_eq!(snapshot(&tmp.log()), complete);
+        // Opened again, nothing is left to trim.
+        let (again, _) =
+            AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, policy).unwrap();
+        assert_eq!(again.recovery().unwrap().trimmed_zero_tail_bytes, 0);
+    }
+}
+
+#[test]
+fn a_tail_of_zeros_is_refused_when_the_policy_refuses_a_tail_and_left_untouched() {
+    let tmp = Temp::new();
+    let ledger = make_ledger(&tmp, 2);
+    let before = ledger.anchor();
+    drop(ledger);
+    let torn = write_log_with_tail(&tmp, 2, &[0u8; 64]);
+    assert!(
+        AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, TailPolicy::Refuse).is_err()
+    );
+    assert_eq!(snapshot(&tmp.log()), torn);
+}
+
+#[test]
+fn a_zero_tail_after_a_lost_acknowledged_record_is_a_rollback_and_is_refused() {
+    let tmp = Temp::new();
+    let ledger = make_ledger(&tmp, 3);
+    let anchor = ledger.anchor();
+    drop(ledger);
+    // The third record, acknowledged by the anchor, reads as zeros: its bytes are gone, and the
+    // zeros start before what the anchor acknowledged.
+    let torn = write_log_with_tail(&tmp, 2, &vec![0u8; frame(3).len()]);
+    for policy in [
+        TailPolicy::Acknowledge,
+        TailPolicy::Discard,
+        TailPolicy::Refuse,
+    ] {
+        let error = AcknowledgedLedger::open(&tmp.paths(), key(), anchor.epoch, policy)
+            .err()
+            .unwrap();
+        assert_eq!(error.code(), "PTR_ACK_LOST_SUFFIX");
+        assert_eq!(snapshot(&tmp.log()), torn);
+    }
+}
+
+#[test]
+fn whole_unacknowledged_frames_followed_by_zeros_are_ordinary_records_plus_a_zero_tail() {
+    // The anchor acknowledges 1 record; `extra` complete frames above it were written, and the
+    // zeros after them are a zero tail at a frame boundary.
+    for extra in [1u64, 2] {
+        let total = 1 + extra;
+        let zeros = vec![0u8; 300];
+
+        // Acknowledge keeps the whole frames, trims only the zeros, and advances the anchor.
+        let tmp = Temp::new();
+        let ledger = make_ledger(&tmp, 1);
+        let before = ledger.anchor();
+        drop(ledger);
+        let kept: Vec<_> = (1..=total).map(committed).collect();
+        write_log_with_tail(&tmp, total, &zeros);
+        let (split, _) = AcknowledgedLedger::inspect(&tmp.paths(), key(), 0).unwrap();
+        assert!(matches!(
+            split,
+            Split::Unacknowledged {
+                complete_records,
+                incomplete_frame: true,
+                ..
+            } if complete_records as u64 == extra
+        ));
+        let (kept_ledger, _) =
+            AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, TailPolicy::Acknowledge)
+                .unwrap();
+        assert_eq!(kept_ledger.events().len() as u64, total);
+        assert_eq!(kept_ledger.anchor().log.index, CommitIndex(total));
+        assert!(kept_ledger.epoch() > before.epoch);
+        let recovery = kept_ledger.recovery().unwrap();
+        assert_eq!(recovery.trimmed_zero_tail_bytes, 300);
+        assert_eq!(recovery.acknowledged_records as u64, extra);
+        assert_eq!(recovery.discarded_records, 0);
+        drop(kept_ledger);
+        assert_eq!(snapshot(&tmp.log()), encode_log(&kept).unwrap());
+
+        // Discard drops the unacknowledged frames and the zeros, and keeps the anchor.
+        let tmp = Temp::new();
+        let ledger = make_ledger(&tmp, 1);
+        let before = ledger.anchor();
+        drop(ledger);
+        write_log_with_tail(&tmp, total, &zeros);
+        let (dropped, _) =
+            AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, TailPolicy::Discard)
+                .unwrap();
+        assert_eq!(dropped.events().len(), 1);
+        assert_eq!(dropped.anchor(), before);
+        assert_eq!(dropped.epoch(), before.epoch);
+        let recovery = dropped.recovery().unwrap();
+        assert_eq!(recovery.trimmed_zero_tail_bytes, 300);
+        assert_eq!(recovery.discarded_records as u64, extra);
+        assert_eq!(recovery.acknowledged_records, 0);
+        drop(dropped);
+        assert_eq!(snapshot(&tmp.log()), encode_log(&[committed(1)]).unwrap());
+
+        // Refuse refuses and leaves every byte in place.
+        let tmp = Temp::new();
+        let ledger = make_ledger(&tmp, 1);
+        let before = ledger.anchor();
+        drop(ledger);
+        let untouched = write_log_with_tail(&tmp, total, &zeros);
+        let refused =
+            AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, TailPolicy::Refuse);
+        assert_eq!(
+            refused.err().map(|error| error.code()),
+            Some("PTR_ACK_TAIL_REFUSED")
+        );
+        assert_eq!(snapshot(&tmp.log()), untouched);
+    }
+}
+
+#[test]
+fn damage_that_is_not_a_tail_of_zeros_alone_is_still_refused() {
+    let frame3 = frame(3);
+    let zeros = |n: usize| vec![0u8; n];
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        // A zero gap, then the written bytes intact.
+        (
+            "gap then intact",
+            [zeros(100), frame3[100..].to_vec()].concat(),
+        ),
+        // The written bytes intact, then zeros to the full length of the frame.
+        (
+            "intact then zeros",
+            [frame3[..60].to_vec(), zeros(frame3.len() - 60)].concat(),
+        ),
+        // The frame magic, then zeros: inside a frame, not at a frame boundary.
+        (
+            "zeros inside a frame",
+            [frame3[..8].to_vec(), zeros(200)].concat(),
+        ),
+        // Zeros, then a frame: not a tail.
+        ("zeros before a frame", [zeros(8), frame3.clone()].concat()),
+    ];
+    for (name, tail) in cases {
+        let tmp = Temp::new();
+        let ledger = make_ledger(&tmp, 3);
+        let anchor = ledger.anchor();
+        drop(ledger);
+        let torn = write_log_with_tail(&tmp, 2, &tail);
+        for policy in [TailPolicy::Acknowledge, TailPolicy::Discard] {
+            assert!(
+                AcknowledgedLedger::open(&tmp.paths(), key(), anchor.epoch, policy).is_err(),
+                "{name}"
+            );
+            assert_eq!(snapshot(&tmp.log()), torn, "{name}");
+        }
+    }
+}
+
+#[test]
+fn a_zero_gap_before_unacknowledged_written_bytes_is_never_trimmed_as_a_zero_tail() {
+    // The anchor acknowledges 2 records, so the damage sits in the unacknowledged region and the
+    // anchor check alone cannot refuse it: only the scanner's all-zero test stands between the
+    // written bytes after the gap and a trim that would delete them.
+    let frame3 = frame(3);
+    let tail = [vec![0u8; 100], frame3[100..].to_vec()].concat();
+    for policy in [TailPolicy::Acknowledge, TailPolicy::Discard] {
+        let tmp = Temp::new();
+        let ledger = make_ledger(&tmp, 2);
+        let before = ledger.anchor();
+        drop(ledger);
+        let torn = write_log_with_tail(&tmp, 2, &tail);
+        assert!(
+            AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, policy).is_err(),
+            "{policy:?}"
+        );
+        assert_eq!(snapshot(&tmp.log()), torn, "{policy:?}");
+    }
+    // The same through the file ledger's directed recovery.
+    let tmp = Temp::new();
+    let ledger = make_ledger(&tmp, 2);
+    let trusted = ledger.anchor().log;
+    drop(ledger);
+    let torn = write_log_with_tail(&tmp, 2, &tail);
+    assert!(FileLedger::recover_unacknowledged_tail_reporting(tmp.log(), trusted).is_err());
+    assert_eq!(snapshot(&tmp.log()), torn);
+}
+
+#[test]
+fn a_file_ledger_trims_a_zero_tail_only_in_the_directed_recovery_and_says_how_much() {
+    let tmp = Temp::new();
+    let ledger = make_ledger(&tmp, 2);
+    let trusted = ledger.anchor().log;
+    drop(ledger);
+    let complete = snapshot(&tmp.log());
+    write_log_with_tail(&tmp, 2, &[0u8; 300]);
+    // The strict open never repairs.
+    assert!(FileLedger::open(tmp.log()).is_err());
+    assert_eq!(snapshot(&tmp.log()).len(), complete.len() + 300);
+    // A trusted anchor behind the tail is not needed to know a zero region holds no frame, but
+    // it is still required to be a boundary of the complete prefix.
+    let wrong = LogAnchor {
+        index: CommitIndex(9),
+        digest: [7; 32],
+    };
+    assert!(FileLedger::recover_unacknowledged_tail_reporting(tmp.log(), wrong).is_err());
+    assert_eq!(snapshot(&tmp.log()).len(), complete.len() + 300);
+    let (ledger, trimmed) =
+        FileLedger::recover_unacknowledged_tail_reporting(tmp.log(), trusted).unwrap();
+    assert_eq!(trimmed, 300);
+    assert_eq!(ledger.events().len(), 2);
+    drop(ledger);
+    assert_eq!(snapshot(&tmp.log()), complete);
+}
+
+#[test]
+fn a_log_that_is_only_the_header_and_zeros_recovers_empty() {
+    let tmp = Temp::new();
+    let ledger = make_ledger(&tmp, 0);
+    let before = ledger.anchor();
+    drop(ledger);
+    let header = snapshot(&tmp.log());
+    write_log_with_tail(&tmp, 0, &[0u8; 512]);
+    let (repaired, _) =
+        AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, TailPolicy::Acknowledge)
+            .unwrap();
+    assert!(repaired.events().is_empty());
+    assert_eq!(repaired.recovery().unwrap().trimmed_zero_tail_bytes, 512);
+    drop(repaired);
+    assert_eq!(snapshot(&tmp.log()), header);
+}
+
 #[test]
 fn a_log_behind_its_anchor_is_refused_and_left_untouched() {
     let tmp = Temp::new();
