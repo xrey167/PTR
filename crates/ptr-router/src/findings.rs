@@ -646,8 +646,26 @@ pub struct ScoringContext<'a> {
 
 /// A learned or scored re-ranking within the admissible set. It returns non-negative weights
 /// for admissible Pods only; it cannot select an outcome class.
+///
+/// # Purity
+///
+/// Off-policy estimation (`ptr_router::estimate_policy`) rebuilds a scorer's distribution on
+/// logged decisions with `request_id = "ope"` and a zero `request_digest`. A scorer used with
+/// it must therefore be a function of `class` and `admissible` (and of its own immutable state)
+/// only, and must ignore `request_id` and `request_digest`; otherwise the estimated probability
+/// of an action is not the probability the router sampled it with. `LearnedPolicy`,
+/// `UniformScorer` and `ActiveScorer` are pure in this sense.
 pub trait AdmissibleScorer {
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError>;
+
+    /// The exploration rate this scorer's evidence was computed under, if it is bound to one
+    /// (a learned policy is: its promotion evidence assumed that floor). A router refuses a
+    /// scorer whose bound rate is not its own, so a learned policy cannot be deployed without
+    /// the floor it was evaluated with. `None` for a scorer that carries no such evidence.
+    ///
+    /// Required, not defaulted: a wrapper scorer must forward its inner scorer's answer, or the
+    /// router's floor check would be silently skipped for it.
+    fn bound_exploration(&self) -> Option<Exploration>;
 }
 
 /// Equal weight for every admissible Pod.
@@ -655,6 +673,10 @@ pub trait AdmissibleScorer {
 pub struct UniformScorer;
 
 impl AdmissibleScorer for UniformScorer {
+    fn bound_exploration(&self) -> Option<Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         Ok(context
             .admissible
@@ -663,6 +685,32 @@ impl AdmissibleScorer for UniformScorer {
             .collect())
     }
 }
+
+/// Why a router could not be built.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum RouterBuildError {
+    /// The scorer is bound to one exploration rate and the router has another (including none).
+    ExplorationMismatch {
+        scorer: Exploration,
+        router: Exploration,
+    },
+}
+
+impl fmt::Display for RouterBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExplorationMismatch { scorer, router } => write!(
+                f,
+                "the scorer is bound to exploration {} and the router uses {}",
+                scorer.epsilon(),
+                router.epsilon()
+            ),
+        }
+    }
+}
+
+impl Error for RouterBuildError {}
 
 /// Why a report could not be routed.
 #[derive(Debug)]
@@ -790,21 +838,34 @@ impl<S> fmt::Debug for FindingRouter<S> {
 }
 
 impl<S: AdmissibleScorer> FindingRouter<S> {
+    /// # Errors
+    /// [`RouterBuildError::ExplorationMismatch`] when `scorer` is bound to an exploration rate
+    /// (see [`AdmissibleScorer::bound_exploration`]) other than `config.exploration`. A learned
+    /// policy promoted with a floor of `epsilon` cannot be deployed under another floor, nor
+    /// under none.
     pub fn new(
         registry: FindingRegistry,
         config: RouterConfig,
         scorer: S,
         key: SamplingKey,
         nonces: NonceSequence,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, RouterBuildError> {
+        if let Some(bound) = scorer.bound_exploration() {
+            if bound != config.exploration {
+                return Err(RouterBuildError::ExplorationMismatch {
+                    scorer: bound,
+                    router: config.exploration,
+                });
+            }
+        }
+        Ok(Self {
             registry,
             config,
             scorer,
             key,
             nonces,
             counters: Mutex::new(Counters::default()),
-        }
+        })
     }
 
     pub fn registry(&self) -> &FindingRegistry {
@@ -909,40 +970,17 @@ impl<S: AdmissibleScorer> FindingRouter<S> {
         admissible: Vec<PodId>,
     ) -> Result<FindingRouteRecord, FindingRouteError> {
         let fail = |kind| FindingRouteError::new(request, kind);
-        let weights = self
-            .scorer
-            .weights(&ScoringContext {
+        let distribution = mixed_distribution(
+            &self.scorer,
+            &ScoringContext {
                 class: &class,
                 admissible: &admissible,
                 request_id: request.request_id,
                 request_digest: request.request_digest,
-            })
-            .map_err(|error| fail(FindingRouteErrorKind::Scorer(error)))?;
-        if let Some((pod, _)) = weights.iter().find(|(pod, _)| !admissible.contains(pod)) {
-            return Err(fail(FindingRouteErrorKind::OutsideAdmissibleSet {
-                pod: pod.clone(),
-            }));
-        }
-        let scored = RouteDistribution::new(weights)
-            .map_err(|error| fail(FindingRouteErrorKind::Distribution(error)))?;
-        if scored.is_empty() {
-            return Err(fail(FindingRouteErrorKind::NoMass));
-        }
-        // Router-owned exploration floor: mix the scorer's quantized distribution with uniform.
-        let epsilon = self.config.exploration.epsilon();
-        let uniform = 1.0 / admissible.len() as f64;
-        let mixed: Vec<(PodId, f64)> = admissible
-            .iter()
-            .map(|pod| {
-                let scorer_mass = scored.probability(pod);
-                (
-                    pod.clone(),
-                    (1.0 - epsilon) * scorer_mass + epsilon * uniform,
-                )
-            })
-            .collect();
-        let distribution = RouteDistribution::new(mixed)
-            .map_err(|error| fail(FindingRouteErrorKind::Distribution(error)))?;
+            },
+            self.config.exploration.epsilon(),
+        )
+        .map_err(fail)?;
         let nonce = self
             .nonces
             .next_nonce()
@@ -993,6 +1031,46 @@ impl<S: AdmissibleScorer> FindingRouter<S> {
             generation: self.registry.generation(),
         })
     }
+}
+
+/// The distribution a router samples from for one class: the scorer's weights over the
+/// admissible Pods, quantized, mixed with the uniform distribution at the router-owned
+/// exploration rate `epsilon`. One function for the router and for the off-policy estimator
+/// (`ope`), so the probability an estimator assigns to a policy is the probability the router
+/// would sample with.
+///
+/// # Errors
+/// The scorer's failure, a weight on a Pod outside `context.admissible`, weights the
+/// distribution refuses, or no mass at all.
+pub(crate) fn mixed_distribution<S: AdmissibleScorer + ?Sized>(
+    scorer: &S,
+    context: &ScoringContext<'_>,
+    epsilon: f64,
+) -> Result<RouteDistribution, FindingRouteErrorKind> {
+    let admissible = context.admissible;
+    let weights = scorer
+        .weights(context)
+        .map_err(FindingRouteErrorKind::Scorer)?;
+    if let Some((pod, _)) = weights.iter().find(|(pod, _)| !admissible.contains(pod)) {
+        return Err(FindingRouteErrorKind::OutsideAdmissibleSet { pod: pod.clone() });
+    }
+    let scored = RouteDistribution::new(weights).map_err(FindingRouteErrorKind::Distribution)?;
+    if scored.is_empty() {
+        return Err(FindingRouteErrorKind::NoMass);
+    }
+    // Router-owned exploration floor: mix the scorer's quantized distribution with uniform.
+    let uniform = 1.0 / admissible.len() as f64;
+    let mixed: Vec<(PodId, f64)> = admissible
+        .iter()
+        .map(|pod| {
+            let scorer_mass = scored.probability(pod);
+            (
+                pod.clone(),
+                (1.0 - epsilon) * scorer_mass + epsilon * uniform,
+            )
+        })
+        .collect();
+    RouteDistribution::new(mixed).map_err(FindingRouteErrorKind::Distribution)
 }
 
 impl Counters {

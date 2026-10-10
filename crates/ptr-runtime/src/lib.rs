@@ -29,6 +29,7 @@ pub mod stepped;
 pub mod tensor_kv;
 pub mod tier;
 pub mod vcw;
+pub mod vcw_host;
 
 pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
 pub use directory::{InMemoryPodDirectory, PodDirectory};

@@ -54,6 +54,7 @@
 mod job;
 mod pods;
 mod service;
+mod shadow;
 mod sim;
 mod wire;
 
@@ -65,6 +66,7 @@ pub use job::{
     MAX_REFERENCE_BYTES, MAX_TEST_ARGS,
 };
 pub use service::{VcwBuildError, VcwService, VcwServiceParts};
+pub use shadow::{LearningReport, ShadowEstimate};
 pub use sim::plantable;
 pub use wire::{
     VcwApiError, VcwAuthor, VcwClaim, VcwCodeTest, VcwCommitted, VcwResponse, VcwSpent, VcwTask,

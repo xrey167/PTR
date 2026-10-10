@@ -4,8 +4,9 @@ use std::path::Path;
 mod vcw;
 
 pub use vcw::{
-    VcwBackend, VcwExperts, VcwHintMode, VcwPods, VcwQwenCpu, VcwServiceConfig, VcwSimulation,
-    VcwTaskKind, MAX_VCW_BUDGET, MAX_VCW_NAME_BYTES, MAX_VCW_NEW_TOKENS, MAX_VCW_REQUEST_MS,
+    VcwBackend, VcwExperts, VcwHintMode, VcwLearning, VcwPods, VcwQwenCpu, VcwServiceConfig,
+    VcwSimulation, VcwTaskKind, MAX_VCW_BUDGET, MAX_VCW_NAME_BYTES, MAX_VCW_NEW_TOKENS,
+    MAX_VCW_REQUEST_MS,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -401,6 +402,10 @@ pub const FIELD_DISPOSITIONS: &[(&str, FieldDisposition)] = &[
     ),
     (
         "vcw.hint_mode",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.learning",
         FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
     ),
     (

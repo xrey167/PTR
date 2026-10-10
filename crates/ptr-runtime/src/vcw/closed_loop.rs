@@ -17,11 +17,11 @@ use ptr_pods::{
 use ptr_protocol::TypedPayload;
 use ptr_router::{
     classify, Accepted, AdmissibleScorer, AttentionSchema, CodeRoute, EscalationReason,
-    FallbackAction, FallbackReason, FindingCode, FindingRegistry, FindingRouteRecord,
+    Exploration, FallbackAction, FallbackReason, FindingCode, FindingRegistry, FindingRouteRecord,
     FindingRouteRequest, FindingRouter, HintPolicy, NonceSequence, PodEligibility, PodRef,
     RegistryChange, RegistryUpdate, ReportClass, RouteClass, RouteOutcome, RouterConfig,
-    RouterLimits, SamplingKey, SelfContext, SelfModel, SelfModelHint, SelfOutcome, SelfRole,
-    SelfTraceStep, UniformScorer,
+    RouterLimits, RoutingLearner, SamplingKey, SelfContext, SelfModel, SelfModelHint, SelfOutcome,
+    SelfRole, SelfTraceStep, UniformScorer, VerifierReward,
 };
 use ptr_types::{
     CandidateId, Digest, Generation, PodId, Probability, ProjectId, RequestId, TypeId,
@@ -357,6 +357,10 @@ pub struct VcwLoop<S = UniformScorer> {
     pub(super) windows: WindowRecorder,
     pub(super) outstanding: OutstandingRequests,
     pub(super) hint_book: BTreeMap<FindingCode, SelfModelHint>,
+    /// Receives the verifier's verdict on every routed Pod's candidate. It counts and logs; it
+    /// cannot change the policy the router scores with (see `ptr_router::PolicyBook`).
+    pub(super) learner: Option<Arc<RoutingLearner>>,
+    pub(super) exploration: Exploration,
     pub(super) failed_trace: Option<VcwTrace>,
     pub(super) counters: VcwCounters,
     /// Fault injection for the unit tests of the error paths.
@@ -454,6 +458,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
             }
         }
         let limits = router.limits;
+        let exploration = router.exploration;
         let windows = WindowRecorder::new(
             config.window_requests,
             config.max_windows,
@@ -461,7 +466,11 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         );
         let outstanding = OutstandingRequests::new(config.max_outstanding);
         Ok(Self {
-            router: FindingRouter::new(registry, router, scorer, key, nonces),
+            router: FindingRouter::new(registry, router, scorer, key, nonces).map_err(|_| {
+                VcwError::Config(
+                    "the scorer is bound to an exploration rate other than the router's",
+                )
+            })?,
             limits,
             self_model,
             schema,
@@ -471,6 +480,8 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
             windows,
             outstanding,
             hint_book: BTreeMap::new(),
+            learner: None,
+            exploration,
             failed_trace: None,
             #[cfg(test)]
             fault: Faults::default(),
@@ -481,6 +492,40 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
 
     pub fn counters(&self) -> VcwCounters {
         self.counters
+    }
+
+    /// Attach a learner that is told, for every routed Pod, whether the candidate it produced
+    /// was accepted ([`VerifierReward::from_class`] of the loop's own `classify`; a declined or
+    /// unproduced candidate is [`VerifierReward::NOT_CLEARED`]). The learner counts and logs;
+    /// routing changes only if a host promotes a snapshot of it through a
+    /// [`ptr_router::PolicyBook`]. The loop never does.
+    ///
+    /// # Errors
+    /// [`VcwError::Config`] when the learner's exploration rate is not the router's: the logged
+    /// support would not be the distribution the estimator rebuilds.
+    pub fn with_learner(mut self, learner: Arc<RoutingLearner>) -> Result<Self, VcwError> {
+        if learner.config().exploration != self.exploration {
+            return Err(VcwError::Config(
+                "the learner and the router must use one exploration rate",
+            ));
+        }
+        self.learner = Some(learner);
+        Ok(self)
+    }
+
+    /// The attached learner, if any.
+    pub fn learner(&self) -> Option<&Arc<RoutingLearner>> {
+        self.learner.as_ref()
+    }
+
+    /// Tell the learner that the routed Pods of `attempt` (those not already settled) produced
+    /// no accepted candidate.
+    fn settle_unproduced<P>(&self, attempt: &Attempt<P>) {
+        if let Some(learner) = &self.learner {
+            for record in attempt.routes.iter().skip(attempt.settled) {
+                learner.settle(record, VerifierReward::NOT_CLEARED);
+            }
+        }
     }
 
     pub fn router(&self) -> &FindingRouter<S> {
@@ -748,6 +793,9 @@ struct Attempt<P> {
     /// was replaced by a fresh draw keeps `Repair`: the outcome belongs to the routing decision.
     role: SelfRole,
     routes: Vec<FindingRouteRecord>,
+    /// The leading routes the learner was already told about (a declined repair that a fresh
+    /// draw followed in the same round); the verdict on the fresh candidate is not theirs.
+    settled: usize,
     unroutable: Vec<FindingCode>,
     plan: Plan<P>,
 }
@@ -789,6 +837,8 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                 // round, as a fallback of a failing report with no usable finding. The fallback
                 // policy decides: Regenerate draws now, Escalate hands over in the next round.
                 self.counters.regenerations = self.counters.regenerations.saturating_add(1);
+                // A decline is an outcome of the routing decision, not a missing one.
+                self.settle_unproduced(&attempt);
                 let previous = match &attempt.plan {
                     Plan::Repair { previous, .. } => Some(previous.clone()),
                     Plan::Propose { .. } | Plan::Escalate { .. } => None,
@@ -801,8 +851,10 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                     attempt = next;
                     continue;
                 }
+                let carried = attempt.routes.len();
                 next.routes
                     .splice(0..0, std::mem::take(&mut attempt.routes));
+                next.settled = carried;
                 next.unroutable
                     .splice(0..0, std::mem::take(&mut attempt.unroutable));
                 attempt = next;
@@ -811,6 +863,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
             let (value, authors) = match produced {
                 Produced::Candidate { value, authors } => (value, authors),
                 Produced::Nothing | Produced::Declined => {
+                    self.settle_unproduced(&attempt);
                     self.push_step(
                         session,
                         &attempt,
@@ -966,6 +1019,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                         reason: Some(reason),
                     },
                     routes: vec![proposer],
+                    settled: 0,
                     unroutable: Vec::new(),
                 })
             }
@@ -975,6 +1029,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                 role: SelfRole::Proposal,
                 plan: Plan::Escalate { reason, previous },
                 routes: Vec::new(),
+                settled: 0,
                 unroutable: Vec::new(),
             }),
             RouteOutcome::Accept(_) | RouteOutcome::Repair { .. } => {
@@ -1265,7 +1320,61 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                 schema.settle(record, returned);
             }
         }
-        session.tally.note(&attempt.routes, returned);
+        // Per route: did the verifier's verdict on the repaired candidate clear the code that
+        // route was for? A route whose Pod declined (the leading `settled` routes) cleared
+        // nothing. A repair route cleared its code when the candidate was accepted, or when the
+        // repaired candidate's hard codes are a subset of the codes that were routed in this
+        // attempt (it introduced nothing new) and the route's own code is gone. A Pod that
+        // removes `x` but introduces `z`, a flip-flop `x -> z -> x`, a report that is not a
+        // repair class (`Unknown`, `Disputed`, ...) or a verifier that hides `x` behind `z` is
+        // credited with nothing, and so is every route that is not a repair. A Pod that is no
+        // longer eligible is credited with nothing.
+        let routed_codes: BTreeSet<&FindingCode> = attempt
+            .routes
+            .iter()
+            .filter_map(|record| match record.class() {
+                RouteClass::Repair(code) => Some(code),
+                RouteClass::Regenerate(_) => None,
+            })
+            .chain(attempt.unroutable.iter())
+            .collect();
+        let cleared: Vec<bool> = attempt
+            .routes
+            .iter()
+            .enumerate()
+            .map(|(index, record)| {
+                if index < attempt.settled || !authors_eligible {
+                    return false;
+                }
+                if passed {
+                    return true;
+                }
+                match (record.class(), &class) {
+                    (RouteClass::Repair(code), ReportClass::Repair(after)) => {
+                        !after.contains(code)
+                            && after
+                                .iter()
+                                .all(|remaining| routed_codes.contains(remaining))
+                    }
+                    _ => false,
+                }
+            })
+            .collect();
+        session.tally.note(&attempt.routes, &cleared);
+        // The learner is told the verifier's verdict on this candidate, for the routes that
+        // produced it: `classify` accepted it or it did not. No score, hint or bid is involved.
+        // A Pod that is no longer eligible is credited with nothing, exactly as in the tally
+        // (an accepted candidate whose author was revoked is not returned).
+        if let Some(learner) = &self.learner {
+            let reward = if returned {
+                VerifierReward::from_class(&class)
+            } else {
+                VerifierReward::NOT_CLEARED
+            };
+            for record in attempt.routes.iter().skip(attempt.settled) {
+                learner.settle(record, reward);
+            }
+        }
 
         let summary = ReportSummary::of(&report);
         let class_summary = match &class {
@@ -1390,6 +1499,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                             reason: Some(reason),
                         },
                         routes: vec![proposer],
+                        settled: 0,
                         unroutable: Vec::new(),
                     },
                     StepDecision::Regenerate,
@@ -1405,6 +1515,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                         previous: Some(value),
                     },
                     routes: Vec::new(),
+                    settled: 0,
                     unroutable: Vec::new(),
                 },
                 StepDecision::Escalate,
@@ -1457,6 +1568,7 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                             actions,
                         },
                         routes: records,
+                        settled: 0,
                         unroutable,
                     },
                     StepDecision::Repair,

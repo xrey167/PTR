@@ -10,7 +10,7 @@ use std::time::Duration;
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use axum::Router;
-use ptr_config::{PtrConfig, VcwServiceConfig, VcwTaskKind};
+use ptr_config::{PtrConfig, VcwLearning, VcwServiceConfig, VcwTaskKind};
 use ptr_events::RuntimeEvent;
 use ptr_ledger::{LedgerEvent, SemanticOrigin};
 use ptr_runtime::execution::RequiredVerification;
@@ -1066,4 +1066,83 @@ async fn a_hostile_reference_writes_no_fact_and_leaves_no_bytes_in_the_ledger() 
         assert!(!key.contains(marker));
         assert!(!format!("{:?}", snapshot.value(key)).contains(marker));
     }
+}
+
+#[tokio::test]
+async fn shadow_learning_learns_and_logs_estimates_but_never_changes_what_is_served() {
+    fn config(learning: VcwLearning) -> VcwServiceConfig {
+        let mut config = with_errors(enabled(), &[("arith.value", 0.6), ("arith.format", 0.4)]);
+        config.experts.simulated.seed = 5;
+        config.experts.simulated.default_repair_success = 0.5;
+        config.max_verifier_calls = 8;
+        config.max_rounds = 6;
+        config.kinds = vec![VcwTaskKind::Arithmetic];
+        config.learning = learning;
+        config
+    }
+    async fn run(config: &VcwServiceConfig) -> (ServerState, Vec<(StatusCode, Value)>) {
+        let (state, app) = server(config);
+        let mut out = Vec::new();
+        for i in 0..160 {
+            out.push(post(&app, &arithmetic(&format!("shadow-{i}"))).await);
+        }
+        (state, out)
+    }
+    let (off_state, off) = run(&config(VcwLearning::Off)).await;
+    let (shadow_state, shadow) = run(&config(VcwLearning::Shadow)).await;
+
+    // Off (the default) learns nothing and reports nothing.
+    assert!(off_state
+        .vcw_service()
+        .unwrap()
+        .learning_report()
+        .is_empty());
+    // Shadow serves byte for byte what off serves: the learned policy never routes.
+    assert_eq!(off, shadow);
+    assert!(shadow
+        .iter()
+        .any(|(_, b)| b["rounds"].as_u64().unwrap_or(0) > 0));
+
+    // It did learn: verdicts were settled, a candidate was frozen, estimates were logged.
+    let reports = shadow_state.vcw_service().unwrap().learning_report();
+    assert_eq!(reports.len(), 1);
+    let report = reports[0];
+    assert_eq!(report.kind, VcwTaskKind::Arithmetic);
+    assert!(report.settled > 256, "{report:?}");
+    assert!(report.candidate.is_some(), "{report:?}");
+    let latest = report.latest.expect("an estimate was logged");
+    assert!(latest.records >= 128, "{latest:?}");
+    // One Pod per role, so a learned policy cannot differ from uniform: the estimated gain is
+    // zero, which is also what the doubly robust estimator must give when nothing can change.
+    assert!(latest.difference.abs() < 1e-9, "{latest:?}");
+    let handle = shadow_state.runtime_handle();
+    let runtime = handle.lock().unwrap();
+    let logged: Vec<_> = runtime
+        .events()
+        .iter()
+        .filter(|e| matches!(e.event, RuntimeEvent::VcwShadowEstimate { .. }))
+        .collect();
+    assert!(!logged.is_empty());
+    // No policy was promoted: no policy event exists.
+    assert!(!runtime
+        .events()
+        .iter()
+        .any(|e| matches!(e.event, RuntimeEvent::VcwPolicyChanged { .. })));
+}
+
+#[test]
+fn shadow_learning_without_an_exploration_floor_is_refused() {
+    let mut config = enabled();
+    config.learning = VcwLearning::Shadow;
+    config.exploration_floor = 0.0;
+    assert!(matches!(
+        VcwService::from_config(&config, &VcwServiceParts::new([1; 32], [2; 8])),
+        Err(VcwBuildError::Config(_))
+    ));
+    assert!(
+        PtrConfig::from_toml_str("[vcw]\nlearning = \"shadow\"\nexploration_floor = 0.0\n")
+            .unwrap()
+            .validate()
+            .is_err()
+    );
 }

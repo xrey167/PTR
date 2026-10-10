@@ -32,6 +32,15 @@
 //!   budget spent  -> Exhausted        (never the best failed candidate)
 //! ```
 //!
+//! # Learning and structure
+//!
+//! A [`VcwLoop`] can be given a learner ([`VcwLoop::with_learner`]) that is told the verifier's
+//! verdict on every routed Pod. The loop only reports; routing changes when a host promotes a
+//! snapshot through `ptr_router::PolicyBook`, which nothing in this module can reach. The
+//! host-side driver that completes the structure policy's requests, gates them and admits them
+//! lives in [`crate::vcw_host`], outside this module on purpose: this module has no handle on the
+//! runtime's admission, grants or gates.
+//!
 //! Across requests, per window: the tally of routed/cleared/unroutable becomes a
 //! `StructureObservation`; [`VcwLoop::structure_step`] returns the policy's *requests* to the
 //! host. The host trains, binds a gate report to the completed proposal and calls
@@ -109,6 +118,7 @@ pub use closed_loop::{
     EscalateCall, HintMode, ProposeCall, RepairCall, RolePods, Roster, VcwConfig, VcwCounters,
     VcwLoop, VcwOutcome, VcwParts, VcwPayload, VcwRequest, VcwRun, VerifiedAnswer,
 };
+pub(crate) use eligibility::state_is_routable;
 pub use eligibility::{AuthorStanding, RuntimeStanding};
 pub use l3::{RosterSync, StructureHost};
 pub use trace::{

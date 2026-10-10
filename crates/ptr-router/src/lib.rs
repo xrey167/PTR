@@ -1,5 +1,10 @@
 mod attention_schema;
 mod findings;
+mod learning;
+mod ope;
+#[cfg(test)]
+mod ope_tests;
+mod policy_book;
 mod propensity;
 mod router;
 mod sampling;
@@ -15,8 +20,21 @@ pub use findings::{
     Exploration, ExplorationError, FallbackAction, FallbackPolicy, FallbackReason, FindingCode,
     FindingRegistry, FindingRouteError, FindingRouteErrorKind, FindingRouteRecord,
     FindingRouteRequest, FindingRouter, PodEligibility, RegistryChange, RegistryError,
-    RegistryGeneration, RegistryUpdate, ReportClass, RouteClass, RouteOutcome, RouterConfig,
-    RouterLimits, ScoringContext, UniformScorer,
+    RegistryGeneration, RegistryUpdate, ReportClass, RouteClass, RouteOutcome, RouterBuildError,
+    RouterConfig, RouterLimits, ScoringContext, UniformScorer,
+};
+pub use learning::{
+    ArmCounts, LearnedPolicy, LearnerConfig, LearningError, LoggedDecision, RewardModel,
+    RoutingLearner, VerifierReward, MAX_ARMS, MAX_DRAWS, MAX_LOG,
+};
+pub use ope::{
+    compare_policies, estimate_policy, Assessment, Comparison, Confidence, Estimator, OpeError,
+    PolicyEstimate, PromotionEvidence, PromotionGate, PromotionRefusal, PromotionRule, Verdict,
+    MIN_EFFECTIVE_SAMPLE_FLOOR, MIN_RECORDS_FLOOR, Z_FLOOR,
+};
+pub use policy_book::{
+    ActiveScorer, PolicyAction, PolicyBook, PolicyBookError, PolicyEvent, PolicySink, MAX_EVENTS,
+    MAX_VERSIONS,
 };
 pub use propensity::{Propensity, PropensityError};
 pub use router::{

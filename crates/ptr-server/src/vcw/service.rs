@@ -6,7 +6,9 @@ use std::fmt;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use ptr_config::{VcwBackend, VcwHintMode, VcwServiceConfig, VcwTaskKind, MAX_VCW_REQUEST_MS};
+use ptr_config::{
+    VcwBackend, VcwHintMode, VcwLearning, VcwServiceConfig, VcwTaskKind, MAX_VCW_REQUEST_MS,
+};
 use ptr_ledger::LedgerEvent;
 use ptr_pods::{
     ExecutionManifest, LineageBinding, PodOutput, PodOutputKind, PodRegistrationError, PodRegistry,
@@ -40,6 +42,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::job::{answer_type, Job};
 use super::pods::ServedPod;
+use super::shadow::{LearningReport, Shadow};
 use super::sim::{plantable, ServedDefects, SimCodec};
 use super::wire::{
     VcwApiError, VcwAuthor, VcwCommitted, VcwResponse, VcwSpent, VcwTask, VcwTaskRequest,
@@ -172,6 +175,8 @@ pub(super) enum Experts {
 struct KindState {
     vcw: VcwLoop,
     experts: Experts,
+    /// Present only with `[vcw] learning = "shadow"`.
+    shadow: Option<Shadow>,
 }
 
 /// The verifier-closed loop as a service: one loop and one expert set per served task kind, the
@@ -435,7 +440,33 @@ impl VcwService {
                 Experts::Llm(llm) => llm.roster(),
             };
             let vcw = build_loop(config, *kind, index, roster, exploration, parts)?;
-            kinds.insert(*kind, Mutex::new(KindState { vcw, experts }));
+            let (vcw, shadow) = match config.learning {
+                VcwLearning::Off => (vcw, None),
+                VcwLearning::Shadow => {
+                    if exploration.epsilon() <= 0.0 {
+                        return Err(VcwBuildError::Config(
+                            "learning = \"shadow\" needs exploration_floor above 0".into(),
+                        ));
+                    }
+                    let seed = sha256(&[b"vcw-shadow", &parts.key, kind.as_str().as_bytes()]);
+                    let mut head = [0_u8; 8];
+                    head.copy_from_slice(&seed[..8]);
+                    let shadow = Shadow::new(*kind, u64::from_le_bytes(head), exploration)
+                        .map_err(VcwBuildError::Config)?;
+                    let vcw = vcw
+                        .with_learner(shadow.learner())
+                        .map_err(VcwBuildError::Loop)?;
+                    (vcw, Some(shadow))
+                }
+            };
+            kinds.insert(
+                *kind,
+                Mutex::new(KindState {
+                    vcw,
+                    experts,
+                    shadow,
+                }),
+            );
         }
 
         Ok(Self {
@@ -611,6 +642,19 @@ impl VcwService {
         self.kinds.keys().copied().collect()
     }
 
+    /// What each kind has learned in shadow mode (empty with `learning = "off"`). The learned
+    /// candidates never route; this is the only place they are visible.
+    #[must_use]
+    pub fn learning_report(&self) -> Vec<LearningReport> {
+        self.kinds
+            .values()
+            .filter_map(|state| {
+                let state = state.lock().ok()?;
+                state.shadow.as_ref().map(Shadow::report)
+            })
+            .collect()
+    }
+
     /// The calls the expert Pods answered or refused, oldest first within each kind (at most
     /// `MAX_LOGGED_CALLS` per kind), for audit and tests.
     #[must_use]
@@ -730,7 +774,11 @@ impl VcwService {
         let Ok(mut state) = slot.lock() else {
             return failed("vcw loop mutex poisoned".into());
         };
-        let KindState { vcw, experts } = &mut *state;
+        let KindState {
+            vcw,
+            experts,
+            shadow,
+        } = &mut *state;
         let (ran, deadline_hit) = {
             let mut standing = RuntimeStanding::new(runtime, &self.pods, &self.project);
             for (pod, generation) in &self.base_pods {
@@ -773,6 +821,9 @@ impl VcwService {
                 );
             }
         };
+        if let Some(shadow) = shadow {
+            shadow.tick(runtime);
+        }
         drop(state);
 
         let spent = run.trace.spent();

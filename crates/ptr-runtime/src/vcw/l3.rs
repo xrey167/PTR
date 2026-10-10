@@ -48,10 +48,13 @@ pub(crate) struct RequestTally {
 }
 
 impl RequestTally {
-    /// Count the routed Pods of one attempt. `cleared` is whether the candidate they produced
-    /// was accepted (a repair, then a pass).
-    pub(super) fn note(&mut self, records: &[FindingRouteRecord], cleared: bool) {
-        for record in records {
+    /// Count the routed Pods of one attempt. `cleared[i]` is whether the verifier's verdict on
+    /// the repaired candidate shows that `records[i]` cleared the code it was routed (see
+    /// `VcwLoop::judge`): the whole candidate is not the unit, because a code that was repaired
+    /// is not "uncleared" merely because another code of the same candidate is still defective.
+    pub(super) fn note(&mut self, records: &[FindingRouteRecord], cleared: &[bool]) {
+        for (index, record) in records.iter().enumerate() {
+            let cleared = cleared.get(index).copied().unwrap_or(false);
             let used = self.usage.entry(record.pod().clone()).or_default();
             *used = used.saturating_add(1);
             if let RouteClass::Repair(code) = record.class() {
@@ -181,6 +184,10 @@ struct Outstanding {
 pub(crate) struct OutstandingRequests {
     max: usize,
     by_operation: BTreeMap<[u8; 32], Outstanding>,
+    /// Experts the ledger committed whose install the host abandoned: not routable, not in the
+    /// roster. Their codes stay held so the policy neither sees them as uncovered nor births a
+    /// second expert for them, until the projection shows the expert gone.
+    stranded: BTreeMap<PodId, BTreeSet<FindingCode>>,
 }
 
 impl OutstandingRequests {
@@ -188,6 +195,7 @@ impl OutstandingRequests {
         Self {
             max,
             by_operation: BTreeMap::new(),
+            stranded: BTreeMap::new(),
         }
     }
 
@@ -212,6 +220,7 @@ impl OutstandingRequests {
         self.by_operation
             .values()
             .flat_map(|entry| entry.holds.iter().cloned())
+            .chain(self.stranded.values().flatten().cloned())
             .collect()
     }
 }
@@ -256,6 +265,58 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         self.outstanding.len()
     }
 
+    /// Windows an unresolved request may stay outstanding before the loop drops it.
+    pub fn outstanding_ttl_windows(&self) -> u32 {
+        self.config.outstanding_ttl_windows
+    }
+
+    /// Whether the request that `proposal` completes is still outstanding in this loop.
+    pub fn is_outstanding(&self, proposal: &ExpertProposal) -> bool {
+        self.outstanding
+            .by_operation
+            .contains_key(proposal.operation_id().as_bytes())
+    }
+
+    /// Committed experts the host abandoned installing, with the codes each was born for. Their
+    /// codes are held (no second Birth) until the projection shows the expert gone.
+    pub fn stranded_experts(&self) -> &BTreeMap<PodId, BTreeSet<FindingCode>> {
+        &self.outstanding.stranded
+    }
+
+    /// The host gives up installing a committed expert (`pods`, born for `codes`): its request
+    /// is forgotten and the experts are recorded as stranded, so the structure policy neither
+    /// treats the codes as uncovered nor births another expert for them. The stranded record
+    /// ends when the projection shows the expert retired, superseded or absent (the host retired
+    /// it through `admit_expert_proposal`), at the next [`Self::structure_step`].
+    ///
+    /// # Errors
+    /// [`VcwError::Config`] when 256 experts are already stranded; then nothing changed.
+    pub fn strand_committed(
+        &mut self,
+        committed: &ExpertProposal,
+        pods: &[PodId],
+        codes: &BTreeSet<FindingCode>,
+    ) -> Result<(), VcwError> {
+        let fresh = pods
+            .iter()
+            .filter(|pod| !self.outstanding.stranded.contains_key(*pod))
+            .count();
+        if self.outstanding.stranded.len() + fresh > MAX_ROSTER {
+            return Err(VcwError::Config("more than 256 stranded experts"));
+        }
+        for pod in pods {
+            self.outstanding
+                .stranded
+                .entry(pod.clone())
+                .or_default()
+                .extend(codes.iter().cloned());
+        }
+        self.outstanding
+            .by_operation
+            .remove(committed.operation_id().as_bytes());
+        Ok(())
+    }
+
     /// Run the structure policy on the closed windows. The returned requests are inert: the loop
     /// admits nothing and has no handle that could.
     ///
@@ -266,6 +327,16 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         if self.windows.closed().is_empty() {
             return Err(VcwError::NoClosedWindow);
         }
+        // A stranded expert the projection shows retired, superseded or absent is resolved. A
+        // fenced one may be readmitted, so it stays held.
+        self.outstanding.stranded.retain(|pod, _| {
+            host.registry.get(&host.project, pod).is_some_and(|expert| {
+                !matches!(
+                    expert.state,
+                    ExpertState::Retired(_) | ExpertState::Superseded
+                )
+            })
+        });
         // An entry that outlived its window budget is dropped, unless the host did commit its
         // experts and only forgot to sync: those are enrolled now, so a committed expert is not
         // stranded outside the roster.
@@ -386,6 +457,15 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         })
     }
 
+    /// Forget an unresolved request by the request the policy made, for a host that could not
+    /// even complete it (training failed, the held-out suite could not run).
+    pub fn withdraw_structure_request(&mut self, request: &StructureProposal) -> bool {
+        self.outstanding
+            .by_operation
+            .remove(request.request().operation_id().as_bytes())
+            .is_some()
+    }
+
     /// Forget an unresolved request (the host dropped it or its gate failed).
     pub fn withdraw_request(&mut self, proposal: &ExpertProposal) -> bool {
         self.outstanding
@@ -419,15 +499,17 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
             .results
             .clone();
         Self::all_routable(registry, project, &results)?;
+        // Removal first: it is idempotent, so a failure here changes nothing a retry cannot
+        // redo, and the outstanding entry is still there. It also frees the roster slots of
+        // retired experts, so the capacity check comes after it: a host that pruned an expert
+        // to make room can retry a failed enrolment. Enrolment and the removal of the entry
+        // then follow with no fallible step in between that could lose the entry.
+        let removed = self.retire_dead_experts(project, registry)?;
         for (pod, _) in &results {
             if !self.repairers.contains_key(pod) && self.repairers.len() >= MAX_ROSTER {
                 return Err(VcwError::Config("more than 256 repair experts"));
             }
         }
-        // Removal first: it is idempotent, so a failure here changes nothing a retry cannot
-        // redo, and the outstanding entry is still there. Enrolment and the removal of the
-        // entry then follow with no fallible step in between that could lose the entry.
-        let removed = self.retire_dead_experts(project, registry)?;
         let enrolled = self.enrol(&results)?;
         self.outstanding.by_operation.remove(&key);
         Ok(RosterSync { enrolled, removed })
