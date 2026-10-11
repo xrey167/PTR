@@ -1,0 +1,68 @@
+version = 1
+kind = "workspace-area"
+name = "F007-vcw-loop"
+path = "experiments/feedback/F007-vcw-loop"
+tests_dir = "tests"
+
+# F007 is planned and not frozen. The numbers below are the harness's compiled constants
+# (`ptr-bench vcw-loop`, bins/ptr-bench/src/experiments/f007/params.rs, whose drift test fails when a
+# constant differs from this table or this table holds a key no constant mirrors). The decision margins are
+# not here: they are the aggregator's (criteria.toml, [decision]) and, at the freeze, the owner's
+# ([preregistration] below). Every skill table is the ASSUMPTION UNDER TEST (see PREREGISTRATION.md
+# section 2), not a measurement.
+[pinned_thresholds]
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
+pilot_seed_floor = 1001
+requests_per_world = 4000
+kind_weights_permille = [400, 350, 250]
+verifier_call_budget = 3
+round_budget = 3
+train_a = 1500
+train_b = 1000
+train_c = 1500
+priors = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+gate_tau_permille = [1, 2, 5, 10, 20, 50, 100, 200, 400]
+edge_z_milli = 3000
+promotion_margin_permille = 20
+promotion_min_records = 300
+promotion_min_ess = 100
+window_requests = 40
+birth_min_unroutable = 3
+birth_windows = 2
+held_out_tasks_per_code = 30
+gap_skill_permille = 0
+born_skill_permille = 800
+broadcast_second_chance_permille = 500
+error_permille = "arith.format=200,arith.value=450,arith.bounds=100,json.parse=200,json.type=350,json.required=350,json.extra=250,code.syntax=250,code.test_failed=450,code.timeout=250"
+proposer_good_multiplier_permille = 600
+proposer_other_multiplier_permille = 1300
+skill_permille = "hetero=800,80,600,300;mild=720,40,620,400;homog=600,0,600,600;ctx=800,80,600,300"
+shuffled_min_loss_permille = 50
+null_max_gap_permille = 30
+baseline_min_gain_permille = 43
+bon_min_gain_permille = 176
+oracle_tolerance_permille = 20
+min_requests_per_kind_permille = 200
+min_hard_events_per_code = 10
+min_repairs_applied = 200
+min_exhausted_runs = 20
+min_births = 1
+max_hard_counter = 0
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml). A
+# `must-be-pinned-...` value is still to be chosen and a `must-be-signed-...` value is an owner decision
+# still to be taken; either blocks the freeze.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "vcw-loop"
+requests_per_world = 4000
+verifier_call_budget = 3
+primary_margin_permille = 30
+equivalence_band_permille = 15
+shuffled_control_margin_permille = 50
+confidence_one_sided_permille = 950
+preregistration_text = "experiments/feedback/F007-vcw-loop/PREREGISTRATION.md"
+preregistration_text_sha256 = "0d072f566ebad315a021066948fbdd1176c172d69a08df1b8d1fcc974ba6ac4b"
+criteria = "experiments/feedback/F007-vcw-loop/criteria.toml"
+criteria_sha256 = "32aa9c44e0ae09f46a6b3e3f252faa76fcd3bbb9cce24c2488e833d30ba3798c"

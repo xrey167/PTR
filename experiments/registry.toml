@@ -504,3 +504,8 @@ status = "superseded"
 id = "M003-v4"
 path = "model/M003-v4-latent-recurrence"
 status = "completed"
+
+[[experiment]]
+id = "F007"
+path = "feedback/F007-vcw-loop"
+status = "completed"

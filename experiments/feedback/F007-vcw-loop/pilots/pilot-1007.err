@@ -1,0 +1,3 @@
+   Compiling ptr-bench v0.1.0 (/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/wt-vcw-x/bins/ptr-bench)
+    Finished `release` profile [optimized] target(s) in 2m 54s
+     Running `target/release/ptr-bench vcw-loop 1007`
