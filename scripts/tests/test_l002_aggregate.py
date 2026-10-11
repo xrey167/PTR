@@ -189,6 +189,24 @@ class CriteriaFileTests(unittest.TestCase):
             self.assertTrue((ROOT / table[key]).is_file(), key)
 
 
+    def test_every_pinned_value_has_the_type_the_registry_declares(self):
+        """The research gate type-checks the table when the experiment leaves `planned`; a mismatch found
+        then cannot be repaired after the freeze (keep_records, ints, was declared as a list of strings)."""
+        import check_research_gates as gates
+
+        table = CONFIG["preregistration"]
+        required = tomllib.loads((ROOT / "experiments" / "preregistration.toml").read_text(encoding="utf-8"))[
+            "experiment"
+        ]["L002"]["required"]
+        for key, kind in required.items():
+            self.assertIsNone(gates.kind_problem(table[key], kind), f"{key} as {kind}")
+        self.assertEqual(required["keep_records"], "int-list")
+        # The reverse: a key pinned in config.toml that the registry does not require is never
+        # type-checked by the gate (a forgotten `election_attempts` would have been one).
+        digests = {"criteria_sha256", "preregistration_text_sha256"}
+        self.assertEqual(set(table) - digests - set(required), set())
+
+
 class VerdictTests(unittest.TestCase):
     def verdict(self, results, exits=None, static=PASSED, mutations=KILLED):
         return aggregate.decide(judged(results, exits), static, SEEDS, mutations)
@@ -266,11 +284,12 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(self.verdict(clean_seeds(), {17: 1})["verdict"], aggregate.INVALID)
         results = clean_seeds()
         put(results[17], "stale_accepts", 1)
-        # The record contradicts itself (a tripped falsifier, status 0): the seed is not valid, and
-        # the tripped falsifier counts all the same.
+        # The record contradicts itself (a tripped falsifier, status 0): the seed is not valid, so
+        # the verdict is INVALID (validity first); the tripped falsifier stays listed.
         verdict = self.verdict(results, {17: 0})
-        self.assertEqual(verdict["verdict"], aggregate.FALSIFIED)
+        self.assertEqual(verdict["verdict"], aggregate.INVALID)
         self.assertEqual(verdict["invalid_seeds"], [17])
+        self.assertEqual(verdict["falsified_seeds"], [17])
         self.assertEqual(self.verdict(clean_seeds(), {17: 2})["verdict"], aggregate.INVALID)
         self.assertEqual(self.verdict(clean_seeds(), {17: None})["verdict"], aggregate.INVALID)
 
@@ -279,13 +298,38 @@ class VerdictTests(unittest.TestCase):
         results[43] = None
         self.assertEqual(self.verdict(results, {43: 2})["verdict"], aggregate.INVALID)
 
-    def test_a_falsified_seed_beats_an_invalid_one(self):
+    def test_validity_comes_before_the_falsifiers_corner_an_invalid_seed(self):
+        """Corner 1: a falsifier fired on one seed and another seed cannot be judged."""
         results = clean_seeds()
         put(results[17], "stale_accepts", 1)
         results[29] = None
         verdict = self.verdict(results, {17: 1, 29: 2})
-        self.assertEqual(verdict["verdict"], aggregate.FALSIFIED)
+        self.assertEqual(verdict["verdict"], aggregate.INVALID)
         self.assertEqual(verdict["invalid_seeds"], [29])
+        self.assertEqual(verdict["falsified_seeds"], [17], "the fired falsifier is still reported")
+        self.assertIsNone(verdict["recommended_status"])
+
+    def test_validity_comes_before_the_falsifiers_corner_a_missing_seed(self):
+        """Corner 2: a falsifier fired and a declared seed has no record at all."""
+        results = clean_seeds()
+        put(results[17], "stale_accepts", 1)
+        del results[71]
+        verdict = self.verdict(results, {17: 1})
+        self.assertEqual(verdict["verdict"], aggregate.INVALID)
+        self.assertTrue(any("71" in problem for problem in verdict["problems"]))
+        self.assertEqual(verdict["falsified_seeds"], [17])
+
+    def test_validity_comes_before_the_falsifiers_corner_static_evidence_that_fails(self):
+        """Corner 3: a falsifier fired and a static-evidence command failed or could not start."""
+        results = clean_seeds()
+        put(results[17], "stale_accepts", 1)
+        for code in (1, -1):
+            static = [{"command": "python3 -m unittest harness", "exit_code": code, "output_sha256": "", "output_tail": ""}]
+            verdict = self.verdict(results, {17: 1}, static=static)
+            self.assertEqual(verdict["verdict"], aggregate.INVALID, code)
+            self.assertEqual(verdict["static_evidence_failed"], ["python3 -m unittest harness"])
+        # On a run that is sound the same falsifier falsifies.
+        self.assertEqual(self.verdict(results, {17: 1})["verdict"], aggregate.FALSIFIED)
 
     def test_judgements_do_not_alias_their_inputs(self):
         results = clean_seeds()
@@ -303,14 +347,20 @@ class MutationEvidenceTests(unittest.TestCase):
             self.assertIsNone(verdict["recommended_status"])
             self.assertTrue(any("mutation" in problem for problem in verdict["problems"]))
 
-    def test_a_falsified_seed_is_falsified_whatever_the_mutation_evidence(self):
+    def test_a_falsifier_on_a_seed_does_not_hide_missing_mutation_evidence(self):
+        """Validity first: no mutation record means the harness was not shown to see defects, so
+        a falsifier it reports is not given as a verdict about the product."""
         results = clean_seeds()
         put(results[17], "recovered_not_prefix", 4)
-        verdict = aggregate.decide(judged(results, {17: 1}), PASSED, SEEDS, None)
-        self.assertEqual(verdict["verdict"], aggregate.FALSIFIED)
+        seeds = judged(results, {17: 1})
+        for mutations in (None, {"killed": 29, "total": 30}):
+            verdict = aggregate.decide(seeds, PASSED, SEEDS, mutations)
+            self.assertEqual(verdict["verdict"], aggregate.INVALID, mutations)
+            self.assertEqual(verdict["falsified_seeds"], [17])
+        self.assertEqual(aggregate.decide(seeds, PASSED, SEEDS, KILLED)["verdict"], aggregate.FALSIFIED)
 
     def test_the_plan_lists_the_mutations_the_evidence_must_count(self):
-        self.assertEqual(len(MUTATIONS["mutation"]), 30)
+        self.assertEqual(len(MUTATIONS["mutation"]), 32)
         self.assertEqual(MUTATIONS["subcommand"], aggregate.BENCHMARK)
 
 
@@ -370,15 +420,15 @@ class L002Tests(unittest.TestCase):
         self.assertEqual(verdict["falsified_seeds"], [71])
         self.assertEqual(verdict["invalid_seeds"], [])
 
-    def test_a_falsifier_in_a_record_that_is_invalid_for_another_reason_still_falsifies(self):
-        """A run cut short by the watchdog has fewer lie images and cannot judge its control, and
-        it is falsified by the hang all the same."""
+    def test_a_falsifier_in_a_record_that_is_invalid_for_another_reason_is_invalid_and_listed(self):
+        """A run cut short by the watchdog has fewer lie images and cannot judge its control: the
+        seed is not valid, so the verdict is INVALID, and the hang stays listed."""
         results = clean_seeds()
         put(results[43], "product_hangs", 3)
         results[43]["controls"]["cutover_lie"].update(naive_accepted_stale=0, lie_images=0)
         put(results[43], "images_lost_bytes", 0)
         verdict = aggregate.decide(judged(results, {43: 1}), PASSED, SEEDS, KILLED)
-        self.assertEqual(verdict["verdict"], aggregate.FALSIFIED)
+        self.assertEqual(verdict["verdict"], aggregate.INVALID)
         self.assertEqual(verdict["falsified_seeds"], [43])
         self.assertEqual(verdict["invalid_seeds"], [43])
 

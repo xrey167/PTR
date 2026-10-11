@@ -278,6 +278,31 @@ fn reference(spec: &Spec) -> &[Ev] {
 }
 
 impl Group {
+    /// A group with no member yet; the caller opens them.
+    fn new(dir: PathBuf, spec: Spec, inj: Arc<Injector>, counters: Tally) -> Self {
+        Self {
+            dir,
+            nodes: Vec::new(),
+            facts: BTreeMap::new(),
+            isolated: BTreeSet::new(),
+            faults: Faults::default(),
+            rng: Rng::new(spec.seed),
+            inj,
+            spec,
+            retained: BTreeMap::new(),
+            retained_len: BTreeMap::new(),
+            last_leader: None,
+            restarted_over_pending: false,
+            holding: false,
+            forger: None,
+            stalled: false,
+            lost_node: false,
+            tamper_held: false,
+            rejected: BTreeSet::new(),
+            counters,
+        }
+    }
+
     fn node_dir(&self, id: u64) -> PathBuf {
         self.dir.join(format!("node-{id}"))
     }
@@ -659,6 +684,61 @@ impl Group {
         }
     }
 
+    /// The schedule's leader change: the leader is cut off and another member is elected by the
+    /// two that can hear each other. Candidates are tried in turn, up to `ELECTION_ATTEMPTS`
+    /// times under the router's faults and once more with them off, so the change does not
+    /// depend on which votes the faults happened to drop. A group that still has no other
+    /// leader then has not done what the plan asks of a baseline (`reference_mismatches`).
+    fn depose_leader(&mut self) {
+        let old = self.leader().unwrap_or(VOTERS[0]);
+        self.isolated.insert(old);
+        let candidates: Vec<u64> = VOTERS
+            .iter()
+            .copied()
+            .filter(|id| *id != old && self.alive(*id))
+            .collect();
+        let armed = self.faults;
+        let mut deposed = false;
+        let mut used = 0;
+        if !candidates.is_empty() {
+            for attempt in 0..=params::ELECTION_ATTEMPTS {
+                if attempt == params::ELECTION_ATTEMPTS {
+                    self.faults = Faults::default();
+                }
+                used = attempt + 1;
+                self.elect(candidates[attempt % candidates.len()]);
+                if self.leader().is_some_and(|leader| leader != old) {
+                    deposed = true;
+                    break;
+                }
+            }
+        }
+        self.faults = armed;
+        // Descriptive, in no rule: how many attempts the depositions used, the latest attempt
+        // on which a leader changed, and the depositions that needed the faults-off attempt.
+        self.counters.add("deposition_attempts_total", used as i64);
+        if deposed {
+            let latest = self
+                .counters
+                .get("deposition_attempts_max_run")
+                .max(used as i64);
+            self.counters.set("deposition_attempts_max_run", latest);
+            if used > params::ELECTION_ATTEMPTS {
+                self.counters.add("deposition_clean_attempt_needed", 1);
+            }
+        }
+        if !deposed {
+            explain(
+                "the leader could not be deposed",
+                &format!(
+                    "member {old} still leads after {} attempts",
+                    params::ELECTION_ATTEMPTS + 1
+                ),
+            );
+            bump(&mut self.counters, ARM, "reference_mismatches");
+        }
+    }
+
     fn elect(&mut self, id: u64) {
         if let Called::Done(messages) = self.call(id, RaftNode::campaign) {
             self.release(id, &messages);
@@ -767,6 +847,18 @@ impl Group {
     /// Leader heartbeats until every member that is up holds the leader's history; judged
     /// against the pinned bound. Returns whether the group converged.
     fn converge(&mut self) -> bool {
+        self.converge_rounds(true)
+    }
+
+    /// The same heartbeats while the router's faults may still be armed: the rounds are not
+    /// judged and not counted (the bound is derived for a router that loses nothing, and the
+    /// claim is about the heartbeats after the faults), the group is only brought as far as it
+    /// goes before the next step.
+    fn settle(&mut self) {
+        self.converge_rounds(false);
+    }
+
+    fn converge_rounds(&mut self, judged: bool) -> bool {
         let Some(leader) = self.ensure_leader() else {
             return false;
         };
@@ -786,22 +878,26 @@ impl Group {
                 }
             }
             if all {
-                add(
-                    &mut self.counters,
-                    ARM,
-                    "rounds_to_converge_total",
-                    round as i64,
-                );
-                let max = self.counters.get("rounds_max_run").max(round as i64);
-                self.counters.set("rounds_max_run", max);
+                if judged {
+                    add(
+                        &mut self.counters,
+                        ARM,
+                        "rounds_to_converge_total",
+                        round as i64,
+                    );
+                    let max = self.counters.get("rounds_max_run").max(round as i64);
+                    self.counters.set("rounds_max_run", max);
+                }
                 return true;
             }
         }
-        explain(
-            "the group did not converge within the bound",
-            &format!("{} rounds", params::CONVERGENCE_ROUNDS),
-        );
-        bump(&mut self.counters, ARM, "convergence_bound_exceeded");
+        if judged {
+            explain(
+                "the group did not converge within the bound",
+                &format!("{} rounds", params::CONVERGENCE_ROUNDS),
+            );
+            bump(&mut self.counters, ARM, "convergence_bound_exceeded");
+        }
         false
     }
 
@@ -1115,27 +1211,7 @@ pub fn run_life(dir: PathBuf, spec: Spec, inject: Inject, probing: bool, capture
     }
     let mut counters = Tally::new(metrics::LIST);
     counters.set("probe_enabled", i64::from(probing));
-    let mut group = Group {
-        dir: dir.clone(),
-        nodes: Vec::new(),
-        facts: BTreeMap::new(),
-        isolated: BTreeSet::new(),
-        faults: Faults::default(),
-        rng: Rng::new(spec.seed),
-        inj: Arc::clone(&inj),
-        spec: spec.clone(),
-        retained: BTreeMap::new(),
-        retained_len: BTreeMap::new(),
-        last_leader: None,
-        restarted_over_pending: false,
-        holding: false,
-        forger: None,
-        stalled: false,
-        lost_node: false,
-        tamper_held: false,
-        rejected: BTreeSet::new(),
-        counters,
-    };
+    let mut group = Group::new(dir.clone(), spec.clone(), Arc::clone(&inj), counters);
     let opened: Result<Vec<RaftNode>, String> = VOTERS
         .iter()
         .map(|id| RaftNode::open(&dir.join(format!("node-{id}")), *id, &VOTERS))
@@ -1219,11 +1295,10 @@ fn play(group: &mut Group, spec: &Spec) {
     if spec.depose {
         // The leader is cut off, another member is elected by the two that can hear each
         // other, and the group goes on under it; the old leader rejoins below.
-        group.isolated.insert(1);
-        group.elect(2);
+        group.depose_leader();
         group.propose_until((spec.b + n) / 2);
         group.isolated.clear();
-        group.converge();
+        group.settle();
     }
     if !spec.tamper {
         group.propose_until(n);
@@ -1432,5 +1507,100 @@ mod tests {
         assert!(spec.tamper);
         let prefix = forgeable_prefix(&spec.workload).expect("forgeable");
         assert_eq!(spec.b, prefix);
+    }
+
+    /// A group of three fresh members in a scratch directory, member 1 elected.
+    fn group_led_by_one(label: &str) -> (Group, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("l002-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut rng = Rng::new(1001);
+        let spec = spec_for("heal", &mut rng);
+        let mut group = Group::new(
+            dir.clone(),
+            spec,
+            Arc::new(Injector::default()),
+            Tally::new(metrics::LIST),
+        );
+        group.nodes = VOTERS
+            .iter()
+            .map(|id| {
+                Some(RaftNode::open(&dir.join(format!("node-{id}")), *id, &VOTERS).expect("open"))
+            })
+            .collect();
+        group.elect(1);
+        assert_eq!(group.leader(), Some(1));
+        (group, dir)
+    }
+
+    #[test]
+    fn a_deposed_leader_is_replaced_even_when_the_faults_drop_every_message() {
+        // Not a fault the plan draws (12 per cent): the worst the router can do, to show that
+        // the leader change does not depend on what the faults happened to drop.
+        let _scenario = FailScenario::setup();
+        let (mut group, dir) = group_led_by_one("depose-all-dropped");
+        group.faults = Faults {
+            drop: 1000,
+            duplicate: 0,
+            reorder: 0,
+        };
+        group.depose_leader();
+        assert!(group.leader().is_some_and(|leader| leader != 1));
+        assert_eq!(group.counters.get("leader_changes"), 1);
+        assert_eq!(group.counters.get("reference_mismatches"), 0);
+        assert_eq!(group.faults.drop, 1000, "the armed faults are put back");
+        // Every attempt under the faults failed, so the one with them off is what deposed it,
+        // and the record says so.
+        let attempts = params::ELECTION_ATTEMPTS as i64 + 1;
+        assert_eq!(group.counters.get("deposition_attempts_total"), attempts);
+        assert_eq!(group.counters.get("deposition_attempts_max_run"), attempts);
+        assert_eq!(group.counters.get("deposition_clean_attempt_needed"), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_deposition_on_a_healthy_network_is_counted_on_its_first_attempt() {
+        let _scenario = FailScenario::setup();
+        let (mut group, dir) = group_led_by_one("depose-healthy");
+        group.depose_leader();
+        assert!(group.leader().is_some_and(|leader| leader != 1));
+        assert_eq!(group.counters.get("deposition_attempts_total"), 1);
+        assert_eq!(group.counters.get("deposition_attempts_max_run"), 1);
+        assert_eq!(group.counters.get("deposition_clean_attempt_needed"), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_leader_that_cannot_be_deposed_is_a_failed_baseline_not_a_quiet_miss() {
+        let _scenario = FailScenario::setup();
+        let (mut group, dir) = group_led_by_one("depose-impossible");
+        group.nodes[1] = None;
+        group.nodes[2] = None;
+        group.depose_leader();
+        assert_eq!(group.counters.get("reference_mismatches"), 1);
+        assert_eq!(group.counters.get("deposition_clean_attempt_needed"), 0);
+        assert_eq!(
+            group.counters.get("deposition_attempts_max_run"),
+            0,
+            "none deposed"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rounds_under_the_faults_are_neither_judged_nor_counted() {
+        let _scenario = FailScenario::setup();
+        let (mut group, dir) = group_led_by_one("settle-unjudged");
+        // A member that cannot be brought to the leader's history in the rounds: nothing is
+        // reported for a phase that is not judged, and the judged phase reports it.
+        group.nodes[2] = None;
+        group.isolated.insert(2);
+        let leader = group.ensure_leader().expect("a leader");
+        let _ = group.leader_len(leader);
+        group.settle();
+        assert_eq!(group.counters.get("convergence_bound_exceeded"), 0);
+        assert_eq!(group.counters.get("rounds_to_converge_total"), 0);
+        group.converge();
+        assert!(group.counters.get("rounds_to_converge_total") > 0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -3,7 +3,7 @@
 # by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
 # that show the defect: a run that fails only on others does not count as detecting it.
 #
-# The first 27 mutations (of 30) plant defects in `ptr-ledger` and `ptr-runtime`: the compaction cutover (the
+# The first 27 mutations plant defects in `ptr-ledger` and `ptr-runtime`: the compaction cutover (the
 # new log's fsync and its directory, a record dropped from the new log, an anchor that keeps the old
 # floor, an open that reads the wrong log, an open without the epoch witness, a reclaim that takes the
 # live log), the runtime's restore from a compacted snapshot and its reading of a revoked generation,
@@ -11,8 +11,11 @@
 # persisted, the covered events of a snapshot not persisted, an installed snapshot not marked pending
 # or not offered again, an anchor match that ignores the digest, a torn tail refused, the log not
 # synced at open, a lost snapshot never reported, entries of a light ready never applied, revocations
-# dropped on apply, events numbered from zero). The last three plant defects in the harness itself, to
-# show that its oracle and its bookkeeping are not vacuous. Every hard counter is expected by at least
+# dropped on apply, events numbered from zero). Three more plant defects in the harness itself, to
+# show that its oracle and its bookkeeping are not vacuous. Two were added in fix round 3 and are listed last:
+# an anchored open that accepts a log shorter than its anchor (the second lie control, the live log cut
+# before an acknowledged revocation, had no mutant of its own) and a heal schedule that never changes the
+# leader (seen as a failed baseline, the one form in which the coverage rule leader_changes has a mutant). Every hard counter is expected by at least
 # one mutation, so that `killed == total` also shows each of the eighteen can fire (a test in
 # bins/ptr-bench checks this list against the harness). The mutations that restore the behavior the
 # first pilot found defective in the product (member-swallows..., snapshot-record-forgets-the-covered-events,
@@ -20,7 +23,10 @@
 # open-does-not-sync-the-log-it-read, lost-snapshot-is-never-reported) are the evidence that the fixes
 # are what the harness sees.
 #
-# Not listed, on purpose, because the harness cannot see them (limits, stated in the preregistration):
+# Not listed, on purpose: a coverage rule is not a hard counter, so a mutant that only silences a coverage counter
+# is not a kill here (the rules are held by the harness test that sets each counter to a violation and by the
+# aggregator tests), and a control that stops tripping ends the run with status 2, which this checker records as
+# a crash. Not listed either, because the harness cannot see them (limits, stated in the preregistration):
 # - removing only the `sync_all` call inside `sync_parent`: the durability probe sees file data pages;
 # - sending the Raft `persisted_messages` before the persistence: the members return all their
 #   messages from one call, so no schedule of the router can tell the order inside it; what the
@@ -36,7 +42,14 @@
 # - the in-memory state running ahead of a state file that could not be written, and a served snapshot
 #   whose payload the state does not name: a unit test of ptr-ledger each
 #   (a_failed_snapshot_write_leaves_the_memory_as_the_disk_is,
-#   a_snapshot_payload_that_is_not_the_one_the_state_names_is_refused).
+#   a_snapshot_payload_that_is_not_the_one_the_state_names_is_refused);
+# - a log cut at a record boundary below the commit index, a storage that goes on writing after an I/O error
+#   past a point of no return (the harness restarts a member after any failed call, so poisoning is invisible
+#   to it) and a resume that changes the node before its write succeeded: unit tests of ptr-ledger
+#   (a_log_cut_at_a_record_boundary_below_the_commit_is_refused_and_does_not_panic,
+#   an_error_past_the_point_of_no_return_poisons_the_storage_and_no_append_is_acknowledged,
+#   a_write_that_fails_part_way_poisons_and_loses_nothing_acknowledged,
+#   a_failed_resume_leaves_the_snapshot_offered_and_the_count_as_it_was).
 #
 # The mutation run is invoked as `ptr-bench raft-recovery <cases> 1001`: `cases` is the number of
 # cutover workloads (one scenario per failpoint in the group arms, so the run is no evidence, and
@@ -256,8 +269,9 @@ expect = ["promise_not_durable", "member_regressed"]
 file = "crates/ptr-ledger/src/raft_storage.rs"
 find = '''
     pub fn set_hard_state(&mut self, hard_state: &HardState) -> io::Result<()> {
-        self.hard_state = hard_state.clone();
+        let previous = std::mem::replace(&mut self.hard_state, hard_state.clone());
         self.persist_state()
+            .inspect_err(|_| self.hard_state = previous)
     }
 '''
 replace = '''
@@ -395,12 +409,18 @@ description = "The commit index of an applied event is taken before it is counte
 expect = ["reorder_or_duplicate_index"]
 file = "crates/ptr-ledger/src/raft_node.rs"
 find = '''
-            self.applied_events += 1;
+            self.applied_events = self
+                .applied_events
+                .checked_add(1)
+                .ok_or_else(|| "the count of applied events is exhausted".to_string())?;
             let index = CommitIndex(self.applied_events);
 '''
 replace = '''
             let index = CommitIndex(self.applied_events);
-            self.applied_events += 1;
+            self.applied_events = self
+                .applied_events
+                .checked_add(1)
+                .ok_or_else(|| "the count of applied events is exhausted".to_string())?;
 '''
 
 [[mutation]]
@@ -438,8 +458,8 @@ replace = '''
 
 [[mutation]]
 name = "open-applies-what-lies-above-a-pending-snapshot"
-description = "open applies the committed entries above a snapshot that is waiting to be accounted for: the member that stopped in between is refused for ever."
-expect = ["unjustified_refusals"]
+description = "A snapshot that is waiting to be accounted for no longer holds back the committed entries above it, neither at open nor in apply_committed (either alone is covered by the other, which is why both are planted): they are numbered from an applied count the snapshot has not yet established, so the history a member presents is not a prefix of the workload."
+expect = ["recovered_not_prefix", "convergence_bound_exceeded"]
 file = "crates/ptr-ledger/src/raft_node.rs"
 find = '''
         if member.installed.is_some() {
@@ -452,6 +472,16 @@ find = '''
 '''
 replace = '''
         member.apply_committed(recovered)?;
+'''
+
+[[mutation.also]]
+find = '''
+            if self.installed.is_some() {
+                // Not applied now, kept for later: raft does not hand these entries over again,
+'''
+replace = '''
+            if false {
+                // Not applied now, kept for later: raft does not hand these entries over again,
 '''
 
 [[mutation]]
@@ -495,4 +525,40 @@ replace = '''
                 if self.revoked.len() < 3 {
                     self.revoked.insert((subject.clone(), *generation));
                 }
+'''
+
+[[mutation]]
+name = "open-accepts-a-log-shorter-than-the-anchor"
+description = "The classification of a log against its anchor reads a log that holds less than the anchor covers as aligned, and the anchor store accepts an acknowledgment below its covered index, so the live log cut before an acknowledged revocation is opened and the anchor moved back (the second lie control). Two layers refuse that cut; planting one leaves the other, which refuses, so both are planted."
+expect = ["anchored_lie_accepted"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+            None if anchor.log.index.0 > self.tail().index.0 => Split::LostSuffix {
+                acknowledged: anchor.log.index,
+                present: self.tail().index,
+            },
+'''
+replace = '''
+            None if anchor.log.index.0 > self.tail().index.0 => Split::Aligned,
+'''
+
+[[mutation.also]]
+file = "crates/ptr-ledger/src/anchor.rs"
+find = '''
+        if next.epoch <= current.epoch || next.log.index.0 < current.log.index.0 {
+'''
+replace = '''
+        if next.epoch <= current.epoch {
+'''
+
+[[mutation]]
+name = "harness-schedule-never-deposes-the-leader"
+description = "The heal schedule asks the isolated leader itself to stand for election, so the leader never changes: the coverage rule leader_changes would be the only one to notice, and the harness counts a leader that cannot be deposed as a failed baseline."
+expect = ["reference_mismatches"]
+file = "bins/ptr-bench/src/experiments/l002/group.rs"
+find = '''
+            .filter(|id| *id != old && self.alive(*id))
+'''
+replace = '''
+            .filter(|id| *id == old && self.alive(*id))
 '''

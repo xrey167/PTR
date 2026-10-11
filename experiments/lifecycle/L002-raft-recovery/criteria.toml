@@ -33,9 +33,11 @@
 # and every wall-clock time are descriptive and are in no rule.
 # coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
 # falsifiers: a rule that does not hold falsifies L002 on that seed.
-# Decision: every seed must hold every coverage rule and every falsifier rule; COMPLETED iff so (and the mutation
-# evidence counts every mutation of the plan killed), INVALID if a seed is missing, unresolvable, or its record does not
-# describe the frozen run, FALSIFIED otherwise.
+# Decision, in the order validity, falsifiers, controls: INVALID if a seed is missing, unresolvable, or its record does
+# not describe the frozen run (a control that did not trip, a counter missing or mistyped, an exit status that disagrees
+# with the rules), or the mutation evidence is absent or short, even when a falsifier fired in a record that can be read;
+# FALSIFIED if every seed can be judged and some seed misses a coverage rule or trips a falsifier; COMPLETED iff every seed
+# holds every coverage rule and every falsifier rule (and the mutation evidence counts every mutation of the plan killed).
 version = 1
 experiment = "L002"
 seed_aggregation = "every_seed_must_pass"

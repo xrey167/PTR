@@ -14,14 +14,18 @@ rule grammar, which `evaluate` below implements):
 
 - a seed is judged by applying every coverage rule and every falsifier rule to
   the one JSON object its harness printed;
-- COMPLETED iff every seed holds every coverage rule and every falsifier rule;
-- FALSIFIED if some valid seed fails a rule (a coverage rule that fails makes
-  the run vacuous, which counts as falsified);
-- INVALID otherwise when a seed cannot be judged: no result line, a harness
-  that exited 2 or by a signal, another benchmark, seed, scale or experiment
-  than the record's, harness gaps, a rule whose counter is missing, null or of
-  the wrong type, or an exit status that disagrees with the rules (0 with a
-  failed rule, 1 with none). INVALID says nothing about the hypothesis.
+- the order is validity, then the falsifiers, then the controls;
+- INVALID if anything about the run is not sound, even when a falsifier fired in
+  a record that can be read: a seed that cannot be judged (no result line, a
+  harness that exited 2 or by a signal, another benchmark, seed, scale or
+  experiment than the record's, harness gaps, a control that did not trip, a rule
+  whose counter is missing, null or of the wrong type, or an exit status that
+  disagrees with the rules: 0 with a failed rule, 1 with none), a missing or
+  duplicated seed, a mutation record that is absent or short, or a failing static
+  command. INVALID says nothing about the hypothesis;
+- FALSIFIED if every seed can be judged and some seed fails a rule (a coverage
+  rule that fails makes the run vacuous, which counts as falsified);
+- COMPLETED iff every seed holds every coverage rule and every falsifier rule.
 
 The harness is shown able to fail by `results/mutations.json` (scripts/mutation_check.py L002), which must be this
 experiment's evidence from the same code, checker and mutation plan with every mutation killed; a missing or partly
@@ -63,11 +67,11 @@ COMPLETED, FALSIFIED, INVALID = "COMPLETED", "FALSIFIED", "INVALID"
 OPERATORS = (">=", "<=", "==")
 NUMBER = re.compile(r"-?[0-9]+")
 SCOPE = (
-    "recovery of a clustered ledger on one host and loopback only: the compaction cutover of AcknowledgedLedger with its "
+    "recovery of a clustered ledger in-process on one host, no network: the compaction cutover of AcknowledgedLedger with its "
     "ProtectedAnchor, crashed at each of its nine failpoints (in-process panic, fsync-honest power-loss images of the new log "
     "and of the anchor's publication) and appends above the new floor crashed at the eight log and anchor failpoints, with the "
     "runtime restored from the compacted snapshot and the retained records compared with an independent oracle (arm K); three "
-    "in-process Raft members over FileRaftStorage on a deterministic router crashed at ten storage failpoints and failed at two "
+    "in-process Raft members over FileRaftStorage on a deterministic router crashed at twelve storage failpoints and failed at two "
     "writes during isolation, snapshot recording and installation, a deposed leader and message faults, held to persist-before-send, "
     "no forgetting and convergence to a single-node reference within a pinned number of heartbeat rounds (arms S and G); "
     "power-loss images of a member's log; a forged snapshot that must be refused by its anchor"
@@ -227,16 +231,21 @@ def decide(seeds: list[dict], static: list[dict] | None, declared: list[int], mu
     elif mutations.get("killed") != mutations.get("total"):
         problems.append(f"the mutation check killed {mutations.get('killed')} of {mutations.get('total')} mutations")
     unmet = [entry["seed"] for entry in seeds if entry["valid"] and entry["coverage_failed"]]
-    # A falsifier that fired in any readable record falsifies, whatever else made the record
-    # invalid (a run cut short by the watchdog, a control that could not be judged): a product
-    # defect is never turned into INVALID.
+    # Reported whatever the verdict: the seeds whose own record trips a falsifier.
     tripped = [entry["seed"] for entry in seeds if entry["falsifiers_failed"]]
     unjudged = [entry["seed"] for entry in seeds if not entry["valid"]]
     static_failed = [item["command"] for item in static or [] if item.get("exit_code") != 0]
-    if unmet or tripped or static_failed:
-        verdict = FALSIFIED
-    elif problems or unjudged:
+    # The order is validity, then the falsifiers, then the controls (the repository rule): a
+    # verdict about the product is only given on a run that is itself sound. A seed that cannot
+    # be judged, a missing seed, a mutation record that is absent or short, a static-evidence
+    # command that fails or cannot start: any of these is INVALID even when a falsifier fired in
+    # a record that can still be read (the fired falsifier stays listed in `falsified_seeds`).
+    # The controls of a seed (a lie that must fool the naive recovery) are validity conditions
+    # of that seed and are judged inside `judge_seed`, before its falsifiers.
+    if problems or unjudged or static_failed:
         verdict = INVALID
+    elif unmet or tripped:
+        verdict = FALSIFIED
     else:
         verdict = COMPLETED
     return {

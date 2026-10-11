@@ -1,0 +1,291 @@
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> vendor/raft-proto/src/confchange.rs:74:14
+   |
+74 |     fn as_v2(&self) -> Cow<ConfChangeV2>;
+   |              ^^^^^     ^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |              |
+   |              the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+74 |     fn as_v2(&self) -> Cow<'_, ConfChangeV2>;
+   |                            +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> vendor/raft-proto/src/confchange.rs:93:14
+   |
+93 |     fn as_v2(&self) -> Cow<ConfChangeV2> {
+   |              ^^^^^     ^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |              |
+   |              the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+   |
+93 |     fn as_v2(&self) -> Cow<'_, ConfChangeV2> {
+   |                            +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/raft-proto/src/confchange.rs:110:14
+    |
+110 |     fn as_v2(&self) -> Cow<ConfChangeV2> {
+    |              ^^^^^     ^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |              |
+    |              the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+110 |     fn as_v2(&self) -> Cow<'_, ConfChangeV2> {
+    |                            +++
+
+warning: `raft-proto` (lib) generated 3 warnings (run `cargo fix --lib -p raft-proto` to apply 3 suggestions)
+warning: unexpected `cfg` condition value: `cargo-clippy`
+   --> vendor/raft/src/lib.rs:478:17
+    |
+478 | #![cfg_attr(not(feature = "cargo-clippy"), allow(unknown_lints))]
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bytes`, `default`, `default-logger`, `fail`, `failpoints`, `prost-codec`, `slog-envlogger`, `slog-stdlog`, and `slog-term`
+    = help: consider adding `cargo-clippy` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unused import: `ReadState`
+  --> vendor/raft/src/config.rs:17:44
+   |
+17 | pub use super::read_only::{ReadOnlyOption, ReadState};
+   |                                            ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unexpected `cfg` condition value: `cargo-clippy`
+  --> vendor/raft/src/errors.rs:53:16
+   |
+53 |     #[cfg_attr(feature = "cargo-clippy", allow(clippy::match_same_arms))]
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: expected values for `feature` are: `bytes`, `default`, `default-logger`, `fail`, `failpoints`, `prost-codec`, `slog-envlogger`, `slog-stdlog`, and `slog-term`
+   = help: consider adding `cargo-clippy` as a feature in `Cargo.toml`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `cargo-clippy`
+  --> vendor/raft/src/errors.rs:93:16
+   |
+93 |     #[cfg_attr(feature = "cargo-clippy", allow(clippy::match_same_arms))]
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: expected values for `feature` are: `bytes`, `default`, `default-logger`, `fail`, `failpoints`, `prost-codec`, `slog-envlogger`, `slog-stdlog`, and `slog-term`
+   = help: consider adding `cargo-clippy` as a feature in `Cargo.toml`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `cargo-clippy`
+   --> vendor/raft/src/raft.rs:924:16
+    |
+924 |     #[cfg_attr(feature = "cargo-clippy", allow(clippy::needless_pass_by_value))]
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bytes`, `default`, `default-logger`, `fail`, `failpoints`, `prost-codec`, `slog-envlogger`, `slog-stdlog`, and `slog-term`
+    = help: consider adding `cargo-clippy` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `cargo-clippy`
+   --> vendor/raft/src/raw_node.rs:377:16
+    |
+377 |     #[cfg_attr(feature = "cargo-clippy", allow(clippy::needless_pass_by_value))]
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bytes`, `default`, `default-logger`, `fail`, `failpoints`, `prost-codec`, `slog-envlogger`, `slog-stdlog`, and `slog-term`
+    = help: consider adding `cargo-clippy` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: use of deprecated module `std::u64`: all constants in this module replaced by associated constants on the type
+  --> vendor/raft/src/quorum/majority.rs:10:23
+   |
+10 | use std::{cmp, slice, u64};
+   |                       ^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated constant `std::u64::MAX`: replaced by the `MAX` associated constant on this type
+  --> vendor/raft/src/quorum/majority.rs:74:26
+   |
+74 |             return (u64::MAX, true);
+   |                          ^^^
+
+warning: use of deprecated module `std::u64`: all constants in this module replaced by associated constants on the type
+ --> vendor/raft/src/util.rs:8:10
+  |
+8 | use std::u64;
+  |          ^^^
+
+warning: use of deprecated constant `std::u64::MAX`: replaced by the `MAX` associated constant on this type
+  --> vendor/raft/src/util.rs:19:32
+   |
+19 | pub const NO_LIMIT: u64 = u64::MAX;
+   |                                ^^^
+
+warning: variable does not need to be mutable
+    --> vendor/raft/src/raft.rs:1008:19
+     |
+1008 |         for (&id, mut pr) in self.mut_prs().iter_mut() {
+     |                   ----^^
+     |                   |
+     |                   help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: trait `AssertSend` is never used
+   --> vendor/raft/src/raft.rs:293:7
+    |
+293 | trait AssertSend: Send {}
+    |       ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> vendor/raft/src/confchange/changer.rs:46:25
+   |
+46 |     pub fn new(tracker: &ProgressTracker) -> Changer {
+   |                         ^^^^^^^^^^^^^^^^     ^^^^^^^ the same lifetime is hidden here
+   |                         |
+   |                         the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+46 |     pub fn new(tracker: &ProgressTracker) -> Changer<'_> {
+   |                                                     ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/raft/src/confchange/changer.rs:272:23
+    |
+272 |     fn check_and_copy(&self) -> Result<(Configuration, IncrChangeMap)> {
+    |                       ^^^^^                            ^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                       |
+    |                       the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+272 |     fn check_and_copy(&self) -> Result<(Configuration, IncrChangeMap<'_>)> {
+    |                                                                     ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/raft/src/raw_node.rs:721:19
+    |
+721 |     pub fn status(&self) -> Status {
+    |                   ^^^^^     ^^^^^^ the same lifetime is hidden here
+    |                   |
+    |                   the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+721 |     pub fn status(&self) -> Status<'_> {
+    |                                   ++++
+
+warning: `raft` (lib) generated 15 warnings (run `cargo fix --lib -p raft` to apply 5 suggestions)
+warning: unused import: `parse_reserved_file_name`
+  --> vendor/raft-engine/src/file_pipe_log/mod.rs:13:18
+   |
+13 | pub use format::{parse_reserved_file_name, FileNameExt};
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `RecoveryConfig`
+  --> vendor/raft-engine/src/file_pipe_log/mod.rs:16:68
+   |
+16 |     DefaultMachineFactory, DualPipesBuilder as FilePipeLogBuilder, RecoveryConfig, ReplayMachine,
+   |                                                                    ^^^^^^^^^^^^^^
+
+warning: use of deprecated module `std::u64`: all constants in this module replaced by associated constants on the type
+ --> vendor/raft-engine/src/log_batch.rs:7:16
+  |
+7 | use std::{mem, u64};
+  |                ^^^
+  |
+  = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated module `std::i32`: all constants in this module replaced by associated constants on the type
+   --> vendor/raft-engine/src/util.rs:224:15
+    |
+224 |     use std::{i32, ptr};
+    |               ^^^
+
+warning: use of deprecated constant `std::i32::MAX`: replaced by the `MAX` associated constant on this type
+   --> vendor/raft-engine/src/util.rs:233:35
+    |
+233 |             if content_len > i32::MAX as usize {
+    |                                   ^^^
+
+warning: methods `must_rewrite_append_queue`, `must_rewrite_rewrite_queue`, and `must_purge_all_stale` are never used
+   --> vendor/raft-engine/src/purge.rs:135:12
+    |
+ 59 | / impl<P> PurgeManager<P>
+ 60 | | where
+ 61 | |     P: PipeLog,
+    | |_______________- methods in this implementation
+...
+135 |       pub fn must_rewrite_append_queue(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+162 |       pub fn must_rewrite_rewrite_queue(&self) {
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+172 |       pub fn must_purge_all_stale(&self) {
+    |              ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/raft-engine/src/log_batch.rs:375:17
+    |
+375 |     pub fn iter(&self) -> std::slice::Iter<LogItem> {
+    |                 ^^^^^     ^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+375 |     pub fn iter(&self) -> std::slice::Iter<'_, LogItem> {
+    |                                            +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/raft-engine/src/log_batch.rs:379:18
+    |
+379 |     pub fn drain(&mut self) -> LogItemDrain {
+    |                  ^^^^^^^^^     ^^^^^^^^^^^^ the same lifetime is hidden here
+    |                  |
+    |                  the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+379 |     pub fn drain(&mut self) -> LogItemDrain<'_> {
+    |                                            ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/raft-engine/src/log_batch.rs:881:25
+    |
+881 |     pub(crate) fn drain(&mut self) -> LogItemDrain {
+    |                         ^^^^^^^^^     ^^^^^^^^^^^^ the same lifetime is hidden here
+    |                         |
+    |                         the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+881 |     pub(crate) fn drain(&mut self) -> LogItemDrain<'_> {
+    |                                                   ++++
+
+warning: `raft-engine` (lib) generated 9 warnings (run `cargo fix --lib -p raft-engine` to apply 5 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.24s
+     Running `target/release/ptr-bench raft-recovery 1002`
+seed 1002 is not one of the manifest's seeds [17, 29, 43, 71, 101]; this is a dry run

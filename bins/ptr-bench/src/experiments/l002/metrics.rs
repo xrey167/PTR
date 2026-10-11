@@ -40,7 +40,7 @@ pub const HIT_POINTS: [&str; 24] = [
 ];
 
 /// The metrics of the manifest, in its order (a test compares them with the file).
-pub const METRIC_NAMES: [&str; 62] = [
+pub const METRIC_NAMES: [&str; 65] = [
     // Coverage, observed.
     "cuts",
     "recoveries_cutover",
@@ -106,6 +106,9 @@ pub const METRIC_NAMES: [&str; 62] = [
     "retried_cutovers",
     "raft_stalled",
     "images_damaged",
+    "deposition_attempts_total",
+    "deposition_attempts_max",
+    "deposition_clean_attempt_needed",
 ];
 
 /// The counters whose sum is `hard_failures` and that `tests/mutations.toml` names.

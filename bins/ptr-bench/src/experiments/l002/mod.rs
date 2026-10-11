@@ -180,16 +180,22 @@ fn run_scenario(
     });
     let _ = std::fs::remove_dir_all(&dir);
     let run = check::counted_append(tally, group::ARM, outcome)?;
-    // The longest wait of a run is a maximum, not a sum.
+    // The longest wait of a run and the latest attempt a leader changed on are maxima, not sums.
+    const MAXIMA: [(&str, &str); 2] = [
+        ("rounds_max_run", "rounds_to_converge_max"),
+        ("deposition_attempts_max_run", "deposition_attempts_max"),
+    ];
     let (maxima, sums): (Vec<_>, Vec<_>) = run
         .counters
         .iter()
         .cloned()
-        .partition(|(name, _)| name == "rounds_max_run");
+        .partition(|(name, _)| MAXIMA.iter().any(|(run_name, _)| name == run_name));
     tally.absorb(&sums);
-    for (_, rounds) in maxima {
-        let longest = tally.get("rounds_to_converge_max").max(rounds);
-        tally.set("rounds_to_converge_max", longest);
+    for (name, value) in maxima {
+        if let Some((_, total)) = MAXIMA.iter().find(|(run_name, _)| *run_name == name) {
+            let longest = tally.get(total).max(value);
+            tally.set(total, longest);
+        }
     }
     Some(run)
 }

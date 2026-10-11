@@ -59,6 +59,11 @@ pub const IMAGE_CAPTURES_PER_SCENARIO: usize = 6;
 /// leader's history.
 pub const CONVERGENCE_ROUNDS: usize = 6;
 
+/// Elections the schedule that deposes a leader may attempt under the message faults before it
+/// makes one last attempt with the router's faults off: a vote the router drops is not a lost
+/// election, and the leader change the plan asks for must not depend on what the faults drew.
+pub const ELECTION_ATTEMPTS: usize = 8;
+
 /// The watchdog of one recovery or in-process sequence, in milliseconds, and how many may fire
 /// before the run stops issuing them.
 pub const HANG_WATCHDOG_MS: u64 = 60_000;
@@ -265,6 +270,7 @@ pub fn compiled() -> Vec<(&'static str, Leaf)> {
             int(IMAGE_CAPTURES_PER_SCENARIO),
         ),
         ("convergence_rounds", int(CONVERGENCE_ROUNDS)),
+        ("election_attempts", int(ELECTION_ATTEMPTS)),
         ("proposal_settle_rounds", int(PROPOSAL_SETTLE_ROUNDS as i64)),
         ("hang_watchdog_ms", int(HANG_WATCHDOG_MS)),
         ("hang_limit", int(HANG_LIMIT)),

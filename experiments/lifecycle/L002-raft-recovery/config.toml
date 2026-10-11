@@ -28,8 +28,10 @@ heal_scenarios = 3
 tamper_scenarios = 3
 image_scenarios = 3
 image_captures_per_scenario = 6
-# The liveness bound: leader heartbeat rounds after the last fault until every member holds the leader's history.
+# The liveness bound: leader heartbeat rounds after the last fault until every member holds the leader's history. The
+# elections a deposing schedule attempts under the message faults before one last attempt with the faults off.
 convergence_rounds = 6
+election_attempts = 8
 proposal_settle_rounds = 6
 # The watchdog of one recovery or in-process sequence, in milliseconds, and how many may fire before the run stops issuing them.
 hang_watchdog_ms = 60000
@@ -110,6 +112,7 @@ tamper_scenarios = 3
 image_scenarios = 3
 image_captures_per_scenario = 6
 convergence_rounds = 6
+election_attempts = 8
 proposal_settle_rounds = 6
 hang_watchdog_ms = 60000
 hang_limit = 3
