@@ -403,7 +403,7 @@ status = "planned"
 [[experiment]]
 id = "C004"
 path = "consciousness/C004-recurrent-integration"
-status = "prepared"
+status = "completed"
 
 [[experiment]]
 id = "C005"
