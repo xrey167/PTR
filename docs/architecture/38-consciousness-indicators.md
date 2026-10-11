@@ -1,8 +1,12 @@
 # 38 — Consciousness-indicator properties as functional capability requirements
 
-Status: **design**, plus one CPU mechanism experiment built to freeze-ready but not frozen
-and not run (C001, `experiments/consciousness/C001-global-workspace/`) and five further
-experiments registered as `planned` (C002-C006). Nothing in this document is evidence that
+Status: **design**, plus one executed CPU mechanism experiment: C001
+(`experiments/consciousness/C001-global-workspace/`), frozen at tag `c001-prereg`, 20 seeds
+(4001-4020), outcome **NOT_SHOWN** (neither supported nor refuted; section 6, item 1, and the
+STATUS.md C001 line). `experiments/registry.toml` on this branch keeps C001 at `prepared`, as its
+preregistration defines for NOT_SHOWN. Five further experiments are registered `planned`
+(C002-C006). C004, C007 and C008 are being built to freeze-ready (none is in this branch's
+registry as `prepared`, so none is frozen as far as this branch shows) and have no outcome. Nothing in this document is evidence that
 any PTR component has any of the properties below. The tables mark what exists in code, what
 is only a scaffold and what is missing; every requirement is an experiment with a baseline,
 ablations and a falsification rule (invariant 15).
@@ -167,6 +171,23 @@ flowchart LR
     M13[M013] -. tests .-> AE
 ```
 
+### 3.1 Evidence status of the targeted indicators (functional properties only)
+
+The statuses below describe whether a **functional** property has been shown in a test; none is
+a statement about experience, and no system is trained or scored on statements about itself
+([`docs/MODEL_WELFARE.md`](../MODEL_WELFARE.md), principle 2 above). Registry status is
+`experiments/registry.toml` on this branch.
+
+| Indicator (functional property) | Experiment | Registry status | Outcome as recorded |
+|---|---|---|---|
+| GWT-2/GWT-3 (bottleneck, broadcast), learned analogue only | C001 | prepared (as defined for NOT_SHOWN) | NOT_SHOWN (`results/run.json`; STATUS.md C001 line): advantage over sparse all-to-all supported, over all-to-all and bandwidth-matched all-to-all straddles the margin; broadcast, capacity and competition not attributed |
+| GWT-2/3 for the deterministic `ptr-pods::workspace` contract | C006 (GPU) | planned | none; the contract has tests only |
+| RPT-1 | C004 | planned | none; built toward freeze-ready, not frozen |
+| HOT-2/HOT-3 (self-model predicts own errors), toy | C007 (stage A of C002) | not in this branch's registry | none; built toward freeze-ready, not frozen |
+| AST-1 (schema of the router's own attention), toy | C008 (stage A of C003) | not in this branch's registry | none; built toward freeze-ready, not frozen |
+| HOT/AST at OLMoE scale; self-report reliability | C002, C003, C005 (GPU) | planned | none |
+| AE-1 | M013 | planned | none |
+
 ## 4. Capability requirements for Pods and the Pod-MoE
 
 The three levels are those of [37 — Pod-MoE](37-pod-moe.md) section 2: **L1** token experts
@@ -227,7 +248,7 @@ start of their hypothesis. They are not run before their CPU predecessor has a v
 
 ## 6. Experiment roadmap
 
-1. **C001 (CPU, redesigned, not frozen).** The first mechanism test, of a *learned-attention*
+1. **C001 (CPU, frozen at `c001-prereg`, completed run, outcome NOT_SHOWN).** The first mechanism test, of a *learned-attention*
    workspace on a toy task (finite data, shared-weight modules, out-of-distribution module counts,
    bandwidth-matched and competition/capacity ablations, a sensitivity control). It does not test the
    deterministic `ptr-pods::workspace` contract (package A): a supportive result does not validate
@@ -248,7 +269,18 @@ start of their hypothesis. They are not run before their CPU predecessor has a v
    P(supported) is between 0.02 and 0.69 (at the best pooled estimate and the observed rate of workspace stalls, 1 of 17 pilot seeds, not flagged by the guard's harness rule: not shown 0.78, supported 0.20, invalid 0.02,
    refuted about 0); at an advantage equal to the margin, not shown 0.92-0.93. Supported shows an advantage over pairwise attention at 2048 examples and 16 modules, not that the broadcast,
    the capacity limit or the competition is the reason (reported contrast by contrast, each may read "not attributed").
-2. **C004 (CPU toy first).** Independent of C001; also informs M003.
+   **Outcome (verdict NOT_SHOWN in `experiments/consciousness/C001-global-workspace/results/run.json`;
+   registry status `prepared`; mutation check 38 of 38 planted defects killed).** All coverage,
+   falsifier and integrity rules held on every seed; the sensitivity controls resolved. On the
+   primary metric (16-module out-of-distribution accuracy, margin 30 per mille, one-sided 95% bounds
+   over 20 seeds) the workspace minus sparse all-to-all is +132 per mille (lower bound 65, supports);
+   minus all-to-all +27 [-15, 70] and minus bandwidth-matched all-to-all +19 [-23, 60] straddle the
+   margin, so the support conjunction fails. Attribution contrasts (no_broadcast, capacity_off,
+   competition_off) are unresolved or not attributed. By the decision rule above, NOT_SHOWN means
+   **nothing changes**: C001 does not justify building a learned L2 prototype for C006, and GW-L1 and GW-L2 are
+   not downgraded either. Scope: a learned-attention workspace on one synthetic modular task, not the
+   `ptr-pods` workspace contract; it says nothing about consciousness.
+2. **C004 (CPU toy first).** Independent of C001; also informs M003. Registry status `planned` on this branch; being built to freeze-ready, not frozen, no outcome. C007 (CPU metacognitive self-model, stage A of C002) and C008 (CPU attention-schema routing, stage A of C003) are in the same state: built to freeze-ready, not in this branch's registry, no outcome.
 3. **C002 and C003 (CPU toy first).** Stage A tests the mechanism and the guards (no write path
    to a gate); stage B needs the Pod-MoE training programme (doc 37 section 5) to reach an OLMoE
    baseline. Neither is a claim about OLMoE until stage B is run.
@@ -259,7 +291,7 @@ start of their hypothesis. They are not run before their CPU predecessor has a v
    experts and verifier-driven expert lifecycle ([37 section 11](37-pod-moe.md)); the C-series
    components plug into that loop.
 
-Order of cost: C001 and C004 stage A can run now; everything marked GPU waits for the GPU
+Order of cost: C004 stage A can run now (C001 has run); everything marked GPU waits for the GPU
 queue of doc 37 section 5.
 
 ## 7. Limits of this approach

@@ -1,9 +1,15 @@
 # 36 — KV-cache reuse: control plane in PTR, data plane in engines
 
-Status: **design.** Nothing in this document is implemented beyond the existing
-`ptr-pods` CPU reference code described in section A, which is not wired into any
-inference path. Every claim about speed-up or hit rate is an **experiment** with a
-falsification rule (section E), and all of them are planned, none has run.
+Status: **design, with a CPU reference path exercised by completed mechanism checks.**
+The control plane (catalog, chain keys, dependency admission, taint) exists as CPU
+reference code in `ptr-pods` and `ptr-runtime` (for example
+`crates/ptr-pods/src/kv_chain.rs`, `crates/ptr-runtime/src/kv_prefix.rs`,
+`kv_infer_layered.rs`, `kv_secondary.rs`) on a tiny seeded model; there is no engine
+adapter and no GPU path, and the candle path is not compiled in CI. Every claim about
+speed-up or hit rate is an **experiment** with a falsification rule (section E). Evidence
+status is in section E.1: R005 (Exact half, now marked stale), R006, R007, R009, R010 and
+R012 are `completed` in `experiments/registry.toml` on this branch, R008, E006 and E007 are
+`planned` there, and no experiment of this document has produced a GPU or engine result.
 Nothing here changes the authority order of ADR-0002: the ledger stays the only
 authority, and a KV block is derived state under invariants #3, #5 and #17.
 
@@ -473,10 +479,78 @@ Proposed types (none exists yet):
   activation: Always | AfterInvocation }`, `MoeTopology`, `RoutingDeterminism`.
 - `KvLayerBinding { layers, effective_weights_digest, generations }`.
 
+### The base-model link: `BaseModelRef` (id, digest, generation) from adapters and experts to the base
+
+Every adapter or expert Pod is tied to the base model it adapts by a value, not by a name:
+the "symlink" from the derived artifact to the base. It is the triple (`id`, `digest`,
+`generation`) and its pieces are verified in the worktree as follows.
+
+* **Type.** `BaseModelRef { id: BaseModelId, digest: BaseModelDigest, generation: u64 }`
+  (`crates/ptr-pods/src/expert.rs:326-330`); `BaseModelRef::new` rejects generation 0
+  (`expert.rs:332-346`). All three fields take part in equality, so two refs with the same
+  digest and generation but different ids are different bases (doc comment `expert.rs:320-325`;
+  test `base_model_ref_validates_generation`, `crates/ptr-pods/tests/expert.rs:1313`, and
+  `prune_requires_one_base_model`, `:1292-1308`).
+* **Carried by** `ExpertPodSpec` (`expert.rs:723`) and `ExpertTarget` (`expert.rs:869`, accessor
+  `:924`); in the runtime, `crates/ptr-runtime/src/vcw_host/driver.rs:320` holds the base for
+  Birth requests.
+* **As a dependency.** `ExpertInputRef::from_base_model` (`expert.rs:2155-2161`) turns it into
+  the input `base-model:{id}` with the base's generation and digest (prefix
+  `expert.rs:2040`). `ptr-runtime` derives that dependency from every version 3 expert record
+  (`crates/ptr-runtime/src/expert.rs:3037-3041`; module doc `:110-116`). An expert admitted
+  through `admit_expert_proposal` (version 2 records) names no inputs and is outside this
+  mechanism.
+* **Compound invalidation.** Revoking `base-model:{id}` at generation g fences every version 3
+  expert and every descendant that rests on it, in one `InputInvalidated` ledger event
+  (test `the_base_model_is_a_dependency_of_every_version_3_expert`,
+  `crates/ptr-runtime/tests/expert_input_invalidation.rs:990-1008`: x, y, z fenced, the
+  version 2 expert w untouched, and a new Birth on the revoked base refused with
+  `InputRevoked`). A supersession must carry the digest the base was registered with
+  (`InputBindingMismatch`, same file `:1010-1020`). The semantics of supersession
+  (an expert built from a generation below the replacement is dead unless it was retrained
+  on the replacement) are in `crates/ptr-runtime/src/expert/dependency.rs:323-326`.
+  **Evidence:** R011, status `completed` in `experiments/registry.toml`, verdict COMPLETED in
+  `experiments/runtime/R011-self-modification-safety/results/run.json`: 43 of 43
+  invalidation-matrix cells with 0 stale hits (STATUS.md, R011 line). The dedicated base-model
+  supersession success path has no separate test in `expert_input_invalidation.rs` beyond the
+  generic supersession tests (for example `:597`, `:657`) and the digest-mismatch test above.
+* **KV side.** The per-layer chain key hashes the base identity **and** generation at its root
+  (`KvChainIdentity { base_model, generation, build, tokenizer }`,
+  `crates/ptr-pods/src/kv_chain.rs:73-81`; root hash `:247-249`), so a new base generation changes
+  `chain(l)` for every layer. The entries record the base as a `KvDependency::base_model`
+  (`crates/ptr-runtime/src/kv_prefix.rs:316`; layered path
+  `crates/ptr-runtime/src/kv_infer_layered.rs:845-849`), whose revocation or supersession
+  drops them (R005, R006, R009, R010 matrices above). **Gaps, stated:** no code converts a
+  `BaseModelRef` into a `KvChainIdentity`; the two carry the same id and generation by
+  convention only. The CPU reference backend pins one base, `MODEL_NAME` at
+  `Generation(1)` (`crates/ptr-runtime/src/kv_infer.rs:941-942`). **E007** (the split-Pod
+  check) is `planned` in `experiments/registry.toml` on this branch; its CPU test is in
+  progress on its own branch and is **not a result**.
+* **Gate evidence bound to the exact base.** A `BoundGateReport` carries a `GateSubject` with
+  `base_model_digest` (`crates/ptr-lineage/src/forgetting.rs:219`, `:244-266`); the plain
+  `GateReport` "names no lineage or base model" (`forgetting.rs:175-180`).
+  `ptr-runtime` rejects evidence whose base digest differs from the operation's
+  (`EvidenceBaseModelMismatch`, `crates/ptr-runtime/src/expert.rs:1994-1996`; expectation
+  built at `:2106-2141`; tests `crates/ptr-runtime/tests/expert_evidence_binding.rs:519, 638,
+  719, 791`). The base **generation** is bound through the artifact digest, which for version 3
+  records folds in the inputs block that contains `base-model:{id}` at its generation
+  (`expert.rs:2134-2137`; the digest function with inputs is at `:2086`). A Merge or
+  Prune over two bases is `MixedBaseModels` (`ptr-pods/src/expert.rs:1960-1966`), and a result
+  on a different base than its sources is `ResultBaseModelMismatch` (`:2011-2014`): a pass
+  does not transfer across bases.
+* **What retraining the base implies.** A retrained base is a new generation (and digest) of the
+  same `base-model:{id}`: the old generation is superseded, so dependent adapters, experts and
+  their KV entries are invalidated by the rules above; the adapters must be re-trained or
+  re-validated against the new base and **re-gated** (a new `BoundGateReport` on the new base
+  digest and a new proposal id, since the base generation is part of `proposal_id()`, test
+  `tests/expert.rs:1313-1339`). This is the design consequence of the mechanisms cited; no
+  experiment retrains a real base model.
+
 ## E. Phases, experiments and falsification
 
-All phases are **planned**. P0 is this document; every other phase has an
-experiment that can fail.
+The phases below are design; their experiments are listed with their registry status in
+section E.1 (some are completed on the CPU reference path, the rest are planned). P0 is this
+document; every other phase has an experiment that can fail.
 
 | Phase | Content | Experiment and falsification |
 |---|---|---|
@@ -514,6 +588,24 @@ vacuous. In the rows below, "semantic, memory, derived" stands for **every gener
 | E007 | the upstream stage pod (identity, generation, manifest digest), the **upstream base model** (revocation and supersession), the **upstream-chain experts** (types revocation, supersession and fence) and the **upstream adapters** (revocation and supersession), and every generation-bearing input kind of the closed list recorded in the frame's `input_lineage` | normal, lag (the `Revoke` message dropped or delayed), in-flight; restore does not apply (no KV is restored on a Pod) |
 
 R011's matrix is in doc 37, section 3.
+
+### E.1 Evidence status (registry on branch `claude/dev-docs13`, outcome as in each `results/run.json` or STATUS.md)
+
+| Experiment | Registry status | Outcome as recorded | Scope |
+|---|---|---|---|
+| R005 exact-prefix-reuse (Exact half) | completed | COMPLETED at the run commit; later marked stale by `results/STALE.toml`, so it is not current evidence (STATUS.md R005 line) | CPU reference, tiny seeded model |
+| R006 positional-reuse-oracle | completed | COMPLETED (97 coverage and 69 falsifier rules held on 5 seeds, STATUS.md) | CPU, one layer for exact positional reuse |
+| R007 span-forget | completed | COMPLETED | CPU |
+| R009 layer-shared-lora-kv | completed | COMPLETED (40-cell invalidation matrix, STATUS.md) | CPU |
+| R010 moe-expert-kv-revocation | completed | COMPLETED | CPU, tiny dropless top-2 MoE |
+| R012 approximate-taint-containment | completed | COMPLETED (STATUS.md R012 line; limits in the P-row text above) | CPU reference, tiny seeded model |
+| R011 self-modification-safety | completed | COMPLETED; 43 of 43 invalidation-matrix cells with 0 stale hits (STATUS.md); the base-model revocation case is the test cited in section D (doc 37, section 3 has the matrix) | CPU reference, public `PtrRuntime` API |
+| R008 lossy-kv-tier | planned | no outcome | design only |
+| E006 engine-prefix-reuse | planned | no outcome | GPU and engine, not built |
+| E007 split-pod-kv | planned | no outcome; CPU test in progress, not a result | CPU test first, engine and GPU later |
+
+Everything else in this document (engine adapter, GPU numerics, speed-up and hit-rate claims
+on a real model) has no result. A completed row is a statement about the CPU reference path.
 
 ## F. Risks
 
