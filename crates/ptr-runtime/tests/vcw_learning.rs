@@ -24,6 +24,10 @@ use ptr_runtime::PtrRuntime;
 use ptr_types::{Generation, PodId, ProjectId, RequestId, VerificationLevel};
 use sha2::{Digest as _, Sha256};
 
+fn book() -> PolicyBook {
+    PolicyBook::new("defect-doc", Exploration::default()).unwrap()
+}
+
 fn pod(name: &str) -> PodId {
     PodId::from(name)
 }
@@ -145,7 +149,7 @@ fn gate() -> PromotionGate {
 
 #[test]
 fn the_bandit_learns_the_better_repair_pod_and_a_host_promotes_it_on_held_out_evidence() {
-    let mut book = PolicyBook::new("defect-doc");
+    let mut book = book();
     let learner = learner(7);
     let mut vcw = make_loop(1, book.scorer(), Some(&learner));
     let mut sim = experts(21, 0.9, 0.1, false);
@@ -166,27 +170,30 @@ fn the_bandit_learns_the_better_repair_pod_and_a_host_promotes_it_on_held_out_ev
 
     // Phase B: more incumbent traffic, logged after the snapshot: the held-out evidence.
     run_requests(&mut vcw, &mut sim, "b", 900);
-    let log = learner.log_from(candidate.cutoff());
-    assert!(log.len() > 1500, "{}", log.len());
+    assert!(
+        learner.log_len_from(candidate.cutoff()) > 1500,
+        "{}",
+        learner.log_len_from(candidate.cutoff())
+    );
 
     // The learner changed nothing about routing by itself.
     assert!(!book.is_learned());
     assert!(book.events().is_empty());
 
-    let assessment = gate()
-        .assess(&log, &candidate, &book.scorer(), book.active_digest())
-        .unwrap();
+    let assessment = gate().assess(&learner, &candidate, &book.scorer()).unwrap();
     let evidence = match assessment.verdict {
         Verdict::Promote(evidence) => evidence,
         Verdict::Refuse(reason) => panic!("{reason:?} {:?}", assessment.comparison),
     };
     assert!(evidence.lower_bound() > 0.05);
 
-    // The host promotes, and records it as a runtime event.
-    let event = book.promote(candidate.clone(), evidence).unwrap();
-    assert_eq!(event.action, PolicyAction::Promoted);
+    // The host promotes; the runtime is the sink, so the runtime event is emitted by the
+    // promotion itself and cannot be forgotten.
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    runtime.record_vcw_policy_event(&event);
+    let event = book
+        .promote(candidate.clone(), evidence, &mut runtime)
+        .unwrap();
+    assert_eq!(event.action, PolicyAction::Promoted);
     let recorded = runtime.events().iter().any(|envelope| {
         matches!(
             &envelope.event,
@@ -218,9 +225,14 @@ fn the_bandit_learns_the_better_repair_pod_and_a_host_promotes_it_on_held_out_ev
     assert!(f64::from(after.verified) / 600.0 >= f64::from(before.verified) / 300.0);
 
     // Rolling back restores the incumbent and is recorded too.
-    let rolled = book.rollback().unwrap();
-    runtime.record_vcw_policy_event(&rolled);
+    let rolled = book.rollback(&mut runtime).unwrap();
     assert_eq!(rolled.action, PolicyAction::RolledBack);
+    let changes = runtime
+        .events()
+        .iter()
+        .filter(|envelope| matches!(envelope.event, RuntimeEvent::VcwPolicyChanged { .. }))
+        .count();
+    assert_eq!(changes, 2);
     let mut vcw_after = make_loop(2, book.scorer(), None);
     let uniform_again = run_requests(&mut vcw_after, &mut sim, "d", 300);
     let uniform_share = uniform_again.repair_to_good as f64
@@ -231,7 +243,7 @@ fn the_bandit_learns_the_better_repair_pod_and_a_host_promotes_it_on_held_out_ev
 #[test]
 fn every_routed_pod_is_settled_exactly_once_including_declined_repairs() {
     for decline in [false, true] {
-        let book = PolicyBook::new("defect-doc");
+        let book = book();
         let learner = learner(3);
         let mut vcw = make_loop(4, book.scorer(), Some(&learner));
         let mut sim = experts(5, 0.6, 0.3, decline);
@@ -250,7 +262,7 @@ fn every_routed_pod_is_settled_exactly_once_including_declined_repairs() {
 fn a_declined_repair_is_a_failure_of_the_routed_pod_not_a_missing_observation() {
     // The bad pod declines whenever it fails; the good pod never fails. Declines must lower the
     // bad pod's posterior exactly as failures do.
-    let book = PolicyBook::new("defect-doc");
+    let book = book();
     let learner = learner(11);
     let mut vcw = make_loop(6, book.scorer(), Some(&learner));
     let mut sim = experts(8, 1.0, 0.0, true);
@@ -267,7 +279,7 @@ fn a_declined_repair_is_a_failure_of_the_routed_pod_not_a_missing_observation() 
 fn the_reward_is_the_verifiers_verdict_whatever_the_pods_do() {
     // The simulation's "repairs" never succeed (a pod that claims to repair does not): no
     // candidate is ever accepted, so no routed Pod is ever credited.
-    let book = PolicyBook::new("defect-doc");
+    let book = book();
     let learner = learner(13);
     let mut vcw = make_loop(9, book.scorer(), Some(&learner));
     let mut sim = experts(10, 0.0, 0.0, false);
@@ -284,8 +296,34 @@ fn the_reward_is_the_verifiers_verdict_whatever_the_pods_do() {
 }
 
 #[test]
+fn a_loop_refuses_a_policy_book_scorer_under_another_exploration_floor() {
+    let book = book();
+    let parts = |epsilon: f64| VcwParts {
+        config: VcwConfig::new("learning-test", [3; 32]),
+        roster: Roster {
+            proposers: vec![pod("gen")],
+            repairers: vec![(pod("fix_good"), vec![code()])],
+        },
+        router: RouterConfig {
+            exploration: Exploration::new(epsilon).unwrap(),
+            ..RouterConfig::default()
+        },
+        scorer: book.scorer(),
+        key: SamplingKey::from_bytes([1; 32]),
+        nonces: NonceSequence::starting_at([1; 8], 0),
+        self_model: SelfModel::new(SelfModelLimits::default()),
+        schema: None,
+        structure: StructurePolicy::new(StructurePolicyConfig::default()).unwrap(),
+    };
+    // No floor, and a different floor: refused. The book's own: accepted.
+    assert!(matches!(VcwLoop::new(parts(0.0)), Err(VcwError::Config(_))));
+    assert!(matches!(VcwLoop::new(parts(0.3)), Err(VcwError::Config(_))));
+    assert!(VcwLoop::new(parts(Exploration::default().epsilon())).is_ok());
+}
+
+#[test]
 fn a_learner_must_use_the_routers_exploration_rate() {
-    let book = PolicyBook::new("defect-doc");
+    let book = book();
     let other = Arc::new(
         RoutingLearner::new(LearnerConfig {
             exploration: Exploration::new(0.2).unwrap(),
@@ -303,19 +341,70 @@ fn the_loop_holds_the_learner_and_the_read_only_scorer_but_no_way_to_change_the_
     // from the loop. The source scan of the loop's module (tests/vcw_loop.rs) pins that the
     // module never names the book or its actions.
     fn scorer_is_read_only<S: ptr_router::AdmissibleScorer>(_: &VcwLoop<S>) {}
-    let book = PolicyBook::new("defect-doc");
+    let book = book();
     let vcw = make_loop(1, book.scorer(), None);
     scorer_is_read_only(&vcw);
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/vcw");
-    for entry in std::fs::read_dir(src).unwrap() {
+    let mut scanned = 0;
+    for path in rust_files(&src) {
+        let text = std::fs::read_to_string(&path).unwrap();
+        // Comments removed, then whitespace: a token split across lines is still found.
+        let code: String = strip_comments(&text)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        for token in ["PolicyBook", ".promote(", ".rollback(", "PromotionGate"] {
+            assert!(!code.contains(token), "{} names `{token}`", path.display());
+        }
+        scanned += 1;
+    }
+    // The scan reaches the nested expert modules too.
+    assert!(scanned >= 10, "{scanned} files scanned");
+    assert!(rust_files(&src)
+        .iter()
+        .any(|p| p.to_string_lossy().contains("experts")));
+}
+
+/// Every `.rs` file under `dir`, recursively.
+fn rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_some_and(|e| e == "rs") {
-            let text = std::fs::read_to_string(&path).unwrap();
-            for line in text.lines().filter(|l| !l.trim_start().starts_with("//")) {
-                for token in ["PolicyBook", ".promote(", ".rollback(", "PromotionGate"] {
-                    assert!(!line.contains(token), "{}: {line}", path.display());
-                }
-            }
+        if path.is_dir() {
+            out.extend(rust_files(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
         }
     }
+    out
+}
+
+/// `source` without `//` line comments (doc comments included) and `/* */` block comments.
+fn strip_comments(source: &str) -> String {
+    let mut out = String::new();
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('/', Some('/')) => {
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            ('/', Some('*')) => {
+                chars.next();
+                let mut previous = ' ';
+                for next in chars.by_ref() {
+                    if previous == '*' && next == '/' {
+                        break;
+                    }
+                    previous = next;
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }

@@ -2,13 +2,13 @@
 //! trained on verifier verdicts only, evaluated off-policy before it may be promoted by a host.
 
 use ptr_router::{
-    classify, compare_policies, estimate_policy, AdmissibleScorer, Confidence, EligibilitySnapshot,
-    Estimator, Exploration, FallbackPolicy, FindingCode, FindingRegistry, FindingRouteErrorKind,
-    FindingRouteRecord, FindingRouteRequest, FindingRouter, LearnedPolicy, LearnerConfig,
-    LoggedDecision, NonceSequence, OpeError, PolicyAction, PolicyBook, PolicyBookError,
-    PromotionGate, PromotionRefusal, PromotionRule, RegistryChange, RegistryUpdate, ReportClass,
-    RewardModel, RouteClass, RouteDistribution, RouteError, RouterConfig, RouterLimits,
-    RoutingLearner, SamplingKey, ScoringContext, UniformScorer, Verdict, VerifierReward,
+    classify, AdmissibleScorer, EligibilitySnapshot, Exploration, FallbackPolicy, FindingCode,
+    FindingRegistry, FindingRouteErrorKind, FindingRouteRecord, FindingRouteRequest, FindingRouter,
+    LearnedPolicy, LearnerConfig, NonceSequence, OpeError, PolicyAction, PolicyBook,
+    PolicyBookError, PolicyEvent, PromotionGate, PromotionRefusal, PromotionRule, RegistryChange,
+    RegistryUpdate, ReportClass, RouteClass, RouteDistribution, RouteError, RouterBuildError,
+    RouterConfig, RouterLimits, RoutingLearner, SamplingKey, ScoringContext, UniformScorer,
+    Verdict, VerifierReward, MAX_EVENTS,
 };
 use ptr_types::{Generation, PodId, Probability, RequestId, VerificationLevel};
 use ptr_verifier::{Finding, VerificationReport, VerificationStatus};
@@ -99,6 +99,7 @@ fn router<S: AdmissibleScorer>(
         SamplingKey::from_bytes([key; 32]),
         NonceSequence::starting_at([key; 8], 0),
     )
+    .unwrap()
 }
 
 fn route_record<S: AdmissibleScorer>(
@@ -122,6 +123,26 @@ fn route_record<S: AdmissibleScorer>(
 
 const EPSILON: f64 = 0.1;
 
+/// The verifier's verdict as the loop would hand it to the learner: `Accept` is built only by
+/// `classify` from a clean passing report at the required level.
+fn verdict(passed: bool) -> VerifierReward {
+    if !passed {
+        return VerifierReward::NOT_CLEARED;
+    }
+    let clean = VerificationReport {
+        status: VerificationStatus::Pass,
+        level: VerificationLevel::Deterministic,
+        score: Probability::new(0.0).unwrap(),
+        findings: Vec::new(),
+    };
+    let class = classify(
+        &clean,
+        VerificationLevel::Deterministic,
+        &RouterLimits::default(),
+    );
+    VerifierReward::from_class(&class)
+}
+
 /// Route `n` requests under `scorer`, settle each with the world's verdict, return the learner.
 fn collect<S: AdmissibleScorer>(
     learner: &RoutingLearner,
@@ -137,7 +158,7 @@ fn collect<S: AdmissibleScorer>(
         let record = route_record(router, &view, &format!("{tag}-{i}"));
         let p = truth.iter().find(|(p, _)| *p == record.pod().0).unwrap().1;
         let passed = world.unit() < p;
-        learner.settle(&record, VerifierReward::replayed(passed != invert));
+        learner.settle(&record, verdict(passed != invert));
     }
 }
 
@@ -206,11 +227,7 @@ fn learned_weights_are_a_function_of_the_snapshot_and_change_with_evidence() {
 }
 
 /// Train on 400 decisions, snapshot, then log `eval` more under the uniform incumbent.
-fn trained_and_logged(
-    seed: u64,
-    eval: usize,
-    invert: bool,
-) -> (RoutingLearner, LearnedPolicy, Vec<LoggedDecision>) {
+fn trained_and_logged(seed: u64, eval: usize, invert: bool) -> (RoutingLearner, LearnedPolicy) {
     let learner = learner(seed);
     let uniform = router(&["bad", "good"], EPSILON, UniformScorer, 1);
     let mut world = World(seed.wrapping_mul(7919));
@@ -218,24 +235,27 @@ fn trained_and_logged(
     let policy = learner.snapshot();
     let fresh = router(&["bad", "good"], EPSILON, UniformScorer, 6);
     collect(&learner, &fresh, &TRUTH, eval, "eval", &mut world, false);
-    let log = learner.log_from(policy.cutoff());
-    (learner, policy, log)
+    (learner, policy)
 }
 
 fn gate() -> PromotionGate {
     PromotionGate::new(PromotionRule::new(0.05, 500, 100.0)).unwrap()
 }
 
+fn book() -> PolicyBook {
+    PolicyBook::new("arith", Exploration::new(EPSILON).unwrap()).unwrap()
+}
+
 #[test]
 fn a_clearly_better_policy_is_promoted_on_held_out_decisions_and_can_be_rolled_back() {
-    let (_, policy, log) = trained_and_logged(21, 1500, false);
+    let (learner, policy) = trained_and_logged(21, 1500, false);
+    let log = learner.log_from(policy.cutoff());
     assert_eq!(log.len(), 1500);
+    assert_eq!(learner.log_len_from(policy.cutoff()), 1500);
     assert!(log.iter().all(|d| d.seq() >= policy.cutoff()));
-    let mut book = PolicyBook::new("arith");
+    let mut book = book();
     let incumbent = book.scorer();
-    let assessment = gate()
-        .assess(&log, &policy, &incumbent, book.active_digest())
-        .unwrap();
+    let assessment = gate().assess(&learner, &policy, &incumbent).unwrap();
     let evidence = match &assessment.verdict {
         Verdict::Promote(evidence) => evidence.clone(),
         other => panic!(
@@ -255,11 +275,16 @@ fn a_clearly_better_policy_is_promoted_on_held_out_decisions_and_can_be_rolled_b
     // Promotion is a host action that records an event; nothing promoted before it.
     assert!(book.events().is_empty());
     let initial = book.active_digest();
-    let event = book.promote(policy.clone(), evidence.clone()).unwrap();
+    let mut sink: Vec<PolicyEvent> = Vec::new();
+    let event = book
+        .promote(policy.clone(), evidence.clone(), &mut sink)
+        .unwrap();
     assert_eq!(event.action, PolicyAction::Promoted);
     assert_eq!(event.from, initial);
     assert_eq!(event.to, policy.digest());
     assert_eq!(event.evidence, Some(evidence.digest()));
+    // The sink saw exactly the event the book returned: a promotion cannot skip the record.
+    assert_eq!(sink, vec![event.clone()]);
     assert!(book.is_learned());
     assert_eq!(book.active_digest(), policy.digest());
 
@@ -273,21 +298,24 @@ fn a_clearly_better_policy_is_promoted_on_held_out_decisions_and_can_be_rolled_b
 
     // The same evidence cannot be applied twice: its incumbent is no longer the active policy.
     assert_eq!(
-        book.promote(policy.clone(), evidence).unwrap_err(),
+        book.promote(policy.clone(), evidence, &mut sink)
+            .unwrap_err(),
         PolicyBookError::StaleEvidence
     );
+    assert_eq!(sink.len(), 1, "a refused promotion records nothing");
     // Rolled back, routing is uniform again and an event says so.
-    let rolled = book.rollback().unwrap();
+    let rolled = book.rollback(&mut sink).unwrap();
     assert_eq!(rolled.action, PolicyAction::RolledBack);
     assert_eq!(rolled.from, policy.digest());
     assert_eq!(rolled.to, initial);
+    assert_eq!(sink.len(), 2);
     assert!(!book.is_learned());
     let good = (0..2000)
         .filter(|i| route_record(&live, &view, &format!("q{i}")).pod().0 == "good")
         .count();
     assert!((800..1200).contains(&good), "{good}");
     assert_eq!(
-        book.rollback().unwrap_err(),
+        book.rollback(&mut sink).unwrap_err(),
         PolicyBookError::NothingToRollBack
     );
     assert_eq!(book.events().len(), 2);
@@ -295,52 +323,197 @@ fn a_clearly_better_policy_is_promoted_on_held_out_decisions_and_can_be_rolled_b
 }
 
 #[test]
-fn evidence_is_bound_to_its_candidate_its_incumbent_and_its_scope() {
-    let (_, policy, log) = trained_and_logged(31, 1500, false);
-    let (_, other, _) = trained_and_logged(32, 10, false);
-    let mut book = PolicyBook::new("arith");
+fn evidence_is_bound_to_its_candidate_its_incumbent_its_scope_and_its_exploration() {
+    let (learner, policy) = trained_and_logged(31, 1500, false);
+    let (_, other) = trained_and_logged(32, 10, false);
+    let mut book = book();
+    let mut sink: Vec<PolicyEvent> = Vec::new();
     let evidence = gate()
-        .assess(&log, &policy, &book.scorer(), book.active_digest())
+        .assess(&learner, &policy, &book.scorer())
         .unwrap()
         .evidence()
         .cloned()
         .expect("promotable");
     assert_eq!(
-        book.promote(other, evidence.clone()).unwrap_err(),
+        book.promote(other, evidence.clone(), &mut sink)
+            .unwrap_err(),
         PolicyBookError::EvidenceForAnotherCandidate
     );
-    let mut elsewhere = PolicyBook::new("code");
+    let mut elsewhere = PolicyBook::new("code", Exploration::new(EPSILON).unwrap()).unwrap();
     assert_eq!(
         elsewhere
-            .promote(policy.clone(), evidence.clone())
+            .promote(policy.clone(), evidence.clone(), &mut sink)
             .unwrap_err(),
         PolicyBookError::ScopeMismatch
     );
-    // Evidence sealed against another incumbent digest is stale for this book.
-    let against_other = gate()
-        .assess(&log, &policy, &book.scorer(), [9; 32])
+    // A book for another exploration rate refuses the candidate, and the gate refuses to
+    // compare it with that book's handle at all.
+    let mut other_floor = PolicyBook::new("arith", Exploration::new(0.2).unwrap()).unwrap();
+    assert_eq!(
+        other_floor
+            .promote(policy.clone(), evidence.clone(), &mut sink)
+            .unwrap_err(),
+        PolicyBookError::ExplorationMismatch
+    );
+    assert_eq!(
+        gate()
+            .assess(&learner, &policy, &other_floor.scorer())
+            .unwrap_err(),
+        OpeError::ExplorationMismatch
+    );
+    // Evidence sealed against another incumbent is stale for this book: after a promotion and
+    // a rollback the book is back at the uniform policy, so use the learned one as the stale
+    // incumbent instead.
+    book.promote(policy.clone(), evidence.clone(), &mut sink)
+        .unwrap();
+    assert_eq!(
+        book.promote(policy.clone(), evidence, &mut sink)
+            .unwrap_err(),
+        PolicyBookError::StaleEvidence
+    );
+    assert_eq!(sink.len(), 1);
+}
+
+#[test]
+fn a_candidate_can_only_be_assessed_on_the_log_of_the_learner_it_came_from() {
+    let (learner_a, policy_a) = trained_and_logged(61, 1500, false);
+    let (learner_b, _) = trained_and_logged(61, 1500, false);
+    let book = book();
+    assert_eq!(
+        gate()
+            .assess(&learner_b, &policy_a, &book.scorer())
+            .unwrap_err(),
+        OpeError::ForeignLearner
+    );
+    assert!(gate().assess(&learner_a, &policy_a, &book.scorer()).is_ok());
+}
+
+#[test]
+fn a_log_in_which_nothing_was_cleared_cannot_yield_evidence() {
+    // The only rewards a learner can be given are verifier verdicts. Settling every evaluation
+    // decision as not cleared leaves the candidate no better than the incumbent.
+    let learner = learner(71);
+    let uniform = router(&["bad", "good"], EPSILON, UniformScorer, 1);
+    let mut world = World(5);
+    collect(&learner, &uniform, &TRUTH, 400, "train", &mut world, false);
+    let policy = learner.snapshot();
+    let view = eligible(&["bad", "good"]);
+    for i in 0..1500 {
+        let record = route_record(&uniform, &view, &format!("nothing-{i}"));
+        learner.settle(&record, VerifierReward::NOT_CLEARED);
+    }
+    let book = book();
+    let assessment = gate().assess(&learner, &policy, &book.scorer()).unwrap();
+    assert!(
+        assessment.evidence().is_none(),
+        "{:?}",
+        assessment.comparison
+    );
+}
+
+#[test]
+fn a_router_cannot_be_built_with_a_learned_scorer_under_another_exploration_floor() {
+    let book = book();
+    let build = |epsilon: f64| {
+        FindingRouter::new(
+            registry(&["bad", "good"]),
+            config(epsilon),
+            book.scorer(),
+            SamplingKey::from_bytes([1; 32]),
+            NonceSequence::starting_at([1; 8], 0),
+        )
+    };
+    // No floor at all: refused.
+    assert!(matches!(
+        build(0.0),
+        Err(RouterBuildError::ExplorationMismatch { .. })
+    ));
+    // Another floor: refused.
+    assert!(matches!(
+        build(0.2),
+        Err(RouterBuildError::ExplorationMismatch { .. })
+    ));
+    // The book's own floor: accepted.
+    assert!(build(EPSILON).is_ok());
+    // A learned snapshot used directly is bound too.
+    let snapshot = learner(3).snapshot();
+    let direct = |epsilon: f64| {
+        FindingRouter::new(
+            registry(&["bad", "good"]),
+            config(epsilon),
+            snapshot.clone(),
+            SamplingKey::from_bytes([1; 32]),
+            NonceSequence::starting_at([1; 8], 0),
+        )
+    };
+    assert!(direct(0.0).is_err());
+    assert!(direct(0.3).is_err());
+    assert!(direct(EPSILON).is_ok());
+    // A book needs a positive floor of its own.
+    assert_eq!(
+        PolicyBook::new("arith", Exploration::NONE).unwrap_err(),
+        PolicyBookError::NoFloor
+    );
+}
+
+#[test]
+fn rollback_still_works_after_more_events_than_the_history_holds() {
+    let (learner, policy) = trained_and_logged(81, 1500, false);
+    let mut book = book();
+    let mut sink: Vec<PolicyEvent> = Vec::new();
+    let evidence = gate()
+        .assess(&learner, &policy, &book.scorer())
         .unwrap()
         .evidence()
         .cloned()
-        .unwrap();
-    assert_eq!(
-        book.promote(policy.clone(), against_other).unwrap_err(),
-        PolicyBookError::StaleEvidence
-    );
-    // Nothing was installed by any refusal.
+        .expect("promotable");
+    let initial = book.active_digest();
+    // The same evidence applies again whenever the book is back at the incumbent it names.
+    let rounds = MAX_EVENTS / 2 + 40;
+    for _ in 0..rounds {
+        book.promote(policy.clone(), evidence.clone(), &mut sink)
+            .unwrap();
+        book.rollback(&mut sink).unwrap();
+    }
+    assert!(sink.len() > MAX_EVENTS);
+    assert_eq!(book.events().len(), MAX_EVENTS);
+    assert!(book.dropped_events() > 0);
+    // One more promotion, then the rollback that must not be blocked.
+    book.promote(policy.clone(), evidence, &mut sink).unwrap();
+    assert!(book.is_learned());
+    let rolled = book.rollback(&mut sink).unwrap();
+    assert_eq!(rolled.to, initial);
     assert!(!book.is_learned());
-    assert!(book.events().is_empty());
-    book.promote(policy, evidence).unwrap();
+    // Sequence numbers keep counting past the dropped events.
+    assert_eq!(rolled.sequence, sink.len() as u64);
+}
+
+#[test]
+fn the_gate_cannot_be_weakened_below_its_floors() {
+    let weak = [
+        PromotionRule::new(0.05, 2, 100.0),
+        PromotionRule::new(0.05, 99, 100.0),
+        PromotionRule::new(0.05, 500, 1.0),
+        PromotionRule::new(0.05, 500, 29.0),
+        PromotionRule::new(-0.01, 500, 100.0),
+        PromotionRule {
+            confidence: ptr_router::Confidence::from_quantile(1.0).unwrap(),
+            ..PromotionRule::new(0.05, 500, 100.0)
+        },
+    ];
+    for rule in weak {
+        assert!(matches!(PromotionGate::new(rule), Err(OpeError::Config(_))));
+    }
+    // The floors themselves are accepted.
+    assert!(PromotionGate::new(PromotionRule::new(0.0, 100, 30.0)).is_ok());
 }
 
 #[test]
 fn promotion_is_refused_when_the_lower_bound_does_not_beat_the_incumbent() {
     // A policy that learned the wrong way round is worse than the incumbent.
-    let (_, worse, log) = trained_and_logged(41, 1500, true);
-    let book = PolicyBook::new("arith");
-    let assessment = gate()
-        .assess(&log, &worse, &book.scorer(), book.active_digest())
-        .unwrap();
+    let (learner, worse) = trained_and_logged(41, 1500, true);
+    let book = book();
+    let assessment = gate().assess(&learner, &worse, &book.scorer()).unwrap();
     assert!(
         assessment.comparison.difference < 0.0,
         "{:?}",
@@ -351,12 +524,14 @@ fn promotion_is_refused_when_the_lower_bound_does_not_beat_the_incumbent() {
         Verdict::Refuse(PromotionRefusal::LowerBoundNotAboveMargin { .. })
     ));
 
-    // A policy trained on nothing is the prior: its value is the incumbent's, within noise.
-    let (_, _, log) = trained_and_logged(42, 1500, false);
-    let untrained = learner(43).snapshot();
-    let assessment = gate()
-        .assess(&log, &untrained, &book.scorer(), book.active_digest())
-        .unwrap();
+    // A policy trained on nothing is the prior: its value is the incumbent's, within noise. It
+    // has to come from the learner whose log is used, so snapshot a learner before any traffic.
+    let learner = self::learner(43);
+    let untrained = learner.snapshot();
+    let uniform = router(&["bad", "good"], EPSILON, UniformScorer, 6);
+    let mut world = World(9);
+    collect(&learner, &uniform, &TRUTH, 1500, "eval", &mut world, false);
+    let assessment = gate().assess(&learner, &untrained, &book.scorer()).unwrap();
     assert!(
         assessment.evidence().is_none(),
         "{:?}",
@@ -364,18 +539,17 @@ fn promotion_is_refused_when_the_lower_bound_does_not_beat_the_incumbent() {
     );
 
     // A real improvement still fails a margin it cannot reach.
-    let (_, policy, log) = trained_and_logged(44, 1500, false);
+    let (learner, policy) = trained_and_logged(44, 1500, false);
     let strict = PromotionGate::new(PromotionRule::new(0.6, 500, 100.0)).unwrap();
-    let assessment = strict
-        .assess(&log, &policy, &book.scorer(), book.active_digest())
-        .unwrap();
+    let assessment = strict.assess(&learner, &policy, &book.scorer()).unwrap();
     assert!(matches!(
         assessment.verdict,
         Verdict::Refuse(PromotionRefusal::LowerBoundNotAboveMargin { .. })
     ));
     // And too short a log, whatever it shows.
+    let (short_learner, short) = trained_and_logged(45, 100, false);
     let assessment = gate()
-        .assess(&log[..100], &policy, &book.scorer(), book.active_digest())
+        .assess(&short_learner, &short, &book.scorer())
         .unwrap();
     assert!(matches!(
         assessment.verdict,
@@ -388,25 +562,31 @@ fn promotion_is_refused_when_the_lower_bound_does_not_beat_the_incumbent() {
 
 #[test]
 fn a_candidate_is_never_evaluated_on_decisions_it_was_trained_on() {
-    let (learner, policy, _) = trained_and_logged(51, 800, false);
-    let everything = learner.log_from(0);
-    assert!(everything.len() > 800);
-    let book = PolicyBook::new("arith");
-    let error = gate()
-        .assess(&everything, &policy, &book.scorer(), book.active_digest())
-        .unwrap_err();
-    assert!(
-        matches!(error, OpeError::OverlapsTraining { seq: 0, .. }),
-        "{error:?}"
-    );
+    // The gate takes the log from the learner starting at the candidate's cutoff, so a stale
+    // snapshot (taken later than the decisions) sees only what came after it; one taken before
+    // any settling sees everything, and that is exactly the held-out log.
+    let (learner, policy) = trained_and_logged(51, 800, false);
+    assert_eq!(learner.log_len_from(policy.cutoff()), 800);
+    assert_eq!(learner.log_len_from(0), 1200);
+    assert!(learner
+        .log_from(policy.cutoff())
+        .iter()
+        .all(|d| d.seq() >= policy.cutoff()));
+    let book = book();
+    let assessment = gate().assess(&learner, &policy, &book.scorer()).unwrap();
+    assert_eq!(assessment.comparison.target.n, 800);
 }
 
-// --- the estimators -------------------------------------------------------------------------
+// --- authority helpers ---------------------------------------------------------------------
 
 /// A target policy that prefers its weights as given.
 struct Fixed(Vec<(&'static str, f64)>);
 
 impl AdmissibleScorer for Fixed {
+    fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+        None
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         Ok(context
             .admissible
@@ -423,214 +603,6 @@ impl AdmissibleScorer for Fixed {
     }
 }
 
-struct Constant(f64);
-
-impl RewardModel for Constant {
-    fn predict(&self, _: &RouteClass, _: &PodId) -> f64 {
-        self.0
-    }
-}
-
-struct Truth;
-
-impl RewardModel for Truth {
-    fn predict(&self, _: &RouteClass, p: &PodId) -> f64 {
-        match p.0.as_str() {
-            "a" => 0.2,
-            "b" => 0.5,
-            _ => 0.8,
-        }
-    }
-}
-
-fn synthetic_log(n: usize, world: &mut World) -> Vec<LoggedDecision> {
-    let logging =
-        RouteDistribution::new(vec![(pod("a"), 0.5), (pod("b"), 0.3), (pod("c"), 0.2)]).unwrap();
-    let support: Vec<(PodId, u64)> = ["a", "b", "c"]
-        .iter()
-        .map(|p| (pod(p), logging.width(&pod(p))))
-        .collect();
-    let floor = Exploration::new(0.1).unwrap();
-    (0..n)
-        .map(|i| {
-            let draw = world.next() >> 11;
-            let mut upper = 0;
-            let mut chosen = pod("c");
-            for (p, width) in &support {
-                upper += width;
-                if draw < upper {
-                    chosen = p.clone();
-                    break;
-                }
-            }
-            let truth = Truth.predict(&repair_class(), &chosen);
-            LoggedDecision::replayed(
-                i as u64,
-                repair_class(),
-                support.clone(),
-                chosen,
-                VerifierReward::replayed(world.unit() < truth),
-                floor,
-            )
-            .unwrap()
-        })
-        .collect()
-}
-
-#[test]
-fn ips_snips_and_dr_are_unbiased_on_a_log_with_known_value_and_cover() {
-    // Target mixture at epsilon 0.1 over weights (0.1, 0.2, 0.7): pi = 0.9 w + 0.1 / 3.
-    let target = Fixed(vec![("a", 0.1), ("b", 0.2), ("c", 0.7)]);
-    let pi = [
-        0.9 * 0.1 + 0.1 / 3.0,
-        0.9 * 0.2 + 0.1 / 3.0,
-        0.9 * 0.7 + 0.1 / 3.0,
-    ];
-    let truth = pi[0] * 0.2 + pi[1] * 0.5 + pi[2] * 0.8;
-    let reps = 40;
-    let mut world = World(77);
-    let mut sums = [0.0_f64; 3];
-    let mut squares = [0.0_f64; 3];
-    let mut covered = [0_usize; 3];
-    let wrong_model = Constant(0.5);
-    for _ in 0..reps {
-        let log = synthetic_log(3000, &mut world);
-        // DR with a deliberately wrong reward model is still unbiased: the propensities are right.
-        let estimate = estimate_policy(&log, &target, &wrong_model).unwrap();
-        let values = [estimate.ips, estimate.snips, estimate.doubly_robust];
-        let errors = [
-            estimate.se_ips,
-            estimate.se_snips,
-            estimate.se_doubly_robust,
-        ];
-        for k in 0..3 {
-            sums[k] += values[k];
-            squares[k] += values[k] * values[k];
-            if (values[k] - truth).abs() <= 1.96 * errors[k] {
-                covered[k] += 1;
-            }
-        }
-        assert!(estimate.effective_sample_size > 1000.0);
-    }
-    for k in 0..3 {
-        let mean = sums[k] / reps as f64;
-        let variance = squares[k] / reps as f64 - mean * mean;
-        let se_of_mean = (variance / reps as f64).sqrt();
-        assert!(
-            (mean - truth).abs() < 3.0 * se_of_mean + 1e-3,
-            "estimator {k}: mean {mean} truth {truth} se {se_of_mean}"
-        );
-        assert!(
-            covered[k] >= 34,
-            "estimator {k} covered {} of {reps}",
-            covered[k]
-        );
-    }
-}
-
-#[test]
-fn doubly_robust_with_a_good_model_has_a_smaller_error_than_ips() {
-    let target = Fixed(vec![("a", 0.1), ("b", 0.2), ("c", 0.7)]);
-    let mut world = World(5);
-    let log = synthetic_log(3000, &mut world);
-    let good = estimate_policy(&log, &target, &Truth).unwrap();
-    assert!(good.se_doubly_robust < good.se_ips, "{good:?}");
-}
-
-#[test]
-fn the_comparison_of_a_policy_with_itself_is_exactly_zero() {
-    let target = Fixed(vec![("a", 0.1), ("b", 0.2), ("c", 0.7)]);
-    let mut world = World(8);
-    let log = synthetic_log(500, &mut world);
-    for estimator in [Estimator::Ips, Estimator::Snips, Estimator::DoublyRobust] {
-        let c = compare_policies(
-            &log,
-            &target,
-            &target,
-            &Truth,
-            estimator,
-            Confidence::ONE_SIDED_95,
-        )
-        .unwrap();
-        assert!(c.difference.abs() < 1e-12);
-        assert!(c.difference_se.abs() < 1e-12);
-    }
-}
-
-#[test]
-fn estimation_refuses_what_it_cannot_trust() {
-    let target = Fixed(vec![("a", 1.0), ("b", 1.0), ("c", 1.0)]);
-    assert_eq!(
-        estimate_policy(&[], &target, &Truth).unwrap_err(),
-        OpeError::EmptyLog
-    );
-    let mut world = World(1);
-    let log = synthetic_log(50, &mut world);
-
-    // A policy that names a Pod outside the logged admissible set.
-    struct Escaping;
-    impl AdmissibleScorer for Escaping {
-        fn weights(&self, _: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
-            Ok(vec![(PodId::from("zzz"), 1.0)])
-        }
-    }
-    assert!(matches!(
-        estimate_policy(&log, &Escaping, &Truth).unwrap_err(),
-        OpeError::PolicyOutsideAdmissibleSet { .. }
-    ));
-
-    // A policy with no mass at all.
-    struct Silent;
-    impl AdmissibleScorer for Silent {
-        fn weights(&self, _: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
-            Ok(Vec::new())
-        }
-    }
-    assert!(matches!(
-        estimate_policy(&log, &Silent, &Truth).unwrap_err(),
-        OpeError::PolicyFailed { .. }
-    ));
-
-    // A reward model outside [0, 1].
-    assert_eq!(
-        estimate_policy(&log, &target, &Constant(1.5)).unwrap_err(),
-        OpeError::RewardModelOutOfRange
-    );
-    assert_eq!(
-        estimate_policy(&log, &target, &Constant(f64::NAN)).unwrap_err(),
-        OpeError::RewardModelOutOfRange
-    );
-
-    // A log whose logger had no floor: a propensity far below epsilon / n.
-    let support = vec![
-        (pod("a"), 1_u64 << 20),
-        (pod("b"), (1_u64 << 53) - (1 << 20)),
-    ];
-    let thin = LoggedDecision::replayed(
-        0,
-        repair_class(),
-        support,
-        pod("a"),
-        VerifierReward::NOT_CLEARED,
-        Exploration::new(0.1).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        estimate_policy(&[thin], &target, &Truth).unwrap_err(),
-        OpeError::BelowFloor { seq: 0 }
-    );
-    // A log without any exploration floor cannot even be built.
-    assert!(LoggedDecision::replayed(
-        0,
-        repair_class(),
-        vec![(pod("a"), 1_u64 << 53)],
-        pod("a"),
-        VerifierReward::NOT_CLEARED,
-        Exploration::NONE,
-    )
-    .is_err());
-}
-
 // --- authority --------------------------------------------------------------------------------
 
 #[test]
@@ -638,6 +610,10 @@ fn a_scorer_cannot_choose_an_ineligible_pod_or_remove_the_floor() {
     // A scorer that names a pod the eligibility view does not list is refused.
     struct Everyone;
     impl AdmissibleScorer for Everyone {
+        fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+            None
+        }
+
         fn weights(&self, _: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
             Ok(vec![(pod("a"), 1.0), (pod("b"), 1.0)])
         }
@@ -663,6 +639,10 @@ fn a_scorer_cannot_choose_an_ineligible_pod_or_remove_the_floor() {
     // A learned policy wrapped so that it also names a third pod is refused too.
     struct Padded(LearnedPolicy);
     impl AdmissibleScorer for Padded {
+        fn bound_exploration(&self) -> Option<ptr_router::Exploration> {
+            None
+        }
+
         fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
             let mut weights = self.0.weights(context)?;
             weights.push((pod("not-admissible"), 5.0));

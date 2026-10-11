@@ -18,6 +18,16 @@ postgres-experiments = [
     "dep:tokio",
     "dep:tokio-postgres",
 ]
+# The L001-v2 harness (revocation under crash, power-loss and leadership schedules). It needs the
+# test-only failpoints of ptr-ledger (the log's, the anchor's and the vendored raft-engine's), the
+# raft-engine and raft-rs backends, and the `fail` crate to drive them. Instrumentation only:
+# the default binary is unchanged.
+ledger-experiments = [
+    "dep:fail",
+    "ptr-ledger/failpoints",
+    "ptr-ledger/raft-engine-failpoints",
+    "ptr-ledger/raft-rs-backend",
+]
 # Adds the Turso projection as a third L004 oracle. Turso needs the stable
 # toolchain, as its own CI job does.
 turso-oracle = ["postgres-experiments", "ptr-state/turso-backend"]
@@ -33,6 +43,7 @@ ptr-memory = { workspace = true }
 ptr-search = { workspace = true }
 ptr-exec = { workspace = true }
 ptr-ledger = { workspace = true }
+fail = { version = "0.5", optional = true }
 # R010 admits, retires, supersedes and fences MoE experts through the runtime's real path and
 # builds the gate reports that path requires.
 ptr-lineage = { workspace = true }

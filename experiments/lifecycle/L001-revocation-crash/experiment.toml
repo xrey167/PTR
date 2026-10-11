@@ -1,6 +1,6 @@
 version = 1
 id = "L001"
-status = "running"
+status = "superseded"
 hypothesis = "Can revoked generations ever resurrect across injected crashes?"
 metrics = "false accept count; recovery consistency"
 baseline = "no-fault reference + naive recovery"

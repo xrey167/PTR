@@ -145,6 +145,9 @@ AGREED = (
     ("executable", "program"),
     ("toolchain", "toolchain"),
     ("environment", "environment"),
+    # The variables the manifest declares for the command, by name and
+    # whether each was set, never by value.
+    ("command_environment", "command environment"),
 )
 
 

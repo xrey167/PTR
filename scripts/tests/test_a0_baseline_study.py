@@ -31,10 +31,14 @@ CRITERIA = tomllib.loads((ROOT / study.CRITERIA).read_text(encoding="utf-8"))
 REGS = {reg.exp_id: reg for reg in study.registrations(CRITERIA)}
 LISTED = [exp_id for exp_id, reg in REGS.items() if reg.listed]
 CONFIRMATORY = ["M001-v5", "M002-v10", "M003-v2"]
-VERSION_V1, VERSION_V2 = study.VERSIONS
+VERSION_V1, VERSION_V2, VERSION_V3 = study.VERSIONS
 CRITERIA_V2 = tomllib.loads((ROOT / VERSION_V2.criteria).read_text(encoding="utf-8"))
 REGS_V2 = {reg.exp_id: reg for reg in study.registrations(CRITERIA_V2)}
 CONFIRMATORY_V2 = ["M001-v6", "M002-v11", "M003-v3"]
+CRITERIA_V3 = tomllib.loads((ROOT / VERSION_V3.criteria).read_text(encoding="utf-8"))
+REGS_V3 = {reg.exp_id: reg for reg in study.registrations(CRITERIA_V3)}
+# M003-v3 was interrupted (D1) and is superseded by the v3-m003 successor (D3); its files stay as frozen.
+SUPERSEDED_V2 = ["M003-v3"]
 # The sweeps that stand: each study's current one. A superseded sweep keeps its
 # frozen files and records as history and is no longer rendered or frozen.
 CURRENT_SWEEPS = [study.current_sweep(exp_id) for exp_id in CONFIRMATORY]
@@ -549,7 +553,9 @@ class PlannedRegistrationV2Tests(unittest.TestCase):
             with self.subTest(exp_id=exp_id):
                 status = toml_at(ROOT, reg, "experiment.toml")["status"]
                 self.assertEqual(registry[exp_id], {"id": exp_id, "path": reg.path, "status": status})
-                self.assertIn(status, {"planned", "prepared"})
+                # A completed study (decided, results published) keeps the files it ran under.
+                self.assertIn(status, {"planned", "prepared", "completed", "superseded"})
+                self.assertEqual(status == "superseded", exp_id in SUPERSEDED_V2)
                 self.assertTrue(reg.listed)
         self.assertNotIn("M004-v3", registry)
         self.assertEqual(REGS_V2["M002-v11"].path, "model/M002-v11-typed-attention")
@@ -557,6 +563,8 @@ class PlannedRegistrationV2Tests(unittest.TestCase):
     def test_committed_files_are_what_the_generator_renders(self):
         for exp_id, reg in REGS_V2.items():
             status = toml_at(ROOT, reg, "experiment.toml")["status"]
+            if status in ("superseded", "completed"):
+                continue
             files = study.render_files(reg, ROOT)
             if status == "prepared":
                 result, manifest = study.frozen_form(ROOT, reg)
@@ -656,9 +664,9 @@ class PlannedRegistrationV2Tests(unittest.TestCase):
             self.assertEqual(gates.a0_baseline_freeze_errors(ROOT, ROOT / "experiments" / reg.path, manifest, exp_id), [])
 
     def test_versions_ids_and_sweep_chains(self):
-        self.assertEqual([v.label for v in study.VERSIONS], ["v1", "v2"])
+        self.assertEqual([v.label for v in study.VERSIONS], ["v1", "v2", "v3"])
         for exp_id, label in (("M001-v5", "v1"), ("M002-v10-sweep-r2", "v1"), ("M004-v2", "v1"), ("M003-v3", "v2"),
-                              ("M001-v6-sweep", "v2"), ("M002-v11-sweep-r2", "v2")):
+                              ("M001-v6-sweep", "v2"), ("M002-v11-sweep-r2", "v2"), ("M003-v4", "v3")):
             self.assertEqual(study.version_of_experiment(exp_id).label, label, exp_id)
         with self.assertRaises(study.RegistrationError):
             study.version_of_experiment("M009-v1")
@@ -668,9 +676,11 @@ class PlannedRegistrationV2Tests(unittest.TestCase):
         self.assertEqual(gates.a0_baseline_parts("M001-v6-sweep"), ("M001-v6", True, 1))
         self.assertEqual(gates.a0_baseline_parts("M002-v11-sweep-r2"), ("M002-v11", True, 2))
         self.assertEqual(gates.a0_baseline_parts("M003-v3"), ("M003-v3", False, 1))
+        self.assertEqual(gates.a0_baseline_parts("M003-v4"), ("M003-v4", False, 1))
         self.assertIsNone(gates.a0_baseline_parts("M004-v3"))
         self.assertIsNone(gates.a0_baseline_parts("M001-v7"))
         self.assertEqual(study.version_of_criteria(CRITERIA_V2).label, "v2")
+        self.assertEqual(study.version_of_criteria(CRITERIA_V3).label, "v3")
         # v1's successor table is v1's alone.
         with mock_successors({"M002-v10": ("M002-v10-sweep-r2",)}):
             self.assertEqual(study.sweep_chain("M003-v3"), ("M003-v3-sweep",))
@@ -797,6 +807,295 @@ class FrozenFixtureV2Tests(FixtureMixin, unittest.TestCase):
             study.render(root, label="v2")
         with self.assertRaisesRegex(study.RegistrationError, "more than one study version"):
             study.render(root, ids=["M001-v6", "M001-v5"])
+
+
+# ---------------------------------------------------------------- study v3-m003
+
+
+class SupersededM003V3Tests(unittest.TestCase):
+    """M003-v3 was interrupted (no outcome); its successor study is v3-m003. Only
+    its status moved: the results and the frozen files are as the runs left them."""
+
+    def test_m003_v3_is_superseded_with_a_record_and_untouched_results(self):
+        reg = REGS_V2["M003-v3"]
+        registry = {item["id"]: item for item in tomllib.loads((ROOT / "experiments/registry.toml").read_text())["experiment"]}
+        self.assertEqual(toml_at(ROOT, reg, "experiment.toml")["status"], "superseded")
+        self.assertEqual(registry["M003-v3"]["status"], "superseded")
+        text = (ROOT / "experiments" / reg.path / "SUPERSEDED.md").read_text(encoding="utf-8")
+        for needle in ("INCONCLUSIVE-INTERRUPTED", "**M003-v4**", "A0-baseline-v3-m003", "interruption, not an outcome",
+                       "unobserved", "D1"):
+            self.assertIn(needle, text)
+        names = sorted(path.name for path in (ROOT / "experiments" / reg.path / "results").iterdir())
+        self.assertEqual([n for n in names if n.startswith("run-")].__len__(), 4)
+        self.assertEqual([n for n in names if not n.startswith("run-") and n != ".gitkeep"], ["DECISION.toml", "paired-ci-95.json"])
+        # The sweep M003-v4 reuses is not superseded.
+        self.assertEqual(toml_at(ROOT, REGS_V2["M003-v3-sweep"], "experiment.toml")["status"], "prepared")
+        self.assertEqual(registry["M003-v3-sweep"]["status"], "prepared")
+
+
+class PlannedRegistrationV3Tests(unittest.TestCase):
+    REG = REGS_V3["M003-v4"]
+
+    def test_the_registered_ids_and_statuses(self):
+        self.assertEqual(sorted(REGS_V3), ["M003-v4"])  # no sweep of its own, no M004
+        registry = {item["id"]: item for item in tomllib.loads((ROOT / "experiments/registry.toml").read_text())["experiment"]}
+        status = toml_at(ROOT, self.REG, "experiment.toml")["status"]
+        self.assertEqual(registry["M003-v4"], {"id": "M003-v4", "path": "model/M003-v4-latent-recurrence", "status": status})
+        # Completed once its frozen run was decided (INCONCLUSIVE/NO-GO-CALIBRATION, see RESULTS.md).
+        self.assertIn(status, {"planned", "prepared", "completed"})
+        for absent in ("M003-v4-sweep", "M004-v3"):
+            self.assertNotIn(absent, registry)
+        self.assertEqual(study.sweep_chain("M003-v4"), ())
+        self.assertEqual(study.current_sweep("M003-v4"), "M003-v3-sweep")
+        self.assertEqual(study.lr_file_path("M003-v4"), "research/falsification/A0-baseline-v3-m003/lr_M003-v4.tsv")
+
+    def test_committed_files_are_what_the_generator_renders(self):
+        status = toml_at(ROOT, self.REG, "experiment.toml")["status"]
+        files = study.render_files(self.REG, ROOT)
+        if status in {"prepared", "completed"}:
+            result, manifest = study.frozen_form(ROOT, self.REG)
+            files["config.toml"] = study.config_text(self.REG, result["table"])
+            # A completed manifest is the frozen one with only its status line moved on.
+            files["experiment.toml"] = manifest.replace('status = "prepared"', f'status = "{status}"', 1)
+        for name, text in files.items():
+            with self.subTest(file=name):
+                self.assertEqual((ROOT / "experiments" / self.REG.path / name).read_text(encoding="utf-8"), text)
+
+    def test_the_listing_matches_the_generator(self):
+        text = (ROOT / "experiments/preregistration.toml").read_text(encoding="utf-8")
+        listed = tomllib.loads(text)["experiment"]["M003-v4"]
+        self.assertEqual(listed["required"], self.REG.required)
+        self.assertIn(study.preregistration_entry(self.REG), text)
+        self.assertEqual(listed["required"]["decision_base"], "file")
+
+    def test_only_values_known_at_the_freeze_are_placeholders(self):
+        if toml_at(ROOT, self.REG, "experiment.toml")["status"] != "planned":
+            return
+        table = toml_at(ROOT, self.REG, "config.toml")["preregistration"]
+        # The lr file exists at registration (a copy of the completed sweep's), so its digest is pinned already.
+        self.assertEqual(sorted(k for k, v in table.items() if v == study.PENDING),
+                         ["implementation_tree_git_digest", "runner_baseline_sha256", "runner_main_sha256"])
+        self.assertEqual(table["lr_file_sha256"], study.file_digest(ROOT, table["lr_file"]))
+
+    def test_every_value_is_the_v3_criteria_value_and_pins_the_deciders(self):
+        table = toml_at(ROOT, self.REG, "config.toml")["preregistration"]
+        protocol, data = CRITERIA_V3["protocol"], CRITERIA_V3["data"]
+        self.assertEqual(table["criteria"], "research/falsification/A0-baseline-v3-m003/criteria.toml")
+        self.assertEqual(table["preregistration_text"], "research/falsification/A0-baseline-v3-m003/PREREGISTRATION.md")
+        self.assertEqual(table["decision_script"], "scripts/aggregate_a0_baseline_v3.py")
+        self.assertEqual(table["decision_base"], "scripts/aggregate_a0_baseline_v2.py")
+        for key in ("decision_script", "decision_base", "decision_core", "criteria", "preregistration_text", "lr_file"):
+            digest = table[f"{key}_sha256"]
+            if digest != study.PENDING:
+                self.assertEqual(digest, study.file_digest(ROOT, table[key]))
+        self.assertEqual(table["decision_core_sha256"], CRITERIA_V3["decision"]["core_sha256"])
+        self.assertEqual(table["folds"], data["folds"])
+        self.assertEqual((table["steps"], table["batch"], table["d_model"], table["rank"]),
+                         (protocol["steps"], protocol["batch_size"], protocol["d_model"], protocol["rank"]))
+        self.assertEqual(table["seeds"], CRITERIA_V3["seeds"])
+        self.assertEqual(table["lr_file"], "research/falsification/A0-baseline-v3-m003/lr_M003-v4.tsv")
+        self.assertEqual(table["sweep_experiment"], "M003-v3-sweep")
+        self.assertEqual(table["primary_contrast"], "M003-v4-primary")
+        self.assertNotIn("A0-baseline-v2", json.dumps({k: v for k, v in table.items() if k != "lr_file"}))
+
+    def test_the_experiment_equals_m003_v3_but_for_ids_documents_and_deciders(self):
+        old, new = REGS_V2["M003-v3"], self.REG
+        keep = ("seeds", "study", "arms", "steps", "batch", "d_model", "rank", "bias_limit", "metadata_dropout", "router_mode",
+                "data", "folds", "dataset_lock", "lr_grid", "lr_selection_rule", "sweep_seed", "delta_min", "ood_nll_ci_upper_le",
+                "ood_ece_mean_le", "ood_ece_ci_upper_le", "iid_accuracy_ci_lower_ge", "plain_param_tolerance", "runner_arm_table",
+                "runner_main", "runner_train", "runner_baseline", "implementation_tree", "decision_core", "sweep_experiment")
+        for key in keep:
+            self.assertEqual(old.table[key] if key != "sweep_experiment" else "M003-v3-sweep", new.table[key], key)
+        self.assertEqual(old.manifest["entrypoint"], new.manifest["entrypoint"])
+        self.assertEqual(old.manifest["seeds"], new.manifest["seeds"])
+        # Same learning rates, pinned by the same digest (the old config is the one M003-v3 was frozen with).
+        self.assertEqual(toml_at(ROOT, old, "config.toml")["preregistration"]["lr_file_sha256"],
+                         toml_at(ROOT, new, "config.toml")["preregistration"]["lr_file_sha256"])
+        self.assertEqual(old.required, new.required)
+        self.assertIn("M003-v3", VERSION_V3.lead)
+        self.assertIn("not read and not pooled", VERSION_V3.lead)
+
+    def test_the_reuse_is_named_by_generator_criteria_and_files_alike(self):
+        sweep, lr_file = study.REUSED_SWEEPS["M003-v4"]
+        self.assertEqual(CRITERIA_V3["sweep_reuse"], {"study": "M003-v4", "experiment": sweep, "lr_file": lr_file})
+        self.assertEqual(sweep, "M003-v3-sweep")
+        self.assertEqual(lr_file, study.lr_file_path("M003-v3"))
+        study.check_reused_lr_file(ROOT, "M003-v4")
+        study.check_reused_lr_file(ROOT, "M001-v6")  # a study without reuse: nothing to check
+
+    def test_the_commands_are_ones_the_runner_can_build_from_the_table(self):
+        manifest = toml_at(ROOT, self.REG, "experiment.toml")
+        table = toml_at(ROOT, self.REG, "config.toml")["preregistration"]
+        self.assertEqual(gates.command_errors("M003-v4", manifest, table), [])
+        self.assertIn("--lr-file <lr_file>", manifest["entrypoint"])
+        self.assertIn("--out -", manifest["entrypoint"])
+        self.assertIn("research/falsification/A0-baseline-v3-m003/criteria.toml", manifest["falsification"])
+
+    def test_the_binding_is_green_as_committed(self):
+        manifest = toml_at(ROOT, self.REG, "experiment.toml")
+        self.assertEqual(gates.a0_baseline_freeze_errors(ROOT, ROOT / "experiments" / self.REG.path, manifest, "M003-v4"), [])
+
+
+class FrozenFixtureV3Tests(unittest.TestCase):
+    """A copy of the v3-m003 files and what they pin, in a temporary repository: the
+    freeze of M003-v4 passes the repository's own gate, and each tamper does not."""
+
+    COPIED = [
+        "research/falsification/A0-baseline-v3-m003", "research/falsification/A0-baseline-v2/lr_M003-v3.tsv",
+        "scripts/aggregate_a0_baseline.py", "scripts/aggregate_a0_baseline_v2.py", "scripts/aggregate_a0_baseline_v3.py",
+        "scripts/aggregate_m002_v5.py", "benchmarks/operator-routing-v2/splits.lock.json", "model/burn-a0",
+        "research/baselines/plain_model", "hardware/a0-cpu-4core.toml",
+    ]
+
+    @classmethod
+    def setUpClass(cls):
+        scratch = tempfile.TemporaryDirectory(prefix="a0-baseline-v3-freeze-")
+        cls.addClassCleanup(scratch.cleanup)
+        cls.template = root = Path(scratch.name) / "template"
+        for relative in cls.COPIED:
+            source, target = ROOT / relative, root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, target, ignore=shutil.ignore_patterns("target*", "__pycache__"))
+            else:
+                shutil.copy2(source, target)
+        reg = REGS_V3["M003-v4"]
+        sweep = REGS_V2["M003-v3-sweep"]
+        # The reused sweep, as the real repository holds it: frozen (prepared). Its manifest is all the gate reads.
+        for name in ("experiment.toml",):
+            target = root / "experiments" / sweep.path / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / "experiments" / sweep.path / name, target)
+        git(root, "init", "-q")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "inputs")
+        prereg = (ROOT / "experiments/preregistration.toml").read_text(encoding="utf-8")
+        entry = study.preregistration_entry(reg)
+        assert entry in prereg
+        (root / "experiments/preregistration.toml").write_text("version = 1\n\n" + entry, encoding="utf-8")
+        (root / "experiments/registry.toml").write_text(
+            f'version = 1\n\n[[experiment]]\nid = "M003-v4"\npath = "{reg.path}"\nstatus = "planned"\n', encoding="utf-8")
+        for name, text in study.render_files(reg, root).items():
+            target = root / "experiments" / reg.path / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8", newline="\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "registered, planned")
+
+    def fresh(self):
+        copy = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="a0-baseline-v3-run-"))) / "repo"
+        shutil.copytree(self.template, copy)
+        return copy
+
+    def frozen(self, edit=None):
+        root = self.fresh()
+        study.freeze(root, "M003-v4", write=True)
+        if edit:
+            edit(root)
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "freeze")
+        return root
+
+    def errors(self, root):
+        return sorted(e for e in gates.gate_errors(root) if e.startswith("M003-v4"))
+
+    def test_a_frozen_study_passes_the_gate_and_is_prepared(self):
+        root = self.frozen()
+        self.assertEqual(self.errors(root), [])
+        self.assertEqual(gates.launch_errors(root, "M003-v4"), [])
+        reg = REGS_V3["M003-v4"]
+        self.assertEqual(toml_at(root, reg, "experiment.toml")["status"], "prepared")
+        table = toml_at(root, reg, "config.toml")["preregistration"]
+        self.assertNotIn(study.PENDING, table.values())
+        self.assertEqual(table["implementation_tree_git_digest"], gates.directory_digest_at(root, "HEAD", "model/burn-a0"))
+
+    def test_the_lr_file_must_stay_a_byte_copy_of_the_sweeps(self):
+        root = self.fresh()
+        lr = root / "research/falsification/A0-baseline-v3-m003/lr_M003-v4.tsv"
+        lr.write_text(lr.read_text() + "# edited\n", encoding="utf-8")
+        with self.assertRaisesRegex(study.RegistrationError, "not a byte copy"):
+            study.freeze(root, "M003-v4", write=True)
+        lr.write_bytes((root / "research/falsification/A0-baseline-v2/lr_M003-v3.tsv").read_bytes())
+        root2 = self.frozen()
+        copy = root2 / "research/falsification/A0-baseline-v3-m003/lr_M003-v4.tsv"
+        copy.write_text(copy.read_text() + "# edited\n", encoding="utf-8")
+        git(root2, "add", "-A")
+        git(root2, "commit", "-q", "-m", "tamper")
+        errors = self.errors(root2)
+        self.assertTrue(any("not a byte copy" in e for e in errors), errors)
+        self.assertTrue(any("lr_file_sha256" in e for e in errors), errors)
+
+    def test_the_sweep_it_takes_must_be_frozen_and_named(self):
+        root = self.frozen()
+        reg = REGS_V3["M003-v4"]
+        directory = root / "experiments" / reg.path
+        manifest = toml_at(root, reg, "experiment.toml")
+        sweep = root / "experiments" / REGS_V2["M003-v3-sweep"].path / "experiment.toml"
+        original = sweep.read_text()
+        sweep.write_text(original.replace('status = "prepared"', 'status = "planned"', 1), encoding="utf-8")
+        errors = gates.a0_baseline_freeze_errors(root, directory, manifest, "M003-v4")
+        self.assertTrue(any("not frozen" in e for e in errors), errors)
+        sweep.write_text(original, encoding="utf-8")
+        config = (directory / "config.toml").read_text()
+        (directory / "config.toml").write_text(
+            config.replace('sweep_experiment = "M003-v3-sweep"', 'sweep_experiment = "M003-v4-sweep"'), encoding="utf-8")
+        self.assertTrue(gates.a0_baseline_freeze_errors(root, directory, manifest, "M003-v4"))
+        (directory / "config.toml").write_text(config, encoding="utf-8")
+        self.assertEqual(gates.a0_baseline_freeze_errors(root, directory, manifest, "M003-v4"), [])
+        # It registers no sweep of its own.
+        self.assertEqual(
+            gates.a0_baseline_freeze_errors(root, directory, {**manifest, "id": "M003-v4-sweep"}, "M003-v4-sweep"),
+            ["M003-v4-sweep: M003-v4 has no sweep of its own, it takes 'M003-v3-sweep'"],
+        )
+
+    def test_a_changed_document_decider_or_runner_after_the_freeze_is_caught(self):
+        def edit(path, text):
+            return lambda root: (root / path).write_text((root / path).read_text() + text, encoding="utf-8")
+
+        cases = {
+            "criteria_sha256": edit("research/falsification/A0-baseline-v3-m003/criteria.toml", "\n# edited\n"),
+            "decision_script_sha256": edit("scripts/aggregate_a0_baseline_v3.py", "\n# edited\n"),
+            "decision_base_sha256": edit("scripts/aggregate_a0_baseline_v2.py", "\n# edited\n"),
+            "preregistration_text_sha256": edit("research/falsification/A0-baseline-v3-m003/PREREGISTRATION.md", "\nedited\n"),
+            "runner_arm_table_sha256": edit("model/burn-a0/examples/a0_ablation/arms.rs", "\n// edited\n"),
+        }
+        for key, change in cases.items():
+            with self.subTest(key=key):
+                self.assertTrue(any(key in e for e in self.errors(self.frozen(change))), key)
+
+    def test_the_binding_rejects_a_table_that_differs_from_the_v3_criteria(self):
+        root = self.frozen()
+        reg = REGS_V3["M003-v4"]
+        directory = root / "experiments" / reg.path
+        manifest = toml_at(root, reg, "experiment.toml")
+        config = (directory / "config.toml").read_text()
+        changes = (
+            ("rank = 8", "rank = 16"), ('study = "m003-v2"', 'study = "m001-v5"'), ("steps = 1500", "steps = 15"),
+            ('decision_script = "scripts/aggregate_a0_baseline_v3.py"', 'decision_script = "scripts/aggregate_a0_baseline_v2.py"'),
+            ('decision_base = "scripts/aggregate_a0_baseline_v2.py"', 'decision_base = "scripts/aggregate_a0_baseline.py"'),
+            ('criteria = "research/falsification/A0-baseline-v3-m003/criteria.toml"',
+             'criteria = "research/falsification/A0-baseline-v2/criteria.toml"'),
+            ('lr_file = "research/falsification/A0-baseline-v3-m003/lr_M003-v4.tsv"',
+             'lr_file = "research/falsification/A0-baseline-v2/lr_M003-v3.tsv"'),
+        )
+        for old, new in changes:
+            with self.subTest(change=new):
+                self.assertIn(old, config)
+                (directory / "config.toml").write_text(config.replace(old, new, 1), encoding="utf-8")
+                self.assertTrue(gates.a0_baseline_freeze_errors(root, directory, manifest, "M003-v4"))
+        (directory / "config.toml").write_text(config, encoding="utf-8")
+        for flag in ("--rank <rank>", "--lr-file <lr_file>", "--out -"):
+            dropped = {**manifest, "entrypoint": manifest["entrypoint"].replace(flag, "")}
+            self.assertTrue(gates.a0_baseline_freeze_errors(root, directory, dropped, "M003-v4"), flag)
+
+    def test_render_is_exclusive_and_the_v2_ids_are_not_v3s(self):
+        root = self.fresh()
+        with self.assertRaisesRegex(study.RegistrationError, "already registered"):
+            study.render(root, label="v3")
+        with self.assertRaisesRegex(study.RegistrationError, "more than one study version"):
+            study.render(root, ids=["M003-v4", "M003-v3"])
+        with self.assertRaisesRegex(study.RegistrationError, "is not an experiment of the study"):
+            study.render(root, ids=["M003-v4-sweep"])
 
 
 if __name__ == "__main__":

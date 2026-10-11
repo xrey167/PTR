@@ -5,42 +5,87 @@
 # the C001 README). The keys `package`, `features`, `subcommand`, `cases` and `seed` exist only because the checker's plan loader
 # requires them; `subcommand` is the benchmark name the aggregator checks in results/mutations.json.
 #
-# A mutation is killed when the harness, run at the reduced scale of `runner_args` with the defect planted, exits 1 and an
-# expected hard counter is above zero (or an expected coverage counter fails), or exits 2 because an expected negative control
-# did not trip (`expect` entries "control:<name>"). A defect of the PRODUCT arm (the workspace) must reach a counter and exit 1,
-# never exit 2: the negative controls run on doctored inputs or on the all-to-all net, not on the arm under test, so a broken
-# workspace cannot preempt its own falsifier. Every hard counter is expected by at least one mutation (a unit test checks it).
+# A mutation is killed in one of three ways.
+#  1. STRUCTURAL counters (exit 1): the harness, run at the reduced scale of `runner_args` with the defect planted, exits 1 and an
+#     expected structural counter is above zero (or an expected coverage counter fails). A defect of the PRODUCT arm (the workspace)
+#     must reach a counter and exit 1, never exit 2: the negative controls run on doctored inputs or on the all-to-all net, not on the
+#     arm under test, so a broken workspace cannot preempt its own falsifier.
+#  2. INTEGRITY counters and negative controls (exit 2): the harness exits 2 and its stderr lists an expected INTEGRITY counter
+#     (a defect of the task or the harness: n_leaks, train_eval_overlap, val_eval_overlap, param_mismatch_arms, nonfinite_arms,
+#     checkpoint_mismatch_arms, convergence_mismatch_arms) or an expected negative control (`expect` entries "control:<name>").
+#  3. UNIT tests (entries with `unit_tests`, expect "unit:<name>"): defects in the pure derivations of the guard scalars
+#     (research/consciousness/gw/rules.py), in the model definitions of the sensitivity controls and in the training loop's stopping
+#     rule. The named tests (research/consciousness/tests) pass in the unmutated copy and must fail in the planted one; the runner
+#     checks both.
+# Every structural and integrity counter, every coverage counter (arms_trained, the three *_eval_instances, workspace_influence_hits,
+# pairwise_influence_hits, no_broadcast_reporter_hits) and each negative control is expected by at least one mutation (test_rules.py).
+# pairwise_influence_hits shares its probe with the control isolation_probe, so its mutation is killed through the control (exit 2).
+#
+# What kills each judged rule (test_rules.py::RulesAgreeWithCriteria checks that the named mutations exist and that every coverage
+# counter and negative control is expected):
+#   comparator band guard (both bounds) .......... comparator-set-includes-no-broadcast (unit), plus the aggregator band tests
+#   convergence guard (unconverged_judged_arms) .. convergence-guard-ignores-the-comparators (unit), converged-flag-always-true,
+#                                                  patience-never-reached; the count across seeds: test_c001_aggregate.py
+#   untrained-workspace guard .................... workspace-trained-ignores-the-margin (unit); the allowance: test_c001_aggregate.py
+#   gross and graded sensitivity controls ........ weak-arm-has-no-weight-decay, training-ignores-the-arm-weight-decay, crippled-arm-has-all-rounds (unit); the bounds
+#                                                  and thresholds: test_c001_aggregate.py (bound pinned to hand-computed values)
+#   plateau protocol (patience, min-delta, best checkpoint, validation never test) .. best-checkpoint-not-restored,
+#                                                  patience-never-reached, converged-flag-always-true, validation-set-is-the-evaluation-set,
+#                                                  min-delta-ignored, patience-off-by-one (unit)
+#   statistics (bounds, margin, sign, quantile, seed count, three outcomes, three-valued attribution): test_c001_aggregate.py
+#   aggregator wiring (Bonferroni refutation quantile, untrained-workspace count, environment-mismatch invalidation, one finished
+#                                                  record per seed): test_c001_aggregate.py (WiringTests); these are mutations of the
+#                                                  aggregator, which this plan cannot plant (it plants into the harness copy)
 #
 # Not listed, on purpose: changes that alter accuracy only (the activation inside the update network, the optimiser). They
-# are judged by the paired rule across seeds, not by a per-seed structural counter. The statistics (bounds, margin, sign,
-# quantile, seed count, the three outcomes) are mutated in scripts/tests/test_c001_aggregate.py.
+# are judged by the paired rule across seeds, not by a per-seed structural counter.
 
 package = "c001-gw"
 features = ""
 subcommand = "c001"
 cases = 200
 seed = 1002
-runner_args = ["--set", "steps=200", "--set", "eval_every=100"]
+runner_args = ["--set", "max_steps=200", "--set", "eval_every=25", "--set", "patience=6"]
 hard_counters = [
-    "param_mismatch_arms",
+    # Structural counters (exit 1), then integrity counters (exit 2): the order of research/consciousness/gw/rules.py::HARD_COUNTERS.
     "no_comm_leaks",
     "no_broadcast_leaks",
     "bottleneck_violations",
     "dropped_module_leaks",
+    "nondeterminism",
+    "no_comm_above_chance",
+    "param_mismatch_arms",
     "n_leaks",
     "train_eval_overlap",
-    "nondeterminism",
     "nonfinite_arms",
-    "no_comm_above_chance",
-    # Not hard counters of the harness: a coverage counter and negative controls, listed because
+    "val_eval_overlap",
+    "checkpoint_mismatch_arms",
+    "convergence_mismatch_arms",
+    # Not hard counters of the harness: a coverage counter, negative controls and unit-test kills, listed because
     # scripts/mutation_check.py requires every expected name to be in this list.
     "workspace_influence_hits",
+    "no_broadcast_reporter_hits",
+    "pairwise_influence_hits",
+    "arms_trained",
+    "id_eval_instances",
+    "ood16_eval_instances",
+    "ood24_eval_instances",
     "control:n_leak",
     "control:overlap",
     "control:param_mismatch",
     "control:isolation_probe",
     "control:bottleneck",
     "control:dropout_probe",
+    "unit:comparator_set",
+    "unit:workspace_trained_margin",
+    "unit:convergence_guard_arms",
+    "unit:plateau_min_delta",
+    "unit:plateau_patience",
+    "unit:weak_decay",
+    "unit:train_arm_weight_decay",
+    "unit:crippled_rounds",
+    "unit:train_arm_min_delta",
+    "unit:train_arm_patience",
 ]
 
 [[mutation]]
@@ -48,6 +93,15 @@ name = "topk-write-not-applied"
 file = "research/consciousness/gw/model.py"
 find = 'masked = torch.full_like(scores, float("-inf")).scatter(-1, top.indices, top.values)'
 replace = "masked = scores"
+expect = ["bottleneck_violations"]
+
+[[mutation]]
+name = "sparse-pairwise-attention-is-not-sparse"
+file = "research/consciousness/gw/model.py"
+find = '''if self.sparse_k is not None:
+            top = scores.topk(min(self.sparse_k, scores.shape[-1]), dim=-1)'''
+replace = '''if False:
+            top = scores.topk(min(self.sparse_k, scores.shape[-1]), dim=-1)'''
 expect = ["bottleneck_violations"]
 
 [[mutation]]
@@ -171,3 +225,159 @@ file = "research/consciousness/gw/harness.py"
 find = "bumped[:, 0] = bumped[:, 0] + scale"
 replace = "bumped[:, 0] = bumped[:, 0] + 0.0 * scale"
 expect = ["control:dropout_probe"]
+
+[[mutation]]
+name = "best-checkpoint-not-restored"
+file = "research/consciousness/gw/harness.py"
+find = """    if best_state is not None:
+        net.load_state_dict(best_state)"""
+replace = """    if False:
+        net.load_state_dict(best_state)"""
+expect = ["checkpoint_mismatch_arms"]
+
+[[mutation]]
+name = "converged-flag-always-true"
+file = "research/consciousness/gw/harness.py"
+find = '"converged": converged,'
+replace = '"converged": True,'
+expect = ["convergence_mismatch_arms"]
+
+[[mutation]]
+name = "patience-never-reached"
+file = "research/consciousness/gw/harness.py"
+find = 'if since >= cfg["patience"]:'
+replace = "if False:"
+expect = ["convergence_mismatch_arms"]
+
+[[mutation]]
+name = "validation-set-is-the-evaluation-set"
+file = "research/consciousness/gw/harness.py"
+find = 'val_batch = make_batch(gens["curve"], cfg["curve_eval_size"], n_train, cfg)'
+replace = "val_batch = id_batch"
+expect = ["val_eval_overlap"]
+
+[[mutation]]
+name = "min-delta-ignored"
+file = "research/consciousness/gw/harness.py"
+find = 'if permille(c, t) > best + cfg["min_delta_permille"]:'
+replace = "if permille(c, t) > best:"
+expect = ["unit:train_arm_min_delta"]
+unit_tests = ["test_task_model.TrainArmTests"]
+
+[[mutation]]
+name = "patience-off-by-one"
+file = "research/consciousness/gw/harness.py"
+find = 'if since >= cfg["patience"]:'
+replace = 'if since > cfg["patience"]:'
+expect = ["unit:train_arm_patience"]
+unit_tests = ["test_task_model.TrainArmTests"]
+
+[[mutation]]
+name = "comparator-set-includes-no-broadcast"
+file = "research/consciousness/gw/rules.py"
+find = "return max(ood16_permille[arm] for arm in PAIRWISE_COMPARATORS)"
+replace = 'return max(ood16_permille[arm] for arm in PAIRWISE_COMPARATORS + ("no_broadcast",))'
+expect = ["unit:comparator_set"]
+unit_tests = ["test_rules.GuardDerivationTests"]
+
+[[mutation]]
+name = "workspace-trained-ignores-the-margin"
+file = "research/consciousness/gw/rules.py"
+find = "return int(workspace_id >= no_comm_id + margin_permille)"
+replace = "return int(workspace_id >= no_comm_id)"
+expect = ["unit:workspace_trained_margin"]
+unit_tests = ["test_rules.GuardDerivationTests"]
+
+[[mutation]]
+name = "convergence-guard-ignores-the-comparators"
+file = "research/consciousness/gw/rules.py"
+find = "return sum(1 for arm in CONVERGENCE_GUARD_ARMS if not converged[arm])"
+replace = 'return sum(1 for arm in ("workspace",) if not converged[arm])'
+expect = ["unit:convergence_guard_arms"]
+unit_tests = ["test_rules.GuardDerivationTests"]
+
+[[mutation]]
+name = "plateau-audit-ignores-min-delta"
+file = "research/consciousness/gw/rules.py"
+find = "if value > best + min_delta_permille:"
+replace = "if value > best:"
+expect = ["unit:plateau_min_delta"]
+unit_tests = ["test_rules.GuardDerivationTests"]
+
+[[mutation]]
+name = "plateau-audit-patience-off-by-one"
+file = "research/consciousness/gw/rules.py"
+find = "if since >= patience:"
+replace = "if since > patience:"
+expect = ["unit:plateau_patience"]
+unit_tests = ["test_rules.GuardDerivationTests"]
+
+[[mutation]]
+name = "weak-arm-has-no-weight-decay"
+file = "research/consciousness/gw/model.py"
+find = 'return cfg.get("arm_weight_decay", {}).get(name, cfg["weight_decay"])'
+replace = 'return cfg["weight_decay"]'
+expect = ["unit:weak_decay"]
+unit_tests = ["test_task_model.ModelTests.test_arm_settings_make_the_ablations_what_they_say"]
+
+[[mutation]]
+name = "training-ignores-the-arm-weight-decay"
+file = "research/consciousness/gw/harness.py"
+find = "weight_decay=gwmodel.arm_weight_decay(name, cfg))"
+replace = 'weight_decay=cfg["weight_decay"])'
+expect = ["unit:train_arm_weight_decay"]
+unit_tests = ["test_task_model.TrainArmTests.test_the_optimiser_gets_the_weight_decay_of_the_arm"]
+
+[[mutation]]
+name = "crippled-arm-has-all-rounds"
+file = "research/consciousness/gw/model.py"
+find = '"crippled_all_to_all": {"scheme": "all_to_all", "rounds": 1},'
+replace = '"crippled_all_to_all": {"scheme": "all_to_all", "rounds": 3},'
+expect = ["unit:crippled_rounds"]
+unit_tests = ["test_task_model.ModelTests.test_arm_settings_make_the_ablations_what_they_say"]
+
+# Coverage rules (criteria.toml `coverage`): each is expected by at least one mutation (test_rules.py checks the whole list).
+[[mutation]]
+name = "arms-trained-counter-undercounts"
+file = "research/consciousness/gw/harness.py"
+find = '"arms_trained": len(arms),'
+replace = '"arms_trained": len(arms) - 1,'
+expect = ["arms_trained"]
+
+[[mutation]]
+name = "id-evaluation-set-has-half-size"
+file = "research/consciousness/gw/harness.py"
+find = 'id_batch = make_batch(gens["id"], cfg["eval_size"], n_train, cfg)'
+replace = 'id_batch = make_batch(gens["id"], cfg["eval_size"] // 2, n_train, cfg)'
+expect = ["id_eval_instances"]
+
+[[mutation]]
+name = "ood16-evaluation-set-has-half-size"
+file = "research/consciousness/gw/harness.py"
+find = 'ood16 = make_batch(gens["ood16"], cfg["eval_size"], 16, cfg)'
+replace = 'ood16 = make_batch(gens["ood16"], cfg["eval_size"] // 2, 16, cfg)'
+expect = ["ood16_eval_instances"]
+
+[[mutation]]
+name = "ood24-evaluation-set-has-half-size"
+file = "research/consciousness/gw/harness.py"
+find = 'ood24 = make_batch(gens["ood24"], cfg["eval_size"], 24, cfg)'
+replace = 'ood24 = make_batch(gens["ood24"], cfg["eval_size"] // 2, 24, cfg)'
+expect = ["ood24_eval_instances"]
+
+# `pairwise_influence_hits` is the same probe call as the negative control `isolation_probe` (perturb each module of the all-to-all
+# net and count the modules that move), so a pairwise net that does not communicate trips the control first and the harness exits 2;
+# the mutation is expected to be killed by the control and the coverage counter reads 0 in the same run.
+[[mutation]]
+name = "pairwise-attention-output-zeroed"
+file = "research/consciousness/gw/model.py"
+find = 'return self.ao(torch.einsum("bmn,bnd->bmd", attn, v))'
+replace = 'return 0.0 * self.ao(torch.einsum("bmn,bnd->bmd", attn, v))'
+expect = ["control:isolation_probe", "pairwise_influence_hits"]
+
+[[mutation]]
+name = "no-broadcast-reporter-never-reads-the-workspace"
+file = "research/consciousness/gw/model.py"
+find = "keep[0, -1, 0] = 1.0"
+replace = "keep[0, -1, 0] = 0.0"
+expect = ["no_broadcast_reporter_hits"]

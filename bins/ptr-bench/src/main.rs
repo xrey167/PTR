@@ -124,6 +124,13 @@ fn main() {
         "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(
             &args, 2, 8, "requests",
         ))),
+        // The harness of L001-v2: `<seed>` (the pinned scale) or `<cases> <seed>` (the mutation
+        // checker's form); no default seed, and a typo stops the run. Its child processes run
+        // `revocation-crash-child`, which no one starts by hand.
+        #[cfg(feature = "ledger-experiments")]
+        "revocation-crash" => experiments::l001::run(&args[2..]),
+        #[cfg(feature = "ledger-experiments")]
+        "revocation-crash-child" => experiments::l001::child::run(&args[2..]),
         #[cfg(feature = "postgres-experiments")]
         "fastmem-revocation" => {
             experiments::l003::run(parse_usize(&args, 2, 20), parse_u64(&args, 3, 17))
@@ -134,8 +141,8 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: ptr-bench [all|semdb|mailbox|ledger-recovery|ledger-process-crash{}] [iterations] [seed]",
-                EXPERIMENT_COMMANDS
+                "usage: ptr-bench [all|semdb|mailbox|ledger-recovery|ledger-process-crash{}{}] [iterations] [seed]",
+                EXPERIMENT_COMMANDS, LEDGER_EXPERIMENT_COMMANDS
             );
             std::process::exit(2);
         }
@@ -149,6 +156,12 @@ const EXPERIMENT_COMMANDS: &str =
     "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
 #[cfg(not(feature = "postgres-experiments"))]
 const EXPERIMENT_COMMANDS: &str = "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
+
+/// The ledger experiment's subcommand, only when it is compiled in (usage text only).
+#[cfg(feature = "ledger-experiments")]
+const LEDGER_EXPERIMENT_COMMANDS: &str = "|revocation-crash";
+#[cfg(not(feature = "ledger-experiments"))]
+const LEDGER_EXPERIMENT_COMMANDS: &str = "";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)

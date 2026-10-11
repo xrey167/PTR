@@ -9,6 +9,15 @@
 //! Nothing here routes. The loop's scorer stays [`ptr_router::UniformScorer`]; the candidate is
 //! never handed to the router, and promoting one is a host action
 //! ([`ptr_router::PolicyBook::promote`]) this service does not take and has no configuration for.
+//!
+//! What the estimates are, and are not: monitoring values from a one-step per-route clear rate
+//! (not request-level acceptance or cost), computed repeatedly on a growing log (so they are
+//! uncorrected for peeking) with decisions treated as independent. They are never promotion
+//! evidence; the promotion gate assesses a candidate once, on a log whose size was fixed in
+//! advance. The estimate is computed by the learner's own log only after a cheap length check
+//! (`RoutingLearner::log_len_from`), so a request that is not due does not copy the log. When the
+//! log is so full that the next estimate point could never be reached, the candidate is
+//! re-frozen from the current posteriors and the held-out log restarts, so estimates continue.
 
 use std::sync::Arc;
 
@@ -92,22 +101,31 @@ impl Shadow {
             }
             return;
         };
-        let log = self.learner.log_from(candidate.cutoff());
         let due = self.last_estimate_at + self.last_estimate_at / 2 + 1;
-        if log.len() < FIRST_ESTIMATE.max(due) {
+        let held_out = self.learner.log_len_from(candidate.cutoff());
+        if held_out < FIRST_ESTIMATE.max(due) {
             return;
         }
+        let candidate = candidate.clone();
+        let log = self.learner.log_from(candidate.cutoff());
         self.last_estimate_at = log.len();
         // The uniform policy is what routes; the candidate is the reward model, trained on
         // decisions before the freeze, so the evaluation log is independent of it.
-        let Ok(comparison) = compare_policies(
+        let comparison = compare_policies(
             &log,
-            candidate,
+            &candidate,
             &UniformScorer,
-            candidate,
+            &candidate,
             Estimator::DoublyRobust,
             Confidence::ONE_SIDED_95,
-        ) else {
+        );
+        // The next estimate point is `1.5 * len + 1`. If the log can never hold that many, this
+        // candidate has had its last estimate: freeze a fresh one and start its log over.
+        if log.len() + log.len() / 2 + 1 > MAX_LOG {
+            self.candidate = Some(self.learner.snapshot());
+            self.last_estimate_at = 0;
+        }
+        let Ok(comparison) = comparison else {
             return;
         };
         let estimate = ShadowEstimate {

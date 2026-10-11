@@ -1,6 +1,7 @@
 //! Experiment harnesses. The PostgreSQL ones (L003, L004) are compiled only
 //! with the `postgres-experiments` feature and read the server's connection
-//! string from `PTR_PG_EXPERIMENT_DSN`; S003 and R005 run in memory, and they and the
+//! string from `PTR_PG_EXPERIMENT_DSN`; the ledger one (L001-v2) is compiled only with the
+//! `ledger-experiments` feature, which turns on the failpoints of `ptr-ledger`; S003 and R005 run in memory, and they and the
 //! seeded generator and the JSON helper every harness shares are always built.
 
 pub mod f001;
@@ -12,6 +13,8 @@ pub mod f007;
 #[cfg_attr(not(feature = "postgres-experiments"), allow(dead_code))]
 mod json;
 pub mod kv_reuse_smoke;
+#[cfg(feature = "ledger-experiments")]
+pub mod l001;
 #[cfg(feature = "postgres-experiments")]
 pub mod l003;
 #[cfg(feature = "postgres-experiments")]

@@ -20,11 +20,29 @@
 //! removing a Pod cannot lower the clear rate of the codes it served, without the gate's report
 //! failing. The numbers come from the suite, which runs the verifier on candidates; no number is
 //! supplied by the proposer or by a model.
+//!
+//! # What the suite is told, and what it must cover
+//!
+//! The suite is told only the identity of a candidate specialist ([`SpecialistIdentity`]: Pod
+//! id, codes, manifest digest). What a specialist can do is whatever the suite *measures*; the
+//! trainer's own claims about its skill or its side effects (`TrainedSpecialist::skill` and
+//! `collateral`) are untrusted self-reports and are not passed to it. [`SimulatedHeldOut`]
+//! cannot measure a model, so its "world" (the true skill a candidate would have, and the
+//! collateral it would cause) is configuration of the simulation, supplied out of band
+//! ([`SimulatedHeldOut::with_world_of`]) and bound into [`HeldOutSuite::manifest_digest`].
+//!
+//! The suite's measured codes must cover the codes of the serving roster plus the codes of the
+//! candidate: a Prune of the only repairer of a code that the suite does not measure would
+//! otherwise be measured as "nothing lost". [`check_coverage`] refuses with
+//! [`MeasurementError::Coverage`]. [`HeldOutSuite::manifest_digest`] identifies the suite (its
+//! codes, tasks, seeds and world) and is what the driver puts in the gate subject's evaluation
+//! manifest, which admission compares with the digest in its grant.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use ptr_lineage::{AccuracyMatrix, PublicSuite};
+use ptr_pods::ManifestDigest;
 use ptr_router::{
     EligibilitySnapshot, FindingCode, NonceSequence, RouterConfig, SamplingKey, SelfModel,
     SelfModelLimits, UniformScorer,
@@ -32,7 +50,7 @@ use ptr_router::{
 use ptr_types::{Generation, PodId, ProjectId, RequestId, VerificationLevel};
 use sha2::{Digest as _, Sha256};
 
-use super::specialist::{Collateral, TrainedSpecialist};
+use super::specialist::{Collateral, SimulatedTrainer, TrainedSpecialist};
 use crate::expert::{StructurePolicy, StructurePolicyConfig};
 use crate::vcw::experts::{DefectDoc, DefectDocVerifier, SimulatedExperts, SimulationConfig};
 use crate::vcw::{RequestBudget, Roster, VcwConfig, VcwLoop, VcwOutcome, VcwParts, VcwRequest};
@@ -59,19 +77,40 @@ impl RosterView {
     }
 }
 
+/// What a candidate specialist is, as far as a suite may know: no skill, no side effects. The
+/// suite measures those.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpecialistIdentity {
+    pub pod: PodId,
+    pub codes: BTreeSet<FindingCode>,
+    pub manifest_digest: ManifestDigest,
+}
+
+impl SpecialistIdentity {
+    /// The identity of `specialist`, dropping everything the trainer claimed about it.
+    #[must_use]
+    pub fn of(specialist: &TrainedSpecialist) -> Self {
+        Self {
+            pod: specialist.pod.clone(),
+            codes: specialist.codes.clone(),
+            manifest_digest: specialist.manifest_digest,
+        }
+    }
+}
+
 /// A change to the roster whose effect the suite measures.
 #[derive(Clone, Copy, Debug)]
 pub enum RosterChange<'a> {
     /// No change in routing (a Freeze keeps the expert routable).
     Keep,
     /// A specialist joins (Birth, Reactivate).
-    Add(&'a TrainedSpecialist),
+    Add(&'a SpecialistIdentity),
     /// Experts leave routing (Prune).
     Remove(&'a [PodId]),
     /// A specialist replaces its sources (Merge).
     Replace {
         remove: &'a [PodId],
-        add: &'a TrainedSpecialist,
+        add: &'a SpecialistIdentity,
     },
 }
 
@@ -113,15 +152,15 @@ impl RosterChange<'_> {
         }
     }
 
-    /// The simulated collateral of the specialist's training, if any.
+    /// The candidate specialist, if the change adds one.
     #[must_use]
-    pub fn collateral(&self) -> &[Collateral] {
+    pub fn candidate(&self) -> Option<&SpecialistIdentity> {
         match self {
             Self::Add(specialist)
             | Self::Replace {
                 add: specialist, ..
-            } => &specialist.collateral,
-            Self::Keep | Self::Remove(_) => &[],
+            } => Some(specialist),
+            Self::Keep | Self::Remove(_) => None,
         }
     }
 }
@@ -141,6 +180,11 @@ impl std::error::Error for SuiteError {}
 /// Verified held-out tasks. The host's evaluator: its rates are measured with the verifier, on
 /// tasks the Pods did not see in serving, never reported by the Pod being judged.
 pub trait HeldOutSuite {
+    /// Identifies the suite: its codes, tasks, seeds and world. The driver puts it in the gate
+    /// subject's evaluation manifest, so a report measured by one suite is not admissible under
+    /// a grant that expects another, and a change of the suite changes the bound subject.
+    fn manifest_digest(&self) -> [u8; 32];
+
     /// The clear rate in `[0, 1]` of every held-out code under `roster` after `change`.
     /// The same codes must be reported with and without a change.
     ///
@@ -163,6 +207,8 @@ pub enum MeasurementError {
     BadRate,
     /// The suite measured different codes before and after.
     CodesDiffer,
+    /// The suite does not measure some code of the serving roster or of the candidate.
+    Coverage { missing: BTreeSet<FindingCode> },
     /// The matrix or public suite was refused by `ptr-lineage`.
     Lineage(String),
 }
@@ -173,12 +219,40 @@ impl fmt::Display for MeasurementError {
             Self::Empty => f.write_str("the held-out suite has no code"),
             Self::BadRate => f.write_str("a measured clear rate is not in [0, 1]"),
             Self::CodesDiffer => f.write_str("the suite measured other codes after the change"),
+            Self::Coverage { missing } => write!(
+                f,
+                "the suite does not cover {} code(s) of the roster or the candidate",
+                missing.len()
+            ),
             Self::Lineage(why) => write!(f, "gate inputs refused: {why}"),
         }
     }
 }
 
 impl std::error::Error for MeasurementError {}
+
+/// Refuses unless `measured` covers every code the serving `roster` repairs and every code of
+/// the change's candidate.
+///
+/// # Errors
+/// [`MeasurementError::Coverage`] naming the codes the suite did not measure.
+pub fn check_coverage(
+    measured: &BTreeMap<FindingCode, f64>,
+    roster: &RosterView,
+    change: &RosterChange<'_>,
+) -> Result<(), MeasurementError> {
+    let mut required = roster.codes();
+    required.extend(change.focus());
+    let missing: BTreeSet<FindingCode> = required
+        .into_iter()
+        .filter(|code| !measured.contains_key(code))
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(MeasurementError::Coverage { missing })
+    }
+}
 
 /// The gate inputs for a change with clear rates `before` and `after`, `focus` being the codes
 /// the change is about. See the module documentation for the mapping.
@@ -241,8 +315,10 @@ pub fn gate_inputs(
 /// `Verified`.
 ///
 /// The "world" is the simulation configuration the live experts run under; the suite derives its
-/// own per-code seed from `seed`, so its draws are independent of serving. A specialist's
-/// configured skill and its simulated collateral are applied in the "after" measurement.
+/// own per-code seed from `seed`, so its draws are independent of serving. What a candidate
+/// would be able to do, and what its training would cost other Pods, is configuration of this
+/// simulated world ([`Self::with_world_of`]) and not something the trainer's output is allowed to
+/// say: the trainer's `skill` and `collateral` fields are never read here.
 #[derive(Clone, Debug)]
 pub struct SimulatedHeldOut {
     world: SimulationConfig,
@@ -251,6 +327,10 @@ pub struct SimulatedHeldOut {
     tasks_per_code: u32,
     seed: u64,
     project: ProjectId,
+    /// The true clear probability of a candidate for a code absent from `candidate_skill`.
+    default_candidate_skill: f64,
+    candidate_skill: BTreeMap<String, f64>,
+    collateral: Vec<Collateral>,
 }
 
 impl SimulatedHeldOut {
@@ -276,7 +356,21 @@ impl SimulatedHeldOut {
             tasks_per_code,
             seed,
             project,
+            default_candidate_skill: 0.0,
+            candidate_skill: BTreeMap::new(),
+            collateral: Vec::new(),
         })
+    }
+
+    /// Take the simulated world's candidate skills and collateral from the *configuration* of
+    /// `trainer` (what the simulation says a candidate is worth), replacing any earlier ones.
+    /// Without it a candidate has skill 0 and no collateral: nothing is assumed in its favour.
+    #[must_use]
+    pub fn with_world_of(mut self, trainer: &SimulatedTrainer) -> Self {
+        self.default_candidate_skill = trainer.default_skill();
+        self.candidate_skill = trainer.configured_skills().clone();
+        self.collateral = trainer.configured_collateral().to_vec();
+        self
     }
 
     fn run_code(
@@ -304,22 +398,23 @@ impl SimulatedHeldOut {
         config.seed = derived;
         config.error_rates = BTreeMap::from([(code.to_owned(), 1.0)]);
         if apply_change {
-            if let RosterChange::Add(specialist)
-            | RosterChange::Replace {
-                add: specialist, ..
-            } = change
-            {
-                for (skill_code, p) in &specialist.skill {
+            if let Some(candidate) = change.candidate() {
+                for skill_code in &candidate.codes {
+                    let p = self
+                        .candidate_skill
+                        .get(skill_code.as_str())
+                        .copied()
+                        .unwrap_or(self.default_candidate_skill);
                     config
                         .pod_repair_success
-                        .insert((specialist.pod.0.clone(), skill_code.clone()), *p);
+                        .insert((candidate.pod.0.clone(), skill_code.as_str().to_owned()), p);
                 }
-            }
-            for collateral in change.collateral() {
-                config.pod_repair_success.insert(
-                    (collateral.pod.0.clone(), collateral.code.clone()),
-                    collateral.success_after,
-                );
+                for collateral in &self.collateral {
+                    config.pod_repair_success.insert(
+                        (collateral.pod.0.clone(), collateral.code.clone()),
+                        collateral.success_after,
+                    );
+                }
             }
         }
         let mut experts = SimulatedExperts::<DefectDoc>::new(config, &self.task)
@@ -387,6 +482,55 @@ impl SimulatedHeldOut {
 }
 
 impl HeldOutSuite for SimulatedHeldOut {
+    fn manifest_digest(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        let text = |hasher: &mut Sha256, value: &str| {
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value.as_bytes());
+        };
+        hasher.update(b"ptr.runtime.vcw_host.held_out.simulated.v1");
+        text(&mut hasher, &self.project.0);
+        text(&mut hasher, &self.task);
+        hasher.update(self.tasks_per_code.to_le_bytes());
+        hasher.update(self.seed.to_le_bytes());
+        let mut codes: Vec<&String> = self.codes.iter().collect();
+        codes.sort();
+        hasher.update((codes.len() as u64).to_le_bytes());
+        for code in codes {
+            text(&mut hasher, code);
+        }
+        // The world: everything that decides a measured rate.
+        hasher.update(self.world.seed.to_le_bytes());
+        hasher.update([u8::from(self.world.decline_on_failure)]);
+        hasher.update(self.world.default_repair_success.to_bits().to_le_bytes());
+        for table in [&self.world.error_rates, &self.world.repair_success] {
+            hasher.update((table.len() as u64).to_le_bytes());
+            for (code, p) in table {
+                text(&mut hasher, code);
+                hasher.update(p.to_bits().to_le_bytes());
+            }
+        }
+        hasher.update((self.world.pod_repair_success.len() as u64).to_le_bytes());
+        for ((pod, code), p) in &self.world.pod_repair_success {
+            text(&mut hasher, pod);
+            text(&mut hasher, code);
+            hasher.update(p.to_bits().to_le_bytes());
+        }
+        hasher.update(self.default_candidate_skill.to_bits().to_le_bytes());
+        hasher.update((self.candidate_skill.len() as u64).to_le_bytes());
+        for (code, p) in &self.candidate_skill {
+            text(&mut hasher, code);
+            hasher.update(p.to_bits().to_le_bytes());
+        }
+        hasher.update((self.collateral.len() as u64).to_le_bytes());
+        for collateral in &self.collateral {
+            text(&mut hasher, &collateral.pod.0);
+            text(&mut hasher, &collateral.code);
+            hasher.update(collateral.success_after.to_bits().to_le_bytes());
+        }
+        hasher.finalize().into()
+    }
+
     fn clear_rates(
         &self,
         roster: &RosterView,

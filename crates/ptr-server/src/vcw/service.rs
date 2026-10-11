@@ -42,6 +42,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::job::{answer_type, Job};
 use super::pods::ServedPod;
+use super::report::{LedgerSummary, TraceStore};
 use super::shadow::{LearningReport, Shadow};
 use super::sim::{plantable, ServedDefects, SimCodec};
 use super::wire::{
@@ -194,6 +195,8 @@ pub struct VcwService {
     pods: PodRegistry,
     base_pods: Vec<(PodId, Generation)>,
     kinds: BTreeMap<VcwTaskKind, Mutex<KindState>>,
+    /// The traces of the last requests, for `GET /v1/vcw/traces/{id}`.
+    traces: Mutex<TraceStore>,
 }
 
 /// The scope holds no lease, session or queue outside the runtime, so cleanup has nothing to do.
@@ -322,6 +325,21 @@ fn simulation_config(
     Ok(out)
 }
 
+/// The repair role named in `[vcw.pods.extra_repairers]`; the names are those of
+/// `ptr_config::VCW_REPAIR_ROLES`, which `validate` enforces. The two lists are in the same order
+/// (checked by a unit test), so the position is the mapping and nothing can fall through.
+fn repair_role(name: &str) -> Result<RepairRole, VcwBuildError> {
+    ptr_config::VCW_REPAIR_ROLES
+        .iter()
+        .position(|candidate| *candidate == name)
+        .map(|index| RepairRole::ALL[index])
+        .ok_or_else(|| {
+            VcwBuildError::Config(format!(
+                "vcw.pods.extra_repairers names the unknown role {name:?}"
+            ))
+        })
+}
+
 impl VcwService {
     /// Build the service from the `[vcw]` section.
     ///
@@ -359,6 +377,14 @@ impl VcwService {
         .fold(RepairRoleAssignments::new(), |roles, (role, pod)| {
             roles.assign(role, PodId::from(pod.as_str()))
         });
+        // Further repairers by role name; a Pod under several roles covers all their codes.
+        let mut assignments = assignments;
+        for (role, pods) in &config.pods.extra_repairers {
+            let role = repair_role(role)?;
+            for pod in pods {
+                assignments = assignments.assign(role, PodId::from(pod.as_str()));
+            }
+        }
         let repairers = assignments.repairers();
         let repairer_codes: Vec<(PodId, Vec<String>)> = repairers
             .iter()
@@ -480,6 +506,7 @@ impl VcwService {
             pods,
             base_pods,
             kinds,
+            traces: Mutex::new(TraceStore::default()),
         })
     }
 
@@ -739,7 +766,23 @@ impl VcwService {
             started + self.request_deadline,
         );
         runtime.record_vcw_finished(&request_id, outcome, digest);
+        // The ledger range of the request: its raw text and, for an accepted answer, the admission.
+        // Only the bounded summary is computed here, under the runtime lock (at most 64 canonical
+        // encodings and digests); the store's own lock is taken for a move.
+        let ledger =
+            LedgerSummary::of(runtime.committed_events().get(first_event..).unwrap_or(&[]));
+        if let Ok(mut traces) = self.traces.lock() {
+            traces.finish(&id, outcome, ledger);
+        }
         result
+    }
+
+    /// The trace of a finished request and a summary of the ledger events it committed, as JSON, or `None`
+    /// if the request is unknown or no longer retained (the last
+    /// [`MAX_RETAINED_TRACES`](super::report::MAX_RETAINED_TRACES) are kept). Read-only.
+    #[must_use]
+    pub fn trace_report(&self, id: &str) -> Option<serde_json::Value> {
+        self.traces.lock().ok()?.report(id)
     }
 
     /// The part of a request after its raw text is committed. Returns the result with the
@@ -835,6 +878,9 @@ impl VcwService {
         let trace_digest = *run.trace.digest();
         let digest_hex = hex(&trace_digest);
         let backend = backend_tag(self.backend).to_owned();
+        if let Ok(mut traces) = self.traces.lock() {
+            traces.insert(id, &backend, &run.trace);
+        }
         let unanswered = |reason: String| VcwUnanswered {
             id: id.to_owned(),
             reason,
@@ -1157,6 +1203,16 @@ fn llm_experts(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_configurable_role_name_maps_to_its_own_role() {
+        for (name, role) in ptr_config::VCW_REPAIR_ROLES.iter().zip(RepairRole::ALL) {
+            assert_eq!(repair_role(name).unwrap(), role);
+            // The configuration names are the verifier's role names without the suffix.
+            assert_eq!(role.as_str(), format!("{name}-repair"));
+        }
+        assert!(repair_role("poetry").is_err());
+    }
+
     use super::*;
     use ptr_config::PtrConfig;
 

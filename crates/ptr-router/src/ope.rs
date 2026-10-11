@@ -45,6 +45,38 @@
 //! confidence bound of the difference exceeds the margin. The estimator is named in the rule
 //! before the data are seen. Evidence is a value, not an action: [`crate::PolicyBook::promote`]
 //! is the host action that consumes it.
+//!
+//! The gate reads the evaluation log from the [`RoutingLearner`] itself and requires the
+//! candidate to be a snapshot of that learner and the incumbent to be the book's
+//! [`ActiveScorer`] under the candidate's exploration rate. There is no way to hand it a log,
+//! a reward or an incumbent digest: a log assembled by a caller cannot produce evidence.
+//!
+//! # Statistical assumptions (stated, not corrected)
+//!
+//! * **One-step value.** What is compared is the per-route clear rate: the probability that the
+//!   candidate produced by the routed Pod is accepted by the verifier. It is not request-level
+//!   acceptance, cost or latency, and it ignores state dependence (a round-2 repair exists only
+//!   after a round-1 failure).
+//! * **Independence.** Decisions are treated as independent. Routes of one attempt share a
+//!   verdict (joint attribution) and rounds of one request are dependent, so the standard error
+//!   is optimistic; the floors below are chosen with that in mind.
+//! * **Peeking.** The test uses a fixed one-sided quantile. Assessing the same learner on a
+//!   growing log repeatedly (as the server's shadow mode does for its estimates) inflates the
+//!   false-promotion rate; the estimates in shadow mode are for monitoring, and a promotion
+//!   should rest on one assessment of a log whose size was fixed in advance.
+//! * **Scorer purity.** The target and incumbent are evaluated with placeholder `request_id`
+//!   and `request_digest`; they must be functions of the class and admissible set only (see
+//!   [`AdmissibleScorer`]).
+//!
+//! # Floors on the gate's strength
+//!
+//! A caller can tighten but not weaken the rule below [`MIN_RECORDS_FLOOR`] decisions,
+//! [`MIN_EFFECTIVE_SAMPLE_FLOOR`] effective samples and the one-sided 95% quantile
+//! ([`Z_FLOOR`]), and the margin cannot be negative (a candidate must beat the incumbent, not
+//! tie it). 100 records and an effective sample of 30 are the smallest sizes at which a normal
+//! approximation of a mean of bounded influence terms is not absurd (the usual n of 30 rule,
+//! with a factor for the dependence above); the quantile floor is the conventional one-sided
+//! 5% level.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -56,8 +88,16 @@ use sha2::{Digest as _, Sha256};
 use crate::findings::{
     mixed_distribution, AdmissibleScorer, FindingRouteErrorKind, ScoringContext,
 };
-use crate::learning::{class_label, LearnedPolicy, LoggedDecision, RewardModel};
+use crate::learning::{class_label, LearnedPolicy, LoggedDecision, RewardModel, RoutingLearner};
+use crate::policy_book::ActiveScorer;
 use crate::router::RouteDistribution;
+
+/// Fewest evaluation decisions a [`PromotionRule`] may demand.
+pub const MIN_RECORDS_FLOOR: usize = 100;
+/// Smallest effective sample size a [`PromotionRule`] may demand.
+pub const MIN_EFFECTIVE_SAMPLE_FLOOR: f64 = 30.0;
+/// Smallest one-sided normal quantile a [`PromotionRule`] may use (one-sided 95%).
+pub const Z_FLOOR: f64 = 1.644_853_626_951_472_7 - 1e-12;
 
 const EVIDENCE_DOMAIN: &[u8] = b"ptr.router.ope.evidence.v1";
 const LOG_DOMAIN: &[u8] = b"ptr.router.ope.log.v1";
@@ -139,6 +179,10 @@ pub enum OpeError {
         seq: u64,
         cutoff: u64,
     },
+    /// The candidate is not a snapshot of the learner whose log was offered.
+    ForeignLearner,
+    /// The incumbent's exploration rate is not the candidate's.
+    ExplorationMismatch,
 }
 
 impl fmt::Display for OpeError {
@@ -162,6 +206,10 @@ impl fmt::Display for OpeError {
                 f,
                 "decision {seq} is below the training cutoff {cutoff}: the candidate saw it"
             ),
+            Self::ForeignLearner => f.write_str("the candidate is not a snapshot of this learner"),
+            Self::ExplorationMismatch => {
+                f.write_str("the incumbent and the candidate use different exploration rates")
+            }
         }
     }
 }
@@ -356,6 +404,13 @@ fn mean_and_se(values: &[f64]) -> Result<(f64, f64), OpeError> {
 
 /// The IPS, SNIPS and DR estimates of `policy` on `log`.
 ///
+/// `policy` is evaluated with the placeholder `request_id` `"ope"` and a zero `request_digest`,
+/// so it must be a function of the route class, the admissible set and its own immutable state
+/// only (it must ignore both request fields); otherwise the probability estimated for a logged
+/// action is not the probability the router sampled it with. See
+/// [`AdmissibleScorer`](crate::AdmissibleScorer). The estimates are a one-step per-route value
+/// with decisions treated as independent; see the module documentation.
+///
 /// # Errors
 /// [`OpeError`]: see the module documentation for the preconditions.
 pub fn estimate_policy(
@@ -446,16 +501,19 @@ pub fn compare_policies(
 pub struct PromotionRule {
     pub estimator: Estimator,
     pub confidence: Confidence,
-    /// The lower confidence bound of the value difference must exceed this, in `[0, 1]`.
+    /// The lower confidence bound of the value difference must exceed this, in `[0, 1]`
+    /// (never negative: a tie is not an improvement).
     pub margin: f64,
-    /// Fewest decisions in the evaluation log.
+    /// Fewest decisions in the evaluation log, at least [`MIN_RECORDS_FLOOR`].
     pub min_records: usize,
-    /// Smallest effective sample size of the candidate's weights.
+    /// Smallest effective sample size of the candidate's weights, at least
+    /// [`MIN_EFFECTIVE_SAMPLE_FLOOR`].
     pub min_effective_sample: f64,
 }
 
 impl PromotionRule {
-    /// Doubly robust, one-sided 95%, the given margin and size floors.
+    /// Doubly robust, one-sided 95%, the given margin and size floors ([`PromotionGate::new`]
+    /// refuses values below the module's floors).
     pub fn new(margin: f64, min_records: usize, min_effective_sample: f64) -> Self {
         Self {
             estimator: Estimator::DoublyRobust,
@@ -470,11 +528,20 @@ impl PromotionRule {
         if !(self.margin.is_finite() && (0.0..=1.0).contains(&self.margin)) {
             return Err(OpeError::Config("margin is not in [0, 1]"));
         }
-        if self.min_records < 2 {
-            return Err(OpeError::Config("min_records is below 2"));
+        if self.min_records < MIN_RECORDS_FLOOR {
+            return Err(OpeError::Config("min_records is below the floor of 100"));
         }
-        if !(self.min_effective_sample.is_finite() && self.min_effective_sample >= 1.0) {
-            return Err(OpeError::Config("min_effective_sample is below 1"));
+        if !(self.min_effective_sample.is_finite()
+            && self.min_effective_sample >= MIN_EFFECTIVE_SAMPLE_FLOOR)
+        {
+            return Err(OpeError::Config(
+                "min_effective_sample is below the floor of 30",
+            ));
+        }
+        if self.confidence.quantile() < Z_FLOOR {
+            return Err(OpeError::Config(
+                "the quantile is below the one-sided 95% floor",
+            ));
         }
         Ok(())
     }
@@ -512,6 +579,24 @@ pub struct PromotionEvidence {
     lcb: f64,
     margin: f64,
     cutoff: u64,
+}
+
+#[cfg(test)]
+impl PromotionEvidence {
+    /// Evidence for a chain-length test of the policy book, which has no use for the estimate.
+    pub(crate) fn sealed_for_test(candidate: [u8; 32], incumbent: [u8; 32]) -> Self {
+        Self {
+            candidate,
+            incumbent,
+            log_digest: [0; 32],
+            estimator: Estimator::Snips,
+            records: 0,
+            difference: 0.0,
+            lcb: 0.0,
+            margin: 0.0,
+            cutoff: 0,
+        }
+    }
 }
 
 impl PromotionEvidence {
@@ -633,22 +718,34 @@ impl PromotionGate {
         &self.rule
     }
 
-    /// Assesses `candidate` against `incumbent` on `log`.
+    /// Assesses `candidate` against `incumbent` on the decisions `learner` logged after the
+    /// candidate was frozen.
     ///
-    /// `log` must hold only decisions the candidate did not train on (`seq >= cutoff`) and made
-    /// under the router's exploration floor. `incumbent_digest` names the policy the host is
-    /// running, so the evidence cannot be applied to another.
+    /// The log is read from `learner` (decisions with `seq >= candidate.cutoff()`), so it holds
+    /// only router records and verifier verdicts the learner was told, none of which the
+    /// candidate trained on. `incumbent` is the book's active handle: its digest is the one the
+    /// evidence names.
     ///
     /// # Errors
-    /// [`OpeError`] for a log or policy that cannot be evaluated. A candidate that is evaluated
-    /// but does not clear the rule is `Ok` with a [`Verdict::Refuse`].
+    /// [`OpeError`] for a log or policy that cannot be evaluated, a candidate that did not come
+    /// from `learner` ([`OpeError::ForeignLearner`]) or an incumbent under another exploration
+    /// rate ([`OpeError::ExplorationMismatch`]). A candidate that is evaluated but does not
+    /// clear the rule is `Ok` with a [`Verdict::Refuse`].
     pub fn assess(
         &self,
-        log: &[LoggedDecision],
+        learner: &RoutingLearner,
         candidate: &LearnedPolicy,
-        incumbent: &dyn AdmissibleScorer,
-        incumbent_digest: [u8; 32],
+        incumbent: &ActiveScorer,
     ) -> Result<Assessment, OpeError> {
+        if candidate.origin() != learner.id() {
+            return Err(OpeError::ForeignLearner);
+        }
+        if incumbent.exploration() != candidate.exploration() {
+            return Err(OpeError::ExplorationMismatch);
+        }
+        let log = learner.log_from(candidate.cutoff());
+        let log = log.as_slice();
+        let incumbent_digest = incumbent.digest();
         if let Some(decision) = log.iter().find(|d| d.seq() < candidate.cutoff()) {
             return Err(OpeError::OverlapsTraining {
                 seq: decision.seq(),

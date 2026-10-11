@@ -238,6 +238,107 @@ def names_an_entrypoint(manifest: dict) -> bool:
     entrypoint=manifest.get("entrypoint")
     return isinstance(entrypoint,str) and bool(entrypoint.strip())
 
+# The variables of the runner's environment a listed experiment's manifest
+# may name in `command_environment`, to be passed to its command: only
+# names of this form, so no variable that loads code (`PATH`, `LD_*`,
+# `PYTHON*`, `RUST*`, `CARGO*`) can be declared, and at most this many.
+COMMAND_ENVIRONMENT_NAME=re.compile(r"PTR_[A-Z0-9_]+")
+MAX_COMMAND_ENVIRONMENT=8
+
+def command_environment_errors(exp_id: str, manifest: dict) -> list[str]:
+    """Why the manifest's `command_environment`, the names of the variables
+    the runner passes through from its own environment to a listed
+    experiment's command, is not a list of at most
+    `MAX_COMMAND_ENVIRONMENT` distinct strings that each match
+    `COMMAND_ENVIRONMENT_NAME`. An absent field declares none."""
+    if "command_environment" not in manifest:
+        return []
+    names=manifest["command_environment"]
+    if not isinstance(names,list) or not all(isinstance(name,str) for name in names):
+        return [f"{exp_id}: command_environment is not a list of variable names"]
+    errors=[]
+    if len(names)>MAX_COMMAND_ENVIRONMENT:
+        errors.append(f"{exp_id}: command_environment names {len(names)} variables, more than the {MAX_COMMAND_ENVIRONMENT} allowed")
+    if len(set(names))!=len(names):
+        errors.append(f"{exp_id}: command_environment names a variable more than once")
+    for name in names:
+        if not COMMAND_ENVIRONMENT_NAME.fullmatch(name):
+            errors.append(f"{exp_id}: command_environment names {name!r}, which does not match "
+                          f"{COMMAND_ENVIRONMENT_NAME.pattern}: only PTR_ variables may reach a command by name")
+    return errors
+
+# What a record says of each declared variable's redaction: the value is
+# replaced in the recorded output (`applied`), or it is too short to be a
+# credential and replacing it would corrupt the output (`skipped-short-value`).
+REDACTION_STATES=("applied","skipped-short-value")
+
+def preflight_errors(exp_id: str, manifest: dict) -> list[str]:
+    """Why the manifest's `preflight`, a command the runner runs with the
+    command's environment before it reserves a seed, is not valid: a string
+    that splits as a shell would, names a program (the entrypoint's own, so
+    that its record names what ran), holds no NUL character and no
+    placeholder, and, where it runs Cargo, runs a built-in command with no
+    configuration, directory or input from outside the repository
+    (`cargo_command_errors`). An absent field declares none."""
+    if "preflight" not in manifest:
+        return []
+    value=manifest["preflight"]
+    if not isinstance(value,str):
+        return [f"{exp_id}: preflight is not a command string"]
+    try:
+        tokens=shlex.split(value)
+    except ValueError as error:
+        return [f"{exp_id}: preflight cannot be split into a command: {error}"]
+    errors=[]
+    if not tokens or not tokens[0].strip():
+        return [f"{exp_id}: preflight names no program: its first token is empty"]
+    if any("\0" in token for token in tokens):
+        errors.append(f"{exp_id}: preflight holds a NUL character, which no command can be given")
+    if any(experiment_records.PLACEHOLDER.search(token) for token in tokens):
+        errors.append(f"{exp_id}: preflight holds a <placeholder>; it runs before any seed and takes no value from the table")
+    if names_an_entrypoint(manifest):
+        try:
+            entry=shlex.split(manifest["entrypoint"])
+        except ValueError:
+            entry=[]
+        if entry and entry[0]!=tokens[0]:
+            errors.append(f"{exp_id}: preflight starts {tokens[0]!r}, not the entrypoint's program {entry[0]!r}; its record names only the entrypoint's")
+    invocation=cargo_invocation(tokens)
+    if invocation is not None:
+        errors.extend(cargo_command_errors(exp_id,invocation))
+    return errors
+
+def declared_preflight(manifest) -> list[str] | None:
+    """The preflight command's tokens, or None when the manifest declares
+    none or an invalid one (`preflight_errors` names why)."""
+    if not isinstance(manifest,dict) or "preflight" not in manifest or preflight_errors("",manifest):
+        return None
+    return shlex.split(manifest["preflight"])
+
+def declared_command_environment(manifest) -> list[str]:
+    """The variable names the manifest declares in `command_environment`,
+    in the order declared; empty when it declares none or an invalid
+    list (`command_environment_errors` names why)."""
+    if not isinstance(manifest,dict) or command_environment_errors("",manifest):
+        return []
+    return list(manifest.get("command_environment",[]))
+
+def recorded_command_environment_errors(recorded, manifest) -> list[str]:
+    """Why `recorded`, a run record's `command_environment`, is not what the
+    manifest's declaration gives: absent when it declares none, otherwise
+    one `{"name", "set", "redaction"}` entry per declared name in order, each
+    set (a run only starts with every declared variable set) and with a
+    redaction state, and never a value."""
+    names=declared_command_environment(manifest)
+    if not names:
+        return [] if recorded is None else [f"names command_environment {recorded!r}, which the manifest does not declare"]
+    shape=(isinstance(recorded,list) and len(recorded)==len(names)
+           and all(isinstance(entry,dict) and set(entry)=={"name","set","redaction"} and entry["set"] is True
+                   and entry["redaction"] in REDACTION_STATES for entry in recorded)
+           and [entry["name"] for entry in recorded]==names)
+    return [] if shape else [f"names command_environment {recorded!r}, not one entry of name, set (true) and "
+                             f"redaction ({'/'.join(REDACTION_STATES)}) for each of {names!r}, in order"]
+
 def command_errors(exp_id: str, manifest: dict, table: dict, read=None, names=None) -> list[str]:
     """What keeps the runner from building the command of `exp_id`, a listed
     experiment, from its manifest `manifest` and its `[preregistration]`
@@ -263,13 +364,14 @@ def command_errors(exp_id: str, manifest: dict, table: dict, read=None, names=No
     the repository for Cargo to build from (`cargo_manifest_errors`). A commit
     whose command the runner cannot build could not launch and froze
     nothing (`launchable_at`); the tree check refuses it first."""
+    environment_errors=[*command_environment_errors(exp_id,manifest),*preflight_errors(exp_id,manifest)]
     if not names_an_entrypoint(manifest):
-        return []
+        return environment_errors
     try:
         tokens=shlex.split(manifest["entrypoint"])
     except ValueError as error:
-        return [f"{exp_id}: entrypoint cannot be split into a command: {error}"]
-    errors=[]
+        return [*environment_errors,f"{exp_id}: entrypoint cannot be split into a command: {error}"]
+    errors=environment_errors
     if not tokens or not tokens[0].strip():
         errors.append(f"{exp_id}: entrypoint names no program: its first token is empty")
     if any("\0" in token for token in tokens):
@@ -1848,6 +1950,8 @@ def recorded_command_errors(where: str, record: dict, manifest, table, commit: s
     if record.get("command")!=command:
         errors.append(f"{where} names command {record.get('command')!r}, not {command!r}, the command the manifest and "
                       f"[preregistration] table at {commit[:12]} give seed {seed}")
+    for problem in recorded_command_environment_errors(record.get("command_environment"),manifest):
+        errors.append(f"{where} {problem} (the variables the manifest at {commit[:12]} declares; never a value)")
     if record.get("parameters")!=values:
         errors.append(f"{where} names parameters {record.get('parameters')!r}, not {values!r}, the values the "
                       f"[preregistration] table at {commit[:12]} freezes for the command's placeholders")
@@ -2012,7 +2116,7 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                 # The program, the toolchain and the environment lie outside
                 # the commit: the seeds of one experiment ran one of each.
                 programs.setdefault(json.dumps(
-                    [record.get("executable"),record.get("toolchain"),record.get("environment")],sort_keys=True),[]
+                    [record.get("executable"),record.get("toolchain"),record.get("environment"),record.get("command_environment")],sort_keys=True),[]
                 ).append(name)
                 trees.append((str(record.get("started_at","")),name,record.get("git_sha")))
         if aggregate:
@@ -3301,6 +3405,12 @@ A0_BASELINE_VERSIONS=(
      "decision_base":None},
     {"criteria":"research/falsification/A0-baseline-v2/criteria.toml","ids":("M001-v6","M002-v11","M003-v3"),
      "decision_script":"scripts/aggregate_a0_baseline_v2.py","decision_base":"scripts/aggregate_a0_baseline.py"},
+    # v3-m003: the successor study of the interrupted M003-v3. Its decider is a thin layer over
+    # v2's (the experiment pins v2's as `decision_base`; v1's is pinned by criteria.toml and by the
+    # v2 loader). It has no sweep of its own: criteria.toml `[sweep_reuse]` names the completed
+    # sweep and lr file it takes (research/falsification/A0-baseline-v3-m003/DESIGN.md).
+    {"criteria":"research/falsification/A0-baseline-v3-m003/criteria.toml","ids":("M003-v4",),
+     "decision_script":"scripts/aggregate_a0_baseline_v3.py","decision_base":"scripts/aggregate_a0_baseline_v2.py"},
 )
 # A study's sweep is `<study>-sweep`; a sweep whose only seed was spent without
 # an outcome is superseded by `<study>-sweep-r2`, that by `-r3`, ...
@@ -3357,6 +3467,10 @@ def a0_baseline_freeze_errors(root: Path, experiment: Path, manifest: dict, exp_
         return [f"{exp_id}: {criteria_path} names no such study"]
     sweep,revision=parts[1],parts[2]
     protocol=criteria["protocol"]
+    reuse=criteria.get("sweep_reuse")
+    reused=reuse if isinstance(reuse,dict) and reuse.get("study")==parts[0] else None
+    if reused is not None and sweep:
+        return [f"{exp_id}: {parts[0]} has no sweep of its own, it takes {reused.get('experiment')!r}"]
     expected={
         "seeds":[protocol["sweep_seed"]] if sweep else criteria["seeds"],
         "study":study["runner_study"],"arms":",".join(study["arms"]),"steps":protocol["steps"],
@@ -3371,6 +3485,22 @@ def a0_baseline_freeze_errors(root: Path, experiment: Path, manifest: dict, exp_
     if version["decision_base"] is not None:
         expected["decision_base"]=version["decision_base"]
     errors=[]
+    if reused is not None:
+        # A study that reuses a completed sweep names it, holds its lr file to a byte copy of the
+        # sweep's, and needs that sweep frozen (it ran before any confirmatory seed).
+        expected["sweep_experiment"]=reused.get("experiment")
+        try:
+            same_bytes=(root/reused["lr_file"]).read_bytes()==(root/f"{study_dir}/lr_{study['id']}.tsv").read_bytes()
+        except (OSError,KeyError,TypeError):
+            same_bytes=False
+        if not same_bytes:
+            errors.append(f"{exp_id}: {study_dir}/lr_{study['id']}.tsv is not a byte copy of {reused.get('lr_file')}")
+        try:
+            sweep_status=status_of(load(experiment.parent/str(reused.get("experiment"))/"experiment.toml"))
+        except Unreadable:
+            sweep_status=None
+        if sweep_status not in FROZEN:
+            errors.append(f"{exp_id}: {reused.get('experiment')}, whose learning rates it takes, is {sweep_status!r}, not frozen")
     if revision>1:
         # A successor sweep replaces the sweep before it, which must be
         # superseded (its interrupted record kept), and differs from it in

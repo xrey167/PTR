@@ -20,6 +20,9 @@ pub const MAX_VCW_NAME_BYTES: usize = 128;
 /// Most new tokens one model call may be asked for (`ptr_pods::MAX_NEW_TOKENS_LIMIT`).
 pub const MAX_VCW_NEW_TOKENS: u32 = 128;
 
+/// The repair role names `vcw.pods.extra_repairers` accepts (those of `ptr-verifier`).
+pub const VCW_REPAIR_ROLES: [&str; 6] = ["format", "value", "schema", "code", "resource", "fact"];
+
 /// The task kinds the endpoint can serve.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -102,6 +105,11 @@ pub struct VcwPods {
     /// The generation every Pod above is installed at when the lifecycle authority does not
     /// know it yet.
     pub generation: u64,
+    /// Further repair Pods by role name (`format`, `value`, `schema`, `code`, `resource`,
+    /// `fact`), added next to the one above so that a finding code can have several eligible
+    /// repairers and the router samples among them. A Pod listed under several roles covers the
+    /// codes of all of them. Empty by default (one Pod per role).
+    pub extra_repairers: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for VcwPods {
@@ -115,6 +123,7 @@ impl Default for VcwPods {
             resource_repair: "vcw-resource-repair".into(),
             fact_repair: "vcw-fact-repair".into(),
             generation: 1,
+            extra_repairers: BTreeMap::new(),
         }
     }
 }
@@ -381,6 +390,27 @@ impl VcwServiceConfig {
                 return Err(format!(
                     "{field} names the proposer Pod; a proposer cannot also repair"
                 ));
+            }
+        }
+        for (role, pods) in &self.pods.extra_repairers {
+            if !VCW_REPAIR_ROLES.contains(&role.as_str()) {
+                return Err(format!(
+                    "vcw.pods.extra_repairers names the unknown role {role:?} (one of {})",
+                    VCW_REPAIR_ROLES.join(", ")
+                ));
+            }
+            for pod in pods {
+                if !valid_name(pod) {
+                    return Err(format!(
+                        "vcw.pods.extra_repairers.{role} holds an invalid Pod id"
+                    ));
+                }
+                if *pod == self.pods.proposer {
+                    return Err(format!(
+                        "vcw.pods.extra_repairers.{role} names the proposer Pod; a proposer \
+                         cannot also repair"
+                    ));
+                }
             }
         }
         let simulation = &self.experts.simulated;

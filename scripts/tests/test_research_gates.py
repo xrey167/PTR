@@ -5158,7 +5158,11 @@ LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001",
     "M001-v5","M002-v10","M003-v2","M001-v5-sweep","M002-v10-sweep","M003-v2-sweep",
     # The successor of the interrupted M002-v10-sweep (DEVIATIONS.md of the study).
     "M002-v10-sweep-r2",
-    "M001-v6","M002-v11","M003-v3","M001-v6-sweep","M002-v11-sweep","M003-v3-sweep")
+    "M001-v6","M002-v11","M003-v3","M001-v6-sweep","M002-v11-sweep","M003-v3-sweep",
+    # The successor study of the interrupted M003-v3 (A0-baseline-v3-m003); no sweep of its own.
+    "M003-v4",
+    "L001-v2",
+    "F007")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture

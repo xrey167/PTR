@@ -973,6 +973,10 @@ impl<S> ControlledScorer<S> {
 }
 
 impl<S: AdmissibleScorer> AdmissibleScorer for ControlledScorer<S> {
+    fn bound_exploration(&self) -> Option<crate::Exploration> {
+        self.inner.bound_exploration()
+    }
+
     fn weights(&self, context: &ScoringContext<'_>) -> Result<Vec<(PodId, f64)>, RouteError> {
         let inner = self.inner.weights(context)?;
         if matches!(self.arm, ControlArm::InnerOnly | ControlArm::ObserveOnly) {

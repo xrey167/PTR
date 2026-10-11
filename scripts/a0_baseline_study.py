@@ -1,10 +1,13 @@
-"""Registration of the A0 baseline study (research/falsification/A0-baseline-v1 and -v2).
+"""Registration of the A0 baseline study (research/falsification/A0-baseline-v1, -v2 and -v3-m003).
 
 Study v1 has three confirmatory experiments (M001-v5, M002-v10, M003-v2), one
 validation-only learning-rate sweep experiment per study (`<id>-sweep`) and the
 deferred M004-v2. Study v2 (M001-v6, M002-v11, M003-v3 and their sweeps) is the
 complete successor of v1 with the same protocol and a decider that accepts the
-per-seed commits of a correct run loop (`StudyVersion`); it creates no M004. A
+per-seed commits of a correct run loop (`StudyVersion`); it creates no M004. Study
+v3-m003 is the successor study of the interrupted M003-v3 (M003-v4, one study, no sweep of
+its own: it reuses the completed val-only sweep `M003-v3-sweep` and a byte copy of its
+learning-rate file, `REUSED_SWEEPS`). A
 version is found from the experiment ids or the `name` of its criteria.toml; every
 function below takes the version from there, and the v1 module-level names
 (`STUDY_DIR`, `CRITERIA`, ...) keep their meaning. Like the A0 ablation study v2
@@ -61,6 +64,8 @@ PREREGISTRATION_TEXT = f"{STUDY_DIR}/PREREGISTRATION.md"
 DECISION_SCRIPT = "scripts/aggregate_a0_baseline.py"
 STUDY_DIR_V2 = "research/falsification/A0-baseline-v2"
 DECISION_SCRIPT_V2 = "scripts/aggregate_a0_baseline_v2.py"
+STUDY_DIR_V3 = "research/falsification/A0-baseline-v3-m003"
+DECISION_SCRIPT_V3 = "scripts/aggregate_a0_baseline_v3.py"
 HARDWARE_PROFILE = "hardware/a0-cpu-4core.toml"
 PLAIN_BASELINE = "research/baselines/plain_model/config.toml"
 IMPLEMENTATION_TREE = "model/burn-a0"
@@ -76,6 +81,14 @@ SWEEP_SEEDS = [17]
 # without an outcome is superseded by `<study>-sweep-r2`, that by `-r3`, ...
 SWEEP_SUCCESSORS = {"M002-v10": ("M002-v10-sweep-r2",)}
 SWEEP_SUCCESSORS_V2: dict[str, tuple[str, ...]] = {}
+SWEEP_SUCCESSORS_V3: dict[str, tuple[str, ...]] = {}
+# A study that registers no sweep of its own and trains with the learning rates of a
+# completed sweep of another study: study id -> (that sweep, its lr file). The study's
+# own lr file is a byte copy of that file (`check_reused_lr_file`); criteria.toml
+# `[sweep_reuse]` names the same pair and a test ties the two.
+REUSED_SWEEPS = {
+    "M003-v4": ("M003-v3-sweep", "research/falsification/A0-baseline-v2/lr_M003-v3.tsv"),
+}
 SWEEP_ID = re.compile(r"(?P<study>M\d{3}-v\d+)-sweep(?:-r(?P<revision>[2-9]|[1-9]\d+))?")
 PENDING = "must-be-pinned-before-prepared"
 COMMAND_HEAD = (
@@ -175,7 +188,7 @@ class StudyVersion:
     """One version of the study: where its documents are, which decider it
     pins, and the ids of its studies."""
 
-    label: str  # "v1" or "v2"
+    label: str  # "v1", "v2" or "v3"
     name: str  # the `name` of its criteria.toml
     study_dir: str
     decision_script: str
@@ -194,7 +207,7 @@ class StudyVersion:
 
     @property
     def successors(self) -> dict[str, tuple[str, ...]]:
-        return SWEEP_SUCCESSORS if self.label == "v1" else SWEEP_SUCCESSORS_V2
+        return {"v1": SWEEP_SUCCESSORS, "v2": SWEEP_SUCCESSORS_V2, "v3": SWEEP_SUCCESSORS_V3}[self.label]
 
     @property
     def defers_m004(self) -> bool:
@@ -210,6 +223,13 @@ VERSIONS = (
         "v2", "A0-baseline-v2", STUDY_DIR_V2, DECISION_SCRIPT_V2, DECISION_SCRIPT, ("M001-v6", "M002-v11", "M003-v3"),
         "scripts/tests/test_aggregate_a0_baseline_v2.py",
         " It replaces study v1 for a procedural defect of v1's decider (record identity); no v1 outcome was observed.",
+    ),
+    StudyVersion(
+        "v3", "A0-baseline-v3-m003", STUDY_DIR_V3, DECISION_SCRIPT_V3, DECISION_SCRIPT_V2, ("M003-v4",),
+        "scripts/tests/test_aggregate_a0_baseline_v3.py",
+        " It is the successor study of M003-v3, which a container restart interrupted (INCONCLUSIVE-INTERRUPTED, "
+        "an interruption and not an outcome); M003-v3's completed seeds are not read and not pooled, and its "
+        "learning-rate selection is reused.",
     ),
 )
 
@@ -241,6 +261,8 @@ def version_of_experiment(exp_id: str) -> StudyVersion:
 def sweep_chain(study_id: str) -> tuple[str, ...]:
     """The sweep experiments of `study_id`, the first and its successors in
     order; the last is the one whose learning-rate file the study uses."""
+    if study_id in REUSED_SWEEPS:
+        return ()
     chain = (f"{study_id}-sweep", *version_of_study(study_id).successors.get(study_id, ()))
     for position, exp_id in enumerate(chain):
         match = SWEEP_ID.fullmatch(exp_id)
@@ -251,7 +273,10 @@ def sweep_chain(study_id: str) -> tuple[str, ...]:
 
 
 def current_sweep(study_id: str) -> str:
-    """The sweep experiment that produces `study_id`'s learning-rate file."""
+    """The sweep experiment that produces `study_id`'s learning-rate file (for a
+    study that reuses a sweep, that other study's sweep)."""
+    if study_id in REUSED_SWEEPS:
+        return REUSED_SWEEPS[study_id][0]
     return sweep_chain(study_id)[-1]
 
 
@@ -325,6 +350,19 @@ def file_digest(root: Path, relative: str) -> str:
     if not path.is_file():
         raise RegistrationError(f"{relative} is not a file below {root}")
     return experiment_records.preregistered_file_digest(path)
+
+
+def check_reused_lr_file(root: Path, study_id: str) -> None:
+    """A study that reuses a sweep trains with a byte copy of that sweep's lr file."""
+    if study_id not in REUSED_SWEEPS:
+        return
+    source = REUSED_SWEEPS[study_id][1]
+    target = lr_file_path(study_id)
+    for relative in (source, target):
+        if not (root / relative).is_file():
+            raise RegistrationError(f"{relative} is not a file below {root}")
+    if (root / source).read_bytes() != (root / target).read_bytes():
+        raise RegistrationError(f"{target} is not a byte copy of {source}")
 
 
 def baseline_digest(root: Path) -> str:
@@ -405,6 +443,7 @@ def registrations(criteria: dict) -> list[Registration]:
         pending_runner = ("runner_main_sha256", "runner_baseline_sha256", "implementation_tree_git_digest")
         # Sweep: validation only, seed 17, one record per study. A successor
         # sweep (SWEEP_SUCCESSORS) is the identical experiment under a new id.
+        reused = study_id in REUSED_SWEEPS
         chain = sweep_chain(study_id)
         for position, sweep_id in enumerate(chain):
             predecessor = chain[position - 1] if position else None
@@ -445,7 +484,7 @@ def registrations(criteria: dict) -> list[Registration]:
         confirmatory_table = {
             "seeds": SEEDS, **pins,
             "lr_file": lr_file_path(study_id),
-            "sweep_experiment": chain[-1],
+            "sweep_experiment": current_sweep(study_id),
             "primary_contrast": primary["id"],
             "delta_min": f"{thresholds['delta_min']:g}",
             "ood_nll_ci_upper_le": f"{thresholds['ood_nll_ci_upper_le']:g}",
@@ -482,7 +521,8 @@ def registrations(criteria: dict) -> list[Registration]:
             },
             table=confirmatory_table,
             required=confirmatory_required,
-            pending=("lr_file_sha256", *pending_runner),
+            # A reused learning-rate file exists at registration, so its digest is pinned at once.
+            pending=pending_runner if reused else ("lr_file_sha256", *pending_runner),
         ))
     if version.defers_m004:
         out.append(Registration(
@@ -664,6 +704,8 @@ def render(root: Path = ROOT, ids: list[str] | None = None, label: str = "v1") -
             predecessor = next(r for r in registrations(criteria) if r.exp_id == reg.supersedes)
             if load_toml(root / "experiments" / predecessor.path / "experiment.toml").get("status") != "superseded":
                 raise RegistrationError(f"{reg.supersedes} must be superseded before its successor {reg.exp_id} is registered")
+    for reg in regs:
+        check_reused_lr_file(root, reg.study_id)
     rendered = {reg.exp_id: render_files(reg, root) for reg in regs}
     for reg in regs:
         target = root / "experiments" / reg.path
@@ -712,6 +754,8 @@ def freeze(root: Path, exp_id: str, *, write: bool) -> dict:
         raise RegistrationError(f"{exp_id} is {manifest.get('status')!r}; only a planned experiment freezes")
     if reg.kind == "confirmatory" and not (root / reg.table["lr_file"]).is_file():
         raise RegistrationError(f"{reg.table['lr_file']} does not exist: run and commit the sweep first")
+    if reg.kind == "confirmatory":
+        check_reused_lr_file(root, reg.study_id)
     if reg.supersedes is not None:
         predecessor = next(r for r in registrations(criteria) if r.exp_id == reg.supersedes)
         status = load_toml(root / "experiments" / predecessor.path / "experiment.toml").get("status")

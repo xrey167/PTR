@@ -15,13 +15,14 @@ use ptr_lineage::{
 };
 use ptr_pods::{
     BaseModelDigest, BaseModelId, BaseModelRef, ExpertInputRef, ExpertInputs, ExpertLevel,
-    ExpertPodSpec, ExpertProposal, ExpertState, OpKind, PodRegistry, ProposerRef, RationaleDigest,
-    RetiredReason, StructuralOp,
+    ExpertPodSpec, ExpertProposal, ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest,
+    OpKind, PodRegistry, ProposerRef, RationaleDigest, RetiredReason, StructuralOp,
 };
 use ptr_router::LearnerConfig;
 use ptr_router::{
-    ActiveScorer, FindingCode, NonceSequence, PolicyBook, PromotionGate, PromotionRule, RouteClass,
-    RouterConfig, RoutingLearner, SamplingKey, SelfModel, SelfModelLimits, Verdict,
+    ActiveScorer, Exploration, FindingCode, NonceSequence, PolicyBook, PromotionGate,
+    PromotionRule, RouteClass, RouterConfig, RoutingLearner, SamplingKey, SelfModel,
+    SelfModelLimits, Verdict,
 };
 use ptr_runtime::expert::{
     expert_evidence_artifact_digest, expert_evidence_artifact_digest_with_inputs,
@@ -35,9 +36,9 @@ use ptr_runtime::vcw::{
     VcwParts, VcwRequest,
 };
 use ptr_runtime::vcw_host::{
-    rebuild_roster, DriverHost, DriverReport, Refusal, RosterRebuildError, SimulatedHeldOut,
-    SimulatedTrainer, SpecialistTrainer, StructureDriver, StructureResult, TrainedSpecialist,
-    TrainingRequest,
+    rebuild_roster, AbandonReason, DriverError, DriverHost, DriverReport, HeldOutSuite,
+    MeasurementError, Refusal, RosterRebuildError, SimulatedHeldOut, SimulatedTrainer,
+    SpecialistTrainer, StructureDriver, StructureResult, TrainedSpecialist, TrainingRequest,
 };
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_types::{
@@ -87,11 +88,19 @@ fn gate() -> ForgettingGate {
     }
 }
 
+/// The grant of the set-up (the seeds), which expects the test hosts' fixed evaluation manifest.
 fn grant_for(rt: &PtrRuntime) -> ExpertAdmissionGrant {
+    grant_expecting(rt, EVAL_MANIFEST)
+}
+
+/// A grant that expects `eval_manifest`: for the driver, the digest of its held-out suite.
+fn grant_expecting(rt: &PtrRuntime, eval_manifest: [u8; 32]) -> ExpertAdmissionGrant {
+    let mut requirement = requirement(7, gate().config_digest().unwrap());
+    requirement.eval_manifest_digest = eval_manifest;
     ExpertAdmissionGrant::new(
         project(),
         proposer(),
-        requirement(7, gate().config_digest().unwrap()),
+        requirement,
         current_binding(rt, ExpertGrantKind::Admission),
     )
 }
@@ -147,6 +156,9 @@ struct Opts {
     held_out_codes: Vec<&'static str>,
     trainer: SimulatedTrainer,
     learn: bool,
+    /// Extra base repairers `fill0..` (each repairing the code of its own name), to fill the
+    /// loop's roster. They are measured by the held-out suite like every other code.
+    filler: usize,
 }
 
 fn birth_only() -> StructurePolicyConfig {
@@ -221,6 +233,19 @@ fn seed_expert(
     seed: &Seed,
     slot: u16,
 ) -> TrainedSpecialist {
+    seed_expert_declaring(rt, pods, trainer, seed, slot, true)
+}
+
+/// As `seed_expert`; with `declare_codes` false the committed manifest names no code (no
+/// `repairs:` capability), like a base Pod that was later registered as an expert.
+fn seed_expert_declaring(
+    rt: &mut PtrRuntime,
+    pods: &mut PodRegistry,
+    trainer: &mut SimulatedTrainer,
+    seed: &Seed,
+    slot: u16,
+    declare_codes: bool,
+) -> TrainedSpecialist {
     let mut trained = trainer
         .train(&TrainingRequest {
             kind: OpKind::Birth,
@@ -229,6 +254,13 @@ fn seed_expert(
             sources: Vec::new(),
         })
         .unwrap();
+    if !declare_codes {
+        trained
+            .manifest
+            .capabilities
+            .retain(|c| !c.0.starts_with(ptr_runtime::vcw_host::REPAIRS_PREFIX));
+        trained.manifest_digest = ptr_pods::ManifestDigest::new(trained.manifest.digest()).unwrap();
+    }
     if seed.with_inputs {
         trained.inputs = Some(dataset_inputs());
     }
@@ -288,6 +320,10 @@ impl World {
         let mut experts = SimulatedExperts::new(sim.clone(), "task").unwrap();
         experts.add_proposer(pod("gen")).unwrap();
         experts.add_repairer(pod("fixer_a"), &["a"]).unwrap();
+        let fillers: Vec<String> = (0..opts.filler).map(|i| format!("fill{i}")).collect();
+        for name in &fillers {
+            experts.add_repairer(pod(name), &[name.as_str()]).unwrap();
+        }
         let mut pods = PodRegistry::default();
         for registered in experts.pods(&project(), &DefectDoc::clean_type()) {
             pods.register_new(registered).unwrap();
@@ -297,6 +333,9 @@ impl World {
             proposers: vec![pod("gen")],
             repairers: vec![(pod("fixer_a"), vec![code("a")])],
         };
+        for name in &fillers {
+            roster.repairers.push((pod(name), vec![code(name)]));
+        }
         for (slot, seed) in opts.seeds.iter().enumerate() {
             let trained = seed_expert(
                 &mut rt,
@@ -310,7 +349,7 @@ impl World {
                 .repairers
                 .push((pod(seed.name), trained.codes.iter().cloned().collect()));
         }
-        let book = PolicyBook::new("defect-doc");
+        let book = PolicyBook::new("defect-doc", Exploration::default()).unwrap();
         let learner = opts
             .learn
             .then(|| Arc::new(RoutingLearner::new(LearnerConfig::new("defect-doc", 5)).unwrap()));
@@ -332,7 +371,11 @@ impl World {
             Some(learner) => vcw.with_learner(Arc::clone(learner)).unwrap(),
             None => vcw,
         };
-        let suite = SimulatedHeldOut::new(sim, project(), &opts.held_out_codes, 30, 7).unwrap();
+        let mut held_out: Vec<&str> = opts.held_out_codes.clone();
+        held_out.extend(fillers.iter().map(String::as_str));
+        let suite = SimulatedHeldOut::new(sim, project(), &held_out, 30, 7)
+            .unwrap()
+            .with_world_of(&opts.trainer);
         let driver = StructureDriver::new(
             project(),
             proposer(),
@@ -342,7 +385,6 @@ impl World {
                 slots: 16,
             },
             gate(),
-            EVAL_MANIFEST,
         );
         Self {
             rt,
@@ -395,7 +437,14 @@ impl World {
     }
 
     fn l3(&mut self) -> DriverReport {
-        let grant = grant_for;
+        let suite = self.suite.clone();
+        let expected = suite.manifest_digest();
+        self.l3_with(&suite, expected)
+    }
+
+    /// One driver step measured by `suite`, under a grant that expects `expected`.
+    fn l3_with(&mut self, suite: &dyn HeldOutSuite, expected: [u8; 32]) -> DriverReport {
+        let grant = move |rt: &PtrRuntime| grant_expecting(rt, expected);
         let report = self
             .driver
             .step(
@@ -405,7 +454,7 @@ impl World {
                     pods: &mut self.pods,
                     grant: &grant,
                     trainer: &mut self.trainer,
-                    suite: &self.suite,
+                    suite,
                     aimer: &self.aimer,
                 },
             )
@@ -420,6 +469,55 @@ impl World {
             }
         }
         report
+    }
+
+    /// Retire `name` the way a host does: a Prune proposal with a passing seed report.
+    fn prune_via_admission(&mut self, name: &str) {
+        self.retire_with(name, None);
+    }
+
+    /// Retire `name` through a `Retire` proposal with `reason`.
+    fn retire_via_admission(&mut self, name: &str, reason: RetiredReason) {
+        self.retire_with(name, Some(reason));
+    }
+
+    fn retire_with(&mut self, name: &str, reason: Option<RetiredReason>) {
+        let entry = self
+            .rt
+            .expert_registry()
+            .get(&project(), &pod(name))
+            .unwrap()
+            .clone();
+        let target = ExpertTarget::new(ExpertTargetInit {
+            project: project(),
+            pod: pod(name),
+            generation: entry.generation,
+            level: entry.level,
+            base_model: entry.base_model,
+            manifest_digest: entry.manifest_digest,
+            state: entry.state,
+            state_version: entry.state_version,
+        })
+        .unwrap();
+        let op = match reason {
+            None => StructuralOp::Prune {
+                targets: vec![target],
+            },
+            Some(reason) => StructuralOp::Retire { target, reason },
+        };
+        let prune = ExpertProposal::new(
+            project(),
+            proposer(),
+            CommitIndex(1),
+            op,
+            RationaleDigest::new([8; 32]).unwrap(),
+        )
+        .unwrap();
+        let evidence = seed_report(&prune, None);
+        let grant = grant_for(&self.rt);
+        self.rt
+            .admit_expert_proposal(&prune, &evidence, &grant)
+            .unwrap();
     }
 
     fn structural_commits(&self) -> usize {
@@ -441,6 +539,7 @@ fn newcode_opts(trainer: SimulatedTrainer) -> Opts {
         held_out_codes: vec!["a", "newcode"],
         trainer,
         learn: false,
+        filler: 0,
     }
 }
 
@@ -546,6 +645,7 @@ fn a_specialist_that_hurts_another_code_fails_the_gate_and_nothing_is_committed(
 
     // The refusal is not sticky: a specialist that costs nothing passes the same gate later.
     world.trainer = trainer(0.95);
+    world.suite = world.suite.clone().with_world_of(&world.trainer);
     world.serve("more", 8);
     let retry = world.l3();
     let born = only_admitted_birth(&retry).clone();
@@ -555,6 +655,499 @@ fn a_specialist_that_hurts_another_code_fails_the_gate_and_nothing_is_committed(
         .expert_registry()
         .get(&project(), &born.pod)
         .is_some());
+}
+
+/// A suite that returns the same clear rate for every code it was given, before and after.
+struct Canned(BTreeMap<FindingCode, f64>);
+
+impl HeldOutSuite for Canned {
+    fn manifest_digest(&self) -> [u8; 32] {
+        [0xC4; 32]
+    }
+
+    fn clear_rates(
+        &self,
+        _roster: &ptr_runtime::vcw_host::RosterView,
+        _change: &ptr_runtime::vcw_host::RosterChange<'_>,
+    ) -> Result<BTreeMap<FindingCode, f64>, ptr_runtime::vcw_host::SuiteError> {
+        Ok(self.0.clone())
+    }
+}
+
+// --- the suite is part of the evidence -----------------------------------------------------
+
+#[test]
+fn a_suite_that_does_not_measure_every_code_of_the_roster_and_the_candidate_is_refused() {
+    // The serving roster repairs `a`; the suite measures only `newcode`. Whatever the Birth does
+    // to `a` would be measured as "nothing lost", so nothing may be bound or committed.
+    let mut opts = newcode_opts(trainer(0.95));
+    opts.held_out_codes = vec!["newcode"];
+    let mut world = World::new(opts);
+    world.serve("before", 24);
+    let commits = world.rt.committed_events().len();
+    let report = world.l3();
+    assert_eq!(report.outcomes.len(), 1, "{report:?}");
+    match &report.outcomes[0].result {
+        StructureResult::Refused(Refusal::Measurement(MeasurementError::Coverage { missing })) => {
+            assert_eq!(missing, &BTreeSet::from([code("a")]));
+        }
+        other => panic!("expected a coverage refusal, got {other:?}"),
+    }
+    assert_eq!(world.rt.committed_events().len(), commits);
+    assert_eq!(world.vcw.outstanding_requests(), 0);
+
+    // A suite that misses the candidate's own code is refused the same way.
+    let mut opts = newcode_opts(trainer(0.95));
+    opts.held_out_codes = vec!["a"];
+    let mut world = World::new(opts);
+    world.serve("before", 24);
+    let report = world.l3();
+    assert!(matches!(
+        &report.outcomes[0].result,
+        StructureResult::Refused(Refusal::Measurement(MeasurementError::Coverage { missing }))
+            if missing == &BTreeSet::from([code("newcode")])
+    ));
+    assert_eq!(world.structural_commits(), 0);
+}
+
+#[test]
+fn the_bound_subject_carries_the_digest_of_the_suite_that_measured() {
+    let mut world = World::new(newcode_opts(trainer(0.95)));
+    world.serve("before", 24);
+    let measured_by = world.suite.clone();
+    // A different suite (another seed): a different digest.
+    let other = SimulatedHeldOut::new(
+        SimulationConfig::new(31)
+            .with_error_rate("a", 0.5)
+            .with_error_rate("newcode", 1.0)
+            .with_pod_repair_success("fixer_a", "a", 0.95),
+        project(),
+        &["a", "newcode"],
+        30,
+        8,
+    )
+    .unwrap()
+    .with_world_of(&world.trainer);
+    assert_ne!(other.manifest_digest(), measured_by.manifest_digest());
+    // The host's grant expects the digest of the first suite. A report measured by the other
+    // one is bound to the other one's digest and admission refuses it as a different
+    // evaluation manifest, not for its numbers.
+    let report = world.l3_with(&other, measured_by.manifest_digest());
+    match &report.outcomes[0].result {
+        StructureResult::Refused(Refusal::Admission {
+            gate_failed,
+            message,
+        }) => {
+            assert!(!gate_failed);
+            assert!(
+                message.contains("EvidenceEvalManifestMismatch"),
+                "{message}"
+            );
+        }
+        other => panic!("expected an evaluation-manifest refusal, got {other:?}"),
+    }
+    assert_eq!(world.structural_commits(), 0);
+    assert_eq!(world.vcw.outstanding_requests(), 0);
+    // The suite that the grant expects is admitted (same world, same step).
+    world.serve("more", 8);
+    let admitted = world.l3_with(&measured_by, measured_by.manifest_digest());
+    only_admitted_birth(&admitted);
+    assert_eq!(world.structural_commits(), 1);
+}
+
+#[test]
+fn what_the_trainer_claims_about_its_specialist_is_not_what_the_suite_measures() {
+    // The trainer claims a harmless specialist (no collateral); in the simulated world training
+    // it wrecks `fixer_a`. The suite measures the world, so the gate fails.
+    let wrecks = trainer(0.95).with_collateral("fixer_a", "a", 0.0);
+    let mut world = World::new(newcode_opts(trainer(0.95)));
+    world.suite = world.suite.clone().with_world_of(&wrecks);
+    world.serve("before", 24);
+    let report = world.l3();
+    match &report.outcomes[0].result {
+        StructureResult::Refused(Refusal::Admission { gate_failed, .. }) => assert!(gate_failed),
+        other => panic!("expected the gate to fail on the measured collateral, got {other:?}"),
+    }
+    assert_eq!(world.structural_commits(), 0);
+}
+
+#[test]
+fn a_committed_expert_that_cannot_be_installed_is_reported_kept_and_retried() {
+    // The loop's roster is full: fixer_a, the expert e_old and 254 fillers are 256 repairers.
+    // The Birth is admitted (the ledger has room) but the loop cannot enrol one more.
+    let mut world = World::new(Opts {
+        error_rates: vec![("a", 0.5), ("newcode", 1.0)],
+        fixer_a_skill: 0.95,
+        seeds: vec![Seed {
+            name: "e_old",
+            codes: &["old"],
+            skill: 0.9,
+            with_inputs: false,
+        }],
+        structure: birth_only(),
+        window_requests: 4,
+        held_out_codes: vec!["a", "newcode", "old"],
+        trainer: trainer(0.95),
+        learn: false,
+        filler: 254,
+    });
+    assert_eq!(world.vcw.repairers().len(), 256);
+    let seeded = world.structural_commits();
+    world.serve("before", 24);
+    // A suite with canned rates: the simulated one cannot build the 257-repairer loop either,
+    // which is its own refusal. Every roster code and the new one are measured, nothing lost.
+    let mut rates: BTreeMap<FindingCode, f64> = world
+        .vcw
+        .repairers()
+        .values()
+        .flatten()
+        .map(|c| (c.clone(), 0.9))
+        .collect();
+    rates.insert(code("newcode"), 0.9);
+    let canned = Canned(rates);
+    let report = world.l3_with(&canned, canned.manifest_digest());
+    assert_eq!(report.outcomes.len(), 1, "{report:?}");
+    assert!(report.outcomes[0].committed_not_installed(), "{report:?}");
+    assert_eq!(report.pending_install(), 1);
+    assert_eq!(report.refused(), 0, "a committed change is not a refusal");
+    let message = match &report.outcomes[0].result {
+        StructureResult::CommittedNotInstalled { message, .. } => message.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(message.contains("sync_roster"), "{message}");
+
+    // The change is in the ledger; the expert is not routable; the state is observable.
+    assert_eq!(world.structural_commits(), seeded + 1);
+    let pending = world.driver.pending_installs();
+    assert_eq!(pending.len(), 1);
+    let born = pending[0].pods()[0].clone();
+    assert_eq!(
+        world
+            .rt
+            .expert_registry()
+            .get(&project(), &born)
+            .unwrap()
+            .state,
+        ExpertState::Serving
+    );
+    assert!(!world.vcw.repairers().contains_key(&born));
+    assert_eq!(world.vcw.outstanding_requests(), 1, "the request must stay");
+    assert!(world
+        .vcw
+        .router()
+        .registry()
+        .repair_pods(&code("newcode"))
+        .is_empty());
+
+    // A retry while the roster is still full fails again and keeps the entry.
+    let again = world.l3_with(&canned, canned.manifest_digest());
+    assert!(again.installed_late.is_empty());
+    assert_eq!(world.driver.pending_installs().len(), 1);
+
+    // The host frees a slot by pruning e_old through admission; the next step completes the
+    // install on its own.
+    world.prune_via_admission("e_old");
+    let healed = world.l3_with(&canned, canned.manifest_digest());
+    assert_eq!(healed.installed_late, vec![born.clone()]);
+    assert!(world.driver.pending_installs().is_empty());
+    assert!(world.vcw.repairers().contains_key(&born));
+    assert!(!world.vcw.repairers().contains_key(&pod("e_old")));
+    assert_eq!(world.vcw.outstanding_requests(), 0);
+    assert_eq!(
+        world.vcw.router().registry().repair_pods(&code("newcode")),
+        vec![born]
+    );
+}
+
+/// A world whose loop roster is full (256 repairers), so every Birth commits and cannot be
+/// enrolled, with a suite that returns a clear rate for every code.
+fn full_roster_world(codes: &[&'static str]) -> (World, Canned) {
+    let mut error_rates = vec![("a", 0.5)];
+    error_rates.extend(codes.iter().map(|c| (*c, 1.0)));
+    let mut held_out_codes = vec!["a", "old"];
+    held_out_codes.extend(codes.iter().copied());
+    let world = World::new(Opts {
+        error_rates,
+        fixer_a_skill: 0.95,
+        seeds: vec![Seed {
+            name: "e_old",
+            codes: &["old"],
+            skill: 0.9,
+            with_inputs: false,
+        }],
+        structure: birth_only(),
+        window_requests: 4,
+        held_out_codes,
+        trainer: trainer(0.95),
+        learn: false,
+        filler: 254,
+    });
+    assert_eq!(world.vcw.repairers().len(), 256);
+    let mut rates: BTreeMap<FindingCode, f64> = world
+        .vcw
+        .repairers()
+        .values()
+        .flatten()
+        .map(|c| (c.clone(), 0.9))
+        .collect();
+    for c in codes {
+        rates.insert(code(c), 0.9);
+    }
+    (world, Canned(rates))
+}
+
+#[test]
+fn a_pending_install_is_abandoned_when_it_outlives_the_ttl_and_never_retried_forever() {
+    let (mut world, canned) = full_roster_world(&["newcode"]);
+    world.serve("before", 24);
+    let digest = canned.manifest_digest();
+    let first = world.l3_with(&canned, digest);
+    assert!(first.outcomes[0].committed_not_installed(), "{first:?}");
+    let born = world.driver.pending_installs()[0].pods()[0].clone();
+    let commits = world.structural_commits();
+    assert_eq!(world.vcw.outstanding_requests(), 1);
+    assert!(first.abandoned_installs.is_empty());
+
+    // Past outstanding_ttl_windows (16 windows of 4 requests) the roster is still full. The
+    // driver retries first, fails, and gives up; the step itself still runs.
+    world.serve("later", 80);
+    assert!(world.vcw.windows_closed() >= 6 + u64::from(world.vcw.outstanding_ttl_windows()));
+    let report = world.l3_with(&canned, digest);
+    assert_eq!(report.abandoned_installs.len(), 1, "{report:?}");
+    let abandoned = &report.abandoned_installs[0];
+    assert_eq!(abandoned.pods, vec![born.clone()]);
+    assert_eq!(abandoned.codes, BTreeSet::from([code("newcode")]));
+    assert!(
+        matches!(abandoned.reason, AbandonReason::Expired { windows } if windows >= 16),
+        "{abandoned:?}"
+    );
+    assert!(abandoned.message.contains("sync_roster"), "{abandoned:?}");
+    assert!(world.driver.pending_installs().is_empty());
+    assert_eq!(world.vcw.outstanding_requests(), 0);
+    // The committed expert is neither routable nor forgotten: the loop holds its code, so the
+    // policy does not birth a second expert for it, now or in later windows.
+    assert!(world.vcw.stranded_experts().contains_key(&born));
+    assert!(!world.vcw.repairers().contains_key(&born));
+    assert!(report.outcomes.is_empty(), "{report:?}");
+    world.serve("again", 24);
+    let next = world.l3_with(&canned, digest);
+    assert!(next.ran_policy && next.outcomes.is_empty(), "{next:?}");
+    assert!(next.abandoned_installs.is_empty());
+    assert_eq!(world.structural_commits(), commits, "no second Birth");
+
+    // The host retires the stranded expert through admission; the next step releases the hold.
+    world.prune_via_admission(born.0.as_str());
+    world.serve("last", 8);
+    world.l3_with(&canned, digest);
+    assert!(world.vcw.stranded_experts().is_empty());
+}
+
+#[test]
+fn a_code_with_a_pending_install_is_not_born_again_while_the_install_is_pending() {
+    let (mut world, canned) = full_roster_world(&["newcode"]);
+    world.serve("before", 24);
+    let digest = canned.manifest_digest();
+    let first = world.l3_with(&canned, digest);
+    assert!(first.outcomes[0].committed_not_installed(), "{first:?}");
+    let commits = world.structural_commits();
+    // Windows keep closing (well inside the TTL) and `newcode` stays unroutable.
+    for round in 0..3 {
+        world.serve(&format!("more{round}"), 8);
+        let report = world.l3_with(&canned, digest);
+        assert!(report.ran_policy, "{report:?}");
+        assert!(report.outcomes.is_empty(), "{report:?}");
+        assert_eq!(world.driver.pending_installs().len(), 1);
+    }
+    assert_eq!(world.structural_commits(), commits);
+}
+
+/// A committed-looking Birth proposal, only to name an operation for `strand_committed`.
+fn any_birth_proposal(name: &str) -> ExpertProposal {
+    let spec = ExpertPodSpec::new(
+        project(),
+        pod(name),
+        ManifestDigest::new([3; 32]).unwrap(),
+        ExpertLevel::Token {
+            layer: LAYER,
+            index: 400,
+        },
+        base(),
+        Generation(1),
+    )
+    .unwrap();
+    ExpertProposal::new(
+        project(),
+        proposer(),
+        CommitIndex(1),
+        StructuralOp::Birth { result: spec },
+        RationaleDigest::new([6; 32]).unwrap(),
+    )
+    .unwrap()
+}
+
+fn hold_world() -> World {
+    World::new(Opts {
+        error_rates: vec![("a", 0.5)],
+        fixer_a_skill: 0.95,
+        seeds: vec![Seed {
+            name: "e_old",
+            codes: &["old"],
+            skill: 0.9,
+            with_inputs: false,
+        }],
+        structure: birth_only(),
+        window_requests: 4,
+        held_out_codes: vec!["a", "old"],
+        trainer: trainer(0.95),
+        learn: false,
+        filler: 0,
+    })
+}
+
+#[test]
+fn a_stranded_hold_on_an_expert_the_projection_does_not_know_is_released_at_the_next_step() {
+    let mut world = hold_world();
+    world
+        .vcw
+        .strand_committed(
+            &any_birth_proposal("ghost"),
+            &[pod("ghost")],
+            &BTreeSet::from([code("ghost")]),
+        )
+        .unwrap();
+    assert!(world.vcw.stranded_experts().contains_key(&pod("ghost")));
+    world.serve("w", 8);
+    world.l3();
+    assert!(world.vcw.stranded_experts().is_empty());
+}
+
+#[test]
+fn a_stranded_hold_ends_when_the_expert_is_superseded_and_not_before() {
+    let mut world = hold_world();
+    world
+        .vcw
+        .strand_committed(
+            &any_birth_proposal("e_old"),
+            &[pod("e_old")],
+            &BTreeSet::from([code("old")]),
+        )
+        .unwrap();
+    // Serving: the hold stays through a step (the control for the release below).
+    world.serve("w1", 8);
+    world.l3();
+    assert!(world.vcw.stranded_experts().contains_key(&pod("e_old")));
+
+    world.retire_via_admission("e_old", RetiredReason::Superseded);
+    assert_eq!(
+        world
+            .rt
+            .expert_registry()
+            .get(&project(), &pod("e_old"))
+            .unwrap()
+            .state,
+        ExpertState::Retired(RetiredReason::Superseded)
+    );
+    world.serve("w2", 8);
+    world.l3();
+    assert!(world.vcw.stranded_experts().is_empty());
+}
+
+#[test]
+fn a_step_error_after_an_abandon_still_reports_the_abandoned_install() {
+    let (mut world, canned) = full_roster_world(&["newcode"]);
+    world.serve("before", 24);
+    let digest = canned.manifest_digest();
+    let first = world.l3_with(&canned, digest);
+    assert!(first.outcomes[0].committed_not_installed(), "{first:?}");
+    let born = world.driver.pending_installs()[0].pods()[0].clone();
+    world.serve("later", 80);
+    // A non-finite AIMER score makes the loop refuse the step itself, after the driver has
+    // already abandoned the install that outlived the TTL.
+    world.aimer = BTreeMap::from([(pod("e_old"), f64::NAN)]);
+    let grant = move |rt: &PtrRuntime| grant_expecting(rt, digest);
+    let error = world
+        .driver
+        .step(
+            &mut world.vcw,
+            DriverHost {
+                runtime: &mut world.rt,
+                pods: &mut world.pods,
+                grant: &grant,
+                trainer: &mut world.trainer,
+                suite: &canned,
+                aimer: &world.aimer,
+            },
+        )
+        .expect_err("a non-finite signal must refuse the step");
+    let DriverError::Loop {
+        error,
+        abandoned_installs,
+        ..
+    } = error
+    else {
+        panic!("unexpected error shape");
+    };
+    assert!(
+        matches!(*error, ptr_runtime::vcw::VcwError::Structure(_)),
+        "{error:?}"
+    );
+    assert_eq!(
+        abandoned_installs.len(),
+        1,
+        "the notification must not be lost"
+    );
+    assert_eq!(abandoned_installs[0].pods, vec![born.clone()]);
+    assert!(matches!(
+        abandoned_installs[0].reason,
+        AbandonReason::Expired { .. }
+    ));
+    // The effect is real: the hold is recorded and the install is no longer tracked, so the
+    // error is the only place the notification survives.
+    assert!(world.vcw.stranded_experts().contains_key(&born));
+    assert!(world.driver.pending_installs().is_empty());
+}
+
+#[test]
+fn at_the_pending_cap_new_structural_steps_are_refused_and_nothing_is_dropped() {
+    let (mut world, canned) = full_roster_world(&["newcode", "newcode2"]);
+    world.driver = StructureDriver::new(
+        project(),
+        proposer(),
+        base(),
+        BirthSite::Token {
+            layer: LAYER,
+            slots: 16,
+        },
+        gate(),
+    )
+    .with_max_pending(1);
+    world.serve("before", 24);
+    let seeded = world.structural_commits();
+    let report = world.l3_with(&canned, canned.manifest_digest());
+    assert_eq!(report.outcomes.len(), 2, "{report:?}");
+    let pending = report
+        .outcomes
+        .iter()
+        .filter(|o| o.committed_not_installed())
+        .count();
+    assert_eq!(pending, 1, "{report:?}");
+    let refused: Vec<_> = report
+        .outcomes
+        .iter()
+        .filter_map(|o| match &o.result {
+            StructureResult::Refused(refusal) => Some(refusal.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        refused,
+        vec![Refusal::PendingInstallsFull { pending: 1 }],
+        "{report:?}"
+    );
+    // Only the first was committed, and it is still tracked; the refused request is not held.
+    assert_eq!(world.structural_commits(), seeded + 1);
+    assert_eq!(world.driver.pending_installs().len(), 1);
+    assert_eq!(world.vcw.outstanding_requests(), 1);
 }
 
 // --- (d) no commit without admission --------------------------------------------------------
@@ -740,7 +1333,9 @@ fn replaying_the_ledger_reproduces_the_expert_registry_and_the_roster() {
         config: VcwConfig::new("replayed", [4; 32]),
         roster: rebuilt,
         router: RouterConfig::default(),
-        scorer: PolicyBook::new("defect-doc").scorer(),
+        scorer: PolicyBook::new("defect-doc", Exploration::default())
+            .unwrap()
+            .scorer(),
         key: SamplingKey::from_bytes([8; 32]),
         nonces: NonceSequence::starting_at([8; 8], 0),
         self_model: SelfModel::new(SelfModelLimits::default()),
@@ -826,6 +1421,29 @@ fn replaying_the_ledger_reproduces_the_expert_registry_and_the_roster() {
     );
 }
 
+#[test]
+fn a_base_pod_whose_manifest_declares_no_code_keeps_its_base_codes_on_rebuild() {
+    let mut rt = PtrRuntime::new(PtrConfig::default()).unwrap();
+    prime(&mut rt);
+    let mut pods = PodRegistry::default();
+    let mut seeding = trainer(0.9);
+    let seed = Seed {
+        name: "e_base",
+        codes: &["x"],
+        skill: 0.9,
+        with_inputs: false,
+    };
+    seed_expert_declaring(&mut rt, &mut pods, &mut seeding, &seed, 100, false);
+    let base = Roster {
+        proposers: vec![pod("gen")],
+        repairers: vec![(pod("e_base"), vec![code("x")])],
+    };
+    // The expert is routable in the ledger and its manifest names no code: the base roster's
+    // codes must survive the rebuild, or the Pod would serve nothing after a restart.
+    let rebuilt = rebuild_roster(base, rt.expert_registry(), &pods, &project()).unwrap();
+    assert_eq!(rebuilt.repairers, vec![(pod("e_base"), vec![code("x")])]);
+}
+
 // --- (b) learning starves a bad Pod, L3 prunes it ---------------------------------------------
 
 #[test]
@@ -868,6 +1486,7 @@ fn a_pod_the_learned_router_starves_is_pruned_through_admission_and_never_routed
         held_out_codes: vec!["x", "a"],
         trainer: trainer(0.9),
         learn: true,
+        filler: 0,
     });
     world.aimer = BTreeMap::from([(pod("e_bad"), 0.9), (pod("e_good"), 0.1)]);
 
@@ -882,20 +1501,17 @@ fn a_pod_the_learned_router_starves_is_pruned_through_admission_and_never_routed
     let learner = world.learner.clone().unwrap();
     let candidate = learner.snapshot();
     world.serve("held-out", 900);
-    let log = learner.log_from(candidate.cutoff());
     let assessment = PromotionGate::new(PromotionRule::new(0.05, 500, 100.0))
         .unwrap()
-        .assess(
-            &log,
-            &candidate,
-            &world.book.scorer(),
-            world.book.active_digest(),
-        )
+        .assess(&learner, &candidate, &world.book.scorer())
         .unwrap();
     let Verdict::Promote(evidence) = assessment.verdict.clone() else {
         panic!("{assessment:?}");
     };
-    world.book.promote(candidate, evidence).unwrap();
+    world
+        .book
+        .promote(candidate, evidence, &mut world.rt)
+        .unwrap();
 
     // Phase 3: the bad expert is reachable only through the router's floor, so its usage in
     // every window stays under the policy's floor.
@@ -968,9 +1584,10 @@ fn revoking_a_dataset_a_born_pod_rests_on_removes_it_from_routing_with_its_depen
         ],
         structure: birth_only(),
         window_requests: 4,
-        held_out_codes: vec!["y", "z", "newcode"],
+        held_out_codes: vec!["a", "y", "z", "newcode"],
         trainer: trainer(0.95).with_inputs(dataset_inputs()),
         learn: false,
+        filler: 0,
     });
     world.serve("before", 24);
     let born = only_admitted_birth(&world.l3()).clone();

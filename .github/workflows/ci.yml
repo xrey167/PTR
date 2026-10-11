@@ -139,6 +139,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features failpoints --test failpoints --locked
       - run: cargo +stable clippy -p ptr-ledger --features failpoints --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-ledger --features raft-engine-failpoints --test engine_failpoints --locked
+      - run: cargo +stable clippy -p ptr-ledger --features raft-engine-failpoints --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-bench --features ledger-experiments --locked l001
+      - run: cargo +stable clippy -p ptr-bench --features ledger-experiments --all-targets --locked -- -D warnings
   ledger-raft-engine:
     runs-on: ubuntu-latest
     steps:

@@ -58,6 +58,11 @@ pub enum RuntimeEvent {
     /// off-policy evidence a promotion rested on (`None` for a rollback). The record of a host
     /// action, not an authority: routing never changes except through that host action, and
     /// this event is in memory like [`RuntimeEvent::VcwFinished`] (not committed to the ledger).
+    ///
+    /// Observability, not an audit record: it is lost on restart, nothing replays it, and no
+    /// gate record is checked against it. Until a ledger event carries the candidate and
+    /// incumbent digests, the evidence and log digests, the cutoff, the scope and the rule,
+    /// a host must not rely on it to show that a promotion was justified.
     VcwPolicyChanged {
         scope: String,
         sequence: u64,

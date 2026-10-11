@@ -466,7 +466,11 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         );
         let outstanding = OutstandingRequests::new(config.max_outstanding);
         Ok(Self {
-            router: FindingRouter::new(registry, router, scorer, key, nonces),
+            router: FindingRouter::new(registry, router, scorer, key, nonces).map_err(|_| {
+                VcwError::Config(
+                    "the scorer is bound to an exploration rate other than the router's",
+                )
+            })?,
             limits,
             self_model,
             schema,
@@ -1318,10 +1322,22 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         }
         // Per route: did the verifier's verdict on the repaired candidate clear the code that
         // route was for? A route whose Pod declined (the leading `settled` routes) cleared
-        // nothing; a repair route cleared its code when the candidate was accepted or when the
-        // code is no longer among the verifier's hard findings; every other route is credited
-        // only with an accepted candidate. A Pod that is no longer eligible is credited with
-        // nothing.
+        // nothing. A repair route cleared its code when the candidate was accepted, or when the
+        // repaired candidate's hard codes are a subset of the codes that were routed in this
+        // attempt (it introduced nothing new) and the route's own code is gone. A Pod that
+        // removes `x` but introduces `z`, a flip-flop `x -> z -> x`, a report that is not a
+        // repair class (`Unknown`, `Disputed`, ...) or a verifier that hides `x` behind `z` is
+        // credited with nothing, and so is every route that is not a repair. A Pod that is no
+        // longer eligible is credited with nothing.
+        let routed_codes: BTreeSet<&FindingCode> = attempt
+            .routes
+            .iter()
+            .filter_map(|record| match record.class() {
+                RouteClass::Repair(code) => Some(code),
+                RouteClass::Regenerate(_) => None,
+            })
+            .chain(attempt.unroutable.iter())
+            .collect();
         let cleared: Vec<bool> = attempt
             .routes
             .iter()
@@ -1334,7 +1350,12 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
                     return true;
                 }
                 match (record.class(), &class) {
-                    (RouteClass::Repair(code), ReportClass::Repair(codes)) => !codes.contains(code),
+                    (RouteClass::Repair(code), ReportClass::Repair(after)) => {
+                        !after.contains(code)
+                            && after
+                                .iter()
+                                .all(|remaining| routed_codes.contains(remaining))
+                    }
                     _ => false,
                 }
             })
@@ -1342,8 +1363,14 @@ impl<S: AdmissibleScorer> VcwLoop<S> {
         session.tally.note(&attempt.routes, &cleared);
         // The learner is told the verifier's verdict on this candidate, for the routes that
         // produced it: `classify` accepted it or it did not. No score, hint or bid is involved.
+        // A Pod that is no longer eligible is credited with nothing, exactly as in the tally
+        // (an accepted candidate whose author was revoked is not returned).
         if let Some(learner) = &self.learner {
-            let reward = VerifierReward::from_class(&class);
+            let reward = if returned {
+                VerifierReward::from_class(&class)
+            } else {
+                VerifierReward::NOT_CLEARED
+            };
             for record in attempt.routes.iter().skip(attempt.settled) {
                 learner.settle(record, reward);
             }

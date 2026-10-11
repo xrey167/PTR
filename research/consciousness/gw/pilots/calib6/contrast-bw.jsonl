@@ -1,0 +1,10 @@
+{"seed": 1011, "D": 2048, "arm": "bw_all_to_all", "lr": 0.006, "d": 48, "ffn": 147, "wd_micro": 0, "id": 828, "ood16": 791, "ood24": 741, "converged": 1, "steps": 3600, "best_val": 829, "loss_w": 100565, "sec": 58}
+{"seed": 1012, "D": 2048, "arm": "bw_all_to_all", "lr": 0.006, "d": 48, "ffn": 147, "wd_micro": 0, "id": 822, "ood16": 750, "ood24": 710, "converged": 1, "steps": 5850, "best_val": 833, "loss_w": 101186, "sec": 140}
+{"seed": 1013, "D": 2048, "arm": "bw_all_to_all", "lr": 0.006, "d": 48, "ffn": 147, "wd_micro": 0, "id": 811, "ood16": 726, "ood24": 661, "converged": 1, "steps": 4050, "best_val": 846, "loss_w": 94363, "sec": 64}
+{"seed": 1014, "D": 2048, "arm": "bw_all_to_all", "lr": 0.006, "d": 48, "ffn": 147, "wd_micro": 0, "id": 817, "ood16": 749, "ood24": 706, "converged": 1, "steps": 4650, "best_val": 819, "loss_w": 81388, "sec": 102}
+{"seed": 1015, "D": 2048, "arm": "bw_all_to_all", "lr": 0.006, "d": 48, "ffn": 147, "wd_micro": 0, "id": 786, "ood16": 731, "ood24": 647, "converged": 1, "steps": 4050, "best_val": 794, "loss_w": 117906, "sec": 120}
+{"seed": 1016, "D": 2048, "arm": "bw_all_to_all", "lr": 0.006, "d": 48, "ffn": 147, "wd_micro": 0, "id": 792, "ood16": 745, "ood24": 662, "converged": 1, "steps": 3750, "best_val": 812, "loss_w": 114042, "sec": 81}
+{"seed": 1017, "D": 2048, "arm": "bw_all_to_all", "lr": 0.006, "d": 48, "ffn": 147, "wd_micro": 0, "id": 779, "ood16": 690, "ood24": 638, "converged": 1, "steps": 3450, "best_val": 798, "loss_w": 145877, "sec": 73}
+{"seed": 1018, "D": 2048, "arm": "bw_all_to_all", "lr": 0.006, "d": 48, "ffn": 147, "wd_micro": 0, "id": 834, "ood16": 743, "ood24": 680, "converged": 1, "steps": 4650, "best_val": 836, "loss_w": 93031, "sec": 71}
+{"seed": 1019, "D": 2048, "arm": "bw_all_to_all", "lr": 0.006, "d": 48, "ffn": 147, "wd_micro": 0, "id": 798, "ood16": 710, "ood24": 624, "converged": 1, "steps": 4650, "best_val": 816, "loss_w": 98589, "sec": 93}
+{"seed": 1020, "D": 2048, "arm": "bw_all_to_all", "lr": 0.006, "d": 48, "ffn": 147, "wd_micro": 0, "id": 816, "ood16": 766, "ood24": 732, "converged": 1, "steps": 4200, "best_val": 815, "loss_w": 87731, "sec": 60}

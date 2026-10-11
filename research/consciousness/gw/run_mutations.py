@@ -4,6 +4,11 @@ in a throwaway copy of the harness.
     python research/consciousness/gw/run_mutations.py            # all, writes results/mutations.json
     python research/consciousness/gw/run_mutations.py --only topk-write-not-applied
 
+A plan entry is killed in one of three ways (see tests/mutations.toml): the reduced-scale harness exits 1 with an expected structural
+counter; exits 2 with an expected negative control or INTEGRITY counter named in its stderr; or, for entries with `unit_tests`
+(defects in the pure derivations of the guard scalars and in the model definitions), the named unit tests fail in the planted
+copy while they pass in the unmutated copy.
+
 scripts/mutation_check.py is the repository's checker, but it builds a Cargo package and runs
 target/release/<package>; it cannot plant a defect in a Python entrypoint. This runner follows the
 same contract (one defect at a time, restore whatever happens, killed = exit 1 with an expected
@@ -17,6 +22,7 @@ that scale first; otherwise nothing is planted and no record is written.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import shutil
@@ -57,18 +63,44 @@ def run_harness(plan: dict, timeout: int, tree: Path) -> tuple[int | str, dict, 
     return done.returncode, result, done.stderr[-1500:]
 
 
+def stderr_list(stderr: str, prefix: str) -> list[str]:
+    """The names in the list the harness prints after `prefix` on its stderr (a Python list literal), [] when absent."""
+    for line in stderr.splitlines():
+        if line.startswith(prefix):
+            try:
+                value = ast.literal_eval(line[len(prefix):].strip())
+            except (ValueError, SyntaxError):
+                return []
+            return [str(v) for v in value] if isinstance(value, list) else []
+    return []
+
+
 def classify(code, result: dict, stderr: str, expect: list[str]) -> tuple[str, list[str]]:
     fired = [r.split(" ")[0] for r in result.get("falsifiers_failed", [])]
     unmet = [r.split(" ")[0] for r in result.get("coverage_failed", [])]
-    seen = fired + unmet
+    broken = [r.split(" ")[0] for r in result.get("integrity_failed", [])]
+    seen = fired + unmet + broken
     if code == 0:
         return "survived", seen
     if code == 1:
         return ("killed" if any(name in seen for name in expect) else "failed-elsewhere"), seen
     if code == 2:
-        controls = [name for name in expect if name.startswith("control:") and name.split(":", 1)[1] in stderr]
-        return ("killed" if controls else "crashed"), seen
+        controls = stderr_list(stderr, "harness integrity: negative controls did not trip:")
+        counters = stderr_list(stderr, "harness integrity: integrity counters above 0:")
+        hit = [name for name in expect if (name.startswith("control:") and name.split(":", 1)[1] in controls) or name in counters]
+        return ("killed" if hit else "crashed"), seen
     return ("timeout" if code == "timeout" else "crashed"), seen
+
+
+def run_units(plan: dict, tests: list[str], tree: Path, timeout: int) -> tuple[int | str, str]:
+    """Run the named unit tests of research/consciousness/tests in `tree` (exit status, tail of the output)."""
+    command = [sys.executable, "-m", "unittest", *tests]
+    try:
+        done = subprocess.run(command, cwd=tree / "research/consciousness/tests", capture_output=True, text=True, timeout=timeout, check=False,
+                              env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    except subprocess.TimeoutExpired:
+        return "timeout", ""
+    return done.returncode, (done.stdout + done.stderr)[-1500:]
 
 
 def git(*args: str) -> str:
@@ -79,10 +111,14 @@ def prepare_copy(tmp: Path) -> None:
     """A throwaway copy of exactly what the harness reads (gw/*.py and the experiment's config.toml), laid out so
     that the copy's own ROOT is `tmp`: defects are planted there, never in the working tree, so an interrupted run
     cannot leave a mutated harness behind."""
-    shutil.copytree(HERE, tmp / "research/consciousness/gw", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(HERE, tmp / "research/consciousness/gw", ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "pilots"))
+    shutil.copytree(HERE.parent / "tests", tmp / "research/consciousness/tests", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     target = tmp / "experiments/consciousness/C001-global-workspace"
-    target.mkdir(parents=True)
-    shutil.copy(EXPERIMENT / "config.toml", target / "config.toml")
+    (target / "tests").mkdir(parents=True)
+    for name in ("config.toml", "criteria.toml"):
+        shutil.copy(EXPERIMENT / name, target / name)
+    shutil.copy(PLAN, target / "tests/mutations.toml")
+    shutil.copy(ROOT / "experiments/preregistration.toml", tmp / "experiments/preregistration.toml")
 
 
 def main() -> int:
@@ -111,6 +147,12 @@ def main() -> int:
         if code != 0:
             print(f"the unmutated harness does not pass at the mutation scale (exit {code}): {err}", file=sys.stderr)
             return 2
+        unit_names = sorted({t for m in selected for t in m.get("unit_tests", [])})
+        if unit_names:
+            code, tail = run_units(plan, unit_names, base, args.timeout)
+            if code != 0:
+                print(f"the unit tests do not pass in the unmutated copy (exit {code}): {tail}", file=sys.stderr)
+                return 2
         for mutation in selected:
             tree = Path(scratch) / mutation["name"]
             prepare_copy(tree)
@@ -121,8 +163,13 @@ def main() -> int:
                     print(f"{mutation['name']}: anchor not found exactly once in {f}", file=sys.stderr)
                     return 2
                 path.write_text(text.replace(find, replace, 1), encoding="utf-8")
-            code, result, err = run_harness(plan, args.timeout, tree)
-            verdict, seen = classify(code, result, err, mutation["expect"])
+            if mutation.get("unit_tests"):
+                code, tail = run_units(plan, mutation["unit_tests"], tree, args.timeout)
+                verdict, seen = ("killed" if code == 1 else "survived" if code == 0 else "timeout" if code == "timeout" else "crashed"), []
+                result, err = {}, tail
+            else:
+                code, result, err = run_harness(plan, args.timeout, tree)
+                verdict, seen = classify(code, result, err, mutation["expect"])
             outcomes.append({"name": mutation["name"], "file": mutation["file"], "result": verdict, "exit": code, "counters": seen, "expected": mutation["expect"]})
             print(f"{mutation['name']}: {verdict} (exit {code}; {seen})", flush=True)
             shutil.rmtree(tree, ignore_errors=True)

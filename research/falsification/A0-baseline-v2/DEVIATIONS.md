@@ -11,7 +11,7 @@ This file is not part of any digest pin (check: `scripts/a0_baseline_study.py`
 pins `criteria.toml`, `PREREGISTRATION.md`, the deciders, the core, the lock and
 the runner sources, not this file), so entries are added when the events happen.
 
-Log: D1, D2.
+Log: D1, D2, D3.
 
 ### D1: M003-v3 seed 71 interrupted by a container restart (2026-10-09)
 
@@ -30,6 +30,16 @@ Facts: the pinned v2 decider (`scripts/aggregate_a0_baseline_v2.py --publish-res
 What was done: the decider was run as preregistered and its outputs (`DECISION.toml`, `paired-ci-95.json`, `metrics.json`, `run.json`) were kept byte for byte, except that `run.json` was republished through `experiment_records.publish_aggregate` with exactly those three fields added: the two digests copied from the experiment's `experiment.toml` and `seed_records` from `experiment_records.seed_record_digests` over the committed seed records. `metrics_sha256` is recomputed over the unchanged `metrics.json`. No criterion, threshold, metric, verdict, label or seed changed, the decider and its pins were not edited, and no seed record was read for this beyond its file digest. M003-v3 publishes no aggregate (D1) and is untouched.
 
 What `RESULTS.md` says: nothing changes; the verdicts are the decider's.
+
+### D3: successor study for M003-v3: M003-v4 (2026-10-10)
+
+Facts: the owner decided on 2026-10-10 that the question of M003-v3 (does the tied latent recurrence improve out-of-distribution routing at A0?) is still wanted. M003-v3 is INCONCLUSIVE-INTERRUPTED (D1) and by the interruption rule cannot be rerun or completed.
+
+What was observed: nothing new. The completed seeds 17, 29 and 43 of M003-v3 were not read for this entry or for the registration of the successor, and the decider did not read them (D1). The registration used metadata only (ids, statuses, file digests).
+
+What was done: the successor study **A0-baseline-v3-m003** (`research/falsification/A0-baseline-v3-m003/`) registers the experiment **M003-v4** (`experiments/model/M003-v4-latent-recurrence`, status `planned`, listed, to be frozen by the head). Its `criteria.toml` is the v2 file with the same values for M003 (only the study name, the study and contrast ids, the absence of M001/M002, the pin of the v2 decider and a `[sweep_reuse]` table differ; a test compares them). It reuses the learning rates of the completed validation-only `M003-v3-sweep` (`lr_M003-v4.tsv` is a byte copy of `lr_M003-v3.tsv`), so no new sweep is registered. Its decider `scripts/aggregate_a0_baseline_v3.py` imports `scripts/aggregate_a0_baseline_v2.py` unchanged and rebinds only the criteria name and path (the v2 decider hard-codes `A0-baseline-v2` and is digest-pinned by the prepared v2 experiments). M003-v3 is marked `superseded` (manifest status and registry only, `SUPERSEDED.md`; its `results/` are untouched). The case is covered by the procedure below (item 4, "Confirmatory").
+
+What `RESULTS.md` says: nothing changes for M003-v3 (INCONCLUSIVE-INTERRUPTED, no result); it states that the experiment is `superseded` by M003-v4, whose result, when it exists, is reported in `../A0-baseline-v3-m003/RESULTS.md` and is not pooled with any M003-v3 seed.
 
 The story of why this study exists (the v1 decider's record-identity defect and
 the two interruptions of v1) is in `DESIGN.md`, "Why v2 replaced v1", and in
