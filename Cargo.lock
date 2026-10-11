@@ -4471,6 +4471,8 @@ dependencies = [
  "ptr-model-api",
  "ptr-pg",
  "ptr-pods",
+ "ptr-podwire",
+ "ptr-protocol",
  "ptr-runtime",
  "ptr-search",
  "ptr-semdb",
@@ -4692,6 +4694,7 @@ dependencies = [
 name = "ptr-podwire"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "ptr-config",
  "ptr-ledger",
  "ptr-net",
@@ -4713,6 +4716,7 @@ dependencies = [
  "prost-build",
  "protoc-bin-vendored",
  "ptr-types",
+ "sha2 0.11.0",
 ]
 
 [[package]]

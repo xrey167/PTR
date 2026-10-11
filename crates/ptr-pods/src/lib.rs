@@ -113,6 +113,7 @@ pub use qwen_moe::{
 pub use qwen_stack::{
     Qwen2Binding, Qwen2CobatchedOutput, Qwen2PagedStack, Qwen2QkNorm, Qwen2StackConfig,
     Qwen2StackError, Qwen2StackInput, Qwen2StackLayerWeights, Qwen2StackOutput, Qwen2StackWeights,
+    Qwen2StageOutput, StageRows, StageRun,
 };
 pub use runtime::{
     ArtifactCatalog, ArtifactError, ExecutorError, ExecutorFactory, HealthStatus,
