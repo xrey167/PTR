@@ -780,6 +780,8 @@ max_refused_share_damaged_permille = "int"
 max_every_falsifier = "int"
 timing_gated = "bool"
 engine_lie_gated = "bool"
+preregistration_text = "file"
+criteria = "file"
 
 # F007 (vcw-loop): the whole verifier-closed workspace loop on SIMULATED expert Pods with declared per-(Pod, finding
 # code) skill tables; a mechanism check, no claim about any model. The margins are stated in
