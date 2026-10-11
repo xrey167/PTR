@@ -4,231 +4,238 @@ name = "E007-split-pod-kv"
 path = "experiments/system/E007-split-pod-kv"
 tests_dir = "tests"
 
+# The preregistered choices of the harness (`ptr-bench split-pod-kv`, bins/ptr-bench/src/experiments/e007/params.rs,
+# which fails its drift test if a compiled constant differs from this table). E007 is listed in
+# experiments/preregistration.toml; the [preregistration] table at the end of this file repeats these values and
+# the head pins its two digests at the freeze. Keys that begin with owner_decision_ or stated_limit_ are prose and
+# mirror no constant.
 [pinned_thresholds]
-max_wire_kv_handle_count = 0
-max_wire_kv_page_bytes = 0
-
 # Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
 test_model_layers = 4
 split_layer = 2
-min_split_layer_exclusive = 0
-min_activation_frames_crossed = 1
-max_non_allowlisted_payloads_admitted = 0
-min_mislabelled_kv_payload_attempts = 1
-min_interleaved_frame_pairs = 1
-max_cross_frame_mixing_count = 0
-min_large_frame_cases = 1
+hidden_size = 64
+num_heads = 4
+num_kv_heads = 2
+head_dim = 16
+vocab_size = 256
+weight_seed = 20240607
+weights = "seeded random (pinned seed and shape)"
+boundary_dtype = "F32"
+tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
+moe_topology = "none: dense tiny decoder"
+tiny_model_config_digest = "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433a"
+tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
+max_model_pin_mismatches = 0
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_domain = "ptr.e007.corpus-selection.v1"
+corpus_selection_digest = "sha256:52efb0dee3e036edc77172632c28a2ba072ce353fdce3cee55d380402e530aba"
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+sequences = 24
+prompt_tokens_min = 8
+prompt_tokens_max = 64
+decode_steps = 8 # frames per sequence: 1 prefill frame + 7 decode steps
+page_tokens = 16
+intermediate_size = 128
+rope_theta = "10000.0"
+rms_norm_eps = "1e-6"
+key_encoding = "PreRope"
+output_definition = "final logits bytes plus per-layer KV bytes on each pod"
+small_frame_chunk_bytes = 2048
+probe_chunk_bytes = 512
+probe_frame_rows = 12
+frame_budget_ms = 100
+frame_spacing_ms = 25
 large_frame_tokens = 2048
 large_frame_width = 2048
 large_frame_dtype = "f32"
 large_frame_bytes = 16777216
 max_body_bytes = 4194304
-# Preregistered choices for this experiment (no code default exists).
-boundary_dtype = "F32"
-vocab_size = 256
-min_chain_mismatch_attempts = 1
-min_duplicate_chunk_attempts = 1
-min_out_of_window_attempts = 1
-min_bad_chunk_digest_attempts = 1
-min_mixed_version_frame_attempts = 1
-min_incomplete_frames_over_peer_limit = 1
-min_queue_overflow_attempts = 1
-min_reassembly_attempts_after_abandon = 1
-min_interleaved_chunk_switches = 1
-abandoned_chunks_released_equals_sent = true
-buffered_bytes_return_to_baseline = true
-min_kv_sized_allowlisted_smuggling_attempts = 1
-min_stale_upstream_attempts = 1
-max_stale_upstream_kv_served = 0
-output_definition = "final logits bytes plus per-layer KV bytes on each pod"
-# Preregistered choices for this experiment (no code default exists).
-seed_aggregation = "every_seed_must_pass"
-# Preregistered choices for this experiment (no code default exists).
-large_frame_chunks = 5
 max_chunk_bytes = 3670016
+large_frame_chunks = 5
+large_frame_send_order = [1, 0, 3, 2, 4]
 reorder_window = 4
 frame_deadline_ms = 5000
 max_incomplete_frames_per_peer = 8
 max_chunks_in_flight = 32
-min_splice_attempts = 1
-min_non_allowlisted_type_attempts = 1
-max_kv_pages_installed_from_wire = 0
-min_abandoned_frame_cases = 1
-min_abandoned_chunks_sent = 1
+max_frame_tombstones_per_principal = 64
+clock_skew_bound_ms = 1000
+max_clock_skew_ms = 1000
+max_frame_deadline_lifetime_ms = 5000
+replay_window_ms = 10000
+replay_window_rule = "replay_window >= max_frame_deadline_lifetime + 2 * max_clock_skew (10000 >= 5000 + 2 * 1000 = 7000)"
+max_assembled_frame_bytes = 33554432
+max_total_buffered_bytes = 134217728
+tombstone_overcapacity_frames = 65
+tombstone_stagger_ms = 10
+late_window_replay_delay_range_ms = [9000, 10000]
+late_window_replay_delay_range_rule = "[0.9 * replay_window_ms, replay_window_ms), half-open"
+chunk_envelope_authentication = "Ed25519 signature of the upstream runtime over the complete envelope"
+upstream_principal = "stage-a-runtime"
+addressed_to = "stage-b-host"
+stage_identity = "stage-a"
+signing_key_seed = 20240607
+chunk_header_fields = ["frame_id", "chunk_index", "chunk_total", "chunk_digest", "frame_digest", "upstream_chain", "signed_absolute_deadline", "parent_operation_id"]
+chunk_digest_covers = ["frame_id", "chunk_index", "chunk_total", "frame_digest", "parent_operation_id", "signed_absolute_deadline", "upstream_chain", "chunk_bytes", "domain"]
+chunk_envelope_signed_fields = ["frame_id", "parent_operation_id", "chunk_index", "chunk_count", "signed_absolute_deadline", "frame_digest", "chunk_digest", "upstream_chain"]
+reassembly_identity = "(principal, parent_operation_id, frame_id)"
+tombstone_bound = "admitted_incomplete_frames + retained_tombstones (abandoned and completed) <= max_frame_tombstones_per_principal"
+completion_tombstone_retention = "signed_absolute_deadline + clock skew bound"
+abandonment_tombstone_retention = "abandonment_time + replay_window_ms"
+saturation_behaviour = "fail closed with typed FrameTableFull"
+session_policy = "chunks of one (principal, parent_operation_id, frame_id) from any session of the principal join one assembly; exactly one delivery results"
+invalidation_types = ["revocation", "supersession"]
+invalidation_paths = ["normal", "lag", "inflight"]
+invalidation_coverage_matrix = { kinds = ["upstream_stage_generation"], types = ["revocation", "supersession"], paths = ["normal", "lag", "inflight"], cells = ["upstream_stage_generation_normal_revocation", "upstream_stage_generation_normal_supersession", "upstream_stage_generation_lag_revocation", "upstream_stage_generation_lag_supersession", "upstream_stage_generation_inflight_revocation", "upstream_stage_generation_inflight_supersession"] }
+invalidation_matrix_path_meaning = "normal = the Revoke message is delivered, then an ordinary lookup; lag = the Revoke message is dropped (never delivered) or delayed (delivered after the lookup); inflight = a use begun before the invalidation finishes after it"
+invalidation_matrix_not_applicable = "restore: no KV is restored on a Pod; the downstream cache has no persistence"
+revalidated_at_use = ["stage generation", "stage manifest digest", "placement epoch"]
+adversarial_attempt_kinds = ["chain_mismatch", "duplicate_chunk", "out_of_window", "bad_chunk_digest", "mixed_version_frame", "incomplete_frames_over_peer_limit", "queue_overflow", "splice", "cross_operation_splice", "non_allowlisted_type", "mislabelled_kv_payload", "kv_sized_allowlisted_smuggling", "wrong_shape", "positions_length", "mislabelled_frame_digest", "late_chunk_after_abandon", "overcapacity_frame", "full_frame_replay", "stale_upstream_request"]
+valid_frame_cases = ["large_frame_16mib_chunked_control", "concurrent_valid_reassembly", "activation_control"]
+smuggling_probe_kinds = ["mislabelled_kv_payload", "non_allowlisted_type", "kv_sized_allowlisted_smuggling"]
+wire_kv_page_bytes_definition = "bytes of any admitted payload that does not decode as an allowlisted schema, or that matches the digest of a KV page held by either pod or carries a window of one; legitimate traffic only: the activation control and every adversarial probe are excluded; every payload is scanned as sent (each chunk) and every valid frame as reassembled, because a page can straddle two chunks"
+wire_capture = "the run's JSON, key wire_capture: every payload that crossed the PodWire frame codec, with its role, type id, size, digest and verdict"
+transport = "the real PodWire request frame codec (encode_request, decode_request, MAX_BODY_BYTES enforced) in process; no network"
+min_attempts = 1
+max_violations = 0
+min_activation_frames_crossed = 192
+min_valid_frames_sent = 192
+min_large_frame_cases = 1
+min_interleaved_frame_pairs = 1
+min_interleaved_chunk_switches = 1
+tombstones_retained_at_saturation = 64
+abandoned_frames_in_saturation_case = 64
+min_frames_accepted_after_tombstone_expiry = 1
 min_stale_upstream_entries_before_revocation = 1
-min_revoke_messages_dropped_or_delayed = 1
-frames_with_consistent_whole_frame_digest_equals_valid_frames_sent = true
-wire_kv_page_bytes_definition = "bytes of any payload not decoding as an allowlisted schema, or matching the digest of a KV page held by either pod"
-# Preregistered choices for this experiment (no code default exists).
-weights = "seeded random (pinned seed and shape)"
-weight_seed = 20240607
+min_revoke_messages_dropped_or_delayed = 2
+min_control_trips = 1
+buffered_bytes_baseline = 0
+min_stale_worker_frame_race_cases = 1
+min_sequences_per_seed = 24
+
+# The scope of E007 (owner decision of 2026-10-09: core only) and what it leaves to E008, in the words of PREREGISTRATION.md.
+owner_decision_2026_10_09_e007 = "E007 is the core: activation frames, bounded chunking and reassembly, smuggling probes, the fence epoch and bit-identity against a single pod; the extensions (split-frame input lineage and raw ancestry, Approximate frames and taint, persistence rejection, the expert, adapter, base-model, semantic, memory and derived kinds of the invalidation matrix) go to the planned successor E008"
+stated_limit_transport = "frames cross the real PodWire request frame codec in process; no socket, no iroh, no second host, no latency"
+stated_limit_model = "a tiny seeded 4-layer dense decoder on CPU in F32; bit-identity here checks the plumbing (stage hand-over, framing, reassembly), not the math, because the layer code is shared by the split and the single-pod run"
+stated_limit_frame_rate = "a completed frame holds one of 64 table slots per principal until its signed deadline plus 1000 ms; the frame rate one principal can sustain is 64 / (deadline budget + skew), about 58 frames per second at a 100 ms budget"
+stated_limit_signature = "the chunk envelope is authenticated with an Ed25519 signature of the upstream runtime over the complete envelope; the key is registered per authenticated principal and no key distribution or rotation is modelled"
+stated_limit_restore = "no KV is restored on a Pod, so the restore path of the invalidation matrix does not apply"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml). Every value is
+# [pinned_thresholds]'s; the head pins the two digests when the text and the criteria are final.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "split-pod-kv"
+seed_aggregation = "every_seed_must_pass"
+test_model_layers = 4
+split_layer = 2
 hidden_size = 64
 num_heads = 4
 num_kv_heads = 2
 head_dim = 16
-# Preregistered choices for this experiment (no code default exists).
-min_positions_length_rejection_attempts = 1
-max_positions_length_mismatches_admitted = 0
-# Preregistered choices for this experiment (no code default exists).
-min_activation_control_cases = 1
-max_activation_control_kv_installs = 0
-activation_control_excluded_from = ["typed_rejection_requirement", "wire_kv_page_bytes"]
-# Preregistered choices for this experiment (no code default exists).
-min_mislabelled_frame_digest_attempts = 1
-max_mislabelled_frame_digests_admitted = 0
-model_computation_case = "seeded 64-wide split model (hidden_size = 64) versus single-pod execution, bitwise"
-large_frame_case = "transport-only: reassembled bytes equal sent bytes; frame digest over the complete payload"
-max_large_frame_reassembled_bytes_mismatch_count = 0
-max_large_frame_digest_mismatches = 0
-frame_digest_field = "frame_digest"
-# Preregistered choices for this experiment (no code default exists).
-chunking_mandatory = true
-shape_limit_alternative = "removed"
-chunk_header_fields = ["frame_id", "chunk_index", "chunk_total", "chunk_digest", "frame_digest", "upstream_chain", "signed_absolute_deadline", "parent_operation_id"]
-tombstone_retention = "at least the maximum frame deadline plus the clock skew bound"
-clock_skew_bound_ms = 1000
-max_frame_tombstones_per_principal = 64
-min_late_chunks_after_abandon_attempts = 1
-max_late_chunks_after_abandon_admitted = 0
-# Preregistered choices for this experiment (no code default exists).
-min_inflight_split_request_race_cases = 1
-max_outputs_after_upstream_invalidation = 0
-min_tombstone_saturation_cases = 1
-min_new_frames_refused_typed = 1
-max_tombstone_evictions_before_retention = 0
-tombstone_table_full_refusal = "typed FrameTableFull, rate-limited, until a tombstone expires"
-# Preregistered choices for this experiment (no code default exists).
+vocab_size = 256
+weight_seed = 20240607
+weights = "seeded random (pinned seed and shape)"
+boundary_dtype = "F32"
+tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
+moe_topology = "none: dense tiny decoder"
+tiny_model_config_digest = "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433a"
+tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
+max_model_pin_mismatches = 0
 corpus = "synthetic token sequences from a seeded generator"
 corpus_generator_seed = 20240607
 corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
-corpus_selection_digest_recorded_in_run_json = true
+corpus_selection_domain = "ptr.e007.corpus-selection.v1"
+corpus_selection_digest = "sha256:52efb0dee3e036edc77172632c28a2ba072ce353fdce3cee55d380402e530aba"
 max_selection_digest_mismatches = 0
 max_procedure_mismatches = 0
-procedure_parameters_recorded_per_cell = ["seeds", "hidden_size", "vocab_size", "large_frame_chunks", "reorder_window", "frame_deadline_ms", "max_incomplete_frames_per_peer", "max_chunks_in_flight", "test_model_layers", "weight_seed", "num_heads", "num_kv_heads", "head_dim", "corpus_generator_seed", "split_layer", "large_frame_tokens", "large_frame_width", "large_frame_bytes", "clock_skew_bound_ms", "tombstone_overcapacity_abandoned_frames", "chunk_header_fields", "invalidation_types", "tombstone_bound", "reassembly_identity", "chunk_digest_covers", "adversarial_attempt_kinds", "valid_frame_cases", "completion_tombstone_key", "completion_tombstone_retention", "invalidation_coverage_matrix", "smuggling_probe_kinds", "activation_frame_input_lineage", "replay_window_ms", "max_frame_deadline_lifetime_ms", "max_clock_skew_ms", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "boundary_probe_counters", "matrix_kind_frame_fields", "late_window_replay_delay_range_ms", "upstream_chain_elements", "input_lineage_elements", "production_modes", "signed_frame_fields", "derived_state_carriers", "chunk_envelope_signed_fields"]
-# Preregistered choices for this experiment (no code default exists).
-tombstone_overcapacity_abandoned_frames = 65
-min_frames_accepted_after_tombstone_expiry = 1
-saturation_behaviour = "fail closed with typed FrameTableFull"
-# Preregistered choices for this experiment (no code default exists).
-invalidation_types = ["revocation", "supersession"]
-min_overcapacity_frame_attempts = 1
-tombstones_retained_at_saturation_equals_max = true
-# Preregistered choices for this experiment (no code default exists).
-identity_set_checks = [["abandoned_chunk_id_set_digest", "released_chunk_id_set_digest"], ["valid_sent_frame_id_set_digest", "consistent_digest_frame_id_set_digest"]]
-# Preregistered choices for this experiment (no code default exists).
-min_concurrent_abandonment_cases = 1
-max_tombstone_bound_violations = 0
-min_cross_operation_splice_attempts = 1
-max_cross_operation_splices_admitted = 0
-tombstone_bound = "admitted_incomplete_frames + retained_tombstones (abandoned and completed) <= max_frame_tombstones_per_principal"
-reassembly_identity = "(session, parent_operation_id, frame_id)"
-chunk_digest_covers = ["frame_digest", "parent_operation_id", "signed_absolute_deadline"]
-tombstone_bound_terms = ["admitted_incomplete_frames", "retained_tombstones"]
-# Preregistered choices for this experiment (no code default exists).
-adversarial_attempt_kinds = ["chain_mismatch", "duplicate_chunk", "out_of_window", "bad_chunk_digest", "mixed_version_frame", "incomplete_frames_over_peer_limit", "queue_overflow", "splice", "cross_operation_splice", "non_allowlisted_type", "mislabelled_kv_payload", "kv_sized_allowlisted_smuggling", "wrong_shape", "positions_length", "mislabelled_frame_digest", "late_chunk_after_abandon", "overcapacity_frame", "full_frame_replay", "stale_upstream_request"]
-valid_frame_cases = ["large_frame_16mib_chunked_control", "concurrent_valid_reassembly", "activation_control"]
-valid_frames_must_complete_bit_identically = true
-min_full_frame_replay_attempts = 1
-full_frame_replay_includes_fresh_request_ids = true
-max_replayed_frames_admitted = 0
-max_valid_frame_bitwise_mismatches = 0
-completion_tombstone_key = "(principal, parent_operation_id, frame_id)"
-completion_tombstone_retention = "signed_absolute_deadline + clock skew bound"
-replay_rejection = "typed FrameReplayed"
-# Preregistered choices for this experiment (no code default exists).
-invalidation_coverage_matrix = { kinds = ["upstream_stage_generation", "semantic_input", "memory_input", "derived_input", "upstream_chain_expert", "upstream_adapter", "upstream_base_model"], types = ["revocation", "supersession"], paths = ["normal", "lag", "inflight"], extra_types = { upstream_chain_expert = ["fence"] }, cells = ["upstream_stage_generation_normal_revocation", "upstream_stage_generation_normal_supersession", "upstream_stage_generation_lag_revocation", "upstream_stage_generation_lag_supersession", "upstream_stage_generation_inflight_revocation", "upstream_stage_generation_inflight_supersession", "semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "derived_input_normal_revocation", "derived_input_normal_supersession", "derived_input_lag_revocation", "derived_input_lag_supersession", "derived_input_inflight_revocation", "derived_input_inflight_supersession", "upstream_chain_expert_normal_revocation", "upstream_chain_expert_normal_supersession", "upstream_chain_expert_normal_fence", "upstream_chain_expert_lag_revocation", "upstream_chain_expert_lag_supersession", "upstream_chain_expert_lag_fence", "upstream_chain_expert_inflight_revocation", "upstream_chain_expert_inflight_supersession", "upstream_chain_expert_inflight_fence", "upstream_adapter_normal_revocation", "upstream_adapter_normal_supersession", "upstream_adapter_lag_revocation", "upstream_adapter_lag_supersession", "upstream_adapter_inflight_revocation", "upstream_adapter_inflight_supersession", "upstream_base_model_normal_revocation", "upstream_base_model_normal_supersession", "upstream_base_model_lag_revocation", "upstream_base_model_lag_supersession", "upstream_base_model_inflight_revocation", "upstream_base_model_inflight_supersession"] }
-min_invalidation_matrix_cases_per_cell = 1
-max_invalidation_matrix_stale_hits_per_cell = 0
-invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
-invalidation_matrix_not_applicable = "restore: no KV is restored on a Pod"
-# Preregistered choices for this experiment (no code default exists).
-min_digest_inconsistency_attempts = 1
-digest_inconsistency_members_of_adversarial_attempt_kinds = ["mixed_version_frame", "splice", "cross_operation_splice"]
-digest_equality_scope = "valid frames only"
-# Preregistered choices for this experiment (no code default exists).
-min_cross_session_replay_attempts = 1
-max_cross_session_replays_admitted = 0
-tombstone_scope = "authenticated principal; key (principal, parent_operation_id, frame_id); survives reconnects until signed_absolute_deadline + clock skew bound"
-# Preregistered choices for this experiment (no code default exists).
-smuggling_probe_kinds = ["mislabelled_kv_payload", "non_allowlisted_type", "kv_sized_allowlisted_smuggling"]
-min_smuggling_probe_attempts_per_kind = 1
-max_smuggling_probes_admitted = 0
-wire_kv_page_bytes_scope = "admitted legitimate PodWire traffic only; probe bytes excluded"
-# Preregistered choices for this experiment (no code default exists).
-min_concurrent_cross_session_assembly_cases = 1
-max_duplicate_activation_deliveries = 0
-assembly_reservation = "first accepted chunk reserves (principal, parent_operation_id, frame_id) in the principal-scoped tombstone table; reservations count against max_frame_tombstones_per_principal"
-restore_applicable = false
-restore_not_applicable_reason = "no KV is restored on a Pod"
-inflight_race_applicable = true
-activation_frame_input_lineage = "every activation frame carries identity, generation and digest of every semantic and memory input that contributed, signed by the upstream runtime with the frame; downstream use-time admission revalidates it"
-# Preregistered choices for this experiment (no code default exists).
-min_raw_ancestor_omission_cases = 1
-max_reuse_after_raw_ancestor_removed = 0
-input_lineage_raw_ancestry = "ordered (Raw, content_digest) ancestry of every Raw segment that influenced the activation"
-downstream_cache_key_includes = ["activation_frame_digest", "ordered_raw_ancestry"]
-activation_frame_lineage_field = "input_lineage"
-# Preregistered choices for this experiment (no code default exists).
-min_upstream_expert_fence_cases = 1
-max_downstream_kv_reuse_after_upstream_fence = 0
-upstream_chain_carries = ["chain_expert_generation", "per_expert_fence_epoch"]
-# Preregistered choices for this experiment (no code default exists).
-replay_window_ms = 10000
-max_frame_deadline_lifetime_ms = 5000
+sequences = 24
+prompt_tokens_min = 8
+prompt_tokens_max = 64
+decode_steps = 8 # frames per sequence: 1 prefill frame + 7 decode steps
+page_tokens = 16
+intermediate_size = 128
+rope_theta = "10000.0"
+rms_norm_eps = "1e-6"
+key_encoding = "PreRope"
+output_definition = "final logits bytes plus per-layer KV bytes on each pod"
+small_frame_chunk_bytes = 2048
+probe_chunk_bytes = 512
+probe_frame_rows = 12
+frame_budget_ms = 100
+frame_spacing_ms = 25
+large_frame_tokens = 2048
+large_frame_width = 2048
+large_frame_dtype = "f32"
+large_frame_bytes = 16777216
+max_body_bytes = 4194304
+max_chunk_bytes = 3670016
+large_frame_chunks = 5
+large_frame_send_order = [1, 0, 3, 2, 4]
+reorder_window = 4
+frame_deadline_ms = 5000
+max_incomplete_frames_per_peer = 8
+max_chunks_in_flight = 32
+max_frame_tombstones_per_principal = 64
+clock_skew_bound_ms = 1000
 max_clock_skew_ms = 1000
-replay_window_rule = "replay_window >= max_frame_deadline_lifetime + 2 * max_clock_skew_ms (10000 >= 5000 + 2 * 1000 = 7000)"
-min_expired_deadline_frame_attempts = 1
-max_expired_frames_admitted = 0
-min_post_abandonment_replay_cases = 1
-max_abandoned_frame_replays_admitted = 0
-replay_window_terms = ["abandonment_time", "replay_window", "max_frame_deadline_lifetime"]
-# Preregistered choices for this experiment (no code default exists).
-min_upstream_adapter_invalidation_race_cases = 1
-max_downstream_kv_reuse_after_upstream_adapter_invalidation = 0
-upstream_chain_model_side_dependencies = ["base_model", "adapters_of_upstream_range", "experts_of_upstream_range_with_fence_epoch"]
-# Preregistered choices for this experiment (no code default exists).
-tiny_model_config = { layers = 4, hidden_size = 64, num_heads = 4, num_kv_heads = 2, head_dim = 16, vocab_size = 256, weight_seed = 20240607 }
-tiny_model_config_digest = "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433a"
-tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
-tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
-moe_topology = "none: dense tiny decoder"
-model_pins_recorded_in_run_json = true
-max_model_pin_mismatches = 0
-# Preregistered choices for this experiment (no code default exists).
-min_immediate_replay_cases = 1
-min_late_window_replay_cases = 1
+max_frame_deadline_lifetime_ms = 5000
+replay_window_ms = 10000
+replay_window_rule = "replay_window >= max_frame_deadline_lifetime + 2 * max_clock_skew (10000 >= 5000 + 2 * 1000 = 7000)"
+max_assembled_frame_bytes = 33554432
+max_total_buffered_bytes = 134217728
+tombstone_overcapacity_frames = 65
+tombstone_stagger_ms = 10
 late_window_replay_delay_range_ms = [9000, 10000]
 late_window_replay_delay_range_rule = "[0.9 * replay_window_ms, replay_window_ms), half-open"
-boundary_probe_counters = { replay_window_ms = "late_window_replay_cases", frame_deadline_ms = "expired_deadline_frame_attempts", max_frame_deadline_lifetime_ms = "expired_deadline_frame_attempts", max_clock_skew_ms = "expired_deadline_frame_attempts" , tombstone_retention_ms = "late_window_replay_cases" }
-matrix_kind_frame_fields = { upstream_stage_generation = "upstream_chain.stage_pod_identity_generation_manifest_digest", semantic_input = "input_lineage.semantic", memory_input = "input_lineage.memory", derived_input = "input_lineage.derived", upstream_chain_expert = "upstream_chain.experts_with_fence_epoch", upstream_adapter = "upstream_chain.adapters", upstream_base_model = "upstream_chain.base_model_identity_generation_digest" }
-# Preregistered choices for this experiment (no code default exists).
-upstream_chain_elements = { stage = "upstream_stage_generation", base_model = "upstream_base_model", adapters = "upstream_adapter", experts = "upstream_chain_expert" }
-input_lineage_elements = { semantic = "semantic_input", memory = "memory_input", derived = "derived_input" }
-matrix_frame_bijection = "every element of upstream_chain (stage, base model, adapters, experts) and of input_lineage (semantic, memory, derived) has exactly one E007 matrix kind and vice versa"
-# Preregistered choices for this experiment (no code default exists).
-cache_namespace_partitioned_by_production_mode = true
-cache_namespace_partition = "downstream KV cache keyed by production mode (the activation-frame digest and input lineage fix the mode; Approximate frames are never served to Exact requests)"
-production_modes = ["Exact", "Approximate"]
-# Preregistered choices for this experiment (no code default exists).
-signed_frame_fields = ["frame_id", "chunk_digest", "frame_digest", "upstream_chain", "input_lineage", "signed_absolute_deadline", "parent_operation_id", "mode", "taint", "placement_epoch"]
-min_approximate_frame_downstream_exact_lookup_cases = 1
-max_approximate_frames_served_to_exact = 0
-max_untainted_outputs_from_approximate_frames = 0
-# Preregistered choices for this experiment (no code default exists).
-derived_state_carriers = { activation_frame = ["mode", "taint"], downstream_cache_key = ["mode", "taint"], kv_page_transport = ["mode", "taint"] }
-# Preregistered choices for this experiment (no code default exists).
-min_downstream_persist_rejection_cases = 1
-max_downstream_restore_attempts_admitted = 0
+chunk_envelope_authentication = "Ed25519 signature of the upstream runtime over the complete envelope"
+upstream_principal = "stage-a-runtime"
+addressed_to = "stage-b-host"
+stage_identity = "stage-a"
+signing_key_seed = 20240607
+chunk_header_fields = ["frame_id", "chunk_index", "chunk_total", "chunk_digest", "frame_digest", "upstream_chain", "signed_absolute_deadline", "parent_operation_id"]
+chunk_digest_covers = ["frame_id", "chunk_index", "chunk_total", "frame_digest", "parent_operation_id", "signed_absolute_deadline", "upstream_chain", "chunk_bytes", "domain"]
+chunk_envelope_signed_fields = ["frame_id", "parent_operation_id", "chunk_index", "chunk_count", "signed_absolute_deadline", "frame_digest", "chunk_digest", "upstream_chain"]
+reassembly_identity = "(principal, parent_operation_id, frame_id)"
+tombstone_bound = "admitted_incomplete_frames + retained_tombstones (abandoned and completed) <= max_frame_tombstones_per_principal"
+completion_tombstone_retention = "signed_absolute_deadline + clock skew bound"
+abandonment_tombstone_retention = "abandonment_time + replay_window_ms"
+saturation_behaviour = "fail closed with typed FrameTableFull"
+session_policy = "chunks of one (principal, parent_operation_id, frame_id) from any session of the principal join one assembly; exactly one delivery results"
+invalidation_types = ["revocation", "supersession"]
+invalidation_paths = ["normal", "lag", "inflight"]
+invalidation_coverage_matrix_kinds = ["upstream_stage_generation"]
+invalidation_coverage_matrix_cells = ["upstream_stage_generation_normal_revocation", "upstream_stage_generation_normal_supersession", "upstream_stage_generation_lag_revocation", "upstream_stage_generation_lag_supersession", "upstream_stage_generation_inflight_revocation", "upstream_stage_generation_inflight_supersession"]
+invalidation_matrix_path_meaning = "normal = the Revoke message is delivered, then an ordinary lookup; lag = the Revoke message is dropped (never delivered) or delayed (delivered after the lookup); inflight = a use begun before the invalidation finishes after it"
+invalidation_matrix_not_applicable = "restore: no KV is restored on a Pod; the downstream cache has no persistence"
+revalidated_at_use = ["stage generation", "stage manifest digest", "placement epoch"]
+adversarial_attempt_kinds = ["chain_mismatch", "duplicate_chunk", "out_of_window", "bad_chunk_digest", "mixed_version_frame", "incomplete_frames_over_peer_limit", "queue_overflow", "splice", "cross_operation_splice", "non_allowlisted_type", "mislabelled_kv_payload", "kv_sized_allowlisted_smuggling", "wrong_shape", "positions_length", "mislabelled_frame_digest", "late_chunk_after_abandon", "overcapacity_frame", "full_frame_replay", "stale_upstream_request"]
+valid_frame_cases = ["large_frame_16mib_chunked_control", "concurrent_valid_reassembly", "activation_control"]
+smuggling_probe_kinds = ["mislabelled_kv_payload", "non_allowlisted_type", "kv_sized_allowlisted_smuggling"]
+wire_kv_page_bytes_definition = "bytes of any admitted payload that does not decode as an allowlisted schema, or that matches the digest of a KV page held by either pod or carries a window of one; legitimate traffic only: the activation control and every adversarial probe are excluded; every payload is scanned as sent (each chunk) and every valid frame as reassembled, because a page can straddle two chunks"
+wire_capture = "the run's JSON, key wire_capture: every payload that crossed the PodWire frame codec, with its role, type id, size, digest and verdict"
+transport = "the real PodWire request frame codec (encode_request, decode_request, MAX_BODY_BYTES enforced) in process; no network"
+min_attempts = 1
+max_violations = 0
+min_activation_frames_crossed = 192
+min_valid_frames_sent = 192
+min_large_frame_cases = 1
+min_interleaved_frame_pairs = 1
+min_interleaved_chunk_switches = 1
+tombstones_retained_at_saturation = 64
+abandoned_frames_in_saturation_case = 64
+min_frames_accepted_after_tombstone_expiry = 1
+min_stale_upstream_entries_before_revocation = 1
+min_revoke_messages_dropped_or_delayed = 2
+min_control_trips = 1
+buffered_bytes_baseline = 0
 min_stale_worker_frame_race_cases = 1
-max_stale_placement_frames_admitted = 0
-downstream_cache_persistence = "prohibited: no KvSnapshot or tier write, no restore; a restart drops downstream caches"
-placement_epoch = "upstream stage placement or fence (lease) epoch captured at production; part of the signed frame and the downstream dependency set"
-# Preregistered choices for this experiment (no code default exists).
-tombstone_retention_ms = 10000
-late_probe_inside_retention_window = true
-# Preregistered choices for this experiment (no code default exists).
-min_relabeled_envelope_replay_cases = 1
-max_relabeled_chunks_admitted = 0
-chunk_envelope_signed_fields = ["frame_id", "parent_operation_id", "chunk_index", "chunk_count", "signed_absolute_deadline", "frame_digest", "chunk_digest"]
-chunk_envelope_authentication = "upstream-runtime signature or MAC under the authenticated channel key over the complete envelope"
-completion_tombstone_key_includes = ["principal", "parent_operation_id", "frame_id", "signed_whole_frame_digest"]
+min_sequences_per_seed = 24
+preregistration_text = "experiments/system/E007-split-pod-kv/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/system/E007-split-pod-kv/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

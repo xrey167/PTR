@@ -52,6 +52,10 @@ ptr-runtime = { workspace = true }
 # backend and the chain derivation directly for the cases the backend does not carry.
 ptr-model-api = { workspace = true }
 ptr-pods = { workspace = true }
+# E007 drives the split-pod chunk protocol: the activation-frame schemas of ptr-protocol, the
+# receiving assembler and the request frame codec of ptr-podwire (no network feature).
+ptr-podwire = { workspace = true }
+ptr-protocol = { workspace = true }
 # F002 drives the weak-supervision label model and the statistics kernel it scores with.
 ptr-labeling = { workspace = true }
 # The two verifiers of S003's grant judge a runtime's semantic changes; F001 drives the real
