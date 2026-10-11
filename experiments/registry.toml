@@ -388,7 +388,7 @@ status = "planned"
 [[experiment]]
 id = "C001"
 path = "consciousness/C001-global-workspace"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "C002"

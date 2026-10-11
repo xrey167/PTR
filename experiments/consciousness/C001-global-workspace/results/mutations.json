@@ -1,0 +1,451 @@
+{
+  "experiment_id": "C001",
+  "git_sha": "e50d82fef410003eb63f77bca6bf1b58286ea01e",
+  "interpreter": "3.11.15",
+  "killed": 38,
+  "machine": "x86_64",
+  "mutations": [
+    {
+      "counters": [
+        "bottleneck_violations"
+      ],
+      "exit": 1,
+      "expected": [
+        "bottleneck_violations"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "topk-write-not-applied",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "bottleneck_violations"
+      ],
+      "exit": 1,
+      "expected": [
+        "bottleneck_violations"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "sparse-pairwise-attention-is-not-sparse",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "no_broadcast_leaks"
+      ],
+      "exit": 1,
+      "expected": [
+        "no_broadcast_leaks"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "broadcast-reaches-sensory-modules-in-no-broadcast-arm",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "no_comm_leaks"
+      ],
+      "exit": 1,
+      "expected": [
+        "no_comm_leaks"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "no-comm-arm-communicates",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "no_comm_leaks"
+      ],
+      "exit": 1,
+      "expected": [
+        "no_comm_leaks",
+        "no_comm_above_chance"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "reporter-pools-sensory-inputs",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "dropped_module_leaks"
+      ],
+      "exit": 1,
+      "expected": [
+        "dropped_module_leaks"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "dropped-module-still-writes",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "workspace_influence_hits"
+      ],
+      "exit": 1,
+      "expected": [
+        "workspace_influence_hits"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "workspace-arm-does-not-broadcast",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "n_leaks"
+      ],
+      "exit": 2,
+      "expected": [
+        "n_leaks"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "training-uses-sixteen-modules",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "train_eval_overlap"
+      ],
+      "exit": 2,
+      "expected": [
+        "train_eval_overlap"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "id-evaluation-uses-training-examples",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "param_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "param_mismatch_arms"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "ablation-width-not-matched",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "nondeterminism"
+      ],
+      "exit": 1,
+      "expected": [
+        "nondeterminism"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "unseeded-initialisation",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "nonfinite_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "nonfinite_arms"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "loss-goes-nonfinite",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:bottleneck"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "bottleneck-check-counts-nothing",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:n_leak"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "n-leak-check-counts-nothing",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:overlap"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "overlap-check-counts-nothing",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:param_mismatch"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "param-match-check-counts-nothing",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "workspace_influence_hits",
+        "pairwise_influence_hits",
+        "no_broadcast_reporter_hits"
+      ],
+      "exit": 2,
+      "expected": [
+        "control:isolation_probe"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "influence-probe-sees-nothing",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:dropout_probe"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "dropout-probe-sees-nothing",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "checkpoint_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "checkpoint_mismatch_arms"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "best-checkpoint-not-restored",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "convergence_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "convergence_mismatch_arms"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "converged-flag-always-true",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "convergence_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "convergence_mismatch_arms"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "patience-never-reached",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "val_eval_overlap"
+      ],
+      "exit": 2,
+      "expected": [
+        "val_eval_overlap"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "validation-set-is-the-evaluation-set",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:train_arm_min_delta"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "min-delta-ignored",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:train_arm_patience"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "patience-off-by-one",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:comparator_set"
+      ],
+      "file": "research/consciousness/gw/rules.py",
+      "name": "comparator-set-includes-no-broadcast",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:workspace_trained_margin"
+      ],
+      "file": "research/consciousness/gw/rules.py",
+      "name": "workspace-trained-ignores-the-margin",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:convergence_guard_arms"
+      ],
+      "file": "research/consciousness/gw/rules.py",
+      "name": "convergence-guard-ignores-the-comparators",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:plateau_min_delta"
+      ],
+      "file": "research/consciousness/gw/rules.py",
+      "name": "plateau-audit-ignores-min-delta",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:plateau_patience"
+      ],
+      "file": "research/consciousness/gw/rules.py",
+      "name": "plateau-audit-patience-off-by-one",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:weak_decay"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "weak-arm-has-no-weight-decay",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:train_arm_weight_decay"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "training-ignores-the-arm-weight-decay",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:crippled_rounds"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "crippled-arm-has-all-rounds",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "arms_trained"
+      ],
+      "exit": 1,
+      "expected": [
+        "arms_trained"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "arms-trained-counter-undercounts",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "id_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "id_eval_instances"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "id-evaluation-set-has-half-size",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "ood16_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "ood16_eval_instances"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "ood16-evaluation-set-has-half-size",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "ood24_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "ood24_eval_instances"
+      ],
+      "file": "research/consciousness/gw/harness.py",
+      "name": "ood24-evaluation-set-has-half-size",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "pairwise_influence_hits"
+      ],
+      "exit": 2,
+      "expected": [
+        "control:isolation_probe",
+        "pairwise_influence_hits"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "pairwise-attention-output-zeroed",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "no_broadcast_reporter_hits"
+      ],
+      "exit": 1,
+      "expected": [
+        "no_broadcast_reporter_hits"
+      ],
+      "file": "research/consciousness/gw/model.py",
+      "name": "no-broadcast-reporter-never-reads-the-workspace",
+      "result": "killed"
+    }
+  ],
+  "note": "planted in a throwaway copy at a reduced scale with the interpreter that ran this script (not the uv-locked environment)",
+  "runner_args": [
+    "--set",
+    "max_steps=200",
+    "--set",
+    "eval_every=25",
+    "--set",
+    "patience=6"
+  ],
+  "subcommand": "c001",
+  "torch": "2.7.1+cpu",
+  "total": 38
+}

@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "ptr-py"
 version = "0.1.0"
-description = "PTR governance checks (adapter lineage) callable from Python training code"
+description = "PTR governance checks and read-only VCW-MoE verifier, router and workspace access for Python training code"
 requires-python = ">=3.11"
 license = { text = "MIT OR Apache-2.0" }
 classifiers = ["Programming Language :: Rust"]

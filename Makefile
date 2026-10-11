@@ -44,6 +44,7 @@ py-bindings:
 	$(PY_BINDINGS)/.venv/bin/pip install -q maturin==$(MATURIN)
 	cargo fmt --manifest-path $(PY_BINDINGS)/Cargo.toml -- --check
 	cargo clippy --manifest-path $(PY_BINDINGS)/Cargo.toml --all-targets --locked -- -D warnings
+	cargo test --manifest-path $(PY_BINDINGS)/Cargo.toml --locked
 	cd $(PY_BINDINGS) && VIRTUAL_ENV="$(CURDIR)/$(PY_BINDINGS)/.venv" PATH="$(CURDIR)/$(PY_BINDINGS)/.venv/bin:$$PATH" maturin develop --locked
 	$(PY_BINDINGS)/.venv/bin/python -m unittest discover -s $(PY_BINDINGS)/tests -v
 

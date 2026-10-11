@@ -409,7 +409,7 @@ propensity of 0.5.
    under budget, not a corrupted reference.
 
 For each request it reads back `GET /v1/vcw/traces/{id}` (the retained trace and the ledger
-events the request committed, read from the runtime's ledger) and prints rounds, finding codes,
+events the request committed, read from the runtime's ledger) (a read of a request that is still running returns `outcome` `"running"` and `ledger` `null`) and prints rounds, finding codes,
 the routed Pod with its propensity and support, the budget used and the events. Then it sends
 SIGTERM to `ptrd`, requires exit code 0, and exits 0 only if every expected property held. The
 properties asserted do not depend on which Pod the router drew (the routing nonce instance is
