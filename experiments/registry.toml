@@ -504,3 +504,8 @@ status = "superseded"
 id = "M003-v4"
 path = "model/M003-v4-latent-recurrence"
 status = "completed"
+
+[[experiment]]
+id = "R014"
+path = "runtime/R014-deferred-authority-mechanisms"
+status = "planned"

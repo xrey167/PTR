@@ -3,3 +3,159 @@ kind = "workspace-area"
 name = "L002-raft-recovery"
 path = "experiments/lifecycle/L002-raft-recovery"
 tests_dir = "tests"
+
+# The preregistered choices of the harness (`ptr-bench raft-recovery`, bins/ptr-bench/src/experiments/l002/params.rs,
+# which fails its drift test if a compiled constant differs from this table). L002 is listed in experiments/preregistration.toml;
+# the [preregistration] table at the end of this file repeats these values, and the head pins its two digests at the freeze.
+# Keys that begin with owner_decision_ or stated_limit_ are prose and mirror no constant.
+[pinned_thresholds]
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
+# The workloads: 10 to 16 events over 3 or 4 subjects, a revoke-then-recommit in every history (L001-v2's generator).
+events_min = 10
+events_max = 16
+# Arm K (the compaction cutover): workloads per seed, cutovers per workload, the retention counts a cutover keeps,
+# and the appends above the floor that are crashed per failpoint per cutover.
+cutover_workloads = 6
+cuts_per_workload = 2
+keep_records = [1, 2]
+above_floor_idx_per_point = 1
+# Arms S and G (three Raft members): scenarios per failpoint, in each kind; the images scenarios and the captured
+# appends that become power-loss images.
+crash_scenarios_per_point = 3
+ioerr_scenarios_per_point = 3
+heal_scenarios = 3
+tamper_scenarios = 3
+image_scenarios = 3
+image_captures_per_scenario = 6
+# The liveness bound: leader heartbeat rounds after the last fault until every member holds the leader's history.
+convergence_rounds = 6
+proposal_settle_rounds = 6
+# The watchdog of one recovery or in-process sequence, in milliseconds, and how many may fire before the run stops issuing them.
+hang_watchdog_ms = 60000
+hang_limit = 3
+# The power-loss model: the policies applied to the bytes written after the last sync, and the size of a hole.
+power_loss_policies = ["drop-all", "all", "prefix", "half", "holes"]
+sector_bytes = 512
+# The message-fault phase of a heal scenario, per mille of messages.
+fault_drop_permille = 120
+fault_duplicate_permille = 150
+fault_reorder_permille = 200
+# The failpoints (ptr-ledger's `failpoints` feature).
+cutover_points = ["compaction.before_build", "ledger.create_after_write_before_sync", "ledger.create_after_sync_before_dir_sync", "compaction.after_log_built_before_anchor", "anchor.after_scratch_write_before_sync", "anchor.after_scratch_sync_before_rename", "anchor.after_rename_before_dir_sync", "anchor.after_dir_sync", "compaction.after_anchor_before_install"]
+sync_parent_point = "ledger.sync_parent"
+above_floor_points = ["ledger.before_record_write", "ledger.after_length_before_payload", "ledger.after_payload_before_sync", "ledger.after_sync_before_memory", "anchor.after_scratch_write_before_sync", "anchor.after_scratch_sync_before_rename", "anchor.after_rename_before_dir_sync", "anchor.after_dir_sync"]
+member_points = ["raft.append.after_write_before_sync", "raft.atomic.after_write_before_sync", "raft.atomic.after_sync_before_rename", "raft.state.after_rename_before_dir_sync", "raft.snapshot.after_payload", "raft.snapshot.after_state", "raft.snapshot.after_log_rewrite", "raft.compact.after_sync_before_rename", "raft.compact.after_rename_before_dir_sync", "raft.install.after_payload", "raft.install.after_log_reset", "raft.install.after_log_sync_before_rename"]
+error_points = ["raft.append.before_write", "raft.state.before_write"]
+scenario_kinds = ["crash", "io-error", "heal", "tamper", "images"]
+# Coverage prerequisites (a run that misses one is vacuous).
+min_cuts = 10
+min_recoveries_cutover = 200
+min_recoveries_member = 90
+min_scenarios_group = 36
+min_scenarios_checked = 36
+min_cutover_hits = 10
+min_member_hits = 10
+min_images_lost_bytes = 1000
+min_rename_image_pairs = 10
+min_lie_images = 10
+min_unwind_panics_observed = 150
+min_cuts_over_revocation = 6
+min_snapshots_recorded = 100
+min_snapshots_installed = 40
+min_restarts_between_install_and_resume = 15
+min_injected_io_errors = 4
+min_leader_changes = 3
+min_messages_dropped = 20
+min_promises_checked = 400
+min_promises_vote = 100
+min_tamper_controls = 3
+min_revoke_then_recommit_histories = 40
+min_recoveries_with_acked_revocation = 150
+min_revoked_pairs_denied = 200
+min_subjects = 3
+min_events = 10
+min_probe_calibrated = 1
+min_probe_dirty_seen = 1
+min_probe_clean_checked = 300
+# Falsifiers: every one of the eighteen hard counters must be 0.
+max_every_falsifier = 0
+# Descriptive only (never gated): wall-clock time.
+timing_gated = false
+
+# Owner decisions carried over from L001-v2 (2026-10-09) and the limits this experiment leaves, in the words of PREREGISTRATION.md.
+owner_decision_2026_10_09_raft_engine = "RaftEngineLedger's missing anchor stays a stated limit (L001-v2's undetected_rollback, descriptive, no product work); L002 does not touch the raft-engine backend"
+stated_limit_power_loss = "fsync-honest crash-image model: bytes synced before the crash are intact, nothing else is promised; images exist for the new log and the anchor of the cutover and for the log of a Raft member, not for the state file or the snapshot file of a member; the filesystem the scratch directory is on is recorded in environment.filesystem of every result"
+stated_limit_directory_fsync = "the durability probe sees file data pages, not directory entries: a missing directory fsync is outside what it detects, and a rename whose directory entry is lost is modelled only for the anchor pair and the member-less new log"
+stated_limit_raft_ordering = "the members return all the messages of a call from one call, so the order of persisting and sending inside RaftNode::drain is not observable; the checked contract is that nothing a call returns promises a vote or an append that is not in the files, and that a failed write returns no message"
+stated_limit_process_abort = "the process-abort class is an in-process panic at a failpoint (unwinding drops the handles; no destructor of the code under test writes); L001-v2's child processes that call abort() are not repeated"
+stated_limit_wire = "three in-process members on a deterministic router: no sockets, no election timer, no membership change, no real wire (ptr-cluster, ptr-net)"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml). Every value is
+# [pinned_thresholds]'s; the head pins the two digests when the text and the criteria are final.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "raft-recovery"
+seed_aggregation = "every_seed_must_pass"
+events_min = 10
+events_max = 16
+cutover_workloads = 6
+cuts_per_workload = 2
+keep_records = [1, 2]
+above_floor_idx_per_point = 1
+crash_scenarios_per_point = 3
+ioerr_scenarios_per_point = 3
+heal_scenarios = 3
+tamper_scenarios = 3
+image_scenarios = 3
+image_captures_per_scenario = 6
+convergence_rounds = 6
+proposal_settle_rounds = 6
+hang_watchdog_ms = 60000
+hang_limit = 3
+power_loss_policies = ["drop-all", "all", "prefix", "half", "holes"]
+sector_bytes = 512
+fault_drop_permille = 120
+fault_duplicate_permille = 150
+fault_reorder_permille = 200
+cutover_points = ["compaction.before_build", "ledger.create_after_write_before_sync", "ledger.create_after_sync_before_dir_sync", "compaction.after_log_built_before_anchor", "anchor.after_scratch_write_before_sync", "anchor.after_scratch_sync_before_rename", "anchor.after_rename_before_dir_sync", "anchor.after_dir_sync", "compaction.after_anchor_before_install"]
+sync_parent_point = "ledger.sync_parent"
+above_floor_points = ["ledger.before_record_write", "ledger.after_length_before_payload", "ledger.after_payload_before_sync", "ledger.after_sync_before_memory", "anchor.after_scratch_write_before_sync", "anchor.after_scratch_sync_before_rename", "anchor.after_rename_before_dir_sync", "anchor.after_dir_sync"]
+member_points = ["raft.append.after_write_before_sync", "raft.atomic.after_write_before_sync", "raft.atomic.after_sync_before_rename", "raft.state.after_rename_before_dir_sync", "raft.snapshot.after_payload", "raft.snapshot.after_state", "raft.snapshot.after_log_rewrite", "raft.compact.after_sync_before_rename", "raft.compact.after_rename_before_dir_sync", "raft.install.after_payload", "raft.install.after_log_reset", "raft.install.after_log_sync_before_rename"]
+error_points = ["raft.append.before_write", "raft.state.before_write"]
+scenario_kinds = ["crash", "io-error", "heal", "tamper", "images"]
+min_cuts = 10
+min_recoveries_cutover = 200
+min_recoveries_member = 90
+min_scenarios_group = 36
+min_scenarios_checked = 36
+min_cutover_hits = 10
+min_member_hits = 10
+min_images_lost_bytes = 1000
+min_rename_image_pairs = 10
+min_lie_images = 10
+min_unwind_panics_observed = 150
+min_cuts_over_revocation = 6
+min_snapshots_recorded = 100
+min_snapshots_installed = 40
+min_restarts_between_install_and_resume = 15
+min_injected_io_errors = 4
+min_leader_changes = 3
+min_messages_dropped = 20
+min_promises_checked = 400
+min_promises_vote = 100
+min_tamper_controls = 3
+min_revoke_then_recommit_histories = 40
+min_recoveries_with_acked_revocation = 150
+min_revoked_pairs_denied = 200
+min_subjects = 3
+min_events = 10
+min_probe_calibrated = 1
+min_probe_dirty_seen = 1
+min_probe_clean_checked = 300
+max_every_falsifier = 0
+timing_gated = false
+preregistration_text = "experiments/lifecycle/L002-raft-recovery/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/lifecycle/L002-raft-recovery/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

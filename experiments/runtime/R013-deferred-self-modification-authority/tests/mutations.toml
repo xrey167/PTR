@@ -1,0 +1,341 @@
+# Defects the R013 harness must detect; run with `python scripts/mutation_check.py R013`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file (checked
+# by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
+# that show the defect: a run that fails only on others does not count as detecting it.
+#
+# The product mutations remove one mechanism each from `ptr-runtime`: the inherited-input check of an
+# admission, the stale-evidence check of the gate configuration and of the evaluator, the dependency walk
+# of the route probe, the epoch condition and the source-edge closure of the fence sets (and a fence set
+# that takes every dependent), the expert dependency of the KV liveness oracle, the marker and the digest
+# reset of a restarted session, the artifact and proposal bindings of an attestation, the single use of a
+# run id, the requirement of attestation, the attestor's place in the block, the cause check of a readmission
+# and plant a panic. The last two plant defects in the harness itself (a replay that drops the last event, a pin
+# compared with the wrong constant), to show that its bookkeeping is not vacuous. Every hard counter is expected by
+# at least one mutation, so that `killed == total` also shows each of the sixteen can fire (a test in bins/ptr-bench
+# checks this list against the harness).
+#
+# Not listed, on purpose, because the harness cannot see them (limits, stated in the preregistration): the signature
+# of an attestation (there is none), the replay-time re-check of the artifact and proposal binding (there is none),
+# a raw ledger writer.
+#
+# The mutation run is invoked as `ptr-bench self-modification-authority 1 1001`: the same plan as a seed's, at a seed
+# that is not one of the experiment's, flagged `custom` and so no evidence.
+
+package = "ptr-bench"
+features = ""
+subcommand = "self-modification-authority"
+cases = 1
+seed = 1001
+hard_counters = [
+    "structural_inflight_outputs_after_invalidation",
+    "routable_descendants_after_source_authority_revocation",
+    "reactivations_from_compromised_seed_admitted",
+    "compromised_reactivations_routable",
+    "descendants_routable_after_superseded_source_revocation",
+    "mismatched_attestation_admissions",
+    "unattested_admissions",
+    "revoked_attestor_evidence_admissions",
+    "attestor_quarantine_readmissions_admitted",
+    "inflight_fallback_incomplete",
+    "inflight_fallback_output_mismatches",
+    "fence_set_mismatches",
+    "bystanders_closed",
+    "registry_replay_mismatches",
+    "procedure_mismatches",
+    "product_panics",
+]
+
+[[mutation]]
+name = "inherited-inputs-not-checked"
+description = "A record that creates an expert from a source is not checked against the inputs its ancestors rest on: a seed retired before its input was revoked is reactivated."
+expect = ["reactivations_from_compromised_seed_admitted"]
+file = "crates/ptr-runtime/src/expert.rs"
+find = '''
+        if results.is_empty() || sources.is_empty() {
+            return Ok(());
+        }
+        let status =
+'''
+replace = '''
+        if results.is_empty() || sources.is_empty() || true {
+            return Ok(());
+        }
+        let status =
+'''
+
+[[mutation]]
+name = "stale-gate-config-evidence-accepted"
+description = "The gate configuration's authority is never compared with the evidence: a seed retired before the configuration was revoked is reactivated on the revoked configuration's evidence."
+expect = ["reactivations_from_compromised_seed_admitted"]
+file = "crates/ptr-runtime/src/expert/authority.rs"
+find = '''
+        if let Some(current) = self.authority.gate_config {
+            if claim.gate_epoch != current.epoch {
+'''
+replace = '''
+        if let Some(current) = self.authority.gate_config.filter(|_| false) {
+            if claim.gate_epoch != current.epoch {
+'''
+
+[[mutation]]
+name = "stale-evaluator-evidence-accepted"
+description = "The evaluator's authority is never compared with the evidence: a seed retired before the evaluator was revoked is reactivated on the revoked evaluator's evidence."
+expect = ["reactivations_from_compromised_seed_admitted"]
+file = "crates/ptr-runtime/src/expert/authority.rs"
+find = '''
+        if let (Some(current), EvaluatorClaim::Named(named)) =
+            (self.authority.evaluator, claim.evaluator)
+'''
+replace = '''
+        if let (Some(current), EvaluatorClaim::Named(named)) =
+            (self.authority.evaluator.filter(|_| false), claim.evaluator)
+'''
+
+[[mutation]]
+name = "dependency-walk-finds-nothing-dead"
+description = "The walk over an expert's inputs and its ancestors' never finds a dead input: the admission and the route probe both stop seeing a revoked ancestor."
+expect = ["reactivations_from_compromised_seed_admitted", "compromised_reactivations_routable"]
+file = "crates/ptr-runtime/src/expert/dependency.rs"
+find = '''
+        let mut order: Vec<&[InputKey]> = vec![own];
+'''
+replace = '''
+        if own.len() < usize::MAX {
+            return None;
+        }
+        let mut order: Vec<&[InputKey]> = vec![own];
+'''
+
+[[mutation]]
+name = "authority-fence-set-spares-the-newest-epoch"
+description = "An authority change fences only the experts admitted two epochs back or earlier: a descendant admitted under the previous epoch keeps serving."
+expect = ["routable_descendants_after_source_authority_revocation"]
+file = "crates/ptr-runtime/src/expert/authority.rs"
+find = '''
+                if self.authority.admission(key).epoch(kind) >= epoch {
+                    continue;
+                }
+'''
+replace = '''
+                if self.authority.admission(key).epoch(kind) >= epoch.saturating_sub(1) {
+                    continue;
+                }
+'''
+
+[[mutation]]
+name = "fence-set-closure-ignores-the-source-edges"
+description = "The closure of an input's fence set does not follow the source edges of a Merge or a Split: the live descendant of a consumed source keeps serving."
+expect = ["descendants_routable_after_superseded_source_revocation", "fence_set_mismatches"]
+file = "crates/ptr-runtime/src/expert/dependency.rs"
+find = '''
+            for child in self.children.get(&node).into_iter().flatten() {
+                if affected.contains(child) || retrained(child) {
+'''
+replace = '''
+            for child in self.children.get(&node).into_iter().flatten().filter(|_| false) {
+                if affected.contains(child) || retrained(child) {
+'''
+
+[[mutation]]
+name = "fence-set-takes-every-dependent"
+description = "A revocation fences every expert that rests on any input: a bystander that rests on nothing revoked is closed."
+expect = ["bystanders_closed", "fence_set_mismatches"]
+file = "crates/ptr-runtime/src/expert/dependency.rs"
+find = '''
+            None => self
+                .by_input
+                .get(&(identity.to_owned(), generation))
+                .cloned()
+                .unwrap_or_default(),
+'''
+replace = '''
+            None => self.by_input.values().flatten().cloned().collect(),
+'''
+
+[[mutation]]
+name = "kv-oracle-treats-every-expert-as-live"
+description = "The ledger-anchored liveness oracle answers live for every expert dependency: a call in flight is not cancelled by the fence of its expert."
+expect = ["structural_inflight_outputs_after_invalidation"]
+file = "crates/ptr-runtime/src/kv_prefix.rs"
+find = '''
+            KvDependencyKind::Expert => self.expert_is_serving(
+                &dependency.identity,
+                dependency.generation,
+                dependency.fence_epoch,
+            ),
+'''
+replace = '''
+            KvDependencyKind::Expert => true,
+'''
+
+[[mutation]]
+name = "restart-does-not-mark-itself-restarted"
+description = "A session restarted after a cancellation does not report that it restarted."
+expect = ["inflight_fallback_incomplete"]
+file = "crates/ptr-runtime/src/kv_infer_session.rs"
+find = '''
+        self.restarted = true;
+        self.phase = KvSessionPhase::Prefilling;
+'''
+replace = '''
+        self.restarted = false;
+        self.phase = KvSessionPhase::Prefilling;
+'''
+
+[[mutation]]
+name = "restart-keeps-the-digest-of-the-cancelled-run"
+description = "A restarted session does not reset the hasher of its logits: its output differs from a cold run on the masked router."
+expect = ["inflight_fallback_output_mismatches"]
+file = "crates/ptr-runtime/src/kv_infer_session.rs"
+find = '''
+        self.hasher = new_hasher();
+        self.work = Work::default();
+'''
+replace = '''
+        self.work = Work::default();
+'''
+
+[[mutation]]
+name = "attestation-artifact-not-compared"
+description = "The artifact digest of an attestation is not compared with the proposal's: the attestation of another run is admitted."
+expect = ["mismatched_attestation_admissions"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+        if attestation.artifact_digest != expert_evidence_artifact_digest(proposal.op()) {
+'''
+replace = '''
+        if false && attestation.artifact_digest != expert_evidence_artifact_digest(proposal.op()) {
+'''
+
+[[mutation]]
+name = "attestation-proposal-not-compared"
+description = "The proposal an attestation names is not compared with the one being committed."
+expect = ["mismatched_attestation_admissions"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+        if attestation.proposal_id != *proposal.proposal_id().as_bytes() {
+'''
+replace = '''
+        if false && attestation.proposal_id != *proposal.proposal_id().as_bytes() {
+'''
+
+[[mutation]]
+name = "run-id-reuse-allowed"
+description = "A run id is not consumed by the record that names it: the same run is attested again."
+expect = ["mismatched_attestation_admissions"]
+file = "crates/ptr-runtime/src/expert.rs"
+find = '''
+            if role == ExpertInputRole::Training
+                && identity.starts_with(RUN_IDENTITY_PREFIX)
+'''
+replace = '''
+            if false
+                && role == ExpertInputRole::Training
+                && identity.starts_with(RUN_IDENTITY_PREFIX)
+'''
+
+[[mutation]]
+name = "attestation-requirement-ignored"
+description = "A grant that requires attestation admits an admission that carries none."
+expect = ["unattested_admissions"]
+file = "crates/ptr-runtime/src/expert.rs"
+find = '''
+        if grant.attestation_required && attested == Attested::No {
+'''
+replace = '''
+        if false && grant.attestation_required && attested == Attested::No {
+'''
+
+[[mutation]]
+name = "attestor-left-out-of-the-block"
+description = "The attestor is not recorded among the inputs of the expert it attested: its revocation reaches nobody and a proposal queued across it is admitted."
+expect = ["revoked_attestor_evidence_admissions", "fence_set_mismatches"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+        training.push(attestor);
+'''
+replace = '''
+'''
+
+[[mutation]]
+name = "attestor-fence-readmittable"
+description = "An expert fenced for a revoked input may be readmitted through the gate path, whatever the cause the request names, and the readmission does not look at its dependencies."
+expect = ["attestor_quarantine_readmissions_admitted"]
+file = "crates/ptr-runtime/src/expert.rs"
+find = '''
+                    Some(standing) if standing.cause == ExpertFenceCause::AuthorityQuarantine => {
+                        *standing
+                    }
+                    _ => {
+                        return Err(ExpertAdmissionError::NotReadmittable { pod: pod.0.clone() });
+                    }
+                };
+                if *cause != ExpertFenceCause::AuthorityQuarantine {
+                    return Err(ExpertAdmissionError::FenceCauseMismatch { pod: pod.0.clone() });
+                }
+'''
+replace = '''
+                    Some(standing) => *standing,
+                    None => {
+                        return Err(ExpertAdmissionError::NotReadmittable { pod: pod.0.clone() });
+                    }
+                };
+'''
+
+[[mutation.also]]
+file = "crates/ptr-runtime/src/expert.rs"
+find = '''
+            if let Some((identity, input_generation)) =
+                self.first_dead_dependency(project, pod, *generation)
+            {
+'''
+replace = '''
+            if let Some((identity, input_generation)) = self
+                .first_dead_dependency(project, pod, *generation)
+                .filter(|_| false)
+            {
+'''
+
+[[mutation]]
+name = "fence-set-derivation-panics-for-an-attestor"
+description = "The derivation of a fence set panics when the input is an attestor."
+expect = ["product_panics"]
+file = "crates/ptr-runtime/src/expert.rs"
+find = '''
+        let mut members = Vec::new();
+        for (project, pod, expert_generation) in
+            self.deps.affected(input, generation, superseded_by)
+'''
+replace = '''
+        assert!(!input.starts_with("attestor:"), "planted");
+        let mut members = Vec::new();
+        for (project, pod, expert_generation) in
+            self.deps.affected(input, generation, superseded_by)
+'''
+
+[[mutation]]
+name = "harness-replays-without-the-last-event"
+description = "The harness compares the registry with a replay that drops the last committed event."
+expect = ["registry_replay_mismatches"]
+file = "bins/ptr-bench/src/experiments/r013/cases/mod.rs"
+find = '''
+        let replayed = rt.replayed()?;
+'''
+replace = '''
+        let events = rt.events();
+        let kept = events.len().saturating_sub(1);
+        let replayed = ptr_runtime::PtrRuntime::replay(ptr_config::PtrConfig::default(), &events[..kept])
+            .map_err(|error| format!("{error:?}"))?;
+'''
+
+[[mutation]]
+name = "harness-pins-the-wrong-suite-digest"
+description = "The pin check compares the suite's digest with something else than its pin."
+expect = ["procedure_mismatches"]
+file = "bins/ptr-bench/src/experiments/r013/mod.rs"
+find = '''
+    let mut mismatches = i64::from(selection_digest() != params::SELECTION_DIGEST);
+'''
+replace = '''
+    let mut mismatches = i64::from(selection_digest() != params::SELECTION_DOMAIN);
+'''
