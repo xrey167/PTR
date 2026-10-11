@@ -1,0 +1,7 @@
+{"arm": "control", "best_val": 719, "converged": 1, "law": "diagonal", "load_cv_milli": 746, "lr": 0.001, "rate": 0.05, "reward": 705, "seed": 1001, "steps": 9500, "top1": 350, "wall_s": 60}
+{"arm": "control", "best_val": 686, "converged": 1, "law": "scalar", "load_cv_milli": 833, "lr": 0.001, "rate": 0.05, "reward": 679, "seed": 1001, "steps": 5500, "top1": 452, "wall_s": 35}
+{"arm": "control", "best_val": 716, "converged": 1, "law": "diagonal", "load_cv_milli": 769, "lr": 0.003, "rate": 0.05, "reward": 707, "seed": 1001, "steps": 6250, "top1": 397, "wall_s": 38}
+{"arm": "control", "best_val": 697, "converged": 1, "law": "scalar", "load_cv_milli": 888, "lr": 0.003, "rate": 0.05, "reward": 685, "seed": 1001, "steps": 5000, "top1": 360, "wall_s": 30}
+{"arm": "control", "best_val": 714, "converged": 0, "law": "diagonal", "load_cv_milli": 790, "lr": 0.001, "rate": 0.05, "reward": 707, "seed": 1002, "steps": 12000, "top1": 377, "wall_s": 77}
+{"arm": "control", "best_val": 682, "converged": 1, "law": "scalar", "load_cv_milli": 907, "lr": 0.001, "rate": 0.05, "reward": 685, "seed": 1002, "steps": 9000, "top1": 387, "wall_s": 54}
+{"arm": "control", "best_val": 756, "converged": 1, "law": "diagonal", "load_cv_milli": 884, "lr": 0.003, "rate": 0.05, "reward": 751, "seed": 1002, "steps": 5000, "top1": 358, "wall_s": 39}

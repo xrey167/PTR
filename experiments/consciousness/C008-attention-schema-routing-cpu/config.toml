@@ -1,0 +1,124 @@
+version = 1
+kind = "workspace-area"
+name = "C008-attention-schema-routing-cpu"
+path = "experiments/consciousness/C008-attention-schema-routing-cpu"
+tests_dir = "tests"
+
+[pinned_thresholds]
+seed_aggregation = "paired_one_sided_t_bound_three_outcomes"
+seeds = [7001, 7002, 7003, 7004, 7005, 7006, 7007, 7008, 7009, 7010, 7011, 7012, 7013, 7014, 7015, 7016, 7017, 7018, 7019, 7020]
+pilot_seeds = [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1011]
+# World (research/cseries/c003a/c008_task.py): eight experts, 256 tokens per batch, expert capacity 64, eight demand regimes of three batches each.
+experts = 8
+tokens = 256
+capacity = 64
+regimes = 8
+dwell = 3
+hot_permille = 800
+noise_milli = 250
+# Arms
+history = 4
+router_hidden = 48
+schema_hidden = 32
+heuristic_rate = 0.01
+law_form = "diagonal"
+# Training: online policy gradient, one batch per step, the plateau protocol of C001 on a validation stream.
+max_steps = 24000
+max_steps_null = 12000
+eval_every = 250
+patience = 12
+min_delta_permille = 3
+loss_window_evals = 2
+grad_clip = 1.0
+schema_lr = 0.01
+arm_lr = { schema_free = 0.01, schema_free_wide = 0.003, heuristic = 0.01, describe_only = 0.003, control = 0.001, history_router = 0.003, schema_free_null = 0.01, control_null = 0.001 }
+arm_entropy_milli = { schema_free = 10, schema_free_wide = 10, heuristic = 10, describe_only = 10, control = 10, history_router = 20, schema_free_null = 10, control_null = 10 }
+val_batches = 48
+eval_batches = 240
+probe_batches = 24
+min_eval_instances = 61440
+min_arms_trained = 8
+stream_offset = 17
+val_offset = 500
+eval_offset = 600
+probe_offset = 700
+overlap_window = 2000
+param_tolerance_permille = 20
+flop_tolerance_permille = 50
+epsilon_permille = 150
+epsilon_slack_permille = 50
+shuffle_same_ceiling_permille = 100
+schedule_floor_permille = 650
+schema_floor_permille = 200
+# Guards and decision (criteria.toml). The margin and the seed count come from research/cseries/c003a/planning.py, version 1 was written before the first design and the pinned version 2 (margin 25) after the D1-D3 pilots, from the reachable gain and not from a control-arm result (PREREGISTRATION.md, chronology steps 1 to 2).
+headroom_floor_permille = 40
+comparator_floor_permille = 100
+paired_margin_permille = 25
+sensitivity_margin_permille = 25
+graded_min_lower_permille = 12
+null_world_margin_permille = 25
+null_cost_band_permille = 50
+max_untrained_schema_seeds = 1
+max_unconverged_seeds = 1
+paired_t_support = "1.729133"
+paired_t_refute = "2.539483"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml). The values restate [pinned_thresholds] (a unit test compares them);
+# the two digests are pinned by the head at the freeze.
+[preregistration]
+seeds = [7001, 7002, 7003, 7004, 7005, 7006, 7007, 7008, 7009, 7010, 7011, 7012, 7013, 7014, 7015, 7016, 7017, 7018, 7019, 7020]
+harness = "c008"
+experts = 8
+tokens = 256
+capacity = 64
+regimes = 8
+dwell = 3
+hot_permille = 800
+noise_milli = 250
+history = 4
+router_hidden = 48
+schema_hidden = 32
+heuristic_rate_milli = 10
+law_form = "diagonal"
+max_steps = 24000
+max_steps_null = 12000
+eval_every = 250
+patience = 12
+min_delta_permille = 3
+loss_window_evals = 2
+grad_clip_milli = 1000
+schema_lr_micro = 10000
+arm_lr_micro = "schema_free=10000,schema_free_wide=3000,heuristic=10000,describe_only=3000,control=1000,history_router=3000,schema_free_null=10000,control_null=1000"
+arm_entropy_milli = "schema_free=10,schema_free_wide=10,heuristic=10,describe_only=10,control=10,history_router=20,schema_free_null=10,control_null=10"
+val_batches = 48
+eval_batches = 240
+probe_batches = 24
+min_eval_instances = 61440
+min_arms_trained = 8
+stream_offset = 17
+val_offset = 500
+eval_offset = 600
+probe_offset = 700
+overlap_window = 2000
+param_tolerance_permille = 20
+flop_tolerance_permille = 50
+epsilon_permille = 150
+epsilon_slack_permille = 50
+shuffle_same_ceiling_permille = 100
+schedule_floor_permille = 650
+schema_floor_permille = 200
+headroom_floor_permille = 40
+comparator_floor_permille = 100
+paired_margin_permille = 25
+sensitivity_margin_permille = 25
+graded_min_lower_permille = 12
+null_world_margin_permille = 25
+null_cost_band_permille = 50
+max_untrained_schema_seeds = 1
+max_unconverged_seeds = 1
+paired_t_support = "1.729133"
+paired_t_refute = "2.539483"
+preregistration_text = "experiments/consciousness/C008-attention-schema-routing-cpu/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/consciousness/C008-attention-schema-routing-cpu/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

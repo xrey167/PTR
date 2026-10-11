@@ -1,0 +1,423 @@
+# Defects the C004 harness must detect. `python scripts/mutation_check.py C004 --check` verifies the anchors (every `find` occurs
+# exactly once in its file, so the plan cannot drift from the code silently). The mutations are RUN by
+# `research/cseries/lib/run_mutations.py C004` (planted in a throwaway copy, never in the working tree), not by
+# scripts/mutation_check.py, which builds a Cargo package and cannot plant a defect in a Python entrypoint. The keys `package`,
+# `features`, `subcommand`, `cases` and `seed` exist only because the checker's plan loader requires them; `subcommand` is the benchmark
+# name the aggregator checks in results/mutations.json. `seed` is a pilot seed, never a declared one.
+#
+# A mutation is killed in one of three ways.
+#  1. STRUCTURAL counters and coverage rules (exit 1): the harness, run at the reduced scale of `runner_args` with the defect planted,
+#     exits 1 and an expected structural counter or coverage counter fails. A defect of the recurrent or feed-forward arm or of an isolated
+#     ablation must reach a counter and exit 1; where it also trips an integrity counter (the reset arm that carries state is also above
+#     chance) the entry names both and either kills it.
+#  2. INTEGRITY counters and negative controls (exit 2): the harness exits 2 and its stderr lists an expected INTEGRITY counter or an
+#     expected negative control (`expect` entries "control:<name>").
+#  3. UNIT tests (entries with `unit_tests`, expect "unit:<name>"): defects in the pure derivations of the guard scalars, in the model
+#     formulas and in the plateau protocol. The named tests (research/cseries/tests) pass in the unmutated copy and must fail in the
+#     planted one; the runner checks both.
+# Every structural and integrity counter, every coverage counter and each negative control is expected by at least one mutation
+# (test_c004.py::PlanCoversTheRules).
+#
+# What kills each judged rule:
+#   comparator saturation guard (ceiling 980) ... comparator-scalar-reads-the-recurrent-arm (the harness scalar), the ceiling itself and every guard branch: aggregator mutations
+#                                  (tests/aggregator_mutations.toml); trained-arm guards, unconverged guard ... trained-ignores-the-floor, unconverged-guard-ignores-the-comparator
+#                                  (unit); the counts across seeds, the bounds, the quantiles, the controls and the null worlds:
+#                                  scripts/tests/test_c004_aggregate.py (hand-computed values)
+#   plateau protocol (patience, min-delta, best checkpoint, validation never test) .. train-patience-off-by-one, train-min-delta-ignored,
+#                                  best-checkpoint-not-restored, converged-flag-always-true, evaluation-ignores-the-validation-set,
+#                                  plateau-audit-min-delta-ignored, plateau-audit-patience-off-by-one
+#   parameter and FLOP matching (the tolerance guard) .. ff-target-parameters-doubled, recurrent-flops-counted-at-double-length,
+#                                  the two detectors (blind), and the formulas (unit)
+#   sensitivity controls (label permutation, corrupted inputs) .. permutation-is-identity, corruption-changes-nothing
+# aggregator wiring (Bonferroni refutation quantile, allowance counts, environment mismatch, one finished record per seed) are mutations
+# of the aggregator, which this plan cannot plant (it plants into the harness copy): scripts/tests/test_c004_aggregate.py.
+
+package = "c004-recurrent"
+features = ""
+subcommand = "c004"
+cases = 100
+seed = 1002
+runner_args = ["--set", "max_steps=300", "--set", "max_steps_control=150", "--set", "eval_every=50", "--set", "patience=4", "--set", "pool_per_length=128"]
+hard_counters = [
+    # Structural counters (exit 1), then integrity counters (exit 2): the order of research/cseries/c004/c004_rules.py::HARD_COUNTERS.
+    "reset_carry_leaks",
+    "ff_causal_leaks",
+    "nondeterminism",
+    "param_mismatch_arms",
+    "flop_mismatch_arms",
+    "length_leaks",
+    "inlength_control_errors",
+    "train_eval_overlap",
+    "val_eval_overlap",
+    "nonfinite_arms",
+    "checkpoint_mismatch_arms",
+    "convergence_mismatch_arms",
+    "label_mismatches",
+    "reset_above_chance",
+    "perm_label_leaks",
+    "corruption_rate_errors",
+    # Not hard counters of the harness: coverage counters, negative controls and unit-test kills, listed because
+    # scripts/mutation_check.py requires every expected name to be in this list.
+    "arms_trained",
+    "id_eval_instances",
+    "primary_eval_instances",
+    "secondary_eval_instances",
+    "recurrent_carry_hits",
+    "control:length_leak",
+    "control:inlength_probe",
+    "control:overlap",
+    "control:param_mismatch",
+    "control:flop_mismatch",
+    "control:label_check",
+    "control:isolation_probe",
+    "control:causal_probe",
+    "unit:trained_floor",
+    "unit:comparator_scalar",
+    "unit:unconverged_arms",
+    "unit:above_chance_slack",
+    "unit:rate_error",
+    "unit:label_leak",
+    "unit:plateau_min_delta",
+    "unit:plateau_patience",
+    "unit:train_patience",
+    "unit:train_min_delta",
+    "unit:flop_formulas",
+    "unit:param_formulas",
+    "unit:alibi_sign",
+    "unit:reset_state",
+]
+
+[[mutation]]
+name = "reset-state-not-applied"
+file = "research/cseries/c004/c004_model.py"
+find = '''        if self.reset:
+            out, _ = self.cell(x.reshape(b * t, 1, e))'''
+replace = '''        if False:
+            out, _ = self.cell(x.reshape(b * t, 1, e))'''
+expect = ["reset_carry_leaks", "reset_above_chance"]
+
+[[mutation]]
+name = "ff-attention-not-causal"
+file = "research/cseries/c004/c004_model.py"
+find = "        if self.causal:\n            bias = bias.masked_fill"
+replace = "        if False:\n            bias = bias.masked_fill"
+expect = ["ff_causal_leaks"]
+
+[[mutation]]
+name = "determinism-seed-dropped"
+file = "research/cseries/c004/harness.py"
+find = """    torch.manual_seed(arm_seed(seed, "determinism:" + name))
+"""
+replace = ""
+expect = ["nondeterminism"]
+
+[[mutation]]
+name = "carry-probe-perturbs-nothing"
+file = "research/cseries/c004/harness.py"
+find = "    bumped[:, position] = (bumped[:, position] + 1) % 6\n    with torch.no_grad():\n        a, b = net(x), net(bumped)"
+replace = "    bumped[:, position] = (bumped[:, position] + 0) % 6\n    with torch.no_grad():\n        a, b = net(x), net(bumped)"
+expect = ["control:isolation_probe", "recurrent_carry_hits"]
+
+[[mutation]]
+name = "causal-probe-perturbs-nothing"
+file = "research/cseries/c004/harness.py"
+find = "    bumped[:, -1] = (bumped[:, -1] + 1) % 6\n    with torch.no_grad():\n        a, b = net.forward_all(x)"
+replace = "    bumped[:, -1] = (bumped[:, -1] + 0) % 6\n    with torch.no_grad():\n        a, b = net.forward_all(x)"
+expect = ["control:causal_probe", "ff_causal_leaks"]
+
+[[mutation]]
+name = "training-batches-include-the-primary-length"
+file = "research/cseries/c004/harness.py"
+find = '''        lengths = [*cfg["train_lengths"], primary] if name == "feedforward_inlength" else cfg["train_lengths"]'''
+replace = '''        lengths = [*cfg["train_lengths"], primary]'''
+expect = ["length_leaks", "inlength_control_errors"]
+
+[[mutation]]
+name = "evaluation-not-deduplicated-against-training"
+file = "research/cseries/c004/harness.py"
+find = "            if h not in forbidden:"
+replace = "            if True:"
+expect = ["train_eval_overlap", "val_eval_overlap"]
+
+[[mutation]]
+name = "evaluation-ignores-the-validation-set"
+file = "research/cseries/c004/harness.py"
+find = 'evals[length] = fresh_batch(gens["eval"], size, length, train_hashes | val_hashes)'
+replace = 'evals[length] = fresh_batch(gens["eval"], size, length, train_hashes)'
+expect = ["val_eval_overlap"]
+
+[[mutation]]
+name = "ff-target-parameters-doubled"
+file = "research/cseries/c004/harness.py"
+find = "    target_params = model.recurrent_params(de, dh)\n    target_flops"
+replace = "    target_params = 2 * model.recurrent_params(de, dh)\n    target_flops"
+expect = ["param_mismatch_arms", "flop_mismatch_arms"]
+
+[[mutation]]
+name = "recurrent-flops-counted-at-double-length"
+file = "research/cseries/c004/harness.py"
+find = "else model.recurrent_flops(ref, de, dh))\n        for name, (family, _) in ARM_SPECS.items()"
+replace = "else model.recurrent_flops(2 * ref, de, dh))\n        for name, (family, _) in ARM_SPECS.items()"
+expect = ["flop_mismatch_arms"]
+
+[[mutation]]
+name = "loss-is-infinite"
+file = "research/cseries/c004/harness.py"
+find = "    return torch.nn.functional.cross_entropy(net.forward_all(x).reshape(-1, 6), y.reshape(-1))\n"
+replace = "    return torch.nn.functional.cross_entropy(net.forward_all(x).reshape(-1, 6), y.reshape(-1)) * float('inf')\n"
+expect = ["nonfinite_arms"]
+
+[[mutation]]
+name = "best-checkpoint-not-restored"
+file = "research/cseries/lib/train.py"
+find = "    if best_state is not None:\n        net.load_state_dict(best_state)\n"
+replace = "    if False:\n        net.load_state_dict(best_state)\n"
+expect = ["checkpoint_mismatch_arms"]
+
+[[mutation]]
+name = "converged-flag-always-true"
+file = "research/cseries/lib/train.py"
+find = '        "converged": converged,'
+replace = '        "converged": True,'
+expect = ["convergence_mismatch_arms"]
+
+[[mutation]]
+name = "counter-modulus-is-five"
+file = "research/cseries/c004/c004_task.py"
+find = "    return torch.cumsum(tokens, dim=1) % N_SYMBOLS"
+replace = "    return torch.cumsum(tokens, dim=1) % 5"
+expect = ["label_mismatches"]
+
+[[mutation]]
+name = "labels-are-the-last-symbol"
+file = "research/cseries/c004/c004_task.py"
+find = "    return torch.cumsum(tokens, dim=1) % N_SYMBOLS"
+replace = "    return tokens % N_SYMBOLS"
+expect = ["reset_above_chance"]
+
+[[mutation]]
+name = "permutation-is-identity"
+file = "research/cseries/c004/c004_task.py"
+find = "    return y[torch.randperm(y.shape[0], generator=gen)]"
+replace = "    return y"
+expect = ["perm_label_leaks"]
+
+[[mutation]]
+name = "corruption-changes-nothing"
+file = "research/cseries/c004/c004_task.py"
+find = "    out[rows, where[hit]] = (tokens[rows, where[hit]] + shift[hit]) % N_SYMBOLS"
+replace = "    out[rows, where[hit]] = tokens[rows, where[hit]]"
+expect = ["corruption_rate_errors"]
+
+[[mutation]]
+name = "length-leak-detector-blind"
+file = "research/cseries/c004/harness.py"
+find = "    return len(set(observed_lengths) & set(extrapolation_lengths))"
+replace = "    return 0"
+expect = ["control:length_leak"]
+
+[[mutation]]
+name = "overlap-detector-blind"
+file = "research/cseries/c004/harness.py"
+find = "    return sum(1 for h in row_hashes(x) if h in forbidden)"
+replace = "    return 0"
+expect = ["control:overlap"]
+
+[[mutation]]
+name = "param-mismatch-detector-blind"
+file = "research/cseries/lib/common.py"
+find = "    return sum(1 for arm, n in counts.items() if arm != reference and 1000 * abs(n - ref) > tolerance_permille * ref)"
+replace = "    return 0"
+expect = ["control:param_mismatch"]
+
+[[mutation]]
+name = "flop-mismatch-detector-blind"
+file = "research/cseries/lib/common.py"
+find = "    return sum(1 for arm, n in flops.items() if arm != reference and 1000 * abs(n - ref) > tolerance_permille * ref)"
+replace = "    return 0"
+expect = ["control:flop_mismatch"]
+
+[[mutation]]
+name = "label-audit-blind"
+file = "research/cseries/c004/harness.py"
+find = "    return sum(1 for a, b in zip(task.labels_independent(tokens), y.tolist()) if a != b)"
+replace = "    return 0"
+expect = ["control:label_check"]
+
+[[mutation]]
+name = "an-arm-is-not-trained"
+file = "research/cseries/c004/harness.py"
+find = """    "feedforward_null": ("feedforward", "null"),
+"""
+replace = ""
+expect = ["arms_trained"]
+
+[[mutation]]
+name = "id-evaluation-shrunk"
+file = "research/cseries/c004/harness.py"
+find = 'if length in (id_len, cfg["primary_length"], *cfg["secondary_lengths"])'
+replace = 'if length in (cfg["primary_length"], *cfg["secondary_lengths"])'
+expect = ["id_eval_instances"]
+
+[[mutation]]
+name = "primary-evaluation-shrunk"
+file = "research/cseries/c004/harness.py"
+find = 'if length in (id_len, cfg["primary_length"], *cfg["secondary_lengths"])'
+replace = 'if length in (id_len, *cfg["secondary_lengths"])'
+expect = ["primary_eval_instances"]
+
+[[mutation]]
+name = "secondary-evaluation-shrunk"
+file = "research/cseries/c004/harness.py"
+find = 'if length in (id_len, cfg["primary_length"], *cfg["secondary_lengths"])'
+replace = 'if length in (id_len, cfg["primary_length"])'
+expect = ["secondary_eval_instances"]
+
+[[mutation]]
+name = "trained-ignores-the-floor"
+file = "research/cseries/c004/c004_rules.py"
+find = "    return int(id_permille >= floor_permille)"
+replace = "    return int(id_permille >= 0)"
+expect = ["unit:trained_floor"]
+unit_tests = ["test_c004.RuleDerivationTests.test_trained_uses_the_floor_inclusively"]
+
+[[mutation]]
+name = "unconverged-guard-ignores-the-comparator"
+file = "research/cseries/c004/c004_rules.py"
+find = 'JUDGED_ARMS = ("recurrent", "feedforward")'
+replace = 'JUDGED_ARMS = ("recurrent",)'
+expect = ["unit:unconverged_arms"]
+unit_tests = ["test_c004.RuleDerivationTests.test_unconverged_guard_counts_only_the_judged_arms"]
+
+[[mutation]]
+name = "above-chance-slack-ignored"
+file = "research/cseries/c004/c004_rules.py"
+find = "    return int(accuracy_permille > chance_permille + slack_permille)"
+replace = "    return int(accuracy_permille > chance_permille)"
+expect = ["unit:above_chance_slack"]
+unit_tests = ["test_c004.RuleDerivationTests.test_above_chance_needs_more_than_the_slack"]
+
+[[mutation]]
+name = "rate-error-only-checks-one-side"
+file = "research/cseries/c004/c004_rules.py"
+find = "    return int(abs(1000 * changed - rate_permille * total) > slack_permille * total)"
+replace = "    return int(1000 * changed - rate_permille * total > slack_permille * total)"
+expect = ["unit:rate_error"]
+unit_tests = ["test_c004.RuleDerivationTests.test_rate_error_compares_the_measured_fraction_with_the_pinned_rate"]
+
+[[mutation]]
+name = "label-leak-slack-ignored"
+file = "research/cseries/c004/c004_rules.py"
+find = "    return int(1000 * same > (chance_permille + slack_permille) * total)"
+replace = "    return int(1000 * same > chance_permille * total)"
+expect = ["unit:label_leak"]
+unit_tests = ["test_c004.RuleDerivationTests.test_label_leak_needs_more_than_chance_plus_slack"]
+
+[[mutation]]
+name = "plateau-audit-min-delta-ignored"
+file = "research/cseries/lib/common.py"
+find = "        if value > best + min_delta_permille:"
+replace = "        if value > best:"
+expect = ["unit:plateau_min_delta"]
+unit_tests = ["test_lib.CommonTests.test_plateau_reached"]
+
+[[mutation]]
+name = "plateau-audit-patience-off-by-one"
+file = "research/cseries/lib/common.py"
+find = "        if since >= patience:\n            return True"
+replace = "        if since > patience:\n            return True"
+expect = ["unit:plateau_patience"]
+unit_tests = ["test_lib.CommonTests.test_plateau_reached"]
+
+[[mutation]]
+name = "train-patience-off-by-one"
+file = "research/cseries/lib/train.py"
+find = '            if since >= cfg["patience"]:'
+replace = '            if since > cfg["patience"]:'
+expect = ["unit:train_patience"]
+unit_tests = ["test_c004.TrainingProtocolTests.test_it_stops_after_exactly_patience_evaluations_without_a_gain"]
+
+[[mutation]]
+name = "train-min-delta-ignored"
+file = "research/cseries/lib/train.py"
+find = '            if permille(c, t) > best + cfg["min_delta_permille"]:'
+replace = "            if permille(c, t) > best:"
+expect = ["unit:train_min_delta"]
+unit_tests = ["test_c004.TrainingProtocolTests.test_a_gain_not_above_the_minimum_does_not_reset_the_count"]
+
+[[mutation]]
+name = "ff-flops-drop-attention"
+file = "research/cseries/c004/c004_model.py"
+find = "    per_layer = length * (8 * d * d + 4 * d * ffn) + 2 * d * length * (length + 1)"
+replace = "    per_layer = length * (8 * d * d + 4 * d * ffn)"
+expect = ["unit:flop_formulas"]
+unit_tests = ["test_c004.ModelTests.test_flop_formulas_match_hand_counts"]
+
+[[mutation]]
+name = "gru-flops-count-two-gates"
+file = "research/cseries/c004/c004_model.py"
+find = "    return length * 6 * d_hidden * (d_embed + d_hidden) + 2 * d_hidden * N_SYMBOLS"
+replace = "    return length * 4 * d_hidden * (d_embed + d_hidden) + 2 * d_hidden * N_SYMBOLS"
+expect = ["unit:flop_formulas"]
+unit_tests = ["test_c004.ModelTests.test_flop_formulas_match_hand_counts"]
+
+[[mutation]]
+name = "ff-params-formula-drops-the-norms"
+file = "research/cseries/c004/c004_model.py"
+find = "    block = 2 * 2 * d + (3 * d * d + 3 * d)"
+replace = "    block = (3 * d * d + 3 * d)"
+expect = ["unit:param_formulas"]
+unit_tests = ["test_c004.ModelTests.test_analytic_parameter_counts_equal_the_modules"]
+
+[[mutation]]
+name = "alibi-bias-sign-flipped"
+file = "research/cseries/c004/c004_model.py"
+find = "        bias = -self.slopes[:, None, None] * distance\n"
+replace = "        bias = self.slopes[:, None, None] * distance\n"
+expect = ["unit:alibi_sign"]
+unit_tests = ["test_c004.ModelTests.test_the_relative_bias_is_alibi_and_masked_above_the_diagonal"]
+
+[[mutation]]
+name = "reset-arm-reads-the-first-step"
+file = "research/cseries/c004/c004_model.py"
+find = """        return self.head(out)
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        return self.forward_all(tokens)[:, -1]"""
+replace = """        return self.head(out)
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        return self.forward_all(tokens)[:, 0]"""
+expect = ["unit:reset_state"]
+unit_tests = ["test_c004.ModelTests.test_the_reset_arm_ignores_every_step_but_the_last"]
+
+[[mutation]]
+name = "inlength-arm-never-sees-the-long-length"
+file = "research/cseries/c004/harness.py"
+find = '''        lengths = [*cfg["train_lengths"], primary] if name == "feedforward_inlength" else cfg["train_lengths"]'''
+replace = '''        lengths = cfg["train_lengths"]'''
+expect = ["inlength_control_errors"]
+
+[[mutation]]
+name = "inlength-probe-blinded"
+file = "research/cseries/c004/harness.py"
+find = '''int(seen_lengths["feedforward"] != set(cfg["train_lengths"]) | {primary}) > 0'''
+replace = '''int(seen_lengths["feedforward"] != seen_lengths["feedforward"]) > 0'''
+expect = ["control:inlength_probe"]
+
+[[mutation]]
+name = "comparator-scalar-reads-the-recurrent-arm"
+file = "research/cseries/c004/harness.py"
+find = '''    comparator = permille(arms["feedforward"][f"ex{primary}_correct"], arms["feedforward"][f"ex{primary}_total"])'''
+replace = '''    comparator = permille(arms["recurrent"][f"ex{primary}_correct"], arms["recurrent"][f"ex{primary}_total"])'''
+expect = ["unit:comparator_scalar"]
+unit_tests = ["test_c004.HarnessTests.test_a_tiny_run_passes_with_every_control_tripped"]
+
+[[mutation]]
+name = "initial-weights-are-not-seeded"
+file = "research/cseries/c004/harness.py"
+find = '''            torch.manual_seed(arm_seed(seed, "init:" + name))
+        if family == "feedforward":'''
+replace = '''            pass
+        if family == "feedforward":'''
+expect = ["nondeterminism"]

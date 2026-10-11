@@ -1,0 +1,150 @@
+# C007 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256); no rule changes after a run.
+# Per-seed rules (coverage, falsifiers, integrity) are what the harness itself judges (research/cseries/c002a/c007_rules.py); the guards and the
+# paired rules are judged by aggregate.py. A unit test pins the lists to the harness, in order.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .  A token is an integer literal iff it matches -?[0-9]+; any other token is a reference: a path of object keys
+# from the root of the harness's single JSON result object, separated by '.'. A reference that is missing, null, a boolean or a float makes the
+# seed INVALID. Exact comparisons.
+#
+# coverage: a rule that does not hold makes the seed vacuous (a defect: counts as FALSIFIED, kind structural): a head not trained, an evaluation
+#   set smaller than pinned, an advice probe that could not see an influence.
+# falsifiers: the STRUCTURAL counters (the self-model's lack of authority); each must be 0; the harness exits 1.
+#   model_write_paths: training the self-model or a probe changed a parameter of the classifier (the self-model may only observe).
+#   advice_leaks: consuming adversarial advice changed what the verifier or the gate reads (outcomes, the gate's decisions or threshold, the
+#       classifier's digest): the self-model has no write path to a verifier, a gate or a promotion (hard counter).
+#   nondeterminism: two identical short trainings of the head disagreed.
+# integrity: harness-integrity counters (a defect of the world or the harness, not of an arm); each must be 0; the harness exits 2 and the seed,
+#   hence the experiment, is INVALID (never FALSIFIED).
+#   capacity_mismatch_arms: the self-model and the information-matched probe differ in parameter count. input_mismatches: they were not trained
+#       on the same feature matrix (digest). aux_weight_errors: the probe's auxiliary weight is not 0 or the self-model's is not the pinned one.
+#   split_overlap: an input occurs in two splits. error_rate_errors: the classifier's in-distribution error rate is outside the pinned band.
+#   outcome_audit_mismatches: the verifier's outcomes differ from a plain-loop recomputation. metric_audit_mismatches: the Brier sum differs from a
+#       plain-loop recomputation. permutation_leaks: the label permutation left more outcomes in place than chance allows. shuffle_errors /
+#       noise_errors: the shuffled traces or the noised predictions equal the originals too often.
+#   inert_treatment_arms: the treatment was not applied: the self-model's auxiliary term did not run on every training step, the probe's did, the auxiliary loss
+#       has a zero gradient on the shared trunk, or the self-model's trunk did not diverge from the probe's (they start from the same weights and batches, so
+#       only the auxiliary loss can move them apart). Without it the experiment could report "no difference from the probe" for a self-model that was never trained as one.
+#   fit_split_errors: a calibration fit (the own-confidence baseline's, or a head's post-hoc recalibration) saw anything but the named split (the baseline: calibration
+#       and validation; a head: validation), checked against an independent recomputation from the splits' inputs.
+#   nonfinite_arms / checkpoint_mismatch_arms / convergence_mismatch_arms: loss and plateau-protocol bookkeeping, audited independently.
+# guards: per-seed validity guards. A seed that fails one is UNINFORMATIVE: the experiment is INVALID, never FALSIFIED.
+#   signal_permille: the best trace predictor must beat the constant predictor on the shifted split by signal_floor_permille of Brier (1000 x the
+#   difference): the traces carry information about the errors; otherwise there is nothing for a self-model to do better than a probe. The floor is the
+#   margin (4): the traces must carry at least the information of an effect the experiment could detect (planning.py, fix round).
+#   head_gap_id_permille: the larger of the two judged heads' in-distribution Brier above the model's own calibrated confidence (positive: the head is worse)
+#   must not exceed head_gap_tolerance_permille (planning.py): a head that is further below the baseline than a head with a few tens of effective parameters
+#   could be, on data the heads trained on, is too weak for the question, and a refutation against the baseline would be a statement about the head.
+#   shifted_error_permille: the classifier's error rate on the shifted split must lie in the band in which the experiment is informative.
+#   Counts across seeds (aggregate.py, [paired]): unconverged_judged_arms (a judged head at the step cap).
+#
+# [paired]: over the declared seeds (n = seeds_required; the one-sided t quantiles for n - 1 degrees of freedom pinned as strings). The metric is the
+#   Brier score of the predicted failure probability against the verifier's outcome on the SHIFTED split, in millionths (lower is better); a paired
+#   difference is comparator minus self-model (positive: the self-model is better).
+#   COMPLETED iff the lower one-sided 95% bounds (t_support) against BOTH the information-matched probe and the model's own (Platt-calibrated)
+#   confidence are at or above margin_permille (per mille of Brier);
+#   FALSIFIED (refuted) iff the guards and controls hold and, for one comparator, the upper bound at t_refute (one-sided 95% / 2, Bonferroni
+#   over the two) is below margin_permille: the advantage is BELOW THE MARGIN (this is not "no advantage");
+#   NOT_SHOWN otherwise (nothing is concluded, no requirement is downgraded).
+#   sensitivity_gross: the constant predictor minus the self-model must reach margin_permille (the traces carry usable information on the shifted split).
+#   sensitivity_graded: the self-model with Gaussian noise added to its predictions (a deficit of about sigma^2, less after clipping) minus the
+#   self-model must exceed min_lower_permille.
+#   removal controls (shuffled traces; a self-model trained on permuted outcomes): the improvement over the constant predictor must be below
+#   removal_margin_permille at its UPPER bound: shuffling the traces or permuting the labels must remove the effect; if it does not, the pipeline
+#   reports an advantage the pairing of traces and outcomes cannot explain: INVALID. removal_vs_probe: with the SAME shuffled traces given to the probe, the
+#   self-model's advantage over the probe (probe minus self-model) must also be below removal_margin_permille at its upper bound.
+#   null_world: where the classifier's errors are independent of its inputs, no head can have an advantage over the other: in neither direction may
+#   the lower bound of the self-model/probe contrast reach margin_permille, else the pipeline invents effects: INVALID.
+#   max_unconverged_seeds: allowance across the seeds.
+#   descriptive: probe on input and output only minus the information-matched probe (does the internal state carry information the input and output do
+#   not), the model's raw (uncalibrated) confidence, and the constant predictor against the self-model: bounds reported, never judged.
+#
+# Patterns (stated in advance):
+#   Supports: guards hold; the self-model beats the information-matched probe and the calibrated own confidence by the margin on the shifted split.
+#   Refutes: guards and controls hold and the advantage over a comparator is below the margin with power.
+#   Uninformative (INVALID): no signal in the traces, a classifier outside the informative error band, a head at the step cap, an unresolved control,
+#     a removal control that does not remove, a null world that shows an effect, a harness-integrity counter.
+# Precedence (aggregate.py decide): a seed that trips an integrity counter, a missing or duplicated seed, missing or partial mutation evidence or a seed that
+#   cannot be judged is INVALID before any FALSIFIED (including a structural one) or COMPLETED; then structural FALSIFIED; then the guards and the allowances
+#   (INVALID); then the controls (INVALID); then refuted FALSIFIED, COMPLETED, NOT_SHOWN. The headline names the comparator the verdict rests on (the one with the
+#   smaller lower bound) and the comparators it is refuted against.
+# Decision: COMPLETED / FALSIFIED / NOT_SHOWN / INVALID as above; exit status of aggregate.py 0 / 1 / 3 / 2.
+version = 1
+experiment = "C007"
+seed_aggregation = "paired_one_sided_t_bound_three_outcomes"
+
+coverage = [
+  "arms_trained >= 6",
+  "id_eval_instances >= 4000",
+  "shifted_eval_instances >= 4000",
+  "null_eval_instances >= 4000",
+  "advice_probe_hits >= 1",
+]
+
+guards = [
+  "signal_permille >= 4",
+  "head_gap_id_permille <= 4",
+  "shifted_error_permille >= 100",
+  "shifted_error_permille <= 700",
+]
+
+falsifiers = [
+  "model_write_paths <= 0",
+  "advice_leaks <= 0",
+  "nondeterminism <= 0",
+]
+
+integrity = [
+  "capacity_mismatch_arms <= 0",
+  "input_mismatches <= 0",
+  "aux_weight_errors <= 0",
+  "inert_treatment_arms <= 0",
+  "fit_split_errors <= 0",
+  "split_overlap <= 0",
+  "error_rate_errors <= 0",
+  "outcome_audit_mismatches <= 0",
+  "metric_audit_mismatches <= 0",
+  "permutation_leaks <= 0",
+  "shuffle_errors <= 0",
+  "noise_errors <= 0",
+  "nonfinite_arms <= 0",
+  "checkpoint_mismatch_arms <= 0",
+  "convergence_mismatch_arms <= 0",
+]
+
+[paired]
+metric = "brier"
+arm = "self_model"
+against = ["probe_matched", "own_confidence"]
+margin_permille = 4
+t_support = "1.729133"
+t_refute = "2.093024"
+seeds_required = 20
+max_unconverged_seeds = 1
+removal_margin_permille = 4
+descriptive_against = ["probe_io", "own_confidence_raw", "constant"]
+
+[paired.sensitivity_gross]
+arm = "self_model"
+floor = "constant"
+margin_permille = 4
+
+[paired.sensitivity_graded]
+arm = "self_model"
+degraded = "self_model_noisy"
+min_lower_permille = 2
+
+[paired.removal]
+reference = "constant"
+arms = ["self_model_shuffled", "self_model_perm"]
+
+[paired.removal_vs_probe]
+arm = "self_model_shuffled"
+against = "probe_matched_shuffled"
+
+[paired.null_world]
+arm = "self_model_null"
+against = "probe_matched_null"
+metric = "brier"
+margin_permille = 4

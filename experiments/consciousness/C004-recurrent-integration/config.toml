@@ -3,3 +3,121 @@ kind = "workspace-area"
 name = "C004-recurrent-integration"
 path = "experiments/consciousness/C004-recurrent-integration"
 tests_dir = "tests"
+
+[pinned_thresholds]
+seed_aggregation = "paired_one_sided_t_bound_three_outcomes"
+seeds = [5001, 5002, 5003, 5004, 5005, 5006, 5007, 5008, 5009, 5010, 5011, 5012, 5013, 5014]
+pilot_seeds = [1001, 1002, 1003, 1004, 1005, 1006, 1007]
+# Task (research/cseries/c004/task.py): a modular counter (running sum modulo 6). Training uses 2..6 steps, in distribution is 6, the
+# primary length is 12 (twice the longest trained sequence), the secondary lengths 18 and 24; 9 and 15 only draw the accuracy-against-steps curve.
+train_lengths = [2, 3, 4, 5, 6]
+id_length = 6
+primary_length = 12
+secondary_lengths = [18, 24]
+curve_extra_lengths = [9, 15]
+pool_per_length = 1024
+# Arms: the recurrent GRU is the reference; the feed-forward stack is matched to it in parameters and FLOPs (tolerances below).
+d_embed = 32
+d_hidden = 128
+ff_layers = 5
+ff_heads = 4
+ff_positional = "alibi"
+ff_slope_scale = 4.0
+# Training: Adam, one schedule of batches shared by the arms of a world, the plateau protocol of C001.
+batch_size = 64
+max_steps = 20000
+max_steps_null = 8000
+max_steps_control = 3000
+eval_every = 250
+patience = 12
+min_delta_permille = 5
+loss_window_evals = 5
+grad_clip = 1.0
+warmup_steps = 300
+weight_decay_milli = 0
+arm_lr = { recurrent = 0.01, feedforward = 0.003, feedforward_inlength = 0.003, reset_state = 0.01, recurrent_perm = 0.01, feedforward_perm = 0.003, recurrent_null = 0.01, feedforward_null = 0.003 }
+val_size = 1024
+eval_size = 2048
+curve_eval_size = 1024
+min_eval_instances = 2048
+min_arms_trained = 8
+probe_size = 256
+corruption_rate_permille = 150
+corruption_slack_permille = 50
+param_tolerance_permille = 20
+flop_tolerance_permille = 100
+chance_permille = 166
+chance_slack_permille = 50
+perm_label_slack_permille = 60
+stream_offset = 17
+# Guards and decision (criteria.toml). The margin and the number of seeds come from research/cseries/c004/planning.py, written after one development run of the harness on pilot seed 1001 (the first task design) and before any other pilot (PREREGISTRATION.md, chronology step 1). The ceiling (980) and the control share (500) are not derived from it. The control criterion was loosened after exploration (seed 1002), because the stack is optimisation-limited (empirical); the 1/2 threshold is a verbal a-priori argument, not from the planning model; depth 5 was chosen as the shallowest depth at which the in-length stack reaches 0.80, which is tuning toward the control (at depth 4 the share would have been about 67 percent).
+train_floor_permille = 800
+guard_ceiling_permille = 980
+paired_margin_permille = 100
+sensitivity_margin_permille = 100
+graded_min_lower_permille = 50
+null_world_margin_permille = 100
+max_untrained_recurrent_seeds = 1
+max_untrained_comparator_seeds = 1
+max_unconverged_seeds = 1
+paired_t_support = "1.770933"
+paired_t_refute = "2.160369"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml). The values restate [pinned_thresholds] (a unit test compares them);
+# the two digests are pinned by the head at the freeze.
+[preregistration]
+seeds = [5001, 5002, 5003, 5004, 5005, 5006, 5007, 5008, 5009, 5010, 5011, 5012, 5013, 5014]
+harness = "c004"
+train_lengths = [2, 3, 4, 5, 6]
+id_length = 6
+primary_length = 12
+secondary_lengths = [18, 24]
+curve_extra_lengths = [9, 15]
+pool_per_length = 1024
+d_embed = 32
+d_hidden = 128
+ff_layers = 5
+ff_heads = 4
+ff_positional = "alibi"
+ff_slope_scale_milli = 4000
+batch_size = 64
+max_steps = 20000
+max_steps_null = 8000
+max_steps_control = 3000
+eval_every = 250
+patience = 12
+min_delta_permille = 5
+loss_window_evals = 5
+grad_clip_milli = 1000
+warmup_steps = 300
+weight_decay_milli = 0
+arm_lr_micro = "recurrent=10000,feedforward=3000,feedforward_inlength=3000,reset_state=10000,recurrent_perm=10000,feedforward_perm=3000,recurrent_null=10000,feedforward_null=3000"
+val_size = 1024
+eval_size = 2048
+curve_eval_size = 1024
+min_eval_instances = 2048
+min_arms_trained = 8
+probe_size = 256
+corruption_rate_permille = 150
+corruption_slack_permille = 50
+param_tolerance_permille = 20
+flop_tolerance_permille = 100
+chance_permille = 166
+chance_slack_permille = 50
+perm_label_slack_permille = 60
+stream_offset = 17
+train_floor_permille = 800
+guard_ceiling_permille = 980
+paired_margin_permille = 100
+sensitivity_margin_permille = 100
+graded_min_lower_permille = 50
+null_world_margin_permille = 100
+max_untrained_recurrent_seeds = 1
+max_untrained_comparator_seeds = 1
+max_unconverged_seeds = 1
+paired_t_support = "1.770933"
+paired_t_refute = "2.160369"
+preregistration_text = "experiments/consciousness/C004-recurrent-integration/PREREGISTRATION.md"
+preregistration_text_sha256 = "must-be-pinned-before-prepared"
+criteria = "experiments/consciousness/C004-recurrent-integration/criteria.toml"
+criteria_sha256 = "must-be-pinned-before-prepared"

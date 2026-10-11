@@ -504,3 +504,13 @@ status = "superseded"
 id = "M003-v4"
 path = "model/M003-v4-latent-recurrence"
 status = "completed"
+
+[[experiment]]
+id = "C007"
+path = "consciousness/C007-metacognitive-self-model-cpu"
+status = "planned"
+
+[[experiment]]
+id = "C008"
+path = "consciousness/C008-attention-schema-routing-cpu"
+status = "planned"
