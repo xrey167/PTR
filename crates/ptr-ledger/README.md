@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-08  
-**Code footprint:** 9 Rust source files · 8708 nonblank source lines · 16 integration-test files · 189 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 8730 nonblank source lines · 16 integration-test files · 190 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- encoded_event(event) is public: the canonical payload encoding of one event (the bytes a log record frames), so a reader that needs only a size or a digest of an event (the ptr-server vcw trace summary) takes it from the encoding instead of rendering the event
 - check_encodable refuses a MeshTunnelLifecycle event whose endpoint binding the decoder would refuse (for example a relayed route without a relay id), so an append path cannot write a record the log cannot read back
 - EffectAttempted/EffectSettled/EffectReconciled records (tags 9-11, beside the unchanged 0-8 and the semantic tag 12) carry an execution audit: the attempt is addressed by its own commit index, and a settled response keeps its digest unconditionally and its bytes up to MAX_RETAINED_RESPONSE
 - Effect and VerificationLevel are written through explicit code tables rather than discriminant casts, so inserting an enum variant breaks a build instead of renumbering records already stored

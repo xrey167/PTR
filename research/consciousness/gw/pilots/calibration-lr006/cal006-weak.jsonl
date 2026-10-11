@@ -1,0 +1,5 @@
+{"seed": 1004, "D": 2048, "arm": "weak_all_to_all", "lr": 0.006, "d": 48, "ffn": 206, "id": 761, "ood16": 693, "ood24": 625, "converged": 1, "steps": 4050, "best_val": 794, "loss_w": 134227, "sec": 154}
+{"seed": 1005, "D": 2048, "arm": "weak_all_to_all", "lr": 0.006, "d": 48, "ffn": 206, "id": 842, "ood16": 724, "ood24": 584, "converged": 1, "steps": 3450, "best_val": 850, "loss_w": 83468, "sec": 55}
+{"seed": 1006, "D": 2048, "arm": "weak_all_to_all", "lr": 0.006, "d": 48, "ffn": 206, "id": 745, "ood16": 665, "ood24": 631, "converged": 1, "steps": 3300, "best_val": 737, "loss_w": 144675, "sec": 56}
+{"seed": 1007, "D": 2048, "arm": "weak_all_to_all", "lr": 0.006, "d": 48, "ffn": 206, "id": 827, "ood16": 699, "ood24": 576, "converged": 1, "steps": 3750, "best_val": 843, "loss_w": 84863, "sec": 45}
+{"seed": 1008, "D": 2048, "arm": "weak_all_to_all", "lr": 0.006, "d": 48, "ffn": 206, "id": 840, "ood16": 740, "ood24": 661, "converged": 1, "steps": 3750, "best_val": 840, "loss_w": 78464, "sec": 43}

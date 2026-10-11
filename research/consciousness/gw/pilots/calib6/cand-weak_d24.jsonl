@@ -1,0 +1,4 @@
+{"seed": 1011, "D": 2048, "arm": "weak_d24", "lr": 0.006, "d": 48, "ffn": 333, "id": 807, "ood16": 706, "ood24": 608, "converged": 1, "steps": 4350, "best_val": 814, "loss_w": 103379, "sec": 52}
+{"seed": 1012, "D": 2048, "arm": "weak_d24", "lr": 0.006, "d": 48, "ffn": 333, "id": 827, "ood16": 720, "ood24": 620, "converged": 1, "steps": 6600, "best_val": 842, "loss_w": 63643, "sec": 73}
+{"seed": 1013, "D": 2048, "arm": "weak_d24", "lr": 0.006, "d": 48, "ffn": 333, "id": 831, "ood16": 747, "ood24": 627, "converged": 1, "steps": 6450, "best_val": 852, "loss_w": 76245, "sec": 71}
+{"seed": 1014, "D": 2048, "arm": "weak_d24", "lr": 0.006, "d": 48, "ffn": 333, "id": 832, "ood16": 730, "ood24": 612, "converged": 1, "steps": 3750, "best_val": 845, "loss_w": 99708, "sec": 41}

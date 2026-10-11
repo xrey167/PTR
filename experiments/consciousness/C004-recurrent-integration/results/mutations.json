@@ -1,0 +1,522 @@
+{
+  "experiment_id": "C004",
+  "git_sha": "25c2ea20b9754e9624b871ccae90109f5e4f8a83",
+  "interpreter": "3.11.15",
+  "killed": 44,
+  "machine": "x86_64",
+  "mutations": [
+    {
+      "counters": [
+        "reset_carry_leaks",
+        "reset_above_chance"
+      ],
+      "exit": 2,
+      "expected": [
+        "reset_carry_leaks",
+        "reset_above_chance"
+      ],
+      "file": "research/cseries/c004/c004_model.py",
+      "name": "reset-state-not-applied",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "ff_causal_leaks"
+      ],
+      "exit": 1,
+      "expected": [
+        "ff_causal_leaks"
+      ],
+      "file": "research/cseries/c004/c004_model.py",
+      "name": "ff-attention-not-causal",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "nondeterminism"
+      ],
+      "exit": 1,
+      "expected": [
+        "nondeterminism"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "determinism-seed-dropped",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "recurrent_carry_hits"
+      ],
+      "exit": 2,
+      "expected": [
+        "control:isolation_probe",
+        "recurrent_carry_hits"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "carry-probe-perturbs-nothing",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:causal_probe",
+        "ff_causal_leaks"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "causal-probe-perturbs-nothing",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "length_leaks",
+        "inlength_control_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "length_leaks",
+        "inlength_control_errors"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "training-batches-include-the-primary-length",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "train_eval_overlap",
+        "val_eval_overlap"
+      ],
+      "exit": 2,
+      "expected": [
+        "train_eval_overlap",
+        "val_eval_overlap"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "evaluation-not-deduplicated-against-training",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "val_eval_overlap"
+      ],
+      "exit": 2,
+      "expected": [
+        "val_eval_overlap"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "evaluation-ignores-the-validation-set",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "param_mismatch_arms",
+        "flop_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "param_mismatch_arms",
+        "flop_mismatch_arms"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "ff-target-parameters-doubled",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "flop_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "flop_mismatch_arms"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "recurrent-flops-counted-at-double-length",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "nondeterminism",
+        "recurrent_carry_hits",
+        "nonfinite_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "nonfinite_arms"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "loss-is-infinite",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "checkpoint_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "checkpoint_mismatch_arms"
+      ],
+      "file": "research/cseries/lib/train.py",
+      "name": "best-checkpoint-not-restored",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "convergence_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "convergence_mismatch_arms"
+      ],
+      "file": "research/cseries/lib/train.py",
+      "name": "converged-flag-always-true",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "label_mismatches"
+      ],
+      "exit": 2,
+      "expected": [
+        "label_mismatches"
+      ],
+      "file": "research/cseries/c004/c004_task.py",
+      "name": "counter-modulus-is-five",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "label_mismatches",
+        "reset_above_chance"
+      ],
+      "exit": 2,
+      "expected": [
+        "reset_above_chance"
+      ],
+      "file": "research/cseries/c004/c004_task.py",
+      "name": "labels-are-the-last-symbol",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "perm_label_leaks"
+      ],
+      "exit": 2,
+      "expected": [
+        "perm_label_leaks"
+      ],
+      "file": "research/cseries/c004/c004_task.py",
+      "name": "permutation-is-identity",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "corruption_rate_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "corruption_rate_errors"
+      ],
+      "file": "research/cseries/c004/c004_task.py",
+      "name": "corruption-changes-nothing",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:length_leak"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "length-leak-detector-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:overlap"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "overlap-detector-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:param_mismatch"
+      ],
+      "file": "research/cseries/lib/common.py",
+      "name": "param-mismatch-detector-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:flop_mismatch"
+      ],
+      "file": "research/cseries/lib/common.py",
+      "name": "flop-mismatch-detector-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:label_check"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "label-audit-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "arms_trained"
+      ],
+      "exit": 1,
+      "expected": [
+        "arms_trained"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "an-arm-is-not-trained",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "id_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "id_eval_instances"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "id-evaluation-shrunk",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "primary_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "primary_eval_instances"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "primary-evaluation-shrunk",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "secondary_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "secondary_eval_instances"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "secondary-evaluation-shrunk",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:trained_floor"
+      ],
+      "file": "research/cseries/c004/c004_rules.py",
+      "name": "trained-ignores-the-floor",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:unconverged_arms"
+      ],
+      "file": "research/cseries/c004/c004_rules.py",
+      "name": "unconverged-guard-ignores-the-comparator",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:above_chance_slack"
+      ],
+      "file": "research/cseries/c004/c004_rules.py",
+      "name": "above-chance-slack-ignored",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:rate_error"
+      ],
+      "file": "research/cseries/c004/c004_rules.py",
+      "name": "rate-error-only-checks-one-side",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:label_leak"
+      ],
+      "file": "research/cseries/c004/c004_rules.py",
+      "name": "label-leak-slack-ignored",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:plateau_min_delta"
+      ],
+      "file": "research/cseries/lib/common.py",
+      "name": "plateau-audit-min-delta-ignored",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:plateau_patience"
+      ],
+      "file": "research/cseries/lib/common.py",
+      "name": "plateau-audit-patience-off-by-one",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:train_patience"
+      ],
+      "file": "research/cseries/lib/train.py",
+      "name": "train-patience-off-by-one",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:train_min_delta"
+      ],
+      "file": "research/cseries/lib/train.py",
+      "name": "train-min-delta-ignored",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:flop_formulas"
+      ],
+      "file": "research/cseries/c004/c004_model.py",
+      "name": "ff-flops-drop-attention",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:flop_formulas"
+      ],
+      "file": "research/cseries/c004/c004_model.py",
+      "name": "gru-flops-count-two-gates",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:param_formulas"
+      ],
+      "file": "research/cseries/c004/c004_model.py",
+      "name": "ff-params-formula-drops-the-norms",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:alibi_sign"
+      ],
+      "file": "research/cseries/c004/c004_model.py",
+      "name": "alibi-bias-sign-flipped",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:reset_state"
+      ],
+      "file": "research/cseries/c004/c004_model.py",
+      "name": "reset-arm-reads-the-first-step",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "inlength_control_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "inlength_control_errors"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "inlength-arm-never-sees-the-long-length",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:inlength_probe"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "inlength-probe-blinded",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:comparator_scalar"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "comparator-scalar-reads-the-recurrent-arm",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "nondeterminism"
+      ],
+      "exit": 1,
+      "expected": [
+        "nondeterminism"
+      ],
+      "file": "research/cseries/c004/harness.py",
+      "name": "initial-weights-are-not-seeded",
+      "result": "killed"
+    }
+  ],
+  "note": "planted in a throwaway copy at a reduced scale with the interpreter that ran this script (the locked environment's)",
+  "runner_args": [
+    "--set",
+    "max_steps=300",
+    "--set",
+    "max_steps_control=150",
+    "--set",
+    "eval_every=50",
+    "--set",
+    "patience=4",
+    "--set",
+    "pool_per_length=128"
+  ],
+  "subcommand": "c004",
+  "torch": "2.7.1+cpu",
+  "total": 44
+}

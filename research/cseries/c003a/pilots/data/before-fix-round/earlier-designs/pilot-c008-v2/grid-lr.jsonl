@@ -1,0 +1,14 @@
+{"arm": "schema_free", "best_val": 722, "converged": 0, "load_cv_milli": 678, "lr": 0.001, "rate": 0.05, "reward": 710, "seed": 1001, "steps": 12000, "top1": 0, "wall_s": 49}
+{"arm": "schema_free", "best_val": 720, "converged": 1, "load_cv_milli": 686, "lr": 0.003, "rate": 0.05, "reward": 710, "seed": 1001, "steps": 7500, "top1": 0, "wall_s": 28}
+{"arm": "schema_free", "best_val": 715, "converged": 1, "load_cv_milli": 670, "lr": 0.01, "rate": 0.05, "reward": 707, "seed": 1001, "steps": 5000, "top1": 0, "wall_s": 20}
+{"arm": "schema_free_wide", "best_val": 726, "converged": 1, "load_cv_milli": 672, "lr": 0.001, "rate": 0.05, "reward": 718, "seed": 1001, "steps": 10750, "top1": 0, "wall_s": 37}
+{"arm": "schema_free_wide", "best_val": 722, "converged": 1, "load_cv_milli": 682, "lr": 0.003, "rate": 0.05, "reward": 717, "seed": 1001, "steps": 7000, "top1": 0, "wall_s": 24}
+{"arm": "schema_free_wide", "best_val": 714, "converged": 1, "load_cv_milli": 691, "lr": 0.01, "rate": 0.05, "reward": 704, "seed": 1001, "steps": 4000, "top1": 0, "wall_s": 12}
+{"arm": "describe_only", "best_val": 719, "converged": 1, "load_cv_milli": 668, "lr": 0.001, "rate": 0.05, "reward": 710, "seed": 1001, "steps": 10500, "top1": 385, "wall_s": 51}
+{"arm": "describe_only", "best_val": 726, "converged": 1, "load_cv_milli": 685, "lr": 0.003, "rate": 0.05, "reward": 713, "seed": 1001, "steps": 8500, "top1": 304, "wall_s": 43}
+{"arm": "describe_only", "best_val": 721, "converged": 1, "load_cv_milli": 687, "lr": 0.01, "rate": 0.05, "reward": 714, "seed": 1001, "steps": 7500, "top1": 510, "wall_s": 38}
+{"arm": "control", "best_val": 697, "converged": 1, "load_cv_milli": 808, "lr": 0.001, "rate": 0.05, "reward": 685, "seed": 1001, "steps": 5750, "top1": 508, "wall_s": 32}
+{"arm": "control", "best_val": 690, "converged": 1, "load_cv_milli": 753, "lr": 0.003, "rate": 0.05, "reward": 688, "seed": 1001, "steps": 4000, "top1": 487, "wall_s": 23}
+{"arm": "control", "best_val": 701, "converged": 1, "load_cv_milli": 790, "lr": 0.01, "rate": 0.05, "reward": 692, "seed": 1001, "steps": 3750, "top1": 491, "wall_s": 19}
+{"arm": "schema_free", "best_val": 710, "converged": 1, "load_cv_milli": 659, "lr": 0.001, "rate": 0.05, "reward": 708, "seed": 1002, "steps": 12000, "top1": 0, "wall_s": 39}
+{"arm": "schema_free", "best_val": 715, "converged": 1, "load_cv_milli": 665, "lr": 0.003, "rate": 0.05, "reward": 718, "seed": 1002, "steps": 9250, "top1": 0, "wall_s": 30}

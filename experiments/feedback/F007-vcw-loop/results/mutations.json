@@ -1,0 +1,569 @@
+{
+  "experiment_id": "F007",
+  "git_sha": "99d92379dee2e7ea0dc29e159e11a978e75f12fd",
+  "recorded_at": "2026-10-11T09:54:52.100057+00:00",
+  "subcommand": "vcw-loop",
+  "killed": 33,
+  "total": 33,
+  "mutations": [
+    {
+      "name": "verifier-accepts-any-integer",
+      "file": "crates/ptr-verifier/src/arithmetic.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 7259,
+      "expected": [
+        "false_accepts",
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "false_accepts": 3629,
+        "verdict_mismatches": 3629,
+        "coverage_unmet": 1,
+        "coverage_unmet_hard_events": 1
+      }
+    },
+    {
+      "name": "missing-property-reported-as-another-code",
+      "file": "crates/ptr-verifier/src/json_schema.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4277,
+      "expected": [
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "verdict_mismatches": 4276,
+        "coverage_unmet": 1,
+        "coverage_unmet_hard_events": 1
+      }
+    },
+    {
+      "name": "classify-accepts-a-single-finding-fail",
+      "file": "crates/ptr-router/src/findings.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 80795,
+      "expected": [
+        "loop_errors",
+        "false_accepts"
+      ],
+      "counters": {
+        "loop_errors": 80784,
+        "control_shuffled": 1,
+        "control_baseline": 1,
+        "control_training": 2,
+        "control_grid_edge": 2,
+        "control_bon": 1,
+        "control_l3": 1,
+        "coverage_unmet": 3,
+        "coverage_unmet_repairs": 1,
+        "coverage_unmet_exhausted": 1,
+        "coverage_unmet_births": 1
+      }
+    },
+    {
+      "name": "repair-routed-outside-the-registry",
+      "file": "crates/ptr-router/src/findings.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24929,
+      "expected": [
+        "routing_outside_admissible"
+      ],
+      "counters": {
+        "routing_outside_admissible": 24925,
+        "control_shuffled": 1,
+        "control_ctx": 1,
+        "control_l3": 1,
+        "coverage_unmet": 1,
+        "coverage_unmet_repairs": 1
+      }
+    },
+    {
+      "name": "verifier-budget-off-by-one",
+      "file": "crates/ptr-runtime/src/vcw/budget.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3436,
+      "expected": [
+        "budget_violations"
+      ],
+      "counters": {
+        "budget_violations": 3435,
+        "coverage_unmet": 1,
+        "coverage_unmet_exhausted": 1
+      }
+    },
+    {
+      "name": "meter-does-not-charge-the-call",
+      "file": "crates/ptr-runtime/src/vcw/budget.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 30436,
+      "expected": [
+        "verifier_call_mismatches"
+      ],
+      "counters": {
+        "budget_violations": 3435,
+        "verifier_call_mismatches": 27000,
+        "coverage_unmet": 1,
+        "coverage_unmet_exhausted": 1
+      }
+    },
+    {
+      "name": "candidate-verified-twice",
+      "file": "crates/ptr-runtime/src/vcw/closed_loop.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 125849,
+      "expected": [
+        "double_verifications"
+      ],
+      "counters": {
+        "double_verifications": 48857,
+        "budget_violations": 14886,
+        "verdict_overrides": 11496,
+        "verifier_call_mismatches": 27000,
+        "calls_after_acceptance": 23610
+      }
+    },
+    {
+      "name": "accepted-candidate-is-refused",
+      "file": "crates/ptr-runtime/src/vcw/closed_loop.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 70715,
+      "expected": [
+        "verdict_overrides",
+        "calls_after_acceptance"
+      ],
+      "counters": {
+        "verdict_overrides": 38722,
+        "calls_after_acceptance": 31989,
+        "control_shuffled": 1,
+        "control_baseline": 1,
+        "control_bon": 1,
+        "control_l3": 1
+      }
+    },
+    {
+      "name": "loop-panics",
+      "file": "crates/ptr-runtime/src/vcw/closed_loop.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1539,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "product_panics": 1539
+      }
+    },
+    {
+      "name": "boundary-drops-accepted-calls",
+      "file": "bins/ptr-bench/src/experiments/f007/task.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 47224,
+      "expected": [
+        "unverified_returns"
+      ],
+      "counters": {
+        "unverified_returns": 23610,
+        "verifier_call_mismatches": 23610,
+        "control_shuffled": 1,
+        "control_baseline": 1,
+        "control_bon": 1,
+        "control_l3": 1
+      }
+    },
+    {
+      "name": "structural-commit-not-attributed-to-an-admission",
+      "file": "bins/ptr-bench/src/experiments/f007/lane.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 36,
+      "expected": [
+        "l3_unadmitted"
+      ],
+      "counters": {
+        "l3_unadmitted": 36
+      }
+    },
+    {
+      "name": "exhausted-counted-as-verified",
+      "file": "bins/ptr-bench/src/experiments/f007/lane.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3391,
+      "expected": [
+        "exhausted_as_success"
+      ],
+      "counters": {
+        "exhausted_as_success": 3390,
+        "coverage_unmet": 1,
+        "coverage_unmet_exhausted": 1
+      }
+    },
+    {
+      "name": "shuffled-map-is-the-true-map",
+      "file": "bins/ptr-bench/src/experiments/f007/world.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "control_shuffled"
+      ],
+      "counters": {
+        "control_shuffled": 1
+      }
+    },
+    {
+      "name": "null-world-is-heterogeneous",
+      "file": "bins/ptr-bench/src/experiments/f007/params.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "control_null"
+      ],
+      "counters": {
+        "control_null": 2
+      }
+    },
+    {
+      "name": "gate-is-untrained",
+      "file": "bins/ptr-bench/src/experiments/f007/arms.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "control_baseline"
+      ],
+      "counters": {
+        "control_baseline": 1
+      }
+    },
+    {
+      "name": "broadcast-effect-in-every-world",
+      "file": "bins/ptr-bench/src/experiments/f007/world.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "control_workspace"
+      ],
+      "counters": {
+        "control_baseline": 1,
+        "control_workspace": 2
+      }
+    },
+    {
+      "name": "workspace-ablation-keeps-the-broadcast",
+      "file": "bins/ptr-bench/src/experiments/f007/arms.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "control_ctx"
+      ],
+      "counters": {
+        "control_ctx": 1
+      }
+    },
+    {
+      "name": "no-json-requests",
+      "file": "bins/ptr-bench/src/experiments/f007/arms.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "coverage_unmet_kind_share",
+        "coverage_unmet"
+      ],
+      "counters": {
+        "control_l3": 1,
+        "coverage_unmet": 3,
+        "coverage_unmet_kind_share": 1,
+        "coverage_unmet_hard_events": 1,
+        "coverage_unmet_births": 1
+      }
+    },
+    {
+      "name": "a-code-is-never-planted",
+      "file": "bins/ptr-bench/src/experiments/f007/params.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "coverage_unmet_hard_events"
+      ],
+      "counters": {
+        "coverage_unmet": 1,
+        "coverage_unmet_hard_events": 1
+      }
+    },
+    {
+      "name": "full-loop-never-repairs",
+      "file": "bins/ptr-bench/src/experiments/f007/arms.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5,
+      "expected": [
+        "coverage_unmet_repairs"
+      ],
+      "counters": {
+        "control_workspace": 2,
+        "control_ctx": 1,
+        "coverage_unmet": 2,
+        "coverage_unmet_repairs": 1,
+        "coverage_unmet_births": 1
+      }
+    },
+    {
+      "name": "budget-so-large-nothing-is-exhausted",
+      "file": "bins/ptr-bench/src/experiments/f007/params.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "coverage_unmet_exhausted"
+      ],
+      "counters": {
+        "control_shuffled": 1,
+        "control_baseline": 1,
+        "control_l3": 1,
+        "coverage_unmet": 1,
+        "coverage_unmet_exhausted": 1
+      }
+    },
+    {
+      "name": "l3-off-in-the-full-arm",
+      "file": "bins/ptr-bench/src/experiments/f007/arms.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "coverage_unmet_births",
+        "control_l3"
+      ],
+      "counters": {
+        "control_workspace": 2,
+        "control_l3": 1,
+        "coverage_unmet": 1,
+        "coverage_unmet_births": 1
+      }
+    },
+    {
+      "name": "tuning-grid-too-narrow",
+      "file": "bins/ptr-bench/src/experiments/f007/params.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "control_grid_edge"
+      ],
+      "counters": {
+        "control_grid_edge": 6
+      }
+    },
+    {
+      "name": "gate-is-never-promoted",
+      "file": "bins/ptr-bench/src/experiments/f007/learn.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 7,
+      "expected": [
+        "control_training"
+      ],
+      "counters": {
+        "control_baseline": 1,
+        "control_training": 6
+      }
+    },
+    {
+      "name": "learned-router-is-never-promoted",
+      "file": "bins/ptr-bench/src/experiments/f007/learn.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "control_training"
+      ],
+      "counters": {
+        "control_training": 3
+      }
+    },
+    {
+      "name": "best-of-n-gets-one-call",
+      "file": "bins/ptr-bench/src/experiments/f007/arms.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "control_bon"
+      ],
+      "counters": {
+        "control_bon": 1
+      }
+    },
+    {
+      "name": "oracle-uses-the-worst-pod",
+      "file": "bins/ptr-bench/src/experiments/f007/world.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "control_oracle"
+      ],
+      "counters": {
+        "control_oracle": 1
+      }
+    },
+    {
+      "name": "l3-ablation-is-the-full-arm",
+      "file": "bins/ptr-bench/src/experiments/f007/arms.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "control_l3"
+      ],
+      "counters": {
+        "control_l3": 1
+      }
+    },
+    {
+      "name": "ctx-pods-ignore-the-broadcast",
+      "file": "bins/ptr-bench/src/experiments/f007/world.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "control_ctx"
+      ],
+      "counters": {
+        "control_ctx": 2
+      }
+    },
+    {
+      "name": "probe-delivers-the-broadcast-both-times",
+      "file": "bins/ptr-bench/src/experiments/f007/arms.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "control_ctx"
+      ],
+      "counters": {
+        "control_ctx": 1
+      }
+    },
+    {
+      "name": "arm-state-leaks-into-the-first-draft",
+      "file": "bins/ptr-bench/src/experiments/f007/world.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "control_first_draft"
+      ],
+      "counters": {
+        "control_first_draft": 3
+      }
+    },
+    {
+      "name": "edge-test-never-fires",
+      "file": "bins/ptr-bench/src/experiments/f007/learn.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "control_grid_edge"
+      ],
+      "counters": {
+        "control_grid_edge": 6
+      }
+    },
+    {
+      "name": "edge-test-uses-a-huge-z",
+      "file": "bins/ptr-bench/src/experiments/f007/learn.rs",
+      "cases": 1000,
+      "seed": 1011,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "control_grid_edge"
+      ],
+      "counters": {
+        "control_grid_edge": 6
+      }
+    }
+  ]
+}

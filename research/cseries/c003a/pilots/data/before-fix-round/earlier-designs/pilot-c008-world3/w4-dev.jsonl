@@ -1,0 +1,4 @@
+{"arm": "describe_only", "best_val": 887, "converged": 1, "law": "full", "load_cv_milli": 1013, "lr": 0.003, "rate": 0.05, "reward": 891, "seed": 1001, "set": {}, "steps": 5250, "top1": 225, "wall_s": 39}
+{"arm": "schema_free", "best_val": 890, "converged": 1, "law": "full", "load_cv_milli": 1017, "lr": 0.003, "rate": 0.05, "reward": 893, "seed": 1001, "set": {}, "steps": 5750, "top1": 0, "wall_s": 29}
+{"arm": "control", "best_val": 878, "converged": 1, "law": "full", "load_cv_milli": 1059, "lr": 0.003, "rate": 0.05, "reward": 882, "seed": 1001, "set": {}, "steps": 6750, "top1": 500, "wall_s": 49}
+{"arm": "control", "best_val": 888, "converged": 1, "law": "diagonal", "load_cv_milli": 1045, "lr": 0.003, "rate": 0.05, "reward": 887, "seed": 1001, "set": {}, "steps": 9250, "top1": 733, "wall_s": 71}

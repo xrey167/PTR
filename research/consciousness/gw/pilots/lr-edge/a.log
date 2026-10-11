@@ -1,0 +1,2 @@
+/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/c001-venv/lib/python3.11/site-packages/torch/_subclasses/functional_tensor.py:276: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))

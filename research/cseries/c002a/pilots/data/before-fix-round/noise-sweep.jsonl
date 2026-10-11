@@ -1,0 +1,9 @@
+{"sigma": 150, "seed": 1004, "self": 271, "noisy": 270, "probe": 267}
+{"sigma": 150, "seed": 1005, "self": 269, "noisy": 271, "probe": 274}
+{"sigma": 150, "seed": 1006, "self": 246, "noisy": 253, "probe": 263}
+{"sigma": 250, "seed": 1004, "self": 271, "noisy": 277, "probe": 267}
+{"sigma": 250, "seed": 1005, "self": 269, "noisy": 280, "probe": 274}
+{"sigma": 250, "seed": 1006, "self": 246, "noisy": 265, "probe": 263}
+{"sigma": 400, "seed": 1004, "self": 271, "noisy": 297, "probe": 267}
+{"sigma": 400, "seed": 1005, "self": 269, "noisy": 305, "probe": 274}
+{"sigma": 400, "seed": 1006, "self": 246, "noisy": 291, "probe": 263}
