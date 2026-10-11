@@ -1,3 +1,3 @@
 results_git_sha = "0c4aaa409bbbad50b8dc9745d26fd89d47bcb067"
-stale_since = "2f24e9020a2b63f223cf88ac77f23533d5ba3e8e"
-reason = "No code under test changed after C004's seed records and mutation check. 2f24e902 records the completed status and the result in STATUS.md and regenerates the component docs, which the repository-wide provenance counts as a change; the merge into the integration line then brings unrelated work. C004 was preregistered at c004-prereg (25c2ea20). No rerun under the same preregistration follows (each seed runs once)."
+stale_since = "ee393aa1277bdbb46683949e7237918155e386e6"
+reason = "No code under test changed after C004's seed records and mutation check. ee393aa1 (the C007 completion commit, made after C004's aggregate) is the first commit to regenerate the component docs; 2f24e902 records the completed status and the result in STATUS.md and regenerates the component docs, which the repository-wide provenance counts as a change; the merge into the integration line then brings unrelated work. C004 was preregistered at c004-prereg (25c2ea20). No rerun under the same preregistration follows (each seed runs once)."
