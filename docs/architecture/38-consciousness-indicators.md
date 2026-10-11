@@ -1,8 +1,9 @@
 # 38 — Consciousness-indicator properties as functional capability requirements
 
-Status: **design**, plus one CPU mechanism experiment built to freeze-ready but not frozen
-and not run (C001, `experiments/consciousness/C001-global-workspace/`) and five further
-experiments registered as `planned` (C002-C006). Nothing in this document is evidence that
+Status: **design**, plus four CPU mechanism experiments built to freeze-ready but not frozen
+and not run (C001, `experiments/consciousness/C001-global-workspace/`; and the CPU stage-A experiments
+C004, C007 and C008 below, code in `research/cseries/`) and the GPU experiments registered as
+`planned` (C002, C003, C005, C006). Nothing in this document is evidence that
 any PTR component has any of the properties below. The tables mark what exists in code, what
 is only a scaffold and what is missing; every requirement is an experiment with a baseline,
 ablations and a falsification rule (invariant 15).
@@ -215,10 +216,10 @@ measured evidence is the R011 gate path; nothing here is an experimental result.
 
 | Experiment | What runs on CPU | What needs a GPU |
 |---|---|---|
-| C001 global workspace | everything (8 shared-weight modules in training, 16 and 24 in evaluation, d=32; one seed is an estimated 10 minutes of CPU time on a quiet 4-core machine: 489 s wall at a load of about 25 for the pilot-seed dry run) | nothing |
-| C002 metacognitive self-model | stage A: a toy model with a routing trace and an external probe | stage B: the OLMoE Pod-MoE with a self-model Pod |
-| C003 attention-schema routing | stage A: a toy router with synthetic loads | stage B: OLMoE L1 routing |
-| C004 recurrent integration | the toy recurrence versus feed-forward test (a0-cpu-4core) | the OLMoE-class variant and the M003 link |
+| C001 global workspace | everything (8 shared-weight modules in training, 16 and 24 in evaluation, d=48; one seed is about 7 minutes of CPU time on a lightly loaded core: see the dry run of pilot seed 1010 in `research/consciousness/gw/pilots/dry/`) | nothing |
+| C002 metacognitive self-model | stage A, registered separately as **C007**: a toy two-layer MoE classifier with routing traces, a self-model, an information-matched probe and calibrated own confidence (a0-cpu-4core; minutes per seed) | stage B (C002): the OLMoE Pod-MoE with a self-model Pod |
+| C003 attention-schema routing | stage A, registered separately as **C008**: a toy router under bursty cyclic demand with capacity limits, an attention schema used for control, a describe-only schema, a heuristic balancer and a router that reads the history directly; a construction-validity check on a world built so that a schema can help, which leaves AST-L2 unchanged (a0-cpu-4core; minutes per seed) | stage B (C003): OLMoE L1 routing |
+| C004 recurrent integration | a modular-counter toy: a gated recurrent net against a parameter-matched causal attention stack (FLOPs matched at the longest trained length only; the stack is not depth-matched to anything) and a reset-state ablation, judged at twice the trained length, with a control that trains the stack on the long length; **RPT-1 and the extrapolation clause of RPT-L1 only, not RPT-L2**, and a COMPLETED is close to a known answer (a0-cpu-4core; minutes per seed) | the OLMoE-class variant and the M003 link (not registered) |
 | C005 self-report reliability | nothing meaningful (needs a language model with injectable state) | all |
 | C006 workspace-gated Pod routing | none | all; a Pod-level run needs OLMoE-class Pods |
 
@@ -232,14 +233,29 @@ start of their hypothesis. They are not run before their CPU predecessor has a v
    bandwidth-matched and competition/capacity ablations, a sensitivity control). It does not test the
    deterministic `ptr-pods::workspace` contract (package A): a supportive result does not validate
    that contract and a refuting one does not touch it; the contract's evidence is C006 at the Pod
-   level. Decision, in advance: **supported** (every lower bound at the margin): build the learned L2
-   prototype and run C006. **Refuted with power** (guards hold, an upper bound below the margin):
-   downgrade the learned-workspace requirements GW-L1 and GW-L2 to *exploratory*. **Not shown**
-   (straddling), **invalid** (saturated, floored, insensitive, evidence missing): nothing changes.
-2. **C004 (CPU toy first).** Independent of C001; also informs M003.
-3. **C002 and C003 (CPU toy first).** Stage A tests the mechanism and the guards (no write path
-   to a gate); stage B needs the Pod-MoE training programme (doc 37 section 5) to reach an OLMoE
-   baseline. Neither is a claim about OLMoE until stage B is run.
+   level. Decision, in advance: **supported** (every lower bound at the margin, 30 per mille of 16-module
+   accuracy, against dense, bandwidth-matched and sparse pairwise attention): a learned workspace
+   architecture beats pairwise attention in this setting, and building a learned L2 prototype for
+   C006 is justified. The margin is the smallest advantage that would justify building the block
+   (about three points of accuracy), justified by cost but fixed after the pilots had been seen (disclosed, not fitted). The
+   *broadcast* (GWT-3, no-broadcast ablation), the limited-capacity *bottleneck* (GWT-2, capacity-off)
+   and *competition* contrasts are reported three-valued (attributed, not attributed, unresolved by
+   noise) and never decide the verdict; a no-broadcast tie downgrades the broadcast claim only.
+   **Refuted with power** (guards hold, an upper bound below the margin against a pairwise comparator,
+   i.e. the advantage is below the margin, which is not "no advantage"): downgrade the
+   learned-workspace requirements GW-L1 and GW-L2 to *exploratory* for the 2048-example setting (the pilot advantage grows with the training-set size; a larger-D successor is not excluded). **Not shown** (straddling),
+   **invalid** (saturated, floored, unconverged on more than 2 seeds, workspace untrained on more than 4 of 20, insensitive, a harness-integrity
+   counter, evidence missing): nothing changes. There is no single expected outcome (power.py, prereg section 4): reading the pilots three ways
+   P(supported) is between 0.02 and 0.69 (at the best pooled estimate and the observed rate of workspace stalls, 1 of 17 pilot seeds, not flagged by the guard's harness rule: not shown 0.78, supported 0.20, invalid 0.02,
+   refuted about 0); at an advantage equal to the margin, not shown 0.92-0.93. Supported shows an advantage over pairwise attention at 2048 examples and 16 modules, not that the broadcast,
+   the capacity limit or the competition is the reason (reported contrast by contrast, each may read "not attributed").
+2. **C004 (CPU, built to freeze-ready, not frozen).** Independent of C001; also informs M003.
+3. **C007 and C008 (the CPU stage A of C002 and C003, each registered as its own experiment, built
+   to freeze-ready, not frozen).** They test the mechanism and the guards (no write path to a verifier,
+   a gate or the environment; the self-model's information-matched probe and the schema's
+   describe-only ablation) on toys. C002 and C003 themselves are the GPU stage B and need the Pod-MoE
+   training programme (doc 37 section 5) to reach an OLMoE baseline. Neither stage A is a claim about
+   OLMoE; a CPU toy outcome says nothing about the GPU stage.
 4. **C005 (GPU).** Pure measurement with a hard guard on training signals.
 5. **C006 (GPU).** Depends on the C001 verdict and on L2 Pods existing.
 6. **M013 (existing).** Carries AE-1; this track adds no agency experiment.

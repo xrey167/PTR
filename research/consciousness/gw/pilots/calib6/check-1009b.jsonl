@@ -1,0 +1,1 @@
+{"seed": 1009, "D": 2048, "arm": "all_to_all", "lr": 0.006, "d": 48, "ffn": 137, "id": 845, "ood16": 675, "ood24": 543, "converged": 1, "steps": 4950, "best_val": 847, "loss_w": 94540, "sec": 77}

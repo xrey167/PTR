@@ -1,0 +1,781 @@
+{
+  "experiment_id": "F007",
+  "scope": "the whole verifier-closed workspace loop (ptr-runtime VcwLoop with its finding router, learned router promoted through the off-policy gate, workspace, self-model and attention schema, and L3 through the ledger) on seeded SIMULATED expert Pods with declared per-(Pod, finding code) skill tables, over arithmetic, JSON-schema and small code tasks judged by the real ptr-verifier verifiers, against a trained softmax gate and best-of-N with the same verifier at a matched verifier-call budget. The skill tables are the assumption under test: a gain is a consequence of them, bounded by them. No claim about any model.",
+  "verdict": "COMPLETED",
+  "decision": {
+    "verdict": "COMPLETED",
+    "reasons": [
+      "COMPLETED means: a verifier-closed loop with finding-routed repair beats best-of-N at equal verifier budget and beats the task-feature gate and the shuffled finding map, in a world whose Pod skills are declared (a consequence of those tables, not a result about a model)",
+      "the routing claim rests on the contrasts to the gate and to the shuffled map, not on best-of-N, which also lacks any repair Pod; see the mild-world and null-world rows"
+    ],
+    "problems": [],
+    "falsified_seeds": [],
+    "invalid_seeds": [],
+    "controls_failed": [],
+    "recommended_status": "completed"
+  },
+  "analysis": {
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "margin": 0.03,
+    "baselines": {
+      "gate": {
+        "mean": 0.07195,
+        "lcb": 0.06511976714918054,
+        "ucb": 0.07878023285081946,
+        "sd": 0.007164146843832836,
+        "seeds": 5,
+        "per_seed": [
+          0.074,
+          0.07825,
+          0.068,
+          0.078,
+          0.0615
+        ],
+        "verdict": "above"
+      },
+      "bon": {
+        "mean": 0.06355,
+        "lcb": 0.05398871967957261,
+        "ucb": 0.07311128032042738,
+        "sd": 0.010028708790268069,
+        "seeds": 5,
+        "per_seed": [
+          0.07425,
+          0.051,
+          0.055,
+          0.07,
+          0.0675
+        ],
+        "verdict": "above"
+      }
+    },
+    "robust_without_l3": {
+      "gate": {
+        "mean": 0.0716,
+        "lcb": 0.06527457248480255,
+        "ucb": 0.07792542751519745,
+        "sd": 0.006634662764602281,
+        "seeds": 5,
+        "per_seed": [
+          0.07325,
+          0.079,
+          0.06825,
+          0.0755,
+          0.062
+        ],
+        "verdict": "above"
+      },
+      "bon": {
+        "mean": 0.0632,
+        "lcb": 0.05438532178673118,
+        "ucb": 0.07201467821326883,
+        "sd": 0.009245607064979563,
+        "seeds": 5,
+        "per_seed": [
+          0.0735,
+          0.05175,
+          0.05525,
+          0.0675,
+          0.068
+        ],
+        "verdict": "above"
+      }
+    },
+    "ablations": {
+      "no_workspace": {
+        "mean": 0.0,
+        "lcb": 0.0,
+        "ucb": 0.0,
+        "sd": 0.0,
+        "seeds": 5,
+        "per_seed": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "label": "non_discriminating"
+      },
+      "no_finding": {
+        "mean": 0.16135,
+        "lcb": 0.15376469784032054,
+        "ucb": 0.16893530215967945,
+        "sd": 0.007956129712366432,
+        "seeds": 5,
+        "per_seed": [
+          0.17225,
+          0.16525,
+          0.15725,
+          0.16075,
+          0.15125
+        ],
+        "label": "helps"
+      },
+      "no_selfmodel": {
+        "mean": 0.0,
+        "lcb": 0.0,
+        "ucb": 0.0,
+        "sd": 0.0,
+        "seeds": 5,
+        "per_seed": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "label": "non_discriminating"
+      },
+      "no_l3": {
+        "mean": 0.00035000000000000005,
+        "lcb": -0.0009179562155732877,
+        "ucb": 0.0016179562155732878,
+        "sd": 0.0013299436078270388,
+        "seeds": 5,
+        "per_seed": [
+          0.00075,
+          -0.00075,
+          -0.00025,
+          0.0025,
+          -0.0005
+        ],
+        "label": "non_discriminating"
+      }
+    },
+    "finding_routing_without_l3": {
+      "mean": 0.16099999999999998,
+      "lcb": 0.15360545581591467,
+      "ucb": 0.16839454418408528,
+      "sd": 0.0077560460287442925,
+      "seeds": 5,
+      "per_seed": [
+        0.1715,
+        0.166,
+        0.1575,
+        0.15825,
+        0.15175
+      ],
+      "label": "helps"
+    },
+    "oracle_minus_full": {
+      "mean": 0.009200000000000002,
+      "lcb": 0.003971539293164276,
+      "ucb": 0.014428460706835726,
+      "sd": 0.005484067833278506,
+      "seeds": 5,
+      "per_seed": [
+        0.00425,
+        0.0175,
+        0.01075,
+        0.00425,
+        0.00925
+      ]
+    },
+    "secondary": {
+      "workspace": {
+        "mean": 0.0216,
+        "lcb": 0.019335069321380252,
+        "ucb": 0.02386493067861975,
+        "sd": 0.0023756578036409205,
+        "seeds": 5,
+        "per_seed": [
+          0.0215,
+          0.023,
+          0.02,
+          0.01875,
+          0.02475
+        ],
+        "margin": 0.009,
+        "verdict": "SUPPORTED"
+      },
+      "l3": {
+        "mean": 0.03279766902676097,
+        "lcb": -0.007808053935955364,
+        "ucb": 0.0734033919894773,
+        "sd": 0.04259084109701958,
+        "seeds": 5,
+        "per_seed": [
+          0.10240963855421686,
+          0.0,
+          0.007874015748031496,
+          0.04477611940298507,
+          0.008928571428571428
+        ],
+        "margin": 0.054,
+        "requests_per_seed": [
+          166,
+          145,
+          127,
+          134,
+          112
+        ],
+        "verdict": "NOT_SHOWN"
+      },
+      "self_model": {
+        "verdict": "UNTESTED",
+        "reason": "no discriminating condition in this design"
+      }
+    },
+    "controls": {
+      "shuffled_loses": {
+        "mean": 0.15505,
+        "lcb": 0.13910615729385406,
+        "ucb": 0.17099384270614593,
+        "sd": 0.016723299614609548,
+        "seeds": 5,
+        "per_seed": [
+          0.15875,
+          0.163,
+          0.13075,
+          0.175,
+          0.14775
+        ],
+        "passes": true
+      },
+      "gate_is_trained": {
+        "mean": 0.0894,
+        "lcb": 0.08399733437988946,
+        "ucb": 0.09480266562011053,
+        "sd": 0.005666789214361163,
+        "seeds": 5,
+        "per_seed": [
+          0.09825,
+          0.087,
+          0.08925,
+          0.08275,
+          0.08975
+        ],
+        "passes": true
+      },
+      "bon_beats_single_shot": {
+        "mean": 0.35760000000000003,
+        "lcb": 0.3461486374409083,
+        "ucb": 0.36905136255909177,
+        "sd": 0.01201119269681409,
+        "seeds": 5,
+        "per_seed": [
+          0.35575,
+          0.3785,
+          0.3545,
+          0.3495,
+          0.34975
+        ],
+        "passes": true
+      },
+      "oracle_is_an_upper_reference": {
+        "mean": 0.009200000000000002,
+        "lcb": 0.003971539293164276,
+        "ucb": 0.014428460706835726,
+        "sd": 0.005484067833278506,
+        "seeds": 5,
+        "per_seed": [
+          0.00425,
+          0.0175,
+          0.01075,
+          0.00425,
+          0.00925
+        ],
+        "passes": true
+      },
+      "null_tie_no_l3_vs_gate": {
+        "mean": -0.0007500000000000004,
+        "lcb": -0.0058257437076304165,
+        "ucb": 0.004325743707630415,
+        "sd": 0.005323884859761713,
+        "seeds": 5,
+        "per_seed": [
+          -0.00875,
+          -0.0005,
+          -0.0025,
+          0.00475,
+          0.00325
+        ],
+        "passes": true
+      },
+      "null_tie_no_l3_vs_no_finding": {
+        "mean": -0.0007500000000000004,
+        "lcb": -0.0058257437076304165,
+        "ucb": 0.004325743707630415,
+        "sd": 0.005323884859761713,
+        "seeds": 5,
+        "per_seed": [
+          -0.00875,
+          -0.0005,
+          -0.0025,
+          0.00475,
+          0.00325
+        ],
+        "passes": true
+      },
+      "null_tie_no_l3_vs_shuffled": {
+        "mean": 0.00395,
+        "lcb": -0.0018453310825277715,
+        "ucb": 0.009745331082527772,
+        "sd": 0.006078651166171654,
+        "seeds": 5,
+        "per_seed": [
+          0.005,
+          0.0125,
+          -0.001,
+          -0.00275,
+          0.006
+        ],
+        "passes": true
+      },
+      "null_tie_full_vs_gate": {
+        "mean": -4.99999999999997e-05,
+        "lcb": -0.006160261774427093,
+        "ucb": 0.006060261774427094,
+        "sd": 0.006408978077665737,
+        "seeds": 5,
+        "per_seed": [
+          -0.00625,
+          -0.00525,
+          -0.00175,
+          0.00875,
+          0.00425
+        ],
+        "passes": true
+      },
+      "null_tie_full_vs_no_finding": {
+        "mean": -4.99999999999997e-05,
+        "lcb": -0.006160261774427093,
+        "ucb": 0.006060261774427094,
+        "sd": 0.006408978077665737,
+        "seeds": 5,
+        "per_seed": [
+          -0.00625,
+          -0.00525,
+          -0.00175,
+          0.00875,
+          0.00425
+        ],
+        "passes": true
+      },
+      "null_tie_full_vs_shuffled": {
+        "mean": 0.00465,
+        "lcb": 0.0009938668567895776,
+        "ucb": 0.008306133143210421,
+        "sd": 0.0038348728792490633,
+        "seeds": 5,
+        "per_seed": [
+          0.0075,
+          0.00775,
+          -0.00025,
+          0.00125,
+          0.007
+        ],
+        "passes": true
+      },
+      "workspace_withheld_changes_nothing": {
+        "discordant": 0,
+        "passes": true
+      },
+      "one_harness_for_every_seed": {
+        "digests": [
+          "72b0f73c692f65d36c360da5a32d42f2085399723f19f5febda58c6dc6d66200"
+        ],
+        "passes": true
+      },
+      "first_draft_is_shared": {
+        "first_candidates_differ": 0,
+        "population": 684,
+        "passes": true
+      },
+      "harness_agrees_with_planning_model": {
+        "arms": {
+          "full": {
+            "measured": 0.9536000000000001,
+            "predicted": 0.962,
+            "passes": true
+          },
+          "gate": {
+            "measured": 0.8816499999999999,
+            "predicted": 0.883,
+            "passes": true
+          },
+          "bon": {
+            "measured": 0.8900499999999999,
+            "predicted": 0.891,
+            "passes": true
+          }
+        },
+        "passes": true
+      },
+      "no_arm_at_ceiling_or_floor": {
+        "rates": {
+          "full": 0.9536000000000001,
+          "gate": 0.8816499999999999,
+          "bon": 0.8900499999999999
+        },
+        "passes": true
+      }
+    },
+    "cost_primary_world": {
+      "full": {
+        "success_rate": 0.9536000000000001,
+        "verifier_calls_per_request": 1.6207999999999998,
+        "pod_calls_per_request": 1.6419000000000001,
+        "microseconds_per_request": 653.4341547
+      },
+      "gate": {
+        "success_rate": 0.8816499999999999,
+        "verifier_calls_per_request": 1.67515,
+        "pod_calls_per_request": 1.6948999999999999,
+        "microseconds_per_request": 265.68693529999996
+      },
+      "bon": {
+        "success_rate": 0.8900499999999999,
+        "verifier_calls_per_request": 1.6930999999999998,
+        "pod_calls_per_request": 1.6930999999999998,
+        "microseconds_per_request": 171.08332654999998
+      },
+      "no_workspace": {
+        "success_rate": 0.9536000000000001,
+        "verifier_calls_per_request": 1.6207999999999998,
+        "pod_calls_per_request": 1.6419000000000001,
+        "microseconds_per_request": 671.5098795499999
+      },
+      "no_finding": {
+        "success_rate": 0.7922499999999999,
+        "verifier_calls_per_request": 1.77945,
+        "pod_calls_per_request": 1.8035,
+        "microseconds_per_request": 302.27240335
+      },
+      "no_selfmodel": {
+        "success_rate": 0.9536000000000001,
+        "verifier_calls_per_request": 1.6207999999999998,
+        "pod_calls_per_request": 1.6419000000000001,
+        "microseconds_per_request": 636.80771085
+      },
+      "no_l3": {
+        "success_rate": 0.95325,
+        "verifier_calls_per_request": 1.6218499999999998,
+        "pod_calls_per_request": 1.6429500000000001,
+        "microseconds_per_request": 642.7174143000001
+      },
+      "shuffled": {
+        "success_rate": 0.79855,
+        "verifier_calls_per_request": 1.7698,
+        "pod_calls_per_request": 1.7953,
+        "microseconds_per_request": 733.92648225
+      }
+    },
+    "descriptive_worlds": {
+      "mild": {
+        "full_vs_gate": {
+          "mean": 0.052000000000000005,
+          "lcb": 0.0491249689732761,
+          "ucb": 0.05487503102672391,
+          "sd": 0.003015584520453704,
+          "seeds": 5,
+          "per_seed": [
+            0.056,
+            0.052,
+            0.04975,
+            0.05375,
+            0.0485
+          ]
+        },
+        "full_vs_bon": {
+          "mean": 0.035300000000000005,
+          "lcb": 0.03137847338300756,
+          "ucb": 0.03922152661699245,
+          "sd": 0.004113240814734775,
+          "seeds": 5,
+          "per_seed": [
+            0.0315,
+            0.03775,
+            0.03675,
+            0.04,
+            0.0305
+          ]
+        },
+        "full_vs_no_workspace": {
+          "mean": 0.0,
+          "lcb": 0.0,
+          "ucb": 0.0,
+          "sd": 0.0,
+          "seeds": 5,
+          "per_seed": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "full_vs_no_finding": {
+          "mean": 0.10800000000000001,
+          "lcb": 0.10079613915555337,
+          "ucb": 0.11520386084444666,
+          "sd": 0.007556040629853707,
+          "seeds": 5,
+          "per_seed": [
+            0.11275,
+            0.1125,
+            0.109,
+            0.111,
+            0.09475
+          ]
+        },
+        "full_vs_no_selfmodel": {
+          "mean": -5e-05,
+          "lcb": -0.00015659235,
+          "ucb": 5.659235000000001e-05,
+          "sd": 0.00011180339887498949,
+          "seeds": 5,
+          "per_seed": [
+            0.0,
+            0.0,
+            -0.00025,
+            0.0,
+            0.0
+          ]
+        },
+        "full_vs_no_l3": {
+          "mean": 0.0006499999999999999,
+          "lcb": -0.0011542152535095962,
+          "ucb": 0.0024542152535095957,
+          "sd": 0.0018924190867775563,
+          "seeds": 5,
+          "per_seed": [
+            0.00325,
+            0.00125,
+            0.001,
+            -0.0005,
+            -0.00175
+          ]
+        },
+        "full_vs_shuffled": {
+          "mean": 0.0881,
+          "lcb": 0.07926729452445772,
+          "ucb": 0.09693270547554228,
+          "sd": 0.00926451563763589,
+          "seeds": 5,
+          "per_seed": [
+            0.08075,
+            0.104,
+            0.088,
+            0.08325,
+            0.0845
+          ]
+        },
+        "full_vs_oracle": {
+          "mean": -0.005599999999999999,
+          "lcb": -0.007695563310627703,
+          "ucb": -0.0035044366893722946,
+          "sd": 0.0021980104640333268,
+          "seeds": 5,
+          "per_seed": [
+            -0.00225,
+            -0.00475,
+            -0.0065,
+            -0.0065,
+            -0.008
+          ]
+        }
+      },
+      "ctx": {
+        "full_vs_gate": {
+          "mean": 0.02335,
+          "lcb": 0.02095108001836834,
+          "ucb": 0.02574891998163166,
+          "sd": 0.0025161975280172254,
+          "seeds": 5,
+          "per_seed": [
+            0.02275,
+            0.01975,
+            0.02275,
+            0.026,
+            0.0255
+          ]
+        },
+        "full_vs_bon": {
+          "mean": 0.0874,
+          "lcb": 0.08256911992207577,
+          "ucb": 0.09223088007792424,
+          "sd": 0.005067050424063291,
+          "seeds": 5,
+          "per_seed": [
+            0.09475,
+            0.08175,
+            0.0875,
+            0.08925,
+            0.08375
+          ]
+        },
+        "full_vs_no_workspace": {
+          "mean": 0.0216,
+          "lcb": 0.019335069321380252,
+          "ucb": 0.02386493067861975,
+          "sd": 0.0023756578036409205,
+          "seeds": 5,
+          "per_seed": [
+            0.0215,
+            0.023,
+            0.02,
+            0.01875,
+            0.02475
+          ]
+        },
+        "full_vs_no_finding": {
+          "mean": 0.05014999999999999,
+          "lcb": 0.04858160666747779,
+          "ucb": 0.0517183933325222,
+          "sd": 0.001645068387636208,
+          "seeds": 5,
+          "per_seed": [
+            0.04875,
+            0.04825,
+            0.052,
+            0.0515,
+            0.05025
+          ]
+        },
+        "full_vs_no_selfmodel": {
+          "mean": 0.0,
+          "lcb": -0.00016853730357492446,
+          "ucb": 0.00016853730357492446,
+          "sd": 0.00017677669529663688,
+          "seeds": 5,
+          "per_seed": [
+            0.0,
+            0.00025,
+            0.0,
+            -0.00025,
+            0.0
+          ]
+        },
+        "full_vs_no_l3": {
+          "mean": 0.0029,
+          "lcb": 0.0018261118300912174,
+          "ucb": 0.003973888169908782,
+          "sd": 0.001126388032606881,
+          "seeds": 5,
+          "per_seed": [
+            0.001,
+            0.003,
+            0.00375,
+            0.003,
+            0.00375
+          ]
+        },
+        "full_vs_shuffled": {
+          "mean": 0.045899999999999996,
+          "lcb": 0.042228361557605794,
+          "ucb": 0.0495716384423942,
+          "sd": 0.003851136195981649,
+          "seeds": 5,
+          "per_seed": [
+            0.04725,
+            0.04075,
+            0.0495,
+            0.049,
+            0.043
+          ]
+        },
+        "full_vs_oracle": {
+          "mean": -0.00195,
+          "lcb": -0.0038892778359458833,
+          "ucb": -1.0722164054116547e-05,
+          "sd": 0.0020340845606807993,
+          "seeds": 5,
+          "per_seed": [
+            -0.0045,
+            -0.00175,
+            0.001,
+            -0.003,
+            -0.0015
+          ]
+        }
+      }
+    },
+    "null_world_descriptive": {
+      "full_vs_bon": {
+        "mean": 0.10135000000000001,
+        "lcb": 0.0937684434838059,
+        "ucb": 0.10893155651619411,
+        "sd": 0.007952200953195284,
+        "seeds": 5,
+        "per_seed": [
+          0.0935,
+          0.104,
+          0.111,
+          0.09275,
+          0.1055
+        ]
+      },
+      "gate_vs_bon": {
+        "mean": 0.10140000000000002,
+        "lcb": 0.09078402267665081,
+        "ucb": 0.11201597732334923,
+        "sd": 0.011134967444945673,
+        "seeds": 5,
+        "per_seed": [
+          0.09975,
+          0.10925,
+          0.11275,
+          0.084,
+          0.10125
+        ]
+      }
+    }
+  },
+  "seeds": [
+    {
+      "seed": 17,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "controls_failed": []
+    },
+    {
+      "seed": 29,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "controls_failed": []
+    },
+    {
+      "seed": 43,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "controls_failed": []
+    },
+    {
+      "seed": 71,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "controls_failed": []
+    },
+    {
+      "seed": 101,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "controls_failed": []
+    }
+  ],
+  "mutation_checks": {
+    "killed": 33,
+    "total": 33,
+    "git_sha": "99d92379dee2e7ea0dc29e159e11a978e75f12fd",
+    "sha256": "110ae90c31a7053f4ebab459e7f660ff42da3c43a940f1700037eca2d0eeabf7"
+  },
+  "report": "# F007 vcw-loop: COMPLETED\n\nSeeds: 17, 29, 43, 71, 101.\n\n- seed 17: valid; 0 coverage rules unmet, 0 falsifiers tripped, 0 controls failed\n- seed 29: valid; 0 coverage rules unmet, 0 falsifiers tripped, 0 controls failed\n- seed 43: valid; 0 coverage rules unmet, 0 falsifiers tripped, 0 controls failed\n- seed 71: valid; 0 coverage rules unmet, 0 falsifiers tripped, 0 controls failed\n- seed 101: valid; 0 coverage rules unmet, 0 falsifiers tripped, 0 controls failed\n- mutation check: 33 of 33 killed\n- reason: COMPLETED means: a verifier-closed loop with finding-routed repair beats best-of-N at equal verifier budget and beats the task-feature gate and the shuffled finding map, in a world whose Pod skills are declared (a consequence of those tables, not a result about a model)\n- reason: the routing claim rests on the contrasts to the gate and to the shuffled map, not on best-of-N, which also lacks any repair Pod; see the mild-world and null-world rows\n\nMargin: 3.0 points. Differences are in points of verified-success rate per request, paired within seed, mean over seeds, one-sided 95% t bounds.\n\n| comparison | mean | lower | upper | reading |\n|---|---|---|---|---|\n| full - gate | +7.20 | +6.51 | +7.88 | above the margin |\n| full - bon | +6.35 | +5.40 | +7.31 | above the margin |\n| no_l3 - gate (robustness) | +7.16 | +6.53 | +7.79 | above the margin |\n| no_l3 - bon (robustness) | +6.32 | +5.44 | +7.20 | above the margin |\n| full - no_workspace | +0.00 | +0.00 | +0.00 | non-discriminating in the primary world (see the secondary hypotheses) |\n| full - no_finding | +16.13 | +15.38 | +16.89 | helps |\n| full - no_selfmodel | +0.00 | +0.00 | +0.00 | non-discriminating in the primary world (see the secondary hypotheses) |\n| full - no_l3 | +0.04 | -0.09 | +0.16 | non-discriminating in the primary world (see the secondary hypotheses) |\n| no_l3 - no_finding | +16.10 | +15.36 | +16.84 | helps |\n| oracle - full (upper reference) | +0.92 | +0.40 | +1.44 | descriptive |\n\nSecondary hypotheses (preregistered, margins derived from the planning model, never gate the verdict):\n\n- workspace: +2.16 [+1.93, +2.39] against margin +0.90: SUPPORTED (a harness-defined reader of the broadcast: an implementation check, not the value of the workspace)\n- l3: +3.28 [-0.78, +7.34] against margin +5.40: NOT_SHOWN (low power, about 0.2 at the modelled gain: a NOT_SHOWN or REFUTED here is not evidence against L3)\n- self_model: UNTESTED (no discriminating condition in this design)\n\nControls:\n\n- shuffled_loses: +15.50 [+13.91, +17.10] passes\n- gate_is_trained: +8.94 [+8.40, +9.48] passes\n- bon_beats_single_shot: +35.76 [+34.61, +36.91] passes\n- oracle_is_an_upper_reference: +0.92 [+0.40, +1.44] passes\n- null_tie_no_l3_vs_gate: -0.08 [-0.58, +0.43] passes\n- null_tie_no_l3_vs_no_finding: -0.08 [-0.58, +0.43] passes\n- null_tie_no_l3_vs_shuffled: +0.40 [-0.18, +0.97] passes\n- null_tie_full_vs_gate: -0.00 [-0.62, +0.61] passes\n- null_tie_full_vs_no_finding: -0.00 [-0.62, +0.61] passes\n- null_tie_full_vs_shuffled: +0.46 [+0.10, +0.83] passes\n- workspace_withheld_changes_nothing: discordant requests 0 passes\n- one_harness_for_every_seed: passes (1 distinct source digests)\n- first_draft_is_shared: 0 (arm, request) pairs whose first draft differed from the full arm's, L3 population 684 passes\n- harness_agrees_with_planning_model: passes ({\"full\": {\"measured\": 0.9536000000000001, \"predicted\": 0.962, \"passes\": true}, \"gate\": {\"measured\": 0.8816499999999999, \"predicted\": 0.883, \"passes\": true}, \"bon\": {\"measured\": 0.8900499999999999, \"predicted\": 0.891, \"passes\": true}})\n- no_arm_at_ceiling_or_floor: passes ({\"full\": 0.9536000000000001, \"gate\": 0.8816499999999999, \"bon\": 0.8900499999999999})\n\nCost per request in the primary world (mean over seeds):\n\n| arm | success | verifier calls | Pod calls | microseconds |\n|---|---|---|---|---|\n| full | 0.954 | 1.621 | 1.642 | 653 |\n| gate | 0.882 | 1.675 | 1.695 | 266 |\n| bon | 0.890 | 1.693 | 1.693 | 171 |\n| no_workspace | 0.954 | 1.621 | 1.642 | 672 |\n| no_finding | 0.792 | 1.779 | 1.804 | 302 |\n| no_selfmodel | 0.954 | 1.621 | 1.642 | 637 |\n| no_l3 | 0.953 | 1.622 | 1.643 | 643 |\n| shuffled | 0.799 | 1.770 | 1.795 | 734 |\n\nDescriptive world mild (never gates the verdict):\n\n- full_vs_gate: +5.20 [+4.91, +5.49]\n- full_vs_bon: +3.53 [+3.14, +3.92]\n- full_vs_no_workspace: +0.00 [+0.00, +0.00]\n- full_vs_no_finding: +10.80 [+10.08, +11.52]\n- full_vs_no_selfmodel: -0.01 [-0.02, +0.01]\n- full_vs_no_l3: +0.06 [-0.12, +0.25]\n- full_vs_shuffled: +8.81 [+7.93, +9.69]\n- full_vs_oracle: -0.56 [-0.77, -0.35]\n\nDescriptive world ctx (never gates the verdict):\n\n- full_vs_gate: +2.33 [+2.10, +2.57]\n- full_vs_bon: +8.74 [+8.26, +9.22]\n- full_vs_no_workspace: +2.16 [+1.93, +2.39]\n- full_vs_no_finding: +5.01 [+4.86, +5.17]\n- full_vs_no_selfmodel: +0.00 [-0.02, +0.02]\n- full_vs_no_l3: +0.29 [+0.18, +0.40]\n- full_vs_shuffled: +4.59 [+4.22, +4.96]\n- full_vs_oracle: -0.19 [-0.39, -0.00]\n\nNull world, descriptive (what a repair Pod is worth where nothing is specialised):\n\n- full_vs_bon: +10.14 [+9.38, +10.89]\n- gate_vs_bon: +10.14 [+9.08, +11.20]\n\nLimitations: the expert Pods are seeded simulations with declared skill tables; whether finding routing helps is decided by those tables (the assumption under test), and the null world shows only that the harness adds no advantage of its own where the tables are equal; a trained gate over task features can capture at most the kind-level skill; in the declared worlds the codes of one kind are served best by different Pods, so a task-feature gate is handicapped by construction, which is the structure finding routing exploits; no Pod reads the workspace broadcast outside the descriptive world that declares it, so the workspace ablation is an exact tie by construction (a wiring check), not a measurement of the workspace's value; the self-model acts only through bounded hint boosts; the ablation measures that path alone; L3 is Birth only, on one code that no initial Pod can repair; the baselines have no L3, and the effect of L3 is shown by the no-L3 arm; the learned arms are trained once per run seed on pilot-domain traffic with no online learning during evaluation; the reported intervals are over seeds and so include the variance of training; five seeds give a one-sided t interval with four degrees of freedom, which is wide; a small true gain is NOT_SHOWN, not absent; the workspace, the self-model and L3 are not discriminated by the primary world (the tie of the workspace is by construction, the self-model has no discriminating condition in this design and is untested, L3 acts on one rare code); the workspace and L3 have preregistered secondary hypotheses with margins derived from the planning model, the workspace secondary tests a harness-defined reader of the broadcast and not the workspace's value, and the L3 secondary has low power; best-of-N lacks any repair Pod, so a gain over it bundles having a repair Pod with routing it; the routing claim rests on the contrasts to the gate and to the shuffled map; success is verified success under the real verifiers; a task whose verifier is blind to a defect would count as success (the independent oracle counts these as false accepts, and none was expected).\n"
+}

@@ -516,10 +516,16 @@ schema are derived and non-authoritative; they observe and propose and have no e
 gates, thresholds or the verifier (invariants 4, 5, 11); the L3 policy never gains write access
 to them; queues and workspace capacity are bounded (invariant 8). C001 tests a
 learned-attention analogue of the workspace, not the deterministic `ptr-pods::workspace` contract, so
-its outcome does not validate or refute that contract. The decision rule is three-way: supported means
-the L2 prototype (C006) is built and tested on Pods; refuted with power (the upper bound below the
-margin, with the guards holding) downgrades the learned-workspace requirements GW-L1 and GW-L2 to
-exploratory; not shown or invalid changes nothing.
+its outcome does not validate or refute that contract. The decision rule is three-way: supported
+(every lower bound at the 30 per mille margin against dense, narrow and sparse pairwise attention)
+means a learned workspace architecture is worth building as a C006 prototype on Pods; the
+broadcast, bottleneck and competition contributions (no-broadcast, capacity-off and competition-off
+ablations) are reported as attributed, not attributed or unresolved by noise and never decide the
+verdict; refuted with power (an upper bound below the margin against a pairwise comparator, guards
+holding: the advantage is below the margin, not absent) downgrades the learned-workspace
+requirements GW-L1 and GW-L2 to exploratory for the 2048-example setting (a larger-D successor is not excluded); not shown or invalid changes nothing.
+Supported shows an advantage over pairwise attention, not that the broadcast, the capacity limit or the competition is the reason. No single outcome
+is expected (C001 preregistration section 4: P(supported) between 0.02 and 0.69 depending on how the pilots are read; the workspace stalled on 1 of 17 pilot seeds).
 
 ## 11. Verifier-closed Pod-MoE (central design)
 

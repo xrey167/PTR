@@ -1,0 +1,8 @@
+{"arm": "control", "best_val": 700, "converged": 1, "load_cv_milli": 759, "lr": 0.003, "rate": 0.05, "reward": 694, "seed": 1001, "steps": 4250, "top1": 425, "wall_s": 20}
+{"arm": "describe_only", "best_val": 730, "converged": 1, "load_cv_milli": 677, "lr": 0.003, "rate": 0.05, "reward": 719, "seed": 1001, "steps": 9250, "top1": 341, "wall_s": 48}
+{"arm": "schema_free", "best_val": 724, "converged": 1, "load_cv_milli": 677, "lr": 0.003, "rate": 0.05, "reward": 714, "seed": 1001, "steps": 8500, "top1": 0, "wall_s": 32}
+{"arm": "heuristic", "best_val": 714, "converged": 1, "load_cv_milli": 668, "lr": 0.003, "rate": 0.05, "reward": 686, "seed": 1001, "steps": 11000, "top1": 0, "wall_s": 47}
+{"arm": "control", "best_val": 696, "converged": 1, "load_cv_milli": 882, "lr": 0.003, "rate": 0.05, "reward": 691, "seed": 1002, "steps": 6750, "top1": 458, "wall_s": 37}
+{"arm": "describe_only", "best_val": 721, "converged": 1, "load_cv_milli": 671, "lr": 0.003, "rate": 0.05, "reward": 717, "seed": 1002, "steps": 11500, "top1": 425, "wall_s": 61}
+{"arm": "schema_free", "best_val": 716, "converged": 1, "load_cv_milli": 668, "lr": 0.003, "rate": 0.05, "reward": 715, "seed": 1002, "steps": 9000, "top1": 0, "wall_s": 29}
+{"arm": "heuristic", "best_val": 690, "converged": 1, "load_cv_milli": 657, "lr": 0.003, "rate": 0.05, "reward": 683, "seed": 1002, "steps": 7000, "top1": 0, "wall_s": 31}

@@ -157,6 +157,13 @@ async fn main() {
         state = install_vcw(state, &vcw_config, std::path::Path::new(&data_dir));
     }
 
+    // A daemon that cannot be stopped by a signal is refused, never started and then "stopped
+    // cleanly" at once: a failed registration must not read as a stop request.
+    let stop_signals = register_stop_signals().unwrap_or_else(|err| {
+        eprintln!("refusing to start ptrd: {err}");
+        std::process::exit(2);
+    });
+
     // The service (and, for the model backend, the model load) is built above, so a build error
     // exits before anything listens and a slow load leaves no accepted-then-hung connection.
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -170,7 +177,7 @@ async fn main() {
     // on a stalled client.
     let (signalled_tx, signalled_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = async move {
-        shutdown_signal().await;
+        first_stop(stop_signals).await;
         let _ = signalled_tx.send(());
     };
     let grace = async move {
@@ -202,28 +209,82 @@ async fn main() {
 /// How long `ptrd` waits for requests in flight after SIGINT or SIGTERM.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Completes on SIGINT (Ctrl-C) or, on unix, SIGTERM.
-async fn shutdown_signal() {
+/// A stop signal that was registered: completes when it arrives, never when it cannot.
+type StopSignal = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// Keeps the stop signals that registered and logs each one that did not. If none registered the
+/// daemon could never be stopped cleanly and would also never see a stop request, so that is an
+/// error (the caller refuses to start); one failure alone costs only that signal.
+fn collect_stop_signals(
+    candidates: Vec<(&'static str, std::io::Result<StopSignal>)>,
+) -> Result<Vec<StopSignal>, String> {
+    let mut registered = Vec::new();
+    let mut failures = Vec::new();
+    for (name, candidate) in candidates {
+        match candidate {
+            Ok(signal) => registered.push(signal),
+            Err(err) => {
+                eprintln!("cannot listen for {name} ({err}); that signal will not stop ptrd");
+                failures.push(format!("{name}: {err}"));
+            }
+        }
+    }
+    if registered.is_empty() {
+        return Err(format!(
+            "no stop signal handler could be registered ({})",
+            failures.join("; ")
+        ));
+    }
+    Ok(registered)
+}
+
+/// Completes when the first of `signals` does. With no signal it never completes.
+async fn first_stop(mut signals: Vec<StopSignal>) {
+    std::future::poll_fn(|cx| {
+        for signal in &mut signals {
+            if signal.as_mut().poll(cx).is_ready() {
+                return std::task::Poll::Ready(());
+            }
+        }
+        std::task::Poll::Pending
+    })
+    .await;
+}
+
+/// Registers the SIGINT (Ctrl-C) and, on unix, SIGTERM handlers now, so a failure is known
+/// before anything listens.
+fn register_stop_signals() -> Result<Vec<StopSignal>, String> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut terminate = match signal(SignalKind::terminate()) {
-            Ok(stream) => stream,
-            Err(err) => {
-                // SIGINT must still stop the daemon.
-                eprintln!("cannot listen for SIGTERM ({err}); SIGINT still stops ptrd");
-                let _ = tokio::signal::ctrl_c().await;
-                return;
-            }
+        let listen = |kind: SignalKind| -> std::io::Result<StopSignal> {
+            let mut stream = signal(kind)?;
+            Ok(Box::pin(async move {
+                // A closed stream is not a stop request.
+                if stream.recv().await.is_none() {
+                    std::future::pending::<()>().await;
+                }
+            }))
         };
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = terminate.recv() => {}
-        }
+        collect_stop_signals(vec![
+            ("SIGINT", listen(SignalKind::interrupt())),
+            ("SIGTERM", listen(SignalKind::terminate())),
+        ])
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        let ctrl_c = tokio::signal::windows::ctrl_c().map(|mut stream| -> StopSignal {
+            Box::pin(async move {
+                if stream.recv().await.is_none() {
+                    std::future::pending::<()>().await;
+                }
+            })
+        });
+        collect_stop_signals(vec![("Ctrl-C", ctrl_c)])
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err("no stop signal is supported on this platform".to_owned())
     }
 }
 
@@ -469,6 +530,56 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
+    }
+
+    fn failing() -> std::io::Result<StopSignal> {
+        Err(std::io::Error::other("cannot register"))
+    }
+
+    fn arrives() -> std::io::Result<StopSignal> {
+        Ok(Box::pin(std::future::ready(())))
+    }
+
+    fn never() -> std::io::Result<StopSignal> {
+        Ok(Box::pin(std::future::pending()))
+    }
+
+    #[test]
+    fn no_registered_stop_signal_refuses_to_start_instead_of_stopping() {
+        // The old code treated a failed ctrl_c() as "signalled" and shut down at once with exit
+        // 0; now no handler at all is an error the caller turns into a non-zero refusal.
+        let err = match collect_stop_signals(vec![("SIGINT", failing()), ("SIGTERM", failing())]) {
+            Ok(_) => panic!("expected a refusal"),
+            Err(err) => err,
+        };
+        assert!(err.contains("SIGINT") && err.contains("SIGTERM"), "{err}");
+        assert!(collect_stop_signals(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn one_failed_stop_signal_keeps_the_other() {
+        let kept = collect_stop_signals(vec![("SIGINT", failing()), ("SIGTERM", never())]).unwrap();
+        assert_eq!(kept.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_registration_does_not_complete_the_stop_wait_but_a_signal_does() {
+        let kept = collect_stop_signals(vec![("SIGINT", failing()), ("SIGTERM", never())]).unwrap();
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(100), first_stop(kept));
+        assert!(
+            waited.await.is_err(),
+            "a failed handler must not read as a stop request"
+        );
+        let kept = collect_stop_signals(vec![("SIGINT", never()), ("SIGTERM", arrives())]).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), first_stop(kept))
+            .await
+            .expect("a delivered signal stops the wait");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_real_registration_succeeds_on_unix() {
+        assert_eq!(register_stop_signals().unwrap().len(), 2);
     }
 
     #[cfg(unix)]

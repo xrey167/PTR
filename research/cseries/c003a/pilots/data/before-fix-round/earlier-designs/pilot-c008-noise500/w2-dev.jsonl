@@ -1,0 +1,6 @@
+{"arm": "schema_free", "best_val": 757, "converged": 1, "law": "full", "load_cv_milli": 743, "lr": 0.003, "rate": 0.05, "reward": 754, "seed": 1001, "steps": 6250, "top1": 0, "wall_s": 33}
+{"arm": "describe_only", "best_val": 759, "converged": 1, "law": "full", "load_cv_milli": 741, "lr": 0.003, "rate": 0.05, "reward": 757, "seed": 1001, "steps": 8000, "top1": 445, "wall_s": 52}
+{"arm": "heuristic", "best_val": 757, "converged": 0, "law": "full", "load_cv_milli": 740, "lr": 0.003, "rate": 0.05, "reward": 732, "seed": 1001, "steps": 12000, "top1": 0, "wall_s": 58}
+{"arm": "control", "best_val": 746, "converged": 1, "law": "full", "load_cv_milli": 921, "lr": 0.003, "rate": 0.05, "reward": 752, "seed": 1001, "steps": 4000, "top1": 308, "wall_s": 27}
+{"arm": "control", "best_val": 751, "converged": 1, "law": "diagonal", "load_cv_milli": 926, "lr": 0.003, "rate": 0.05, "reward": 751, "seed": 1001, "steps": 5500, "top1": 512, "wall_s": 35}
+{"arm": "control", "best_val": 745, "converged": 1, "law": "scalar", "load_cv_milli": 1102, "lr": 0.003, "rate": 0.05, "reward": 743, "seed": 1001, "steps": 7750, "top1": 312, "wall_s": 55}

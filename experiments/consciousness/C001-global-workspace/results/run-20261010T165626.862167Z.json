@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "experiment_id": "C001",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v114",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16874930176
+  },
+  "hardware_profile_record": {
+    "path": "hardware/a0-cpu-4core.toml",
+    "sha256": "929ce6339da92df03113c4176a59155336f123e7aed9c771db1614d0a99a0c1f",
+    "contents": {
+      "id": "a0-cpu-4core",
+      "os": "Ubuntu 24.04.4 LTS, Linux 6.18.44 x86_64",
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU (4 cores, 1 thread per core, 1 socket); AVX, AVX2, AVX-512F/BW/CD/DQ/VL/VNNI",
+      "ram_gib": 15.7,
+      "gpu": "none",
+      "gpu_memory_gib": 0,
+      "precision": [
+        "fp32"
+      ],
+      "notes": "Shared cloud container: timing is noisy and is recorded as a diagnostic only. Floating-point results are reproducible bit for bit only on this CPU feature set with the same binary, because the gemm kernel dispatches on AVX-512."
+    },
+    "unspecified_fields": []
+  },
+  "git_sha": "608ec5bfa4871827b07018c2ca70d38658d8430f",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "C001",
+    "status": "prepared",
+    "hypothesis": "[CPU] As an inductive bias (not an expressivity claim), does a learned-attention global workspace (3 slots, competitive top-3 write, gated slot update, broadcast read by every module; GWT-1..4 as a mechanism) generalise better than parameter-matched alternatives when training data is finite and the test has more modules than training? Eight sensory modules with shared weights see one noisy observation each; a cue module carries a query type; the answer is the sum of the values of the two modules of that type, so the cue's content must reach the others before the relevant modules can be selected. Training: a finite set of 2048 eight-module instances, every arm trained to a validation plateau with the same protocol and tuned on the same learning-rate x width grid. Primary evaluation: sixteen modules (more distractors); secondary: twenty-four and eight. Arms: workspace; the pairwise comparators all-to-all, bandwidth-matched all-to-all and sparse top-k all-to-all; the attribution ablations no-broadcast (only the reporter reads the workspace), capacity off (8 slots) and competition off (soft write); no communication (floor); a crippled (one round) and a weak (Adam weight decay 0.001) all-to-all as gross and graded sensitivity controls. Every arm runs at d = 48 with its update width matched to the workspace's parameter count. It tests a learned analogue, not the deterministic ptr-pods::workspace contract. Functional mechanism test only: it says nothing about consciousness.",
+    "metrics": "accuracy on 16 modules (primary); accuracy on 24 and on 8 modules; area under the learning curve (sample efficiency); module-dropout accuracy; ignition curve and sharpness (descriptive); communication-cost proxies per module count; paired per-seed differences with one-sided 95% t bounds (lower and upper) over twenty seeds; validity guards; gross and graded sensitivity controls; three-valued attribution contrasts (attributed / not attributed / unresolved by noise) vs no_broadcast, capacity_off and competition_off",
+    "baseline": "parameter-matched all-to-all pairwise attention; sparse top-k all-to-all; bandwidth-matched all-to-all (value width reduced to the workspace's slot content); parameter-matched no-broadcast workspace, competition_off and capacity_off as reported attribution contrasts (GWT-3, competition, GWT-2); the no-communication floor (descriptive); crippled and weak all-to-all as sensitivity controls",
+    "falsification": "Three outcomes plus invalid, decided in advance. SUPPORTED if the guards hold and every lower one-sided 95% t bound over the twenty paired seed differences of 16-module accuracy (workspace minus all_to_all, bw_all_to_all, sparse_all_to_all) is at least 30 per mille (a margin justified by cost, fixed before the freeze and after the pilots, disclosed: about three points of accuracy is the smallest gain worth a new architectural block); the no_broadcast, capacity_off and competition_off contrasts are reported as attributed / not attributed / unresolved by noise and never change the verdict. REFUTED (falsified for this setting) only if the guards hold, both sensitivity controls resolve, and the UPPER bound (Bonferroni, alpha 0.05/3) against some pairwise comparator is below 30 per mille, i.e. the advantage is below the margin (not 'no advantage'). NOT SHOWN if the bounds straddle the margin (nothing is concluded, no requirement is downgraded). INVALID (never falsified) if the strongest pairwise comparator is below 300 or above 900 per mille on any seed (floored or saturated), the workspace or a pairwise comparator hit the step cap on more than 2 seeds, the gross (crippled, 50 per mille) or graded (weak, above 15 per mille) sensitivity control fails to resolve, the workspace arm fails to train on more than 4 of 20 seeds (such seeds stay in the paired differences), a harness-integrity counter is above 0 on any seed (module counts in training, parameter mismatch, non-finite loss, overlap of training, validation and evaluation data, checkpoint or convergence bookkeeping), or the seeds or mutation evidence are missing. Structurally FALSIFIED (a defect of an arm, not a result about the hypothesis), on any seed, if a structural counter is above 0 (communication leak in an isolated arm, bottleneck violation, dropped-module leak, nondeterminism, no-communication above the majority class) or a coverage rule fails. In-distribution and 24-module accuracy, sample efficiency, dropout and ignition are reported and never judged.",
+    "hardware_profile": "hardware/a0-cpu-4core.toml",
+    "entrypoint": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/consciousness/gw/harness.py --benchmark c001 --seed <seed>",
+    "seeds": [
+      4001,
+      4002,
+      4003,
+      4004,
+      4005,
+      4006,
+      4007,
+      4008,
+      4009,
+      4010,
+      4011,
+      4012,
+      4013,
+      4014,
+      4015,
+      4016,
+      4017,
+      4018,
+      4019,
+      4020
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "design": "../../../docs/architecture/38-consciousness-indicators.md",
+    "preregistration_sha256": "665e0e0e57917ccbf0e112aed9d735354d4e1fd810a6122ad554005f0e34363b",
+    "preregistration_rules_sha256": "f888fc5f7036dda8cc51637cf04bfdf1137d83188294d9fc4a7eca0ce32dcf56"
+  },
+  "manifest_sha256": "899d4a0dbbf17b449db2b420639390ae3e9cc2d858c651188f864aa67eb86be1",
+  "cargo_lock_sha256": "13acc7ada0ee2ad26270fb5ca84dacb7eec7e816ddfd94a9b59622929b12683a",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/a0-cpu-4core.toml",
+  "status": "prepared",
+  "prepared_at": "20261010T165626.862167Z"
+}

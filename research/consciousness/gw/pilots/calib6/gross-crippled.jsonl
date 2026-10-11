@@ -1,0 +1,10 @@
+{"seed": 1011, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.006, "d": 48, "ffn": 413, "id": 363, "ood16": 325, "ood24": 316, "converged": 1, "steps": 2400, "best_val": 388, "loss_w": 1016445, "sec": 24}
+{"seed": 1012, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.006, "d": 48, "ffn": 413, "id": 384, "ood16": 338, "ood24": 321, "converged": 1, "steps": 2100, "best_val": 388, "loss_w": 1025643, "sec": 17}
+{"seed": 1013, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.006, "d": 48, "ffn": 413, "id": 373, "ood16": 321, "ood24": 323, "converged": 1, "steps": 2250, "best_val": 392, "loss_w": 1056146, "sec": 19}
+{"seed": 1014, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.006, "d": 48, "ffn": 413, "id": 344, "ood16": 349, "ood24": 312, "converged": 1, "steps": 2100, "best_val": 381, "loss_w": 1143161, "sec": 18}
+{"seed": 1015, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.006, "d": 48, "ffn": 413, "id": 404, "ood16": 335, "ood24": 313, "converged": 1, "steps": 2250, "best_val": 378, "loss_w": 988769, "sec": 20}
+{"seed": 1016, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.006, "d": 48, "ffn": 413, "id": 380, "ood16": 340, "ood24": 318, "converged": 1, "steps": 2400, "best_val": 387, "loss_w": 1047427, "sec": 20}
+{"seed": 1017, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.006, "d": 48, "ffn": 413, "id": 372, "ood16": 322, "ood24": 329, "converged": 1, "steps": 2250, "best_val": 382, "loss_w": 1107972, "sec": 21}
+{"seed": 1018, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.006, "d": 48, "ffn": 413, "id": 392, "ood16": 330, "ood24": 325, "converged": 1, "steps": 2400, "best_val": 401, "loss_w": 1061963, "sec": 20}
+{"seed": 1019, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.006, "d": 48, "ffn": 413, "id": 375, "ood16": 340, "ood24": 318, "converged": 1, "steps": 2400, "best_val": 397, "loss_w": 1092708, "sec": 23}
+{"seed": 1020, "D": 2048, "arm": "crippled_all_to_all", "lr": 0.006, "d": 48, "ffn": 413, "id": 372, "ood16": 318, "ood24": 330, "converged": 1, "steps": 2100, "best_val": 394, "loss_w": 1055373, "sec": 19}

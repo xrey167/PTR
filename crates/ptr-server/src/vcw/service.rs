@@ -42,7 +42,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::job::{answer_type, Job};
 use super::pods::ServedPod;
-use super::report::TraceStore;
+use super::report::{LedgerSummary, TraceStore};
 use super::shadow::{LearningReport, Shadow};
 use super::sim::{plantable, ServedDefects, SimCodec};
 use super::wire::{
@@ -767,12 +767,12 @@ impl VcwService {
         );
         runtime.record_vcw_finished(&request_id, outcome, digest);
         // The ledger range of the request: its raw text and, for an accepted answer, the admission.
+        // Only the bounded summary is computed here, under the runtime lock (at most 64 canonical
+        // encodings and digests); the store's own lock is taken for a move.
+        let ledger =
+            LedgerSummary::of(runtime.committed_events().get(first_event..).unwrap_or(&[]));
         if let Ok(mut traces) = self.traces.lock() {
-            traces.finish(
-                &id,
-                outcome,
-                runtime.committed_events().get(first_event..).unwrap_or(&[]),
-            );
+            traces.finish(&id, outcome, ledger);
         }
         result
     }

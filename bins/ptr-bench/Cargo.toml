@@ -48,6 +48,9 @@ fail = { version = "0.5", optional = true }
 # builds the gate reports that path requires.
 ptr-lineage = { workspace = true }
 ptr-runtime = { workspace = true }
+# F007 composes the verifier-closed loop: the finding router, its learning scorer and the
+# off-policy gate are the units under test.
+ptr-router = { workspace = true }
 # R005 builds segmented requests (PromptSegment) and drives the catalog, the paged KV
 # backend and the chain derivation directly for the cases the backend does not carry.
 ptr-model-api = { workspace = true }

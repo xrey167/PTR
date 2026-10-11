@@ -15,8 +15,8 @@ use ptr_lineage::{
 };
 use ptr_pods::{
     BaseModelDigest, BaseModelId, BaseModelRef, ExpertInputRef, ExpertInputs, ExpertLevel,
-    ExpertPodSpec, ExpertProposal, ExpertState, ExpertTarget, ExpertTargetInit, OpKind,
-    PodRegistry, ProposerRef, RationaleDigest, RetiredReason, StructuralOp,
+    ExpertPodSpec, ExpertProposal, ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest,
+    OpKind, PodRegistry, ProposerRef, RationaleDigest, RetiredReason, StructuralOp,
 };
 use ptr_router::LearnerConfig;
 use ptr_router::{
@@ -36,9 +36,9 @@ use ptr_runtime::vcw::{
     VcwParts, VcwRequest,
 };
 use ptr_runtime::vcw_host::{
-    rebuild_roster, AbandonReason, DriverHost, DriverReport, HeldOutSuite, MeasurementError,
-    Refusal, RosterRebuildError, SimulatedHeldOut, SimulatedTrainer, SpecialistTrainer,
-    StructureDriver, StructureResult, TrainedSpecialist, TrainingRequest,
+    rebuild_roster, AbandonReason, DriverError, DriverHost, DriverReport, HeldOutSuite,
+    MeasurementError, Refusal, RosterRebuildError, SimulatedHeldOut, SimulatedTrainer,
+    SpecialistTrainer, StructureDriver, StructureResult, TrainedSpecialist, TrainingRequest,
 };
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_types::{
@@ -473,6 +473,15 @@ impl World {
 
     /// Retire `name` the way a host does: a Prune proposal with a passing seed report.
     fn prune_via_admission(&mut self, name: &str) {
+        self.retire_with(name, None);
+    }
+
+    /// Retire `name` through a `Retire` proposal with `reason`.
+    fn retire_via_admission(&mut self, name: &str, reason: RetiredReason) {
+        self.retire_with(name, Some(reason));
+    }
+
+    fn retire_with(&mut self, name: &str, reason: Option<RetiredReason>) {
         let entry = self
             .rt
             .expert_registry()
@@ -490,13 +499,17 @@ impl World {
             state_version: entry.state_version,
         })
         .unwrap();
+        let op = match reason {
+            None => StructuralOp::Prune {
+                targets: vec![target],
+            },
+            Some(reason) => StructuralOp::Retire { target, reason },
+        };
         let prune = ExpertProposal::new(
             project(),
             proposer(),
             CommitIndex(1),
-            StructuralOp::Prune {
-                targets: vec![target],
-            },
+            op,
             RationaleDigest::new([8; 32]).unwrap(),
         )
         .unwrap();
@@ -946,6 +959,152 @@ fn a_code_with_a_pending_install_is_not_born_again_while_the_install_is_pending(
         assert_eq!(world.driver.pending_installs().len(), 1);
     }
     assert_eq!(world.structural_commits(), commits);
+}
+
+/// A committed-looking Birth proposal, only to name an operation for `strand_committed`.
+fn any_birth_proposal(name: &str) -> ExpertProposal {
+    let spec = ExpertPodSpec::new(
+        project(),
+        pod(name),
+        ManifestDigest::new([3; 32]).unwrap(),
+        ExpertLevel::Token {
+            layer: LAYER,
+            index: 400,
+        },
+        base(),
+        Generation(1),
+    )
+    .unwrap();
+    ExpertProposal::new(
+        project(),
+        proposer(),
+        CommitIndex(1),
+        StructuralOp::Birth { result: spec },
+        RationaleDigest::new([6; 32]).unwrap(),
+    )
+    .unwrap()
+}
+
+fn hold_world() -> World {
+    World::new(Opts {
+        error_rates: vec![("a", 0.5)],
+        fixer_a_skill: 0.95,
+        seeds: vec![Seed {
+            name: "e_old",
+            codes: &["old"],
+            skill: 0.9,
+            with_inputs: false,
+        }],
+        structure: birth_only(),
+        window_requests: 4,
+        held_out_codes: vec!["a", "old"],
+        trainer: trainer(0.95),
+        learn: false,
+        filler: 0,
+    })
+}
+
+#[test]
+fn a_stranded_hold_on_an_expert_the_projection_does_not_know_is_released_at_the_next_step() {
+    let mut world = hold_world();
+    world
+        .vcw
+        .strand_committed(
+            &any_birth_proposal("ghost"),
+            &[pod("ghost")],
+            &BTreeSet::from([code("ghost")]),
+        )
+        .unwrap();
+    assert!(world.vcw.stranded_experts().contains_key(&pod("ghost")));
+    world.serve("w", 8);
+    world.l3();
+    assert!(world.vcw.stranded_experts().is_empty());
+}
+
+#[test]
+fn a_stranded_hold_ends_when_the_expert_is_superseded_and_not_before() {
+    let mut world = hold_world();
+    world
+        .vcw
+        .strand_committed(
+            &any_birth_proposal("e_old"),
+            &[pod("e_old")],
+            &BTreeSet::from([code("old")]),
+        )
+        .unwrap();
+    // Serving: the hold stays through a step (the control for the release below).
+    world.serve("w1", 8);
+    world.l3();
+    assert!(world.vcw.stranded_experts().contains_key(&pod("e_old")));
+
+    world.retire_via_admission("e_old", RetiredReason::Superseded);
+    assert_eq!(
+        world
+            .rt
+            .expert_registry()
+            .get(&project(), &pod("e_old"))
+            .unwrap()
+            .state,
+        ExpertState::Retired(RetiredReason::Superseded)
+    );
+    world.serve("w2", 8);
+    world.l3();
+    assert!(world.vcw.stranded_experts().is_empty());
+}
+
+#[test]
+fn a_step_error_after_an_abandon_still_reports_the_abandoned_install() {
+    let (mut world, canned) = full_roster_world(&["newcode"]);
+    world.serve("before", 24);
+    let digest = canned.manifest_digest();
+    let first = world.l3_with(&canned, digest);
+    assert!(first.outcomes[0].committed_not_installed(), "{first:?}");
+    let born = world.driver.pending_installs()[0].pods()[0].clone();
+    world.serve("later", 80);
+    // A non-finite AIMER score makes the loop refuse the step itself, after the driver has
+    // already abandoned the install that outlived the TTL.
+    world.aimer = BTreeMap::from([(pod("e_old"), f64::NAN)]);
+    let grant = move |rt: &PtrRuntime| grant_expecting(rt, digest);
+    let error = world
+        .driver
+        .step(
+            &mut world.vcw,
+            DriverHost {
+                runtime: &mut world.rt,
+                pods: &mut world.pods,
+                grant: &grant,
+                trainer: &mut world.trainer,
+                suite: &canned,
+                aimer: &world.aimer,
+            },
+        )
+        .expect_err("a non-finite signal must refuse the step");
+    let DriverError::Loop {
+        error,
+        abandoned_installs,
+        ..
+    } = error
+    else {
+        panic!("unexpected error shape");
+    };
+    assert!(
+        matches!(*error, ptr_runtime::vcw::VcwError::Structure(_)),
+        "{error:?}"
+    );
+    assert_eq!(
+        abandoned_installs.len(),
+        1,
+        "the notification must not be lost"
+    );
+    assert_eq!(abandoned_installs[0].pods, vec![born.clone()]);
+    assert!(matches!(
+        abandoned_installs[0].reason,
+        AbandonReason::Expired { .. }
+    ));
+    // The effect is real: the hold is recorded and the install is no longer tracked, so the
+    // error is the only place the notification survives.
+    assert!(world.vcw.stranded_experts().contains_key(&born));
+    assert!(world.driver.pending_installs().is_empty());
 }
 
 #[test]

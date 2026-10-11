@@ -1,0 +1,3 @@
+results_git_sha = "a0db62993c091b5bdcf2c3b7603771135e64712f"
+stale_since = "ac2c5381545a85903cac9e834b261c460c9af9da"
+reason = "No code under test changed after C008's seed records and mutation check. ac2c5381 records the failed status and the result in STATUS.md and regenerates the component docs, which the repository-wide provenance counts as a change; the merge into the integration line then brings unrelated work. C008 was preregistered at c008-prereg (eb208acb). No rerun under the same preregistration follows (each seed runs once)."

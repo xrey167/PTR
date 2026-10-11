@@ -788,3 +788,40 @@ The route is section 3.1 and section 6, unchanged; what is specific to these exp
 - **M010 as pinned does not fit.** Do not start M010 before the backend has RL checkpointing and
   accumulation (VCW plan 3.3, P4).
 
+
+## 11. Final state (2026-10-11): CPU today, GPU later
+
+This is the short version for the operator; the details, estimates and margins are in
+[`VCW_MOE_GPU_PLAN.md`](VCW_MOE_GPU_PLAN.md) section 10. Nothing below has a GPU result.
+
+**Runs on CPU today.** C001 (`prepared`, verdict NOT_SHOWN). The Rust `VcwLoop`, router, workspace
+and verifiers with simulated experts (`make vcw-demo`). `ptr_py` with the verifiers, the finding
+router and its propensity log, the off-policy estimators, the bounded workspace and an in-process
+loop simulation (`make py-bindings`); a Python RLVR trainer gets its propensities from
+`FindingRouter.route` and its rewards from `settle(decision_id, candidate)`, which verifies the
+candidate inside Rust; Python also chooses which decisions it settles, the routed report's task
+and the candidate text (the log keeps digests of report and candidate; estimates are only as honest
+as the harness), but cannot state or forge a reward, and cannot change a gate, threshold, verifier, eligibility or the required level. C007 and C008 are the CPU stage-A experiments of C002 and C003 as registered on their own branches; E008 is the split-pod
+extension of E007. C007, C008 and E008 are not in the registry of this branch, so read their
+status from the merged registry.
+
+**Needs the GPU.** OLMoE-1B-7B L1 experts; PERFT-R (M011) and the S0 to S2 stages; RLVR router
+training against verifier rewards; stage B of C002 and C003; C005 and C006; F004 to F006; E008
+part C (split parity on `candle-cuda`, which no workflow compiles).
+
+**Order.** Steps 1 to 3 of section 4, then M011, pilots on seeds 1001 to 1003, freeze, T on final
+seeds, F005, F004, C002 and C003 stage B, M012, M013, F006, C006, C005, with E008 part C on any
+CUDA machine independently and M014 and M015 last.
+
+**Preregistration.** Among the GPU experiments only C001 has a preregistration entry; every other
+one is `planned` with no entry, no freeze and no run. The head freezes.
+
+**Hardware.** `rtx3090.toml` and the manifests' current profile, `rtx4090.toml` (24 GiB, the
+recommended one) and `rtx5090.toml` (32 GiB); one profile per experiment (OD-1).
+
+**Retraining the base model** changes the `BaseModelRef` digest and generation, so all experts
+bound to the old base mismatch, the per-layer KV chain keys change from the first changed layer
+on (old cached KV is never reused), and pinned checkpoint digests need successors.
+
+**Framing.** Doc-38 indicators are functional properties; no run here claims or tests
+consciousness, and `MODEL_WELFARE.md` applies.

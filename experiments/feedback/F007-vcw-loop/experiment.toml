@@ -1,0 +1,15 @@
+version = 1
+id = "F007"
+status = "completed"
+hypothesis = "Whether the verifier-closed loop with finding-routed repair (VcwLoop with finding router, learned router promoted through the off-policy gate, workspace, self-model, L3 through the ledger) verifies more requests at a matched verifier-call budget than a trained softmax gate over the same Pods and than best-of-N with the same verifier, on seeded SIMULATED expert Pods with declared per-(Pod, finding code) skill tables over arithmetic, JSON-schema and code tasks judged by the real ptr-verifier verifiers. Mechanism check: a gain is a consequence of the declared tables, a homogeneous-skill world must tie, and nothing is claimed about any model. The routing claim rests on the contrasts to the gate and the shuffled map, not on best-of-N, which has no repair Pod."
+metrics = "false_accepts, unverified_returns, double_verifications, budget_violations, routing_outside_admissible, verdict_mismatches, verdict_overrides, verifier_call_mismatches, calls_after_acceptance, l3_unadmitted, loop_errors, product_panics, exhausted_as_success, control_shuffled, control_null, control_baseline, control_workspace, control_ctx, control_training, control_grid_edge, control_oracle, control_bon, control_l3, control_first_draft, coverage_unmet, worlds"
+baseline = "learned softmax gate over Pods (task features only); best-of-N with the same verifier at matched verifier calls"
+falsification = "Per seed: an integrity counter above zero (accepted candidate failing independent re-verification, budget overrun, routing outside the admissible set, a verifier verdict not followed, an L3 commit without admission, a loop error or panic) is FALSIFIED; a failed control or unmet coverage rule (shuffled map not clearly worse, null world not tied, gate or best-of-N or learned router not trained and promoted, a tuning grid edge, oracle below the full loop, best-of-N not above single shot, ablations not wired) is INVALID and takes precedence. Across the 5 seeds, on the per-seed paired difference of verified-success rate in world hetero with one-sided 95% t bounds: COMPLETED iff the lower bound of full minus each of the gate and best-of-N exceeds the margin of criteria.toml (3 points); FALSIFIED iff the upper bound against either is below it; NOT_SHOWN otherwise; the harness must agree with power.py within 2 points. Secondary hypotheses (workspace in world ctx, L3 on requests carrying the unrepairable code) are reported and never gate the verdict; the self-model is untested."
+hardware_profile = "hardware/default.toml"
+entrypoint = "cargo run --release --locked -p ptr-bench -- vcw-loop <seed>"
+preflight = "cargo run --release --locked -p ptr-bench -- vcw-loop --preflight"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json", "mutations.json"]
+preregistration_sha256 = "5c84d959adf4edd75e123f75aeb05a6f0f8148c4bb8d3795f97b826efd8dfbd0"
+preregistration_rules_sha256 = "7a2131faf3fd59a21731e503212ca8311ebae2a56cea60d0b97c78afa33d1423"

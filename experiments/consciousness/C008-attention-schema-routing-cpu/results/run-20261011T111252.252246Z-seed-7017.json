@@ -1,0 +1,137 @@
+{
+  "schema_version": 2,
+  "experiment_id": "C008",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v114",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16874930176
+  },
+  "hardware_profile_record": {
+    "path": "hardware/a0-cpu-4core.toml",
+    "sha256": "929ce6339da92df03113c4176a59155336f123e7aed9c771db1614d0a99a0c1f",
+    "contents": {
+      "id": "a0-cpu-4core",
+      "os": "Ubuntu 24.04.4 LTS, Linux 6.18.44 x86_64",
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU (4 cores, 1 thread per core, 1 socket); AVX, AVX2, AVX-512F/BW/CD/DQ/VL/VNNI",
+      "ram_gib": 15.7,
+      "gpu": "none",
+      "gpu_memory_gib": 0,
+      "precision": [
+        "fp32"
+      ],
+      "notes": "Shared cloud container: timing is noisy and is recorded as a diagnostic only. Floating-point results are reproducible bit for bit only on this CPU feature set with the same binary, because the gemm kernel dispatches on AVX-512."
+    },
+    "unspecified_fields": []
+  },
+  "git_sha": "57f97a4fe5bc08927dcaea0babab0e08538021dc",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "C008",
+    "status": "prepared",
+    "hypothesis": "[CPU stage A of C003, on a toy router; the GPU stage B on OLMoE L1 routing is C003 itself and needs a GPU] Indicator AST-1 as a functional property: does a predictive model of the router's own routing (an attention schema: it reads the router's own recent load history and predicts which experts the router will send tokens to next and how loaded they will be) that is also used to control routing improve routing quality over the same router without it? Toy world: bursty cyclic demand over eight experts of limited capacity (eight demand regimes of three batches each; the first-come tokens an expert can take are capped; a deterministic verifier rewards a token routed to a competent expert with room), every arm trained online by policy gradient. Control use is the point: a schema that only describes but does not control is a judged ablation. Arms: the control arm (router reads the schema's prediction); the same router without a schema, FLOP-matched and parameter-matched; a heuristic auxiliary-loss-free balancer; a describe-only schema (trained identically, router given zeros); a router that reads the same load history directly with no schema (parameter-matched); sensitivity controls (a uniform router, epsilon routing), a stationary null world, the shuffled-history attribution (judged) and a hand-set regime-blind reference (reported). The world was built, after failed designs, so that a schema can help: the experiment is a construction-validity check and leaves AST-L2 unchanged whatever its outcome. The schema has no authority over expert capacity or competence (a structural counter). Functional mechanism test only: it says nothing about consciousness or about OLMoE routing.",
+    "metrics": "fraction of tokens verified on a fresh evaluation stream of 240 batches (primary); expert load coefficient of variation; routing entropy; schema prediction accuracy of the router's most-requested next expert; routing churn between evaluations (descriptive); paired per-seed differences with one-sided 95% t bounds (lower and upper) over twenty seeds; validity guards; sensitivity controls; a stationary null world; the shuffled-history attribution. Recovery after an expert is revoked is not measured at stage A (it needs an online adaptation protocol; stage B).",
+    "baseline": "same router without a schema, FLOP-matched to the control (judged) and parameter-matched (judged); a heuristic auxiliary-loss-free balancer (judged); a describe-only schema, trained but not used for control (judged); a router that reads the router's own load history directly, no schema, parameter-matched (judged); a uniform router and an epsilon-routed schema-free router as gross and graded sensitivity controls; a stationary null world; the control with a shuffled history (attribution, judged for COMPLETED); a hand-set regime-blind reference (reported)",
+    "falsification": "Four outcomes, decided in advance (PREREGISTRATION.md, criteria.toml). COMPLETED if the guards and controls hold and the lower one-sided 95% t bounds over the twenty paired seed differences of the verified-token rate (control minus each of the schema-free router, the parameter-matched schema-free router, the heuristic balancer, the describe-only schema and the history router) are all at least 25 per mille and the shuffled-history control is attributed (control minus it at least 25 per mille); a COMPLETED is a construction check on a world built so that a schema can help and does not change AST-L2. FALSIFIED (refuted) only if the guards and controls hold and some Bonferroni upper bound is below 25 per mille (against the describe-only schema alone this is the finding that the schema's control role is not shown; against the history router, that access to the load history, not a separate predictor with a control law, accounts for the gain); and structurally FALSIFIED if a structural counter is above 0 on a valid seed (the describe-only schema reaches the router, the schema changes what the verifier reads, nondeterminism) or a coverage rule fails. NOT_SHOWN if the bounds straddle the margin or the gain is not attributed to the router's own history. INVALID, never falsified (and before any structural FALSIFIED), if seeds or mutation evidence are missing or partial, if parameter or FLOP matching is off beyond tolerance or another integrity counter is above 0, there is no headroom below the oracle, the comparators did not train, the schema did not learn on more than one seed, a judged arm hit the step cap on more than one seed, a control or the null world is not resolved as required, or the seeds or mutation evidence are missing. The schema has no authority over expert promotion or revocation.",
+    "hardware_profile": "hardware/a0-cpu-4core.toml",
+    "entrypoint": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/cseries/c003a/harness.py --benchmark c008 --seed <seed>",
+    "preflight": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/cseries/c003a/harness.py --benchmark c008 --preflight",
+    "seeds": [
+      7001,
+      7002,
+      7003,
+      7004,
+      7005,
+      7006,
+      7007,
+      7008,
+      7009,
+      7010,
+      7011,
+      7012,
+      7013,
+      7014,
+      7015,
+      7016,
+      7017,
+      7018,
+      7019,
+      7020
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "design": "../../../docs/architecture/38-consciousness-indicators.md",
+    "preregistration_sha256": "7923a04f0c26af64b53f2e8ff3264c1946df91975f30ea7b3ef50530af766493",
+    "preregistration_rules_sha256": "98c391d5ab43677e72f731412db1d23f4aa859cd11e9a24d3c58862e996eea87"
+  },
+  "manifest_sha256": "fd7c174727de8db2311b7b3e6c3adddee0e6da620c302e211c7977565e2d78bb",
+  "cargo_lock_sha256": "f5702686d1242e6a9e1222a06afabc4aedcef7b34aabcf385733868a7a79cbcd",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/a0-cpu-4core.toml",
+  "rustc": null,
+  "status": "completed",
+  "started_at": "20261011T111252.252246Z",
+  "entrypoint": "entrypoint",
+  "seed": 7017,
+  "parameters": {},
+  "command": [
+    "env",
+    "UV_PROJECT_ENVIRONMENT=../../../c001-venv",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "uv",
+    "run",
+    "--locked",
+    "--offline",
+    "--no-python-downloads",
+    "--project",
+    "research/consciousness",
+    "python",
+    "-B",
+    "research/cseries/c003a/harness.py",
+    "--benchmark",
+    "c008",
+    "--seed",
+    "7017"
+  ],
+  "environment": {
+    "PATH": "/nix/var/nix/profiles/default/bin:/root/.local/bin:/root/.cargo/bin:/usr/local/go/bin:/opt/node22/bin:/opt/maven/bin:/opt/gradle/bin:/opt/rbenv/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "LC_CTYPE": "C.UTF-8",
+    "RUSTUP_HOME": "/root/.rustup",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONPYCACHEPREFIX": "/tmp/ptr-run-C008",
+    "CARGO_TARGET_DIR": "/tmp/ptr-run-C008/cargo-target",
+    "RUSTUP_TOOLCHAIN": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu"
+  },
+  "executable": {
+    "path": "/usr/bin/env",
+    "sha256": "0aefff8f912fb75716c5d4de3b6acde93edbe8fa280fc8ee895c1226d3e373ef"
+  },
+  "toolchain": {
+    "rustc": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc",
+      "sha256": "f3834d26669b03f6855fa54bd2381443123e860167bc0c7a8dd137e5cf6e5e4f"
+    },
+    "cargo": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/cargo",
+      "sha256": "e951141cc55a6cd7b9876d187bd30a3720e6086b99413af95e3b8de1cdd72f14"
+    }
+  },
+  "finished_at": "2026-10-11T11:18:19.839961+00:00",
+  "exit_code": 0,
+  "stdout": "{\"arms\": {\"control\": {\"best_val_permille\": 909, \"converged\": 1, \"curve_permille\": [538, 740, 781, 798, 807, 814, 820, 827, 832, 834, 838, 841, 845, 844, 847, 851, 853, 855, 857, 860, 859, 863, 864, 862, 867, 868, 862, 870, 869, 874, 875, 873, 875, 879, 882, 883, 884, 884, 886, 887, 893, 892, 894, 891, 895, 889, 895, 897, 898, 898, 895, 898, 894, 900, 899, 900, 900, 900, 903, 905, 904, 901, 899, 906, 909, 897, 906, 902, 905, 894, 907, 901, 905, 904, 902, 898, 900], \"entropy_milli\": 426, \"flops_batch\": 395784, \"hidden\": 48, \"kind\": \"control\", \"load_cv_milli\": 976, \"lr_micro\": 1000, \"params\": 2152, \"reward_correct\": 55483, \"reward_total\": 61440, \"schema_gain_permille\": 657, \"schema_top1_permille\": 987, \"step_cap\": 24000, \"steps\": 19250, \"train_loss_window_micro\": -19116, \"world\": \"task\"}, \"control_null\": {\"best_val_permille\": 871, \"converged\": 1, \"curve_permille\": [641, 750, 827, 844, 852, 851, 854, 857, 857, 860, 860, 862, 862, 863, 862, 865, 863, 865, 866, 867, 866, 868, 866, 869, 871, 870, 871, 872, 870, 872, 872, 872, 873, 872, 873, 873, 873], \"entropy_milli\": 289, \"flops_batch\": 395784, \"hidden\": 48, \"kind\": \"control\", \"load_cv_milli\": 1109, \"lr_micro\": 1000, \"params\": 2152, \"reward_correct\": 53346, \"reward_total\": 61440, \"schema_gain_permille\": 271, \"schema_top1_permille\": 233, \"step_cap\": 12000, \"steps\": 9250, \"train_loss_window_micro\": -15365, \"world\": \"null\"}, \"control_shuffled\": {\"entropy_milli\": 433, \"kind\": \"eval_only\", \"load_cv_milli\": 1099, \"reward_correct\": 51371, \"reward_total\": 61440, \"schema_gain_permille\": -1732, \"schema_top1_permille\": 150, \"world\": \"task\"}, \"describe_only\": {\"best_val_permille\": 842, \"converged\": 1, \"curve_permille\": [785, 813, 823, 827, 830, 831, 833, 833, 838, 839, 840, 837, 840, 838, 840, 841, 841, 840, 842, 842, 841, 843, 842, 843, 840, 844, 845, 844, 840, 839, 841], \"entropy_milli\": 288, \"flops_batch\": 395784, \"hidden\": 48, \"kind\": \"describe_only\", \"load_cv_milli\": 1091, \"lr_micro\": 3000, \"params\": 2152, \"reward_correct\": 51368, \"reward_total\": 61440, \"schema_gain_permille\": 581, \"schema_top1_permille\": 991, \"step_cap\": 24000, \"steps\": 7750, \"train_loss_window_micro\": -12525, \"world\": \"task\"}, \"even_split\": {\"entropy_milli\": 2079, \"kind\": \"eval_only\", \"load_cv_milli\": 1101, \"reward_correct\": 51613, \"reward_total\": 61440, \"schema_gain_permille\": 0, \"schema_top1_permille\": 0, \"world\": \"task\"}, \"heuristic\": {\"best_val_permille\": 847, \"converged\": 1, \"curve_permille\": [819, 831, 831, 835, 829, 837, 842, 844, 840, 841, 840, 831, 838, 844, 847, 843, 841, 840, 848, 840, 845, 839, 842, 845, 840, 844, 841], \"entropy_milli\": 202, \"flops_batch\": 393216, \"hidden\": 48, \"kind\": \"heuristic\", \"load_cv_milli\": 1102, \"lr_micro\": 10000, \"params\": 824, \"reward_correct\": 51303, \"reward_total\": 61440, \"schema_gain_permille\": 0, \"schema_top1_permille\": 0, \"step_cap\": 24000, \"steps\": 6750, \"train_loss_window_micro\": -5458, \"world\": \"task\"}, \"history_router\": {\"best_val_permille\": 910, \"converged\": 1, \"curve_permille\": [566, 731, 825, 837, 844, 845, 864, 852, 866, 876, 868, 870, 867, 881, 860, 865, 871, 878, 871, 883, 885, 879, 885, 878, 885, 883, 886, 893, 892, 886, 893, 884, 897, 899, 889, 899, 894, 892, 888, 897, 896, 896, 902, 896, 897, 897, 900, 901, 901, 897, 903, 906, 900, 906, 900, 910, 890, 902, 903, 909, 908, 904, 904, 911, 901, 904, 903, 910], \"entropy_milli\": 475, \"flops_batch\": 1081344, \"hidden\": 44, \"kind\": \"history_router\", \"load_cv_milli\": 996, \"lr_micro\": 3000, \"params\": 2164, \"reward_correct\": 55569, \"reward_total\": 61440, \"schema_gain_permille\": 0, \"schema_top1_permille\": 0, \"step_cap\": 24000, \"steps\": 17000, \"train_loss_window_micro\": -15303, \"world\": \"task\"}, \"oracle\": {\"kind\": \"oracle\", \"reward_correct\": 58421, \"reward_total\": 61440, \"world\": \"task\"}, \"oracle_null\": {\"kind\": \"oracle\", \"reward_correct\": 58423, \"reward_total\": 61440, \"world\": \"null\"}, \"random_router\": {\"entropy_milli\": 2079, \"kind\": \"eval_only\", \"load_cv_milli\": 171, \"reward_correct\": 15377, \"reward_total\": 61440, \"schema_gain_permille\": 0, \"schema_top1_permille\": 0, \"world\": \"task\"}, \"schema_free\": {\"best_val_permille\": 844, \"converged\": 1, \"curve_permille\": [812, 834, 839, 840, 839, 837, 844, 840, 835, 842, 836, 841, 840, 832, 842, 842, 845, 842, 835], \"entropy_milli\": 262, \"flops_batch\": 393216, \"hidden\": 48, \"kind\": \"schema_free\", \"load_cv_milli\": 1098, \"lr_micro\": 10000, \"params\": 824, \"reward_correct\": 51297, \"reward_total\": 61440, \"schema_gain_permille\": 0, \"schema_top1_permille\": 0, \"step_cap\": 24000, \"steps\": 4750, \"train_loss_window_micro\": -6577, \"world\": \"task\"}, \"schema_free_epsilon\": {\"entropy_milli\": 262, \"kind\": \"eval_only\", \"load_cv_milli\": 932, \"reward_correct\": 47354, \"reward_total\": 61440, \"schema_gain_permille\": 0, \"schema_top1_permille\": 0, \"world\": \"task\"}, \"schema_free_null\": {\"best_val_permille\": 903, \"converged\": 1, \"curve_permille\": [860, 878, 886, 899, 902, 896, 903, 888, 899, 895, 905, 902, 899, 904, 901, 903, 904, 899, 904], \"entropy_milli\": 287, \"flops_batch\": 393216, \"hidden\": 48, \"kind\": \"schema_free\", \"load_cv_milli\": 1037, \"lr_micro\": 10000, \"params\": 824, \"reward_correct\": 55201, \"reward_total\": 61440, \"schema_gain_permille\": 0, \"schema_top1_permille\": 0, \"step_cap\": 12000, \"steps\": 4750, \"train_loss_window_micro\": -9994, \"world\": \"null\"}, \"schema_free_wide\": {\"best_val_permille\": 843, \"converged\": 1, \"curve_permille\": [809, 821, 827, 827, 834, 835, 837, 837, 839, 839, 838, 841, 843, 842, 843, 843, 841, 846, 843, 846, 842, 846, 842, 842, 845], \"entropy_milli\": 288, \"flops_batch\": 1032192, \"hidden\": 126, \"kind\": \"schema_free_wide\", \"load_cv_milli\": 1093, \"lr_micro\": 3000, \"params\": 2150, \"reward_correct\": 51275, \"reward_total\": 61440, \"schema_gain_permille\": 0, \"schema_top1_permille\": 0, \"step_cap\": 24000, \"steps\": 6250, \"train_loss_window_micro\": -9797, \"world\": \"task\"}}, \"arms_trained\": 8, \"authority_leaks\": 0, \"benchmark\": \"c008\", \"blind_reference_permille\": 840, \"checkpoint_mismatch_arms\": 0, \"comparator_above_random_permille\": 654, \"comparator_best_permille\": 904, \"control_influence_hits\": 24, \"controls\": {\"authority_probe\": {\"required_rule_tripped\": true}, \"describe_probe\": {\"required_rule_tripped\": true}, \"flop_mismatch\": {\"required_rule_tripped\": true}, \"history_probe\": {\"required_rule_tripped\": true}, \"influence_probe\": {\"required_rule_tripped\": true}, \"param_mismatch\": {\"required_rule_tripped\": true}, \"reward_audit\": {\"required_rule_tripped\": true}, \"stream_overlap\": {\"required_rule_tripped\": true}}, \"convergence_mismatch_arms\": 0, \"coverage_failed\": [], \"cpu_s\": 208, \"describe_only_influence\": 0, \"environment\": {\"cpu_flags_sha256\": \"19139faa5b3c177a2d253ee9520b13713aee71074562456de06d1ba7833e7890\", \"cpu_model\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"machine\": \"x86_64\", \"pyproject_sha256\": \"2255bd227c27a4d79bd31d5dd21adfa3b1f260e4e9c491715a288ebc6ff51aec\", \"python\": \"3.11.15\", \"threads\": 1, \"torch\": \"2.7.1+cpu\", \"torch_config_sha256\": \"e46186cc4399ea998fbf3c7f5c1d5e7c28eeadf904ab1acdbdf2da0d158ea59e\", \"uv_lock_sha256\": \"3d20af3c90cf233c213b5de5d5e16bee6bccfe78b04adea730db45f196e17ca7\"}, \"epsilon_rate_errors\": 0, \"eval_instances\": 61440, \"experiment\": \"C008\", \"falsifiers_failed\": [], \"flop_mismatch_arms\": 0, \"guards_failed\": [], \"hard_failures\": 0, \"harness_gaps\": [], \"headroom_permille\": 46, \"history_router_blind\": 0, \"integrity_failed\": [], \"nondeterminism\": 0, \"nonfinite_arms\": 0, \"null_eval_instances\": 61440, \"oracle_permille\": 950, \"oracle_violations\": 0, \"param_mismatch_arms\": 0, \"procedure\": {\"eval_batches\": 240, \"seed_is_declared\": true, \"shape_is_pinned\": true, \"tokens\": 256}, \"reward_audit_mismatches\": 0, \"scale\": \"pinned\", \"schedule_errors\": 0, \"schema_gain_permille\": 657, \"schema_top1_permille\": 987, \"schema_trained\": 1, \"seed\": 7017, \"shuffle_errors\": 0, \"stream_overlap\": 0, \"summary\": {\"control\": 903, \"control_null\": 868, \"control_shuffled\": 836, \"describe_only\": 836, \"even_split\": 840, \"heuristic\": 835, \"history_router\": 904, \"oracle\": 950, \"oracle_null\": 950, \"random_router\": 250, \"schema_free\": 834, \"schema_free_epsilon\": 770, \"schema_free_null\": 898, \"schema_free_wide\": 834}, \"timing_s\": 293, \"unconverged_arms\": [], \"unconverged_judged_arms\": 0}\n",
+  "stderr": "/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/c001-venv/lib/python3.11/site-packages/torch/_subclasses/functional_tensor.py:276: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)\n  cpu = _conversion_method_template(device=torch.device(\"cpu\"))\n",
+  "launch_error": null,
+  "duration_ns": 299069066911
+}

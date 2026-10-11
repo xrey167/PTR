@@ -20,7 +20,9 @@
 //!   A pending install that cannot finish is not retried forever: when the loop no longer holds
 //!         its request or it is older than the loop's outstanding_ttl_windows, the driver
 //!         abandons it (DriverReport::abandoned_installs) and records the expert as stranded in
-//!         the loop, so its codes are neither uncovered nor born twice until the host retires it
+//!         the loop, so its codes are neither uncovered nor born twice until the host retires it;
+//!         an abandoned Merge or Reactivate also runs retire_dead_experts (best effort, the error
+//!         is AbandonedInstall::retire_error) so superseded sources leave the roster
 //! ```
 //!
 //! # What the gate subject binds
@@ -39,7 +41,8 @@
 //!
 //! Limits, stated: the structure policy supplies no expert ages, so Prune needs
 //! `prune_min_age_commits = 0`; the AIMER scores come from the caller; Merge and Reactivate go
-//! through the same path but are exercised by the unit tests of their parts only.
+//! through the same path; the driver cannot propose a Merge itself (it passes no subspace
+//! overlaps), so its abandonment is covered by the unit tests of this module.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -47,7 +50,7 @@ use std::fmt;
 use ptr_lineage::{AdapterId, ForgettingGate, GateSubject};
 use ptr_pods::{
     BaseModelRef, ExpertProposal, OpKind, PodRegistrationError, PodRegistry, ProposerRef,
-    RequestedOp,
+    RequestedOp, StructuralOp,
 };
 use ptr_router::{AdmissibleScorer, FindingCode};
 use ptr_types::{CommitIndex, PodId, ProjectId};
@@ -189,13 +192,30 @@ impl DriverReport {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum DriverError {
-    Loop(VcwError),
+    /// The loop refused the step. The installs the driver finished or abandoned at the start of
+    /// this same step are carried here, because they have happened (the loop already holds the
+    /// stranded experts) and the [`DriverReport`] that would have listed them does not exist.
+    Loop {
+        error: Box<VcwError>,
+        /// Pods whose pending install was completed at the start of the step.
+        installed_late: Vec<PodId>,
+        /// Pending installs given up on at the start of the step.
+        abandoned_installs: Vec<AbandonedInstall>,
+    },
 }
 
 impl fmt::Display for DriverError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Loop(error) => write!(f, "structure step: {error}"),
+            Self::Loop {
+                error,
+                abandoned_installs,
+                ..
+            } => write!(
+                f,
+                "structure step: {error} ({} install(s) abandoned in this step)",
+                abandoned_installs.len()
+            ),
         }
     }
 }
@@ -230,6 +250,10 @@ pub struct AbandonedInstall {
     pub reason: AbandonReason,
     /// The last install failure.
     pub message: String,
+    /// For an abandoned Merge or Reactivate, the error of the best-effort
+    /// [`VcwLoop::retire_dead_experts`] that followed (so the superseded sources stop occupying
+    /// roster slots); `None` when it succeeded or the change was neither.
+    pub retire_error: Option<String>,
 }
 
 /// What [`StructureDriver::retry_installs`] did.
@@ -391,12 +415,26 @@ impl StructureDriver {
                 kept.push(pending);
                 continue;
             }
+            // A Merge supersedes its sources and a Reactivate replaces its target; the loop only
+            // drops them from the roster in `retire_dead_experts`, which the install that was
+            // never completed would have called. Best effort: the hold is already recorded.
+            let retire_error = matches!(
+                pending.proposal.op(),
+                StructuralOp::Merge { .. } | StructuralOp::Reactivate { .. }
+            )
+            .then(|| {
+                vcw.retire_dead_experts(&project, runtime.expert_registry())
+                    .err()
+                    .map(|error| format!("retire_dead_experts: {error}"))
+            })
+            .flatten();
             result.abandoned.push(AbandonedInstall {
                 commit: pending.commit,
                 pods: experts,
                 codes: pending.codes,
                 reason,
                 message: pending.message,
+                retire_error,
             });
         }
         self.pending = kept;
@@ -468,7 +506,11 @@ impl StructureDriver {
                 aimer,
                 overlaps: Vec::new(),
             })
-            .map_err(DriverError::Loop)?
+            .map_err(|error| DriverError::Loop {
+                error: Box::new(error),
+                installed_late: installed_late.clone(),
+                abandoned_installs: abandoned_installs.clone(),
+            })?
         };
         self.processed_windows = closed;
         let mut outcomes = Vec::new();
@@ -786,3 +828,7 @@ fn install(
         None => pods.register_new(pod),
     }
 }
+
+#[cfg(test)]
+#[path = "driver_tests.rs"]
+mod tests;

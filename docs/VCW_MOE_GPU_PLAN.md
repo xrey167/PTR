@@ -102,7 +102,7 @@ This plan recommends `rtx4090` for every experiment (it is the owner's machine) 
 
 OLMoE-1B-7B-0125: 16 layers, hidden 2048, expert intermediate 1024, 64 experts, top-8, vocab
 50304, 6.919B parameters (Hub metadata), about 1.3B active. Of the parameters, 6.44B are expert
-weights (12.0 GiB in bf16) and 0.48B are everything else. The PERFT-R adapter of M011
+weights (about 12 GiB in bf16, an estimate from the parameter count) and 0.48B are everything else. The PERFT-R adapter of M011
 (8 experts, rank 8, router, 16 layers) has 4,456,448 trainable parameters; 8 per-class LoRA
 adapters of rank 2 on `q,k,v,o` and one generic rank-16 adapter both have 4,194,304.
 
@@ -338,7 +338,7 @@ clause without a named mutation is not accepted at freeze.
 |---|---|---|
 | P1 | Entrypoints `ptr_training.vcw.{sft,rlvr,repair,probe}` (the configs describe them; `--execute` refuses `vcw-*` backends) | all |
 | P2 | Python verifier fabric for the three domains with finding codes and levels, plus golden vectors checked against the Rust `classify` and `check_verification_gate` (CPU test) | all verifier-using |
-| P3 | Binding of the loop to Python: `ptr_py` today exposes only AIMER, pruning, subspace overlap, interference and TIES merge (`bindings/ptr-py/src/governance.rs`); `FindingRouter`, `RepairLoop`, `Workspace`, `VerificationReport` are Rust-only. Either extend `ptr_py` (package H) or run the loop in Rust against a model server | F004, F005, F006, C006 |
+| P3 | Binding of the loop to Python. **Done on CPU (2026-10-11):** `ptr_py` now exposes the deterministic verifiers (`verify_arithmetic`, `verify_json_schema`, `verify_code`, `verify_facts`), the finding code table, `classify_report`, `FindingRouter` (route with propensity and support, `settle` with a verifier-derived reward, IPS, SNIPS and doubly robust `estimate`), `BoundedWorkspace` and `simulate_vcw_run` (an in-process `VcwLoop` with simulated experts), all read-only. What stays missing: a loop over a real OLMoE expert (needs the GPU entrypoints P1) and golden vectors against the Rust gate (P2, now easy to write through `ptr_py`). | all |
 | P4 | RL gradient checkpointing and accumulation in `moe/rl.py` | M010 as pinned |
 | P5 | FLOPs and verifier-call instrument (section 4.2) | F004, F005, F006, C003 |
 | P6 | Composite-task generator with Pod-private context | C006 |
@@ -749,5 +749,86 @@ it.
 | D3 | Train the OLMoE base router (LoRA or delta) as an extra S1 arm? | not before M010 and M011 report; it changes the frozen-router premise of every M-series comparison |
 | D4 | OD-1: profile of the manifests | `rtx4090` for all; one profile per experiment |
 | D5 | Margins of section 5 | adopt as proposed, then re-check on pilot variance (section 4.6) |
-| D6 | Loop harness language (P3): extend `ptr_py` or run the loop in Rust against a model server | decide with package H; F004 cannot be prepared before |
+| D6 | Loop harness language (P3): extend `ptr_py` or run the loop in Rust against a model server | decided: `ptr_py` is extended (2026-10-11); a Python RLVR trainer logs propensities through `FindingRouter` and obtains rewards through `settle(decision_id, candidate)`, which verifies the candidate inside Rust; the Rust-side loop for real experts is still open |
 | D7 | Whether F006 reuses M013's static and heuristic arms by digest | yes if M013 completed first with the same seeds; saves about half of F006 |
+
+## 10. Final state (2026-10-11)
+
+Status words below come from `experiments/registry.toml` and `STATUS.md` of the integration line
+this document was finalised on. **C007, C008 and E008 are not in that registry**: they were created
+on other package branches, so their status is not stated here and must be read from the merged
+registry. No GPU result exists for any experiment in this document.
+
+### 10.1 What runs on CPU today
+
+| Item | State |
+|---|---|
+| C001 global workspace (learned-attention workspace, one synthetic modular task) | `prepared`; verdict **NOT_SHOWN** (preregistered at `c001-prereg`, 20 seeds, mutation check 38 of 38). The C006 prerequisite P9 is therefore met, with a result that neither supports nor refutes |
+| C007, C008 | the CPU stage-A experiments of C002 and C003 respectively, as registered on their own branches (their status is to be read from the registry after merge); the GPU part of each stays stage B below |
+| E007 split-pod KV (CPU reference) | `planned` in the registry; E008 is its split-pod extension, with part C (split parity on `candle-cuda`) the only GPU part |
+| `ptr_py` VCW surface | built and tested by `make py-bindings` (verifiers, router with propensity log and OPE estimators, bounded workspace, loop simulation). It is a measurement harness: no function changes a gate, threshold, verifier, eligibility or the required level (roster, generations and level are fixed at construction), and a test enforces the public surface |
+| `ptr_training.vcw` | configs, guard, budget and plan (45 tests, no torch) |
+| Rust `VcwLoop`, router, workspace, verifiers | implemented and tested on CPU with simulated experts (`make vcw-demo`) |
+
+### 10.2 What needs a GPU, exactly
+
+| Item | Why it cannot run on CPU | Status |
+|---|---|---|
+| OLMoE-1B-7B L1 experts (frozen bf16 base, 6.9B parameters) | the base alone is an estimated 12 to 13 GiB of expert weights in bf16 (parameter count times two bytes) plus activations; stage VRAM figures are estimates of section 3.3 (14.9 to 25.2 GiB) | `planned` |
+| PERFT-R adapter experts and adapter router (S0, M011) | gradient training through the MoE | M011 `planned` |
+| RLVR router training against verifier rewards (S1) | rewards are `VerificationReport`s; a Python trainer takes propensities from `FindingRouter.route` and rewards from `settle(decision_id, candidate)`, both CPU (Python also chooses which decisions it settles, the routed report's task and the candidate text; it cannot state or forge a reward, which is bound to the routed report's task and computed in Rust; the log keeps SHA-256 digests of the report and of the candidate, the report digest covering the report only; the estimates are only as honest as the harness that produces candidates and settles every decision); the policy gradient itself needs the model | `planned` |
+| C002 and C003 stage B (S0 to S2 checkpoints, probes on real routing traces) | need the trained checkpoints | `planned` |
+| C005 self-report reliability, C006 workspace-gated routing | need injection hooks (P8) and trained Pods | `planned` |
+| F004, F005, F006 | decisive comparisons need real experts | `planned` |
+| E008 part C | split parity (activation frames across two pods, KV on the host) on `candle-cuda`; no workflow compiles that feature | see 10.1 |
+| Real retraining of the base model | not planned in any experiment; stated in 10.4 because its consequences are binding | none |
+
+### 10.3 Order of GPU work
+
+Section 7 stands, with these refinements: (1) handover steps 1 to 3 and OD-1 to OD-3; (2) P2 golden
+vectors through `ptr_py` and P7 groundwork on CPU; (3) M011; (4) pilots on seeds 1001 to 1003; (5)
+T on final seeds; (6) F005, F004, C002 and C003 stage B; (7) M012, M013, F006; (8) C006 after the
+C001 verdict (available), C005 last; (9) E008 part C wherever a CUDA build is available, any time
+after the CPU parts, independently of the stages; (10) M014 and M015 last.
+
+### 10.4 Retraining the base model: identity consequences
+
+A retrained base is a different model, not an updated one. `BaseModelRef` (`ptr-pods`,
+`expert.rs`) holds the base model id, its weights digest and a base generation (zero is refused),
+and all three take part in equality. So:
+
+- every expert, adapter, merge, prune and expert proposal bound to the old base is a different
+  base model for the new one (`MixedBaseModels`, a result base-model mismatch, a different
+  operation id); experts must be retrained or re-admitted on the new base, not carried over;
+- the per-layer KV chain key starts from the base model and generation and the embedding-table
+  digest, then hashes every layer's weights (`kv_chain.rs`). Any weight change therefore changes
+  every chain key from the first changed layer on, and cached KV of the old base is a miss, never
+  reused;
+- checkpoint digests pinned in a preregistration (section 4.7) are bound to the old base; a
+  retrained base needs new pins and, for a prepared or frozen experiment, a successor experiment.
+
+### 10.5 Hardware profiles
+
+| Profile | Memory | Precision | Used by |
+|---|---|---|---|
+| `hardware/rtx3090.toml` (`rtx3090-reference`) | 24 GiB | fp32, fp16, bf16, int8 | still named by the F, C and M manifests (OD-1) |
+| `hardware/rtx4090.toml` (`rtx4090-reference`, Ada sm_89) | 24 GiB | adds fp8 | recommended for every experiment; the `-rtx4090` configs |
+| `hardware/rtx5090.toml` (`rtx5090-reference`) | 32 GiB | adds fp8 | the `-rtx5090` configs, larger sequence budgets |
+
+One experiment runs on exactly one profile.
+
+### 10.6 Preregistration state of each GPU experiment
+
+`experiments/preregistration.toml` lists C001 among these ids and none of the others. So C002,
+C003, C005, C006, F004, F005, F006, M010 to M016 and E008 part C have no preregistration entry, no
+`[preregistration]` table pinned, no freeze commit and no run record; all are `planned`. The
+freeze, as always, is done by the head; a prepared experiment is never patched and a changed
+prepared design needs a successor.
+
+### 10.7 Framing of the doc-38 indicators
+
+C001, C002, C003, C005 and C006 measure functional properties of the system (broadcast under a
+capacity limit, calibration of a self-prediction, routing with an attention-schema model,
+reliability of a report against a ground-truth intervention, gating of routes). Each result is
+reported as that property only. None of them tests or claims consciousness, none trains or scores
+on self-reports, and `MODEL_WELFARE.md` applies to every run.

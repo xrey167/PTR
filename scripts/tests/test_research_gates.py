@@ -5161,7 +5161,12 @@ LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001",
     "M001-v6","M002-v11","M003-v3","M001-v6-sweep","M002-v11-sweep","M003-v3-sweep",
     # The successor study of the interrupted M003-v3 (A0-baseline-v3-m003); no sweep of its own.
     "M003-v4",
-    "L001-v2", "L002", "R013")
+    "L001-v2", "L002", "R013",
+    "F007")
+
+# The CPU stage-A experiments of the consciousness track (C004, C007 = C002 stage A, C008 = C003 stage A): they preregister (experiments/preregistration.toml) and
+# are built to freeze-ready. Like C001 in LISTED_UNFROZEN, they stay listed after their freeze: the list names the experiments that preregister.
+LISTED_UNFROZEN_CSTAGE_A=("C004","C007","C008")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture
@@ -5214,7 +5219,7 @@ class EnrolledExperimentTests(unittest.TestCase):
         # rerun and contingency (scripts/a0_study.py); they are checked by
         # scripts/tests/test_a0_study.py and by the gate itself.
         a0_study_v2=[exp_id for exp_id in listed if re.fullmatch(r"M00[1-4]-a0v2-[a-z0-9-]+",exp_id)]
-        self.assertEqual(sorted(set(listed)-set(a0_study_v2)),sorted((*ENROLLED,*RETIRED,*LISTED_UNFROZEN)))
+        self.assertEqual(sorted(set(listed)-set(a0_study_v2)),sorted((*ENROLLED,*RETIRED,*LISTED_UNFROZEN,*LISTED_UNFROZEN_CSTAGE_A)))
         # S003 lists every key its design preregisters (doc 35 design, section
         # 3.10), with the type of the design's value, low_cells included, in
         # the design's order.
