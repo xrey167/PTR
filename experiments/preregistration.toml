@@ -681,3 +681,18 @@ name = "plain_model"
 path = "research/baselines/plain_model/config.toml"
 keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
 status_key = "status"
+
+# F007 (vcw-loop): the whole verifier-closed workspace loop on SIMULATED expert Pods with declared per-(Pod, finding
+# code) skill tables; a mechanism check, no claim about any model. The margins are stated in
+# experiments/feedback/F007-vcw-loop/PREREGISTRATION.md and are `must-be-signed-...` until the owner signs.
+[experiment.F007.required]
+seeds = "int-list"
+harness = "str"
+requests_per_world = "int"
+verifier_call_budget = "int"
+primary_margin_permille = "int"
+equivalence_band_permille = "int"
+shuffled_control_margin_permille = "int"
+confidence_one_sided_permille = "int"
+preregistration_text = "file"
+criteria = "file"

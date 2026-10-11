@@ -1,0 +1,2 @@
+    Finished `release` profile [optimized] target(s) in 0.23s
+     Running `target/release/ptr-bench vcw-loop 1007`

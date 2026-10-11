@@ -494,3 +494,8 @@ status = "prepared"
 id = "M003-v3"
 path = "model/M003-v3-latent-recurrence"
 status = "prepared"
+
+[[experiment]]
+id = "F007"
+path = "feedback/F007-vcw-loop"
+status = "planned"

@@ -104,6 +104,9 @@ fn main() {
         // The harness of F001: `<seed>` (the pinned scale) or `<tasks> <seed>` (the mutation checker's
         // form); no default seed, and a typo stops the run.
         "generate-verify-repair" => experiments::f001::run(&args[2..]),
+        // The harness of F007: `<seed>` (the pinned scale), `<requests> <seed>` (the mutation checker's
+        // form) or `--preflight`; no default seed, and a typo stops the run.
+        "vcw-loop" => experiments::f007::run(&args[2..]),
         // The harness of S002: `<seed>` (the pinned scale) or `<cases> <seed>` (the mutation checker's form);
         // no default seed, and a typo stops the run.
         "snapshot-cancellation" => experiments::s002::run(&args[2..]),
@@ -143,9 +146,9 @@ fn main() {
 /// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
 const EXPERIMENT_COMMANDS: &str =
-    "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
+    "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
+const EXPERIMENT_COMMANDS: &str = "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)

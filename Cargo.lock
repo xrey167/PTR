@@ -4470,6 +4470,7 @@ dependencies = [
  "ptr-model-api",
  "ptr-pg",
  "ptr-pods",
+ "ptr-router",
  "ptr-runtime",
  "ptr-search",
  "ptr-semdb",

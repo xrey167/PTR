@@ -1,0 +1,123 @@
+# F007 decision criteria. Frozen with the preregistration at the freeze (config.toml names this file and
+# its SHA-256); no rule changes after a run. The three rule lists are what the harness itself judges
+# (bins/ptr-bench, f007/metrics.rs coverage(), falsifiers(), invalid_if()); a harness test pins this file to those
+# lists, in order. `aggregate.py` applies them per seed and then the statistics of [decision] across seeds.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == . A token is an integer literal iff it matches -?[0-9]+ (no decimals: fractions
+# are permille or counts). Any other token is a reference: a path of object keys from the root of the harness's
+# single JSON result object, separated by '.'. A reference that is missing, null, or of the wrong type makes the
+# seed INVALID (it is not a failed rule).
+#
+# coverage   a rule that does not hold makes the seed vacuous: INVALID.
+# falsifiers a rule that does not hold on a valid seed is a product defect observed from events (an accepted
+#            candidate that fails independent re-verification, a budget overrun, a routing outside the
+#            admissible set, a verifier verdict the loop did not follow, an L3 commit without admission, ...):
+#            FALSIFIED.
+# invalid_if the per-seed controls: they show the experiment could discriminate. One that does not hold makes
+#            the seed INVALID, which says nothing about the hypothesis. The harness exits 1 for any failed rule
+#            of the three lists, 2 when it cannot run.
+#
+# Verdict (aggregate.py): FALSIFIED if a falsifier is tripped on a valid seed; else INVALID if a seed is missing
+# or not judgeable, a coverage rule or control fails (per seed or over the seeds, see [decision]), or the
+# mutation evidence does not kill every mutation; else the statistics: COMPLETED iff the one-sided 95 percent lower
+# bound of (full - baseline), mean of the per-seed paired differences, exceeds the margin against EVERY baseline;
+# FALSIFIED iff the upper bound is below the margin against ANY; NOT_SHOWN otherwise.
+version = 1
+experiment = "F007"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "coverage.min_kind_share_permille >= 200",
+  "coverage.min_hard_events_per_code >= 10",
+  "coverage.repairs_applied >= 200",
+  "coverage.exhausted_runs >= 20",
+  "coverage.births >= 1",
+]
+
+falsifiers = [
+  "false_accepts <= 0",
+  "unverified_returns <= 0",
+  "double_verifications <= 0",
+  "budget_violations <= 0",
+  "routing_outside_admissible <= 0",
+  "verdict_mismatches <= 0",
+  "verdict_overrides <= 0",
+  "verifier_call_mismatches <= 0",
+  "calls_after_acceptance <= 0",
+  "l3_unadmitted <= 0",
+  "loop_errors <= 0",
+  "product_panics <= 0",
+  "exhausted_as_success <= 0",
+]
+
+invalid_if = [
+  "control_shuffled <= 0",
+  "control_null <= 0",
+  "control_baseline <= 0",
+  "control_workspace <= 0",
+  "control_ctx <= 0",
+  "control_training <= 0",
+  "control_grid_edge <= 0",
+  "control_oracle <= 0",
+  "control_bon <= 0",
+  "control_l3 <= 0",
+  "control_first_draft <= 0",
+]
+
+# The statistics. Differences are rates of verified success per request, paired over requests within a seed,
+# in permille; the unit of replication is the seed (t interval, df = seeds - 1, one-sided 95 percent, so
+# `confidence_one_sided_permille` of config.toml is 950). Every number below that is not the primary margin is
+# DERIVED from the planning model alone (`python3 experiments/feedback/F007-vcw-loop/power.py derive`, half of a
+# modelled gain, no pilot number); the derivation is in PREREGISTRATION.md section 6.
+[decision]
+primary_world = "hetero"
+null_world = "homog"
+descriptive_worlds = ["mild", "ctx"]
+baselines = ["gate", "bon"]
+# The smallest gain of the full loop over each baseline that is worth the architecture's complexity.
+margin_permille = 30
+# JUDGEMENT (not derived): half the margin, so that a built-in advantage of half of what the experiment asks for
+# cannot hide in the null world. Null-world equivalence: the loop without L3 and the full loop, each minus each of the gate, the generic pool and
+# the shuffled map, must have both one-sided 95 percent bounds within this band (two one-sided tests).
+equivalence_band_permille = 15
+# JUDGEMENT (not derived): margin plus 2 points, so that a misconfigured map must cost more than the margin.
+# Sensitivity control: the full loop must beat the shuffled finding map by at least this (lower bound).
+shuffled_min_loss_permille = 50
+# The gate must be a trained baseline: it beats the untrained generic pool by at least this (lower bound);
+# derived: half of the modelled gap.
+baseline_min_gain_permille = 43
+# Best-of-N must beat single shot (its own first call) by at least this (lower bound); derived: half of the
+# modelled gain.
+bon_min_gain_permille = 176
+# JUDGEMENT (not derived): a fifth of the margin; small enough that a crippled oracle shows, large enough for one
+# seed's noise. The oracle fixed-Pod reference may be below the full loop by at most this (lower bound of oracle - full).
+oracle_tolerance_permille = 20
+# Labels of the component contrasts that are not non-discriminating ("helps" iff the lower bound exceeds it,
+# "hurts" iff the upper bound is below its negative); they do not change the verdict.
+component_margin_permille = 10
+
+# The planning model's prediction of the primary world, and how far the harness may be from it
+# (`power.py derive`, n = 20000, seed 11), and the ceiling and floor outside which no compared arm may sit.
+# JUDGEMENTS: agreement 2 points (the model is a simplified re-implementation, the harness may differ a little, not by
+# the margin); ceiling 0.985 and floor 0.50 (an arm within 1.5 points of perfect, or at a coin flip, cannot show a
+# difference of the size asked for).
+[decision.model]
+predicted_permille = { full = 962, gate = 883, bon = 891 }
+agreement_permille = 20
+ceiling_permille = 985
+floor_permille = 500
+
+# Preregistered secondary hypotheses: reported with their own line, never gating the verdict.
+# Workspace: the full loop against the loop that withholds the broadcast, in the world that declares a Pod
+# reading it (a harness-defined reader: an implementation check of the broadcast path, not the value of the
+# workspace). Margin: half of the modelled gain in that world.
+[decision.secondary.workspace]
+world = "ctx"
+margin_permille = 9
+# L3: the full loop against the loop without L3 on the requests whose first candidate carried the code no
+# initial Pod can repair (the population L3 acts on). Margin: half of the modelled gain on that population.
+[decision.secondary.l3]
+world = "hetero"
+margin_permille = 54
