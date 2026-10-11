@@ -383,7 +383,11 @@ expect = ["control_training"]
 file = "bins/ptr-bench/src/experiments/f007/learn.rs"
 find = '''
         Verdict::Promote(evidence) => book
-            .promote(chosen.clone(), evidence)
+            .promote(
+                candidate_c.clone(),
+                evidence,
+                &mut Vec::<PolicyEvent>::new(),
+            )
             .map(|_| true)
             .map_err(|error| format!("promote: {error:?}"))?,'''
 replace = '''

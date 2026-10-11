@@ -588,7 +588,6 @@ mod tests {
     use super::*;
     use arms::{arm_config, audit_for_tests, request_stream, run_arm, Pair};
     use lane::{EndTag, Lane, LaneConfig, RequestRecord, RouteScorer};
-    use ptr_router::PolicyBook;
     use std::sync::Arc;
     use task::{Kind, Task, KINDS};
     use world::RegistryMode;
@@ -620,7 +619,7 @@ mod tests {
             world,
             kind,
             registry,
-            scorer: RouteScorer::Active(PolicyBook::new(kind.name()).scorer()),
+            scorer: RouteScorer::Active(super::learn::book_for(kind).scorer()),
             hints_steer: false,
             schema: false,
             l3,

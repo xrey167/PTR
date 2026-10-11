@@ -136,6 +136,28 @@ rewritten in later rounds) and are not relied on.
    untrained pool gets the good first draft, which shrinks the modelled gate gap). The grid-edge rule gained a
    sensitivity check and a logged paired SE (section 8), `Cargo.toml` and `Cargo.lock` joined the source digest, and the
    pilots were re-run with the release profile of the entrypoint.
+5. *Round 5 (API adaptation, after the merge of the integration branch that fixed the VCW review findings):* no design
+   element, margin, threshold or tolerance was changed; the harness was ported to the product APIs and the pilots
+   re-run. Three product changes reach the experiment. (a) **Promotion gate**: `PromotionGate::assess` now reads its
+   log from the learner and requires the candidate to be a snapshot of that learner, with floors (100 records, ESS 30,
+   z >= 1.645, margin >= 0) that the preregistered rule (300 records, ESS 100, z = 1.645, 2 points) already met; as a
+   consequence stream A is replayed once per kind under the selected prior in a fresh learner (the replayed snapshot is
+   required to equal the selected candidate digest for digest, else the run is a harness defect) and stream C is served
+   by a fresh lane whose learner has seen stream A only, so the assessed log is stream C alone, as before; the behaviour
+   policy is unchanged (streams A, B and C are routed by the uniform book in every learner; the learner only observes,
+   section 9), and only the learner that records stream C differs (the selected prior's instead of the first prior's). (b) **Exploration floor**: a scorer bound to a rate is refused by a
+   router of another rate; the harness always used the default rate (0.05) in learners, books and routers, now stated.
+   (c) **Credit rule**: a repair route is credited only if the repaired candidate introduces no hard code that was not
+   routed in the attempt, which also feeds the in-request tally. Effect measured on the pilots: the outcome digests
+   of every arm are unchanged except the shuffled-map arm (hetero +0.65 to +0.9 points, mild +0.1 to +0.6, homog 0
+   to +0.4; the likely cause, not isolated, is that wrong-role repairers introduce new codes, which the tally now sees) and, in seed 1008 of the null
+   world, the full loop (-6 of 4000, the same for no-workspace and no-self-model, which are its siblings there). The
+   promotion decisions and the selected priors of all 108 tunings are unchanged. The held-out suite digest replaces the
+   constant evaluation manifest of the grant, and its coverage check passes (the suite measures every code of the
+   kind). **Consequence for the controls**: on the three pilot seeds the null-world tie full against the shuffled map
+   is +0.36 [-0.88, +1.59] and fails the +-1.5 band by its upper bound (the point estimate is inside; this is the 3-seed
+   t interval with df = 2, t = 2.92; the confirmatory five seeds have t = 2.13); it is reported, not tuned away, and
+   the band was not changed.
 The owner has seen all pilots before signing. The owner states at signing whether the margin is kept or moved and
 why; any margin moved must be derived from `power.py` without pilot numbers. The tamper-evident record is the commit of
 the freeze followed by a re-run of pilot 1007 on the committed tree (section 12).
@@ -196,7 +218,8 @@ policy), above zero: `control_grid_edge`, INVALID. The multiplier **z = 3 is a j
 episode** (a one-sided 0.13% level, so that the nine tests per seed rarely flag noise); the rule has no tolerance on the
 value itself, but it does have this constant. **What can escape it:** a real edge gain smaller than 3 paired standard
 errors per grid step, or a slow monotone trend of sub-3-SE steps; the largest raw edge-over-inner gap in the round-4
-pilots is 0.08 points (766 micro) against a margin of 3, so the bound that matters for the verdict is that the baselines are
+pilots (hetero, the world the rule runs in) is 0.07 points (701 micro; an earlier text said 0.08 / 766, which was a
+misreading already present in the round-4 pilots and is corrected in round 5) against a margin of 3, so the bound that matters for the verdict is that the baselines are
 not under-tuned by more than a fraction of a point. The paired standard error of every edge decision is logged in the
 result (`*_edge_se_micro`) so that the bound is auditable. **The test is checked for blindness**: the tuned gate (and
 best-of-N's proposers) are also compared with the worst candidate of the grid, which the test must flag
@@ -238,16 +261,16 @@ the loop exploits specialisation when it exists. A model-backed experiment (F004
 ## 11. Pilots (seeds >= 1001), not evidence
 
 Three pinned-scale pilots on the final code, seeds 1007, 1008, 1009 (`pilots/`, summary in `pilots/summary.md`), run with
-the release profile of the entrypoint (`cargo run --release`, no override): all integrity counters 0, all controls pass,
+the release profile of the entrypoint (`cargo run --release`, no override): all integrity counters 0, all controls pass except one (below),
 coverage met, `first_candidates_differ` 0 in all four worlds, one source digest in all three results. Primary world, mean
-over seeds: full 0.958, gate 0.883, best-of-N 0.892, untrained pool 0.799, shuffled map 0.802, no L3 0.957, oracle about 0.96.
+over seeds: full 0.958, gate 0.883, best-of-N 0.892, untrained pool 0.799, shuffled map 0.810, no L3 0.957, oracle about 0.96.
 **full - gate +7.50 points [6.70, 8.30], full - best-of-N +6.60 [5.60, 7.60]**; between-seed sd 0.5 and 0.6 points.
 The harness agrees with the planning model (0.958 / 0.883 / 0.892 against 0.962 / 0.883 / 0.891). Null world: the no-L3 loop
-minus gate, generic pool and shuffled map is -0.2, -0.2, +0.6 points. Secondary: workspace in `ctx` +2.3 points
+minus gate, generic pool and shuffled map is -0.2, -0.2, +0.4 points; the full loop minus gate, generic pool and shuffled map is -0.25, -0.25, +0.36 [-0.88, +1.59], and the last **fails the +-1.5 band by its upper bound** on these three pilot seeds (df = 2; round 5 below), so the pilot verdict line reads INVALID for illustration. Secondary: workspace in `ctx` +2.3 points
 [1.7, 2.9] against 0.9 (SUPPORTED); L3 on the gap population +3.0 [-5.7, 11.6] against 5.4 (NOT_SHOWN, low power);
 self-model untested (+0.00, non-discriminating). `mild`: full - best-of-N +3.7 [3.6, 3.8], at the margin. The grid
 edge rule flagged none of the 108 tunings and its sensitivity check passed in all of them; the largest edge-over-inner gap
-is 0.08 points (766 micro).
+is 0.07 points (701 micro) in the hetero world, where the rule runs.
 Disclosed history of the pilots: round-1 pilots (grid {50..400}) had full - gate +7.75; round-3 pilots (nine-point grids,
 shared first draft not yet in place) +7.4; the round-4 numbers above change little although the planning model, the
 derived thresholds (gate over the untrained pool 120 -> 43 permille) and the first draft changed: the untrained pool

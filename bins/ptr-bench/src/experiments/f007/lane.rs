@@ -17,8 +17,8 @@ use ptr_lineage::ForgettingGate;
 use ptr_pods::{BaseModelDigest, BaseModelId, BaseModelRef, PodRegistry, ProposerRef};
 use ptr_router::{
     ActiveScorer, AdmissibleScorer, AttentionSchema, ControlArm, ControlConfig, ControlledScorer,
-    NonceSequence, RouteClass, RouteError, RouterConfig, RoutingLearner, SamplingKey, SchemaLimits,
-    ScoringContext, SelfModel, SelfModelLimits,
+    Exploration, NonceSequence, RouteClass, RouteError, RouterConfig, RoutingLearner, SamplingKey,
+    SchemaLimits, ScoringContext, SelfModel, SelfModelLimits,
 };
 use ptr_runtime::execution::AdmissionPolicy;
 use ptr_runtime::expert::{
@@ -31,7 +31,7 @@ use ptr_runtime::vcw::{
     VcwTrace,
 };
 use ptr_runtime::vcw_host::{
-    DriverHost, SimulatedHeldOut, SimulatedTrainer, StructureDriver, StructureResult,
+    DriverHost, HeldOutSuite, SimulatedHeldOut, SimulatedTrainer, StructureDriver, StructureResult,
     TrainedSpecialist,
 };
 use ptr_runtime::PtrRuntime;
@@ -61,6 +61,13 @@ impl AdmissibleScorer for RouteScorer {
         match self {
             Self::Active(scorer) => scorer.weights(context),
             Self::Gate(gate) => gate.weights(context),
+        }
+    }
+
+    fn bound_exploration(&self) -> Option<Exploration> {
+        match self {
+            Self::Active(scorer) => scorer.bound_exploration(),
+            Self::Gate(gate) => gate.bound_exploration(),
         }
     }
 }
@@ -97,7 +104,6 @@ const KEY_ID: &str = "policy-key";
 const PEER: &str = "expert-host-peer";
 const SESSION: &str = "session-1";
 const NOW: Timestamp = Timestamp(1_000);
-const EVAL_MANIFEST: [u8; 32] = [5; 32];
 
 fn project_for(kind: Kind) -> ProjectId {
     ProjectId::from(format!("f007-{}", kind.name()).as_str())
@@ -156,11 +162,11 @@ fn proposer_ref(project: &ProjectId) -> ProposerRef {
     ProposerRef::new(project.clone(), PodId::from("meta"), Generation(1)).expect("proposer")
 }
 
-fn grant_for(project: &ProjectId, rt: &PtrRuntime) -> ExpertAdmissionGrant {
+fn grant_for(project: &ProjectId, manifest: [u8; 32], rt: &PtrRuntime) -> ExpertAdmissionGrant {
     let requirement = ExpertGateRequirement {
         gate_epoch: 7,
         config_digest: gate().config_digest().expect("digest"),
-        eval_manifest_digest: EVAL_MANIFEST,
+        eval_manifest_digest: manifest,
         require_inputs: false,
     };
     let binding = ExpertGrantBinding::new(
@@ -180,6 +186,8 @@ struct L3Env {
     driver: StructureDriver,
     trainer: SimulatedTrainer,
     suite: SimulatedHeldOut,
+    /// The digest of the held-out suite, which the admission grant expects in the subject.
+    manifest: [u8; 32],
     aimer: BTreeMap<PodId, f64>,
     project: ProjectId,
     admitted: Vec<PodId>,
@@ -233,8 +241,8 @@ impl L3Env {
                 slots: 16,
             },
             gate(),
-            EVAL_MANIFEST,
         );
+        let manifest = suite.manifest_digest();
         let born = params::BORN_SKILL_PERMILLE as f64 / 1000.0;
         let mut trainer = SimulatedTrainer::new(
             project.clone(),
@@ -251,6 +259,7 @@ impl L3Env {
             driver,
             trainer,
             suite,
+            manifest,
             aimer: BTreeMap::new(),
             project,
             admitted: Vec::new(),
@@ -477,7 +486,8 @@ impl Lane {
         let Some(env) = l3 else { return };
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             let project = env.project.clone();
-            let grant = move |rt: &PtrRuntime| grant_for(&project, rt);
+            let manifest = env.manifest;
+            let grant = move |rt: &PtrRuntime| grant_for(&project, manifest, rt);
             let L3Env {
                 rt,
                 pods,
@@ -521,6 +531,9 @@ impl Lane {
                     env.refused += 1;
                     self.l3_refusals += 1;
                 }
+                // Committed in the ledger but not installed: not an admission here, so the
+                // end-of-run audit counts the structural event as unbacked (a product defect).
+                StructureResult::CommittedNotInstalled { .. } => {}
             }
         }
     }

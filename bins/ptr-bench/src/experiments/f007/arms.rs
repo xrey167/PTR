@@ -9,7 +9,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use ptr_router::PolicyBook;
 use ptr_runtime::vcw::StepDecision;
 
 use super::super::rng::Rng;
@@ -66,7 +65,7 @@ impl Arm {
 }
 
 fn uniform(kind: Kind) -> RouteScorer {
-    RouteScorer::Active(PolicyBook::new(kind.name()).scorer())
+    RouteScorer::Active(super::learn::book_for(kind).scorer())
 }
 
 /// The lane an arm serves `kind` with.

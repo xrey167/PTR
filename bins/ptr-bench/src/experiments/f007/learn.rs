@@ -16,9 +16,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ptr_router::{
-    compare_policies, estimate_policy, AdmissibleScorer, Confidence, Estimator, LearnedPolicy,
-    LearnerConfig, LoggedDecision, PolicyBook, PromotionGate, PromotionRule, RewardModel,
-    RouteClass, RouteError, RoutingLearner, ScoringContext, UniformScorer, Verdict,
+    compare_policies, estimate_policy, AdmissibleScorer, Confidence, Estimator, Exploration,
+    LearnedPolicy, LearnerConfig, LoggedDecision, PolicyBook, PolicyEvent, PromotionGate,
+    PromotionRule, RewardModel, RouteClass, RouteError, RoutingLearner, ScoringContext,
+    UniformScorer, Verdict,
 };
 use ptr_types::PodId;
 
@@ -96,6 +97,11 @@ impl AdmissibleScorer for GateScorer {
             .zip(means)
             .map(|(pod, mean)| (pod.clone(), ((mean - best) / self.tau).exp().max(1e-12)))
             .collect())
+    }
+
+    /// The gate baseline carries no promotion evidence of the router's, so it is bound to no rate.
+    fn bound_exploration(&self) -> Option<Exploration> {
+        None
     }
 }
 
@@ -193,6 +199,13 @@ pub struct Failures {
     pub panics: u64,
 }
 
+/// The book of a kind's routing scope: uniform until a policy is promoted into it, exploring at
+/// the router's default rate (the rate the harness's routers and learners have always used, now
+/// stated because a policy is bound to it).
+pub fn book_for(kind: Kind) -> PolicyBook {
+    PolicyBook::new(kind.name(), Exploration::default()).expect("the default rate is positive")
+}
+
 fn lane_config(
     world: WorldId,
     kind: Kind,
@@ -200,7 +213,7 @@ fn lane_config(
     seed: u64,
     learner: &Arc<RoutingLearner>,
 ) -> LaneConfig {
-    let book = PolicyBook::new(kind.name());
+    let book = book_for(kind);
     LaneConfig {
         world,
         kind,
@@ -411,13 +424,9 @@ pub fn train_kind(
     let (mut lane, learner) = kept.ok_or("no first prior")?;
     let cutoff_a = candidates[0].1.cutoff();
     run_stream(&mut lane, seeds[1], kind, "b", b, &mut failures);
-    let after_b = learner.log_from(cutoff_a);
-    let len_b = after_b.len();
-    run_stream(&mut lane, seeds[2], kind, "c", c, &mut failures);
-    trained_requests += (b + c) as u64;
-    let both = learner.log_from(cutoff_a);
-    let log_b = &both[..len_b];
-    let log_c = &both[len_b..];
+    trained_requests += b as u64;
+    let log_b = learner.log_from(cutoff_a);
+    let log_b = log_b.as_slice();
     let mut vcw_candidates = Vec::new();
     let mut best: Option<(u64, &LearnedPolicy, f64)> = None;
     for (prior, policy) in &candidates {
@@ -441,10 +450,32 @@ pub fn train_kind(
             )?,
             None => (false, 0.0, 0.0),
         };
-    let mut book = PolicyBook::new(kind.name());
+    // The promotion gate reads its log from the learner the candidate is a snapshot of, from the
+    // candidate's cutoff on. So stream C is served by a learner of the chosen prior that has
+    // seen stream A only: stream A is replayed under the chosen prior (the lane is deterministic,
+    // and the replayed snapshot must be the selected candidate, digest for digest), then stream C
+    // is served and is the whole evaluation log. Stream B, on which the prior was selected, is
+    // not in it, as before.
+    let learner_c = learner_for(kind, vcw_prior, seeds[0])?;
+    let mut lane_c = Lane::new(lane_config(
+        world,
+        kind,
+        RegistryMode::True,
+        seeds[0] ^ world_salt,
+        &learner_c,
+    ));
+    run_stream(&mut lane_c, seeds[0], kind, "a", a, &mut failures);
+    let candidate_c = learner_c.snapshot();
+    if candidate_c.digest() != chosen.digest() {
+        return Err("the replay of stream A did not reproduce the selected candidate".into());
+    }
+    run_stream(&mut lane_c, seeds[2], kind, "c", c, &mut failures);
+    trained_requests += (a + c) as u64;
+    let records_c = learner_c.log_len_from(candidate_c.cutoff());
+    let mut book = book_for(kind);
     let promotion = PromotionGate::new(rule()).map_err(|e| format!("gate: {e}"))?;
     let assessment = promotion
-        .assess(log_c, chosen, &book.scorer(), book.active_digest())
+        .assess(&learner_c, &candidate_c, &book.scorer())
         .map_err(|error| format!("promotion assessment: {error}"))?;
     let (vcw_difference, vcw_lcb) = (
         assessment.comparison.difference,
@@ -452,7 +483,11 @@ pub fn train_kind(
     );
     let vcw_promoted = match assessment.verdict {
         Verdict::Promote(evidence) => book
-            .promote(chosen.clone(), evidence)
+            .promote(
+                candidate_c.clone(),
+                evidence,
+                &mut Vec::<PolicyEvent>::new(),
+            )
             .map(|_| true)
             .map_err(|error| format!("promote: {error:?}"))?,
         Verdict::Refuse(_) => false,
@@ -488,7 +523,7 @@ pub fn train_kind(
         vcw_prior,
         vcw_lcb,
         vcw_difference,
-        vcw_records: log_c.len(),
+        vcw_records: records_c,
         vcw_digest,
         vcw_candidates,
         gate_tau: tuned.gate.tau_permille(),
