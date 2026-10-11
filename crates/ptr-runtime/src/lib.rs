@@ -25,6 +25,7 @@ pub mod routing;
 pub mod sandbox;
 pub mod scopes;
 pub mod semantic;
+pub mod split_stage;
 pub mod stepped;
 pub mod tensor_kv;
 pub mod tier;
@@ -100,6 +101,10 @@ pub use sandbox::{
 pub use scopes::{
     CleanupError, ExecutionScope, ScopeCleanupCoordinator, ScopeError, ScopeEvent, ScopeEventKind,
     ScopeRegistry, ScopeState,
+};
+pub use split_stage::{
+    admit_frame, prefix_key, revalidate_chain, AdmittedFrame, ChainFault, RuntimeStageLiveness,
+    SplitStageCache, StageLiveness, StoreError, UseFault, UseTicket, OPEN_USES_PER_ENTRY,
 };
 pub use stepped::{CancelPolicy, CancelledRun, RunStep, StepResources, SteppedRun};
 pub use tensor_kv::{

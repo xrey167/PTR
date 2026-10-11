@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-22  
-**Code footprint:** 2 Rust source files · 121 nonblank source lines · 2 integration-test files · 19 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-10  
+**Code footprint:** 3 Rust source files · 954 nonblank source lines · 2 integration-test files · 30 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -20,13 +20,17 @@
 - PodCall carries no caller-supplied session identifier: the field is removed and its number and name reserved, because a request that crosses a trust boundary has no field naming its caller — held by a compile-fail doctest rather than by the comment beside it, since a comment cannot notice when somebody reuses the number
 - Frame kind classification independent of transport
 - Validated generated PodCall to domain CallFrame conversion with malformed-frame rejection
+- src/activation.rs, the payload schemas of a split-pod (pipeline layer split) operation: ALLOWLISTED_TYPES names the two type ids a split operation admits (the activation chunk and the policy), admit/admit_typed decode a TypedPayload as exactly one of them and refuse any other type_id with SchemaError::NotAllowlisted whatever the bytes are, ActivationFrame (tokens, width, F32 dtype, positions, UpstreamChain of stage, base model, adapters and experts each with identity, generation, digest and fence epoch, placement epoch, tensor) round-trips through a bounded length-prefixed codec whose decoder validates tokens x width x dtype against the tensor length and the positions length against the row count for every frame, and refuses trailing bytes, an unknown dtype, a zero or oversize chunk count and an empty identity; frame_digest, chunk_digest (frame id, chunk place, whole-frame digest, parent operation, signed deadline, chain, chunk bytes) and envelope_signing_bytes define what a chunk binds and what its signature covers; covered by src/activation.rs tests and the E007 harness
+- Review fixes of the split path: SplitPolicy is signed (signed_absolute_deadline_ms and a 64-byte signature over policy_signing_bytes), admit_view / ChunkView decode a chunk without copying its bytes so a receiver can authenticate before it allocates, chain_bytes gives the canonical bytes of a chain for digests. Version 1 of the frame is Exact-only: it carries no mode and no taint, and the downstream admission (ptr-runtime admit_frame) refuses an Approximate upstream with ChainFault::NotExact; the mode and taint fields are E008.
 
 ### Missing for the target architecture
 
+- The v1 ActivationFrame carries no KvReuseMode or KvReuseTaint (doc 36 section D lists them as frame fields); the downstream admission refuses a non-Exact upstream as stated by the caller, and the fields and the Approximate namespace belong to E008.
 - Semantic version negotiation and compatibility matrix
 - rkyv/local codec adapter and JSON debug adapter
 - Idempotency keys, ACK/CANCEL/BYE/HELLO/DECL frames from the wider PodWire design
 - Anything speaking these messages: they remain a declared shape, and the Pod access protocol that does cross a network boundary is ptr-podwire's own bounded format rather than these
+- The activation schemas are hand-written bounded codecs beside the prost schemas, not generated ones; a Raw ancestry, input lineage, mode and taint field is E008's and will be a new type id, not a change of the v1 one
 
 ### Next milestones
 
@@ -38,6 +42,7 @@
 
 - [R002](../../experiments/runtime/R002-unseen-pod-generalization/README.md) — `planned`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+- [E007](../../experiments/system/E007-split-pod-kv/README.md) — `frozen`
 
 ### Technology evaluations
 

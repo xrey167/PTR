@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "E008-split-pod-extensions"
+path = "experiments/system/E008-split-pod-extensions"
+tests_dir = "tests"

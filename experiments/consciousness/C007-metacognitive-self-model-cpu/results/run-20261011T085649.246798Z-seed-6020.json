@@ -1,0 +1,137 @@
+{
+  "schema_version": 2,
+  "experiment_id": "C007",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v114",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16874930176
+  },
+  "hardware_profile_record": {
+    "path": "hardware/a0-cpu-4core.toml",
+    "sha256": "929ce6339da92df03113c4176a59155336f123e7aed9c771db1614d0a99a0c1f",
+    "contents": {
+      "id": "a0-cpu-4core",
+      "os": "Ubuntu 24.04.4 LTS, Linux 6.18.44 x86_64",
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU (4 cores, 1 thread per core, 1 socket); AVX, AVX2, AVX-512F/BW/CD/DQ/VL/VNNI",
+      "ram_gib": 15.7,
+      "gpu": "none",
+      "gpu_memory_gib": 0,
+      "precision": [
+        "fp32"
+      ],
+      "notes": "Shared cloud container: timing is noisy and is recorded as a diagnostic only. Floating-point results are reproducible bit for bit only on this CPU feature set with the same binary, because the gemm kernel dispatches on AVX-512."
+    },
+    "unspecified_fields": []
+  },
+  "git_sha": "241fd443450c6066bf2c483fa1c3150c2c34761d",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "C007",
+    "status": "prepared",
+    "hypothesis": "[CPU stage A of C002, on a toy mixture-of-experts classifier; the GPU stage B on the Pod-MoE with OLMoE is C002 itself and needs a GPU] Indicators HOT-2/HOT-3 as a functional property: does a self-model that sees the classifier's own routing traces and internal state (the self-observation of docs/architecture/37-pod-moe.md section 3) predict the classifier's own errors on a distribution-shifted split better than an information-matched external probe that sees the same traces, with the same capacity, optimiser, data and initial weights, and than the classifier's own calibrated confidence? The self-model and the probe differ in one pinned number only: the weight of an auxiliary self-modelling loss (a masked prediction of the classifier's own layer-two expert choice and output entropy). The self-model may only observe and propose; it has no write path to the classifier, the verifier or a gate (structural counters; invariants 4, 5, 11). Calibration is scored against the verifier's deterministic outcomes (the prediction is wrong or right against the true class). The self-model's own verbal confidence statements are never read, trained or scored (principle 2 of docs/architecture/38-consciousness-indicators.md). Functional mechanism test only: it says nothing about consciousness or about language models.",
+    "metrics": "Brier score of the predicted failure probability against the verifier's outcome on the shifted split (primary) and in distribution; AUROC; ECE; risk-coverage area; layer-two expert-choice accuracy of the auxiliary head (descriptive); paired per-seed differences (comparator minus self-model) with one-sided 95% t bounds (lower and upper) over twenty seeds; validity guards; sensitivity, removal and null controls",
+    "baseline": "INFORMATION-MATCHED probe: the same network on the same trace, features, optimiser, data and initial weights, with the auxiliary weight 0 (judged); the model's own softmax confidence, calibrated by a two-parameter fit on the calibration and validation labels, and contained in both heads as a base term (judged); a probe on input and output only, the model's raw confidence and a constant predictor (descriptive); shuffled traces and a self-model trained on permuted outcomes (removal controls); noise added to the self-model's predictions (graded control); a null world in which the classifier's errors are independent of its inputs",
+    "falsification": "Four outcomes, decided in advance (PREREGISTRATION.md, criteria.toml). COMPLETED if the guards and controls hold and both lower one-sided 95% t bounds over the twenty paired seed differences of the shifted-split Brier score (information-matched probe minus self-model, own confidence minus self-model) are at least 4 per mille. FALSIFIED (refuted) only if the guards and controls hold and some Bonferroni upper bound is below 4 per mille; and structurally FALSIFIED if a structural counter is above 0 on a valid seed (training the self-model changed the classifier, its advice changed what the verifier or a gate reads: the write-path counters, which in the toy verify the harness wiring only because the self-model has no consumer there; nondeterminism) or a coverage rule fails. NOT_SHOWN if the bounds straddle the margin. INVALID, never falsified (and before any structural FALSIFIED), if seeds or mutation evidence are missing or partial, if the traces carry no usable information on the shifted split, the self-model and the probe are not matched, an integrity counter is above 0, a judged head hit the step cap on more than one seed, a control or the null world is not resolved as required, or the seeds or mutation evidence are missing.",
+    "hardware_profile": "hardware/a0-cpu-4core.toml",
+    "entrypoint": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/cseries/c002a/harness.py --benchmark c007 --seed <seed>",
+    "preflight": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/cseries/c002a/harness.py --benchmark c007 --preflight",
+    "seeds": [
+      6001,
+      6002,
+      6003,
+      6004,
+      6005,
+      6006,
+      6007,
+      6008,
+      6009,
+      6010,
+      6011,
+      6012,
+      6013,
+      6014,
+      6015,
+      6016,
+      6017,
+      6018,
+      6019,
+      6020
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "design": "../../../docs/architecture/38-consciousness-indicators.md",
+    "preregistration_sha256": "81b78522c34049339ca794fcbe8f8d405c7d915c566b6599c3aaf7929d27020b",
+    "preregistration_rules_sha256": "dc808d7a5a3b05f5c645a2d378490be2ad84daea76d800780e074e9c17165313"
+  },
+  "manifest_sha256": "6aabd35b85fb4122620ed127ce1dfd7620344c87b98024d7f6bdfa946d966602",
+  "cargo_lock_sha256": "f5702686d1242e6a9e1222a06afabc4aedcef7b34aabcf385733868a7a79cbcd",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/a0-cpu-4core.toml",
+  "rustc": null,
+  "status": "completed",
+  "started_at": "20261011T085649.246798Z",
+  "entrypoint": "entrypoint",
+  "seed": 6020,
+  "parameters": {},
+  "command": [
+    "env",
+    "UV_PROJECT_ENVIRONMENT=../../../c001-venv",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "uv",
+    "run",
+    "--locked",
+    "--offline",
+    "--no-python-downloads",
+    "--project",
+    "research/consciousness",
+    "python",
+    "-B",
+    "research/cseries/c002a/harness.py",
+    "--benchmark",
+    "c007",
+    "--seed",
+    "6020"
+  ],
+  "environment": {
+    "PATH": "/nix/var/nix/profiles/default/bin:/root/.local/bin:/root/.cargo/bin:/usr/local/go/bin:/opt/node22/bin:/opt/maven/bin:/opt/gradle/bin:/opt/rbenv/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "LC_CTYPE": "C.UTF-8",
+    "RUSTUP_HOME": "/root/.rustup",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONPYCACHEPREFIX": "/tmp/ptr-run-C007",
+    "CARGO_TARGET_DIR": "/tmp/ptr-run-C007/cargo-target",
+    "RUSTUP_TOOLCHAIN": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu"
+  },
+  "executable": {
+    "path": "/usr/bin/env",
+    "sha256": "0aefff8f912fb75716c5d4de3b6acde93edbe8fa280fc8ee895c1226d3e373ef"
+  },
+  "toolchain": {
+    "rustc": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc",
+      "sha256": "f3834d26669b03f6855fa54bd2381443123e860167bc0c7a8dd137e5cf6e5e4f"
+    },
+    "cargo": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/cargo",
+      "sha256": "e951141cc55a6cd7b9876d187bd30a3720e6086b99413af95e3b8de1cdd72f14"
+    }
+  },
+  "finished_at": "2026-10-11T08:58:09.801761+00:00",
+  "exit_code": 0,
+  "stdout": "{\"advice_leaks\": 0, \"advice_probe_hits\": 4000, \"arms\": {\"constant\": {\"auroc_permille\": 500, \"brier_correct\": 1142644447, \"brier_total\": 4000000000, \"ece_permille\": 218, \"id_auroc_permille\": 500, \"id_brier_correct\": 563791111, \"id_brier_total\": 4000000000, \"id_ece_permille\": 4, \"id_rc_area_permille\": 171, \"rc_area_permille\": 391, \"view\": \"none\", \"world\": \"task\"}, \"own_confidence\": {\"auroc_permille\": 728, \"brier_correct\": 959902884, \"brier_total\": 4000000000, \"ece_permille\": 181, \"id_auroc_permille\": 821, \"id_brier_correct\": 445643913, \"id_brier_total\": 4000000000, \"id_ece_permille\": 27, \"id_rc_area_permille\": 57, \"rc_area_permille\": 243, \"view\": \"none\", \"world\": \"task\"}, \"own_confidence_raw\": {\"auroc_permille\": 739, \"brier_correct\": 1386371655, \"brier_total\": 4000000000, \"ece_permille\": 347, \"id_auroc_permille\": 832, \"id_brier_correct\": 585709655, \"id_brier_total\": 4000000000, \"id_ece_permille\": 140, \"id_rc_area_permille\": 52, \"rc_area_permille\": 235, \"view\": \"none\", \"world\": \"task\"}, \"platt\": {\"a_milli\": 253, \"b_milli\": 585}, \"probe_io\": {\"auroc_permille\": 728, \"aux_grad_norm_micro\": 0, \"aux_steps\": 0, \"aux_weight_milli\": 0, \"best_val_permille\": 889, \"brier_correct\": 975676856, \"brier_total\": 4000000000, \"calibration_a_milli\": 1031, \"calibration_b_milli\": -40, \"converged\": 1, \"curve_permille\": [889, 888, 888, 887, 886, 886, 885, 885, 885, 885, 884], \"ece_permille\": 192, \"id_auroc_permille\": 824, \"id_brier_correct\": 445596322, \"id_brier_total\": 4000000000, \"id_ece_permille\": 28, \"id_rc_area_permille\": 58, \"input_digest\": \"58fb1457f1c8cb45\", \"params\": 1494, \"rc_area_permille\": 241, \"step_cap\": 4000, \"steps\": 1100, \"train_loss_window_micro\": 331433, \"view\": \"io\", \"world\": \"task\"}, \"probe_matched\": {\"auroc_permille\": 732, \"aux_grad_norm_micro\": 384329, \"aux_steps\": 0, \"aux_weight_milli\": 0, \"best_val_permille\": 891, \"brier_correct\": 994035407, \"brier_total\": 4000000000, \"calibration_a_milli\": 965, \"calibration_b_milli\": -179, \"converged\": 1, \"curve_permille\": [889, 890, 890, 891, 890, 889, 888, 884, 890, 888, 887, 884, 886, 882], \"ece_permille\": 205, \"expert_accuracy_permille\": 629, \"id_auroc_permille\": 827, \"id_brier_correct\": 442180786, \"id_brier_total\": 4000000000, \"id_ece_permille\": 12, \"id_rc_area_permille\": 55, \"input_digest\": \"c35fd34f5bdf69d6\", \"params\": 3542, \"rc_area_permille\": 227, \"step_cap\": 4000, \"steps\": 1400, \"train_loss_window_micro\": 238030, \"view\": \"trace\", \"world\": \"task\"}, \"probe_matched_null\": {\"auroc_permille\": 515, \"aux_grad_norm_micro\": 524093, \"aux_steps\": 0, \"aux_weight_milli\": 0, \"best_val_permille\": 890, \"brier_correct\": 427276254, \"brier_total\": 4000000000, \"calibration_a_milli\": 704, \"calibration_b_milli\": 634, \"converged\": 1, \"curve_permille\": [890, 890, 890, 889, 888, 887, 885, 884, 882, 880, 876], \"ece_permille\": 8, \"expert_accuracy_permille\": 180, \"id_auroc_permille\": 468, \"id_brier_correct\": 436700331, \"id_brier_total\": 4000000000, \"id_ece_permille\": 5, \"id_rc_area_permille\": 882, \"input_digest\": \"a9f70e8ecf84eb3c\", \"params\": 3542, \"rc_area_permille\": 874, \"step_cap\": 1500, \"steps\": 1100, \"train_loss_window_micro\": 263920, \"view\": \"trace\", \"world\": \"null\"}, \"probe_matched_shuffled\": {\"auroc_permille\": 497, \"brier_correct\": 1255840722, \"brier_total\": 4000000000, \"ece_permille\": 246, \"id_auroc_permille\": 476, \"id_brier_correct\": 701730527, \"id_brier_total\": 4000000000, \"id_ece_permille\": 149, \"id_rc_area_permille\": 180, \"rc_area_permille\": 396, \"view\": \"none\", \"world\": \"task\"}, \"self_model\": {\"auroc_permille\": 733, \"aux_grad_norm_micro\": 208386, \"aux_steps\": 1900, \"aux_weight_milli\": 300, \"best_val_permille\": 893, \"brier_correct\": 984755559, \"brier_total\": 4000000000, \"calibration_a_milli\": 909, \"calibration_b_milli\": -127, \"converged\": 1, \"curve_permille\": [889, 889, 890, 891, 891, 891, 890, 889, 893, 891, 890, 890, 890, 888, 887, 888, 889, 884, 885], \"ece_permille\": 201, \"expert_accuracy_permille\": 951, \"id_auroc_permille\": 828, \"id_brier_correct\": 442481338, \"id_brier_total\": 4000000000, \"id_ece_permille\": 15, \"id_rc_area_permille\": 54, \"input_digest\": \"c35fd34f5bdf69d6\", \"params\": 3542, \"rc_area_permille\": 226, \"step_cap\": 4000, \"steps\": 1900, \"train_loss_window_micro\": 288164, \"view\": \"trace\", \"world\": \"task\"}, \"self_model_noisy\": {\"auroc_permille\": 633, \"brier_correct\": 1062163861, \"brier_total\": 4000000000, \"ece_permille\": 179, \"id_auroc_permille\": 699, \"id_brier_correct\": 599536795, \"id_brier_total\": 4000000000, \"id_ece_permille\": 108, \"id_rc_area_permille\": 97, \"rc_area_permille\": 303, \"view\": \"none\", \"world\": \"task\"}, \"self_model_null\": {\"auroc_permille\": 519, \"aux_grad_norm_micro\": 190069, \"aux_steps\": 1100, \"aux_weight_milli\": 300, \"best_val_permille\": 890, \"brier_correct\": 427203315, \"brier_total\": 4000000000, \"calibration_a_milli\": 701, \"calibration_b_milli\": 647, \"converged\": 1, \"curve_permille\": [890, 890, 890, 889, 888, 888, 887, 886, 886, 884, 882], \"ece_permille\": 8, \"expert_accuracy_permille\": 333, \"id_auroc_permille\": 475, \"id_brier_correct\": 436521602, \"id_brier_total\": 4000000000, \"id_ece_permille\": 3, \"id_rc_area_permille\": 879, \"input_digest\": \"a9f70e8ecf84eb3c\", \"params\": 3542, \"rc_area_permille\": 873, \"step_cap\": 1500, \"steps\": 1100, \"train_loss_window_micro\": 437449, \"view\": \"trace\", \"world\": \"null\"}, \"self_model_perm\": {\"auroc_permille\": 352, \"aux_grad_norm_micro\": 407862, \"aux_steps\": 1100, \"aux_weight_milli\": 300, \"best_val_permille\": 862, \"brier_correct\": 1170465635, \"brier_total\": 4000000000, \"calibration_a_milli\": 377, \"calibration_b_milli\": -1031, \"converged\": 1, \"curve_permille\": [862, 862, 859, 860, 859, 858, 858, 856, 852, 856, 851], \"ece_permille\": 229, \"expert_accuracy_permille\": 615, \"id_auroc_permille\": 312, \"id_brier_correct\": 570857586, \"id_brier_total\": 4000000000, \"id_ece_permille\": 6, \"id_rc_area_permille\": 238, \"input_digest\": \"c35fd34f5bdf69d6\", \"params\": 3542, \"rc_area_permille\": 482, \"step_cap\": 1500, \"steps\": 1100, \"train_loss_window_micro\": 484386, \"view\": \"trace\", \"world\": \"task\"}, \"self_model_shuffled\": {\"auroc_permille\": 499, \"brier_correct\": 1258843019, \"brier_total\": 4000000000, \"ece_permille\": 250, \"id_auroc_permille\": 476, \"id_brier_correct\": 711599481, \"id_brier_total\": 4000000000, \"id_ece_permille\": 153, \"id_rc_area_permille\": 180, \"rc_area_permille\": 396, \"view\": \"none\", \"world\": \"task\"}}, \"arms_trained\": 6, \"aux_weight_errors\": 0, \"benchmark\": \"c007\", \"capacity_mismatch_arms\": 0, \"checkpoint_mismatch_arms\": 0, \"controls\": {\"advice_probe\": {\"required_rule_tripped\": true}, \"capacity\": {\"required_rule_tripped\": true}, \"fit_probe\": {\"required_rule_tripped\": true}, \"input_hash\": {\"required_rule_tripped\": true}, \"metric_audit\": {\"required_rule_tripped\": true}, \"outcome_audit\": {\"required_rule_tripped\": true}, \"shuffle_probe\": {\"required_rule_tripped\": true}, \"split_overlap\": {\"required_rule_tripped\": true}, \"treatment_probe\": {\"required_rule_tripped\": true}, \"write_probe\": {\"required_rule_tripped\": true}}, \"convergence_mismatch_arms\": 0, \"coverage_failed\": [], \"cpu_s\": 42, \"environment\": {\"cpu_flags_sha256\": \"19139faa5b3c177a2d253ee9520b13713aee71074562456de06d1ba7833e7890\", \"cpu_model\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"machine\": \"x86_64\", \"pyproject_sha256\": \"2255bd227c27a4d79bd31d5dd21adfa3b1f260e4e9c491715a288ebc6ff51aec\", \"python\": \"3.11.15\", \"threads\": 1, \"torch\": \"2.7.1+cpu\", \"torch_config_sha256\": \"e46186cc4399ea998fbf3c7f5c1d5e7c28eeadf904ab1acdbdf2da0d158ea59e\", \"uv_lock_sha256\": \"3d20af3c90cf233c213b5de5d5e16bee6bccfe78b04adea730db45f196e17ca7\"}, \"error_rate_errors\": 0, \"experiment\": \"C007\", \"falsifiers_failed\": [], \"fit_split_errors\": 0, \"guards_failed\": [], \"hard_failures\": 0, \"harness_gaps\": [], \"head_gap_id_permille\": -1, \"id_error_permille\": 169, \"id_eval_instances\": 4000, \"inert_treatment_arms\": 0, \"input_mismatches\": 0, \"integrity_failed\": [], \"metric_audit_mismatches\": 0, \"model_write_paths\": 0, \"noise_errors\": 0, \"nondeterminism\": 0, \"nonfinite_arms\": 0, \"null_error_permille\": 878, \"null_eval_instances\": 4000, \"outcome_audit_mismatches\": 0, \"permutation_leaks\": 0, \"procedure\": {\"cal_size\": 2000, \"seed_is_declared\": true, \"shape_is_pinned\": true, \"test_size\": 4000}, \"scale\": \"pinned\", \"seed\": 6020, \"shifted_error_permille\": 391, \"shifted_eval_instances\": 4000, \"shuffle_errors\": 0, \"signal_permille\": 39, \"split_overlap\": 0, \"summary\": {\"constant\": {\"brier_milli\": 286, \"id_brier_milli\": 141}, \"own_confidence\": {\"brier_milli\": 240, \"id_brier_milli\": 111}, \"own_confidence_raw\": {\"brier_milli\": 347, \"id_brier_milli\": 146}, \"probe_io\": {\"brier_milli\": 244, \"id_brier_milli\": 111}, \"probe_matched\": {\"brier_milli\": 249, \"id_brier_milli\": 111}, \"probe_matched_null\": {\"brier_milli\": 107, \"id_brier_milli\": 109}, \"probe_matched_shuffled\": {\"brier_milli\": 314, \"id_brier_milli\": 175}, \"self_model\": {\"brier_milli\": 246, \"id_brier_milli\": 111}, \"self_model_noisy\": {\"brier_milli\": 266, \"id_brier_milli\": 150}, \"self_model_null\": {\"brier_milli\": 107, \"id_brier_milli\": 109}, \"self_model_perm\": {\"brier_milli\": 293, \"id_brier_milli\": 143}, \"self_model_shuffled\": {\"brier_milli\": 315, \"id_brier_milli\": 178}}, \"timing_s\": 52, \"treatment_divergence_micro\": 358232, \"unconverged_arms\": [], \"unconverged_judged_arms\": 0}\n",
+  "stderr": "/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/c001-venv/lib/python3.11/site-packages/torch/_subclasses/functional_tensor.py:276: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)\n  cpu = _conversion_method_template(device=torch.device(\"cpu\"))\n",
+  "launch_error": null,
+  "duration_ns": 56748855205
+}

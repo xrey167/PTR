@@ -8,6 +8,9 @@ publish = false
 [dependencies]
 ptr-types = { workspace = true }
 prost = { workspace = true }
+# The digest of an activation frame and of each of its chunks; the same pin ptr-podwire,
+# ptr-ledger and ptr-execwire use, so one hash has one digest.
+sha2 = { version = "=0.11.0", default-features = false }
 
 [build-dependencies]
 prost-build = { workspace = true }

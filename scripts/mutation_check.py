@@ -20,7 +20,11 @@ linked, which cargo writes after every crate's stamp: otherwise the next
 mutation of another crate, and the unmutated rebuild, would still link the
 defect. A
 mutation is *killed* when the harness exits with status 1 and one of its
-expected counters fired. A run that fails only on other counters is recorded as
+expected counters fired. A mutation of the harness's own validity (it makes the
+record stop describing the frozen run) may instead say `expect_exit = 2`: the
+harness then exits 2, which the aggregator reads as INVALID, and the mutation
+is killed when it still prints its record and one of its expected counters
+fired. A run that fails only on other counters is recorded as
 `failed-elsewhere`: the defect may have broken something unrelated first (a
 query that no longer binds, say), which shows nothing about whether the
 harness sees the defect itself. Exiting any other way (a panic, a build
@@ -111,8 +115,9 @@ def load_plan(exp_root: Path) -> dict:
 
 
 def expectation_errors(plan: dict) -> list[str]:
-    """Every mutation must name at least one expected counter, and each must
-    be one of the plan's hard counters."""
+    """Every mutation must name at least one expected counter, each must be
+    one of the plan's hard counters, and `expect_exit`, when present, must be
+    the integer 2 (any other value would be ignored, so it is refused)."""
     hard = set(plan.get("hard_counters", []))
     errors = []
     for mutation in plan.get("mutation", []):
@@ -138,6 +143,10 @@ def expectation_errors(plan: dict) -> list[str]:
         for counter in expected:
             if counter not in hard:
                 errors.append(f"{mutation['name']}: {counter!r} is not a hard counter")
+        if "expect_exit" in mutation:
+            value = mutation["expect_exit"]
+            if type(value) is not int or value != 2:
+                errors.append(f"{mutation['name']}: expect_exit must be the integer 2, not {value!r}")
     return errors
 
 
@@ -244,6 +253,10 @@ def classify(
         return ("failed-elsewhere" if returncode == 2 else "crashed"), fired
     if returncode == 0:
         return "survived", fired
+    if mutation.get("expect_exit") == 2:
+        if returncode == 2 and any(counter in fired for counter in mutation.get("expect", [])):
+            return "killed", fired
+        return "crashed", fired
     if returncode == 1 and hard > 0:
         if any(counter in fired for counter in mutation.get("expect", [])):
             return "killed", fired

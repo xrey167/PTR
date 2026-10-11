@@ -1,0 +1,205 @@
+# E007 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256);
+# no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
+# e007/metrics.rs coverage(), falsifiers() and validity()); a harness test pins this file to those lists, in order, and
+# every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and so a
+# parse error: no decimal literal exists).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON result
+# object, separated by '.' (no key holds a '.', no array is indexed): "bitwise_mismatch_count" is a top-level
+# key and "smuggling_probe_attempts.non_allowlisted_type" the member of an object. A reference that is
+# missing, null, or of the wrong type makes the seed INVALID (it is not a failed rule). A reference compared
+# with an integer literal or another reference must be a JSON integer (not a boolean, not a float); a digest
+# string is compared only under ==. Exact comparisons.
+#
+# Every attempt and case counter is read from an event the run observed: a payload that crossed the PodWire
+# frame codec and was answered, a frame that was reassembled, a tombstone the receiver reports it holds, a
+# ledger commit of a revocation or supersession. None is read from configuration. Rules that hold by
+# construction of the plan and not by measurement, named so a reader does not mistake them for evidence:
+# procedure.split_layer and procedure.layers_above_split (the pinned split, checked against the stack the
+# cases run), activation_frames_crossed and valid_frames_sent at the pinned scale (24 sequences x 8 frames,
+# counted from frames that were really shipped), tombstones_retained_at_saturation and
+# abandoned_frames_in_saturation_case (the saturation case opens and abandons exactly 64 frames and reads the
+# receiver's own count). The measured ones are the verdicts: the typed rejections, the set digests, the
+# stale hits per cell and the bytes compared with the bytes sent.
+#
+# The controls (a naive downstream cache fed a liveness frozen at storing, a reassembler keyed by the upstream
+# chain, an admission by deny-list, an unchunked 16 MiB frame, an assembler that forgets a completed frame)
+# are coverage rules: each must trip, or the probes it shadows prove nothing. Two of them run the real product
+# code with its protection taken away, so they cannot tell that from a product whose protection a defect has
+# already removed.
+#
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies E007 on that seed. Every one is an observed violation by the
+#   product (a protection that did not hold, a typed answer that was not given).
+# validity: a rule that does not hold makes the seed INVALID: the record does not describe the frozen run (the
+#   model pin, the corpus selection, the procedure or the late replay window differs from the pins). These are
+#   the harness's own, never a finding about the product, so they are neither falsifiers nor coverage.
+#
+# Decision. The outcome set is COMPLETED, FALSIFIED, NOT_SHOWN and INVALID. E007 is deterministic and has no
+# sampled margin, so no path ends in NOT_SHOWN; every case of the five seeds ends in exactly one of the other
+# three. Precedence, highest first (VALIDITY FIRST):
+#   1. INVALID for a seed whose validity rule fails, whatever else fired: the run did not follow the
+#      preregistered procedure (a pin, the selection, the procedure or the late window differs), so its product
+#      observations say nothing about the product. Its falsifier failures are listed as ignored and neither
+#      falsify nor make the seed vacuous. A validity failure whose cause also makes a product counter fire (a
+#      receiver built with another reorder window than the pin lets an out-of-window attack through) is
+#      therefore INVALID, not FALSIFIED; the record shows both lists.
+#   2. With every validity rule holding: FALSIFIED if any falsifier rule fails in any readable record, even a
+#      record that is INVALID for another reason (a control that did not trip, a harness gap, a case that could
+#      not run in the same run): a product defect is never turned into INVALID by those (the precedent of L003
+#      and L004, which put the hard failure before the incomplete coverage). Also FALSIFIED if a valid record
+#      fails a coverage rule (a vacuous run); the coverage failures of an INVALID record do not falsify.
+#   3. INVALID if a seed is missing, unreadable or foreign (another benchmark, seed or scale), has a control
+#      that did not trip, a harness gap, or an exit status the rules do not explain (the harness exits 2 when
+#      it cannot run a case: there is no result), or if the mutation evidence is absent or does not count every
+#      mutation killed.
+#   4. COMPLETED iff every seed meets every coverage and validity rule, no falsifier fails, and the mutation
+#      evidence counts every mutation of the plan killed.
+# The harness exit status follows the same order: 2 when a validity rule fails (whatever else fired); with the
+# validity rules holding, 1 when a falsifier fired from an observed product violation (also when a case could
+# not run or a control did not trip in that run), 2 when it cannot run a case or a control did not trip, 1 for a
+# vacuous run, 0 otherwise. A product regression that kills a real-code control without firing any falsifier
+# therefore surfaces as INVALID (exit 2), never as COMPLETED; a mutation that does so is "crashed", not killed.
+version = 1
+experiment = "E007"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "procedure.split_layer >= 1",
+  "procedure.layers_above_split >= 1",
+  "activation_frames_crossed >= 192",
+  "valid_frames_sent >= 192",
+  "downstream_reuse_cases >= 1",
+  "large_frame_cases >= 1",
+  "mislabelled_kv_payload_attempts >= 1",
+  "non_allowlisted_type_attempts >= 1",
+  "kv_sized_allowlisted_smuggling_attempts >= 1",
+  "activation_control_cases >= 1",
+  "shape_validation_rejections >= 1",
+  "positions_length_rejection_attempts >= 1",
+  "unsigned_chunk_attempts >= 1",
+  "chain_mismatch_attempts >= 1",
+  "unbound_stage_attempts >= 1",
+  "global_cap_attempts >= 1",
+  "non_exact_upstream_attempts >= 1",
+  "non_finite_activation_attempts >= 1",
+  "chain_frame_mismatch_attempts >= 1",
+  "boundary_tick_replay_attempts >= 1",
+  "lost_revoke_full_cache_cases >= 1",
+  "duplicate_chunk_attempts >= 1",
+  "out_of_window_attempts >= 1",
+  "bad_chunk_digest_attempts >= 1",
+  "mixed_version_frame_attempts >= 1",
+  "incomplete_frames_over_peer_limit >= 1",
+  "queue_overflow_attempts >= 1",
+  "splice_attempts >= 1",
+  "cross_operation_splice_attempts >= 1",
+  "digest_inconsistency_attempts >= 1",
+  "mislabelled_frame_digest_attempts >= 1",
+  "abandoned_frame_cases >= 1",
+  "abandoned_chunks_sent >= 1",
+  "reassembly_attempts_after_abandon >= 1",
+  "late_chunks_after_abandon_attempts >= 1",
+  "concurrent_abandonment_cases >= 1",
+  "tombstone_saturation_cases >= 1",
+  "new_frames_refused_typed >= 1",
+  "overcapacity_frame_attempts >= 1",
+  "full_frame_replay_attempts >= 1",
+  "cross_session_replay_attempts >= 1",
+  "concurrent_cross_session_assembly_cases >= 1",
+  "expired_deadline_frame_attempts >= 1",
+  "post_abandonment_replay_cases >= 1",
+  "immediate_replay_cases >= 1",
+  "late_window_replay_cases >= 1",
+  "smuggling_probe_attempts.mislabelled_kv_payload >= 1",
+  "smuggling_probe_attempts.non_allowlisted_type >= 1",
+  "smuggling_probe_attempts.kv_sized_allowlisted_smuggling >= 1",
+  "interleaved_frame_pairs >= 1",
+  "interleaved_chunk_switches >= 1",
+  "buffered_bytes_before_abandon >= 1",
+  "tombstones_retained_at_saturation == 64",
+  "abandoned_frames_in_saturation_case == 64",
+  "frames_accepted_after_tombstone_expiry >= 1",
+  "late_window_delays_in_range >= 1",
+  "relabeled_envelope_replay_cases >= 1",
+  "stale_upstream_attempts.revocation >= 1",
+  "inflight_split_request_race_cases.revocation >= 1",
+  "stale_upstream_attempts.supersession >= 1",
+  "inflight_split_request_race_cases.supersession >= 1",
+  "stale_upstream_entries_before_revocation >= 1",
+  "revoke_messages_dropped_or_delayed >= 2",
+  "invalidation_matrix_cases.upstream_stage_generation_normal_revocation >= 1",
+  "invalidation_matrix_cases.upstream_stage_generation_normal_supersession >= 1",
+  "invalidation_matrix_cases.upstream_stage_generation_lag_revocation >= 1",
+  "invalidation_matrix_cases.upstream_stage_generation_lag_supersession >= 1",
+  "invalidation_matrix_cases.upstream_stage_generation_inflight_revocation >= 1",
+  "invalidation_matrix_cases.upstream_stage_generation_inflight_supersession >= 1",
+  "stale_worker_frame_race_cases >= 1",
+  "control_trips.naive_downstream_cache_serves_stale >= 1",
+  "control_trips.chain_keyed_assembler_mixes_frames >= 1",
+  "control_trips.denylist_admits_mislabelled_payload >= 1",
+  "control_trips.unchunked_large_frame_refused_by_podwire >= 1",
+  "control_trips.tombstone_free_assembler_admits_replay >= 1",
+]
+
+falsifiers = [
+  "bitwise_mismatch_count <= 0",
+  "large_frame_reassembled_bytes_mismatch_count <= 0",
+  "large_frame_digest_mismatches <= 0",
+  "wire_kv_handle_count <= 0",
+  "wire_kv_page_bytes <= 0",
+  "kv_pages_installed_from_wire <= 0",
+  "activation_control_kv_installs <= 0",
+  "chain_mismatch_stores <= 0",
+  "non_allowlisted_payloads_admitted <= 0",
+  "smuggling_probes_admitted <= 0",
+  "attempts_without_typed_rejection <= 0",
+  "verdict_mismatches <= 0",
+  "cross_frame_mixing_count <= 0",
+  "buffered_bytes_after_release <= 0",
+  "stale_upstream_kv_served <= 0",
+  "positions_length_mismatches_admitted <= 0",
+  "mislabelled_frame_digests_admitted <= 0",
+  "late_chunks_after_abandon_admitted <= 0",
+  "outputs_after_upstream_invalidation <= 0",
+  "tombstone_evictions_before_retention <= 0",
+  "tombstone_bound_violations <= 0",
+  "cross_operation_splices_admitted <= 0",
+  "replayed_frames_admitted <= 0",
+  "valid_frame_bitwise_mismatches <= 0",
+  "cross_session_replays_admitted <= 0",
+  "duplicate_activation_deliveries <= 0",
+  "expired_frames_admitted <= 0",
+  "abandoned_frame_replays_admitted <= 0",
+  "stale_placement_frames_admitted <= 0",
+  "relabeled_chunks_admitted <= 0",
+  "unbound_stage_frames_admitted <= 0",
+  "global_cap_breaches <= 0",
+  "non_exact_frames_admitted <= 0",
+  "non_finite_frames_admitted <= 0",
+  "chain_frame_mismatches_delivered <= 0",
+  "boundary_tick_replays_admitted <= 0",
+  "cache_slots_held_by_dead_entries <= 0",
+  "unsigned_chunks_admitted <= 0",
+  "invalidation_matrix_stale_hits.upstream_stage_generation_normal_revocation <= 0",
+  "invalidation_matrix_stale_hits.upstream_stage_generation_normal_supersession <= 0",
+  "invalidation_matrix_stale_hits.upstream_stage_generation_lag_revocation <= 0",
+  "invalidation_matrix_stale_hits.upstream_stage_generation_lag_supersession <= 0",
+  "invalidation_matrix_stale_hits.upstream_stage_generation_inflight_revocation <= 0",
+  "invalidation_matrix_stale_hits.upstream_stage_generation_inflight_supersession <= 0",
+  "abandoned_chunks_released >= abandoned_chunks_sent",
+  "frames_with_consistent_whole_frame_digest == valid_frames_sent",
+  "abandoned_chunk_id_set_digest == released_chunk_id_set_digest",
+  "valid_sent_frame_id_set_digest == consistent_digest_frame_id_set_digest",
+]
+
+validity = [
+  "selection_digest_mismatches <= 0",
+  "procedure_mismatches <= 0",
+  "model_pin_mismatches <= 0",
+  "late_window_delays_out_of_range <= 0",
+]

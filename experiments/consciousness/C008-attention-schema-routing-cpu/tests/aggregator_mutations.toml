@@ -1,0 +1,299 @@
+# Defects planted in C008's aggregate.py and criteria.toml by research/cseries/lib/run_agg_mutations.py C008 (with the shared library's plan). Each must fail scripts/tests/test_c008_aggregate.py or the rule-agreement tests.
+
+[[mutation]]
+name = "invalid-no-longer-precedes-a-structural-verdict"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    elif problems or unjudged:
+        verdict = INVALID  # missing"""
+replace = """    elif False:
+        verdict = INVALID  # missing"""
+
+[[mutation]]
+name = "integrity-counters-no-longer-come-first"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    if broken:
+        verdict = INVALID
+        problems.append(f"harness integrity"""
+replace = """    if False:
+        verdict = INVALID
+        problems.append(f"harness integrity"""
+
+[[mutation]]
+name = "a-tripped-structural-counter-is-ignored"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    elif unmet or tripped or static_failed:"""
+replace = """    elif unmet or static_failed:"""
+
+[[mutation]]
+name = "an-unmet-coverage-rule-is-ignored"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    elif unmet or tripped or static_failed:"""
+replace = """    elif tripped or static_failed:"""
+
+[[mutation]]
+name = "failed-static-evidence-is-ignored"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    elif unmet or tripped or static_failed:"""
+replace = """    elif unmet or tripped:"""
+
+[[mutation]]
+name = "uninformative-seeds-are-ignored"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    elif uninformative:
+"""
+replace = """    elif False:
+"""
+
+[[mutation]]
+name = "an-untrained-schema-is-tolerated"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """counts["untrained_schema"] > allowed["untrained_schema"]"""
+replace = """counts["untrained_schema"] > allowed["untrained_schema"] + 99"""
+
+[[mutation]]
+name = "the-untrained-schema-allowance-is-off-by-one"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """counts["untrained_schema"] > allowed["untrained_schema"]"""
+replace = """counts["untrained_schema"] >= allowed["untrained_schema"]"""
+
+[[mutation]]
+name = "the-unconverged-allowance-is-off-by-one"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """counts["unconverged"] > allowed["unconverged"]"""
+replace = """counts["unconverged"] >= allowed["unconverged"]"""
+
+[[mutation]]
+name = "the-gross-control-is-not-judged"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """if not paired["sensitivity"]["gross"]["resolves"]:"""
+replace = """if False:"""
+
+[[mutation]]
+name = "the-graded-control-is-not-judged"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """if not paired["sensitivity"]["graded"]["resolves"]:"""
+replace = """if False:"""
+
+[[mutation]]
+name = "the-null-world-advantage-is-not-judged"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """if not paired["null_world"]["no_advantage"]:"""
+replace = """if False:"""
+
+[[mutation]]
+name = "the-null-world-cost-is-not-judged"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """if not paired["null_world"]["no_cost"]:"""
+replace = """if False:"""
+
+[[mutation]]
+name = "a-refutation-is-no-longer-possible"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """        elif paired["refuted_against"]:"""
+replace = """        elif False:"""
+
+[[mutation]]
+name = "support-needs-no-attribution"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """        elif paired["supported"] and paired["attribution"]["state"] == ATTRIBUTED:"""
+replace = """        elif paired["supported"]:"""
+
+[[mutation]]
+name = "support-needs-no-lower-bound"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """        elif paired["supported"] and paired["attribution"]["state"] == ATTRIBUTED:"""
+replace = """        elif paired["attribution"]["state"] == ATTRIBUTED:"""
+
+[[mutation]]
+name = "support-needs-only-one-comparator"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """"supported": all(item["supports"] for item in judged)"""
+replace = """"supported": any(item["supports"] for item in judged)"""
+
+[[mutation]]
+name = "support-reads-the-upper-bound"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """"supports": bound["lower_bound_permille"] >= margin"""
+replace = """"supports": bound["upper_bound_permille"] >= margin"""
+
+[[mutation]]
+name = "refutation-uses-the-unadjusted-quantile"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """"refutes": adjusted["upper_bound_permille"] < margin"""
+replace = """"refutes": bound["upper_bound_permille"] < margin"""
+
+[[mutation]]
+name = "refutation-uses-the-support-quantile"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """adjusted = agg.bound_of(results, seeds, metric, paired["arm"], other, t_refute)"""
+replace = """adjusted = agg.bound_of(results, seeds, metric, paired["arm"], other, t_support)"""
+
+[[mutation]]
+name = "control-minus-comparator-is-reversed"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """bound = agg.bound_of(results, seeds, metric, paired["arm"], other, t_support)
+        adjusted"""
+replace = """bound = agg.bound_of(results, seeds, metric, other, paired["arm"], t_support)
+        adjusted"""
+
+[[mutation]]
+name = "the-gross-control-reads-the-mean"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """"resolves": gb["lower_bound_permille"] >= gross["margin_permille"]"""
+replace = """"resolves": gb["mean_permille"] >= gross["margin_permille"]"""
+
+[[mutation]]
+name = "the-graded-control-reads-the-mean"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """"resolves": rb["lower_bound_permille"] > graded["min_lower_permille"]"""
+replace = """"resolves": rb["mean_permille"] > graded["min_lower_permille"]"""
+
+[[mutation]]
+name = "the-null-world-ignores-the-forward-direction"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """"no_advantage": forward["lower_bound_permille"] < null["margin_permille"],"""
+replace = """"no_advantage": True,"""
+
+[[mutation]]
+name = "the-null-cost-reads-the-lower-bound"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """"no_cost": backward["upper_bound_permille"] < null["cost_band_permille"]}"""
+replace = """"no_cost": backward["lower_bound_permille"] < null["cost_band_permille"]}"""
+
+[[mutation]]
+name = "attribution-reads-the-upper-bound-for-attributed"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    if bound["lower_bound_permille"] >= margin:
+        return ATTRIBUTED"""
+replace = """    if bound["upper_bound_permille"] >= margin:
+        return ATTRIBUTED"""
+
+[[mutation]]
+name = "attribution-reads-the-lower-bound-for-not-attributed"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    if bound["upper_bound_permille"] < margin:
+        return NOT_ATTRIBUTED"""
+replace = """    if bound["lower_bound_permille"] < margin:
+        return NOT_ATTRIBUTED"""
+
+[[mutation]]
+name = "unconverged-seeds-are-not-counted"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """"unconverged": sum(1 for e in judgements if e.get("unconverged_judged_arms")),"""
+replace = """"unconverged": 0,"""
+
+[[mutation]]
+name = "untrained-schema-seeds-are-not-counted"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """"untrained_schema": sum(1 for e in judgements if e.get("schema_trained") == 0),"""
+replace = """"untrained_schema": 0,"""
+
+[[mutation]]
+name = "the-seed-count-is-not-checked"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    if len(seeds) != int(paired["seeds_required"]):"""
+replace = """    if False:"""
+
+[[mutation]]
+name = "the-mutation-total-is-not-compared-with-the-plan"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    elif plan_size is not None and mutations.get("total") != plan_size:"""
+replace = """    elif False:"""
+
+[[mutation]]
+name = "partial-mutation-kills-are-accepted"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    elif mutations.get("killed") != mutations.get("total"):"""
+replace = """    elif False:"""
+
+[[mutation]]
+name = "missing-seeds-are-not-a-problem"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    if missing:
+        problems.append"""
+replace = """    if False:
+        problems.append"""
+
+[[mutation]]
+name = "a-missing-static-run-is-not-a-problem"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    if static is None:
+        problems.append"""
+replace = """    if False:
+        problems.append"""
+
+[[mutation]]
+name = "duplicate-judgements-are-not-a-problem"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """    if duplicate or extra:
+        problems.append"""
+replace = """    if False:
+        problems.append"""
+
+[[mutation]]
+name = "the-control-role-reads-the-wrong-comparator"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """if i["against"] == "describe_only" and i["supports"]])"""
+replace = """if i["against"] == "schema_free" and i["supports"]])"""
+
+[[mutation]]
+name = "the-verdict-never-recommends-completed"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """"recommended_status": {COMPLETED: "completed", FALSIFIED: "failed"}.get(verdict),"""
+replace = """"recommended_status": {FALSIFIED: "failed"}.get(verdict),"""
+
+[[mutation]]
+name = "the-blind-reference-reads-the-wrong-arm"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/aggregate.py"
+find = """paired["blind_reference_arm"], other, t_support)"""
+replace = """paired["attribution_arm"], other, t_support)"""
+
+[[mutation]]
+name = "criteria-headroom-guard-is-vacuous"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/criteria.toml"
+find = """  "headroom_permille >= 40","""
+replace = """  "headroom_permille >= 0","""
+
+[[mutation]]
+name = "criteria-comparator-guard-is-vacuous"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/criteria.toml"
+find = """  "comparator_above_random_permille >= 100","""
+replace = """  "comparator_above_random_permille >= 0","""
+
+[[mutation]]
+name = "criteria-margin-is-halved"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/criteria.toml"
+find = """margin_permille = 25
+t_support"""
+replace = """margin_permille = 12
+t_support"""
+
+[[mutation]]
+name = "criteria-refutation-quantile-is-the-plain-one"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/criteria.toml"
+find = """t_refute = "2.539483""""
+replace = """t_refute = "1.729133""""
+
+[[mutation]]
+name = "criteria-drops-the-history-router-comparator"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/criteria.toml"
+find = """"describe_only", "history_router"]"""
+replace = """"describe_only"]"""
+
+[[mutation]]
+name = "criteria-drops-the-describe-only-comparator"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/criteria.toml"
+find = """"heuristic", "describe_only", "history_router"]"""
+replace = """"heuristic", "history_router"]"""
+
+[[mutation]]
+name = "criteria-null-cost-band-is-loosened"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/criteria.toml"
+find = """cost_band_permille = 50"""
+replace = """cost_band_permille = 500"""
+
+[[mutation]]
+name = "criteria-attribution-compares-the-wrong-arm"
+file = "experiments/consciousness/C008-attention-schema-routing-cpu/criteria.toml"
+find = """attribution_arm = "control_shuffled""""
+replace = """attribution_arm = "schema_free_epsilon""""

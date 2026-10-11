@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "experiment_id": "C004",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v114",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16874930176
+  },
+  "hardware_profile_record": {
+    "path": "hardware/a0-cpu-4core.toml",
+    "sha256": "929ce6339da92df03113c4176a59155336f123e7aed9c771db1614d0a99a0c1f",
+    "contents": {
+      "id": "a0-cpu-4core",
+      "os": "Ubuntu 24.04.4 LTS, Linux 6.18.44 x86_64",
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU (4 cores, 1 thread per core, 1 socket); AVX, AVX2, AVX-512F/BW/CD/DQ/VL/VNNI",
+      "ram_gib": 15.7,
+      "gpu": "none",
+      "gpu_memory_gib": 0,
+      "precision": [
+        "fp32"
+      ],
+      "notes": "Shared cloud container: timing is noisy and is recorded as a diagnostic only. Floating-point results are reproducible bit for bit only on this CPU feature set with the same binary, because the gemm kernel dispatches on AVX-512."
+    },
+    "unspecified_fields": []
+  },
+  "git_sha": "24ee9cd9462b576611aa5d41e636d5ae5acdf0c8",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "C004",
+    "status": "prepared",
+    "hypothesis": "[CPU] Indicator RPT-1 (algorithmic recurrence) as a functional property; RPT-2 is not targeted (doc 38): does algorithmic recurrence with a persistent latent state across steps (the latent recurrence of docs/architecture/01-ptr-core.md, model/burn-a0 latent_steps) integrate multi-step evidence better than a parameter- and FLOP-matched feed-forward stack with unshared layers, on a task whose answer depends on a state carried across steps? Toy task: a modular counter (the running sum modulo six of a sequence of symbols, supervised after every step); training sequences have 2 to 6 steps, the answer is asked at 6 steps (in distribution), at 12 steps (primary, twice the longest trained), 18 and 24. Arms: a gated recurrent net with a carried state; a causal feed-forward stack of unshared attention layers with relative-position bias (parameters matched within 2% and FLOPs within 10% at 6 steps, the depth, slope scale and learning rate tuned on pilot seeds with recorded rules); the recurrent net with the carried state reset at every step (ablation, a floor by construction). An extrapolation-removed control: the same stack trained with the 12-step length in its pool must recover more than half of the recurrent arm's advantage. Sensitivity controls: the recurrent net trained on permuted labels (gross), the trained recurrent net on corrupted inputs (graded, a known deficit of the margin's order); null worlds in which recurrence can have no advantage (permuted labels for both arms, and the sum of the last two steps only). Stage A of the CPU part of C004; the GPU stage B (recurrent state in OLMoE-class experts) is not registered here. Targets indicator RPT-1 only (not RPT-L1 or RPT-L2). Functional mechanism test only: it says nothing about consciousness or about language models.",
+    "metrics": "accuracy at 12 steps (primary); accuracy at 6 (in distribution), 18 and 24 steps; accuracy against the number of steps (6, 9, 12, 15, 18, 24; descriptive); parameter and FLOP counts per arm; state-carryover probe (does the read-out change when the first step is replaced: recurrent, feed-forward, reset-state; the true answer always changes); paired per-seed differences with one-sided 95% t bounds (lower and upper) over fourteen seeds; validity guards; sensitivity controls; null worlds",
+    "baseline": "parameter- and FLOP-matched causal feed-forward stack with unshared layers (judged); the recurrent net with the carried state reset every step (judged, a floor by construction); the same stack trained on the 12-step length (extrapolation-removed control); the label-permuted and corrupted-input recurrent nets as gross and graded sensitivity controls; null worlds with permuted labels and with a two-step window",
+    "falsification": "Four outcomes, decided in advance (PREREGISTRATION.md, criteria.toml). COMPLETED if the guards and controls hold and both lower one-sided 95% t bounds over the fourteen paired seed differences of 12-step accuracy (recurrent minus feed-forward, recurrent minus reset-state) are at least 100 per mille. FALSIFIED (refuted) only if the guards and controls hold and some Bonferroni upper bound is below 100 per mille; and structurally FALSIFIED if a structural counter is above 0 on a valid seed (the reset-state ablation carries information over an early step, the feed-forward stack is not causal, nondeterminism) or a coverage rule fails. NOT_SHOWN if the bounds straddle the margin. INVALID, never falsified, if parameter or FLOP counts differ beyond the pinned tolerance (2% and 10%) or any other integrity counter is above 0, the feed-forward comparator is saturated (at or above 980 per mille) or did not learn the training distribution (below 800) on more than one seed, the recurrent arm did not, a judged arm hit the step cap on more than one seed, a sensitivity control, the extrapolation-removed control or a null world is not resolved as required, or the seeds or mutation evidence are missing; INVALID precedes every FALSIFIED and COMPLETED branch.",
+    "hardware_profile": "hardware/a0-cpu-4core.toml",
+    "entrypoint": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/cseries/c004/harness.py --benchmark c004 --seed <seed>",
+    "preflight": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/cseries/c004/harness.py --benchmark c004 --preflight",
+    "seeds": [
+      5001,
+      5002,
+      5003,
+      5004,
+      5005,
+      5006,
+      5007,
+      5008,
+      5009,
+      5010,
+      5011,
+      5012,
+      5013,
+      5014
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "design": "../../../docs/architecture/38-consciousness-indicators.md",
+    "preregistration_sha256": "5e5e63b59d6945c37d52c3487ff729fa73ff495ccc6be243266ea5fafc3c2ab2",
+    "preregistration_rules_sha256": "867eb8ab0147774bdaa86a391cb0f234923fd1910c8de067ac8eeeff9e72fd91"
+  },
+  "manifest_sha256": "3e66badcb5e794675e9c5bf7ddbcbfd90241eb8fb5d4a27240ecc10a48a6c0d6",
+  "cargo_lock_sha256": "f5702686d1242e6a9e1222a06afabc4aedcef7b34aabcf385733868a7a79cbcd",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/a0-cpu-4core.toml",
+  "status": "prepared",
+  "prepared_at": "20261011T124607.156086Z"
+}
