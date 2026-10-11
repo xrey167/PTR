@@ -31,7 +31,7 @@ id = "redpanda-kafka"
 source = "external"
 status = "to-evaluate"
 evidence = []
-note = "owner licence decision required (source-available non-OSI licence, to be confirmed) and needs a container or cluster; not to be selected or run; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
+note = "Redpanda (BSL, source-available) not used (owner-delegated decision 2026-10-11, reversible); event streaming stays on the open candidates; see evaluations/BATCH_DECISIONS.md section Owner delegation decisions (2026-10-11)"
 
 [[candidate]]
 id = "postgres-projection-event-log"

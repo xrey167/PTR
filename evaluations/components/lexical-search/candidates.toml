@@ -42,6 +42,6 @@ evidence = []
 [[candidate]]
 id = "paradedb-pg-search"
 source = "external"
-status = "to-evaluate"
+status = "rejected"
 evidence = []
-note = "owner licence decision required (AGPL-3.0); must not be selected or run until the owner decides; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
+note = "licence (AGPL-3.0), owner-delegated decision 2026-10-11, reversible; not selected, not run, not vendored; see evaluations/BATCH_DECISIONS.md section Owner delegation decisions (2026-10-11)"

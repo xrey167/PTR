@@ -8,8 +8,9 @@ reference code in `ptr-pods` and `ptr-runtime` (for example
 adapter and no GPU path, and the `candle-cuda` feature is not compiled in CI. Every claim about
 speed-up or hit rate is an **experiment** with a falsification rule (section E). Evidence
 status is in section E.1: R005 (Exact half, now marked stale), R006, R007, R009, R010 and
-R012 are `completed` in `experiments/registry.toml` on this branch, R008, E006 and E007 are
-`planned` there, and no experiment of this document has produced a GPU or engine result.
+R012 are `completed` in `experiments/registry.toml` on this branch, R008 and E006 are `planned`
+there, E007 is `planned` there but frozen on its own branch (tag `e007-prereg`, commit 3c1076b9, branch
+`claude/dev-e007`, registry `prepared` there) with results pending, and no experiment of this document has produced a GPU or engine result.
 Nothing here changes the authority order of ADR-0002: the ledger stays the only
 authority, and a KV block is derived state under invariants #3, #5 and #17.
 
@@ -602,7 +603,7 @@ R011's matrix is in doc 37, section 3.
 | R011 self-modification-safety | completed | COMPLETED; 43 of 43 invalidation-matrix cells with 0 stale hits (STATUS.md); the base-model revocation case is the test cited in section D (doc 37, section 3 has the matrix) | CPU reference, public `PtrRuntime` API |
 | R008 lossy-kv-tier | planned | no outcome | design only |
 | E006 engine-prefix-reuse | planned | no outcome | GPU and engine, not built |
-| E007 split-pod-kv | planned | no outcome; CPU test in progress, not a result | CPU test first, engine and GPU later |
+| E007 split-pod-kv | `planned` on this branch; `prepared` on `claude/dev-e007` (tag `e007-prereg`, commit 3c1076b9; `results/` holds only `.gitkeep` there) | frozen, results pending: no outcome, not a result | CPU test first, engine and GPU later |
 
 Everything else in this document (engine adapter, GPU numerics, speed-up and hit-rate claims
 on a real model) has no result. A completed row is a statement about the CPU reference path.

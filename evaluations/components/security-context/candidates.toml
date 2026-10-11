@@ -25,7 +25,7 @@ id = "brin-signal"
 source = "external"
 status = "to-evaluate"
 evidence = []
-note = "external service, unidentified; deferred (infrastructure); see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
+note = "external service, unidentified; marked not obtainable by owner-delegated decision 2026-10-11 (no substitute is guessed); see evaluations/BATCH_DECISIONS.md section Owner delegation decisions (2026-10-11)"
 
 [[candidate]]
 id = "custom-scanners"

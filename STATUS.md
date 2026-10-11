@@ -2,6 +2,18 @@
 
 PTR is a **compiling architecture/research prototype**, not yet a complete model/runtime product and not yet evidence of superiority over strong baselines.
 
+## Summary of the evidence state (final docs pass, 2026-10-11)
+
+Sources: component count from [docs/components/STATUS.md](docs/components/STATUS.md) (33 components); registry status from `experiments/registry.toml` on this branch (104 entries: 23 `completed`, 2 `failed`, 31 `prepared`, 37 `planned`, 11 `superseded`); verdicts from each experiment's `results/run.json`. A registry status is not a verdict: C001 and M008 keep `prepared` although they have a verdict, and several `completed` M-series records are INCONCLUSIVE.
+
+- **Completed (verdict COMPLETED, `results/run.json`):** F007 vcw-loop (simulated experts, mechanism check), C004 recurrent-integration (counter toy, extrapolation only), and the earlier S001, S002, R001, Q002, L001-v2, F001, F002, F003, R005 (stale), R006, R007, R009, R010, R011, R012. L003 and L004 carry the verdict `hard-pass` and S003's `run.json` has no `verdict` key (completed per its STATUS line). Details in the lines below.
+- **Falsified:** C007 metacognitive-self-model-cpu and C008 attention-schema-routing-cpu (registry `failed`, verdict FALSIFIED); M008 fast-weight-memory (FALSIFIED on four valid seeds, seed 17 interrupted, registry `prepared`, `results/OUTCOME.md`).
+- **Not shown:** C001 global-workspace (verdict NOT_SHOWN, registry `prepared`). M001/M002/M003-v4 are INCONCLUSIVE (no positive claim).
+- **Invalid:** Q003-v2 postgres-hybrid (INVALID, incomplete: seeds 43/71/101 never ran and seed 29 stopped by owner decision; STATUS line on branch `claude/dev-q003v3`, commit 97171787; not merged into this tree, whose registry has no Q003-v2).
+- **Frozen, results pending (frozen on their own branches, absent from this tree's registry as `prepared`):** E007 split-pod-kv (tag `e007-prereg`, commit 3c1076b9, branch `claude/dev-e007`) and R013 deferred-self-modification-authority (tag `r013-prereg`, commit fc39d4bf, branch `claude/dev-r013`). No `results/run.json` exists on either; no outcome is claimed.
+- **Built to freeze-ready, not frozen:** L002 raft-recovery (branch `claude/dev-l002-r013`, `PREREGISTRATION.md` present, no freeze tag) and Q003-v3 postgres-hybrid (branch `claude/dev-q003v3`, successor of Q003-v2, no freeze tag). **[HEAD TO FILL: freeze tag and commit for L002 and Q003-v3, and E007, R013, L002, Q003-v3 outcomes once their `results/run.json` exists and is merged; until then they have no outcome.]**
+- **Planned:** every other registry entry with status `planned`, including the GPU experiments C002, C003, C005, C006, F004-F006, M004-M007, M013 and E004-E006.
+
 ## Implemented and validated
 
 - 33 Rust workspace crates plus four binaries (`ptr-bench`, `ptr-worker`, `ptrctl`, `ptrd`), including typed file/environment/CLI configuration and a central `ptr-runtime` orchestrator; [docs/components/STATUS.md](docs/components/STATUS.md) is the generated inventory and the authority for the count (33 components: 1 foundation, 21 prototype, 1 research-scaffold, 10 scaffold, as generated on this branch; `crates/` holds exactly those 33 `ptr-*` crates, the four binaries are not components)
@@ -63,13 +75,14 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 ### In progress (no outcome yet; nothing below is evidence)
 
-The registry on this branch (`experiments/registry.toml`) lists E007, C004, L002, R013 and Q003 as `planned`; work on the following runs on separate branches and none has a recorded outcome.
+F007, C004, C007 and C008 are no longer in progress: their outcomes are the lines above. The registry on this branch lists E007, L002, R013 and Q003 as `planned`; the runs below live on separate branches and none has a recorded outcome.
 
-- **F007 vcw-loop** (whole verifier-closed loop against a trained softmax gate and best-of-N, simulated experts): frozen at tag `f007-prereg` (branch `claude/dev-vcw-x`); no confirmatory result in the repository yet. Not in this branch's registry. Pilot numbers are not evidence.
-- **Q003-v2 postgres-hybrid**: frozen at tag `q003v2-prereg` on branch `claude/dev-q003` (registry there: `prepared`); no outcome. The original Q003 is `planned` in this branch's registry and is superseded by Q003-v2 (frozen at `q003v2-prereg` on `claude/dev-q003`, no result yet).
-- **C004 recurrent-integration, C007 metacognitive-self-model-cpu, C008 attention-schema-routing-cpu**: built to freeze-ready on branch `claude/dev-c234`; C004 is `planned` in this branch's registry and C007 and C008 are not registered here, so none is frozen as far as this branch shows. No seed of a declared set has been run.
-- **E007 split-pod-kv** (CPU test of the split-Pod activation transport, `planned` here), **L002 raft-recovery** and **R013 deferred-self-modification-authority** (both `planned` here): in progress on branches `claude/dev-e007` and `claude/dev-l002-r013`; no outcome.
-- **Component batch decisions B1-B8** ([evaluations/BATCH_DECISIONS.md](evaluations/BATCH_DECISIONS.md), 2026-10-11): decisions about what to run, not a selection. No candidate is `preferred` and no winner exists without measured evidence; no seed was run for that document; the host is not decision-grade (shared, no GPU), so durable-write numbers are diagnostic only. Owner licence decisions are open for the candidates it marks OWNER LICENCE DECISION REQUIRED (for example nemo-relay's MIT-0 dependency, the AGPL retrieval candidates, lancedb's MPL-2.0 dependency, redpanda). No protocol or batch bench workspace exists yet, so no external candidate can be run by the runner.
+- **E007 split-pod-kv** (CPU test of the split-Pod activation transport): frozen, results pending. Tag `e007-prereg` (commit 3c1076b9, "freeze preregistration, status prepared") on `claude/dev-e007`; `results/` holds only `.gitkeep` there.
+- **R013 deferred-self-modification-authority**: frozen, results pending. Tag `r013-prereg` (commit fc39d4bf) on `claude/dev-r013`; `results/` holds only `.gitkeep` there.
+- **L002 raft-recovery**: built to freeze-ready, not frozen (branch `claude/dev-l002-r013`; `PREREGISTRATION.md` present, registry `planned`, no results). **[HEAD TO FILL: freeze status]**
+- **Q003-v3 postgres-hybrid** (successor of Q003-v2, harness fix with unchanged thresholds): built to freeze-ready, not frozen (branch `claude/dev-q003v3`, no results). **[HEAD TO FILL: freeze status]**
+- **Q003-v2 postgres-hybrid: stopped, INVALID (incomplete).** Frozen at `q003v2-prereg` on `claude/dev-q003`; seed 17 ran to exit 0 (about 8.5 hours on the shared CPU), seed 29's record is kept as written (status `started`), seeds 43/71/101 were not run, so no aggregate exists and nothing is claimed about hybrid retrieval. The owner stopped it and chose a successor (Q003-v3). The first diagnosis, a pipe deadlock between `ptr-bench` and the BM25 driver, was wrong: the successor channel's process snapshot shows idle reader threads and a strong arm (cross-encoder, four torch threads on an oversubscribed four-core host) that took 57-877 s per query. Thread oversubscription is the most likely cause of seed 29's 13 hours; it is not proven for seed 29. The v2 harness could not tell slow from stuck, which Q003-v3 closes with typed exit-2 stops. Sources: STATUS.md lines on `claude/dev-q003v3` (commit 97171787) and `q003v2-hang-diagnosis.md` in the Q003-v3 directory there.
+- **Component batch decisions B1-B8** ([evaluations/BATCH_DECISIONS.md](evaluations/BATCH_DECISIONS.md), 2026-10-11): decisions about what to run, not a selection. No candidate is `preferred` and no winner exists without measured evidence; no seed was run for that document; the host is not decision-grade (shared, no GPU), so durable-write numbers are diagnostic only. The owner delegated the open licence and install questions on 2026-10-11; the decisions are in the section "Owner delegation decisions (2026-10-11)" of that document (AGPL candidates not used, MIT-0 only when built, MPL exception deferred, Redpanda not used). No protocol or batch bench workspace exists yet, so no external candidate can be run by the runner.
 
 ### M001/M002 paired evidence freeze
 
@@ -138,7 +151,7 @@ The registry on this branch (`experiments/registry.toml`) lists E007, C004, L002
   around the pinned decider's output without changing a metric or verdict
   (`DEVIATIONS.md` D2, owner decision). `M003-v3` is `superseded` (owner decision
   2026-10-10, `DEVIATIONS.md` D3) by the successor study `A0-baseline-v3-m003`
-  (`M003-v4`, registered `planned`, not yet frozen or run; it reuses the
+  (`M003-v4`, completed INCONCLUSIVE, see its line above; it reuses the
   `M003-v3-sweep` learning rates and does not pool any M003-v3 seed).
 
 ## Current research/implementation gap
