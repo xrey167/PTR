@@ -18,7 +18,7 @@
 //! * **A read-back of the last requests.** `GET /v1/vcw/traces/{id}` returns the trace of a
 //!   finished request (steps, finding codes, routed Pods with support and propensity, budget
 //!   spent) and a summary of the ledger events it committed (read from the ledger when the request finished; the runtime lock is never taken by a query); the last 64
-//!   requests are retained in memory. Observability only, no authority; `make vcw-demo` uses it.
+//!   requests are retained in memory. A request that is still running (its trace is stored once the loop has finished, before admission) reads `outcome: "running"` and `ledger: null`; both are filled when it ends. The `bytes` and `digest` of an event come from its canonical encoding (`ptr_ledger::encoded_event`), not from a rendering of it. Observability only, no authority; `make vcw-demo` uses it.
 //! * **Off by default.** The route exists only on a [`ServerState`] given a [`VcwService`]
 //!   (`ServerState::with_vcw`); every other route, type and signature is unchanged.
 //! * **No authority path of its own.** An accepted answer is committed by the runtime's normal
@@ -130,7 +130,8 @@ async fn handle(
 /// `GET /v1/vcw/traces/{id}`: the trace of a finished request (rounds, finding codes, the routed
 /// Pods with their propensity, the budget spent) and a summary of the ledger events it committed
 /// (index, kind, size, digest; never their content). 404 for an unknown request or one no longer
-/// retained. It reads only the bounded in-memory store, never the runtime lock, so it answers while
+/// retained. A request still running reads `outcome` `"running"` and `ledger` `null` (the ledger
+/// summary is stored when it ends); `bytes` is the size of the event's canonical encoding. It reads only the bounded in-memory store, never the runtime lock, so it answers while
 /// a long request runs and needs no admission slot (the store's own lock is held for a clone of
 /// small JSON only). Read-only; the same loopback-only caveat as the fact kind applies, because the
 /// trace names finding codes.

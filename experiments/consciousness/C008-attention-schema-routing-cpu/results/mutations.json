@@ -1,0 +1,500 @@
+{
+  "experiment_id": "C008",
+  "git_sha": "eb208acbbeea693991e9f436b6743a570a21fe93",
+  "interpreter": "3.11.15",
+  "killed": 42,
+  "machine": "x86_64",
+  "mutations": [
+    {
+      "counters": [
+        "describe_only_influence"
+      ],
+      "exit": 1,
+      "expected": [
+        "describe_only_influence"
+      ],
+      "file": "research/cseries/c003a/c008_model.py",
+      "name": "describe-only-router-reads-the-schema",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "authority_leaks"
+      ],
+      "exit": 1,
+      "expected": [
+        "authority_leaks"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "schema-writes-the-environment",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "nondeterminism"
+      ],
+      "exit": 1,
+      "expected": [
+        "nondeterminism"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "determinism-seed-dropped",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "param_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "param_mismatch_arms"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "param-target-doubled",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "flop_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "flop_mismatch_arms"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "flop-target-doubled",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "stream_overlap"
+      ],
+      "exit": 2,
+      "expected": [
+        "stream_overlap"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "evaluation-stream-reuses-training",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "stream_overlap"
+      ],
+      "exit": 2,
+      "expected": [
+        "stream_overlap"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "validation-stream-reuses-training",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "reward_audit_mismatches",
+        "oracle_violations"
+      ],
+      "exit": 2,
+      "expected": [
+        "reward_audit_mismatches",
+        "oracle_violations"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "verifier-ignores-capacity",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "reward_audit_mismatches"
+      ],
+      "exit": 2,
+      "expected": [
+        "reward_audit_mismatches"
+      ],
+      "file": "research/cseries/c003a/c008_task.py",
+      "name": "reference-verifier-off-by-one",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "oracle_violations"
+      ],
+      "exit": 2,
+      "expected": [
+        "oracle_violations"
+      ],
+      "file": "research/cseries/c003a/c008_task.py",
+      "name": "oracle-ignores-the-secondary-expert",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "schedule_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "schedule_errors"
+      ],
+      "file": "research/cseries/c003a/c008_task.py",
+      "name": "dwell-doubled-in-the-generator",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "nondeterminism",
+        "control_influence_hits",
+        "history_router_blind",
+        "nonfinite_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "nonfinite_arms"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "loss-is-infinite",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "checkpoint_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "checkpoint_mismatch_arms"
+      ],
+      "file": "research/cseries/lib/train.py",
+      "name": "best-checkpoint-not-restored",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "convergence_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "convergence_mismatch_arms"
+      ],
+      "file": "research/cseries/lib/train.py",
+      "name": "converged-flag-always-true",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "epsilon_rate_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "epsilon_rate_errors"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "epsilon-rate-ignored",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "shuffle_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "shuffle_errors"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "shuffle-returns-the-real-history",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "arms_trained"
+      ],
+      "exit": 1,
+      "expected": [
+        "arms_trained"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "a-null-arm-is-not-trained",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "eval_instances",
+        "null_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "eval_instances",
+        "null_eval_instances"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "evaluation-streams-halved",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "null_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "null_eval_instances"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "null-evaluation-stream-halved",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "control_influence_hits"
+      ],
+      "exit": 2,
+      "expected": [
+        "control:influence_probe",
+        "control_influence_hits"
+      ],
+      "file": "research/cseries/c003a/c008_model.py",
+      "name": "control-ignores-the-schema-output",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:stream_overlap"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "overlap-detector-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:param_mismatch"
+      ],
+      "file": "research/cseries/lib/common.py",
+      "name": "param-mismatch-detector-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:flop_mismatch"
+      ],
+      "file": "research/cseries/lib/common.py",
+      "name": "flop-mismatch-detector-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:reward_audit"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "reward-audit-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:authority_probe"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "authority-digest-ignores-the-capacity",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "control_influence_hits"
+      ],
+      "exit": 2,
+      "expected": [
+        "control:describe_probe",
+        "control:influence_probe"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "describe-probe-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:headroom"
+      ],
+      "file": "research/cseries/c003a/c008_rules.py",
+      "name": "headroom-sign-flipped",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:schema_trained"
+      ],
+      "file": "research/cseries/c003a/c008_rules.py",
+      "name": "schema-trained-ignores-the-floor",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:schema_trained"
+      ],
+      "file": "research/cseries/c003a/c008_rules.py",
+      "name": "gain-over-persistence-sign-flipped",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:unconverged_arms"
+      ],
+      "file": "research/cseries/c003a/c008_rules.py",
+      "name": "unconverged-guard-ignores-the-comparators",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:rate_error"
+      ],
+      "file": "research/cseries/c003a/c008_rules.py",
+      "name": "rate-error-only-checks-one-side",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:shuffle_error"
+      ],
+      "file": "research/cseries/c003a/c008_rules.py",
+      "name": "shuffle-error-threshold-ignored",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:schedule_error"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "schedule-error-counts-the-wrong-side",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:flop_formulas"
+      ],
+      "file": "research/cseries/c003a/c008_model.py",
+      "name": "batch-flops-miss-the-schema",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:param_formulas"
+      ],
+      "file": "research/cseries/c003a/c008_model.py",
+      "name": "total-params-miss-the-schema",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:bias_sign"
+      ],
+      "file": "research/cseries/c003a/c008_model.py",
+      "name": "balancer-bias-moves-with-the-load",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:bias_only_heuristic"
+      ],
+      "file": "research/cseries/c003a/c008_model.py",
+      "name": "every-arm-has-a-balancer",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:schema_detached"
+      ],
+      "file": "research/cseries/c003a/c008_model.py",
+      "name": "control-feeds-the-schema-with-gradient",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "history_router_blind"
+      ],
+      "exit": 2,
+      "expected": [
+        "history_router_blind"
+      ],
+      "file": "research/cseries/c003a/c008_model.py",
+      "name": "history-router-ignores-the-history",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:history_probe"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "history-probe-blinded",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "param_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "param_mismatch_arms"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "history-router-width-doubled",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "nondeterminism"
+      ],
+      "exit": 1,
+      "expected": [
+        "nondeterminism"
+      ],
+      "file": "research/cseries/c003a/harness.py",
+      "name": "initial-weights-are-not-seeded",
+      "result": "killed"
+    }
+  ],
+  "note": "planted in a throwaway copy at a reduced scale with the interpreter that ran this script (the locked environment's)",
+  "runner_args": [
+    "--set",
+    "max_steps=300",
+    "--set",
+    "max_steps_null=200",
+    "--set",
+    "eval_every=50",
+    "--set",
+    "patience=4"
+  ],
+  "subcommand": "c008",
+  "torch": "2.7.1+cpu",
+  "total": 42
+}

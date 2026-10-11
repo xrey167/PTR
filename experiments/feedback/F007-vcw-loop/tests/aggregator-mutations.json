@@ -1,0 +1,98 @@
+{
+ "killed": 23,
+ "total": 23,
+ "mutations": [
+  {
+   "name": "verdict-bands-swap-bounds",
+   "result": "killed"
+  },
+  {
+   "name": "completed-needs-only-one-baseline",
+   "result": "killed"
+  },
+  {
+   "name": "falsified-by-the-margin-removed",
+   "result": "killed"
+  },
+  {
+   "name": "invalid-no-longer-first",
+   "result": "killed"
+  },
+  {
+   "name": "interval-uses-the-wrong-variance",
+   "result": "killed"
+  },
+  {
+   "name": "t-quantile-is-wrong",
+   "result": "killed"
+  },
+  {
+   "name": "equivalence-ignores-the-upper-bound",
+   "result": "killed"
+  },
+  {
+   "name": "shuffled-control-is-inverted",
+   "result": "killed"
+  },
+  {
+   "name": "best-of-n-control-is-dropped",
+   "result": "killed"
+  },
+  {
+   "name": "oracle-control-is-dropped",
+   "result": "killed"
+  },
+  {
+   "name": "model-agreement-is-ignored",
+   "result": "killed"
+  },
+  {
+   "name": "ceiling-and-floor-are-ignored",
+   "result": "killed"
+  },
+  {
+   "name": "a-missing-key-crashes-instead-of-invalid",
+   "result": "killed"
+  },
+  {
+   "name": "workspace-secondary-reads-the-primary-world",
+   "result": "killed"
+  },
+  {
+   "name": "l3-secondary-ignores-the-population",
+   "result": "killed"
+  },
+  {
+   "name": "untested-contrasts-are-labelled-no-effect",
+   "result": "killed"
+  },
+  {
+   "name": "secondary-verdict-ignores-the-upper-bound",
+   "result": "killed"
+  },
+  {
+   "name": "frozen-confidence-is-unchecked",
+   "result": "killed"
+  },
+  {
+   "name": "frozen-margin-is-unchecked",
+   "result": "killed"
+  },
+  {
+   "name": "source-digests-are-not-compared",
+   "result": "killed"
+  },
+  {
+   "name": "source-digest-is-not-required",
+   "result": "killed"
+  },
+  {
+   "name": "first-draft-differences-are-ignored",
+   "result": "killed"
+  },
+  {
+   "name": "a-tripped-falsifier-no-longer-falsifies",
+   "result": "killed"
+  }
+ ]
+}

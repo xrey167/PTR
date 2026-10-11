@@ -12,7 +12,7 @@ communication followed by a per-module update. The schemes differ only in the co
 Arms are `ARM_SPECS` entries: the scheme plus the knobs that make the ablations (competition off =
 soft write over all modules; capacity off = as many slots as training modules; bandwidth-matched
 pairwise = value width reduced so that the values stored equal the slots' content; a crippled
-all-to-all with one round, the sensitivity control). The update-network width is chosen per arm so
+all-to-all with one round and a weight-decayed all-to-all, the sensitivity controls). The update-network width is chosen per arm so
 that parameter counts agree (`match_width`).
 """
 
@@ -34,6 +34,12 @@ ARM_SPECS: dict[str, dict] = {
     "no_comm": {"scheme": "no_comm"},
     "competition_off": {"scheme": "workspace", "top_k": 10**6},
     "capacity_off": {"scheme": "workspace", "slots": "n_train"},
+    # Sparse pairwise attention: each query keeps its top-k keys, k = the workspace's slot count, so that a module's incoming
+    # message is a mix of as many values as a workspace read mixes slots (read-side bandwidth matched).
+    "sparse_all_to_all": {"scheme": "all_to_all", "sparse": True},
+    # Sensitivity controls: a graded handicap (the pairwise net with L2 weight decay, `arm_weight_decay` in the configuration: an
+    # over-regularised all-to-all; the structure is all_to_all's) and a gross one (one round: the cue cannot reach the selection).
+    "weak_all_to_all": {"scheme": "all_to_all"},
     "crippled_all_to_all": {"scheme": "all_to_all", "rounds": 1},
 }
 
@@ -51,6 +57,7 @@ class Net(nn.Module):
         top_k: int,
         out_hidden: int,
         d_value: int | None = None,
+        sparse_k: int | None = None,
     ) -> None:
         super().__init__()
         if scheme not in SCHEMES:
@@ -58,6 +65,7 @@ class Net(nn.Module):
         self.scheme, self.rounds, self.d = scheme, rounds, d
         self.slots, self.top_k = slots, top_k
         self.d_value = d_value or d
+        self.sparse_k = sparse_k
         self.encoder = nn.Linear(d_in, d)
         self.reporter_init = nn.Parameter(torch.randn(d) * 0.1)
         self.norm = nn.LayerNorm(d)
@@ -107,8 +115,13 @@ class Net(nn.Module):
         q, k, v = self.aq(h), self.ak(h), self.av(h)
         scores = torch.einsum("bmd,bnd->bmn", q, k) / math.sqrt(self.d)
         scores = scores.masked_fill(~alive[:, None, :], float("-inf"))
-        attn = torch.softmax(scores, dim=-1)
+        if self.sparse_k is not None:
+            top = scores.topk(min(self.sparse_k, scores.shape[-1]), dim=-1)
+            scores = torch.full_like(scores, float("-inf")).scatter(-1, top.indices, top.values)
+        attn = torch.nan_to_num(torch.softmax(scores, dim=-1), nan=0.0)
         self.trace["pairwise"] = attn.detach()
+        if self.sparse_k is not None:
+            self.trace["write_sparse"] = attn.detach()
         return self.ao(torch.einsum("bmn,bnd->bmd", attn, v))
 
     # -- forward ------------------------------------------------------------
@@ -141,14 +154,27 @@ def count_params(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
 
+def arm_d(name: str, cfg: dict) -> int:
+    """The model width of arm `name`: its entry of `arm_d` when the configuration has one, else `d_model`."""
+    return cfg.get("arm_d", {}).get(name, cfg["d_model"])
+
+
+def arm_weight_decay(name: str, cfg: dict) -> float:
+    """The Adam weight decay of arm `name`: its entry of `arm_weight_decay` when the configuration has one, else `weight_decay`."""
+    return cfg.get("arm_weight_decay", {}).get(name, cfg["weight_decay"])
+
+
 def arm_settings(name: str, cfg: dict) -> dict:
     """The scheme, slots, top_k, rounds and value width of arm `name` under `cfg`."""
     spec = ARM_SPECS[name]
     slots = cfg["n_train_modules"] if spec.get("slots") == "n_train" else spec.get("slots", cfg["slots"])
-    d_value = None
+    d = arm_d(name, cfg)
+    d_value = spec.get("d_value")  # an explicit value width (calibration of the graded control), else bw or the model width
     if spec.get("bw"):
-        d_value = max(1, round(cfg["slots"] * cfg["d_model"] / cfg["n_train_modules"]))
+        d_value = max(1, round(cfg["slots"] * d / cfg["n_train_modules"]))
     return {
+        "d": d,
+        "sparse_k": spec.get("sparse_k", cfg["slots"] if spec.get("sparse") else None),
         "scheme": spec["scheme"],
         "slots": slots,
         "top_k": spec.get("top_k", cfg["top_k"]),
@@ -162,7 +188,7 @@ def build(name: str, cfg: dict, ffn: int | None = None) -> Net:
     return Net(
         scheme=s["scheme"],
         d_in=cfg["d_in"],
-        d=cfg["d_model"],
+        d=s["d"],
         ffn=cfg["ffn_workspace"] if ffn is None else ffn,
         rounds=s["rounds"],
         n_out=2 * cfg["n_values"] - 1,
@@ -170,13 +196,14 @@ def build(name: str, cfg: dict, ffn: int | None = None) -> Net:
         top_k=s["top_k"],
         out_hidden=cfg["out_hidden"],
         d_value=s["d_value"],
+        sparse_k=s["sparse_k"],
     )
 
 
 def match_width(name: str, cfg: dict, target: int) -> int:
     """The update-network width for arm `name` whose parameter count is closest to `target` (ties to the smaller)."""
     best = None
-    for ffn in range(4, 6 * cfg["ffn_workspace"] + 1):
+    for ffn in range(4, 12 * cfg["ffn_workspace"] + 1):
         diff = abs(count_params(build(name, cfg, ffn=ffn)) - target)
         if best is None or diff < best[0]:
             best = (diff, ffn)
@@ -194,7 +221,7 @@ def comm_ops(name: str, cfg: dict, n_modules: int) -> int:
     elif s["scheme"] == "no_broadcast":
         per = s["slots"] * n_modules + s["slots"]
     elif s["scheme"] == "all_to_all":
-        per = (n_modules + 1) ** 2
+        per = (n_modules + 1) ** 2  # sparse pairwise still scores every key before keeping the top k
     else:
         per = 0
     return per * rounds

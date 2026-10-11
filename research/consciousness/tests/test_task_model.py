@@ -98,9 +98,24 @@ class ModelTests(unittest.TestCase):
         self.assertGreaterEqual(s["competition_off"]["top_k"], 24)
         self.assertEqual(s["capacity_off"]["slots"], self.cfg["n_train_modules"])
         self.assertEqual(s["crippled_all_to_all"]["rounds"], 1)
+        self.assertEqual(s["weak_all_to_all"], {**s["all_to_all"]})  # same structure as all_to_all: the handicap is the weight decay
+        self.assertEqual(gwmodel.arm_weight_decay("weak_all_to_all", self.cfg), 0.001)
+        for name in gwmodel.ARM_SPECS:
+            if name != "weak_all_to_all":
+                self.assertEqual(gwmodel.arm_weight_decay(name, self.cfg), 0.0, name)
+        self.assertEqual(s["sparse_all_to_all"]["sparse_k"], self.cfg["slots"])
+        self.assertIsNone(s["all_to_all"]["sparse_k"])
         self.assertEqual(s["all_to_all"]["rounds"], self.cfg["rounds"])
         self.assertLess(s["bw_all_to_all"]["d_value"], self.cfg["d_model"])
         self.assertIsNone(s["all_to_all"]["d_value"])
+
+    def test_explicit_value_width_and_sparse_fan_in_are_spec_knobs_of_the_calibration_arms(self):
+        gwmodel.ARM_SPECS["probe_arm"] = {"scheme": "all_to_all", "d_value": 6, "sparse_k": 2}
+        try:
+            s = gwmodel.arm_settings("probe_arm", self.cfg)
+        finally:
+            del gwmodel.ARM_SPECS["probe_arm"]
+        self.assertEqual((s["d_value"], s["sparse_k"]), (6, 2))
 
     def test_communication_cost_is_linear_in_modules_for_the_workspace_and_quadratic_for_pairwise(self):
         ws = [gwmodel.comm_ops("workspace", self.cfg, n) for n in (8, 16, 24)]
@@ -118,7 +133,7 @@ class ModelTests(unittest.TestCase):
 
     def test_write_attention_is_top_k_sparse_and_competition_off_is_not(self):
         x = self.x(8, batch=5)
-        for name in ("workspace", "no_broadcast", "capacity_off"):
+        for name in ("workspace", "no_broadcast", "capacity_off", "sparse_all_to_all"):
             net = gwmodel.build(name, self.cfg)
             with torch.no_grad():
                 net(x)
@@ -129,11 +144,99 @@ class ModelTests(unittest.TestCase):
             net(x)
         self.assertGreater(harness.bottleneck_violations(net.trace, self.cfg["top_k"]), 0)
 
+    def test_the_model_width_can_differ_per_arm_and_parameters_still_match(self):
+        cfg = {**self.cfg, "arm_d": {**self.cfg["arm_d"], "workspace": 48, "all_to_all": 48}}
+        target = gwmodel.count_params(gwmodel.build("workspace", cfg))
+        ffn = gwmodel.match_width("all_to_all", cfg, target)
+        n = gwmodel.count_params(gwmodel.build("all_to_all", cfg, ffn=ffn))
+        self.assertLessEqual(1000 * abs(n - target), self.cfg["param_tolerance_permille"] * target)
+        self.assertEqual(gwmodel.build("workspace", cfg).d, 48)
+
+    def test_sparse_pairwise_attention_keeps_k_keys_and_dense_keeps_all(self):
+        x = self.x(8, batch=3)
+        sparse, dense = gwmodel.build("sparse_all_to_all", self.cfg), gwmodel.build("all_to_all", self.cfg)
+        with torch.no_grad():
+            sparse(x)
+            dense(x)
+        self.assertTrue(bool(((sparse.trace["pairwise"] > 0).sum(-1) <= self.cfg["slots"]).all()))
+        self.assertTrue(bool(((dense.trace["pairwise"] > 0).sum(-1) > self.cfg["slots"]).any()))
+
     def test_dropped_module_input_has_no_effect(self):
         x = self.x(6, batch=4)
         for name in ("workspace", "all_to_all", "no_broadcast"):
             self.assertEqual(harness.dropped_leaks(gwmodel.build(name, self.cfg), x, 5.0), 0, name)
         self.assertTrue(harness.dropout_probe_is_sensitive(gwmodel.build("all_to_all", self.cfg), x, 5.0))
+
+
+@unittest.skipIf(torch is None, "torch is not installed")
+class TrainArmTests(unittest.TestCase):
+    """The plateau protocol of `harness.train_arm`: stopping by patience, the minimum improvement, the step cap and the restored
+    best checkpoint. The validation accuracy is scripted (the evaluation is replaced by a table); the training steps are real."""
+
+    def setUp(self):
+        self.cfg = {**harness.load_config(), "eval_every": 5, "patience": 3, "min_delta_permille": 5, "max_steps": 200, "batch_size": 8}
+        self.data = harness.make_batch(torch.Generator().manual_seed(1), 32, 8, self.cfg)
+        self.val = harness.make_batch(torch.Generator().manual_seed(2), 16, 8, self.cfg)
+
+    def run_arm(self, curve):
+        snapshots = []
+
+        def scripted(net, batch, alive=None):
+            snapshots.append({k: v.clone() for k, v in net.state_dict().items()})
+            return curve[min(len(snapshots) - 1, len(curve) - 1)], 1000
+
+        original = harness.evaluate
+        harness.evaluate = scripted
+        try:
+            net, info, _, _ = harness.train_arm("no_comm", self.cfg, 1, self.data, self.val, 16, 0.003, set())
+        finally:
+            harness.evaluate = original
+        return net, info, snapshots
+
+    def assert_holds(self, net, snapshot):
+        for key, value in net.state_dict().items():
+            self.assertTrue(torch.equal(value, snapshot[key]), key)
+
+    def test_the_optimiser_gets_the_weight_decay_of_the_arm(self):
+        seen = {}
+        original = torch.optim.Adam
+
+        def spy(params, **kwargs):
+            seen["weight_decay"] = kwargs["weight_decay"]
+            return original(params, **kwargs)
+
+        torch.optim.Adam = spy
+        try:
+            for name, expected in (("weak_all_to_all", 0.001), ("all_to_all", 0.0)):
+                harness.train_arm(name, {**self.cfg, "max_steps": 5}, 1, self.data, self.val, 16, 0.003, set())
+                self.assertEqual(seen["weight_decay"], expected, name)
+        finally:
+            torch.optim.Adam = original
+
+    def test_a_flat_curve_stops_after_exactly_patience_evaluations_without_improvement(self):
+        net, info, snaps = self.run_arm([400] * 100)
+        self.assertEqual((info["converged"], info["steps"], len(info["curve"]), info["best_val"]), (True, 20, 4, 400))
+        self.assert_holds(net, snaps[0])  # the first evaluation was the best one
+
+    def test_an_improvement_of_no_more_than_min_delta_does_not_count(self):
+        net, info, snaps = self.run_arm([400, 405] + [405] * 100)
+        self.assertEqual((info["converged"], info["steps"], info["best_val"]), (True, 20, 400))
+        self.assert_holds(net, snaps[0])
+
+    def test_the_best_checkpoint_is_restored_not_the_last_weights(self):
+        net, info, snaps = self.run_arm([400, 430, 420, 420, 420, 420, 420])
+        self.assertEqual((info["converged"], info["steps"], info["best_val"]), (True, 25, 430))
+        self.assert_holds(net, snaps[1])
+        self.assertFalse(torch.equal(net.state_dict()["head.0.weight"], snaps[-1]["head.0.weight"]))
+
+    def test_a_late_improvement_resets_the_patience_count(self):
+        _, info, _ = self.run_arm([400, 400, 400, 420] + [420] * 100)
+        self.assertEqual((info["converged"], info["steps"], info["best_val"]), (True, 35, 420))
+
+    def test_a_curve_that_keeps_improving_runs_to_the_cap_and_is_not_converged(self):
+        net, info, snaps = self.run_arm([400 + 10 * k for k in range(40)])
+        self.assertEqual((info["converged"], info["steps"], len(info["curve"])), (False, 200, 40))
+        self.assert_holds(net, snaps[-1])
 
 
 if __name__ == "__main__":

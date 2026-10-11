@@ -190,6 +190,11 @@ fn delta_carries_payload(encoded_delta: &[u8], key: &str, payload: &TypedPayload
         })
 }
 
+// The unit tests of vcw_host share the host-side set-up of tests/expert_support, which names the
+// crate by its public path.
+#[cfg(test)]
+extern crate self as ptr_runtime;
+
 #[cfg(test)]
 mod delta_payload_tests {
     use super::*;

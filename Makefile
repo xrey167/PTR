@@ -44,6 +44,7 @@ py-bindings:
 	$(PY_BINDINGS)/.venv/bin/pip install -q maturin==$(MATURIN)
 	cargo fmt --manifest-path $(PY_BINDINGS)/Cargo.toml -- --check
 	cargo clippy --manifest-path $(PY_BINDINGS)/Cargo.toml --all-targets --locked -- -D warnings
+	cargo test --manifest-path $(PY_BINDINGS)/Cargo.toml --locked
 	cd $(PY_BINDINGS) && VIRTUAL_ENV="$(CURDIR)/$(PY_BINDINGS)/.venv" PATH="$(CURDIR)/$(PY_BINDINGS)/.venv/bin:$$PATH" maturin develop --locked
 	$(PY_BINDINGS)/.venv/bin/python -m unittest discover -s $(PY_BINDINGS)/tests -v
 
@@ -222,6 +223,7 @@ ci-repository-invariants:
 	$(PYTHON) -m unittest discover -s research/embeddings/tests
 	$(PYTHON) research/embeddings/verify_manifest.py --regenerate
 	$(PYTHON) -m unittest discover -s research/consciousness/tests
+	$(PYTHON) -m unittest discover -s research/cseries/tests
 	$(PYTHON) -m unittest discover -s docs-site/tests
 	$(PYTHON) benchmarks/operator-routing/generator.py
 	$(PYTHON) -m unittest discover -s benchmarks/operator-routing/tests

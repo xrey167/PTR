@@ -321,7 +321,7 @@ baselines with a verdict). **There is no research result for any VCW-MoE compone
 | Component | Status | Registered experiment |
 |---|---|---|
 | Runtime composition of workspace, finding router, repair loop, budgets, eligibility and structural ledger events as one path (package H; new path, old signatures unchanged) | Planned | none by itself; X exercises it |
-| End-to-end CPU experiment with stub experts: full loop against learned-gate routing, best-of-N with the verifier, and ablations without workspace, finding routing, self-model (package X) | Planned. Id assigned at registration | X |
+| End-to-end CPU experiment with stub experts: full loop against learned-gate routing, best-of-N with the verifier, and ablations without workspace, finding routing, self-model (package X) | Registered as F007 (`experiments/feedback/F007-vcw-loop`, planned, draft preregistration, not frozen, not run) | F007 |
 | Categorical L2 off-policy estimator (37 section 2) | Built for the finding router (`ope.rs`, package VL); the contextual routing log of 37 section 2 and any estimate on a model-backed loop are not built | needed by F004, F005 |
 | Learned `AdmissibleScorer` | Built as a context-free Thompson bandit (`learning.rs`, package VL); a feature-based policy is not built. Learned critic Pod (advisory): not built | F004 |
 | Persistence of workspace content in SemDB or a branch overlay | Not built, not required by the contract | C006 |
@@ -409,7 +409,7 @@ propensity of 0.5.
    under budget, not a corrupted reference.
 
 For each request it reads back `GET /v1/vcw/traces/{id}` (the retained trace and the ledger
-events the request committed, read from the runtime's ledger) and prints rounds, finding codes,
+events the request committed, read from the runtime's ledger) (a read of a request that is still running returns `outcome` `"running"` and `ledger` `null`) and prints rounds, finding codes,
 the routed Pod with its propensity and support, the budget used and the events. Then it sends
 SIGTERM to `ptrd`, requires exit code 0, and exits 0 only if every expected property held. The
 properties asserted do not depend on which Pod the router drew (the routing nonce instance is

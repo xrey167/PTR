@@ -1,0 +1,656 @@
+{
+  "experiment_id": "C001",
+  "status": "prepared",
+  "scope": "a functional-mechanism test, on a CPU toy task, of a learned-attention global workspace (competitive top-k write, gated slot update, broadcast read-back by every module) against parameter-matched pairwise comparators (all-to-all, bandwidth-matched and sparse top-k pairwise attention; the judged comparison) and ablations (no-broadcast, competition off, capacity off: reported attribution contrasts; no communication: floor) and crippled and weak all-to-all as gross and graded sensitivity controls: shared-weight modules, a finite training set of eight modules, evaluation on sixteen modules (primary) and twenty-four (secondary) with more distractors; the primary endpoint is accuracy on sixteen modules, judged by one-sided 95% t bounds over twenty seeds of the paired difference. It does not test the deterministic ptr-pods::workspace contract, and it makes no claim about consciousness",
+  "git_sha": "1919ecbb6b360307f4cf6991c76488e69ba27d6e",
+  "aggregated_at_git_sha": "5aa4d48395096d686c5b0614587a118ac343bc0a",
+  "recorded_at": "2026-10-10T22:19:33.372869+00:00",
+  "preregistration_sha256": "665e0e0e57917ccbf0e112aed9d735354d4e1fd810a6122ad554005f0e34363b",
+  "preregistration_rules_sha256": "f888fc5f7036dda8cc51637cf04bfdf1137d83188294d9fc4a7eca0ce32dcf56",
+  "criteria_sha256": "896e692fef7dadc6d192d71d58b87dc183f39d0af64bbc748b35cb711b3ff0fb",
+  "entrypoint": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/consciousness/gw/harness.py --benchmark c001 --seed <seed>",
+  "seeds": [
+    {
+      "seed": 4001,
+      "record": "run-20261010T165647.282184Z-seed-4001.json",
+      "git_sha": "1919ecbb6b360307f4cf6991c76488e69ba27d6e",
+      "exit_code": 0
+    },
+    {
+      "seed": 4002,
+      "record": "run-20261010T170616.687421Z-seed-4002.json",
+      "git_sha": "3ead3b5fde69f6c1f7189041b0ad0c46a07aa247",
+      "exit_code": 0
+    },
+    {
+      "seed": 4003,
+      "record": "run-20261010T171638.390944Z-seed-4003.json",
+      "git_sha": "f626f76caf10cc61278cffc2af4596bf697a3ba1",
+      "exit_code": 0
+    },
+    {
+      "seed": 4004,
+      "record": "run-20261010T172631.413326Z-seed-4004.json",
+      "git_sha": "6596ee7fd58c7fd59b2af5d1fc7e373511ab9502",
+      "exit_code": 0
+    },
+    {
+      "seed": 4005,
+      "record": "run-20261010T173718.358768Z-seed-4005.json",
+      "git_sha": "26c1ef9553319809902b92512cf955e0406e6f70",
+      "exit_code": 0
+    },
+    {
+      "seed": 4006,
+      "record": "run-20261010T174848.213080Z-seed-4006.json",
+      "git_sha": "5f4906081614754f11b48a8f1f8532fb12580739",
+      "exit_code": 0
+    },
+    {
+      "seed": 4007,
+      "record": "run-20261010T180545.185087Z-seed-4007.json",
+      "git_sha": "37650f2a1fd671b06d8c8e94b6d9804e09085faa",
+      "exit_code": 0
+    },
+    {
+      "seed": 4008,
+      "record": "run-20261010T182847.957541Z-seed-4008.json",
+      "git_sha": "68bde335fa6d29371fea05a224b1c0a7552fd950",
+      "exit_code": 0
+    },
+    {
+      "seed": 4009,
+      "record": "run-20261010T185224.034900Z-seed-4009.json",
+      "git_sha": "7d4ee06f244304c4a6033e060be083654fda2820",
+      "exit_code": 0
+    },
+    {
+      "seed": 4010,
+      "record": "run-20261010T191419.393276Z-seed-4010.json",
+      "git_sha": "a67cd71d84727ceda44cced93ffa73d5923a44ec",
+      "exit_code": 0
+    },
+    {
+      "seed": 4011,
+      "record": "run-20261010T193003.195462Z-seed-4011.json",
+      "git_sha": "d18e48d0f77d4ac0a2054c802a27fb71239af125",
+      "exit_code": 0
+    },
+    {
+      "seed": 4012,
+      "record": "run-20261010T194620.520095Z-seed-4012.json",
+      "git_sha": "e64ca3cb42f08cd3349f4222371d21b0671511d0",
+      "exit_code": 0
+    },
+    {
+      "seed": 4013,
+      "record": "run-20261010T200604.495048Z-seed-4013.json",
+      "git_sha": "44b1f78c19df93ddeca1f4734a952ee1a65d4929",
+      "exit_code": 0
+    },
+    {
+      "seed": 4014,
+      "record": "run-20261010T202317.531915Z-seed-4014.json",
+      "git_sha": "9b46b3b0c7d234d917bc95077fc14ec94d55ddd6",
+      "exit_code": 0
+    },
+    {
+      "seed": 4015,
+      "record": "run-20261010T203913.999082Z-seed-4015.json",
+      "git_sha": "d055771d96a6280e32845f127b9f9bda9f200dc3",
+      "exit_code": 0
+    },
+    {
+      "seed": 4016,
+      "record": "run-20261010T210148.583077Z-seed-4016.json",
+      "git_sha": "dc6184696c1c7439d1268e07a72f7ac4b6e25202",
+      "exit_code": 0
+    },
+    {
+      "seed": 4017,
+      "record": "run-20261010T211642.289051Z-seed-4017.json",
+      "git_sha": "c72ee5be2ec281ed7d7b18b102f22ae5f2fb9e04",
+      "exit_code": 0
+    },
+    {
+      "seed": 4018,
+      "record": "run-20261010T213253.271374Z-seed-4018.json",
+      "git_sha": "05df733e9154da198a2717a7ce20d4d30960aa1d",
+      "exit_code": 0
+    },
+    {
+      "seed": 4019,
+      "record": "run-20261010T215109.556814Z-seed-4019.json",
+      "git_sha": "69cf09a673f3660b381c891bec035863db18cb8d",
+      "exit_code": 0
+    },
+    {
+      "seed": 4020,
+      "record": "run-20261010T220539.099158Z-seed-4020.json",
+      "git_sha": "8781bdc38b42e57c30526e746031c8dd992ab469",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "4001": "1e9487af40e2dc973bc65976365d4b068ebc8f85e82e632b51b6172e6036bd4e",
+    "4002": "fe5b398272305beeed36ce27908569f996667159881ab826578a18d85e16f5b8",
+    "4003": "e170835c98df568fce18fcaa47d6085c851e9148b5042cb013040150ae66fe2c",
+    "4004": "1e7e4825f6dfb81bb62a7c4c53d5034c29ae05bf51ed5dd4906df939f34d9e5f",
+    "4005": "03b9f11fdaea0619d4c8064df214fae9b324b836144e34835b7e3ca98ab40e48",
+    "4006": "8b36f2aca5da3ba10c9cae426f9118f96c578d4352ab93bbffa59e68346b21fc",
+    "4007": "9f68b4a9bc7f0948bce0f29422e800ab53b8b6c8ae3bcbb6016666742e2e8655",
+    "4008": "ec8db28cf493d471dc95e5244ed5c311e2ef358cd52ab3b6ef590d2bd0a18101",
+    "4009": "63652ff56f7e0296cc64ddc68a1588d1d5b150e887b83396e0f3f32d6854adee",
+    "4010": "9d8dff658e3b283c160c9f4a61fa741f5dbc8ce5d77b855e779b8788006276bd",
+    "4011": "508ebcd392eb9b68ac168bf7c3cdf98c3ebdb946b7a2442cbe96aac1301773be",
+    "4012": "1ccf4b7d91e56700b731917496c1ae161fddf600cb2174dbf0cf843b04592bf2",
+    "4013": "2eb2b4e3860689bb4391f779b53a3f2d4dd6e6d8de39417fdfd51a900637b7e6",
+    "4014": "dee642030977e73c450f9f7cd4f1c647d0ab14c6ab0a2ba0e22fbc3259826416",
+    "4015": "e721ae89f9aa3dae8e6b9fc8e971fc574a7a5b6bd39bbf8730fad99b77f4cc45",
+    "4016": "e12f3aaedf5b919433f3a7ac2328916789de2396cab04ff676dc6b537f345f34",
+    "4017": "0c5698287dd7c8edbaaa1d180c08fd112edb1909621055d5249c3a882336e7aa",
+    "4018": "f9bd3f2e9a87c025c1c6f0f4a0c32bae9d5a0ad8c1e2c090967d50874760f6cd",
+    "4019": "1046c59f2f1fa7431aa3181b47b031c41c44334e994b957fcd6ee480c0d9eeac",
+    "4020": "ff34515dc30efe0058b2e30699457de0b18ccc6af849adc64f6bbd76c8e63aca"
+  },
+  "verdict": "NOT_SHOWN",
+  "paired": {
+    "supported": false,
+    "refuted_against": [],
+    "judged": [
+      {
+        "against": "all_to_all",
+        "metric": "ood16",
+        "per_seed_permille": [
+          117.67578125,
+          104.4921875,
+          20.5078125,
+          92.7734375,
+          7.8125,
+          29.78515625,
+          41.9921875,
+          15.13671875,
+          76.171875,
+          17.578125,
+          33.69140625,
+          -408.69140625,
+          62.5,
+          40.52734375,
+          145.99609375,
+          31.73828125,
+          44.921875,
+          37.59765625,
+          4.8828125,
+          29.78515625
+        ],
+        "supports": false,
+        "refutes": false,
+        "upper_bound_adjusted_permille": 83.57780286609233,
+        "margin_permille": 30,
+        "mean_permille": 27.34375,
+        "sd_permille": 109.60913815851808,
+        "lower_bound_permille": -15.036173105774782,
+        "upper_bound_permille": 69.72367310577478,
+        "n": 20
+      },
+      {
+        "against": "bw_all_to_all",
+        "metric": "ood16",
+        "per_seed_permille": [
+          43.45703125,
+          61.03515625,
+          48.828125,
+          126.953125,
+          -7.8125,
+          20.01953125,
+          45.41015625,
+          -2.9296875,
+          66.89453125,
+          51.26953125,
+          46.875,
+          -408.203125,
+          51.7578125,
+          24.90234375,
+          120.1171875,
+          0.0,
+          -22.4609375,
+          56.640625,
+          31.25,
+          18.06640625
+        ],
+        "supports": false,
+        "refutes": false,
+        "upper_bound_adjusted_permille": 73.60838584323739,
+        "margin_permille": 30,
+        "mean_permille": 18.603515625,
+        "sd_permille": 107.21326512778329,
+        "lower_bound_permille": -22.850053013258613,
+        "upper_bound_permille": 60.057084263258616,
+        "n": 20
+      },
+      {
+        "against": "sparse_all_to_all",
+        "metric": "ood16",
+        "per_seed_permille": [
+          121.09375,
+          328.61328125,
+          395.99609375,
+          481.4453125,
+          404.78515625,
+          94.7265625,
+          65.4296875,
+          15.13671875,
+          168.45703125,
+          63.96484375,
+          138.671875,
+          -317.3828125,
+          70.3125,
+          69.3359375,
+          154.296875,
+          43.9453125,
+          195.3125,
+          58.10546875,
+          43.9453125,
+          49.8046875
+        ],
+        "supports": true,
+        "refutes": false,
+        "upper_bound_adjusted_permille": 221.3464235746453,
+        "margin_permille": 30,
+        "mean_permille": 132.2998046875,
+        "sd_permille": 173.56606281592124,
+        "lower_bound_permille": 65.19119933314633,
+        "upper_bound_permille": 199.40841004185367,
+        "n": 20
+      }
+    ],
+    "attribution": [
+      {
+        "against": "no_broadcast",
+        "state": "unresolved by noise",
+        "attribution_margin_permille": 30,
+        "half_width_permille": 40.49580163337909,
+        "median_permille": 34.66796875,
+        "positive_seeds": 13,
+        "per_seed_permille": [
+          42.96875,
+          69.3359375,
+          13.671875,
+          47.8515625,
+          -69.82421875,
+          36.62109375,
+          78.125,
+          -50.29296875,
+          47.36328125,
+          131.34765625,
+          32.71484375,
+          -308.59375,
+          -9.765625,
+          -22.94921875,
+          59.5703125,
+          239.74609375,
+          14.6484375,
+          41.015625,
+          -90.33203125,
+          -27.34375
+        ],
+        "mean_permille": 13.7939453125,
+        "sd_permille": 104.73614841146708,
+        "lower_bound_permille": -26.70185632087909,
+        "upper_bound_permille": 54.28974694587909,
+        "n": 20
+      },
+      {
+        "against": "capacity_off",
+        "state": "not attributed",
+        "attribution_margin_permille": 30,
+        "half_width_permille": 36.49581797779837,
+        "median_permille": 1.953125,
+        "positive_seeds": 11,
+        "per_seed_permille": [
+          16.11328125,
+          61.03515625,
+          41.015625,
+          15.625,
+          3.90625,
+          -23.92578125,
+          -56.15234375,
+          1.953125,
+          1.953125,
+          46.875,
+          -1.46484375,
+          -373.53515625,
+          6.8359375,
+          -27.83203125,
+          80.56640625,
+          -14.16015625,
+          -65.91796875,
+          78.61328125,
+          -60.546875,
+          -13.18359375
+        ],
+        "mean_permille": -14.111328125,
+        "sd_permille": 94.39080729222802,
+        "lower_bound_permille": -50.60714610279837,
+        "upper_bound_permille": 22.384489852798364,
+        "n": 20
+      },
+      {
+        "against": "competition_off",
+        "state": "not attributed",
+        "attribution_margin_permille": 30,
+        "half_width_permille": 39.69303306652644,
+        "median_permille": -11.23046875,
+        "positive_seeds": 7,
+        "per_seed_permille": [
+          25.390625,
+          66.89453125,
+          10.25390625,
+          -0.48828125,
+          -49.8046875,
+          -20.5078125,
+          -18.5546875,
+          -31.73828125,
+          29.296875,
+          21.484375,
+          -10.25390625,
+          -430.6640625,
+          -12.20703125,
+          -8.30078125,
+          74.70703125,
+          -72.265625,
+          -43.9453125,
+          12.20703125,
+          -60.05859375,
+          -64.453125
+        ],
+        "mean_permille": -29.150390625,
+        "sd_permille": 102.65991126177113,
+        "lower_bound_permille": -68.84342369152644,
+        "upper_bound_permille": 10.542642441526437,
+        "n": 20
+      }
+    ],
+    "attribution_states": {
+      "broadcast": "unresolved by noise",
+      "bottleneck": "not attributed",
+      "competition": "not attributed"
+    },
+    "broadcast_attributed": false,
+    "bottleneck_attributed": false,
+    "competition_attributed": false,
+    "sensitivity": {
+      "gross": {
+        "arm": "all_to_all",
+        "crippled": "crippled_all_to_all",
+        "margin_permille": 50,
+        "resolves": true,
+        "mean_permille": 393.9697265625,
+        "sd_permille": 24.176099232191984,
+        "lower_bound_permille": 384.62213708527855,
+        "upper_bound_permille": 403.31731603972145,
+        "n": 20
+      },
+      "graded": {
+        "arm": "all_to_all",
+        "weak": "weak_all_to_all",
+        "min_lower_permille": 15,
+        "resolves": true,
+        "mean_permille": 61.5478515625,
+        "sd_permille": 50.41183591788059,
+        "lower_bound_permille": 42.05632224556518,
+        "upper_bound_permille": 81.03938087943482,
+        "n": 20
+      }
+    },
+    "descriptive": [
+      {
+        "against": "all_to_all",
+        "metric": "id",
+        "mean_permille": -18.4814453125,
+        "sd_permille": 108.73665930308479,
+        "lower_bound_permille": -60.524028052080105,
+        "upper_bound_permille": 23.561137427080105,
+        "n": 20
+      },
+      {
+        "against": "bw_all_to_all",
+        "metric": "id",
+        "mean_permille": -6.9091796875,
+        "sd_permille": 111.34742858292643,
+        "lower_bound_permille": -49.96120564673751,
+        "upper_bound_permille": 36.14284627173751,
+        "n": 20
+      },
+      {
+        "against": "sparse_all_to_all",
+        "metric": "id",
+        "mean_permille": 122.3388671875,
+        "sd_permille": 190.75719842500226,
+        "lower_bound_permille": 48.583379853651614,
+        "upper_bound_permille": 196.09435452134838,
+        "n": 20
+      },
+      {
+        "against": "no_comm",
+        "metric": "id",
+        "mean_permille": 482.275390625,
+        "sd_permille": 110.76777251255828,
+        "lower_bound_permille": 439.4474863047309,
+        "upper_bound_permille": 525.1032949452691,
+        "n": 20
+      },
+      {
+        "against": "no_broadcast",
+        "metric": "id",
+        "mean_permille": 14.5751953125,
+        "sd_permille": 102.31539316934075,
+        "lower_bound_permille": -24.98463124851928,
+        "upper_bound_permille": 54.13502187351928,
+        "n": 20
+      },
+      {
+        "against": "all_to_all",
+        "metric": "ood24",
+        "mean_permille": 80.4931640625,
+        "sd_permille": 120.061522135022,
+        "lower_bound_permille": 34.071869620006574,
+        "upper_bound_permille": 126.91445850499343,
+        "n": 20
+      },
+      {
+        "against": "bw_all_to_all",
+        "metric": "ood24",
+        "mean_permille": 51.025390625,
+        "sd_permille": 112.61638621921227,
+        "lower_bound_permille": 7.482727407284051,
+        "upper_bound_permille": 94.56805384271595,
+        "n": 20
+      },
+      {
+        "against": "sparse_all_to_all",
+        "metric": "ood24",
+        "mean_permille": 130.7861328125,
+        "sd_permille": 164.20082437259532,
+        "lower_bound_permille": 67.29855843935339,
+        "upper_bound_permille": 194.27370718564663,
+        "n": 20
+      },
+      {
+        "against": "no_comm",
+        "metric": "ood24",
+        "mean_permille": 391.2109375,
+        "sd_permille": 109.77393799587367,
+        "lower_bound_permille": 348.76729521394236,
+        "upper_bound_permille": 433.65457978605764,
+        "n": 20
+      },
+      {
+        "against": "no_broadcast",
+        "metric": "ood24",
+        "mean_permille": 17.1875,
+        "sd_permille": 108.2312186313796,
+        "lower_bound_permille": -24.659656179703152,
+        "upper_bound_permille": 59.03465617970315,
+        "n": 20
+      },
+      {
+        "against": "all_to_all",
+        "metric": "auc",
+        "mean_permille": -65.5126953125,
+        "sd_permille": 74.58943390378462,
+        "lower_bound_permille": -94.35239359362369,
+        "upper_bound_permille": -36.67299703137631,
+        "n": 20
+      },
+      {
+        "against": "bw_all_to_all",
+        "metric": "auc",
+        "mean_permille": -42.5927734375,
+        "sd_permille": 84.0259091268713,
+        "lower_bound_permille": -75.08104610815677,
+        "upper_bound_permille": -10.104500766843232,
+        "n": 20
+      },
+      {
+        "against": "sparse_all_to_all",
+        "metric": "auc",
+        "mean_permille": 129.4580078125,
+        "sd_permille": 117.8106047464418,
+        "lower_bound_permille": 83.90702133381448,
+        "upper_bound_permille": 175.0089942911855,
+        "n": 20
+      },
+      {
+        "against": "no_comm",
+        "metric": "auc",
+        "mean_permille": 292.099609375,
+        "sd_permille": 81.53093641529063,
+        "lower_bound_permille": 260.5760076564574,
+        "upper_bound_permille": 323.6232110935426,
+        "n": 20
+      },
+      {
+        "against": "no_broadcast",
+        "metric": "auc",
+        "mean_permille": 22.96875,
+        "sd_permille": 81.53904209246453,
+        "lower_bound_permille": -8.557985745331948,
+        "upper_bound_permille": 54.49548574533195,
+        "n": 20
+      },
+      {
+        "against": "all_to_all",
+        "metric": "drop_irrelevant",
+        "mean_permille": -18.9697265625,
+        "sd_permille": 103.42797789779522,
+        "lower_bound_permille": -58.95972943940609,
+        "upper_bound_permille": 21.02027631440609,
+        "n": 20
+      },
+      {
+        "against": "bw_all_to_all",
+        "metric": "drop_irrelevant",
+        "mean_permille": -7.275390625,
+        "sd_permille": 106.92648227975283,
+        "lower_bound_permille": -48.618075852880835,
+        "upper_bound_permille": 34.067294602880835,
+        "n": 20
+      },
+      {
+        "against": "sparse_all_to_all",
+        "metric": "drop_irrelevant",
+        "mean_permille": 119.1162109375,
+        "sd_permille": 188.1680199970401,
+        "lower_bound_permille": 46.36181880910315,
+        "upper_bound_permille": 191.87060306589686,
+        "n": 20
+      },
+      {
+        "against": "no_comm",
+        "metric": "drop_irrelevant",
+        "mean_permille": 488.28125,
+        "sd_permille": 101.4467885249965,
+        "lower_bound_permille": 449.05726585736915,
+        "upper_bound_permille": 527.5052341426308,
+        "n": 20
+      },
+      {
+        "against": "no_broadcast",
+        "metric": "drop_irrelevant",
+        "mean_permille": 10.888671875,
+        "sd_permille": 92.78021367652971,
+        "lower_bound_permille": -24.984416695974343,
+        "upper_bound_permille": 46.761760445974346,
+        "n": 20
+      },
+      {
+        "against": "all_to_all",
+        "metric": "drop_relevant",
+        "mean_permille": -2.5146484375,
+        "sd_permille": 16.176838834389596,
+        "lower_bound_permille": -8.769356734763116,
+        "upper_bound_permille": 3.7400598597631167,
+        "n": 20
+      },
+      {
+        "against": "bw_all_to_all",
+        "metric": "drop_relevant",
+        "mean_permille": -4.150390625,
+        "sd_permille": 14.551747086896233,
+        "lower_bound_permille": -9.776763872324166,
+        "upper_bound_permille": 1.475982622324166,
+        "n": 20
+      },
+      {
+        "against": "sparse_all_to_all",
+        "metric": "drop_relevant",
+        "mean_permille": -1.318359375,
+        "sd_permille": 15.434387426474695,
+        "lower_bound_permille": -7.286001884630497,
+        "upper_bound_permille": 4.649283134630497,
+        "n": 20
+      },
+      {
+        "against": "no_comm",
+        "metric": "drop_relevant",
+        "mean_permille": -12.1826171875,
+        "sd_permille": 17.59844046600767,
+        "lower_bound_permille": -18.986981917129985,
+        "upper_bound_permille": -5.378252457870016,
+        "n": 20
+      },
+      {
+        "against": "no_broadcast",
+        "metric": "drop_relevant",
+        "mean_permille": -2.1728515625,
+        "sd_permille": 14.461765446854367,
+        "lower_bound_permille": -7.764433778255332,
+        "upper_bound_permille": 3.418730653255331,
+        "n": 20
+      }
+    ]
+  },
+  "recommended_status": null,
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 38,
+    "total": 38,
+    "git_sha": "e50d82fef410003eb63f77bca6bf1b58286ea01e",
+    "sha256": "33632ad633ed6230390431cb4ddf05ab4df5ddc4688924c77685713d9ea50d5d"
+  },
+  "limitations": [
+    "a result applies to this task family, its size (eight training modules, d=48, three rounds), the training-set size chosen on pilot seeds and these hyperparameters (the same learning-rate x width grid for every arm, selected on the primary metric over five pilot seeds disjoint from the declared ones; the grid was extended by lr 0.006 at d 48 for every arm after every arm had selected the edge 0.003, and by lr 0.012 for the four arms that then selected 0.006 (the pairwise comparators and competition_off), both extensions run on pilot seeds after the pilot comparisons had been seen; 0.012 won for none of them (the networks did not train), so every arm's selected rate is interior to the tested grid at d 48, but the grid is geometric and a rate between two tested ones or at d 32 was not tried, so an arm may still be under-tuned; d = 48 is the upper edge of the width grid {32, 48} for six of seven arms and d = 64 was not tried, the workspace gaining most from width, direction of the bias unknown); the workspace had extra structural choices (slots, top-k, rounds) made from pilot observations; arms are trained to a validation plateau and a converged arm is assumed to be at its optimum, which a bounded patience cannot prove",
+    "the plateau protocol can stop an arm prematurely (a run that stalls for patience evaluations before a late jump is flagged converged): a stalled comparator inflates the workspace advantage, a stalled workspace deflates it; the guards catch only the extreme cases (band, untrained workspace), and the per-seed differences are heavy-tailed, so the median and the number of seeds with a positive difference are reported beside the t bounds",
+    "the t bounds assume roughly normal paired differences, which twenty points cannot check; per-seed differences and both bounds are reported; the decision uses the upper bound for refutation and the lower bound for support; the 30 per mille margin is justified by the cost of building the learned workspace but was fixed before the freeze and after the pilots had been seen (not fitted to them; an earlier version used the pilot gap, 50); disclosed",
+    "the ablations differ from the workspace arm in more than one way at matched parameter counts (update-network width); the no-broadcast arm keeps one reader (the reporter) so that the readout path is shared; the bandwidth-matched arm is one definition of matched bandwidth",
+    "a learned-attention network is not the deterministic bid-ordered workspace of ptr-pods::workspace: a supportive result does not validate that contract and a refuting one does not touch it",
+    "in distribution (eight modules) the pairwise arms can express everything the workspace can; the claim tested is an inductive-bias one (finite data, more modules), not an expressivity one",
+    "sample efficiency (area under the learning curve), module dropout, ID accuracy, the 24-module accuracy, ignition and communication-cost proxies are reported with bounds where they are differences and are never judged",
+    "mutation evidence comes from run_mutations.py (scripts/mutation_check.py plants Cargo packages only) and was run at a reduced scale with the locked uv environment's interpreter (the c001-venv python of the preregistration, section 8); experiment_records tracks only Rust and Cargo files as code, so this aggregator separately refuses when research/consciousness or this experiment's files differ from the mutation commit, and when the mutation total is not the plan's size",
+    "COMPLETED shows an advantage over pairwise attention at 2048 training examples and 16 modules; it does not show that the broadcast read, the capacity limit or the competition is responsible (the attribution contrasts, which are not in the support conjunction, may read not attributed or unresolved), and FALSIFIED is scoped to the same setting (the pilot advantage grows with the training-set size)",
+    "the workspace stalled (16-module accuracy near chance) on 1 of 17 pilot seeds without being flagged by the guard's harness rule (in-distribution accuracy at least the no-communication arm's plus 100 per mille); such a seed stays in the paired differences and counts against the workspace, and the guard tolerates up to 4 flagged seeds of 20 (more make the run INVALID), so the outcome probabilities are wide (P(COMPLETED) 0.02 to 0.69 depending on how the pilots are read; preregistration section 4)",
+    "an indicator property here is a functional property: the experiment says nothing about whether any system is conscious"
+  ],
+  "metrics_sha256": "13c58614dabf07c12173d4608f6d138c2f90e07803d59d3282f4ab74781e30d7"
+}

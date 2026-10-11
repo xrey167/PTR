@@ -1847,6 +1847,14 @@ pub fn check_encodable(event: &LedgerEvent) -> Result<(), io::Error> {
     Ok(())
 }
 
+/// The canonical payload encoding of `event`: the bytes a durable log record frames, whose
+/// length [`check_encodable`] bounds. A reader that needs a size or a digest of an event (a
+/// summary that must not carry its content) takes it from here instead of rendering the event.
+#[must_use]
+pub fn encoded_event(event: &LedgerEvent) -> Vec<u8> {
+    encode_event(event)
+}
+
 /// The rules the decoder applies to an attributed origin, checked before any
 /// encoding with the functions the decoder itself calls, in the order it
 /// reads the fields they cover, so an append path refuses what the decoder
@@ -4515,6 +4523,22 @@ mod semantic_origin_tests {
         let encoded = encode_event(&event);
         assert_eq!(encoded[0], 14);
         assert!(!encoded.windows(7).any(|window| window == b"secret!"));
+        assert_eq!(decode_event(&encoded).unwrap(), event);
+    }
+
+    #[test]
+    fn encoded_event_is_the_payload_the_decoder_reads_back() {
+        let event = LedgerEvent::ProtectedStateCommitted {
+            domain: 3,
+            logical_id: "kv/session-1".into(),
+            generation: Generation(2),
+            revision: Revision(9),
+            plaintext_digest: [1; 32],
+            ciphertext_digest: [2; 32],
+            anchor_digest: [3; 32],
+        };
+        let encoded = encoded_event(&event);
+        assert_eq!(encoded, encode_event(&event));
         assert_eq!(decode_event(&encoded).unwrap(), event);
     }
 }

@@ -388,7 +388,7 @@ status = "planned"
 [[experiment]]
 id = "C001"
 path = "consciousness/C001-global-workspace"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "C002"
@@ -403,7 +403,7 @@ status = "planned"
 [[experiment]]
 id = "C004"
 path = "consciousness/C004-recurrent-integration"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "C005"
@@ -509,3 +509,18 @@ status = "completed"
 id = "E008"
 path = "system/E008-split-pod-extensions"
 status = "planned"
+
+[[experiment]]
+id = "F007"
+path = "feedback/F007-vcw-loop"
+status = "completed"
+
+[[experiment]]
+id = "C007"
+path = "consciousness/C007-metacognitive-self-model-cpu"
+status = "failed"
+
+[[experiment]]
+id = "C008"
+path = "consciousness/C008-attention-schema-routing-cpu"
+status = "failed"

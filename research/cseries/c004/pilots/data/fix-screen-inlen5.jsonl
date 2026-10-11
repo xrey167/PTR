@@ -1,0 +1,1 @@
+{"arm": "feedforward_inlength", "cpu_s": 170, "feedforward_inlength": {"best_val": 769, "converged": 1, "ex12": 555, "ex15": 439, "ex18": 330, "ex24": 154, "ex9": 788, "id": 962, "steps": 10500}, "layers": 5, "lr": 0.01, "max_steps": 20000, "seed": 1002, "set": {}, "slope_scale": 1.0, "wall_s": 256, "width": {"ffn": 70, "width": 40}}

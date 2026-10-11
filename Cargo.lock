@@ -4473,6 +4473,7 @@ dependencies = [
  "ptr-pods",
  "ptr-podwire",
  "ptr-protocol",
+ "ptr-router",
  "ptr-runtime",
  "ptr-search",
  "ptr-semdb",
