@@ -116,6 +116,15 @@ class MutationCheckTests(unittest.TestCase):
         self.assertTrue(any(error.startswith("empty: no expected") for error in errors))
         self.assertTrue(any(error.startswith("unknown: 'c' is not") for error in errors))
 
+    def test_an_invalid_expect_exit_is_refused_not_ignored(self):
+        plan = {"hard_counters": ["a"], "mutation": [{"name": "ok", "expect": ["a"], "expect_exit": 2}]}
+        self.assertEqual(mod.expectation_errors(plan), [])
+        for value in ("2", 1, 0, 3, 2.0, True, None, [2]):
+            plan = {"hard_counters": ["a"], "mutation": [{"name": "bad", "expect": ["a"], "expect_exit": value}]}
+            errors = mod.expectation_errors(plan)
+            self.assertEqual(len(errors), 1, value)
+            self.assertIn("bad: expect_exit must be the integer 2", errors[0])
+
     def test_a_mutation_is_killed_only_by_a_counter_it_expects(self):
         plan = {"hard_counters": ["lost", "read_failures"]}
         mutation = {"expect": ["lost"]}
@@ -131,6 +140,16 @@ class MutationCheckTests(unittest.TestCase):
         self.assertEqual(mod.classify(0, {"hard_failures": 0}, plan, mutation)[0], "survived")
         self.assertEqual(mod.classify(101, {}, plan, mutation)[0], "crashed")
         self.assertEqual(mod.classify(1, {}, plan, mutation)[0], "crashed")
+
+    def test_a_validity_mutation_is_killed_by_the_exit_2_it_names_and_by_nothing_else(self):
+        plan = {"hard_counters": ["pin", "lost"]}
+        mutation = {"expect": ["pin"], "expect_exit": 2}
+        self.assertEqual(mod.classify(2, {"hard_failures": 0, "pin": 1}, plan, mutation), ("killed", {"pin": 1}))
+        # Exit 1 (a falsifier fired) or an exit 2 without the counter shows nothing about this defect.
+        self.assertEqual(mod.classify(1, {"hard_failures": 1, "pin": 1}, plan, mutation)[0], "crashed")
+        self.assertEqual(mod.classify(2, {"hard_failures": 0, "lost": 1}, plan, mutation)[0], "crashed")
+        self.assertEqual(mod.classify(2, {}, plan, mutation)[0], "crashed")
+        self.assertEqual(mod.classify(0, {"hard_failures": 0}, plan, mutation)[0], "survived")
 
     def test_the_last_json_line_is_the_result(self):
         stdout = 'Compiling\n{"a":1}\nnoise\n{"hard_failures":2}\n'

@@ -283,7 +283,7 @@ status = "planned"
 [[experiment]]
 id = "E007"
 path = "system/E007-split-pod-kv"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "M002-a0v2-sweep-lr0p002"
@@ -504,6 +504,11 @@ status = "superseded"
 id = "M003-v4"
 path = "model/M003-v4-latent-recurrence"
 status = "completed"
+
+[[experiment]]
+id = "E008"
+path = "system/E008-split-pod-extensions"
+status = "planned"
 
 [[experiment]]
 id = "F007"

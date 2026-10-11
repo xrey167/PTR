@@ -53,6 +53,11 @@ pub enum Qwen2StackError {
     InvalidLayer(KvBackendError),
     InvalidWeights(&'static str),
     EmptyInput,
+    /// The frame's positions are not the next `rows` positions of the cache.
+    StagePositions {
+        expected_first: usize,
+        rows: usize,
+    },
     /// A decode call must carry exactly one token.
     DecodeNeedsOneToken {
         tokens: usize,
@@ -85,6 +90,12 @@ pub enum Qwen2StackError {
         admitted: usize,
     },
     Kv(KvBackendError),
+    /// A stage run failed part-way and the cache could not be returned to its length before
+    /// the run: the cache still holds the rows of the failed run and must be discarded.
+    RollbackFailed {
+        cause: Box<Qwen2StackError>,
+        rollback: KvBackendError,
+    },
     /// The bound adapter does not fit this stack.
     Adapter(Qwen2AdapterError),
     /// The MoE does not fit this stack, or routing found no live expert.
@@ -92,6 +103,19 @@ pub enum Qwen2StackError {
     /// A co-batched run needs one input per cache and an `order` that is a permutation of
     /// the request indices.
     InvalidBatch,
+    /// A stage's layer span is empty, reversed or reaches past the stack.
+    InvalidLayerSpan {
+        start: usize,
+        end: usize,
+        layers: usize,
+    },
+    /// A stage input whose row count or width does not match the declared rows and the
+    /// stack's hidden size.
+    StageInputShape {
+        values: usize,
+        rows: usize,
+        hidden: usize,
+    },
 }
 
 impl From<Qwen2AdapterError> for Qwen2StackError {
@@ -170,6 +194,63 @@ pub struct Qwen2StackInput {
 pub struct Qwen2StackOutput {
     /// One logits vector (`vocab_size` long) per input token.
     pub logits: Vec<Vec<f32>>,
+    pub first_position: usize,
+    pub next_position: usize,
+}
+
+/// How many rows a stage run takes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StageRows {
+    /// Any number of rows (a prompt, or a chunk of it).
+    Prefill,
+    /// Exactly one row (a decode step).
+    DecodeStep,
+}
+
+/// One run of a stage: which layers, over which residual rows.
+#[derive(Clone, Debug)]
+pub struct StageRun<'a> {
+    /// The layers to run.
+    pub span: std::ops::Range<usize>,
+    /// `rows` x hidden size, row-major.
+    pub residual: &'a [f32],
+    pub rows: usize,
+    pub shape: StageRows,
+    /// The sequence position of each row as the frame declared it. When set, the rows must
+    /// be exactly the next positions of the cache (no gap, no repeat).
+    pub positions: Option<&'a [u32]>,
+}
+
+impl<'a> StageRun<'a> {
+    pub fn new(
+        span: std::ops::Range<usize>,
+        residual: &'a [f32],
+        rows: usize,
+        shape: StageRows,
+    ) -> Self {
+        Self {
+            span,
+            residual,
+            rows,
+            shape,
+            positions: None,
+        }
+    }
+
+    /// Require the rows to sit at these positions.
+    pub fn at_positions(mut self, positions: &'a [u32]) -> Self {
+        self.positions = Some(positions);
+        self
+    }
+}
+
+/// What a stage returns: the residual rows after its layers, and where they sit in the
+/// sequence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Qwen2StageOutput {
+    /// `rows` x hidden size, row-major.
+    pub residual: Vec<f32>,
+    pub rows: usize,
     pub first_position: usize,
     pub next_position: usize,
 }
@@ -383,6 +464,156 @@ impl Qwen2PagedStack {
         .with_key_encoding(self.config.key_encoding))
     }
 
+    /// Check that `span` is a non-empty run of this stack's layers.
+    pub fn validate_layer_span(
+        &self,
+        span: &std::ops::Range<usize>,
+    ) -> Result<(), Qwen2StackError> {
+        if span.start >= span.end || span.end > self.config.num_layers {
+            return Err(Qwen2StackError::InvalidLayerSpan {
+                start: span.start,
+                end: span.end,
+                layers: self.config.num_layers,
+            });
+        }
+        Ok(())
+    }
+
+    /// The cache schema of a stage that holds the layers `span` only (layer `k` of the
+    /// cache is stack layer `span.start + k`), the same model, shape and key encoding as
+    /// [`Self::kv_schema`] otherwise.
+    pub fn stage_kv_schema(
+        &self,
+        span: &std::ops::Range<usize>,
+        model: ModelVersion,
+        adapter: AdapterVersion,
+        device: DeviceId,
+    ) -> Result<KvTensorSchema, Qwen2StackError> {
+        self.validate_layer_span(span)?;
+        let mut schema = self.kv_schema(model, adapter, device)?;
+        schema.layer_count = span.len();
+        Ok(schema)
+    }
+
+    /// The embedding rows of `tokens`, row-major (`tokens.len()` x hidden size): the input
+    /// of the first stage.
+    pub fn embed_tokens(&self, tokens: &[u32]) -> Result<Vec<f32>, Qwen2StackError> {
+        let hidden = self.config.layer.hidden_size;
+        let mut rows = Vec::with_capacity(tokens.len() * hidden);
+        for token in tokens {
+            if *token as usize >= self.config.vocab_size {
+                return Err(Qwen2StackError::TokenOutOfVocabulary {
+                    token: *token,
+                    vocab_size: self.config.vocab_size,
+                });
+            }
+            let start = *token as usize * hidden;
+            rows.extend_from_slice(&self.weights.embedding[start..start + hidden]);
+        }
+        Ok(rows)
+    }
+
+    /// Run the layers `span` over `rows` residual rows (row-major, `rows` x hidden size),
+    /// one row at a time through the same per-layer path as the whole stack, appending the
+    /// rows' K/V for those layers to `cache` (a cache of [`Self::stage_kv_schema`]). Returns
+    /// the residual rows after the span. Running the spans `0..k` and `k..L` in turn, the
+    /// first on the embedding rows, is the whole stack, bit for bit: the same code runs
+    /// each layer with the same inputs; only the place the residual rows wait differs.
+    ///
+    /// **Atomic on failure.** If any row fails, the rows already appended to `cache` are
+    /// truncated away, so a failed run leaves the cache where it found it.
+    pub fn run_stage_in_regime<B: PagedKvTensorBackend>(
+        &self,
+        backend: &B,
+        cache: &mut B::Cache,
+        run: StageRun<'_>,
+        regime: &Qwen2RopeRegime,
+    ) -> Result<Qwen2StageOutput, Qwen2StackError> {
+        let StageRun {
+            span,
+            residual,
+            rows,
+            shape,
+            positions,
+        } = run;
+        let require_single_token = shape == StageRows::DecodeStep;
+        self.validate_layer_span(&span)?;
+        let hidden = self.config.layer.hidden_size;
+        if rows == 0 {
+            return Err(Qwen2StackError::EmptyInput);
+        }
+        if require_single_token && rows != 1 {
+            return Err(Qwen2StackError::DecodeNeedsOneToken { tokens: rows });
+        }
+        if rows.checked_mul(hidden) != Some(residual.len()) {
+            return Err(Qwen2StackError::StageInputShape {
+                values: residual.len(),
+                rows,
+                hidden,
+            });
+        }
+        if !self.config.layer.accepts_regime(regime) {
+            return Err(Qwen2StackError::RopeRegimeMismatch);
+        }
+        let (first_position, length_before) =
+            self.admit_cache(backend, cache, rows, regime, span.len())?;
+        if let Some(positions) = positions {
+            let contiguous = positions.len() == rows
+                && positions
+                    .iter()
+                    .enumerate()
+                    .all(|(offset, position)| *position as usize == first_position + offset);
+            if !contiguous {
+                return Err(Qwen2StackError::StagePositions {
+                    expected_first: first_position,
+                    rows,
+                });
+            }
+        }
+        let mut context = ForwardContext {
+            adapter: None,
+            loads: None,
+            trace: None,
+        };
+        let mut out = Vec::with_capacity(residual.len());
+        for row in residual.chunks_exact(hidden) {
+            match self.forward_layers(
+                backend,
+                cache,
+                span.clone(),
+                row.to_vec(),
+                regime.effective_base(),
+                &mut context,
+            ) {
+                Ok(done) => out.extend(done),
+                Err(error) => return Err(roll_back_run(backend, cache, length_before, error)),
+            }
+        }
+        Ok(Qwen2StageOutput {
+            residual: out,
+            rows,
+            first_position,
+            next_position: first_position + rows,
+        })
+    }
+
+    /// The logits of each residual row (row-major, `rows` x hidden size) after the last
+    /// layer: the final norm and the LM head, the tail of the last stage.
+    pub fn logits_from_residual(&self, residual: &[f32]) -> Result<Vec<Vec<f32>>, Qwen2StackError> {
+        let hidden = self.config.layer.hidden_size;
+        if residual.is_empty() || !residual.len().is_multiple_of(hidden) {
+            return Err(Qwen2StackError::StageInputShape {
+                values: residual.len(),
+                rows: residual.len() / hidden,
+                hidden,
+            });
+        }
+        residual
+            .chunks_exact(hidden)
+            .map(|row| self.project_logits_row(row))
+            .collect()
+    }
+
     /// Fix the effective RoPE regime of a request admitted with `prompt_tokens` prompt
     /// tokens and at most `max_new_tokens` generated tokens (doc 36 section D). Compute it
     /// once per request and pass the same value to every
@@ -461,6 +692,7 @@ impl Qwen2PagedStack {
         require_single_token: bool,
         regime: &Qwen2RopeRegime,
         binding: &Qwen2Binding<'_>,
+        layer_count: usize,
     ) -> Result<usize, Qwen2StackError> {
         if let Some(adapter) = binding.adapter {
             adapter.validate_for(&self.config)?;
@@ -486,6 +718,23 @@ impl Qwen2PagedStack {
                 vocab_size: self.config.vocab_size,
             });
         }
+        self.admit_cache(backend, cache, input.tokens.len(), regime, layer_count)
+            .map(|(first_position, _)| first_position)
+    }
+
+    /// The cache-side half of admission: the cache's schema and position against this stack
+    /// and the regime, for `rows` new rows of a cache that holds `layer_count` layers.
+    /// Returns the position of the first new row and the cache's sequence length before the
+    /// run (the two differ by the cache's position offset; a rollback truncates to the
+    /// length, not to the position).
+    fn admit_cache<B: PagedKvTensorBackend>(
+        &self,
+        backend: &B,
+        cache: &B::Cache,
+        rows: usize,
+        regime: &Qwen2RopeRegime,
+        layer_count: usize,
+    ) -> Result<(usize, usize), Qwen2StackError> {
         let before = backend.snapshot(cache)?;
         before.schema.validate_key_encoding()?;
         let found = before.schema.key_encoding();
@@ -496,7 +745,7 @@ impl Qwen2PagedStack {
             });
         }
         let layer = &self.config.layer;
-        if before.schema.layer_count != self.config.num_layers
+        if before.schema.layer_count != layer_count
             || before.schema.attention_heads != layer.num_attention_heads
             || before.schema.key_value_heads != layer.num_key_value_heads
             || before.schema.head_dim != self.config.head_dim()?
@@ -505,7 +754,7 @@ impl Qwen2PagedStack {
         {
             return Err(Qwen2StackError::CacheSchemaMismatch);
         }
-        let required = before.sequence_length + input.tokens.len();
+        let required = before.sequence_length.saturating_add(rows);
         if required > layer.max_position_embeddings {
             return Err(Qwen2StackError::ContextExceeded {
                 required,
@@ -513,15 +762,24 @@ impl Qwen2PagedStack {
             });
         }
 
-        let first_position = before.position_offset + before.sequence_length;
-        let end_position = first_position + input.tokens.len();
+        let first_position = before
+            .position_offset
+            .checked_add(before.sequence_length)
+            .ok_or(Qwen2StackError::CacheSchemaMismatch)?;
+        let end_position =
+            first_position
+                .checked_add(rows)
+                .ok_or(Qwen2StackError::RopeRegimeExceeded {
+                    required: usize::MAX,
+                    admitted: regime.admitted_sequence_length(),
+                })?;
         if end_position > regime.admitted_sequence_length() {
             return Err(Qwen2StackError::RopeRegimeExceeded {
                 required: end_position,
                 admitted: regime.admitted_sequence_length(),
             });
         }
-        Ok(first_position)
+        Ok((first_position, before.sequence_length))
     }
 
     fn run<B: PagedKvTensorBackend>(
@@ -541,6 +799,7 @@ impl Qwen2PagedStack {
             require_single_token,
             regime,
             binding,
+            self.config.num_layers,
         )?;
         let mut context = ForwardContext {
             adapter: binding.adapter,
@@ -642,7 +901,15 @@ impl Qwen2PagedStack {
         }
         let mut firsts = Vec::with_capacity(count);
         for (cache, input) in caches.iter().zip(&inputs) {
-            firsts.push(self.admit_request(backend, cache, input, false, regime, binding)?);
+            firsts.push(self.admit_request(
+                backend,
+                cache,
+                input,
+                false,
+                regime,
+                binding,
+                self.config.num_layers,
+            )?);
         }
         let mut counts = self
             .moe
@@ -699,6 +966,43 @@ impl Qwen2PagedStack {
         theta: f32,
         context: &mut ForwardContext<'_, '_>,
     ) -> Result<Vec<f32>, Qwen2StackError> {
+        let hidden = self.config.layer.hidden_size;
+        let start = token as usize * hidden;
+        let residual = self.weights.embedding[start..start + hidden].to_vec();
+        let residual = self.forward_layers(
+            backend,
+            cache,
+            0..self.config.num_layers,
+            residual,
+            theta,
+            context,
+        )?;
+        self.project_logits_row(&residual)
+    }
+
+    /// The final norm and the LM head over one residual row.
+    fn project_logits_row(&self, residual: &[f32]) -> Result<Vec<f32>, Qwen2StackError> {
+        let final_hidden = rms_norm(
+            residual,
+            &self.weights.final_norm,
+            self.config.layer.rms_norm_eps,
+        )?;
+        Ok(self.weights.lm_head.apply(&final_hidden)?)
+    }
+
+    /// Run the layers `span` over one token's residual row and append that token's K/V rows
+    /// for exactly those layers to `cache`, whose layer `k` is stack layer `span.start + k`.
+    /// With the whole span this is the single-pod path: [`Self::forward_token`] is the
+    /// embedding, this, and the head.
+    fn forward_layers<B: PagedKvTensorBackend>(
+        &self,
+        backend: &B,
+        cache: &mut B::Cache,
+        span: std::ops::Range<usize>,
+        mut residual: Vec<f32>,
+        theta: f32,
+        context: &mut ForwardContext<'_, '_>,
+    ) -> Result<Vec<f32>, Qwen2StackError> {
         let layer_config = &self.config.layer;
         let heads = layer_config.num_attention_heads;
         let kv_heads = layer_config.num_key_value_heads;
@@ -711,12 +1015,18 @@ impl Qwen2PagedStack {
         let state = backend.snapshot(cache)?;
         let cached = state.sequence_length;
         let position = state.position_offset + cached;
-        let start = token as usize * hidden;
-        let mut residual = self.weights.embedding[start..start + hidden].to_vec();
-        let mut stored_keys = Vec::with_capacity(self.config.num_layers);
-        let mut stored_values = Vec::with_capacity(self.config.num_layers);
+        let mut stored_keys = Vec::with_capacity(span.len());
+        let mut stored_values = Vec::with_capacity(span.len());
 
-        for (index, weights) in self.weights.layers.iter().enumerate() {
+        for (index, weights) in self
+            .weights
+            .layers
+            .iter()
+            .enumerate()
+            .skip(span.start)
+            .take(span.len())
+        {
+            let local = index - span.start;
             let decoder = &weights.decoder;
             let normalized = rms_norm(&residual, &decoder.input_layernorm, eps)?;
             let mut query = decoder.query.apply(&normalized)?;
@@ -752,7 +1062,7 @@ impl Qwen2PagedStack {
             if cached > 0 {
                 let snapshot_layer = state
                     .layers
-                    .get(index)
+                    .get(local)
                     .ok_or(KvBackendError::SnapshotSchemaMismatch)?;
                 if snapshot_layer.keys.values.len() != cached * kv_width
                     || snapshot_layer.values.values.len() != cached * kv_width
@@ -823,7 +1133,7 @@ impl Qwen2PagedStack {
             residual = add(&after_attention, &mlp)?;
 
             stored_keys.push(TensorRef {
-                layer: index,
+                layer: local,
                 shape: vec![1, kv_width],
                 values: match encoding {
                     KvKeyEncoding::PostRope => rotated_key,
@@ -831,15 +1141,13 @@ impl Qwen2PagedStack {
                 },
             });
             stored_values.push(TensorRef {
-                layer: index,
+                layer: local,
                 shape: vec![1, kv_width],
                 values: value,
             });
         }
         backend.append(cache, &stored_keys, &stored_values)?;
-
-        let final_hidden = rms_norm(&residual, &self.weights.final_norm, eps)?;
-        Ok(self.weights.lm_head.apply(&final_hidden)?)
+        Ok(residual)
     }
 }
 
@@ -882,6 +1190,24 @@ impl<B: PagedKvTensorBackend> KvContinuationExecutor<B> for Qwen2PagedStack {
             &Qwen2Binding::default(),
             None,
         )
+    }
+}
+
+/// Return `cache` to `length_before` (a sequence length, not a position: a cache restored
+/// at a position offset holds fewer rows than its next position) after a failed run, and
+/// say so if that is impossible. The failed run's own error stays the cause.
+fn roll_back_run<B: PagedKvTensorBackend>(
+    backend: &B,
+    cache: &mut B::Cache,
+    length_before: usize,
+    cause: Qwen2StackError,
+) -> Qwen2StackError {
+    match backend.truncate(cache, length_before) {
+        Ok(()) => cause,
+        Err(rollback) => Qwen2StackError::RollbackFailed {
+            cause: Box::new(cause),
+            rollback,
+        },
     }
 }
 
@@ -957,7 +1283,7 @@ impl SeededStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Qwen2Activation, Qwen2RopeScaling};
+    use crate::{InMemoryPagedKvBackend, KvTensorBackend, Qwen2Activation, Qwen2RopeScaling};
 
     fn config(encoding: KvKeyEncoding) -> Qwen2StackConfig {
         Qwen2StackConfig {
@@ -978,6 +1304,101 @@ mod tests {
             key_encoding: encoding,
             qk_norm: Qwen2QkNorm::Disabled,
         }
+    }
+
+    fn offset_cache(
+        backend: &InMemoryPagedKvBackend,
+        stack: &Qwen2PagedStack,
+        offset: usize,
+    ) -> <InMemoryPagedKvBackend as crate::KvTensorBackend>::Cache {
+        let schema = stack
+            .stage_kv_schema(
+                &(0..2),
+                ptr_types::ModelVersion::from("m"),
+                ptr_types::AdapterVersion::from("base"),
+                ptr_types::DeviceId::from("cpu"),
+            )
+            .unwrap();
+        let binding = crate::KvPageBinding {
+            model: schema.model.clone(),
+            adapter: schema.adapter.clone(),
+            generation: ptr_types::Generation(1),
+            execution_manifest: [9; 32],
+            principal: ptr_types::PrincipalId::from("alice"),
+            device: schema.device.clone(),
+            dtype: crate::KvTensorDType::F32,
+            page_tokens: crate::KvPageSize::new(4).unwrap(),
+        };
+        let mut cache = backend.allocate_bound(schema, 32, binding).unwrap();
+        cache.position_offset = offset;
+        cache
+    }
+
+    #[test]
+    fn a_rollback_truncates_to_the_length_not_the_position_of_an_offset_cache() {
+        let stack = Qwen2PagedStack::reference(config(KvKeyEncoding::PreRope), 3).unwrap();
+        let backend = InMemoryPagedKvBackend::new(crate::KvPageSize::new(4).unwrap());
+        let regime = stack.admit_rope_regime(32, 0).unwrap();
+        let mut cache = offset_cache(&backend, &stack, 5);
+        let embedded = stack.embed_tokens(&[1, 2, 3]).unwrap();
+        fn run(rows: usize, residual: &[f32]) -> StageRun<'_> {
+            StageRun::new(0..2, residual, rows, StageRows::Prefill)
+        }
+        let first = stack
+            .run_stage_in_regime(&backend, &mut cache, run(3, &embedded), &regime)
+            .unwrap();
+        // The cache holds 3 rows at positions 5..8.
+        assert_eq!((first.first_position, first.next_position), (5, 8));
+        let (position, length) = stack.admit_cache(&backend, &cache, 2, &regime, 2).unwrap();
+        assert_eq!((position, length), (8, 3));
+        let advanced = stack
+            .run_stage_in_regime(&backend, &mut cache, run(2, &embedded[..16]), &regime)
+            .unwrap();
+        assert_eq!(advanced.next_position, 10);
+        assert_eq!(cache.sequence_length, 5);
+        // Rolling the second run back must leave the 3 rows of the first run.
+        let cause = Qwen2StackError::EmptyInput;
+        let error = roll_back_run(&backend, &mut cache, length, cause.clone());
+        assert_eq!(error, cause);
+        assert_eq!(cache.sequence_length, 3);
+        assert_eq!(cache.position_offset, 5);
+        // The old value (the position, 8) is not a length of this cache.
+        assert_eq!(
+            backend.truncate(&mut cache, position),
+            Err(KvBackendError::InvalidTruncation)
+        );
+    }
+
+    #[test]
+    fn an_offset_that_overflows_the_position_is_a_typed_refusal_not_a_panic() {
+        let stack = Qwen2PagedStack::reference(config(KvKeyEncoding::PreRope), 3).unwrap();
+        let backend = InMemoryPagedKvBackend::new(crate::KvPageSize::new(4).unwrap());
+        let regime = stack.admit_rope_regime(32, 0).unwrap();
+        let cache = offset_cache(&backend, &stack, usize::MAX);
+        assert!(matches!(
+            stack.admit_cache(&backend, &cache, 2, &regime, 2),
+            Err(Qwen2StackError::CacheSchemaMismatch | Qwen2StackError::RopeRegimeExceeded { .. })
+        ));
+        let cache = offset_cache(&backend, &stack, usize::MAX - 1);
+        assert!(stack.admit_cache(&backend, &cache, 2, &regime, 2).is_err());
+    }
+
+    #[test]
+    fn a_rollback_that_fails_is_reported_with_its_cause_and_leaves_no_silent_state() {
+        let stack = Qwen2PagedStack::reference(config(KvKeyEncoding::PreRope), 3).unwrap();
+        let backend = InMemoryPagedKvBackend::new(crate::KvPageSize::new(4).unwrap());
+        let mut cache = offset_cache(&backend, &stack, 5);
+        // A revoked cache refuses every truncation: the injected fault.
+        backend.revoke_runtime_lease(&mut cache).unwrap();
+        let cause = Qwen2StackError::EmptyInput;
+        let error = roll_back_run(&backend, &mut cache, 0, cause.clone());
+        assert_eq!(
+            error,
+            Qwen2StackError::RollbackFailed {
+                cause: Box::new(cause),
+                rollback: KvBackendError::StaleLease,
+            }
+        );
     }
 
     #[test]

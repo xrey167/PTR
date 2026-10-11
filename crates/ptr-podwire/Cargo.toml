@@ -32,6 +32,9 @@ ptr-runtime = { workspace = true }
 # The same pin ptr-ledger and ptr-execwire use. Three pins of a hash would be
 # three digests for the bytes they are all taken over.
 sha2 = { version = "=0.11.0", default-features = false }
+# Each chunk of an activation frame carries the signature of the upstream runtime over its
+# envelope; the same pin the runtime verifies identity and policy signatures with.
+ed25519-dalek = { workspace = true }
 ptr-net = { workspace = true, optional = true }
 # Only for a deadline on one exchange. How long to wait for an answer is this
 # layer's policy, so the clock belongs here rather than in the transport.

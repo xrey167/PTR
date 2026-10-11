@@ -74,6 +74,9 @@ fn main() {
         "moe-expert-kv-revocation" => {
             experiments::r010::run(strict_or_exit(seed_arg(&args, "moe-expert-kv-revocation")))
         }
+        // The harness of E007: `<seed>`, `<sequences> <seed>` (the mutation checker's form) or
+        // `--preflight`; no default seed, and a typo stops the run.
+        "split-pod-kv" => experiments::e007::run(&args[2..]),
         // The harness of R012: one seed per run, no default seed.
         "approximate-taint-containment" => experiments::r012::run(strict_or_exit(seed_arg(
             &args,

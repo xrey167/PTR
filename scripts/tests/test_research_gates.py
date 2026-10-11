@@ -5162,7 +5162,9 @@ LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001",
     # The successor study of the interrupted M003-v3 (A0-baseline-v3-m003); no sweep of its own.
     "M003-v4",
     "L001-v2",
-    "F007")
+    "F007",
+    # E007 (split-Pod KV, CPU part); E008 is planned and not listed in experiments/preregistration.toml.
+    "E007")
 
 # The CPU stage-A experiments of the consciousness track (C004, C007 = C002 stage A, C008 = C003 stage A): they preregister (experiments/preregistration.toml) and
 # are built to freeze-ready. Like C001 in LISTED_UNFROZEN, they stay listed after their freeze: the list names the experiments that preregister.
