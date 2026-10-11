@@ -31,3 +31,4 @@ id = "nemo-relay"
 source = "external"
 status = "to-evaluate"
 evidence = []
+note = "owner licence decision required (MIT-0 dependency borrow-or-share is outside the deny.toml allow list); not to be selected or run until decided; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
