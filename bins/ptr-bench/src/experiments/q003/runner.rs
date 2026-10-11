@@ -53,8 +53,8 @@ pub struct Options {
     pub resume_dir: Option<PathBuf>,
 }
 
-/// The longest the harness waits for one reply of a driver.
-const REPLY_TIMEOUT: Duration = Duration::from_secs(3600);
+/// The longest the harness waits for one reply of a driver (`params::REQUEST_TIMEOUT_SECONDS`).
+const REPLY_TIMEOUT: Duration = Duration::from_secs(params::REQUEST_TIMEOUT_SECONDS);
 
 #[derive(Default)]
 struct Ranks {
@@ -103,7 +103,7 @@ fn python_bridge(
     args: &[String],
     root: &std::path::Path,
 ) -> Result<Bridge, String> {
-    Bridge::spawn(name, program, args, root, REPLY_TIMEOUT)
+    Bridge::spawn(name, program, args, root, REPLY_TIMEOUT).map_err(String::from)
 }
 
 /// Start the reference driver exactly as a seed does (`python3` from `PATH`, same arguments).
@@ -121,7 +121,7 @@ pub(super) fn spawn_bm25(root: &std::path::Path) -> Result<Bridge, String> {
     python_bridge(
         "bm25",
         "python3",
-        &["experiments/retrieval/Q003-v2-postgres-hybrid/bm25_driver.py".to_string()],
+        &["experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py".to_string()],
         root,
     )
 }
@@ -306,13 +306,23 @@ impl<'a> Run<'a> {
         self.arm.server.clone()
     }
 
-    pub fn close(self) {
-        self.reference.close();
-        self.bm25.close();
+    /// End the drivers and the product arm. A driver that failed (it exited with a status other
+    /// than 0, or died before it answered the quit) is the harness's: the first such stop is the
+    /// result, after every driver and the arm were ended.
+    pub fn close(self) -> Result<(), String> {
+        let mut first: Option<String> = None;
+        let mut note = |ended: Result<(), super::watch::Stop>| {
+            if let Err(stop) = ended {
+                first.get_or_insert(stop.into());
+            }
+        };
+        note(self.reference.close());
+        note(self.bm25.close());
         if let Some(strong) = self.strong {
-            strong.close();
+            note(strong.close());
         }
         self.arm.finish();
+        first.map_or(Ok(()), Err)
     }
 
     fn note_error(&mut self, what: &str, error: &PgError) {
@@ -340,6 +350,7 @@ impl<'a> Run<'a> {
 
     /// The whole run.
     pub fn go(&mut self) -> Result<(), String> {
+        super::watch::monitor().phase("ingest");
         self.ingest(Phase::Commits);
         self.ingest(Phase::FirstSupersessions);
         self.ingest(Phase::SecondSupersessions);
@@ -393,6 +404,7 @@ impl<'a> Run<'a> {
     }
 
     fn checkpoint(&mut self, checkpoint: u8) -> Result<(), String> {
+        super::watch::monitor().phase(format!("checkpoint {checkpoint}: lifecycle checks"));
         self.cross_check_lifecycle();
         self.residual_rows();
         if checkpoint == 2 {
@@ -509,6 +521,7 @@ impl<'a> Run<'a> {
 
     /// Rebuild the three baseline indexes from the harness's live table.
     fn rebuild_baselines(&mut self, checkpoint: u8) -> Result<(), String> {
+        super::watch::monitor().phase(format!("checkpoint {checkpoint}: loading the baselines"));
         let pairs = self.oracle.live_pairs();
         let ids: Vec<String> = pairs
             .iter()
@@ -800,6 +813,7 @@ impl<'a> Run<'a> {
             .collect();
         let total = queries.len();
         for (done, (index, query)) in queries.into_iter().enumerate() {
+            super::watch::monitor().phase(format!("checkpoint {checkpoint}: query {done}/{total}"));
             if done % 50 == 0 {
                 eprintln!(
                     "{}: checkpoint {checkpoint}: query {done}/{total}, strong arm {} s so far",

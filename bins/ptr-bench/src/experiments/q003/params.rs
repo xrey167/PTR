@@ -2,7 +2,7 @@
 //!
 //! The constants mirror the keys of `[pinned_thresholds]` in the experiment's `config.toml`, which
 //! is read at compile time; the drift test fails when a constant differs from the file and when the
-//! file holds a key no constant mirrors. The harness serves Q003-v2, the successor of the superseded Q003.
+//! file holds a key no constant mirrors. The harness serves Q003-v3, the successor of the superseded Q003.
 
 // The thresholds complete the compiled table the drift test compares with the file; the harness
 // evaluates most of them in `metrics`, and the rest only echo the table.
@@ -10,15 +10,15 @@
 
 /// The experiment's configuration file, read at compile time.
 pub const CONFIG_TOML: &str =
-    include_str!("../../../../../experiments/retrieval/Q003-v2-postgres-hybrid/config.toml");
+    include_str!("../../../../../experiments/retrieval/Q003-v3-postgres-hybrid/config.toml");
 
 /// The experiment's manifest, read at compile time (the metric names come from it).
 pub const EXPERIMENT_TOML: &str =
-    include_str!("../../../../../experiments/retrieval/Q003-v2-postgres-hybrid/experiment.toml");
+    include_str!("../../../../../experiments/retrieval/Q003-v3-postgres-hybrid/experiment.toml");
 
 /// The experiment this harness runs for: the id in the result's `experiment` field, which
-/// `aggregate.py` and `criteria.toml` name. Q003-v2 succeeds Q003 (superseded) and keeps its harness.
-pub const EXPERIMENT_ID: &str = "Q003-v2";
+/// `aggregate.py` and `criteria.toml` name. Q003-v3 succeeds Q003 (superseded) and keeps its harness.
+pub const EXPERIMENT_ID: &str = "Q003-v3";
 
 /// The subcommand of the harness (`ptr-bench <BENCHMARK> <seed>`).
 pub const BENCHMARK: &str = "postgres-hybrid";
@@ -26,10 +26,10 @@ pub const BENCHMARK: &str = "postgres-hybrid";
 /// The runner's command, as the preregistration states it. `experiment.toml` carries it from the
 /// freeze on (until then its `entrypoint` is empty). The strong arm's interpreter and the models
 /// directory come from `PTR_Q003_STRONG_PYTHON` and `PTR_Q003_MODELS_ROOT`.
-pub const ENTRYPOINT: &str = "cargo run --release --locked -p ptr-bench --features postgres-experiments -- postgres-hybrid <seed>";
+pub const ENTRYPOINT: &str = "cargo run --release --locked -p ptr-bench --features postgres-experiments -- postgres-hybrid <seed> --strong-threads 1";
 
 pub const SEED_AGGREGATION: &str = "every_seed_must_pass";
-pub const SEEDS: [u64; 5] = [17, 29, 43, 71, 101];
+pub const SEEDS: [u64; 5] = [43, 71, 101, 131, 173];
 
 /// The frozen inputs, relative to the repository root, and their SHA-256. The harness hashes each
 /// file it reads at start-up and exits 2 on a mismatch.
@@ -141,14 +141,6 @@ pub const RECALL_EXACT_MARGIN_PERMILLE: i64 = 30;
 /// `workload_digest_mismatches`.
 pub const WORKLOAD_DIGESTS: [(u64, &str); 5] = [
     (
-        17,
-        "fdfe7b7405bf9bc09b1c53233d10a29bfa3c1ff1b67afb2f6f1e7972ac7d23cb",
-    ),
-    (
-        29,
-        "1abf7eaf710cfa64869ba8e93b461ff5fb467a6d6f75e9fabbf1b48b9486920d",
-    ),
-    (
         43,
         "31c46173e56d6eefb2f4e5336899f34dff452bd9f81f3d704aac623df90769dd",
     ),
@@ -160,13 +152,47 @@ pub const WORKLOAD_DIGESTS: [(u64, &str); 5] = [
         101,
         "918a27a7337e01afb733d1f757222015423418a9e91a5a35dda0f603244c47c9",
     ),
+    (
+        131,
+        "7cdbcfa0b102570b646fab2b03f67d145a915bdf822e89fbb1de9ec20175a2c4",
+    ),
+    (
+        173,
+        "81fd25a4599ae3175befff654daa16dfc3b0f2b9d34d04bd16f9517292e64582",
+    ),
 ];
 
-/// The pinned workload digest of a seed, if the seed is declared.
+/// The harness's own limits (`[harness_limits]` of `config.toml`; a drift test compares them). They
+/// are not thresholds: no rule reads them and no metric depends on them. A run that meets one ends
+/// with exit status 2 and a typed reason, never as a finding about the product. The request
+/// timeout bounds one exchange with a driver (write, flush and reply); the strong arm's
+/// cross-encoder costs about 8 CPU-seconds a query, so an unloaded request is far below it, and
+/// Q003-v2's completed seed 17 showed stretches of about 1,500 s a request on a loaded host. The
+/// deadline bounds the whole seed: planning model 200 strong queries at 8 CPU-seconds is under an
+/// hour, and the loaded host took 8.5 hours, so a day is the bound at which a run is stuck, not slow.
+pub const REQUEST_TIMEOUT_SECONDS: u64 = 7_200;
+pub const RUN_DEADLINE_SECONDS: u64 = 86_400;
+/// How often a run prints where it is (phase, request in flight, slowest request).
+pub const HEARTBEAT_SECONDS: u64 = 600;
+/// The torch threads of the strong driver when `--strong-threads` is not given (the driver's own default).
+pub const DEFAULT_STRONG_THREADS: u32 = 4;
+
+/// The development seed: not a declared seed, the seed the mutation checker and the development
+/// runs use (`seed` of `tests/mutations.toml`). Its workload digest is pinned (`[development_seed]`
+/// of `config.toml`, compared by a drift test) so that the mutation of the workload generator is
+/// seen at a seed that no experiment declares; it is Q003-v2's pin for seed 17, unchanged.
+pub const DEVELOPMENT_SEED: u64 = 17;
+pub const DEVELOPMENT_DIGESTS: [(u64, &str); 1] = [(
+    17,
+    "fdfe7b7405bf9bc09b1c53233d10a29bfa3c1ff1b67afb2f6f1e7972ac7d23cb",
+)];
+
+/// The pinned workload digest of a seed, if the seed is declared or is the development seed.
 pub fn pinned_digest(seed: u64) -> Option<&'static str> {
     WORKLOAD_DIGESTS
         .iter()
-        .find(|(declared, _)| *declared == seed)
+        .chain(DEVELOPMENT_DIGESTS.iter())
+        .find(|(pinned, _)| *pinned == seed)
         .map(|(_, digest)| *digest)
 }
 

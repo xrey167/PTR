@@ -30,10 +30,11 @@ pub mod pgarm;
 pub mod preflight;
 pub mod resume;
 pub mod runner;
+pub mod watch;
 pub mod workload;
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::layered_kv::emit::{count, judge, Check, Gaps, Json, Status, Tally};
 use data::Data;
@@ -122,14 +123,24 @@ pub fn execute(seed: u64, scale: Scale, options: &Options) -> Result<Report, Str
         }
     }
     let data = Data::load(&data::repo_root(), options.strong != StrongMode::Off)?;
+    // Both bounds are the harness's, not the product's: a request that is not answered ends with
+    // exit status 2 and a typed reason after `REQUEST_TIMEOUT_SECONDS`, the whole run after
+    // `RUN_DEADLINE_SECONDS`; every `HEARTBEAT_SECONDS` the run says where it is.
+    let _watchdog = watch::Watchdog::start(
+        watch::monitor(),
+        Duration::from_secs(params::RUN_DEADLINE_SECONDS),
+        Duration::from_secs(params::HEARTBEAT_SECONDS),
+        watch::stop_the_process,
+    );
     let mut run = Run::open(seed, &workload, &digest, &data, options, tally)?;
     let outcome = run.go();
     let server = run.server();
     let hellos = std::mem::take(&mut run.hellos);
     let (ingest_ns, register_ns, strong_ns) = (run.ingest_ns, run.register_ns, run.strong_ns);
     let tally = std::mem::replace(&mut run.tally, Tally::new(metrics::LIST));
-    run.close();
+    let closed = run.close();
     outcome?;
+    closed?;
 
     // The negative control: the no-live-join queries must have returned the planted rows.
     if tally.get("control_planted_returned") < 1 {
@@ -179,6 +190,18 @@ pub fn execute(seed: u64, scale: Scale, options: &Options) -> Result<Report, Str
                     ("mode", Json::str(options.strong.name())),
                     ("ran", Json::Bool(strong_ran)),
                     ("reranked", Json::Bool(options.strong == StrongMode::Full)),
+                    (
+                        "strong_threads",
+                        if strong_ran {
+                            Json::Int(i64::from(
+                                options
+                                    .strong_threads
+                                    .unwrap_or(params::DEFAULT_STRONG_THREADS),
+                            ))
+                        } else {
+                            Json::Null
+                        },
+                    ),
                     (
                         "resumed_queries",
                         Json::Int(tally.get("strong_results_resumed")),

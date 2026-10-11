@@ -18,7 +18,9 @@ PLACEHOLDER = "must-be-pinned-before-prepared"
 HEX64 = re.compile(r"[0-9a-f]{64}")
 # The statuses of a listed experiment from its freeze on; the test holds before the freeze (planned,
 # placeholders) and after it (pinned digests), and does not depend on which.
-FROZEN = ("prepared", "running", "completed", "failed")
+# Q003-v2 itself was frozen, prepared and then superseded (INVALID, incomplete; see its SUPERSEDED.md): the test holds in
+# every status from planned on.
+FROZEN = ("prepared", "running", "completed", "failed", "superseded")
 STATUSES = ("planned", *FROZEN)
 
 

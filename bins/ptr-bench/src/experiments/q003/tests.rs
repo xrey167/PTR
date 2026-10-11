@@ -2,12 +2,12 @@ use super::*;
 use crate::experiments::layered_kv::emit::{self, judge, Json, Status};
 
 const CRITERIA: &str =
-    include_str!("../../../../../experiments/retrieval/Q003-v2-postgres-hybrid/criteria.toml");
+    include_str!("../../../../../experiments/retrieval/Q003-v3-postgres-hybrid/criteria.toml");
 const MUTATIONS: &str = include_str!(
-    "../../../../../experiments/retrieval/Q003-v2-postgres-hybrid/tests/mutations.toml"
+    "../../../../../experiments/retrieval/Q003-v3-postgres-hybrid/tests/mutations.toml"
 );
 const DRAFT: &str =
-    include_str!("../../../../../experiments/retrieval/Q003-v2-postgres-hybrid/PREREGISTRATION.md");
+    include_str!("../../../../../experiments/retrieval/Q003-v3-postgres-hybrid/PREREGISTRATION.md");
 
 fn rules(table: &toml::Table, key: &str) -> Vec<String> {
     table[key]
@@ -386,6 +386,74 @@ fn the_compiled_parameters_are_the_pinned_thresholds_of_the_config() {
     );
 }
 
+/// The development seed (the mutation checker's) is no declared seed, yet its workload digest is
+/// pinned, so that the planted change of the workload generator is seen at a seed no experiment
+/// declares (it was the declared seed 17 of Q003-v2; Q003-v3 dropped it and the mutation went blind).
+#[test]
+fn the_development_seed_is_pinned_without_being_declared() {
+    let config: toml::Table = params::CONFIG_TOML.parse().expect("config.toml parses");
+    let development = config["development_seed"]
+        .as_table()
+        .expect("development_seed");
+    assert_eq!(development.len(), 2);
+    assert_eq!(
+        development.get("seed").and_then(toml::Value::as_integer),
+        Some(params::DEVELOPMENT_SEED as i64)
+    );
+    assert_eq!(params::DEVELOPMENT_DIGESTS.len(), 1);
+    let (seed, digest) = params::DEVELOPMENT_DIGESTS[0];
+    assert_eq!(seed, params::DEVELOPMENT_SEED);
+    assert_eq!(
+        development
+            .get("workload_digest")
+            .and_then(toml::Value::as_str),
+        Some(digest)
+    );
+    assert!(!params::SEEDS.contains(&params::DEVELOPMENT_SEED));
+    assert!(!config["pinned_thresholds"]
+        .as_table()
+        .unwrap()
+        .contains_key("workload_digest_seed_17"));
+    assert_eq!(
+        params::pinned_digest(params::DEVELOPMENT_SEED),
+        Some(digest)
+    );
+    assert_eq!(params::pinned_digest(1001), None);
+    // The workload of the development seed is the one pinned (the generator is unchanged).
+    let workload = Workload::generate(params::DEVELOPMENT_SEED, Shape::PINNED).expect("generates");
+    assert_eq!(workload.digest(params::DEVELOPMENT_SEED), digest);
+}
+
+/// The harness's own limits are the `[harness_limits]` of the config, and are no threshold.
+#[test]
+fn the_harness_limits_are_the_configs_and_are_no_threshold() {
+    let config: toml::Table = params::CONFIG_TOML.parse().expect("config.toml parses");
+    let limits = config["harness_limits"].as_table().expect("harness_limits");
+    let compiled = [
+        ("request_timeout_seconds", params::REQUEST_TIMEOUT_SECONDS),
+        ("run_deadline_seconds", params::RUN_DEADLINE_SECONDS),
+        ("heartbeat_seconds", params::HEARTBEAT_SECONDS),
+    ];
+    assert_eq!(limits.len(), compiled.len());
+    for (key, value) in compiled {
+        assert_eq!(
+            limits.get(key).and_then(toml::Value::as_integer),
+            Some(value as i64),
+            "{key}"
+        );
+    }
+    // The order that makes the bounds mean something: a heartbeat sooner than a request limit,
+    // a request limit sooner than the run's.
+    const { assert!(params::HEARTBEAT_SECONDS < params::REQUEST_TIMEOUT_SECONDS) };
+    const { assert!(params::REQUEST_TIMEOUT_SECONDS < params::RUN_DEADLINE_SECONDS) };
+    let pinned = config["pinned_thresholds"]
+        .as_table()
+        .expect("pinned_thresholds");
+    assert!(pinned
+        .keys()
+        .all(|key| !key.contains("timeout") && !key.contains("deadline")));
+}
+
 #[test]
 fn the_pinned_inputs_agree_with_the_baselines_own_configuration() {
     let root = data::repo_root();
@@ -432,15 +500,54 @@ fn the_hard_counters_of_the_mutation_plan_are_the_harnesss_and_each_is_expected_
     assert_eq!(plan["subcommand"].as_str(), Some(params::BENCHMARK));
     assert_eq!(plan["cases"].as_integer(), Some(400));
     let mutations = plan["mutation"].as_array().expect("mutations");
-    assert_eq!(mutations.len(), 19);
+    assert_eq!(mutations.len(), 28);
     for counter in metrics::HARD_COUNTERS {
         assert!(
-            mutations.iter().any(|m| m["expect"]
-                .as_array()
-                .expect("expect")
-                .iter()
-                .any(|name| name.as_str() == Some(counter))),
+            mutations.iter().any(|m| m
+                .get("expect")
+                .and_then(toml::Value::as_array)
+                .is_some_and(|names| names.iter().any(|name| name.as_str() == Some(counter)))),
             "{counter} is expected by no mutation"
+        );
+    }
+    // The harness-stop mutations name a typed reason instead of a counter, and each reason they
+    // name is one the harness can give; together they cover the stops of the bridge and the watchdog.
+    let tags: Vec<&str> = [
+        watch::StopReason::RequestTimeout,
+        watch::StopReason::DriverExited,
+        watch::StopReason::RunDeadline,
+        watch::StopReason::DriverRefused,
+        watch::StopReason::BadReply,
+    ]
+    .iter()
+    .map(|reason| reason.tag())
+    .collect();
+    let stops: Vec<&str> = mutations
+        .iter()
+        .filter_map(|m| m.get("expect_stop").and_then(toml::Value::as_str))
+        .collect();
+    assert_eq!(stops.len(), 8);
+    for tag in &tags {
+        assert!(stops.contains(tag), "{tag} is named by no stop mutation");
+    }
+    for stop in stops {
+        assert!(tags.contains(&stop), "{stop}");
+    }
+    // The thread-pin mutation is killed by the aggregator's validity rule, which names the pinned count.
+    let invalid: Vec<&str> = mutations
+        .iter()
+        .filter_map(|m| m.get("expect_invalid").and_then(toml::Value::as_str))
+        .collect();
+    assert_eq!(invalid, ["the strong arm recorded strong_threads 4,"]);
+    for mutation in mutations {
+        let named = ["expect", "expect_stop", "expect_invalid"]
+            .iter()
+            .filter(|key| mutation.get(**key).is_some())
+            .count();
+        assert_eq!(
+            named, 1,
+            "{}: names counters, a stop reason or a validity reason, exactly one of them",
+            mutation["name"]
         );
     }
     // Every falsifier names a hard counter or is restated by one, and every hard counter is a metric.
@@ -554,9 +661,10 @@ fn reduced_report() -> &'static Report {
 fn a_reduced_run_assembles_one_json_object_with_every_metric() {
     let report = reduced_report();
     assert!(!report.line.contains('\n'));
-    assert!(report
-        .line
-        .starts_with("{\"benchmark\":\"postgres-hybrid\",\"experiment\":\"Q003\""));
+    assert!(report.line.starts_with(&format!(
+        "{{\"benchmark\":\"postgres-hybrid\",\"experiment\":\"{}\"",
+        params::EXPERIMENT_ID
+    )));
     assert!(report.line.contains("\"harness_gaps\":[]"), "no gap");
     assert_eq!(int(&report.json, "seed"), 17);
     for name in metrics::METRIC_NAMES {
@@ -577,6 +685,11 @@ fn a_reduced_run_assembles_one_json_object_with_every_metric() {
         emit::resolve(&report.json, "procedure.strong_arm.mode"),
         Some(Json::Str(mode)) if mode == "no-rerank"
     ));
+    // The thread count of the strong driver is in the record (the driver's default when no flag).
+    assert_eq!(
+        int(&report.json, "procedure.strong_arm.strong_threads"),
+        i64::from(params::DEFAULT_STRONG_THREADS)
+    );
 }
 
 #[test]

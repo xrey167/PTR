@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-HERE = ROOT / "experiments" / "retrieval" / "Q003-v2-postgres-hybrid"
+HERE = ROOT / "experiments" / "retrieval" / "Q003-v3-postgres-hybrid"
 sys.path.insert(0, str(ROOT / "scripts"))
 
 spec = importlib.util.spec_from_file_location("q003_aggregate", HERE / "aggregate.py")
@@ -53,13 +53,13 @@ def passing_result(seed: int) -> dict:
     """A harness result in which every rule of the criteria holds, at the boundary where it can."""
     result = {
         "benchmark": "postgres-hybrid",
-        "experiment": "Q003-v2",
+        "experiment": "Q003-v3",
         "seed": seed,
         "scale": "pinned",
         "procedure": {
             "seed_is_declared": True,
             "shape_is_pinned": True,
-            "strong_arm": {"mode": "full", "ran": True, "reranked": True},
+            "strong_arm": {"mode": "full", "ran": True, "reranked": True, "strong_threads": 1},
         },
         "controls": {"no_live_join": {"required_rule_tripped": True}},
         "harness_gaps": [],
@@ -160,7 +160,7 @@ class CriteriaFileTests(unittest.TestCase):
         self.assertEqual(pinned["seeds"], SEEDS)
 
     def test_the_reference_result_holds_every_rule(self):
-        result = passing_result(17)
+        result = passing_result(131)
         for rule in CRITERIA["coverage"] + CRITERIA["falsifiers"]:
             self.assertTrue(aggregate.evaluate(result, rule), rule)
 
@@ -168,7 +168,7 @@ class CriteriaFileTests(unittest.TestCase):
         """No rule is vacuous: some value of its left counter breaks it."""
         for rule in CRITERIA["coverage"] + CRITERIA["falsifiers"]:
             left, op, right = aggregate.parse_rule(rule)
-            result = passing_result(17)
+            result = passing_result(131)
             value = aggregate.resolve(result, left)
             bound = int(right) if aggregate.NUMBER.fullmatch(right) else aggregate.resolve(result, right)
             put(result, left, bound - 1 if op == ">=" else value + 1)
@@ -297,20 +297,20 @@ class VerdictTests(unittest.TestCase):
             self.assertIn(rule, CRITERIA["falsifiers"])
         self.assertIn("live_probe_lexical_self_hits >= 45", CRITERIA["coverage"])
         results = clean_seeds()
-        put(results[17], "live_probe_lexical_self_hits", 44)
-        self.assertEqual(self.verdict(results, {17: 1})["verdict"], aggregate.FALSIFIED)
+        put(results[131], "live_probe_lexical_self_hits", 44)
+        self.assertEqual(self.verdict(results, {131: 1})["verdict"], aggregate.FALSIFIED)
 
     def test_a_mismatch_counter_that_is_zero_leaves_the_seed_valid_and_a_real_falsification_still_wins(self):
         for counter in INTEGRITY_COUNTERS:
             results = clean_seeds()
-            put(results[17], counter, 0)
-            self.assertTrue(judged(results)[SEEDS.index(17)]["valid"])
-            put(results[29], counter, 1)  # harness defect on one seed ...
+            put(results[131], counter, 0)
+            self.assertTrue(judged(results)[SEEDS.index(131)]["valid"])
+            put(results[173], counter, 1)  # harness defect on one seed ...
             put(results[43], "stale_hits", 1)  # ... and a falsification on another
-            verdict = self.verdict(results, {29: 1, 43: 1})
+            verdict = self.verdict(results, {173: 1, 43: 1})
             self.assertEqual(verdict["verdict"], aggregate.FALSIFIED)
             self.assertEqual(verdict["falsified_seeds"], [43])
-            self.assertEqual(verdict["invalid_seeds"], [29])
+            self.assertEqual(verdict["invalid_seeds"], [173])
 
     def test_a_missing_seed_is_invalid(self):
         results = clean_seeds()
@@ -332,8 +332,8 @@ class VerdictTests(unittest.TestCase):
             lambda result: result.update(retrieval_hits=20),
         ):
             results = clean_seeds()
-            damage(results[29])
-            judgement = judged(results)[SEEDS.index(29)]
+            damage(results[173])
+            judgement = judged(results)[SEEDS.index(173)]
             self.assertFalse(judgement["valid"])
             self.assertEqual(self.verdict(results)["verdict"], aggregate.INVALID)
 
@@ -358,26 +358,41 @@ class VerdictTests(unittest.TestCase):
             lambda result: result["procedure"]["strong_arm"].update(ran=False),
             lambda result: result["procedure"]["strong_arm"].update(reranked=False),
             lambda result: result["procedure"].pop("strong_arm"),
+            lambda result: result["procedure"]["strong_arm"].update(strong_threads=4),
+            lambda result: result["procedure"]["strong_arm"].update(strong_threads=2),
+            lambda result: result["procedure"]["strong_arm"].update(strong_threads=None),
+            lambda result: result["procedure"]["strong_arm"].update(strong_threads=True),
+            lambda result: result["procedure"]["strong_arm"].update(strong_threads="1"),
+            lambda result: result["procedure"]["strong_arm"].update(strong_threads=1.0),
+            lambda result: result["procedure"]["strong_arm"].pop("strong_threads"),
         ):
             results = clean_seeds()
-            damage(results[17])
+            damage(results[131])
             self.assertEqual(self.verdict(results)["verdict"], aggregate.INVALID)
+
+    def test_a_strong_thread_count_other_than_one_is_a_validity_failure_on_every_declared_seed(self):
+        for seed in SEEDS:
+            results = clean_seeds()
+            results[seed]["procedure"]["strong_arm"]["strong_threads"] = 4
+            verdict = self.verdict(results)
+            self.assertEqual(verdict["verdict"], aggregate.INVALID, seed)
+            self.assertEqual(verdict["invalid_seeds"], [seed])
 
     def test_a_control_that_returned_no_planted_row_is_the_harnesss_failure_not_a_finding(self):
         results = clean_seeds()
-        put(results[17], "control_planted_returned", 0)
-        results[17]["controls"]["no_live_join"]["required_rule_tripped"] = False
-        verdict = self.verdict(results, {17: 1})
+        put(results[131], "control_planted_returned", 0)
+        results[131]["controls"]["no_live_join"]["required_rule_tripped"] = False
+        verdict = self.verdict(results, {131: 1})
         self.assertEqual(verdict["verdict"], aggregate.INVALID)
-        self.assertEqual(verdict["invalid_seeds"], [17])
+        self.assertEqual(verdict["invalid_seeds"], [131])
 
     def test_an_exit_status_that_disagrees_with_the_rules_is_invalid(self):
-        self.assertEqual(self.verdict(clean_seeds(), {17: 1})["verdict"], aggregate.INVALID)
+        self.assertEqual(self.verdict(clean_seeds(), {131: 1})["verdict"], aggregate.INVALID)
         results = clean_seeds()
-        put(results[17], "late_write_accepted", 1)
-        self.assertEqual(self.verdict(results, {17: 0})["verdict"], aggregate.INVALID)
-        self.assertEqual(self.verdict(clean_seeds(), {17: 2})["verdict"], aggregate.INVALID)
-        self.assertEqual(self.verdict(clean_seeds(), {17: None})["verdict"], aggregate.INVALID)
+        put(results[131], "late_write_accepted", 1)
+        self.assertEqual(self.verdict(results, {131: 0})["verdict"], aggregate.INVALID)
+        self.assertEqual(self.verdict(clean_seeds(), {131: 2})["verdict"], aggregate.INVALID)
+        self.assertEqual(self.verdict(clean_seeds(), {131: None})["verdict"], aggregate.INVALID)
 
     def test_a_seed_without_a_result_is_invalid(self):
         results = clean_seeds()
@@ -386,11 +401,11 @@ class VerdictTests(unittest.TestCase):
 
     def test_a_falsified_seed_beats_an_invalid_one(self):
         results = clean_seeds()
-        put(results[17], "stale_hits", 1)
-        results[29] = None
-        verdict = self.verdict(results, {17: 1, 29: 2})
+        put(results[131], "stale_hits", 1)
+        results[173] = None
+        verdict = self.verdict(results, {131: 1, 173: 2})
         self.assertEqual(verdict["verdict"], aggregate.FALSIFIED)
-        self.assertEqual(verdict["invalid_seeds"], [29])
+        self.assertEqual(verdict["invalid_seeds"], [173])
 
     def test_judgements_do_not_alias_their_inputs(self):
         results = clean_seeds()
@@ -426,23 +441,24 @@ class MutationEvidenceTests(unittest.TestCase):
 
     def test_a_falsified_seed_is_falsified_whatever_the_mutation_evidence(self):
         results = clean_seeds()
-        put(results[17], "product_panics", 4)
-        verdict = aggregate.decide(judged(results, {17: 1}), PASSED, SEEDS, None, PLANNED)
+        put(results[131], "product_panics", 4)
+        verdict = aggregate.decide(judged(results, {131: 1}), PASSED, SEEDS, None, PLANNED)
         self.assertEqual(verdict["verdict"], aggregate.FALSIFIED)
         self.assertFalse(verdict["mutations_ok"])
 
     def test_the_plan_lists_the_mutations_the_evidence_must_count(self):
-        self.assertEqual(PLANNED, 19)
+        # Q003-v2's 19 counter mutations and the 5 harness stops of Q003-v3 (`expect_stop`).
+        self.assertEqual(PLANNED, 28)
         self.assertEqual(MUTATIONS["subcommand"], aggregate.BENCHMARK)
         names = [mutation["name"] for mutation in MUTATIONS["mutation"]]
         self.assertEqual(len(names), len(set(names)))
         for mutation in MUTATIONS["mutation"]:
-            self.assertTrue(mutation["expect"], mutation["name"])
-            for counter in mutation["expect"]:
+            self.assertTrue(mutation.get("expect") or mutation.get("expect_stop") or mutation.get("expect_invalid"), mutation["name"])
+            for counter in mutation.get("expect", []):
                 self.assertIn(counter, MUTATIONS["hard_counters"], mutation["name"])
         for counter in MUTATIONS["hard_counters"]:
             self.assertTrue(
-                any(counter in mutation["expect"] for mutation in MUTATIONS["mutation"]),
+                any(counter in mutation.get("expect", []) for mutation in MUTATIONS["mutation"]),
                 f"{counter} is expected by no mutation",
             )
         harness = [m for m in MUTATIONS["mutation"] if m["file"].startswith("bins/ptr-bench/")]
@@ -453,11 +469,11 @@ class Q003Tests(unittest.TestCase):
     def test_the_reference_falling_short_falsifies_and_the_strong_baseline_never_gates(self):
         path = "recall10_pg_deficit_vs_reference_permille"
         results = clean_seeds()
-        put(results[17], path, 31)
-        verdict = aggregate.decide(judged(results, {17: 1}), PASSED, SEEDS, KILLED, PLANNED)
+        put(results[131], path, 31)
+        verdict = aggregate.decide(judged(results, {131: 1}), PASSED, SEEDS, KILLED, PLANNED)
         self.assertEqual(verdict["verdict"], aggregate.FALSIFIED, path)
-        put(results[17], path, 30)
-        verdict = aggregate.decide(judged(results, {17: 1}), PASSED, SEEDS, KILLED, PLANNED)
+        put(results[131], path, 30)
+        verdict = aggregate.decide(judged(results, {131: 1}), PASSED, SEEDS, KILLED, PLANNED)
         self.assertEqual(verdict["verdict"], aggregate.INVALID, "exit 1 with every rule holding disagrees")
         judged_text = " ".join(CRITERIA["coverage"] + CRITERIA["falsifiers"])
         for descriptive in ("vs_strong", "recall10_strong", "on_strong_subset", "ndcg10_strong"):
@@ -509,9 +525,10 @@ class Q003Tests(unittest.TestCase):
             "912",
             "projector_residual_rows",
             "discordant queries",
-            "seed 17 was run end to end",
-            "every mutation run",
-            "final-harness dry run was the pilot seed 1001",
+            "were never run against PostgreSQL before the freeze",
+            "blind on all five",
+            "seeds 17 and 29",
+            "steered no rule",
             "about 0.7 percent over the five seeds",
             "10 to 16 percent of seeds",
             "sensitivity control",
@@ -529,8 +546,8 @@ class Q003Tests(unittest.TestCase):
 class ReportTests(unittest.TestCase):
     def test_the_report_names_the_verdict_and_every_failed_rule(self):
         results = clean_seeds()
-        put(results[17], "stale_hits", 1)
-        seeds = judged(results, {17: 1})
+        put(results[131], "stale_hits", 1)
+        seeds = judged(results, {131: 1})
         verdict = aggregate.decide(seeds, PASSED, SEEDS, KILLED, PLANNED)
         text = aggregate.report(verdict, seeds, PASSED, KILLED)
         self.assertIn("FALSIFIED", text)
@@ -568,11 +585,11 @@ class PinWorkloadTests(unittest.TestCase):
 
     def test_a_pin_that_is_missing_is_refused(self):
         with self.assertRaises(SystemExit):
-            self.pin.pin_config("x = 1\n", {17: "0" * 64})
+            self.pin.pin_config("x = 1\n", {131: "0" * 64})
         with self.assertRaises(SystemExit):
-            self.pin.pin_config('workload_digest_seed_17 = "' + "0" * 64 + '"\n', {17: "0" * 64})
+            self.pin.pin_config('workload_digest_seed_131 = "' + "0" * 64 + '"\n', {131: "0" * 64})
         with self.assertRaises(SystemExit):
-            self.pin.pin_params("pub const X: u8 = 1;\n", {17: "0" * 64})
+            self.pin.pin_params("pub const X: u8 = 1;\n", {131: "0" * 64})
 
 
 if __name__ == "__main__":

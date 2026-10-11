@@ -205,7 +205,7 @@ Sources: `experiments/README.md` (Preregistration, Runner), `experiments/preregi
 ### 3.2 Facts about listed runs that matter on this machine
 
 - Only experiments named in `experiments/preregistration.toml` get these protections. Today
-  the list holds S003, F003, Q003-v2 (successor of the superseded Q003), R004, M008, E005, R007, R009 to R012 and the A0 records.
+  the list holds S003, F003, Q003-v2 (superseded; the successor of the superseded Q003), Q003-v3 (the successor of the superseded Q003-v2), R004, M008, E005, R007, R009 to R012 and the A0 records.
   **None of M006, M010 to M016, R002, R003, R008, E001 to E004 or E006 is listed.**
   `CLAUDE.md`: unlisted prepared records are not covered by the freeze check. Listing them
   before the first prepared record is a project decision (OD-2).

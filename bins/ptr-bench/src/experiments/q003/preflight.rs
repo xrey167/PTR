@@ -166,16 +166,26 @@ fn imports_work(python: &str) -> Result<(), String> {
     }
 }
 
-fn strong_query(data: &Data, python: &str, models: &str) -> Result<(), String> {
+fn strong_query(
+    data: &Data,
+    python: &str,
+    models: &str,
+    threads: Option<u32>,
+) -> Result<(), String> {
     let root = repo_root();
-    let args = vec![
+    let mut args = vec![
         "research/baselines/strong_retrieval/driver.py".to_string(),
         "--reranker".to_string(),
         "bge".to_string(),
         "--models-root".to_string(),
         models.to_string(),
     ];
-    let mut bridge = Bridge::spawn("strong", python, &args, &root, REPLY_TIMEOUT)?;
+    if let Some(threads) = threads {
+        args.push("--threads".to_string());
+        args.push(threads.to_string());
+    }
+    let mut bridge =
+        Bridge::spawn("strong", python, &args, &root, REPLY_TIMEOUT).map_err(String::from)?;
     let outcome = (|| {
         let hello = bridge.hello()?;
         if resolve(&hello, "reranker.active") != Some(&Json::Bool(true)) {
@@ -213,8 +223,8 @@ fn strong_query(data: &Data, python: &str, models: &str) -> Result<(), String> {
         }
         Ok(())
     })();
-    bridge.close();
-    outcome
+    let closed = bridge.close().map_err(String::from);
+    outcome.and(closed)
 }
 
 /// One tiny load and one query through an already started reference or BM25 driver; `embedded`
@@ -257,15 +267,16 @@ fn reference_and_bm25(data: &Data) -> Result<(), String> {
         bridge_round(data, &mut reference, true)
             .map_err(|error| format!("reference driver: {error}"))
     })();
-    reference.close();
+    let closed = reference.close().map_err(String::from);
     outcome?;
+    closed?;
     let mut bm25 = spawn_bm25(&root)?;
     let outcome = (|| {
         bm25.hello()?;
         bridge_round(data, &mut bm25, false).map_err(|error| format!("BM25 driver: {error}"))
     })();
-    bm25.close();
-    outcome
+    let closed = bm25.close().map_err(String::from);
+    outcome.and(closed)
 }
 
 fn product_query(data: &Data) -> Result<(), String> {
@@ -335,7 +346,7 @@ pub fn run(options: &Options, environment: &dyn Fn(&str) -> Option<String>) -> R
         5,
         "one strong-arm query end to end through the driver, reranker included",
     );
-    strong_query(&data, &python, &models)?;
+    strong_query(&data, &python, &models, options.strong_threads)?;
     step(
         6,
         "the reference and BM25 drivers start from PATH and answer one query each",
@@ -387,11 +398,11 @@ mod tests {
         let root = repo_root();
         let mut bm25 = spawn_bm25(&root).expect("python3 starts the BM25 driver");
         let outcome = bridge_round(&data, &mut bm25, false);
-        bm25.close();
+        bm25.close().unwrap();
         assert_eq!(outcome, Ok(()));
         let mut reference = spawn_reference(&root).expect("python3 starts the reference driver");
         let outcome = bridge_round(&data, &mut reference, true);
-        reference.close();
+        reference.close().unwrap();
         assert_eq!(outcome, Ok(()));
     }
 
