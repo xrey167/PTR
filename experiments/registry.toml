@@ -513,4 +513,4 @@ status = "prepared"
 [[experiment]]
 id = "C008"
 path = "consciousness/C008-attention-schema-routing-cpu"
-status = "planned"
+status = "prepared"
