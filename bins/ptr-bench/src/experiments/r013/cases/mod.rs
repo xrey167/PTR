@@ -1,7 +1,7 @@
 //! The cases of R013: dormant seeds (`dormant`), lineage and transitive authority (`lineage`),
 //! in-flight calls racing a base-model or adapter invalidation (`inflight`) and the minimal
 //! attestor mechanism (`attestor`), each driving the PUBLIC runtime API on R011's
-//! [`fixture::Rt`] (a `PtrRuntime` over a durable `FileLedger` in a temporary directory).
+//! [`Rt`] (a `PtrRuntime` over a durable `FileLedger` in a temporary directory).
 //!
 //! Counting rules (R011's, restated):
 //!
