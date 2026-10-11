@@ -1,7 +1,7 @@
 //! The durable state of a Raft member across a stop in the middle of a write: a torn tail of
 //! the log, a snapshot installed or recorded and the process gone before the next file moved.
-use ptr_ledger::raft_node::RaftNode;
-use ptr_ledger::raft_storage::FileRaftStorage;
+use ptr_ledger::raft_node::{NoSnapshotPending, NodeFailed, RaftNode};
+use ptr_ledger::raft_storage::{FileRaftStorage, MAX_SNAPSHOT_BYTES};
 use ptr_ledger::LedgerEvent;
 use ptr_types::{CapsuleId, Generation, ProjectId};
 use raft::prelude::{Snapshot, SnapshotMetadata};
@@ -328,10 +328,275 @@ fn a_node_reopened_over_a_log_ending_below_its_commit_is_refused() {
     assert!(RaftNode::open(&temp.dir(), 1, &[1]).is_err());
 }
 
+#[test]
+fn a_log_cut_at_a_record_boundary_below_the_commit_is_refused_and_does_not_panic() {
+    let _turn = serial();
+    // A lost suffix or an older copy of the file ends cleanly: no torn record to notice.
+    let temp = Temp::new("boundary-cut");
+    let size = storage_with_records(&temp, 4, 4);
+    let log = temp.dir().join("log");
+    let bytes = std::fs::read(&log).unwrap();
+    std::fs::write(&log, &bytes[..(8 + 3 * size) as usize]).unwrap();
+    let refused = FileRaftStorage::open(&temp.dir(), &[1], &[]).expect_err("committed entry lost");
+    assert!(
+        refused.to_string().contains("below the committed index"),
+        "{refused}"
+    );
+    assert!(RaftNode::open(&temp.dir(), 1, &[1]).is_err());
+    // The same cut at or above the commit index is a shorter log, not a lost one.
+    let temp = Temp::new("boundary-cut-above");
+    let size = storage_with_records(&temp, 4, 2);
+    let log = temp.dir().join("log");
+    let bytes = std::fs::read(&log).unwrap();
+    std::fs::write(&log, &bytes[..(8 + 3 * size) as usize]).unwrap();
+    let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    assert_eq!(storage.wl().last_index(), 3);
+}
+
+#[test]
+fn files_past_their_size_bound_are_refused_before_they_are_read() {
+    let _turn = serial();
+    // The state file.
+    let temp = Temp::new("big-state");
+    with_entries(&temp, 2);
+    let state = std::fs::OpenOptions::new()
+        .write(true)
+        .open(temp.dir().join("state"))
+        .unwrap();
+    state.set_len(2 * 1024 * 1024).unwrap();
+    drop(state);
+    let refused = FileRaftStorage::open(&temp.dir(), &[1], &[]).expect_err("oversized state");
+    assert!(refused.to_string().contains("size bound"), "{refused}");
+
+    // The retained snapshot payload (sparse: no disk is used).
+    let temp = Temp::new("big-payload");
+    with_entries(&temp, 3);
+    {
+        let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+        storage.wl().record_snapshot(2, b"state".to_vec()).unwrap();
+    }
+    let files = snapshot_files(&temp);
+    let payload = std::fs::OpenOptions::new()
+        .write(true)
+        .open(temp.dir().join(&files[0]))
+        .unwrap();
+    payload.set_len(MAX_SNAPSHOT_BYTES as u64 + 1).unwrap();
+    drop(payload);
+    let refused = FileRaftStorage::open(&temp.dir(), &[1], &[]).expect_err("oversized payload");
+    assert!(refused.to_string().contains("size bound"), "{refused}");
+
+    // The log (sparse).
+    let temp = Temp::new("big-log");
+    with_entries(&temp, 2);
+    let log = std::fs::OpenOptions::new()
+        .write(true)
+        .open(temp.dir().join("log"))
+        .unwrap();
+    log.set_len(ptr_ledger::raft_storage::MAX_LOG_BYTES + 1)
+        .unwrap();
+    drop(log);
+    let refused = FileRaftStorage::open(&temp.dir(), &[1], &[]).expect_err("oversized log");
+    assert!(refused.to_string().contains("size bound"), "{refused}");
+}
+
+#[test]
+fn an_append_that_would_pass_the_log_bound_is_refused_before_a_byte_moves() {
+    let _turn = serial();
+    let temp = Temp::new("log-bound");
+    let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    let before = std::fs::read(temp.dir().join("log")).unwrap();
+    // Entries of the largest allowed size, until the file would pass its bound.
+    let big = |index: u64| raft::prelude::Entry {
+        index,
+        term: 1,
+        data: vec![0u8; ptr_ledger::raft_storage::MAX_ENTRY_BYTES],
+        ..Default::default()
+    };
+    let count = ptr_ledger::raft_storage::MAX_LOG_BYTES
+        / ptr_ledger::raft_storage::MAX_ENTRY_BYTES as u64
+        + 1;
+    let entries: Vec<_> = (1..=count).map(big).collect();
+    let refused = storage.wl().append(&entries).expect_err("past the bound");
+    assert!(refused.to_string().contains("size bound"), "{refused}");
+    assert_eq!(std::fs::read(temp.dir().join("log")).unwrap(), before);
+    assert!(
+        !storage.wl().is_poisoned(),
+        "a refusal before any write is not a poisoning"
+    );
+}
+
+#[test]
+fn leftover_scratch_files_are_removed_at_open_and_foreign_files_are_not() {
+    let _turn = serial();
+    let temp = Temp::new("leftovers");
+    with_entries(&temp, 2);
+    let dir = temp.dir();
+    for name in ["state.tmp", "log.rewrite", "snapshot-notes.txt"] {
+        std::fs::write(dir.join(name), b"left over").unwrap();
+    }
+    let orphan = format!("snapshot-{}", "ab".repeat(32));
+    std::fs::write(dir.join(&orphan), b"orphan payload").unwrap();
+    std::fs::write(dir.join(format!("{orphan}.tmp")), b"half payload").unwrap();
+    drop(FileRaftStorage::open(&dir, &[1], &[]).unwrap());
+    assert!(!dir.join("state.tmp").exists());
+    assert!(!dir.join("log.rewrite").exists());
+    assert!(!dir.join(&orphan).exists());
+    assert!(!dir.join(format!("{orphan}.tmp")).exists());
+    assert!(
+        dir.join("snapshot-notes.txt").exists(),
+        "a file this module did not write is not its to remove"
+    );
+}
+
+#[test]
+fn an_applied_count_at_the_top_of_the_range_is_refused_and_does_not_overflow() {
+    let _turn = serial();
+    // The count is host input. Counting one more event past u64::MAX is a refusal.
+    let temp = Temp::new("overflow");
+    FileRaftStorage::open(&temp.dir(), &[1], &[])
+        .unwrap()
+        .wl()
+        .apply_snapshot(snapshot_with_voter(10))
+        .unwrap();
+    let mut node = RaftNode::open(&temp.dir(), 1, &[1]).unwrap();
+    assert!(node.take_installed_snapshot().is_some());
+    node.resume_with_applied(u64::MAX).unwrap();
+    node.campaign().unwrap();
+    let refused = node
+        .propose(LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("p"),
+            capsule: CapsuleId::from("capsule:a"),
+            generation: Generation(1),
+        })
+        .expect_err("one event past u64::MAX");
+    assert!(refused.contains("exhausted"), "{refused}");
+
+    // The storage counts the events a snapshot covers the same way.
+    let temp = Temp::new("overflow-storage");
+    storage_with_records(&temp, 3, 3);
+    let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    storage.wl().set_applied_events(u64::MAX).unwrap();
+    assert!(storage.wl().record_snapshot(2, b"state".to_vec()).is_err());
+    assert_eq!(storage.wl().first_index(), 1, "nothing was compacted");
+}
+
+#[test]
+fn a_log_with_records_and_no_state_file_is_refused_and_left_as_it_was() {
+    let _turn = serial();
+    let temp = Temp::new("state-missing");
+    with_entries(&temp, 2);
+    std::fs::remove_file(temp.dir().join("state")).unwrap();
+    let before = std::fs::read(temp.dir().join("log")).unwrap();
+    let refused = FileRaftStorage::open(&temp.dir(), &[1], &[]).expect_err("records without state");
+    assert!(
+        refused.to_string().contains("state file is missing"),
+        "{refused}"
+    );
+    assert_eq!(std::fs::read(temp.dir().join("log")).unwrap(), before);
+    assert!(!temp.dir().join("state").exists());
+
+    // A log holding only its header (a stop during the first open) is started over.
+    let temp = Temp::new("state-missing-header-only");
+    drop(FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap());
+    std::fs::remove_file(temp.dir().join("state")).unwrap();
+    FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+}
+
+#[test]
+fn resume_with_applied_is_refused_when_no_snapshot_is_pending_and_the_count_stays() {
+    let _turn = serial();
+    let temp = Temp::new("resume-nothing-pending");
+    with_entries(&temp, 3);
+    let mut node = RaftNode::open(&temp.dir(), 1, &[1]).unwrap();
+    assert_eq!(node.applied_events(), 3);
+    let refused = node.resume_with_applied(9).expect_err("nothing is pending");
+    assert!(refused.contains(NoSnapshotPending::CODE), "{refused}");
+    assert_eq!(node.applied_events(), 3, "the count did not move");
+    assert!(!node.is_failed(), "a refused call is not a failure");
+    drop(node);
+    let reopened = RaftNode::open(&temp.dir(), 1, &[1]).unwrap();
+    assert_eq!(
+        reopened.applied_events(),
+        3,
+        "the durable count did not move"
+    );
+
+    // A retry after a success is refused the same way and renumbers nothing.
+    let temp = Temp::new("resume-twice");
+    FileRaftStorage::open(&temp.dir(), &[1], &[])
+        .unwrap()
+        .wl()
+        .apply_snapshot(snapshot_with_voter(10))
+        .unwrap();
+    let mut node = RaftNode::open(&temp.dir(), 1, &[1]).unwrap();
+    node.resume_with_applied(5).unwrap();
+    assert!(node.resume_with_applied(7).is_err());
+    assert_eq!(node.applied_events(), 5);
+}
+
+#[test]
+fn losing_held_entries_while_resuming_fails_the_member() {
+    let _turn = serial();
+    let temp = Temp::new("resume-partial");
+    {
+        let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+        let mut core = storage.wl();
+        core.apply_snapshot(snapshot_with_voter(10)).unwrap();
+        // An entry above the snapshot that is committed and does not decode as an event.
+        core.append(&[raft::prelude::Entry {
+            index: 11,
+            term: 1,
+            data: vec![0xff; 8],
+            ..Default::default()
+        }])
+        .unwrap();
+        core.set_commit(11).unwrap();
+    }
+    let mut node = RaftNode::open(&temp.dir(), 1, &[1]).unwrap();
+    assert!(node.take_installed_snapshot().is_some());
+    let failed = node
+        .resume_with_applied(5)
+        .expect_err("the held entry does not decode");
+    assert!(
+        !failed.contains(NodeFailed::CODE),
+        "the first error is the cause: {failed}"
+    );
+    assert!(node.is_failed());
+    assert!(
+        !node.is_poisoned(),
+        "the storage is sound; the member is not"
+    );
+    for refused in [
+        node.tick().map(drop),
+        node.campaign().map(drop),
+        node.resume_with_applied(5),
+    ] {
+        let error = refused.expect_err("every state-changing call is refused");
+        assert!(error.contains(NodeFailed::CODE), "{error}");
+    }
+}
+
 #[cfg(feature = "failpoints")]
 mod failpoints {
     use super::*;
+    use ptr_ledger::raft_storage::StoragePoisoned;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    /// Whether an I/O error is the typed refusal of a poisoned storage.
+    fn is_poisoned_refusal(error: &std::io::Error) -> bool {
+        error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<StoragePoisoned>())
+    }
+
+    fn entry_at(index: u64) -> raft::prelude::Entry {
+        raft::prelude::Entry {
+            index,
+            term: 1,
+            data: vec![index as u8; 16],
+            ..Default::default()
+        }
+    }
 
     fn crash_at(point: &str, run: impl FnOnce()) {
         let scenario = fail::FailScenario::setup();
@@ -514,5 +779,297 @@ mod failpoints {
         assert!(failed.is_err());
         assert!(state_failed.is_err());
         assert_eq!(storage.wl().last_index(), 0, "nothing was appended");
+    }
+
+    /// Run `change` with the failpoint configured, then drop the scenario.
+    fn with_failpoint<T>(point: &str, action: &str, change: impl FnOnce() -> T) -> T {
+        let scenario = fail::FailScenario::setup();
+        fail::cfg(point, action).unwrap();
+        let outcome = change();
+        drop(scenario);
+        outcome
+    }
+
+    #[test]
+    fn an_error_past_the_point_of_no_return_poisons_the_storage_and_no_append_is_acknowledged() {
+        let _turn = super::serial();
+        // Each point is past a rename, a truncation or a partial write; the storage must refuse
+        // every later write, and a restart must hold every entry acknowledged before.
+        for point in [
+            "raft.compact.after_sync_before_rename",
+            "raft.compact.after_rename_before_dir_sync",
+            "raft.state.after_rename_before_dir_sync",
+        ] {
+            let temp = Temp::new("poison-compact");
+            let last = with_entries(&temp, 5);
+            let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+            let failed = with_failpoint(point, "return", || {
+                storage.wl().record_snapshot(3, b"state".to_vec())
+            });
+            assert!(failed.is_err(), "{point}");
+            assert!(storage.wl().is_poisoned(), "{point}");
+            // The handle may be on an unlinked file or the offsets may belong to the other
+            // file: an append here would be acknowledged into the wrong place.
+            let refused = storage.wl().append(&[entry_at(last + 1)]);
+            assert!(
+                refused.as_ref().is_err_and(is_poisoned_refusal),
+                "{point}: {refused:?}"
+            );
+            assert!(storage
+                .wl()
+                .set_hard_state(&raft::prelude::HardState {
+                    term: 9,
+                    vote: 1,
+                    commit: 1
+                })
+                .as_ref()
+                .is_err_and(is_poisoned_refusal));
+            assert!(storage
+                .wl()
+                .record_snapshot(4, Vec::new())
+                .as_ref()
+                .is_err_and(is_poisoned_refusal));
+            drop(storage);
+            // Nothing acknowledged is lost: the member reopens with all five events.
+            let node = RaftNode::open(&temp.dir(), 1, &[1])
+                .unwrap_or_else(|error| panic!("{point}: {error}"));
+            assert_eq!(node.applied_events(), 5, "{point}");
+            let reopened = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+            assert_eq!(reopened.wl().last_index(), last, "{point}");
+        }
+    }
+
+    #[test]
+    fn a_failed_state_rename_sync_poisons_and_a_restart_finds_one_consistent_state() {
+        let _turn = super::serial();
+        let temp = Temp::new("poison-state");
+        let last = with_entries(&temp, 3);
+        let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+        let failed = with_failpoint("raft.state.after_rename_before_dir_sync", "return", || {
+            storage.wl().set_commit(last)
+        });
+        assert!(failed.is_err());
+        assert!(storage.wl().is_poisoned());
+        assert!(storage
+            .wl()
+            .append(&[entry_at(last + 1)])
+            .as_ref()
+            .is_err_and(is_poisoned_refusal));
+        drop(storage);
+        let reopened = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+        assert_eq!(reopened.wl().last_index(), last);
+        assert!(!reopened.wl().is_poisoned(), "a restart starts sound");
+    }
+
+    #[test]
+    fn a_write_that_fails_part_way_poisons_and_loses_nothing_acknowledged() {
+        let _turn = super::serial();
+        // (point, whether the new entries conflict with held ones, so that the file was
+        // shortened first)
+        for (point, conflicting) in [
+            ("raft.append.partial_write", false),
+            ("raft.append.partial_write", true),
+            ("raft.append.after_write_before_sync", false),
+            ("raft.append.after_write_before_sync", true),
+        ] {
+            let temp = Temp::new("poison-append");
+            storage_with_records(&temp, 4, 2);
+            let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+            // Entries 3 and 4 are above the commit index (2); a new leader may replace them.
+            let first = if conflicting { 3 } else { 5 };
+            let new: Vec<_> = (first..first + 2).map(entry_at).collect();
+            let failed = with_failpoint(point, "return", || storage.wl().append(&new));
+            assert!(failed.is_err(), "{point} {conflicting}");
+            assert!(storage.wl().is_poisoned(), "{point} {conflicting}");
+            let refused = storage.wl().append(&[entry_at(first + 2)]);
+            assert!(
+                refused.as_ref().is_err_and(is_poisoned_refusal),
+                "{point} {conflicting}: {refused:?}"
+            );
+            drop(storage);
+            let reopened = FileRaftStorage::open(&temp.dir(), &[1], &[])
+                .unwrap_or_else(|error| panic!("{point} {conflicting}: {error}"));
+            let core = reopened.wl();
+            assert!(
+                core.last_index() >= 2,
+                "{point} {conflicting}: the committed prefix is intact"
+            );
+            assert!(core.committed_entries().len() == 2, "{point} {conflicting}");
+            if point == "raft.append.partial_write" {
+                // The torn half-record is cut off at open and reported.
+                assert!(core.trimmed_tail_bytes() > 0, "{point}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_error_installing_a_snapshot_past_the_state_write_poisons_and_a_restart_finishes() {
+        let _turn = super::serial();
+        for point in [
+            "raft.install.after_log_sync_before_rename",
+            "raft.install.after_log_reset",
+        ] {
+            let temp = Temp::new("poison-install");
+            with_entries(&temp, 3);
+            let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+            let failed = with_failpoint(point, "return", || {
+                storage.wl().apply_snapshot(snapshot_with_voter(10))
+            });
+            assert!(failed.is_err(), "{point}");
+            assert!(storage.wl().is_poisoned(), "{point}");
+            assert!(storage
+                .wl()
+                .append(&[entry_at(11)])
+                .as_ref()
+                .is_err_and(is_poisoned_refusal));
+            drop(storage);
+            let mut node = RaftNode::open(&temp.dir(), 1, &[1])
+                .unwrap_or_else(|error| panic!("{point}: {error}"));
+            assert_eq!(node.take_installed_snapshot().map(|s| s.index), Some(10));
+        }
+    }
+
+    #[test]
+    fn a_poisoned_member_answers_nothing_and_a_restart_holds_what_it_acknowledged() {
+        let _turn = super::serial();
+        let temp = Temp::new("poison-node");
+        let mut node = RaftNode::open(&temp.dir(), 1, &[1]).unwrap();
+        node.campaign().unwrap();
+        let mut acknowledged = 0;
+        for generation in 1..=3 {
+            node.propose(LedgerEvent::CapsuleCommitted {
+                project: ProjectId::from("p"),
+                capsule: CapsuleId::from("capsule:a"),
+                generation: Generation(generation),
+            })
+            .unwrap();
+            acknowledged += 1;
+        }
+        assert!(!node.is_poisoned());
+        let outcome = with_failpoint("raft.state.after_rename_before_dir_sync", "return", || {
+            node.propose(LedgerEvent::CapsuleCommitted {
+                project: ProjectId::from("p"),
+                capsule: CapsuleId::from("capsule:a"),
+                generation: Generation(4),
+            })
+        });
+        assert!(outcome.is_err(), "the proposal is not acknowledged");
+        assert!(node.is_poisoned());
+        for refused in [
+            node.tick().map(drop),
+            node.campaign().map(drop),
+            node.propose(LedgerEvent::CapsuleCommitted {
+                project: ProjectId::from("p"),
+                capsule: CapsuleId::from("capsule:a"),
+                generation: Generation(5),
+            })
+            .map(drop),
+            node.record_snapshot(2, Vec::new()),
+            node.resume_with_applied(1),
+        ] {
+            let error = refused.expect_err("every call is refused");
+            assert!(error.contains(StoragePoisoned::CODE), "{error}");
+        }
+        assert_eq!(node.committed_events().len(), acknowledged);
+        drop(node);
+        let reopened = RaftNode::open(&temp.dir(), 1, &[1]).unwrap();
+        assert!(!reopened.is_poisoned());
+        assert!(
+            reopened.committed_events().len() >= acknowledged,
+            "every acknowledged event is still there"
+        );
+    }
+
+    #[test]
+    fn an_error_after_a_ready_that_does_not_poison_still_fails_the_member() {
+        let _turn = super::serial();
+        // (failpoint, calls to let through first): an append refused before a byte moved and a
+        // hard-state write refused before its rename.
+        for (point, skip) in [
+            ("raft.append.before_write", 0),
+            ("raft.state.before_write", 0),
+        ] {
+            let temp = Temp::new("node-failed");
+            let mut node = RaftNode::open(&temp.dir(), 1, &[1]).unwrap();
+            node.campaign().unwrap();
+            let event = |generation| LedgerEvent::CapsuleCommitted {
+                project: ProjectId::from("p"),
+                capsule: CapsuleId::from("capsule:a"),
+                generation: Generation(generation),
+            };
+            node.propose(event(1)).unwrap();
+            let acknowledged = node.committed_events().len();
+            let outcome = with_failpoint(point, &format!("{skip}*off->1*return"), || {
+                node.propose(event(2))
+            });
+            assert!(outcome.is_err(), "{point} {skip}: not acknowledged");
+            assert!(
+                !node.is_poisoned(),
+                "{point} {skip}: these errors do not poison"
+            );
+            assert!(node.is_failed(), "{point} {skip}");
+            for refused in [
+                node.tick().map(drop),
+                node.campaign().map(drop),
+                node.propose(event(3)).map(drop),
+                node.record_snapshot(2, Vec::new()),
+                node.report_unreachable(2).map(drop),
+            ] {
+                let error = refused.expect_err("every state-changing call is refused");
+                assert!(error.contains(NodeFailed::CODE), "{point} {skip}: {error}");
+            }
+            assert_eq!(
+                node.committed_events().len(),
+                acknowledged,
+                "{point} {skip}"
+            );
+            drop(node);
+            let reopened = RaftNode::open(&temp.dir(), 1, &[1]).unwrap();
+            assert!(!reopened.is_failed(), "a restart starts sound");
+            assert!(
+                reopened.committed_events().len() >= acknowledged,
+                "{point} {skip}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_resume_leaves_the_snapshot_offered_and_the_count_as_it_was() {
+        let _turn = super::serial();
+        let temp = Temp::new("resume-rollback");
+        with_entries(&temp, 3);
+        {
+            let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+            storage
+                .wl()
+                .apply_snapshot(snapshot_with_voter(10))
+                .unwrap();
+        }
+        let mut node = RaftNode::open(&temp.dir(), 1, &[1]).unwrap();
+        assert!(node.take_installed_snapshot().is_some());
+        let failed = with_failpoint("raft.state.before_write", "1*return", || {
+            node.resume_with_applied(5)
+        });
+        assert!(failed.is_err());
+        assert!(
+            node.take_installed_snapshot().is_some(),
+            "the vetted snapshot is still offered"
+        );
+        assert_eq!(node.applied_events(), 0, "the count did not move");
+        // The call can be repeated.
+        node.resume_with_applied(5).unwrap();
+        assert!(node.take_installed_snapshot().is_none());
+        assert_eq!(node.applied_events(), 5);
+    }
+
+    #[test]
+    fn an_error_syncing_the_log_at_open_is_an_error_and_not_a_member_answering_for_it() {
+        let _turn = super::serial();
+        let temp = Temp::new("open-sync-error");
+        with_entries(&temp, 3);
+        let refused = with_failpoint("raft.open.log_sync", "return", || {
+            FileRaftStorage::open(&temp.dir(), &[1], &[])
+        });
+        assert!(refused.is_err(), "an unsynced log is not answered for");
     }
 }

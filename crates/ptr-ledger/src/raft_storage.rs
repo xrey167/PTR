@@ -83,6 +83,49 @@ struct LogImage {
 
 /// Bound on the retained snapshot payload.
 pub const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
+/// Bound on the log file: it is read whole at open, so a file past this is refused before it is
+/// read, and an append that would take the file past it is refused before a byte moves.
+pub const MAX_LOG_BYTES: u64 = 1024 * 1024 * 1024;
+/// Bound on the state file (a few hundred bytes plus the configuration's id lists).
+const MAX_STATE_BYTES: u64 = 1024 * 1024;
+
+/// Whether the storage can still be trusted to describe its files.
+///
+/// An I/O error past the point where a transition could be undone (a rename done and its
+/// directory entry not known to be durable, a write that stopped part-way) leaves memory, the
+/// file handle and the files disagreeing, and anything acknowledged from there could land in a
+/// file that is no longer the log. From then on every write is refused with
+/// [`StoragePoisoned`]; the member is restarted, and what it reopens is what the disk holds.
+///
+/// Reads keep answering from memory when poisoned.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Health {
+    Sound,
+    Poisoned,
+}
+
+/// The refusal every write gets once the storage is poisoned (see [`Core::is_poisoned`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StoragePoisoned;
+
+impl StoragePoisoned {
+    /// Stable diagnostic code, also the start of the error text.
+    pub const CODE: &'static str = "PTR_RAFT_STORAGE_POISONED";
+}
+
+impl std::fmt::Display for StoragePoisoned {
+    /// Name the code and what to do about it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: an I/O error past a point of no return left the storage unsure of its files; \
+             restart the member",
+            Self::CODE
+        )
+    }
+}
+
+impl std::error::Error for StoragePoisoned {}
 
 /// Entry-type wire codes.
 ///
@@ -151,6 +194,10 @@ impl FileRaftStorage {
         fs::create_dir_all(dir)?;
         let state_path = dir.join("state");
         let log_path = dir.join("log");
+        // Scratch files a stop left behind (a state or log being replaced) name nothing the
+        // state refers to; they are removed so that they do not accumulate.
+        remove_leftover(&atomic_scratch(&state_path));
+        remove_leftover(&log_path.with_extension("rewrite"));
 
         let existing = state_path.is_file();
         let mut log = OpenOptions::new()
@@ -201,8 +248,20 @@ impl FileRaftStorage {
                 fence: image.fence,
                 applied: image.applied,
                 trimmed_tail_bytes: read.trimmed,
+                health: Health::Sound,
             }
         } else {
+            // No state file but a log holding records: the state was deleted or never written
+            // for a log somebody else made. Starting fresh would overwrite the header and leave
+            // the old records to be mixed with new appends, so it is refused (an operator
+            // decision). A log that is empty or holds only the header is what a stop during
+            // the first open leaves, and is started over.
+            if log.metadata()?.len() > LOG_MAGIC.len() as u64 {
+                return Err(invalid(
+                    "a log with records exists but its state file is missing; refusing to start \
+                     over it",
+                ));
+            }
             write_log_header(&mut log)?;
             let conf_state = ConfState {
                 voters: voters.to_vec(),
@@ -224,6 +283,7 @@ impl FileRaftStorage {
                 fence: 0,
                 applied: AppliedEvents::Counted(0),
                 trimmed_tail_bytes: 0,
+                health: Health::Sound,
             }
         };
         if !existing {
@@ -276,6 +336,8 @@ pub struct Core {
     /// on disk — every write re-reads the file, because the whole point is to
     /// notice a *different process* that has moved it on.
     fence: u64,
+    /// See [`Health`].
+    health: Health,
 }
 
 impl Core {
@@ -283,7 +345,7 @@ impl Core {
     pub fn first_index(&self) -> u64 {
         match self.entries.first() {
             Some(entry) => entry.index,
-            None => self.snapshot_metadata.index + 1,
+            None => self.snapshot_metadata.index.saturating_add(1),
         }
     }
 
@@ -305,16 +367,38 @@ impl Core {
         &self.conf_state
     }
 
-    /// Record term, vote and commit, flushed before returning.
-    pub fn set_hard_state(&mut self, hard_state: &HardState) -> io::Result<()> {
-        self.hard_state = hard_state.clone();
-        self.persist_state()
+    /// Whether an I/O error past a point of no return has made this storage refuse every
+    /// write ([`StoragePoisoned`]). Reads keep answering from memory; a poisoned storage is
+    /// restarted, and what it reopens is what the disk holds.
+    pub fn is_poisoned(&self) -> bool {
+        self.health == Health::Poisoned
     }
 
-    /// Record a new commit index, flushed before returning.
-    pub fn set_commit(&mut self, commit: u64) -> io::Result<()> {
-        self.hard_state.commit = commit;
+    fn poison(&mut self) {
+        self.health = Health::Poisoned;
+    }
+
+    fn refuse_if_poisoned(&self) -> io::Result<()> {
+        match self.health {
+            Health::Sound => Ok(()),
+            Health::Poisoned => Err(io::Error::other(StoragePoisoned)),
+        }
+    }
+
+    /// Record term, vote and commit, flushed before returning. On a failure the hard state in
+    /// memory is left as it was.
+    pub fn set_hard_state(&mut self, hard_state: &HardState) -> io::Result<()> {
+        let previous = std::mem::replace(&mut self.hard_state, hard_state.clone());
         self.persist_state()
+            .inspect_err(|_| self.hard_state = previous)
+    }
+
+    /// Record a new commit index, flushed before returning. On a failure the commit index in
+    /// memory is left as it was.
+    pub fn set_commit(&mut self, commit: u64) -> io::Result<()> {
+        let previous = std::mem::replace(&mut self.hard_state.commit, commit);
+        self.persist_state()
+            .inspect_err(|_| self.hard_state.commit = previous)
     }
 
     /// How many ledger events this member has accounted for.
@@ -352,10 +436,12 @@ impl Core {
             .inspect_err(|_| self.applied = previous)
     }
 
-    /// Record a new configuration, flushed before returning.
+    /// Record a new configuration, flushed before returning. On a failure the configuration in
+    /// memory is left as it was.
     pub fn set_conf_state(&mut self, conf_state: ConfState) -> io::Result<()> {
-        self.conf_state = conf_state;
+        let previous = std::mem::replace(&mut self.conf_state, conf_state);
         self.persist_state()
+            .inspect_err(|_| self.conf_state = previous)
     }
 
     /// Append entries, replacing any that conflict.
@@ -364,7 +450,18 @@ impl Core {
     /// an overwrite of compacted history is a refusal this layer can report, and
     /// a process that aborts inside a write is the situation durability exists to
     /// survive.
+    ///
+    /// A refusal before the file is touched leaves everything as it was. Once the file has been
+    /// shortened or written to, an error leaves it holding something memory does not describe
+    /// (a shortened log, a partial record), so the storage is poisoned: no later write is
+    /// acknowledged into a file whose offsets nobody can vouch for. Memory is changed only after
+    /// the records are durable.
+    ///
+    /// A multi-entry append whose later records reach the disk while an earlier one is torn is
+    /// never acknowledged; a restart finds valid records after the damage and refuses the log
+    /// (fail-closed, an operator decision), rather than cutting what may have been acknowledged.
     pub fn append(&mut self, entries: &[Entry]) -> io::Result<()> {
+        self.refuse_if_poisoned()?;
         let Some(first) = entries.first() else {
             return Ok(());
         };
@@ -379,20 +476,47 @@ impl Core {
                 self.first_index()
             )));
         }
-        if first.index > self.last_index() + 1 {
+        let next = self
+            .last_index()
+            .checked_add(1)
+            .ok_or_else(|| invalid("the raft log index is exhausted"))?;
+        if first.index > next {
             return Err(invalid(format!(
                 "append at {} leaves a gap after {}",
                 first.index,
                 self.last_index()
             )));
         }
+        let mut total = 0u64;
         for (position, entry) in entries.iter().enumerate() {
-            if entry.index != first.index + position as u64 {
+            let expected = first
+                .index
+                .checked_add(position as u64)
+                .ok_or_else(|| invalid("the raft log index is exhausted"))?;
+            if entry.index != expected {
                 return Err(invalid("appended raft entries are not consecutive"));
             }
             if entry.data.len() > MAX_ENTRY_BYTES || entry.context.len() > MAX_ENTRY_BYTES {
                 return Err(invalid("raft entry payload is over the bound"));
             }
+            total += record_len(entry);
+        }
+        let keep = (first.index - self.first_index()) as usize;
+        let start = match self.offsets.get(keep) {
+            Some(offset) => *offset,
+            None => self.log.metadata()?.len(),
+        };
+        // Checked before anything is encoded or written.
+        if start.saturating_add(total) > MAX_LOG_BYTES {
+            return Err(invalid("the raft log would pass its size bound"));
+        }
+        let mut buffer = Vec::with_capacity(total as usize);
+        let mut lengths = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let record = encode_record(entry);
+            debug_assert_eq!(record.len() as u64, record_len(entry));
+            lengths.push(record.len() as u64);
+            buffer.extend_from_slice(&record);
         }
 
         // Test-only: an I/O error here must leave the log untouched and reach the caller,
@@ -400,39 +524,65 @@ impl Core {
         #[cfg(feature = "failpoints")]
         fail::fail_point!("raft.append.before_write", |_| Err(injected_io_error()));
 
+        match self.write_entries(keep, start, entries, &lengths, &buffer) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
+        }
+    }
+
+    /// The file part of an append: shorten to `start` if entries conflict, write, sync, and only
+    /// then move memory. An error here is past the point of no return (the caller poisons).
+    fn write_entries(
+        &mut self,
+        keep: usize,
+        start: u64,
+        entries: &[Entry],
+        lengths: &[u64],
+        buffer: &[u8],
+    ) -> io::Result<()> {
         // Truncate first. The file is shortened to the offset the new entries
         // start at, so what is on disk is always a prefix of one history rather
         // than two spliced together.
-        let keep = (first.index - self.first_index()) as usize;
         if keep < self.entries.len() {
-            let offset = self.offsets[keep];
-            self.log.set_len(offset)?;
-            self.log.seek(SeekFrom::Start(offset))?;
-            self.entries.truncate(keep);
-            self.offsets.truncate(keep);
-        } else {
-            let end = self.log.seek(SeekFrom::End(0))?;
-            debug_assert_eq!(
-                end,
-                self.offsets.last().map_or(LOG_MAGIC.len() as u64, |_| end)
-            );
+            self.log.set_len(start)?;
         }
+        self.log.seek(SeekFrom::Start(start))?;
+        // Test-only: a write that puts part of the records down and then fails.
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.append.partial_write", |_| {
+            let torn = lengths.first().map_or(0, |length| *length as usize / 2);
+            let _ = self.log.write_all(&buffer[..torn]);
+            Err(injected_io_error())
+        });
+        self.log.write_all(buffer)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.append.after_write_before_sync", |_| Err(
+            injected_io_error()
+        ));
+        self.log.sync_data()?;
 
-        let mut position = self.log.seek(SeekFrom::End(0))?;
-        for entry in entries {
-            let record = encode_record(entry);
-            self.log.write_all(&record)?;
+        // Durable: memory follows.
+        self.entries.truncate(keep);
+        self.offsets.truncate(keep);
+        let mut position = start;
+        for (entry, length) in entries.iter().zip(lengths) {
             self.entries.push(entry.clone());
             self.offsets.push(position);
-            position += record.len() as u64;
+            position += length;
         }
-        #[cfg(feature = "failpoints")]
-        fail::fail_point!("raft.append.after_write_before_sync");
-        self.log.sync_data()
+        Ok(())
     }
 
     /// Replace the log with a snapshot's position and payload.
+    ///
+    /// Once the state naming the snapshot is durable, an error while the log is replaced poisons
+    /// the storage: the state and the log no longer describe one history, and a restart (which
+    /// finishes the installation) is the only way forward.
     pub fn apply_snapshot(&mut self, snapshot: Snapshot) -> io::Result<()> {
+        self.refuse_if_poisoned()?;
         let metadata = snapshot.get_metadata().clone();
         if self.first_index() > metadata.index {
             return Err(invalid(format!(
@@ -484,17 +634,23 @@ impl Core {
         self.snapshot_data = snapshot.data.to_vec();
         remove_other_payloads(&self.dir, &self.snapshot_digest);
 
-        // The log is replaced by an empty one beside it and renamed over the old, so that no
-        // stop leaves a log that is not a log.
+        self.reset_log().inspect_err(|_| self.poison())
+    }
+
+    /// The log is replaced by an empty one beside it and renamed over the old, so that no stop
+    /// leaves a log that is not a log. Memory follows the file only once the rename is durable.
+    fn reset_log(&mut self) -> io::Result<()> {
         let scratch = write_scratch_log(&self.log_path, &[])?;
         #[cfg(feature = "failpoints")]
-        fail::fail_point!("raft.install.after_log_sync_before_rename");
+        fail::fail_point!("raft.install.after_log_sync_before_rename", |_| Err(
+            injected_io_error()
+        ));
         let (reset, offsets) = install_scratch_log(&self.log_path, scratch)?;
         self.log = reset;
         self.offsets = offsets;
         self.entries.clear();
         #[cfg(feature = "failpoints")]
-        fail::fail_point!("raft.install.after_log_reset");
+        fail::fail_point!("raft.install.after_log_reset", |_| Err(injected_io_error()));
         Ok(())
     }
 
@@ -518,7 +674,11 @@ impl Core {
     /// This is both halves of what `MemStorage` splits between `compact` and a
     /// fabricated snapshot: a durable store cannot invent a snapshot it does not
     /// hold, so the application hands one in.
+    ///
+    /// Once the state naming the snapshot is durable, an error while the log is compacted
+    /// poisons the storage (the state and the log no longer describe one history).
     pub fn record_snapshot(&mut self, index: u64, data: Vec<u8>) -> io::Result<()> {
+        self.refuse_if_poisoned()?;
         if index > self.hard_state.commit {
             return Err(invalid(format!(
                 "snapshot at {index} is ahead of the committed index {}",
@@ -550,15 +710,17 @@ impl Core {
         };
         // The events the snapshot covers: those the previous one covered and every event
         // entry from there up to `index`, counted by the rule `RaftNode` applies entries by.
+        let in_log = self
+            .entries
+            .iter()
+            .filter(|entry| entry.index <= index)
+            .filter(|entry| {
+                entry.get_entry_type() == EntryType::EntryNormal && !entry.data.is_empty()
+            })
+            .count() as u64;
         let covered = already
-            + self
-                .entries
-                .iter()
-                .filter(|entry| entry.index <= index)
-                .filter(|entry| {
-                    entry.get_entry_type() == EntryType::EntryNormal && !entry.data.is_empty()
-                })
-                .count() as u64;
+            .checked_add(in_log)
+            .ok_or_else(|| invalid("the count of applied events is exhausted"))?;
 
         let digest = sha256(&data);
         write_payload(&self.dir, &digest, &data)?;
@@ -579,7 +741,7 @@ impl Core {
         remove_other_payloads(&self.dir, &self.snapshot_digest);
         #[cfg(feature = "failpoints")]
         fail::fail_point!("raft.snapshot.after_state");
-        self.compact_to(index)?;
+        self.compact_to(index).inspect_err(|_| self.poison())?;
         #[cfg(feature = "failpoints")]
         fail::fail_point!("raft.snapshot.after_log_rewrite");
         Ok(())
@@ -591,6 +753,12 @@ impl Core {
     /// written beside the old log and renamed over it. The cost is proportional to
     /// what is kept, which is the opposite of what compaction is for — acceptable
     /// because compaction is rare, and stated rather than hidden.
+    ///
+    /// Memory follows the file at the rename: the kept entries, their offsets and the handle on
+    /// the new file are assigned right after it, so that nothing is ever appended through the
+    /// handle of a file that is no longer the log. An error before the rename leaves memory
+    /// untouched, yet the caller poisons on any error, conservatively: the state already names
+    /// the snapshot, and a restart rewrites the log.
     fn compact_to(&mut self, index: u64) -> io::Result<()> {
         if index < self.first_index() {
             return Ok(());
@@ -601,35 +769,19 @@ impl Core {
                 self.last_index()
             )));
         }
-        let drop = (index + 1 - self.first_index()) as usize;
-        let kept: Vec<Entry> = self.entries.split_off(drop);
-        self.entries = kept;
-        self.offsets.clear();
+        let drop = (index - self.first_index()) as usize + 1;
+        let kept: Vec<Entry> = self.entries[drop..].to_vec();
 
-        let temporary = self.log_path.with_extension("rewrite");
-        let mut rewritten = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temporary)?;
-        write_log_header(&mut rewritten)?;
-        let mut position = LOG_MAGIC.len() as u64;
-        for entry in &self.entries {
-            let record = encode_record(entry);
-            rewritten.write_all(&record)?;
-            self.offsets.push(position);
-            position += record.len() as u64;
-        }
-        rewritten.sync_all()?;
+        let scratch = write_scratch_log(&self.log_path, &kept)?;
         #[cfg(feature = "failpoints")]
-        fail::fail_point!("raft.compact.after_sync_before_rename");
-        fs::rename(&temporary, &self.log_path)?;
-        #[cfg(feature = "failpoints")]
-        fail::fail_point!("raft.compact.after_rename_before_dir_sync");
-        sync_dir(&self.dir)?;
-        self.log = rewritten;
-        Ok(())
+        fail::fail_point!("raft.compact.after_sync_before_rename", |_| Err(
+            injected_io_error()
+        ));
+        fs::rename(self.log_path.with_extension("rewrite"), &self.log_path)?;
+        self.log = scratch.file;
+        self.offsets = scratch.offsets;
+        self.entries = kept;
+        sync_after_rename(&self.dir)
     }
 
     /// Committed data entries, in order, for a node rebuilding its state after a
@@ -689,7 +841,14 @@ impl Core {
         Ok(self.fence)
     }
 
+    /// Write the state file. The state-file fields (hard state, commit, configuration, snapshot
+    /// position and digest, applied count) are changed in memory by the caller *before* this
+    /// runs and rolled back by it if this fails, so for them memory does not wait for the I/O
+    /// (only the log's entries, offsets and handle do). An error before the rename leaves the
+    /// old file and the caller restores memory; an error after it (the directory entry may or may not be durable)
+    /// poisons the storage, because neither the old nor the new state can be assumed.
     fn persist_state(&mut self) -> io::Result<()> {
+        self.refuse_if_poisoned()?;
         #[cfg(feature = "failpoints")]
         fail::fail_point!("raft.state.before_write", |_| Err(injected_io_error()));
         let fence = self.fenced_to()?;
@@ -702,9 +861,7 @@ impl Core {
             applied: self.applied,
         });
         atomic_write(&self.state_path, &bytes)?;
-        #[cfg(feature = "failpoints")]
-        fail::fail_point!("raft.state.after_rename_before_dir_sync");
-        sync_dir(&self.dir)
+        sync_state_dir(&self.dir).inspect_err(|_| self.poison())
     }
 }
 
@@ -730,10 +887,10 @@ impl Storage for FileRaftStorage {
         if low < core.first_index() {
             return Err(RaftError::Store(StorageError::Compacted));
         }
-        if high > core.last_index() + 1 {
+        if high > core.last_index().saturating_add(1) {
             panic!(
                 "index out of bound (last: {}, high: {})",
-                core.last_index() + 1,
+                core.last_index(),
                 high
             );
         }
@@ -784,6 +941,11 @@ impl Storage for FileRaftStorage {
         }
         Ok(core.snapshot())
     }
+}
+
+/// The length of the record `encode_record` writes for `entry`: header, both payloads, digest.
+fn record_len(entry: &Entry) -> u64 {
+    (RECORD_MAGIC.len() + 8 + 8 + 1 + 4 + 4 + 32 + entry.context.len() + entry.data.len()) as u64
 }
 
 /// Encode one log record: magic, position, kind, payloads, digest.
@@ -877,8 +1039,15 @@ fn write_log_header(log: &mut File) -> io::Result<()> {
 /// sequence is never trimmed.
 fn read_log(log: &mut File, snapshot_index: u64, commit: u64) -> io::Result<LogImage> {
     log.seek(SeekFrom::Start(0))?;
+    if log.metadata()?.len() > MAX_LOG_BYTES {
+        return Err(invalid("raft log is over the size bound"));
+    }
     let mut bytes = Vec::new();
-    log.read_to_end(&mut bytes)?;
+    // Bounded again while reading: the file can grow between the check and the read.
+    Read::take(&mut *log, MAX_LOG_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_LOG_BYTES {
+        return Err(invalid("raft log is over the size bound"));
+    }
     if bytes.len() < LOG_MAGIC.len() || &bytes[..LOG_MAGIC.len()] != LOG_MAGIC {
         return Err(invalid("not a PTR raft log"));
     }
@@ -902,7 +1071,9 @@ fn read_log(log: &mut File, snapshot_index: u64, commit: u64) -> io::Result<LogI
         }
         let expected = entries
             .last()
-            .map_or(snapshot_index + 1, |last: &Entry| last.index + 1);
+            .map_or(snapshot_index, |last: &Entry| last.index)
+            .checked_add(1)
+            .ok_or_else(|| invalid("raft log index is exhausted"))?;
         if entry.index != expected {
             return Err(invalid(format!(
                 "raft log jumps from {expected} to {}, so a record is missing or duplicated",
@@ -912,6 +1083,15 @@ fn read_log(log: &mut File, snapshot_index: u64, commit: u64) -> io::Result<LogI
         entries.push(entry);
         offsets.push(start as u64);
     }
+    // Whether the log ends in a torn record or exactly at a record boundary (a suffix lost, an
+    // older copy restored), it must hold everything that was committed: raft itself would panic
+    // on a commit index past its log, and that is not a thing disk input may cause.
+    let last = entries.last().map_or(snapshot_index, |entry| entry.index);
+    if last < commit {
+        return Err(invalid(format!(
+            "raft log ends at {last}, below the committed index {commit}: committed entries are missing"
+        )));
+    }
     let mut trimmed = 0;
     if let Some(cut) = torn_at {
         let rest = &bytes[cut..];
@@ -919,12 +1099,6 @@ fn read_log(log: &mut File, snapshot_index: u64, commit: u64) -> io::Result<LogI
             return Err(invalid(format!(
                 "raft log is damaged at byte {cut} and valid records follow it: they may have \
                  been acknowledged, so nothing is cut"
-            )));
-        }
-        let last = entries.last().map_or(snapshot_index, |entry| entry.index);
-        if last < commit {
-            return Err(invalid(format!(
-                "raft log ends at {last}, below the committed index {commit}: committed entries are missing"
             )));
         }
         log.set_len(cut as u64)?;
@@ -1032,7 +1206,7 @@ fn put_ids(bytes: &mut Vec<u8>, ids: &[u64]) {
 
 /// Read the state file, or refuse it.
 fn read_state(path: &Path) -> io::Result<StateImage> {
-    let bytes = fs::read(path)?;
+    let bytes = read_bounded(path, MAX_STATE_BYTES, "raft state file")?;
     if bytes.len() < STATE_MAGIC.len() + 32 || &bytes[..STATE_MAGIC.len()] != STATE_MAGIC {
         return Err(invalid("not a PTR raft state file"));
     }
@@ -1108,6 +1282,20 @@ fn read_state(path: &Path) -> io::Result<StateImage> {
     })
 }
 
+/// Read a file whose size is checked against `max` before it is read, and again while reading.
+fn read_bounded(path: &Path, max: u64, what: &str) -> io::Result<Vec<u8>> {
+    let file = File::open(path)?;
+    if file.metadata()?.len() > max {
+        return Err(invalid(format!("{what} is over the size bound")));
+    }
+    let mut bytes = Vec::new();
+    file.take(max + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(invalid(format!("{what} is over the size bound")));
+    }
+    Ok(bytes)
+}
+
 /// Read a length-prefixed list of node ids.
 fn take_ids(body: &[u8], at: &mut usize) -> io::Result<Vec<u64>> {
     let count_bytes = body
@@ -1131,7 +1319,7 @@ fn take_ids(body: &[u8], at: &mut usize) -> io::Result<Vec<u64>> {
 /// A half-written state file is worse than an old one: it describes a term or a
 /// vote that was never actually held.
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temporary = path.with_extension("tmp");
+    let temporary = atomic_scratch(path);
     {
         let mut file = OpenOptions::new()
             .write(true)
@@ -1148,6 +1336,36 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::rename(&temporary, path)
 }
 
+/// The file `atomic_write` writes beside `path` before renaming it over.
+fn atomic_scratch(path: &Path) -> PathBuf {
+    path.with_extension("tmp")
+}
+
+/// Make the state file's rename durable. The failpoint can stop the process here or return an
+/// error in place of the directory sync.
+fn sync_state_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("raft.state.after_rename_before_dir_sync", |_| Err(
+        injected_io_error()
+    ));
+    sync_dir(dir)
+}
+
+/// Make a log rename durable. The failpoint can stop the process here or return an error in
+/// place of the directory sync.
+fn sync_after_rename(dir: &Path) -> io::Result<()> {
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("raft.compact.after_rename_before_dir_sync", |_| Err(
+        injected_io_error()
+    ));
+    sync_dir(dir)
+}
+
+/// Remove a scratch file a stop left behind. Best effort.
+fn remove_leftover(path: &Path) {
+    let _ = fs::remove_file(path);
+}
+
 /// The error a test-only failpoint returns in place of an I/O operation.
 #[cfg(feature = "failpoints")]
 fn injected_io_error() -> io::Error {
@@ -1158,7 +1376,7 @@ fn injected_io_error() -> io::Error {
 /// durable before this process acknowledges anything that depends on it.
 fn sync_opened_log(log: &File) -> io::Result<()> {
     #[cfg(feature = "failpoints")]
-    fail::fail_point!("raft.open.log_sync");
+    fail::fail_point!("raft.open.log_sync", |_| Err(injected_io_error()));
     log.sync_data()
 }
 
@@ -1180,7 +1398,7 @@ fn write_payload(dir: &Path, digest: &[u8; 32], data: &[u8]) -> io::Result<()> {
 /// The payload the state names, or a refusal: absent or altered bytes are not a snapshot.
 fn load_payload(dir: &Path, digest: &[u8; 32]) -> io::Result<Vec<u8>> {
     let path = dir.join(payload_name(digest));
-    let data = match fs::read(&path) {
+    let data = match read_bounded(&path, MAX_SNAPSHOT_BYTES as u64, "retained raft snapshot") {
         Ok(data) => data,
         Err(error) if error.kind() == io::ErrorKind::NotFound && *digest == sha256(&[]) => {
             return Ok(Vec::new())
@@ -1211,10 +1429,20 @@ fn remove_other_payloads(dir: &Path, keep: &[u8; 32]) {
     for entry in listing.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if name.starts_with("snapshot") && name != kept {
+        if is_payload_file(name) && name != kept {
             let _ = fs::remove_file(entry.path());
         }
     }
+}
+
+/// Whether `name` is a payload file this module wrote: `snapshot-` and 64 hex digits, with the
+/// `.tmp` suffix of a payload being written. Anything else in the directory is not ours to remove.
+fn is_payload_file(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("snapshot-") else {
+        return false;
+    };
+    let digest = rest.strip_suffix(".tmp").unwrap_or(rest);
+    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Flush a directory entry, so a rename survives a crash.

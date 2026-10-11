@@ -573,26 +573,32 @@ fn a_member_refuses_to_apply_anything_until_a_snapshot_is_accounted_for() {
     );
 
     // Another entry arrives before the application has said what the payload covers.
-    // Appending it is fine; *applying* it is what must be refused, and that happens a
-    // message later when the commit index moves, so keep delivering until one of them
-    // is refused.
+    // Appending it is fine; *applying* it must wait, and the call that brings it must still
+    // hand back its messages: an error there would drop the acknowledgements the leader needs
+    // to commit. Everything is delivered, nothing is refused.
     let messages = cluster.node(1).propose(event(6)).unwrap();
-    let mut queue: VecDeque<Message> = messages.into();
-    let mut refused = None;
-    while let Some(message) = queue.pop_front() {
-        match cluster.node(message.to).step(message) {
-            Ok(produced) => queue.extend(produced),
-            Err(error) => {
-                refused = Some(error);
-                break;
-            }
-        }
-    }
-    let refused = refused.expect("applying an entry above an unaccounted snapshot");
+    cluster.settle(messages);
     assert!(
-        refused.contains("resume_with_applied"),
-        "the refusal must name what is missing: {refused}"
+        cluster.events(3).is_empty(),
+        "nothing is applied above an unaccounted snapshot"
     );
+    assert!(
+        cluster.node(3).take_installed_snapshot().is_some(),
+        "the wait is visible: the snapshot is still offered"
+    );
+    assert_eq!(
+        cluster.events(1).len(),
+        6,
+        "the leader committed the entry with the other follower"
+    );
+
+    // Once the snapshot is accounted for, the entry that was held is applied and continues
+    // the numbering.
+    let covered_events = 5;
+    cluster.node(3).resume_with_applied(covered_events).unwrap();
+    let applied = cluster.events(3);
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0].index.0, 6);
 }
 
 #[test]
@@ -955,9 +961,9 @@ fn reopening_after_a_snapshot_continues_the_numbering_it_established() {
     let covered = cluster.get(1).raft_committed();
     let state = encode_state(&cluster.events(1));
     cluster.node(1).record_snapshot(covered, state).unwrap();
-    // The application accounts for the four events the payload describes, so the
-    // records below the floor stop being this member's to report.
-    cluster.node(1).resume_with_applied(4).unwrap();
+    // The count of the four events the payload describes was made durable by recording the
+    // snapshot itself; a count handed in with nothing pending is refused.
+    assert!(cluster.node(1).resume_with_applied(4).is_err());
     cluster.propose(1, 5).unwrap();
 
     let fifth = cluster

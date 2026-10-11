@@ -10,7 +10,7 @@
 //! that delivers them by hand is not its business. That separation is what makes a
 //! partition testable without a timer: nothing here is driven by wall-clock time,
 //! so a test decides exactly which message arrives and which does not.
-use crate::raft_storage::{AppliedEvents, FileRaftStorage};
+use crate::raft_storage::{AppliedEvents, FileRaftStorage, StoragePoisoned};
 use crate::{decode_event, encode_event, integrity, CommittedEvent, LedgerEvent};
 use ptr_types::CommitIndex;
 use raft::codec::Message as _;
@@ -119,6 +119,54 @@ pub enum SnapshotDelivery {
     Failed,
 }
 
+/// The refusal every state-changing call gets once the member has failed (see
+/// [`RaftNode::is_failed`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NodeFailed;
+
+impl NodeFailed {
+    /// Stable diagnostic code, also the start of the error text.
+    pub const CODE: &'static str = "PTR_RAFT_NODE_FAILED";
+}
+
+impl std::fmt::Display for NodeFailed {
+    /// Name the code and what to do about it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: an error after raft handed this member a ready state left the raft state ahead \
+             of what the host applied; restart the member so it replays its log",
+            Self::CODE
+        )
+    }
+}
+
+impl std::error::Error for NodeFailed {}
+
+/// The refusal [`RaftNode::resume_with_applied`] gives when no snapshot is waiting to be
+/// accounted for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NoSnapshotPending;
+
+impl NoSnapshotPending {
+    /// Stable diagnostic code, also the start of the error text.
+    pub const CODE: &'static str = "PTR_RAFT_NO_SNAPSHOT_PENDING";
+}
+
+impl std::fmt::Display for NoSnapshotPending {
+    /// Name the code and why the call is refused.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: no installed snapshot is waiting to be accounted for; a count set now would \
+             renumber every later event",
+            Self::CODE
+        )
+    }
+}
+
+impl std::error::Error for NoSnapshotPending {}
+
 /// A Raft member over durable state.
 pub struct RaftNode {
     node: RawNode<FileRaftStorage>,
@@ -136,6 +184,11 @@ pub struct RaftNode {
     /// applied, so it will not hand them over again): applied by
     /// [`RaftNode::resume_with_applied`].
     deferred: Vec<Entry>,
+    /// Set by any error after raft handed the member a ready state (or after the member took
+    /// its deferred entries): raft has consumed committed entries and a light ready that the
+    /// host did not apply, so carrying on would renumber every later event. Only a restart
+    /// (which replays the log) clears it.
+    failed: bool,
     id: u64,
 }
 
@@ -202,6 +255,7 @@ impl RaftNode {
             applied_events: recovered_applied,
             installed: pending,
             deferred: Vec::new(),
+            failed: false,
             id,
         };
         let _ = recovered_count;
@@ -213,6 +267,39 @@ impl RaftNode {
             member.apply_committed(recovered)?;
         }
         Ok(member)
+    }
+
+    /// Whether the member's storage hit an I/O error past a point of no return and refuses
+    /// every write from now on ([`StoragePoisoned`]): the member answers nothing, and is
+    /// restarted from what its disk holds.
+    ///
+    /// Limit: a poisoned member still answers the reads of committed state (`is_leader`,
+    /// `role`, `term`, `voters`, `committed_events`, `raft_committed`); it can say it leads
+    /// while every write is refused, and raft's in-memory term and commit may be ahead of the
+    /// rolled-back storage memory. Callers check this before relying on them.
+    pub fn is_poisoned(&self) -> bool {
+        self.node.raft.raft_log.store.wl().is_poisoned()
+    }
+
+    /// Whether an error after raft handed the member a ready state (a refused or failed append,
+    /// hard-state or commit write, an entry that would not apply, a deferred entry lost) left
+    /// raft ahead of what the host applied. The storage need not be poisoned for this: raft hands
+    /// committed entries over once, so the member refuses every state-changing call
+    /// ([`NodeFailed`]) and is restarted, which replays its log.
+    pub fn is_failed(&self) -> bool {
+        self.failed
+    }
+
+    /// The refusal every call that could change the member's state gets once it is poisoned or
+    /// failed.
+    fn ensure_sound(&self) -> Result<(), String> {
+        if self.is_poisoned() {
+            return Err(StoragePoisoned.to_string());
+        }
+        if self.failed {
+            return Err(NodeFailed.to_string());
+        }
+        Ok(())
     }
 
     /// This member's id.
@@ -260,10 +347,11 @@ impl RaftNode {
     /// Record this member's state at a committed index and discard the log below it.
     ///
     /// The payload is the application's; this layer neither builds nor inspects it.
-    /// Recording a snapshot is what makes [`Storage::snapshot`] answerable, which is
+    /// Recording a snapshot is what makes `Storage::snapshot` answerable, which is
     /// what lets a leader catch up a member it has compacted past — a leader with no
     /// recorded snapshot has nothing to send, and says so rather than inventing one.
     pub fn record_snapshot(&mut self, index: u64, state: Vec<u8>) -> Result<(), String> {
+        self.ensure_sound()?;
         let store = self.node.raft.raft_log.store.clone();
         let outcome = store.wl().record_snapshot(index, state);
         outcome.map_err(|error| error.to_string())
@@ -318,9 +406,19 @@ impl RaftNode {
     /// Until this is called, applying further entries is refused. A member that
     /// carried on as though the snapshot were empty would number the next event 1
     /// and disagree with every other member about what that index means.
+    ///
+    /// The count is made durable first and the member's own fields change only after that: a
+    /// failed write leaves the snapshot installed and offered, the count as it was and the held
+    /// entries held, so the call can be repeated. With no snapshot pending the call is refused
+    /// ([`NoSnapshotPending`]). If applying the held entries then fails part-way, the rest are
+    /// lost to the member (raft will not hand them over again): it has failed ([`NodeFailed`]).
     pub fn resume_with_applied(&mut self, applied_events: u64) -> Result<(), String> {
-        self.applied_events = applied_events;
-        self.installed = None;
+        self.ensure_sound()?;
+        // Refused when nothing is pending: the count would overwrite a durable one and renumber
+        // every later event (a retry after a success is such a call).
+        if self.installed.is_none() {
+            return Err(NoSnapshotPending.to_string());
+        }
         // Durable, because the events this count covers are described by a
         // payload rather than by records this member still holds. A restart that
         // counted from zero would hand the next event an index the snapshot
@@ -328,8 +426,13 @@ impl RaftNode {
         let store = self.node.raft.raft_log.store.clone();
         let outcome = store.wl().set_applied_events(applied_events);
         outcome.map_err(|error| error.to_string())?;
+        self.applied_events = applied_events;
+        self.installed = None;
         let deferred = std::mem::take(&mut self.deferred);
+        // Raft counts these entries as applied and will not hand them over again, so an error
+        // part-way loses the rest: the member has failed.
         self.apply_committed(deferred)
+            .inspect_err(|_| self.failed = true)
     }
 
     /// Tell the group how the snapshot it sent to `peer` ended: delivered when the peer
@@ -345,6 +448,7 @@ impl RaftNode {
         peer: u64,
         outcome: SnapshotDelivery,
     ) -> Result<Vec<Message>, String> {
+        self.ensure_sound()?;
         self.node.report_snapshot(
             peer,
             match outcome {
@@ -359,6 +463,7 @@ impl RaftNode {
     /// that was streaming entries to it falls back to probing instead of filling a window nobody
     /// is reading.
     pub fn report_unreachable(&mut self, peer: u64) -> Result<Vec<Message>, String> {
+        self.ensure_sound()?;
         self.node.report_unreachable(peer);
         self.drain()
     }
@@ -369,9 +474,10 @@ impl RaftNode {
     /// accept a configuration nobody agreed, so this refuses rather than
     /// forwarding. The change is not in effect when this returns — it is an
     /// entry like any other, and it takes hold when it commits and
-    /// [`RaftNode::apply_committed`] applies it, which is what makes a
+    /// `RaftNode::apply_committed` applies it, which is what makes a
     /// membership change survive a restart.
     pub fn propose_membership(&mut self, change: MembershipChange) -> Result<Vec<Message>, String> {
+        self.ensure_sound()?;
         if !self.is_leader() {
             return Err("only a leader may propose a membership change".into());
         }
@@ -410,6 +516,7 @@ impl RaftNode {
 
     /// Stand for election, returning the messages that asks for votes.
     pub fn campaign(&mut self) -> Result<Vec<Message>, String> {
+        self.ensure_sound()?;
         self.node.campaign().map_err(|error| error.to_string())?;
         self.drain()
     }
@@ -419,6 +526,7 @@ impl RaftNode {
     /// Ticks are a count, not a duration: a test decides how many happen and when,
     /// so an election timeout is reached deterministically rather than by waiting.
     pub fn tick(&mut self) -> Result<Vec<Message>, String> {
+        self.ensure_sound()?;
         self.node.tick();
         self.drain()
     }
@@ -429,6 +537,7 @@ impl RaftNode {
     /// buffering it for a leadership it may never regain. A buffered proposal that
     /// is replayed later is a write the group never ordered.
     pub fn propose(&mut self, event: LedgerEvent) -> Result<Vec<Message>, String> {
+        self.ensure_sound()?;
         crate::check_encodable(&event).map_err(|error| error.to_string())?;
         self.node
             .propose(Vec::new(), encode_event(&event))
@@ -438,6 +547,7 @@ impl RaftNode {
 
     /// Take one message from another member.
     pub fn step(&mut self, message: Message) -> Result<Vec<Message>, String> {
+        self.ensure_sound()?;
         self.node.step(message).map_err(|error| error.to_string())?;
         self.drain()
     }
@@ -448,7 +558,15 @@ impl RaftNode {
     /// before the write, `persisted_messages` only after it. Sending a vote or an
     /// append that the sender has not yet flushed is how a crash turns into a
     /// promise nobody kept.
+    ///
+    /// An error here, after `ready()` has handed over committed entries and a light ready that
+    /// raft will not hand over again, marks the member failed whether or not the storage was
+    /// poisoned: it would otherwise keep running ahead of what the host applied.
     fn drain(&mut self) -> Result<Vec<Message>, String> {
+        self.drain_ready().inspect_err(|_| self.failed = true)
+    }
+
+    fn drain_ready(&mut self) -> Result<Vec<Message>, String> {
         let mut outbound = Vec::new();
         while self.node.has_ready() {
             let store = self.node.raft.raft_log.store.clone();
@@ -543,18 +661,20 @@ impl RaftNode {
                 continue;
             }
             if self.installed.is_some() {
-                // Refused now, kept for later: raft does not hand these entries over again, so
-                // the entry and what follows it are applied by `resume_with_applied` and are not
-                // lost to the error.
+                // Not applied now, kept for later: raft does not hand these entries over again,
+                // so the entry and what follows it are applied by `resume_with_applied`. This is
+                // not an error: the call that brought them also has messages to hand back, and
+                // an error would drop them. The host sees the wait through
+                // `take_installed_snapshot`.
                 self.deferred.push(entry);
                 self.deferred.extend(entries);
-                return Err(
-                    "a snapshot is waiting to be accounted for; call resume_with_applied first"
-                        .into(),
-                );
+                return Ok(());
             }
             let event = decode_event(entry.data.as_ref()).map_err(|error| error.to_string())?;
-            self.applied_events += 1;
+            self.applied_events = self
+                .applied_events
+                .checked_add(1)
+                .ok_or_else(|| "the count of applied events is exhausted".to_string())?;
             let index = CommitIndex(self.applied_events);
             self.committed.push(CommittedEvent { index, event });
         }
