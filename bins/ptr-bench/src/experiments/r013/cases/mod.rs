@@ -1,7 +1,7 @@
 //! The cases of R013: dormant seeds (`dormant`), lineage and transitive authority (`lineage`),
 //! in-flight calls racing a base-model or adapter invalidation (`inflight`) and the minimal
 //! attestor mechanism (`attestor`), each driving the PUBLIC runtime API on R011's
-//! [`fixture::Rt`] (a `PtrRuntime` over a durable `FileLedger` in a temporary directory).
+//! [`Rt`] (a `PtrRuntime` over a durable `FileLedger` in a temporary directory).
 //!
 //! Counting rules (R011's, restated):
 //!
@@ -24,13 +24,16 @@ use super::{metrics, params};
 use crate::experiments::layered_kv::corpus;
 use crate::experiments::layered_kv::emit::{Json, Tally};
 use crate::experiments::layered_kv::lab::Res;
-use crate::experiments::r011::cases::fixture::{report_for, ReportSpec, Rt, Setup};
-use crate::experiments::r011::cases::{classify, Verdict};
-use ptr_pods::{ExpertInputs, ExpertProposal, StructuralOp};
+use crate::experiments::r011::cases::fixture::{prime, report_for, ReportSpec, Rt, Setup};
+use crate::experiments::r011::cases::Verdict;
+use ed25519_dalek::SigningKey;
+use ptr_config::PtrConfig;
+use ptr_pods::{BaseModelRef, ExpertInputs, ExpertProposal, StructuralOp};
 use ptr_runtime::expert::{
-    expert_evidence_artifact_digest, ExpertAdmissionError, ExpertAttestation,
+    expert_attestor_key_id, ExpertAdmissionError, ExpertAdmissionGrant, ExpertAttestation,
+    ExpertAttestationClaim, ExpertAttestorRegistry,
 };
-use ptr_runtime::RuntimeError;
+use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_types::{CommitIndex, Generation};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -142,7 +145,12 @@ impl Cx {
     }
 
     /// Classify the result of an attempt of the adversarial case `case` and count the attempt
-    /// (only an `Ok` or an expected refusal reached the boundary the case names).
+    /// (only an `Ok` or a refusal reached the boundary the case names). An `Ok` is a violation
+    /// the caller counts. A refusal that is not the typed error the case owes is a violation of
+    /// the product's contract, counted here as `wrong_typed_refusals` (a falsifier, exit 1): the
+    /// product, not the harness, answered wrongly. Only an error the harness itself made
+    /// (`RuntimeError::InvalidConfig`, which the fixtures use for a request they could not
+    /// build) is a harness error (exit 2).
     pub fn verdict<T: std::fmt::Debug>(
         &mut self,
         case: &str,
@@ -150,7 +158,23 @@ impl Cx {
         result: Result<T, RuntimeError>,
         expected: impl Fn(&RuntimeError) -> bool,
     ) -> Res<Verdict> {
-        let verdict = classify(what, result, expected)?;
+        let verdict = match result {
+            Ok(_) => Verdict::Admitted,
+            Err(error) if expected(&error) => Verdict::Refused,
+            Err(RuntimeError::InvalidConfig(reason)) => {
+                return Err(format!(
+                    "{what}: the harness could not build the attempt: {reason}"
+                ))
+            }
+            Err(error) => {
+                eprintln!(
+                    "{}: {what}: refused with a typed error other than the one owed: {error:?}",
+                    params::BENCHMARK
+                );
+                self.count("wrong_typed_refusals", 1);
+                Verdict::Refused
+            }
+        };
         self.attempt(case)?;
         Ok(verdict)
     }
@@ -176,7 +200,8 @@ impl Cx {
     /// The registry of `rt` against a fresh replay of its committed history: a difference is a
     /// finding (`registry_replay_mismatches`), never a harness error.
     pub fn check_replay(&mut self, rt: &Rt) -> Res<()> {
-        let replayed = rt.replayed()?;
+        let replayed = replay_attested(rt.runtime.committed_events())
+            .map_err(|error| format!("replaying the committed history: {error:?}"))?;
         let equal = replayed.expert_registry() == rt.runtime.expert_registry();
         self.count("registry_replay_mismatches", i64::from(!equal));
         Ok(())
@@ -261,7 +286,7 @@ pub fn regime() -> Setup {
 /// rotations that fence nothing).
 pub fn regime_rt() -> Res<Rt> {
     use ptr_ledger::{ExpertAuthorityClass, ExpertAuthorityKind};
-    let mut rt = Rt::fresh()?;
+    let mut rt = fresh()?;
     for (kind, epoch) in [
         (ExpertAuthorityKind::GateConfig, GATE_START),
         (ExpertAuthorityKind::Evaluator, EVALUATOR_START),
@@ -292,24 +317,45 @@ pub fn must_under(
 
 // ---- attestors --------------------------------------------------------------------------------
 
-/// A trusted training attestor of the harness: a name and an epoch.
+/// A trusted training attestor of the harness: a name and an epoch. Its signing key is derived
+/// from both, so the host's registry ([`registry`]) and the attestor agree on one key per epoch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Attestor {
     pub name: &'static str,
     pub epoch: u64,
 }
 
+/// The attestors the harness's host trusts: every attestor a case signs with, except the
+/// intruder of the untrusted-attestor attempts, which the host never registered.
+pub const TRUSTED: [Attestor; 4] = [
+    Attestor::new("alpha", 1),
+    Attestor::new("alpha", 2),
+    Attestor::new("beta", 1),
+    Attestor::new("preflight", 1),
+];
+
+/// An attestor nobody registered: it signs with a key of its own.
+pub const INTRUDER: Attestor = Attestor::new("intruder", 1);
+
 impl Attestor {
     pub const fn new(name: &'static str, epoch: u64) -> Self {
         Self { name, epoch }
     }
 
-    /// The digest the attestor's input identity carries at its epoch.
+    /// The attestor's signing key (a fixture key, derived from the name and the epoch).
+    pub fn signing_key(&self) -> SigningKey {
+        let mut seed = [0x5A; 32];
+        for (index, byte) in self.name.bytes().enumerate() {
+            seed[index % 28] ^= byte.wrapping_add(index as u8);
+        }
+        seed[30] = self.epoch as u8;
+        seed[31] = 0x13;
+        SigningKey::from_bytes(&seed)
+    }
+
+    /// The id of the attestor's key: the digest its input identity carries at its epoch.
     pub fn digest(&self) -> [u8; 32] {
-        let mut digest = [0xA0; 32];
-        digest[0] = self.name.as_bytes()[0];
-        digest[1] = self.epoch as u8;
-        digest
+        expert_attestor_key_id(&self.signing_key().verifying_key())
     }
 
     /// The identity of the attestor as an input.
@@ -318,32 +364,125 @@ impl Attestor {
     }
 
     /// What the attestor asserts of the run `run` that served `proposal` and emitted the
-    /// artifact the proposal's operation determines.
+    /// artifact the proposal's operation determines, signed.
     pub fn attest(&self, proposal: &ExpertProposal, run: u8) -> Res<ExpertAttestation> {
-        self.attest_with(
-            run,
-            *proposal.proposal_id().as_bytes(),
-            expert_evidence_artifact_digest(proposal.op()),
-        )
+        Ok(self.claim(proposal, run)?.sign(&self.signing_key()))
     }
 
-    /// An attestation with the proposal and artifact it binds named by the caller.
+    /// The honest claim of the attestor about `proposal`.
+    pub fn claim(&self, proposal: &ExpertProposal, run: u8) -> Res<ExpertAttestationClaim> {
+        ExpertAttestationClaim::for_proposal(
+            self.name,
+            Generation(self.epoch),
+            run_id(run),
+            proposal,
+        )
+        .map_err(|error| format!("an attestation claim: {error:?}"))
+    }
+
+    /// A validly signed claim that names `proposal_id`, `artifact_digest` and `base_model`
+    /// instead of what `proposal` determines (the results stay the proposal's).
     pub fn attest_with(
         &self,
+        proposal: &ExpertProposal,
         run: u8,
         proposal_id: [u8; 32],
         artifact_digest: [u8; 32],
+        base_model: BaseModelRef,
     ) -> Res<ExpertAttestation> {
-        ExpertAttestation::new(
+        let honest = self.claim(proposal, run)?;
+        ExpertAttestationClaim::new(
             self.name,
             Generation(self.epoch),
-            self.digest(),
             run_id(run),
             proposal_id,
             artifact_digest,
+            base_model,
+            honest.results().to_vec(),
         )
-        .map_err(|error| format!("an attestation: {error:?}"))
+        .map(|claim| claim.sign(&self.signing_key()))
+        .map_err(|error| format!("an attestation claim: {error:?}"))
     }
+
+    /// The honest claim carrying the signature of another key under this attestor's key id: a
+    /// forgery of a registered attestor.
+    pub fn forged_by(
+        &self,
+        forger: Attestor,
+        proposal: &ExpertProposal,
+        run: u8,
+    ) -> Res<ExpertAttestation> {
+        let claim = self.claim(proposal, run)?;
+        let forged = claim.clone().sign(&forger.signing_key());
+        Ok(ExpertAttestation::from_parts(
+            claim,
+            self.digest(),
+            *forged.signature(),
+        ))
+    }
+}
+
+/// The host's registry of trusted attestor keys.
+pub fn registry() -> ExpertAttestorRegistry {
+    let mut registry = ExpertAttestorRegistry::new();
+    for attestor in TRUSTED {
+        registry
+            .register(
+                attestor.name,
+                Generation(attestor.epoch),
+                attestor.signing_key().verifying_key(),
+            )
+            .expect("the fixture attestors are valid and distinct");
+    }
+    registry
+}
+
+/// A fresh durable runtime, primed, whose host trusts the harness's attestors: they are the
+/// runtime's construction input, and no call changes them later.
+pub fn fresh() -> Res<Rt> {
+    let mut rt = Rt::fresh()?;
+    reopen(&mut rt)?;
+    Ok(rt)
+}
+
+/// Drop the runtime and open the same ledger again against the host's attestor registry (a
+/// restart), then install the host authority again.
+pub fn reopen(rt: &mut Rt) -> Res<()> {
+    let placeholder = PtrRuntime::new(PtrConfig::default())
+        .map_err(|error| format!("a placeholder runtime: {error:?}"))?;
+    drop(std::mem::replace(&mut rt.runtime, placeholder));
+    rt.runtime = PtrRuntime::open_durable_with_attestors(
+        PtrConfig::default(),
+        rt.scratch("ledger"),
+        registry(),
+    )
+    .map_err(|error| format!("reopening the durable ledger: {error:?}"))?;
+    prime(&mut rt.runtime)
+}
+
+/// Export a compacted snapshot and continue on the runtime restored from it, which is built with
+/// the host's attestor registry again.
+pub fn restore(rt: &mut Rt) -> Res<()> {
+    let snapshot = rt
+        .runtime
+        .export_compacted_snapshot()
+        .map_err(|error| format!("exporting a compacted snapshot: {error:?}"))?;
+    let mut restored = PtrRuntime::restore_compacted_with_attestors(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+        registry(),
+    )
+    .map_err(|error| format!("restoring a compacted snapshot: {error:?}"))?;
+    prime(&mut restored)?;
+    rt.runtime = restored;
+    Ok(())
+}
+
+/// A runtime rebuilt from `events` by replay against the host's attestor registry.
+pub fn replay_attested(events: &[ptr_ledger::CommittedEvent]) -> Result<PtrRuntime, RuntimeError> {
+    PtrRuntime::replay_with_attestors(PtrConfig::default(), events, registry())
 }
 
 /// The id of the training run numbered `n`.
@@ -351,6 +490,12 @@ pub fn run_id(n: u8) -> [u8; 32] {
     let mut id = [0xC0; 32];
     id[1] = n;
     id
+}
+
+/// The input identity of the run numbered `n`.
+pub fn run_identity(n: u8) -> String {
+    let hex: String = run_id(n).iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("run:{hex}")
 }
 
 /// Admit `proposal` with `attestation` over the dependency block `inputs` (the block the
@@ -363,15 +508,27 @@ pub fn admit_with_attestation(
     spec: &ReportSpec,
     setup: Setup,
 ) -> Result<CommitIndex, RuntimeError> {
-    let block = attestation
-        .attested_inputs(&inputs)
-        .map_err(RuntimeError::Expert)?;
-    let report = report_for(proposal, Some(&block), spec).map_err(RuntimeError::InvalidConfig)?;
     let grant = rt
         .admission_grant(setup)
         .map_err(RuntimeError::InvalidConfig)?;
+    admit_with_attestation_under(rt, proposal, attestation, inputs, spec, &grant)
+}
+
+/// [`admit_with_attestation`] under the given `grant`.
+pub fn admit_with_attestation_under(
+    rt: &mut Rt,
+    proposal: &ExpertProposal,
+    attestation: &ExpertAttestation,
+    inputs: ExpertInputs,
+    spec: &ReportSpec,
+    grant: &ExpertAdmissionGrant,
+) -> Result<CommitIndex, RuntimeError> {
+    let block = attestation
+        .attested_inputs(&inputs, grant)
+        .map_err(RuntimeError::Expert)?;
+    let report = report_for(proposal, Some(&block), spec).map_err(RuntimeError::InvalidConfig)?;
     rt.runtime
-        .admit_attested_expert_proposal(proposal, &report, &grant, inputs, attestation)
+        .admit_attested_expert_proposal(proposal, &report, grant, inputs, attestation)
 }
 
 /// Admit `op` attested by `who` for the run `run`, with the correct report under `setup`.

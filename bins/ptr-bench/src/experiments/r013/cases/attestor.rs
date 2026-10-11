@@ -1,13 +1,20 @@
-//! F5 and F6: the minimal attestor mechanism.
+//! F5 and F6: the signed attestor mechanism.
 //!
 //! F5, the binding of an attestation: for the three operations that produce an artifact (a
-//! `Birth`, a `Merge` and the `Reactivate` of a retired seed) an attestation that names the
-//! proposal and the artifact the operation determines is admitted (the positive control); the
-//! same proposal paired with an attestation of another artifact (the attestation of another
-//! run), or of another proposal, is refused; a grant that requires attestation refuses the
-//! admission that carries none; and a run id is single-use: the second record that names it is
-//! refused whoever the attestor is, after a reopen of the durable ledger, and on the plain
-//! admission path that names the run as an input of its own.
+//! `Birth`, a `Merge` and the `Reactivate` of a retired seed) an attestation, signed by a
+//! registered attestor, that names the proposal, the artifact, the base model and the results
+//! the operation determines is admitted (the positive control); the same proposal paired with
+//! a validly signed attestation of another artifact, another proposal or another base model is
+//! refused; an attestor nobody registered (it signs with a key of its own) and a registered
+//! attestor's id carrying another key's signature are refused; a grant that requires
+//! attestation refuses the admission that carries none; and a run id is single-use: the second
+//! record that names it is refused whoever the attestor is, after a reopen of the durable
+//! ledger, and on the plain admission path that names the run as an input of its own, as a
+//! training input at generation 1 or 2 or as an evaluation input. The recorded requirement: an
+//! admission under a grant that requires attestation records the requirement, so after a
+//! restart with a looser grant an unattested artifact-producing admission is refused, and so
+//! is a recorded unattested record in a replay, while an operation that produces no artifact
+//! is not blocked.
 //!
 //! F6, the attestor's epoch: a proposal queued across the revocation of its attestor is refused
 //! at the commit (a fresh attestor is admitted); the experts admitted under a revoked attestor
@@ -17,21 +24,33 @@
 
 use super::dormant::Path;
 use super::{
-    admit_with_attestation, must_attested, must_under, refused_with, run_id, Attestor, Cx,
+    admit_with_attestation, admit_with_attestation_under, fresh, must_attested, must_under,
+    refused_with, reopen, replay_attested, run_id, run_identity, Attestor, Cx, INTRUDER,
 };
 use crate::experiments::layered_kv::lab::Res;
 use crate::experiments::r011::cases::fixture::{
     level_of, readmission_report, report_for, spec_at, ReportSpec, Rt, Setup,
 };
 use crate::experiments::r011::cases::{classify_bystander, is_where};
-use ptr_ledger::ExpertFenceCause;
-use ptr_pods::{ExpertInputs, ExpertState, RetiredReason, StructuralOp};
+use ptr_ledger::{CommittedEvent, ExpertFenceCause, LedgerEvent};
+use ptr_pods::{
+    BaseModelDigest, BaseModelId, BaseModelRef, ExpertCommitRecord, ExpertInputs, ExpertProposal,
+    ExpertState, RetiredReason, StructuralOp,
+};
 use ptr_runtime::expert::{
-    expert_evidence_artifact_digest, ExpertAdmissionError, ExpertFenceRequest, ExpertStaleField,
-    InputInvalidation,
+    expert_evidence_artifact_digest, ledger_op_kind, ExpertAdmissionError, ExpertFenceGrant,
+    ExpertFenceRequest, ExpertStaleField, InputInvalidation,
 };
 use ptr_runtime::RuntimeError;
 use ptr_types::{CommitIndex, Generation};
+
+/// The caller's attempt to make `who`'s key trusted on a live runtime through `forged`. The
+/// product has no call that does it: the trusted set is fixed when the runtime is built, so
+/// there is nothing to try and the body is empty. (The mutation plan puts the live registration
+/// that this experiment's review found back, here and in the product, to show the case sees it.)
+fn try_to_trust(rt: &mut Rt, forged: &ExpertFenceGrant, who: Attestor) {
+    let _ = (rt, forged, who);
+}
 
 const A1: Attestor = Attestor::new("alpha", 1);
 const A2: Attestor = Attestor::new("alpha", 2);
@@ -57,7 +76,7 @@ impl Op {
 
     /// A fresh runtime in which the operation can be proposed, and the operation.
     fn fresh(self) -> Res<(Rt, StructuralOp)> {
-        let mut rt = Rt::fresh()?;
+        let mut rt = fresh()?;
         let op = match self {
             Self::Birth => StructuralOp::Birth {
                 result: rt.spec("n"),
@@ -96,12 +115,27 @@ impl Op {
 
 /// The artifact digest of an operation other than any `Op` above produces.
 fn other_artifact() -> Res<[u8; 32]> {
-    let rt = Rt::fresh()?;
+    let rt = fresh()?;
     let op = StructuralOp::Birth {
         result: rt.spec("q"),
     };
     let proposal = rt.proposal(op)?;
     Ok(expert_evidence_artifact_digest(proposal.op()))
+}
+
+/// The base model every expert of the fixtures is on.
+fn base_model() -> BaseModelRef {
+    crate::experiments::r011::cases::fixture::base()
+}
+
+/// Another base model than the fixtures'.
+fn other_base_model() -> BaseModelRef {
+    BaseModelRef::new(
+        BaseModelId::new("r013-other-base").expect("a valid base model id"),
+        BaseModelDigest::new([0x77; 32]).expect("a non-zero digest"),
+        1,
+    )
+    .expect("a non-zero generation")
 }
 
 pub fn attestation_binding(cx: &mut Cx) -> Res<()> {
@@ -110,7 +144,11 @@ pub fn attestation_binding(cx: &mut Cx) -> Res<()> {
         binding(cx, op)?;
     }
     cx.sub("run_reuse");
-    run_reuse(cx)
+    run_reuse(cx)?;
+    cx.sub("recorded_requirement");
+    recorded_requirement(cx)?;
+    cx.sub("binding_replayed");
+    binding_replayed(cx)
 }
 
 fn binding(cx: &mut Cx, op: Op) -> Res<()> {
@@ -139,7 +177,13 @@ fn binding(cx: &mut Cx, op: Op) -> Res<()> {
     let other = other_artifact()?;
     let (mut rt, operation) = op.fresh()?;
     let proposal = rt.proposal(operation)?;
-    let attestation = A1.attest_with(2, *proposal.proposal_id().as_bytes(), other)?;
+    let attestation = A1.attest_with(
+        &proposal,
+        2,
+        *proposal.proposal_id().as_bytes(),
+        other,
+        base_model(),
+    )?;
     let events = rt.event_count();
     let verdict = cx.verdict(
         "attestation_artifact_mismatch",
@@ -163,9 +207,11 @@ fn binding(cx: &mut Cx, op: Op) -> Res<()> {
     let (mut rt, operation) = op.fresh()?;
     let proposal = rt.proposal(operation)?;
     let attestation = A1.attest_with(
+        &proposal,
         3,
         [0x55; 32],
         expert_evidence_artifact_digest(proposal.op()),
+        base_model(),
     )?;
     let events = rt.event_count();
     let verdict = cx.verdict(
@@ -183,6 +229,116 @@ fn binding(cx: &mut Cx, op: Op) -> Res<()> {
     )?;
     cx.count("attestation_proposal_mismatch_attempts", 1);
     cx.count("mismatched_attestation_admissions", verdict.violation());
+    expect_unchanged(&rt, events, verdict.admitted())?;
+
+    // The base model of another model, validly signed.
+    let (mut rt, operation) = op.fresh()?;
+    let proposal = rt.proposal(operation)?;
+    let attestation = A1.attest_with(
+        &proposal,
+        5,
+        *proposal.proposal_id().as_bytes(),
+        expert_evidence_artifact_digest(proposal.op()),
+        other_base_model(),
+    )?;
+    let events = rt.event_count();
+    let verdict = cx.verdict(
+        "attestation_base_model_mismatch",
+        "an attestation of another base model",
+        admit_with_attestation(
+            &mut rt,
+            &proposal,
+            &attestation,
+            ExpertInputs::default(),
+            &ReportSpec::correct(),
+            Setup::PRE,
+        ),
+        refused_with(|e| matches!(e, ExpertAdmissionError::AttestationBaseModelMismatch)),
+    )?;
+    cx.count("attestation_base_model_mismatch_attempts", 1);
+    cx.count("mismatched_attestation_admissions", verdict.violation());
+    expect_unchanged(&rt, events, verdict.admitted())?;
+
+    // An attestor nobody registered, signing with a key of its own: the caller invented it.
+    let (mut rt, operation) = op.fresh()?;
+    let proposal = rt.proposal(operation)?;
+    let attestation = INTRUDER.attest(&proposal, 6)?;
+    let events = rt.event_count();
+    let verdict = cx.verdict(
+        "attestation_self_invented_attestor",
+        "an attestation by an attestor the host never registered",
+        admit_with_attestation(
+            &mut rt,
+            &proposal,
+            &attestation,
+            ExpertInputs::default(),
+            &ReportSpec::correct(),
+            Setup::PRE,
+        ),
+        refused_with(|e| matches!(e, ExpertAdmissionError::AttestorUnknown { .. })),
+    )?;
+    cx.count("attestation_untrusted_attestor_attempts", 1);
+    cx.count("untrusted_attestor_admissions", verdict.violation());
+    expect_unchanged(&rt, events, verdict.admitted())?;
+
+    // A registered attestor's id with the signature of another key.
+    let (mut rt, operation) = op.fresh()?;
+    let proposal = rt.proposal(operation)?;
+    let attestation = A1.forged_by(INTRUDER, &proposal, 7)?;
+    let events = rt.event_count();
+    let verdict = cx.verdict(
+        "attestation_forged_signature",
+        "an attestation of a registered attestor signed by another key",
+        admit_with_attestation(
+            &mut rt,
+            &proposal,
+            &attestation,
+            ExpertInputs::default(),
+            &ReportSpec::correct(),
+            Setup::PRE,
+        ),
+        refused_with(|e| matches!(e, ExpertAdmissionError::AttestationSignatureInvalid)),
+    )?;
+    cx.count("attestation_untrusted_attestor_attempts", 1);
+    cx.count("untrusted_attestor_admissions", verdict.violation());
+    expect_unchanged(&rt, events, verdict.admitted())?;
+
+    // A caller holding only an admission grant assembles a gate fence grant from that grant's
+    // binding and tries to make its own key trusted, then signs with it and admits.
+    let (mut rt, operation) = op.fresh()?;
+    let proposal = rt.proposal(operation)?;
+    let admission = rt.admission_grant(Setup::PRE)?;
+    let forged = ExpertFenceGrant::gate(
+        rt.project.clone(),
+        Setup::PRE.requirement()?,
+        admission.binding().clone(),
+    );
+    try_to_trust(&mut rt, &forged, INTRUDER);
+    let trusted = rt
+        .runtime
+        .expert_attestors()
+        .key(INTRUDER.name, Generation(INTRUDER.epoch))
+        .is_some();
+    let attestation = INTRUDER.attest(&proposal, 8)?;
+    let events = rt.event_count();
+    let verdict = cx.verdict(
+        "attestation_forged_gate_grant",
+        "an attestation signed by a key the caller tried to trust through a forged gate grant",
+        admit_with_attestation_under(
+            &mut rt,
+            &proposal,
+            &attestation,
+            ExpertInputs::default(),
+            &ReportSpec::correct(),
+            &admission,
+        ),
+        refused_with(|e| matches!(e, ExpertAdmissionError::AttestorUnknown { .. })),
+    )?;
+    cx.count("forged_gate_grant_attempts", 1);
+    cx.count(
+        "self_trusted_attestor_admissions",
+        i64::from(trusted) + verdict.violation(),
+    );
     expect_unchanged(&rt, events, verdict.admitted())?;
 
     // A grant that requires attestation refuses an admission without one (with a block of its
@@ -217,19 +373,15 @@ fn binding(cx: &mut Cx, op: Op) -> Res<()> {
         }
     }
     let attestation = A1.attest(&proposal, 4)?;
-    let block = attestation
-        .attested_inputs(&ExpertInputs::default())
-        .map_err(|error| format!("{error:?}"))?;
-    let report = report_for(&proposal, Some(&block), &ReportSpec::correct())?;
-    rt.runtime
-        .admit_attested_expert_proposal(
-            &proposal,
-            &report,
-            &grant,
-            ExpertInputs::default(),
-            &attestation,
-        )
-        .map_err(|error| format!("the attested {} under the requirement: {error:?}", op.key()))?;
+    admit_with_attestation_under(
+        &mut rt,
+        &proposal,
+        &attestation,
+        ExpertInputs::default(),
+        &ReportSpec::correct(),
+        &grant,
+    )
+    .map_err(|error| format!("the attested {} under the requirement: {error:?}", op.key()))?;
     cx.count("attestation_binding_controls_accepted", 1);
     cx.count_in("attestation_controls_by_operation", op.key(), 1);
     Ok(())
@@ -250,7 +402,7 @@ fn birth_op(rt: &Rt, pod: &str) -> StructuralOp {
 }
 
 fn run_reuse(cx: &mut Cx) -> Res<()> {
-    let mut rt = Rt::fresh()?;
+    let mut rt = fresh()?;
     let op = birth_op(&rt, "p");
     must_attested(
         &mut rt,
@@ -291,24 +443,50 @@ fn run_reuse(cx: &mut Cx) -> Res<()> {
     cx.count("mismatched_attestation_admissions", verdict.violation());
     expect_unchanged(&rt, events, verdict.admitted())?;
 
-    // The plain admission path naming the run as an input of its own.
-    let identity = A1.attest_with(1, [1; 32], [2; 32])?.run_identity();
-    let block =
-        crate::experiments::r011::cases::fixture::inputs(&[(identity.as_str(), 1, run_id(1))], &[]);
-    let op = birth_op(&rt, "s");
-    let events = rt.event_count();
-    let verdict = cx.verdict(
-        "attestation_run_reuse_plain_path",
-        "the run named as a plain input",
-        rt.admit_as(op, Some(block), &ReportSpec::correct(), Setup::PRE),
-        refused_with(reused),
-    )?;
-    cx.count("attestation_run_reuse_attempts", 1);
-    cx.count("mismatched_attestation_admissions", verdict.violation());
-    expect_unchanged(&rt, events, verdict.admitted())?;
+    // The plain admission path naming the run as an input of its own: as a training input at
+    // generation 1, as an evaluation input, and at generation 2.
+    for (case, what, generation, evaluation) in [
+        (
+            "attestation_run_reuse_plain_path",
+            "the run named as a plain training input",
+            1,
+            false,
+        ),
+        (
+            "attestation_run_reuse_evaluation_role",
+            "the run named as an evaluation input",
+            1,
+            true,
+        ),
+        (
+            "attestation_run_reuse_other_generation",
+            "the run named as a training input at generation 2",
+            2,
+            false,
+        ),
+    ] {
+        let identity = run_identity(1);
+        let named = [(identity.as_str(), generation, run_id(1))];
+        let block = if evaluation {
+            crate::experiments::r011::cases::fixture::inputs(&[], &named)
+        } else {
+            crate::experiments::r011::cases::fixture::inputs(&named, &[])
+        };
+        let op = birth_op(&rt, "s");
+        let events = rt.event_count();
+        let verdict = cx.verdict(
+            case,
+            what,
+            rt.admit_as(op, Some(block), &ReportSpec::correct(), Setup::PRE),
+            refused_with(reused),
+        )?;
+        cx.count("attestation_run_reuse_attempts", 1);
+        cx.count("mismatched_attestation_admissions", verdict.violation());
+        expect_unchanged(&rt, events, verdict.admitted())?;
+    }
 
     // After a reopen of the durable ledger: the consumed run is derived from the history.
-    rt.reopen()?;
+    reopen(&mut rt)?;
     let op = birth_op(&rt, "t");
     let events = rt.event_count();
     let verdict = cx.verdict(
@@ -337,6 +515,156 @@ fn run_reuse(cx: &mut Cx) -> Res<()> {
     cx.check_replay(&rt)
 }
 
+/// `history` followed by a record of `proposal` over `block` (none: an unattested record), as a
+/// writer that bypasses the public API could append it.
+fn with_record(
+    mut history: Vec<CommittedEvent>,
+    proposal: &ExpertProposal,
+    block: Option<&ExpertInputs>,
+) -> Res<Vec<CommittedEvent>> {
+    let report = report_for(proposal, block, &ReportSpec::correct())?;
+    let requirement = Setup::PRE.requirement()?;
+    let record = match block {
+        Some(block) => ExpertCommitRecord::new_with_inputs(
+            proposal.clone(),
+            report.digest(),
+            requirement.gate_epoch,
+            requirement.config_digest,
+            report.encode_canonical(),
+            block.clone(),
+        ),
+        None => ExpertCommitRecord::new_with_evidence(
+            proposal.clone(),
+            report.digest(),
+            requirement.gate_epoch,
+            requirement.config_digest,
+            report.encode_canonical(),
+        ),
+    }
+    .map_err(|error| format!("a record: {error:?}"))?;
+    let next = history.last().map_or(1, |last| last.index.0 + 1);
+    history.push(CommittedEvent {
+        index: CommitIndex(next),
+        event: LedgerEvent::ExpertStructuralCommitted {
+            project: proposal.project().clone(),
+            op_kind: ledger_op_kind(proposal.op().kind()),
+            proposal_id: *proposal.proposal_id().as_bytes(),
+            operation_id: *proposal.operation_id().as_bytes(),
+            evidence_digest: *record.evidence_digest(),
+            record: record.encode_canonical(),
+        },
+    });
+    Ok(history)
+}
+
+/// The binding of a recorded attestation is re-checked in a replay: the block of an attestation
+/// made for one proposal, carried by the record of another proposal (another artifact), does
+/// not replay, and the record it was made for does.
+fn binding_replayed(cx: &mut Cx) -> Res<()> {
+    let rt = fresh()?;
+    let grant = rt.admission_grant(Setup::PRE)?;
+    let op = birth_op(&rt, "f");
+    let proposal = rt.proposal(op)?;
+    let block = A1
+        .attest(&proposal, 1)?
+        .attested_inputs(&ExpertInputs::default(), &grant)
+        .map_err(|error| format!("{error:?}"))?;
+    replay_attested(&with_record(rt.events(), &proposal, Some(&block))?)
+        .map_err(|error| format!("the record the attestation was made for: {error:?}"))?;
+    cx.count("attestation_binding_controls_accepted", 1);
+    cx.count_in("attestation_controls_by_operation", "binding_replayed", 1);
+    let other = rt.proposal(birth_op(&rt, "g"))?;
+    let history = with_record(rt.events(), &other, Some(&block))?;
+    let verdict = cx.verdict(
+        "attestation_binding_replayed",
+        "a recorded attestation made for another proposal and artifact, replayed",
+        replay_attested(&history).map(|_| ()),
+        refused_with(|e| matches!(e, ExpertAdmissionError::AttestationSignatureInvalid)),
+    )?;
+    cx.count("attestation_artifact_mismatch_attempts", 1);
+    cx.count("mismatched_attestation_admissions", verdict.violation());
+    Ok(())
+}
+
+/// The requirement of attestation is recorded with the admission: after a restart with a
+/// looser grant an unattested artifact-producing admission is refused, a record that lacks
+/// the attestation is refused in a replay, and an operation that produces no artifact is not
+/// blocked.
+fn recorded_requirement(cx: &mut Cx) -> Res<()> {
+    let mut rt = fresh()?;
+    let required = rt.admission_grant(Setup::PRE)?.with_required_attestation();
+    let op = birth_op(&rt, "p");
+    let proposal = rt.proposal(op)?;
+    let attestation = A1.attest(&proposal, 1)?;
+    admit_with_attestation_under(
+        &mut rt,
+        &proposal,
+        &attestation,
+        ExpertInputs::default(),
+        &ReportSpec::correct(),
+        &required,
+    )
+    .map_err(|error| format!("the attested birth under the requirement: {error:?}"))?;
+    cx.count("attestation_binding_controls_accepted", 1);
+    cx.count_in(
+        "attestation_controls_by_operation",
+        "requirement_recorded",
+        1,
+    );
+
+    // The restart rebuilds the grant without the requirement.
+    reopen(&mut rt)?;
+    let loose = rt.admission_grant(Setup::PRE)?;
+    if loose.requires_attestation() {
+        return Err("the restarted grant requires attestation".to_string());
+    }
+    for with_block in [false, true] {
+        let op = birth_op(&rt, "q");
+        let proposal = rt.proposal(op)?;
+        let inputs = with_block.then(ExpertInputs::default);
+        let report = report_for(&proposal, inputs.as_ref(), &ReportSpec::correct())?;
+        let events = rt.event_count();
+        let verdict = cx.verdict(
+            "attestation_unattested_after_reopen",
+            "an unattested admission under a looser grant after a restart",
+            rt.commit_proposal(&proposal, &report, &loose, inputs),
+            refused_with(|e| matches!(e, ExpertAdmissionError::AttestationRequired)),
+        )?;
+        cx.count("attestation_requirement_after_reopen_attempts", 1);
+        cx.count("unattested_admissions", verdict.violation());
+        expect_unchanged(&rt, events, verdict.admitted())?;
+    }
+
+    // A record without the attestation in the history, as a writer that bypasses the API
+    // could leave it: the replay refuses it.
+    let op = birth_op(&rt, "r");
+    let proposal = rt.proposal(op)?;
+    let history = with_record(rt.events(), &proposal, None)?;
+    let verdict = cx.verdict(
+        "attestation_unattested_record_replayed",
+        "a recorded unattested record in a history that requires attestation",
+        replay_attested(&history).map(|_| ()),
+        refused_with(|e| matches!(e, ExpertAdmissionError::AttestationRequired)),
+    )?;
+    cx.count("attestation_requirement_after_reopen_attempts", 1);
+    cx.count("unattested_admissions", verdict.violation());
+
+    // The operations that produce no artifact are not attested and not blocked, under the
+    // recorded requirement or a grant that states it.
+    let target = rt.target("p")?;
+    let proposal = rt.proposal(StructuralOp::Freeze { target })?;
+    let report = report_for(&proposal, None, &ReportSpec::correct())?;
+    let required = rt.admission_grant(Setup::PRE)?.with_required_attestation();
+    rt.commit_proposal(&proposal, &report, &required, None)
+        .map_err(|error| format!("a freeze under the requirement: {error:?}"))?;
+    if rt.state("p").map(|(state, _)| state) != Some(ExpertState::Frozen) {
+        return Err("the freeze under the requirement did not freeze".to_string());
+    }
+    cx.count("attestation_binding_controls_accepted", 1);
+    cx.count_in("attestation_controls_by_operation", "freeze_unaffected", 1);
+    cx.check_replay(&rt)
+}
+
 pub fn attestor_revocation(cx: &mut Cx) -> Res<()> {
     cx.sub("queued_across_revocation");
     queued_across_revocation(cx)?;
@@ -348,22 +676,22 @@ pub fn attestor_revocation(cx: &mut Cx) -> Res<()> {
 }
 
 fn queued_across_revocation(cx: &mut Cx) -> Res<()> {
-    let mut rt = Rt::fresh()?;
+    let mut rt = fresh()?;
     // The proposal, its attestation and its report are prepared while the attestor is live.
     let op = birth_op(&rt, "e");
     let proposal = rt.proposal(op)?;
     let attestation = A1.attest(&proposal, 1)?;
+    let grant = rt.admission_grant(Setup::PRE)?;
     let block = attestation
-        .attested_inputs(&ExpertInputs::default())
+        .attested_inputs(&ExpertInputs::default(), &grant)
         .map_err(|error| format!("{error:?}"))?;
     let report = report_for(&proposal, Some(&block), &ReportSpec::correct())?;
-    let grant = rt.admission_grant(Setup::PRE)?;
     // A fresh attestor's proposal, prepared the same way, is the control.
     let op = birth_op(&rt, "g");
     let control_proposal = rt.proposal(op)?;
     let control_attestation = B1.attest(&control_proposal, 2)?;
     let control_block = control_attestation
-        .attested_inputs(&ExpertInputs::default())
+        .attested_inputs(&ExpertInputs::default(), &grant)
         .map_err(|error| format!("{error:?}"))?;
     let control_report = report_for(
         &control_proposal,
@@ -421,7 +749,7 @@ fn readmit(rt: &mut Rt, pod: &str, cause: ExpertFenceCause) -> Result<CommitInde
 }
 
 fn quarantine(cx: &mut Cx, path: Path) -> Res<()> {
-    let mut rt = Rt::fresh()?;
+    let mut rt = fresh()?;
     for (pod, run, who) in [("e", 1, A1), ("f", 2, A1), ("w", 3, B1)] {
         let op = birth_op(&rt, pod);
         must_attested(

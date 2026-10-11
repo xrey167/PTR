@@ -317,7 +317,7 @@ fn run_control(
 fn run_cell(cx: &mut Cx, world: &World, kind: Kind, trigger: Trigger) -> Res<()> {
     let label = format!("f4.{}.{}", kind.key(), trigger.key());
     cx.sub(&label);
-    let mut rt = Rt::fresh()?;
+    let mut rt = super::fresh()?;
     let (live, reference, target_pod) = bind(world, &mut rt, kind)?;
     let request = corpus::raw_request(&label, &prompt());
     run_control(&label, &request, &live, &rt.runtime)?;

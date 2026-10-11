@@ -63,19 +63,19 @@ COMPLETED, FALSIFIED, INVALID = "COMPLETED", "FALSIFIED", "INVALID"
 OPERATORS = (">=", "<=", "==")
 NUMBER = re.compile(r"-?[0-9]+")
 SCOPE = (
-    "authority over dormant seeds, lineage and in-flight calls in PtrRuntime's expert registry, and a minimal attestor mechanism, "
+    "authority over dormant seeds, lineage and in-flight calls in PtrRuntime's expert registry, and a signed attestor mechanism, "
     "on one host: experts retired before the authority or the input they rested on was revoked are not reactivated from that "
     "compromised seed (gate configuration, evaluator, training input, attestor); descendants of consumed sources (merge, split, "
     "reactivation) are fenced when an authority, an input or an attestor is revoked, on the normal, reopen and compacted-restore "
     "paths; a call in flight on the R010 KvSession over the tiny seeded MoE is cancelled at its next use when the base model or an "
-    "adapter it rests on is invalidated; an attestation names one proposal, one artifact digest and one single-use run id, an "
-    "attestor revocation is the compound input invalidation (terminal for the experts admitted under it), and a grant can require "
-    "attestation"
+    "adapter it rests on is invalidated; an attestation is signed by a registered attestor key and names one proposal, one artifact "
+    "digest, the base model, the results and one single-use run id, an attestor revocation is the compound input invalidation "
+    "(terminal for the experts admitted under it), and a grant can require attestation, which the ledger records"
 )
 LIMITATIONS = [
     "a route is a probe of PtrRuntime::expert_route_admission: no production router consumes it, and no end-to-end MoE routing is claimed",
     "the direct append is the public PtrRuntime API only; the grant is not recorded in the ledger and the report digest is unkeyed, so a raw ledger writer is outside the claim",
-    "the attestation is the host's assertion: neither signed nor recorded; replay re-checks the attestor's liveness and the single use of the run id (both live in the dependency block) and does not re-check the artifact or proposal binding or that an attestation was presented; the artifact digest it binds is the one the operation determines, not weights",
+    "the attestation is an Ed25519 signature by an attestor key the host registered: the registry is host configuration handed to the runtime's constructor, not history (it is not a ledger event, the host supplies it again at a restart and a replay against a registry that lacks a key refuses the record; the same key may be registered under two names; revoking one name does not revoke the key), the signature binds claims, not weights (the artifact digest it binds is the one the operation determines) and not the other training or evaluation inputs of the dependency block, the requirement for attestation is recorded with the first attested record admitted under a requiring grant so records before it may be unattested, and a global-revocation authority can burn a run id nobody has used",
     "an authority's epochs are monotone and a revocation fences every serving expert admitted under an earlier epoch, so the transitive-authority cases see defects of the epoch bookkeeping, not a missing lineage rule",
     "the runtime has no adapter role: an adapter is an input identity in the training block, and the base-model cells fence every expert of the MoE, so they check the cancellation and not the replacement path",
     "every race is a sequenced interleaving in a single-writer runtime; a crash is modelled as drop after the append and reopen",
