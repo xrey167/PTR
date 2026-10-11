@@ -1,15 +1,21 @@
 version = 1
 id = "ptr-py"
 maturity = "prototype"
-last_reviewed = "2026-10-04"
+last_reviewed = "2026-10-11"
 
 implemented = [
   "PyO3 (abi3-py311) extension module ptr_py over ptr-lineage, built by maturin in its own excluded Cargo workspace: aimer_score, rank_experts_for_pruning, subspace_overlap, chance_overlap, measure_interference, ties_merge and forgetting_gate_evaluate, taking and returning plain Python types (lists, nested row-major lists, tuples, dicts)",
   "Every LineageError becomes PtrLineageError (a ValueError) whose message is the Rust error code and Display text; malformed Python shapes (ragged rows) are ValueError before reaching Rust",
+  "Read-only VCW-MoE surface: verify_arithmetic, verify_json_schema, verify_code and verify_facts return an unforgeable VerificationReport (status, level, score, findings with code, severity and message); finding_code_table, codes_for_role and repair_role_for expose the code table",
+  "FindingRouter (roster, eligibility, generations and the deterministic required level fixed at construction; seeded key, uniform scorer) routes a report and returns the decision with propensity equal to the sampled Pod's support entry; settle(decision_id, candidate) verifies the candidate inside Rust against the task of the routed report and derives the reward from that report with classify (report and candidate SHA-256 digests logged; a report object from Python is refused, so Python cannot state or forge a reward, but it chooses which decisions it settles, the routed report's task and the candidate text, so estimates are only as honest as the harness); estimate() returns IPS, SNIPS and doubly robust values for a table target policy; classify_report exposes the deterministic class",
+  "BoundedWorkspace wraps the ptr-pods workspace with a verifier and level fixed at construction (submit, subscribe, run_cycle, receive; texts capped at 64 KiB, texts not held by a slot evicted after each cycle; author is an unauthenticated label; the GIL is released during verify_code, the cycle and the simulation); simulate_vcw_run runs one VcwLoop request in-process with seeded simulated experts and returns outcome, trace, budget use and per-step routes",
+  "Errors raise PtrVerifierError, PtrRouterError, PtrWorkspaceError (and its subclass PtrWorkspaceCapacityError) or PtrVcwError (ValueErrors); tests assert the public surface has no setter for gates, thresholds, verifiers or eligibility",
   "The gate decides: forgetting_gate_evaluate returns the ForgettingGate verdict, violations and accuracy-matrix metrics unchanged, and the bindings add no thresholds or logic of their own",
 ]
 
 missing = [
+  "Policy promotion (PromotionGate, PolicyBook), learned scorers, roster changes, the structure driver and any live-runtime handle are deliberately not exposed",
+  "Parser for the server's /v1/vcw/traces/{id} JSON (not needed: the loop runs in-process)",
   "Lineage registry (register, gate, serve, retire) and replay pool from Python",
   "Published wheels; the module is built locally by make py-bindings",
   "Caller in training/src/ptr_training/moe/gates.py (guarded import) is owned by the training package",
