@@ -1,0 +1,118 @@
+# Defects planted in the shared aggregation library (agg.py, stats.py). Run by run_agg_mutations.py for every stage-A experiment; each must fail the
+# experiment's aggregator tests or research/cseries/tests/test_lib.py while both pass unmutated.
+
+[[mutation]]
+name = "paired-variance-divides-by-n"
+file = "research/cseries/lib/stats.py"
+find = "for d in differences), Fraction(0)) / (n - 1)"
+replace = "for d in differences), Fraction(0)) / n"
+
+[[mutation]]
+name = "paired-half-width-ignores-the-square-root-of-n"
+file = "research/cseries/lib/stats.py"
+find = "half = t_quantile_value * sd / Decimal(n).sqrt()"
+replace = "half = t_quantile_value * sd / Decimal(n)"
+
+[[mutation]]
+name = "paired-bounds-are-swapped"
+file = "research/cseries/lib/stats.py"
+find = '''        "lower_bound_permille": float((mean_d - half) * 1000),
+        "upper_bound_permille": float((mean_d + half) * 1000),'''
+replace = '''        "lower_bound_permille": float((mean_d + half) * 1000),
+        "upper_bound_permille": float((mean_d - half) * 1000),'''
+
+[[mutation]]
+name = "median-of-an-even-count-takes-the-upper-middle"
+file = "research/cseries/lib/stats.py"
+find = "return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2"
+replace = "return ordered[mid]"
+
+[[mutation]]
+name = "t-cdf-bisection-stops-early"
+file = "research/cseries/lib/stats.py"
+find = "    for _ in range(200):\n        mid = (lo + hi) / 2\n        lo, hi = (mid, hi) if t_cdf(mid, df) < p else (lo, mid)"
+replace = "    for _ in range(3):\n        mid = (lo + hi) / 2\n        lo, hi = (mid, hi) if t_cdf(mid, df) < p else (lo, mid)"
+
+[[mutation]]
+name = "greater-or-equal-is-strict"
+file = "research/cseries/lib/agg.py"
+find = 'return x >= y if op == ">=" else x <= y if op == "<=" else x == y'
+replace = 'return x > y if op == ">=" else x <= y if op == "<=" else x == y'
+
+[[mutation]]
+name = "less-or-equal-is-strict"
+file = "research/cseries/lib/agg.py"
+find = 'return x >= y if op == ">=" else x <= y if op == "<=" else x == y'
+replace = 'return x >= y if op == ">=" else x < y if op == "<=" else x == y'
+
+[[mutation]]
+name = "guards-are-not-judged"
+file = "research/cseries/lib/agg.py"
+find = '    for rule in criteria.get("guards", []):'
+replace = '    for rule in []:'
+
+[[mutation]]
+name = "integrity-counters-are-not-judged"
+file = "research/cseries/lib/agg.py"
+find = '    for rule in criteria.get("integrity", []):'
+replace = '    for rule in []:'
+
+[[mutation]]
+name = "a-tripped-negative-control-is-not-required"
+file = "research/cseries/lib/agg.py"
+find = '        if not isinstance(control, dict) or control.get("required_rule_tripped") is not True:'
+replace = '        if False:'
+
+[[mutation]]
+name = "the-pinned-scale-is-not-required"
+file = "research/cseries/lib/agg.py"
+find = '    if result.get("scale") != "pinned":'
+replace = '    if False:'
+
+[[mutation]]
+name = "the-reported-seed-is-not-compared"
+file = "research/cseries/lib/agg.py"
+find = '    if result.get("seed") != seed or isinstance(result.get("seed"), bool):'
+replace = '    if False:'
+
+[[mutation]]
+name = "the-exit-status-is-not-compared-with-the-rules"
+file = "research/cseries/lib/agg.py"
+find = "        if failing != (exit_code == 1):"
+replace = "        if False:"
+
+[[mutation]]
+name = "an-environment-mismatch-invalidates-nothing"
+file = "research/cseries/lib/agg.py"
+find = "        if entry[\"seed\"] in mismatches:"
+replace = "        if False:"
+
+[[mutation]]
+name = "arm-counts-above-the-total-are-accepted"
+file = "research/cseries/lib/agg.py"
+find = "or total <= 0 or not 0 <= correct <= total:"
+replace = "or total <= 0:"
+
+[[mutation]]
+name = "the-benchmark-name-is-not-compared"
+file = "research/cseries/lib/agg.py"
+find = '    if result.get("benchmark") != benchmark or result.get("experiment") != experiment:'
+replace = '    if False:'
+
+[[mutation]]
+name = "harness-gaps-are-ignored"
+file = "research/cseries/lib/agg.py"
+find = '    if result.get("harness_gaps") != []:'
+replace = '    if False:'
+
+[[mutation]]
+name = "the-environment-record-is-not-required"
+file = "research/cseries/lib/agg.py"
+find = "    if not isinstance(environment, dict) or not all(isinstance(environment.get(k), str) and environment.get(k) for k in ENVIRONMENT_KEYS):"
+replace = "    if False:"
+
+[[mutation]]
+name = "a-rule-with-an-unknown-operator-parses"
+file = "research/cseries/lib/agg.py"
+find = "    if len(tokens) != 3 or tokens[1] not in OPERATORS or not all(tokens):"
+replace = "    if len(tokens) != 3 or not all(tokens):"

@@ -1,0 +1,590 @@
+{
+  "experiment_id": "C007",
+  "git_sha": "145c75f848b065cb235ca3e6cfe53d0a6c645bb3",
+  "interpreter": "3.11.15",
+  "killed": 50,
+  "machine": "x86_64",
+  "mutations": [
+    {
+      "counters": [
+        "model_write_paths"
+      ],
+      "exit": 1,
+      "expected": [
+        "model_write_paths"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "head-training-writes-the-classifier",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "advice_leaks"
+      ],
+      "exit": 1,
+      "expected": [
+        "advice_leaks"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "advice-writes-the-gate-threshold",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "nondeterminism"
+      ],
+      "exit": 1,
+      "expected": [
+        "nondeterminism"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "determinism-seed-dropped",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "capacity_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "capacity_mismatch_arms"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "probe-has-a-different-width",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "input_mismatches"
+      ],
+      "exit": 2,
+      "expected": [
+        "input_mismatches"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "probe-trained-on-other-features",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "aux_weight_errors",
+        "inert_treatment_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "aux_weight_errors"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "probe-has-an-auxiliary-loss",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "split_overlap"
+      ],
+      "exit": 2,
+      "expected": [
+        "split_overlap"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "every-split-is-drawn-from-the-same-seed",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "error_rate_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "error_rate_errors"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "classifier-is-not-trained",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "error_rate_errors",
+        "outcome_audit_mismatches"
+      ],
+      "exit": 2,
+      "expected": [
+        "outcome_audit_mismatches",
+        "error_rate_errors"
+      ],
+      "file": "research/cseries/c002a/c007_task.py",
+      "name": "verifier-outcome-flipped",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "metric_audit_mismatches"
+      ],
+      "exit": 2,
+      "expected": [
+        "metric_audit_mismatches"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "brier-accumulates-in-single-precision",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "permutation_leaks"
+      ],
+      "exit": 2,
+      "expected": [
+        "permutation_leaks"
+      ],
+      "file": "research/cseries/c002a/c007_task.py",
+      "name": "permutation-is-identity",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "shuffle_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "shuffle_errors"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "shuffle-is-the-identity",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "noise_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "noise_errors"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "noise-is-zero",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "advice_probe_hits",
+        "nonfinite_arms",
+        "checkpoint_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "nonfinite_arms"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "loss-is-infinite",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "checkpoint_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "checkpoint_mismatch_arms"
+      ],
+      "file": "research/cseries/lib/train.py",
+      "name": "best-checkpoint-not-restored",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "convergence_mismatch_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "convergence_mismatch_arms"
+      ],
+      "file": "research/cseries/lib/train.py",
+      "name": "converged-flag-always-true",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "arms_trained"
+      ],
+      "exit": 1,
+      "expected": [
+        "arms_trained"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "a-null-head-is-not-trained",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "id_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "id_eval_instances"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "in-distribution-test-halved",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "shifted_eval_instances",
+        "null_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "shifted_eval_instances"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "shifted-test-halved",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "null_eval_instances"
+      ],
+      "exit": 1,
+      "expected": [
+        "null_eval_instances"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "null-test-halved",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "advice_probe_hits"
+      ],
+      "exit": 1,
+      "expected": [
+        "advice_probe_hits"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "advice-probe-sees-nothing",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:split_overlap"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "overlap-detector-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:capacity"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "capacity-comparison-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:input_hash"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "feature-digest-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:outcome_audit"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "mismatch-counter-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "capacity_mismatch_arms",
+        "input_mismatches",
+        "fit_split_errors",
+        "metric_audit_mismatches"
+      ],
+      "exit": 2,
+      "expected": [
+        "control:metric_audit",
+        "metric_audit_mismatches",
+        "capacity_mismatch_arms",
+        "input_mismatches"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "difference-test-inverted",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:write_probe"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "parameter-digest-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:advice_probe"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "environment-digest-ignores-the-threshold",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "control:shuffle_probe",
+        "unit:unchanged"
+      ],
+      "file": "research/cseries/c002a/c007_rules.py",
+      "name": "unchanged-test-blind",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:signal"
+      ],
+      "file": "research/cseries/c002a/c007_rules.py",
+      "name": "signal-sign-flipped",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:unconverged_arms"
+      ],
+      "file": "research/cseries/c002a/c007_rules.py",
+      "name": "unconverged-guard-ignores-the-probe",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:band"
+      ],
+      "file": "research/cseries/c002a/c007_rules.py",
+      "name": "error-band-is-exclusive",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:agreement"
+      ],
+      "file": "research/cseries/c002a/c007_rules.py",
+      "name": "agreement-slack-ignored",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:confidence_score"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "confidence-score-sign-flipped",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:auroc"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "auroc-counts-ties-as-wins",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:ece"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "ece-unweighted-bins",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:risk_coverage"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "risk-coverage-keeps-the-worst-first",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:platt"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "platt-fit-without-intercept",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:brier"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "brier-reference-sums-absolute-errors",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:feature_widths"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "feature-widths-forget-the-entropy",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:aux_mask"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "auxiliary-view-keeps-the-late-features",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "inert_treatment_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "inert_treatment_arms"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "aux-branch-never-runs",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "inert_treatment_arms"
+      ],
+      "exit": 2,
+      "expected": [
+        "inert_treatment_arms"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "aux-term-is-counted-but-scaled-to-zero",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "fit_split_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "fit_split_errors"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "platt-baseline-fitted-on-the-shifted-split",
+      "result": "killed"
+    },
+    {
+      "counters": [
+        "fit_split_errors"
+      ],
+      "exit": 2,
+      "expected": [
+        "fit_split_errors"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "head-recalibrated-on-the-shifted-split",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:head_gap"
+      ],
+      "file": "research/cseries/c002a/c007_rules.py",
+      "name": "head-gap-sign-flipped",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:base"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "base-term-dropped",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 1,
+      "expected": [
+        "unit:base"
+      ],
+      "file": "research/cseries/c002a/c007_model.py",
+      "name": "base-reads-the-wrong-column",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:treatment_probe"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "treatment-detector-blinded",
+      "result": "killed"
+    },
+    {
+      "counters": [],
+      "exit": 2,
+      "expected": [
+        "control:fit_probe"
+      ],
+      "file": "research/cseries/c002a/harness.py",
+      "name": "fit-split-detector-blinded",
+      "result": "killed"
+    }
+  ],
+  "note": "planted in a throwaway copy at a reduced scale with the interpreter that ran this script (the locked environment's)",
+  "runner_args": [
+    "--set",
+    "model_steps=300",
+    "--set",
+    "max_steps=400",
+    "--set",
+    "max_steps_control=100",
+    "--set",
+    "eval_every=25",
+    "--set",
+    "patience=100"
+  ],
+  "subcommand": "c007",
+  "torch": "2.7.1+cpu",
+  "total": 50
+}
