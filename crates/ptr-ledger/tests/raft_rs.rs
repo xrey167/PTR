@@ -205,6 +205,9 @@ fn a_record_whose_digest_does_not_match_is_refused_on_open() {
             .wl()
             .append(&[entry(1, 1, b"one"), entry(2, 1, b"two")])
             .unwrap();
+        // Committed, so that a record that cannot be read is missing committed history and not
+        // an unacknowledged tail (which open cuts off and reports).
+        storage.wl().set_commit(2).unwrap();
     }
     let log = temp.dir().join("log");
     let original = std::fs::read(&log).unwrap();
@@ -217,17 +220,17 @@ fn a_record_whose_digest_does_not_match_is_refused_on_open() {
     std::fs::write(&log, &payload_damaged).unwrap();
     let error = FileRaftStorage::open(&temp.dir(), &[1], &[])
         .expect_err("a damaged record is not readable state");
-    assert!(error.to_string().contains("digest"), "{error}");
+    assert!(error.to_string().contains("committed"), "{error}");
 
-    // A bit flipped in a length field fails earlier, while reading: a different
-    // fault with a different refusal, rather than one message for everything.
+    // A bit flipped in a length field fails earlier, while reading; the refusal is the same
+    // because either way a committed record is gone.
     let mut length_damaged = original.clone();
     let inside_length = original.len() - 40;
     length_damaged[inside_length] ^= 0x01;
     std::fs::write(&log, &length_damaged).unwrap();
     let error = FileRaftStorage::open(&temp.dir(), &[1], &[])
         .expect_err("a length that runs past the file is not readable state");
-    assert!(error.to_string().contains("ends inside"), "{error}");
+    assert!(error.to_string().contains("committed"), "{error}");
 
     std::fs::write(&log, &original).unwrap();
     FileRaftStorage::open(&temp.dir(), &[1], &[]).expect("the intact log still opens");
@@ -272,6 +275,7 @@ fn a_truncated_log_and_a_damaged_state_file_are_both_refused() {
     {
         let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
         storage.wl().append(&[entry(1, 1, b"one")]).unwrap();
+        storage.wl().set_commit(1).unwrap();
     }
     let log = temp.dir().join("log");
     let bytes = std::fs::read(&log).unwrap();
@@ -281,7 +285,7 @@ fn a_truncated_log_and_a_damaged_state_file_are_both_refused() {
             .expect_err("a torn record is not readable state");
         let message = error.to_string();
         assert!(
-            message.contains("ends inside") || message.contains("magic"),
+            message.contains("committed") || message.contains("magic"),
             "{length}: {message}"
         );
     }

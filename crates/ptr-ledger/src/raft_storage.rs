@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Marks the state file. A foreign file is refused rather than parsed.
-const STATE_MAGIC: &[u8; 8] = b"PTRRST02";
+const STATE_MAGIC: &[u8; 8] = b"PTRRST03";
 /// Marks each log record.
 const RECORD_MAGIC: &[u8; 8] = b"PTRRFR01";
 /// Marks the log file, once, at offset zero.
@@ -39,6 +39,48 @@ const LOG_MAGIC: &[u8; 8] = b"PTRRLG01";
 /// Bound on one entry's payload. An entry past this is refused on the way in, so
 /// the file can never hold one that cannot be read back.
 pub const MAX_ENTRY_BYTES: usize = 8 * 1024 * 1024;
+/// How many ledger events a member has accounted for.
+///
+/// A closed state, not a number with a magic value: from the moment a snapshot is installed
+/// until the host has accounted for the events it covers (`set_applied_events`) the count is
+/// not known. A restart that finds [`AppliedEvents::SnapshotPending`] knows the installation was
+/// interrupted or not yet accounted for: the log is reset and the snapshot is offered to the host
+/// again, rather than adopted as though it had been vetted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AppliedEvents {
+    /// The events applied in total, snapshot included.
+    Counted(u64),
+    /// A snapshot was installed whose events the host has not accounted for.
+    SnapshotPending,
+}
+
+/// The snapshot a restart finds installed and not yet accounted for.
+pub(crate) struct PendingSnapshot {
+    pub(crate) index: u64,
+    pub(crate) term: u64,
+    pub(crate) payload: Vec<u8>,
+}
+
+/// Everything the state file holds.
+struct StateImage {
+    hard_state: HardState,
+    conf_state: ConfState,
+    snapshot: SnapshotMetadata,
+    snapshot_digest: [u8; 32],
+    fence: u64,
+    applied: AppliedEvents,
+}
+
+/// What reading the log found.
+struct LogImage {
+    entries: Vec<Entry>,
+    offsets: Vec<u64>,
+    /// Records the snapshot covers were still in the file.
+    skipped: bool,
+    /// Bytes cut off the end because they were not a record that could have been acknowledged.
+    trimmed: u64,
+}
+
 /// Bound on the retained snapshot payload.
 pub const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
@@ -109,7 +151,6 @@ impl FileRaftStorage {
         fs::create_dir_all(dir)?;
         let state_path = dir.join("state");
         let log_path = dir.join("log");
-        let snapshot_path = dir.join("snapshot");
 
         let existing = state_path.is_file();
         let mut log = OpenOptions::new()
@@ -120,32 +161,46 @@ impl FileRaftStorage {
             .open(&log_path)?;
 
         let mut core = if existing {
-            let (hard_state, conf_state, snapshot_metadata, fence, applied_events) =
-                read_state(&state_path)?;
-            let snapshot_data = if snapshot_path.is_file() {
-                let data = fs::read(&snapshot_path)?;
-                if data.len() > MAX_SNAPSHOT_BYTES {
-                    return Err(invalid("retained raft snapshot is over the bound"));
-                }
-                data
-            } else {
-                Vec::new()
-            };
-            let (entries, offsets) = read_log(&mut log, snapshot_metadata.index)?;
+            let image = read_state(&state_path)?;
+            let snapshot_data = load_payload(dir, &image.snapshot_digest)?;
+            remove_other_payloads(dir, &image.snapshot_digest);
+            // What the log holds when it is read may have been written by a process that
+            // stopped before it synced: it is synced now, before the member answers for it.
+            sync_opened_log(&log)?;
+            // While a snapshot waits to be accounted for the member may already hold entries
+            // above it (appended and acknowledged), which are kept. A log that still starts at
+            // or below the snapshot is the one from before the installation, whose reset was
+            // interrupted: all of it goes. The committed prefix is checked in either state.
+            let pending = image.applied == AppliedEvents::SnapshotPending;
+            let read = read_log(&mut log, image.snapshot.index, image.hard_state.commit)?;
+            let (mut entries, mut offsets) = (read.entries, read.offsets);
+            if pending && read.skipped {
+                let (reset, kept) = rewrite_log(&log_path, &[])?;
+                log = reset;
+                offsets = kept;
+                entries.clear();
+            } else if read.skipped {
+                // Records the snapshot covers are still in the file under the state that names
+                // it: the file is rewritten without them, so that it holds what it is read as.
+                let (rewritten, kept) = rewrite_log(&log_path, &entries)?;
+                log = rewritten;
+                offsets = kept;
+            }
             Core {
                 dir: dir.to_path_buf(),
                 state_path,
                 log_path,
-                snapshot_path,
                 log,
-                hard_state,
-                conf_state,
-                snapshot_metadata,
+                hard_state: image.hard_state,
+                conf_state: image.conf_state,
+                snapshot_metadata: image.snapshot,
+                snapshot_digest: image.snapshot_digest,
                 snapshot_data,
                 entries,
                 offsets,
-                fence,
-                applied_events,
+                fence: image.fence,
+                applied: image.applied,
+                trimmed_tail_bytes: read.trimmed,
             }
         } else {
             write_log_header(&mut log)?;
@@ -158,16 +213,17 @@ impl FileRaftStorage {
                 dir: dir.to_path_buf(),
                 state_path,
                 log_path,
-                snapshot_path,
                 log,
                 hard_state: HardState::default(),
                 conf_state,
                 snapshot_metadata: SnapshotMetadata::default(),
+                snapshot_digest: sha256(&[]),
                 snapshot_data: Vec::new(),
                 entries: Vec::new(),
                 offsets: Vec::new(),
                 fence: 0,
-                applied_events: 0,
+                applied: AppliedEvents::Counted(0),
+                trimmed_tail_bytes: 0,
             }
         };
         if !existing {
@@ -192,11 +248,14 @@ pub struct Core {
     dir: PathBuf,
     state_path: PathBuf,
     log_path: PathBuf,
-    snapshot_path: PathBuf,
     log: File,
     hard_state: HardState,
     conf_state: ConfState,
     snapshot_metadata: SnapshotMetadata,
+    /// Digest of `snapshot_data`, recorded in the state file: the payload and the position it
+    /// is served under are one pair, and a payload whose digest the state does not name is not
+    /// served.
+    snapshot_digest: [u8; 32],
     snapshot_data: Vec<u8>,
     entries: Vec<Entry>,
     /// File offset of `entries[i]`, so a conflicting append can shorten the file
@@ -208,7 +267,9 @@ pub struct Core {
     /// Durable because a snapshot covers events whose records are gone: a member
     /// that reopened counting from zero would hand the next event an index the
     /// snapshot already describes, and two different events would claim it.
-    applied_events: u64,
+    applied: AppliedEvents,
+    /// Bytes cut off the end of the log when it was opened (zero for a clean log).
+    trimmed_tail_bytes: u64,
     /// The highest term this storage has ever accepted a write under.
     ///
     /// This is the fencing token. It is kept in memory only as a cache of what is
@@ -256,15 +317,39 @@ impl Core {
         self.persist_state()
     }
 
-    /// How many ledger events this member has applied in total.
-    pub fn applied_events(&self) -> u64 {
-        self.applied_events
+    /// How many ledger events this member has accounted for.
+    pub(crate) fn applied(&self) -> AppliedEvents {
+        self.applied
     }
 
-    /// Record how many events the member has applied, flushed before returning.
+    /// Whether a snapshot was installed whose events the host has not yet accounted for.
+    pub fn snapshot_pending(&self) -> bool {
+        self.applied == AppliedEvents::SnapshotPending
+    }
+
+    /// The snapshot waiting to be accounted for, if one is.
+    pub(crate) fn pending_snapshot(&self) -> Option<PendingSnapshot> {
+        self.snapshot_pending().then(|| PendingSnapshot {
+            index: self.snapshot_metadata.index,
+            term: self.snapshot_metadata.term,
+            payload: self.snapshot_data.clone(),
+        })
+    }
+
+    /// Bytes cut off the end of the log when it was opened: zero for a clean log. A non-zero
+    /// value is what a stop in the middle of an unacknowledged append leaves, and is reported
+    /// rather than repaired silently.
+    pub fn trimmed_tail_bytes(&self) -> u64 {
+        self.trimmed_tail_bytes
+    }
+
+    /// Record how many events the member has applied, flushed before returning. On a failure
+    /// the count in memory is left as it was.
     pub fn set_applied_events(&mut self, applied_events: u64) -> io::Result<()> {
-        self.applied_events = applied_events;
+        let previous = self.applied;
+        self.applied = AppliedEvents::Counted(applied_events);
         self.persist_state()
+            .inspect_err(|_| self.applied = previous)
     }
 
     /// Record a new configuration, flushed before returning.
@@ -310,6 +395,11 @@ impl Core {
             }
         }
 
+        // Test-only: an I/O error here must leave the log untouched and reach the caller,
+        // which must then release no message that depends on the entries.
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.append.before_write", |_| Err(injected_io_error()));
+
         // Truncate first. The file is shortened to the offset the new entries
         // start at, so what is on disk is always a prefix of one history rather
         // than two spliced together.
@@ -336,6 +426,8 @@ impl Core {
             self.offsets.push(position);
             position += record.len() as u64;
         }
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.append.after_write_before_sync");
         self.log.sync_data()
     }
 
@@ -352,27 +444,58 @@ impl Core {
         if snapshot.data.len() > MAX_SNAPSHOT_BYTES {
             return Err(invalid("raft snapshot payload is over the bound"));
         }
-        // Fenced before anything is written, because this path truncates the log
-        // before it persists state: a fenced writer must not get as far as that.
+        // Fenced before anything is written, because this path resets the log after it
+        // persists state: a fenced writer must not get as far as that.
         self.fenced_to()?;
 
-        // The payload lands before the state that points at it: a crash between
-        // the two leaves a snapshot file nothing refers to, which is recoverable,
-        // where the other order leaves a state naming a payload that is not there.
-        atomic_write(&self.snapshot_path, &snapshot.data)?;
-        self.snapshot_data = snapshot.data.to_vec();
+        // The payload lands under a name that is its own digest, and the state names that
+        // digest: a stop at any point leaves the old state with the old payload or the new
+        // state with the new one, never one under the other.
+        let digest = sha256(&snapshot.data);
+        write_payload(&self.dir, &digest, &snapshot.data)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.install.after_payload");
 
-        self.entries.clear();
-        self.offsets.clear();
-        self.log.set_len(0)?;
-        self.log.seek(SeekFrom::Start(0))?;
-        write_log_header(&mut self.log)?;
-
-        self.hard_state.term = self.hard_state.term.max(metadata.term);
+        // The state that names the snapshot is written before the log is reset, and marks the
+        // events it covers as not yet accounted for. A crash between the two leaves a state
+        // that a restart recognises (`AppliedEvents::SnapshotPending`) and finishes, where the
+        // other order left an empty log under a commit index far above it, which raft refuses
+        // by panicking.
+        let previous_term = self.hard_state.term;
+        let previous_commit = self.hard_state.commit;
+        let previous_conf = self.conf_state.clone();
+        let previous_metadata = std::mem::replace(&mut self.snapshot_metadata, metadata.clone());
+        let previous_digest = std::mem::replace(&mut self.snapshot_digest, digest);
+        let previous_applied = self.applied;
+        self.hard_state.term = previous_term.max(metadata.term);
         self.hard_state.commit = metadata.index;
         self.conf_state = metadata.get_conf_state().clone();
-        self.snapshot_metadata = metadata;
-        self.persist_state()
+        self.applied = AppliedEvents::SnapshotPending;
+        if let Err(error) = self.persist_state() {
+            // Nothing in memory runs ahead of the disk it could not reach.
+            self.hard_state.term = previous_term;
+            self.hard_state.commit = previous_commit;
+            self.conf_state = previous_conf;
+            self.snapshot_metadata = previous_metadata;
+            self.snapshot_digest = previous_digest;
+            self.applied = previous_applied;
+            return Err(error);
+        }
+        self.snapshot_data = snapshot.data.to_vec();
+        remove_other_payloads(&self.dir, &self.snapshot_digest);
+
+        // The log is replaced by an empty one beside it and renamed over the old, so that no
+        // stop leaves a log that is not a log.
+        let scratch = write_scratch_log(&self.log_path, &[])?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.install.after_log_sync_before_rename");
+        let (reset, offsets) = install_scratch_log(&self.log_path, scratch)?;
+        self.log = reset;
+        self.offsets = offsets;
+        self.entries.clear();
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.install.after_log_reset");
+        Ok(())
     }
 
     /// The retained snapshot, as raft asks for it.
@@ -383,6 +506,11 @@ impl Core {
             data: self.snapshot_data.clone(),
             metadata: Some(metadata),
         }
+    }
+
+    /// Whether the payload held is the one the state names.
+    fn payload_matches_state(&self) -> bool {
+        sha256(&self.snapshot_data) == self.snapshot_digest
     }
 
     /// Record a snapshot this node produced itself, discarding the log it covers.
@@ -400,6 +528,9 @@ impl Core {
         if index < self.snapshot_metadata.index {
             return Err(invalid("snapshot moves the covered position backwards"));
         }
+        if data.len() > MAX_SNAPSHOT_BYTES {
+            return Err(invalid("raft snapshot payload is over the bound"));
+        }
         let term = self.term_of(index)?;
         // Fenced before the payload lands and before the log is rewritten, for the
         // same reason `apply_snapshot` fences first: `compact_to` discards the
@@ -412,11 +543,46 @@ impl Core {
             conf_state: Some(self.conf_state.clone()),
         };
 
-        atomic_write(&self.snapshot_path, &data)?;
+        let AppliedEvents::Counted(already) = self.applied else {
+            return Err(invalid(
+                "a snapshot is waiting to be accounted for; record no snapshot over it",
+            ));
+        };
+        // The events the snapshot covers: those the previous one covered and every event
+        // entry from there up to `index`, counted by the rule `RaftNode` applies entries by.
+        let covered = already
+            + self
+                .entries
+                .iter()
+                .filter(|entry| entry.index <= index)
+                .filter(|entry| {
+                    entry.get_entry_type() == EntryType::EntryNormal && !entry.data.is_empty()
+                })
+                .count() as u64;
+
+        let digest = sha256(&data);
+        write_payload(&self.dir, &digest, &data)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.snapshot.after_payload");
+        // The state names the payload by digest and position together, and is written before
+        // anything in memory moves; the log is compacted after.
+        let previous_metadata = std::mem::replace(&mut self.snapshot_metadata, snapshot_metadata);
+        let previous_digest = std::mem::replace(&mut self.snapshot_digest, digest);
+        self.applied = AppliedEvents::Counted(covered);
+        if let Err(error) = self.persist_state() {
+            self.snapshot_metadata = previous_metadata;
+            self.snapshot_digest = previous_digest;
+            self.applied = AppliedEvents::Counted(already);
+            return Err(error);
+        }
         self.snapshot_data = data;
-        self.snapshot_metadata = snapshot_metadata;
+        remove_other_payloads(&self.dir, &self.snapshot_digest);
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.snapshot.after_state");
         self.compact_to(index)?;
-        self.persist_state()
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.snapshot.after_log_rewrite");
+        Ok(())
     }
 
     /// Discard log entries at or below `index`, rewriting the file without them.
@@ -456,7 +622,11 @@ impl Core {
             position += record.len() as u64;
         }
         rewritten.sync_all()?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.compact.after_sync_before_rename");
         fs::rename(&temporary, &self.log_path)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.compact.after_rename_before_dir_sync");
         sync_dir(&self.dir)?;
         self.log = rewritten;
         Ok(())
@@ -502,7 +672,7 @@ impl Core {
     /// is stated in `31-cluster-integrity.md` rather than hidden.
     fn fenced_to(&mut self) -> io::Result<u64> {
         let on_disk = match read_state(&self.state_path) {
-            Ok((_, _, _, fence, _)) => fence,
+            Ok(image) => image.fence,
             // No state file yet: nothing has claimed this storage, so there is
             // nothing to be fenced by. Any other error is a real failure and is
             // not treated as "unfenced".
@@ -520,15 +690,20 @@ impl Core {
     }
 
     fn persist_state(&mut self) -> io::Result<()> {
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.state.before_write", |_| Err(injected_io_error()));
         let fence = self.fenced_to()?;
-        let bytes = encode_state(
-            &self.hard_state,
-            &self.conf_state,
-            &self.snapshot_metadata,
+        let bytes = encode_state(&StateImage {
+            hard_state: self.hard_state.clone(),
+            conf_state: self.conf_state.clone(),
+            snapshot: self.snapshot_metadata.clone(),
+            snapshot_digest: self.snapshot_digest,
             fence,
-            self.applied_events,
-        );
+            applied: self.applied,
+        });
         atomic_write(&self.state_path, &bytes)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.state.after_rename_before_dir_sync");
         sync_dir(&self.dir)
     }
 }
@@ -602,7 +777,7 @@ impl Storage for FileRaftStorage {
     /// match its claimed position would be sent to a follower as truth.
     fn snapshot(&self, request_index: u64, _to: u64) -> raft::Result<Snapshot> {
         let core = self.wl();
-        if core.snapshot_metadata.index < request_index {
+        if core.snapshot_metadata.index < request_index || !core.payload_matches_state() {
             return Err(RaftError::Store(
                 StorageError::SnapshotTemporarilyUnavailable,
             ));
@@ -633,6 +808,53 @@ fn encode_record(entry: &Entry) -> Vec<u8> {
     record
 }
 
+/// Replace the log file with one that holds exactly `entries`: written beside it, synced and
+/// renamed over it. Returns the new handle and the offset of each entry.
+fn rewrite_log(log_path: &Path, entries: &[Entry]) -> io::Result<(File, Vec<u64>)> {
+    let scratch = write_scratch_log(log_path, entries)?;
+    install_scratch_log(log_path, scratch)
+}
+
+/// A log written and synced beside the real one, not yet in its place.
+struct ScratchLog {
+    file: File,
+    offsets: Vec<u64>,
+}
+
+/// Write the replacement log beside `log_path` and sync it.
+fn write_scratch_log(log_path: &Path, entries: &[Entry]) -> io::Result<ScratchLog> {
+    let temporary = log_path.with_extension("rewrite");
+    let mut rewritten = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temporary)?;
+    write_log_header(&mut rewritten)?;
+    let mut offsets = Vec::with_capacity(entries.len());
+    let mut position = LOG_MAGIC.len() as u64;
+    for entry in entries {
+        let record = encode_record(entry);
+        rewritten.write_all(&record)?;
+        offsets.push(position);
+        position += record.len() as u64;
+    }
+    rewritten.sync_all()?;
+    Ok(ScratchLog {
+        file: rewritten,
+        offsets,
+    })
+}
+
+/// Rename the scratch log over `log_path` and make the rename durable.
+fn install_scratch_log(log_path: &Path, scratch: ScratchLog) -> io::Result<(File, Vec<u64>)> {
+    fs::rename(log_path.with_extension("rewrite"), log_path)?;
+    if let Some(parent) = log_path.parent() {
+        sync_dir(parent)?;
+    }
+    Ok((scratch.file, scratch.offsets))
+}
+
 /// Write the log file's header at offset zero.
 fn write_log_header(log: &mut File) -> io::Result<()> {
     log.seek(SeekFrom::Start(0))?;
@@ -640,8 +862,20 @@ fn write_log_header(log: &mut File) -> io::Result<()> {
     log.sync_data()
 }
 
-/// Read every record, checking each digest and that indexes are consecutive.
-fn read_log(log: &mut File, snapshot_index: u64) -> io::Result<(Vec<Entry>, Vec<u64>)> {
+/// Read the records, checking each digest and that indexes are consecutive.
+///
+/// Records the snapshot covers (index at or below `snapshot_index`) are skipped: a restart can
+/// find them under a state that already names the snapshot.
+///
+/// The first thing that is not a whole record ends the log, and what follows it is cut off only
+/// when it can be shown never to have been acknowledged as a record: it is all zero (space the
+/// file system gave and nothing filled), or it holds no record that parses anywhere after the
+/// break (an append that stopped part-way). A damaged record with valid data after it is
+/// refused, because those records may have been acknowledged and cutting them would forget a
+/// promise; a log that ends below the commit index lost committed entries and is refused too.
+/// What was cut is reported (`LogImage::trimmed`). A record that is whole and valid but out of
+/// sequence is never trimmed.
+fn read_log(log: &mut File, snapshot_index: u64, commit: u64) -> io::Result<LogImage> {
     log.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
     log.read_to_end(&mut bytes)?;
@@ -652,91 +886,137 @@ fn read_log(log: &mut File, snapshot_index: u64) -> io::Result<(Vec<Entry>, Vec<
     let mut entries: Vec<Entry> = Vec::new();
     let mut offsets: Vec<u64> = Vec::new();
     let mut at = LOG_MAGIC.len();
+    let mut skipped = false;
+    let mut torn_at: Option<usize> = None;
     while at < bytes.len() {
         let start = at;
-        let header_end = at
-            .checked_add(RECORD_MAGIC.len() + 8 + 8 + 1 + 4)
-            .ok_or_else(|| invalid("raft log record header overflows"))?;
-        let header = bytes
-            .get(at..header_end)
-            .ok_or_else(|| invalid("raft log ends inside a record header"))?;
-        if &header[..RECORD_MAGIC.len()] != RECORD_MAGIC {
-            return Err(invalid("raft log record has the wrong magic"));
+        let Some(record) = parse_record(&bytes, at) else {
+            torn_at = Some(start);
+            break;
+        };
+        let (entry, end) = record?;
+        at = end;
+        if entry.index <= snapshot_index && entries.is_empty() {
+            skipped = true;
+            continue;
         }
-        let index = u64::from_le_bytes(header[8..16].try_into().expect("index bytes"));
-        let term = u64::from_le_bytes(header[16..24].try_into().expect("term bytes"));
-        let kind = entry_type_from_code(header[24])?;
-        let context_len =
-            u32::from_le_bytes(header[25..29].try_into().expect("context length")) as usize;
-        at = header_end;
-        let context = bytes
-            .get(at..at + context_len)
-            .ok_or_else(|| invalid("raft log ends inside an entry context"))?
-            .to_vec();
-        at += context_len;
-        let data_len_bytes = bytes
-            .get(at..at + 4)
-            .ok_or_else(|| invalid("raft log ends inside a data length"))?;
-        let data_len = u32::from_le_bytes(data_len_bytes.try_into().expect("data length")) as usize;
-        at += 4;
-        let data = bytes
-            .get(at..at + data_len)
-            .ok_or_else(|| invalid("raft log ends inside an entry payload"))?
-            .to_vec();
-        at += data_len;
-        let recorded = bytes
-            .get(at..at + 32)
-            .ok_or_else(|| invalid("raft log ends inside a record digest"))?;
-        if sha256(&bytes[start..at]) != recorded {
-            return Err(invalid("raft log record does not match its digest"));
-        }
-        at += 32;
-
         let expected = entries
             .last()
             .map_or(snapshot_index + 1, |last: &Entry| last.index + 1);
-        if index != expected {
+        if entry.index != expected {
             return Err(invalid(format!(
-                "raft log jumps from {expected} to {index}, so a record is missing or duplicated"
+                "raft log jumps from {expected} to {}, so a record is missing or duplicated",
+                entry.index
             )));
         }
-
-        let mut entry = Entry {
-            index,
-            term,
-            context,
-            data,
-            ..Entry::default()
-        };
-        entry.set_entry_type(kind);
         entries.push(entry);
         offsets.push(start as u64);
     }
-    Ok((entries, offsets))
+    let mut trimmed = 0;
+    if let Some(cut) = torn_at {
+        let rest = &bytes[cut..];
+        if !rest.iter().all(|byte| *byte == 0) && record_follows(&bytes, cut) {
+            return Err(invalid(format!(
+                "raft log is damaged at byte {cut} and valid records follow it: they may have \
+                 been acknowledged, so nothing is cut"
+            )));
+        }
+        let last = entries.last().map_or(snapshot_index, |entry| entry.index);
+        if last < commit {
+            return Err(invalid(format!(
+                "raft log ends at {last}, below the committed index {commit}: committed entries are missing"
+            )));
+        }
+        log.set_len(cut as u64)?;
+        log.sync_data()?;
+        trimmed = rest.len() as u64;
+    }
+    Ok(LogImage {
+        entries,
+        offsets,
+        skipped,
+        trimmed,
+    })
 }
 
-/// Encode the state file: hard state, configuration, snapshot position, digest.
-fn encode_state(
-    hard_state: &HardState,
-    conf_state: &ConfState,
-    snapshot: &SnapshotMetadata,
-    fence: u64,
-    applied_events: u64,
-) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(96);
+/// Whether a whole, valid record starts anywhere after `cut`.
+fn record_follows(bytes: &[u8], cut: usize) -> bool {
+    (cut + 1..bytes.len())
+        .filter(|at| bytes[*at..].starts_with(RECORD_MAGIC))
+        .any(|at| matches!(parse_record(bytes, at), Some(Ok(_))))
+}
+
+/// Parse the record at `at`. `None` when the bytes there are not a whole record (cut short, or
+/// not a record: another magic, a hole, a wrong digest), which only a caller that knows the
+/// file's synced length can tell from corruption; `Some(Err(_))` for a whole record that cannot
+/// be used.
+fn parse_record(bytes: &[u8], at: usize) -> Option<io::Result<(Entry, usize)>> {
+    let header_end = at.checked_add(RECORD_MAGIC.len() + 8 + 8 + 1 + 4)?;
+    let header = bytes.get(at..header_end)?;
+    if &header[..RECORD_MAGIC.len()] != RECORD_MAGIC {
+        return None;
+    }
+    let index = u64::from_le_bytes(header[8..16].try_into().ok()?);
+    let term = u64::from_le_bytes(header[16..24].try_into().ok()?);
+    let kind_code = header[24];
+    let context_len = u32::from_le_bytes(header[25..29].try_into().ok()?) as usize;
+    let mut cursor = header_end;
+    let context = bytes
+        .get(cursor..cursor.checked_add(context_len)?)?
+        .to_vec();
+    cursor += context_len;
+    let data_len =
+        u32::from_le_bytes(bytes.get(cursor..cursor.checked_add(4)?)?.try_into().ok()?) as usize;
+    cursor += 4;
+    let data = bytes.get(cursor..cursor.checked_add(data_len)?)?.to_vec();
+    cursor += data_len;
+    let recorded = bytes.get(cursor..cursor.checked_add(32)?)?;
+    if sha256(&bytes[at..cursor]) != recorded {
+        return None;
+    }
+    cursor += 32;
+    let kind = match entry_type_from_code(kind_code) {
+        Ok(kind) => kind,
+        Err(error) => return Some(Err(error)),
+    };
+    let mut entry = Entry {
+        index,
+        term,
+        context,
+        data,
+        ..Entry::default()
+    };
+    entry.set_entry_type(kind);
+    Some(Ok((entry, cursor)))
+}
+
+/// Encode the state file: hard state, configuration, snapshot position and payload digest,
+/// fence, applied count, digest.
+fn encode_state(image: &StateImage) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(160);
     bytes.extend_from_slice(STATE_MAGIC);
-    bytes.extend_from_slice(&hard_state.term.to_le_bytes());
-    bytes.extend_from_slice(&hard_state.vote.to_le_bytes());
-    bytes.extend_from_slice(&hard_state.commit.to_le_bytes());
-    put_ids(&mut bytes, &conf_state.voters);
-    put_ids(&mut bytes, &conf_state.learners);
-    put_ids(&mut bytes, &conf_state.voters_outgoing);
-    put_ids(&mut bytes, &conf_state.learners_next);
-    bytes.push(u8::from(conf_state.auto_leave));
-    bytes.extend_from_slice(&snapshot.index.to_le_bytes());
-    bytes.extend_from_slice(&snapshot.term.to_le_bytes());
-    bytes.extend_from_slice(&fence.to_le_bytes());
-    bytes.extend_from_slice(&applied_events.to_le_bytes());
+    bytes.extend_from_slice(&image.hard_state.term.to_le_bytes());
+    bytes.extend_from_slice(&image.hard_state.vote.to_le_bytes());
+    bytes.extend_from_slice(&image.hard_state.commit.to_le_bytes());
+    put_ids(&mut bytes, &image.conf_state.voters);
+    put_ids(&mut bytes, &image.conf_state.learners);
+    put_ids(&mut bytes, &image.conf_state.voters_outgoing);
+    put_ids(&mut bytes, &image.conf_state.learners_next);
+    bytes.push(u8::from(image.conf_state.auto_leave));
+    bytes.extend_from_slice(&image.snapshot.index.to_le_bytes());
+    bytes.extend_from_slice(&image.snapshot.term.to_le_bytes());
+    bytes.extend_from_slice(&image.snapshot_digest);
+    bytes.extend_from_slice(&image.fence.to_le_bytes());
+    match image.applied {
+        AppliedEvents::Counted(count) => {
+            bytes.push(0);
+            bytes.extend_from_slice(&count.to_le_bytes());
+        }
+        AppliedEvents::SnapshotPending => {
+            bytes.push(1);
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+        }
+    }
     let digest = sha256(&bytes);
     bytes.extend_from_slice(&digest);
     bytes
@@ -751,7 +1031,7 @@ fn put_ids(bytes: &mut Vec<u8>, ids: &[u64]) {
 }
 
 /// Read the state file, or refuse it.
-fn read_state(path: &Path) -> io::Result<(HardState, ConfState, SnapshotMetadata, u64, u64)> {
+fn read_state(path: &Path) -> io::Result<StateImage> {
     let bytes = fs::read(path)?;
     if bytes.len() < STATE_MAGIC.len() + 32 || &bytes[..STATE_MAGIC.len()] != STATE_MAGIC {
         return Err(invalid("not a PTR raft state file"));
@@ -798,12 +1078,34 @@ fn read_state(path: &Path) -> io::Result<(HardState, ConfState, SnapshotMetadata
         term: take_u64(&mut at)?,
         conf_state: None,
     };
+    let snapshot_digest: [u8; 32] = body
+        .get(at..at + 32)
+        .ok_or_else(|| invalid("raft state file ends inside the snapshot digest"))?
+        .try_into()
+        .expect("digest bytes");
+    at += 32;
     let fence = take_u64(&mut at)?;
-    let applied_events = take_u64(&mut at)?;
+    let applied_tag = *body
+        .get(at)
+        .ok_or_else(|| invalid("raft state file ends before the applied count"))?;
+    at += 1;
+    let applied_count = take_u64(&mut at)?;
+    let applied = match (applied_tag, applied_count) {
+        (0, count) => AppliedEvents::Counted(count),
+        (1, 0) => AppliedEvents::SnapshotPending,
+        _ => return Err(invalid("raft state file has an invalid applied count")),
+    };
     if at != body.len() {
         return Err(invalid("raft state file has trailing bytes"));
     }
-    Ok((hard_state, conf_state, snapshot, fence, applied_events))
+    Ok(StateImage {
+        hard_state,
+        conf_state,
+        snapshot,
+        snapshot_digest,
+        fence,
+        applied,
+    })
 }
 
 /// Read a length-prefixed list of node ids.
@@ -837,9 +1139,82 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
             .truncate(true)
             .open(&temporary)?;
         file.write_all(bytes)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("raft.atomic.after_write_before_sync");
         file.sync_all()?;
     }
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("raft.atomic.after_sync_before_rename");
     fs::rename(&temporary, path)
+}
+
+/// The error a test-only failpoint returns in place of an I/O operation.
+#[cfg(feature = "failpoints")]
+fn injected_io_error() -> io::Error {
+    io::Error::other("PTR_RAFT_INJECTED_IO_ERROR")
+}
+
+/// Flush a log read at open: a record the previous process wrote and did not sync is made
+/// durable before this process acknowledges anything that depends on it.
+fn sync_opened_log(log: &File) -> io::Result<()> {
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("raft.open.log_sync");
+    log.sync_data()
+}
+
+/// File name under which the snapshot payload with this digest is kept.
+fn payload_name(digest: &[u8; 32]) -> String {
+    let mut name = String::from("snapshot-");
+    for byte in digest {
+        name.push_str(&format!("{byte:02x}"));
+    }
+    name
+}
+
+/// Write a payload under the name of its own digest and make the name durable.
+fn write_payload(dir: &Path, digest: &[u8; 32], data: &[u8]) -> io::Result<()> {
+    atomic_write(&dir.join(payload_name(digest)), data)?;
+    sync_dir(dir)
+}
+
+/// The payload the state names, or a refusal: absent or altered bytes are not a snapshot.
+fn load_payload(dir: &Path, digest: &[u8; 32]) -> io::Result<Vec<u8>> {
+    let path = dir.join(payload_name(digest));
+    let data = match fs::read(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == io::ErrorKind::NotFound && *digest == sha256(&[]) => {
+            return Ok(Vec::new())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(invalid("the snapshot payload the state names is missing"))
+        }
+        Err(error) => return Err(error),
+    };
+    if data.len() > MAX_SNAPSHOT_BYTES {
+        return Err(invalid("retained raft snapshot is over the bound"));
+    }
+    if sha256(&data) != *digest {
+        return Err(invalid(
+            "retained raft snapshot does not match the digest the state names",
+        ));
+    }
+    Ok(data)
+}
+
+/// Remove payload files (and their scratch files) the state does not name. Best effort: a file
+/// that stays is named by nothing and is removed on the next open.
+fn remove_other_payloads(dir: &Path, keep: &[u8; 32]) {
+    let kept = payload_name(keep);
+    let Ok(listing) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in listing.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with("snapshot") && name != kept {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Flush a directory entry, so a rename survives a crash.

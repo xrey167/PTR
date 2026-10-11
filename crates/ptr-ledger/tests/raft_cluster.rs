@@ -59,6 +59,9 @@ fn event(generation: u64) -> LedgerEvent {
 struct Cluster {
     nodes: Vec<RaftNode>,
     unreachable: HashSet<u64>,
+    /// The transport loses every snapshot message, and counts them.
+    lose_snapshots: bool,
+    lost_snapshots: usize,
 }
 
 impl Cluster {
@@ -70,6 +73,8 @@ impl Cluster {
         Self {
             nodes,
             unreachable: HashSet::new(),
+            lose_snapshots: false,
+            lost_snapshots: 0,
         }
     }
 
@@ -98,6 +103,10 @@ impl Cluster {
                 return;
             };
             if self.unreachable.contains(&message.from) || self.unreachable.contains(&message.to) {
+                continue;
+            }
+            if self.lose_snapshots && message.msg_type == 7 {
+                self.lost_snapshots += 1;
                 continue;
             }
             let produced = self.node(message.to).step(message).unwrap();
@@ -975,4 +984,173 @@ fn reopening_after_a_snapshot_continues_the_numbering_it_established() {
         vec![5],
         "the one record above the floor keeps the index it was committed at"
     );
+}
+
+#[test]
+fn a_snapshot_the_transport_lost_is_sent_again_once_the_leader_is_told_so() {
+    let temp = Temp::new("lost-snapshot");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    for generation in 1..=3 {
+        cluster.propose(1, generation).unwrap();
+    }
+    cluster.unreachable.insert(3);
+    for generation in 4..=5 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let covered = cluster.get(1).raft_committed();
+    let state = encode_state(&cluster.events(1));
+    cluster.node(1).record_snapshot(covered, state).unwrap();
+    cluster.unreachable.remove(&3);
+
+    // The first snapshot is lost on the way, and nothing says so: the leader has handed the
+    // member to the snapshot and sends it nothing else, however many heartbeats pass.
+    cluster.lose_snapshots = true;
+    for _ in 0..5 {
+        cluster.heartbeat(1);
+    }
+    assert_eq!(cluster.lost_snapshots, 1, "one snapshot is sent, and lost");
+    assert!(cluster.node(3).take_installed_snapshot().is_none());
+    assert_eq!(cluster.events(3).len(), 3, "the member is still behind");
+
+    // The transport reports the failure, and the leader tries again.
+    cluster.lose_snapshots = false;
+    let messages = cluster
+        .node(1)
+        .report_snapshot(3, ptr_ledger::SnapshotDelivery::Failed)
+        .unwrap();
+    cluster.settle(messages);
+    for _ in 0..3 {
+        cluster.heartbeat(1);
+    }
+    let installed = cluster
+        .node(3)
+        .take_installed_snapshot()
+        .expect("the snapshot is sent again after the failure is reported");
+    assert_eq!(installed.index, covered);
+}
+
+#[test]
+fn a_leader_that_recorded_a_snapshot_keeps_numbering_events_after_a_restart() {
+    let temp = Temp::new("snapshot-numbering");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    for generation in 1..=4 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let covered = cluster.get(1).raft_committed();
+    let state = encode_state(&cluster.events(1));
+    cluster.node(1).record_snapshot(covered, state).unwrap();
+    assert_eq!(cluster.get(1).applied_events(), 4);
+
+    let reopened = RaftNode::open(&temp.member(1), 1, &VOTERS).unwrap();
+    assert_eq!(
+        reopened.applied_events(),
+        4,
+        "the events the snapshot covers are still counted after a restart"
+    );
+    cluster.nodes.retain(|node| node.id() != 1);
+    cluster.nodes.push(reopened);
+    cluster.elect(1);
+    cluster.propose(1, 5).unwrap();
+    let last = cluster.events(1).last().cloned().expect("an event");
+    assert_eq!(last.index.0, 5, "the next event continues the numbering");
+}
+
+#[test]
+fn a_snapshot_installed_and_not_accounted_for_is_offered_again_after_a_restart() {
+    let temp = Temp::new("pending-snapshot");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    for generation in 1..=2 {
+        cluster.propose(1, generation).unwrap();
+    }
+    cluster.unreachable.insert(3);
+    for generation in 3..=4 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let covered = cluster.get(1).raft_committed();
+    let state = encode_state(&cluster.events(1));
+    cluster
+        .node(1)
+        .record_snapshot(covered, state.clone())
+        .unwrap();
+    cluster.unreachable.remove(&3);
+    cluster.heartbeat(1);
+    assert!(cluster.node(3).take_installed_snapshot().is_some());
+
+    // The process stops before the host accounted for it.
+    let mut reopened = RaftNode::open(&temp.member(3), 3, &VOTERS).unwrap();
+    let again = reopened
+        .take_installed_snapshot()
+        .expect("a snapshot nobody vetted is not adopted by restarting");
+    assert_eq!(again.index, covered);
+    assert_eq!(again.state, state);
+    assert!(reopened.committed_events().is_empty());
+}
+
+/// A group whose member 3 holds an installed snapshot nobody accounted for and has also been
+/// handed a further committed entry above it, which it refused to apply. Returns the cluster and
+/// how many events the snapshot covers.
+fn member_with_entry_above_unaccounted_snapshot(temp: &Temp) -> (Cluster, u64) {
+    let mut cluster = Cluster::open(temp);
+    cluster.elect(1);
+    for generation in 1..=3 {
+        cluster.propose(1, generation).unwrap();
+    }
+    cluster.unreachable.insert(3);
+    for generation in 4..=5 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let covered = cluster.get(1).raft_committed();
+    let state = encode_state(&cluster.events(1));
+    let covered_events = decode_state(&state).len() as u64;
+    cluster.node(1).record_snapshot(covered, state).unwrap();
+    cluster.unreachable.remove(&3);
+    cluster.heartbeat(1);
+    assert!(cluster.node(3).take_installed_snapshot().is_some());
+    let messages = cluster.node(1).propose(event(6)).unwrap();
+    let mut queue: VecDeque<Message> = messages.into();
+    while let Some(message) = queue.pop_front() {
+        match cluster.node(message.to).step(message) {
+            Ok(produced) => queue.extend(produced),
+            Err(_) => break,
+        }
+    }
+    (cluster, covered_events)
+}
+
+#[test]
+fn a_member_with_a_committed_entry_above_an_unaccounted_snapshot_opens_and_applies_it_after_accounting(
+) {
+    let temp = Temp::new("pending-with-entry");
+    let (cluster, covered_events) = member_with_entry_above_unaccounted_snapshot(&temp);
+    drop(cluster);
+
+    let mut reopened = RaftNode::open(&temp.member(3), 3, &VOTERS)
+        .expect("a pending snapshot with committed entries above it does not stop the member");
+    assert!(reopened.take_installed_snapshot().is_some());
+    assert!(
+        reopened.committed_events().is_empty(),
+        "nothing is applied before the snapshot is accounted for"
+    );
+    reopened.resume_with_applied(covered_events).unwrap();
+    let events = reopened.committed_events();
+    assert_eq!(
+        events.len(),
+        1,
+        "the entry kept above the snapshot is applied"
+    );
+    assert_eq!(events[0].index.0, covered_events + 1);
+}
+
+#[test]
+fn an_entry_refused_while_a_snapshot_is_unaccounted_for_is_applied_exactly_once_afterwards() {
+    let temp = Temp::new("deferred-live");
+    let (mut cluster, covered_events) = member_with_entry_above_unaccounted_snapshot(&temp);
+    cluster.node(3).resume_with_applied(covered_events).unwrap();
+    cluster.heartbeat(1);
+    let events = cluster.get(3).committed_events();
+    assert_eq!(events.len(), 1, "applied once, neither lost nor twice");
+    assert_eq!(events[0].index.0, covered_events + 1);
 }

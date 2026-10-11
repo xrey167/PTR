@@ -57,3 +57,8 @@ required-features = ["raft-rs-backend"]
 name = "raft_fence"
 path = "tests/raft_fence.rs"
 required-features = ["raft-rs-backend"]
+
+[[test]]
+name = "raft_storage_crash"
+path = "tests/raft_storage_crash.rs"
+required-features = ["raft-rs-backend"]

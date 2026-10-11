@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-08  
-**Code footprint:** 9 Rust source files · 7946 nonblank source lines · 15 integration-test files · 152 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 8388 nonblank source lines · 16 integration-test files · 173 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -42,6 +42,11 @@
 - Erasure audit over live and superseded logs: byte-level presence search biased toward still-retained, with host-retained artifacts folded in explicitly
 - Two audit entry points: the live log is read through its owning handle when a ledger is open, since mandatory Windows locks make an independent handle unusable there
 - Named permanent erasure boundaries (host-retained artifacts, storage residue, model-derived state) reported by every audit rather than as situational caveats
+- FileRaftStorage survives a stop at every step of its snapshot transitions (L002): the snapshot payload is stored under a name that is its own digest, the state file names that digest together with the covered position, and Storage::snapshot refuses a payload the state does not name, so a stop leaves the old pair or the new pair and never one under the other; a snapshot is installed by writing the payload, then the state with the covered-event count marked AppliedEvents::SnapshotPending, then replacing the log by an empty one written beside it and renamed over it, and recorded by writing the payload, then the state with the covered-event count, then compacting the log; the in-memory state is rolled back when the state file cannot be written; a restart skips log records the snapshot covers, finishes an interrupted installation and offers a snapshot the host has not accounted for to the host again (RaftNode::take_installed_snapshot after open) instead of adopting it unvetted, keeps the committed entries above it and applies them once the host has accounted for it, and a recorded snapshot persists the number of events it covers so the leader's numbering survives a restart
+- Opening a Raft log cuts off a tail only when it is all zero or when no valid record follows the break, reports the bytes cut (Core::trimmed_tail_bytes), checks the committed prefix whether or not a snapshot is pending, and refuses a damaged record that valid records follow, because those may have been acknowledged; the log it read is synced before the member answers for it
+- FileRaftStorage trims a torn tail of the log (a record cut short, a hole, another magic or a wrong digest, the state after a power loss in the middle of an append) when the records read reach the commit index, and refuses a log that ends below it; an existing log is synced when it is opened, so a record a stopped process wrote and never synced is not answered for before it is
+- RaftNode::report_snapshot(peer, SnapshotDelivery) and report_unreachable(peer) hand the transport's knowledge of a lost snapshot or message to the leader, which otherwise stops sending a member that was handed a snapshot anything else for ever
+- Test-only failpoints in FileRaftStorage behind `failpoints` (raft.append.after_write_before_sync, raft.atomic.after_write_before_sync, raft.atomic.after_sync_before_rename, raft.state.after_rename_before_dir_sync, raft.snapshot.after_payload, raft.snapshot.after_state, raft.snapshot.after_log_rewrite, raft.compact.after_sync_before_rename, raft.compact.after_rename_before_dir_sync, raft.install.after_payload, raft.install.after_log_reset), two that return an I/O error in place of a write (raft.append.before_write, raft.state.before_write), and in the compaction cutover (compaction.before_build, ledger.create_after_write_before_sync, ledger.create_after_sync_before_dir_sync, compaction.after_log_built_before_anchor, compaction.after_anchor_before_install)
 - Cross-process single-writer advisory lock retained for FileLedger handle lifetime
 - Poisoned writer after ambiguous append failure; reopen/replay required before subsequent writes
 - Lifecycle LedgerEvent enum
@@ -86,7 +91,7 @@
 
 - Define storage/consensus interfaces around existing Ledger contract
 - Benchmark FileLedger against raft-engine, then connect raft-rs RawNode to raft-engine persistence and network transport
-- Run L001-v2 (revocation under crash, power-loss and leadership schedules; it supersedes L001) through its mutation check and freeze, then run L002 cluster recovery
+- L002 (recovery of the compaction cutover and of a Raft member's snapshot transitions) is built to freeze-ready; the head freezes it and runs its five seeds
 
 ### Linked experiments
 
@@ -114,6 +119,7 @@
 - an exhausted anchor epoch refuses both acknowledge and compacted advance without republishing the record
 - a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected
 - an exhausted commit index is refused rather than repeated, leaving the ledger unchanged
+- tests/raft_storage_crash.rs (a torn tail is trimmed and damage below the commit index is refused; a snapshot installed or recorded and the process stopped at each step leaves a member that opens, with `failpoints`) and, in tests/raft_cluster.rs, a lost snapshot is sent again once the leader is told, a leader that recorded a snapshot keeps numbering after a restart, and an unvetted installed snapshot is offered again after a restart
 - Every single-bit mutation of the reference log, independent hashlib golden vector, ordering and hostile-length rejection
 - Every partial-frame cut, wrong anchor, complete suffix loss and rehashed alternative-history rejection
 - Create-new destination safety, guarded legacy migration and duplicate-descriptor unlock regression

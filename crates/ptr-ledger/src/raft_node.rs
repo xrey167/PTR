@@ -10,12 +10,13 @@
 //! that delivers them by hand is not its business. That separation is what makes a
 //! partition testable without a timer: nothing here is driven by wall-clock time,
 //! so a test decides exactly which message arrives and which does not.
-use crate::raft_storage::FileRaftStorage;
+use crate::raft_storage::{AppliedEvents, FileRaftStorage};
 use crate::{decode_event, encode_event, integrity, CommittedEvent, LedgerEvent};
 use ptr_types::CommitIndex;
 use raft::codec::Message as _;
 use raft::prelude::{
     ConfChange, ConfChangeType, Config as RaftConfig, Entry, EntryType, Message, RawNode,
+    SnapshotStatus,
 };
 use raft::StateRole;
 use std::path::Path;
@@ -109,6 +110,15 @@ pub enum MembershipChange {
     RemoveVoter(u64),
 }
 
+/// How the snapshot a leader sent to a peer ended, as only the transport knows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotDelivery {
+    /// The peer took it.
+    Delivered,
+    /// The message was dropped, the peer was down or refused it.
+    Failed,
+}
+
 /// A Raft member over durable state.
 pub struct RaftNode {
     node: RawNode<FileRaftStorage>,
@@ -122,6 +132,10 @@ pub struct RaftNode {
     /// by a payload only the application can read, and continuing as though it were
     /// empty would renumber every event that follows.
     installed: Option<InstalledSnapshot>,
+    /// Committed entries held back while `installed` is set, in order (raft counts them as
+    /// applied, so it will not hand them over again): applied by
+    /// [`RaftNode::resume_with_applied`].
+    deferred: Vec<Entry>,
     id: u64,
 }
 
@@ -147,7 +161,24 @@ impl RaftNode {
         let storage = FileRaftStorage::open(dir, voters, &[]).map_err(|error| error.to_string())?;
         let recovered = storage.wl().committed_entries();
         let applied = storage.wl().hard_state().commit;
-        let recovered_applied = storage.wl().applied_events();
+        // A snapshot installed and not yet accounted for (the process stopped in between) is
+        // offered to the host again: it has not been vetted, and the member applies nothing
+        // above it until it is.
+        let (pending, recovered_applied) = {
+            let core = storage.wl();
+            match (core.applied(), core.pending_snapshot()) {
+                (AppliedEvents::Counted(count), _) => (None, count),
+                (AppliedEvents::SnapshotPending, snapshot) => (
+                    snapshot.map(|snapshot| InstalledSnapshot {
+                        index: snapshot.index,
+                        term: snapshot.term,
+                        digest: integrity::sha256(&snapshot.payload),
+                        state: snapshot.payload,
+                    }),
+                    0,
+                ),
+            }
+        };
 
         let config = RaftConfig {
             id,
@@ -169,11 +200,18 @@ impl RaftNode {
             // Recovered from the state file, so replay continues the numbering a
             // snapshot established rather than restarting it.
             applied_events: recovered_applied,
-            installed: None,
+            installed: pending,
+            deferred: Vec::new(),
             id,
         };
         let _ = recovered_count;
-        member.apply_committed(recovered)?;
+        if member.installed.is_some() {
+            // Entries above a snapshot that is waiting to be accounted for were committed and
+            // are kept; they are applied, in order, once the host has accounted for it.
+            member.deferred = recovered;
+        } else {
+            member.apply_committed(recovered)?;
+        }
         Ok(member)
     }
 
@@ -289,7 +327,40 @@ impl RaftNode {
         // already covers, and two different events would claim it.
         let store = self.node.raft.raft_log.store.clone();
         let outcome = store.wl().set_applied_events(applied_events);
-        outcome.map_err(|error| error.to_string())
+        outcome.map_err(|error| error.to_string())?;
+        let deferred = std::mem::take(&mut self.deferred);
+        self.apply_committed(deferred)
+    }
+
+    /// Tell the group how the snapshot it sent to `peer` ended: delivered when the peer
+    /// took it, otherwise (the message was dropped, the peer was down or refused it) a failure.
+    ///
+    /// Only the transport knows. A leader that has sent a member a snapshot stops sending it
+    /// anything else until it hears how that ended, and a member that never received it, or
+    /// lost it in a crash before it was durable, never says; without this report the leader
+    /// waits for ever and the member is never caught up. A failure makes the leader try again
+    /// after its next heartbeat interval.
+    pub fn report_snapshot(
+        &mut self,
+        peer: u64,
+        outcome: SnapshotDelivery,
+    ) -> Result<Vec<Message>, String> {
+        self.node.report_snapshot(
+            peer,
+            match outcome {
+                SnapshotDelivery::Delivered => SnapshotStatus::Finish,
+                SnapshotDelivery::Failed => SnapshotStatus::Failure,
+            },
+        );
+        self.drain()
+    }
+
+    /// Tell the group that the last message sent to `peer` did not arrive, so that a leader
+    /// that was streaming entries to it falls back to probing instead of filling a window nobody
+    /// is reading.
+    pub fn report_unreachable(&mut self, peer: u64) -> Result<Vec<Message>, String> {
+        self.node.report_unreachable(peer);
+        self.drain()
     }
 
     /// Propose a change to the group's membership.
@@ -446,7 +517,8 @@ impl RaftNode {
     /// not ledger events, so the commit index and the ledger's own index are
     /// different sequences on purpose.
     fn apply_committed(&mut self, entries: Vec<Entry>) -> Result<(), String> {
-        for entry in entries {
+        let mut entries = entries.into_iter();
+        while let Some(entry) = entries.next() {
             // A configuration change is not a ledger event, but it is not
             // nothing either: until it is applied here raft's own view of the
             // group is unchanged, so an entry that committed would have no
@@ -471,6 +543,11 @@ impl RaftNode {
                 continue;
             }
             if self.installed.is_some() {
+                // Refused now, kept for later: raft does not hand these entries over again, so
+                // the entry and what follows it are applied by `resume_with_applied` and are not
+                // lost to the error.
+                self.deferred.push(entry);
+                self.deferred.extend(entries);
                 return Err(
                     "a snapshot is waiting to be accounted for; call resume_with_applied first"
                         .into(),

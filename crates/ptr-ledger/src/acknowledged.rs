@@ -394,6 +394,11 @@ impl AcknowledgedLedger {
         if anchors.get(offset - 1) != Some(&plan.base) {
             return Err(CompactionFault::FloorNotOnBoundary.into());
         }
+        // Test-only instrumentation of the cutover (compiled out without `failpoints`): before
+        // anything is built, once the new log exists and the anchor still names the old one, and
+        // once the anchor names the new one and this handle still holds the old one.
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("compaction.before_build");
         let retained = self.log.events()[offset..].to_vec();
         let bytes = integrity::encode_log_from(&retained, plan.base)?;
         let live_log = self.paths.log_path(plan.base.index);
@@ -402,7 +407,11 @@ impl AcknowledgedLedger {
             return Err(CompactionFault::DestinationExists.into());
         }
         let compacted = FileLedger::create_from_log_above(&live_log, &bytes, plan.base, plan.tail)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("compaction.after_log_built_before_anchor");
         self.anchors.advance_compacted(plan.base, plan.tail)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("compaction.after_anchor_before_install");
         // Past the commit point the anchor names the new file, so installing it
         // here cannot disagree with what a reopen would resolve.
         self.log = compacted;
