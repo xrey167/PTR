@@ -17,8 +17,9 @@ research_flexibility = 0.03
 [[candidate]]
 id = "gliclass-rs"
 source = "external"
-status = "to-evaluate"
+status = "rejected"
 evidence = []
+note = "blocked: RUSTSEC-2025-0119 and RUSTSEC-2024-0436 via the pinned tokenizers 0.21.4 and MPL-2.0 option-ext; not trimmable without forking the crate; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
 
 [[candidate]]
 id = "burn-small-classifier"

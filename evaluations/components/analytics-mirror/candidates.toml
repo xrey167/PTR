@@ -26,6 +26,7 @@ id = "pg-duckdb"
 source = "external"
 status = "to-evaluate"
 evidence = []
+note = "not obtainable from this sandbox (source archive answers 403, no package); stays conditional on a reachable source; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
 
 [[candidate]]
 id = "iceberg-mirror"

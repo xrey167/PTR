@@ -25,6 +25,7 @@ id = "serde-json-tree"
 source = "external"
 status = "to-evaluate"
 evidence = []
+note = "not obtainable: no such crate on crates.io; owner must confirm the intended project; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
 
 [[candidate]]
 id = "custom-inspect"

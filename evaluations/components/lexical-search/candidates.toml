@@ -44,3 +44,4 @@ id = "paradedb-pg-search"
 source = "external"
 status = "to-evaluate"
 evidence = []
+note = "owner licence decision required (AGPL-3.0); must not be selected or run until the owner decides; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
