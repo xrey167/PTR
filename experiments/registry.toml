@@ -123,7 +123,7 @@ status = "completed"
 [[experiment]]
 id = "L002"
 path = "lifecycle/L002-raft-recovery"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "Q001"
