@@ -24,11 +24,11 @@
 22. Repair experts routed by verifier finding class repair more per verifier call than one generic repair expert and than regenerate-only, with no collateral edits (F005, GPU). Planned.
 23. Expert Birth and Merge driven by verifier statistics keep or improve verified success at equal compute and active parameters versus a static set and the M013 heuristic, still only through gated proposals (F006, GPU). Planned.
 24. A Verifier-Closed Workspace MoE (VCW-MoE, doc 39) is a useful MoE type: the combination of (a) a deterministic accept predicate (status Pass, no hard finding, level at least the required level; no learned score is an argument), (b) request-level routing by verifier finding class with a learned choice only inside the verifier-admissible set and propensities logged at every sampled decision, (c) a bounded workspace that carries only verified content, and (d) a structure policy driven by the unroutable-finding statistics, with budgets and `Exhausted` instead of best-effort, solves more verifiable tasks per unit of compute than a standard learned-gate MoE, than a single generator with self-refinement, than best-of-N sampling from the same MoE filtered by the same verifier at the same verifier calls and FLOPs, and than the same loop with a generic router, with 0 false accepts (F004, F005, F006 on GPU; X, registered as F007, on CPU as a mechanism check with stubs). Refuted (R1 in doc 39 section 6.2) if the closed loop does not beat best-of-N at matched verifier calls and FLOPs, or (R2) if a shuffled finding-to-Pod map is not worse than the true map; components (workspace R4, self-model R5, lifecycle R6) are dropped from the definition independently if their ablations show no effect. "Verifier outcomes guide routing" alone is not claimed (ORACLE, arXiv:2607.22465). Unproven; no model-backed evidence.
-25. (X, CPU mechanism check, registered as F007) With stub experts of declared per-finding-class skill, the full loop beats best-of-N with the same verifier at matched verifier calls, learned-gate routing, and the loop without workspace, without finding routing (true map vs shuffled map) and without self-model hints, with all safety counters 0; a mechanism claim about the loop, whose gains are consequences of the stated stub skill, not about any model. F007 is frozen at tag `f007-prereg` on its branch and its seeds are running; no outcome.
+25. (X, CPU mechanism check, registered as F007) With stub experts of declared per-finding-class skill, the full loop beats best-of-N with the same verifier at matched verifier calls, learned-gate routing, and the loop without workspace, without finding routing (true map vs shuffled map) and without self-model hints, with all safety counters 0; a mechanism claim about the loop, whose gains are consequences of the stated stub skill, not about any model. F007 is frozen at tag `f007-prereg` on branch `claude/dev-vcw-x`; no confirmatory result in the repository yet, so no outcome.
 
 ## Claim status index
 
-One row per claim: the experiment(s) that test it and the current outcome, from `experiments/registry.toml` on the docs branch and each experiment's `results/run.json` or the STATUS.md line. Outcome vocabulary: completed, falsified, not shown, invalid, planned, running (a frozen experiment whose seeds are not finished has no outcome). "Mechanism only" means the completed experiment tests a part of the claim on a reference path. Every claim is unproven as a whole.
+One row per claim: the experiment(s) that test it and the current outcome, from `experiments/registry.toml` on the docs branch and each experiment's `results/run.json` or the STATUS.md line. Outcome vocabulary: completed, falsified, not shown, invalid, planned, frozen with no result yet (a frozen experiment with no recorded run has no outcome). "Mechanism only" means the completed experiment tests a part of the claim on a reference path. Every claim is unproven as a whole.
 
 | Claim | Tested by | Current outcome |
 |---|---|---|
@@ -55,8 +55,8 @@ One row per claim: the experiment(s) that test it and the current outcome, from 
 | 21 | F004; F001 for the loop mechanism | F004 planned (GPU); F001 completed (mechanism with seeded stub) |
 | 22 | F005 | planned (GPU) |
 | 23 | F006 | planned (GPU) |
-| 24 | F004, F005, F006; F007 as the CPU mechanism check | F004-F006 planned (GPU); F007 running (frozen, seeds not finished), no outcome |
-| 25 | F007 | running, no outcome |
+| 24 | F004, F005, F006; F007 as the CPU mechanism check | F004-F006 planned (GPU); F007 frozen, no result yet |
+| 25 | F007 | frozen, no result yet |
 
 Related substrate evidence that is not a test of any claim: L001-v2 (completed, ledger revocation crash), R001, Q002 (completed).
 
