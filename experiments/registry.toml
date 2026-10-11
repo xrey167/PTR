@@ -508,4 +508,4 @@ status = "completed"
 [[experiment]]
 id = "F007"
 path = "feedback/F007-vcw-loop"
-status = "prepared"
+status = "completed"
