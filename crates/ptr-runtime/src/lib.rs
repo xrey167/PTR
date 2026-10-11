@@ -733,6 +733,8 @@ pub struct PtrRuntime {
     execution_manifests: Arc<RwLock<ExecutionManifestRegistry>>,
     manifest_authority: Arc<RwLock<ManifestAuthorityRegistry>>,
     policy_trust: policy::PolicyTrustStore,
+    /// The attestor keys the host trusts; host configuration, not history.
+    attestors: expert::ExpertAttestorRegistry,
     policy_authority_ready: bool,
     revoked_sessions: BTreeSet<ptr_types::SessionId>,
     hypotheses: BTreeMap<String, PodHypothesis>,
@@ -753,15 +755,49 @@ impl PtrRuntime {
         Self::with_ledger(config, RuntimeLedger::Memory(InMemoryLedger::default()))
     }
 
-    pub fn open_durable(config: PtrConfig, path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
-        let ledger =
-            FileLedger::open(path).map_err(|error| RuntimeError::Ledger(error.to_string()))?;
-        Self::from_durable_ledger(config, ledger)
+    /// [`PtrRuntime::new`] trusting the attestor keys `attestors`, which the host builds from its
+    /// own configuration. The trusted set is fixed here: there is no call that changes it later.
+    ///
+    /// # Errors
+    /// As [`PtrRuntime::new`].
+    pub fn new_with_attestors(
+        config: PtrConfig,
+        attestors: expert::ExpertAttestorRegistry,
+    ) -> Result<Self, RuntimeError> {
+        let mut runtime = Self::new(config)?;
+        runtime.attestors = attestors;
+        Ok(runtime)
     }
 
-    fn from_durable_ledger(config: PtrConfig, ledger: FileLedger) -> Result<Self, RuntimeError> {
+    pub fn open_durable(config: PtrConfig, path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
+        Self::open_durable_with_attestors(config, path, expert::ExpertAttestorRegistry::new())
+    }
+
+    /// [`PtrRuntime::open_durable`] replaying against the attestor keys the host trusts: an
+    /// attested expert record replays only when its signature verifies under the key `attestors`
+    /// holds for its attestor and epoch. With [`PtrRuntime::open_durable`] the registry is empty
+    /// and a ledger holding an attested record does not open.
+    ///
+    /// # Errors
+    /// As [`PtrRuntime::open_durable`], and the attestation refusals of a replayed record.
+    pub fn open_durable_with_attestors(
+        config: PtrConfig,
+        path: impl AsRef<Path>,
+        attestors: expert::ExpertAttestorRegistry,
+    ) -> Result<Self, RuntimeError> {
+        let ledger =
+            FileLedger::open(path).map_err(|error| RuntimeError::Ledger(error.to_string()))?;
+        Self::from_durable_ledger(config, ledger, attestors)
+    }
+
+    fn from_durable_ledger(
+        config: PtrConfig,
+        ledger: FileLedger,
+        attestors: expert::ExpertAttestorRegistry,
+    ) -> Result<Self, RuntimeError> {
         let persisted = ledger.events().to_vec();
         let mut runtime = Self::with_ledger(config, RuntimeLedger::File(ledger))?;
+        runtime.attestors = attestors;
         for committed in &persisted {
             runtime.validate_lifecycle_event(&committed.event)?;
             let semantic =
@@ -791,6 +827,7 @@ impl PtrRuntime {
             execution_manifests: Arc::new(RwLock::new(ExecutionManifestRegistry::default())),
             manifest_authority: Arc::new(RwLock::new(ManifestAuthorityRegistry::default())),
             policy_trust: policy::PolicyTrustStore::default(),
+            attestors: expert::ExpertAttestorRegistry::default(),
             policy_authority_ready: false,
             revoked_sessions: BTreeSet::new(),
             hypotheses: BTreeMap::new(),
@@ -803,7 +840,21 @@ impl PtrRuntime {
     }
 
     pub fn replay(config: PtrConfig, events: &[CommittedEvent]) -> Result<Self, RuntimeError> {
+        Self::replay_with_attestors(config, events, expert::ExpertAttestorRegistry::new())
+    }
+
+    /// [`PtrRuntime::replay`] against the attestor keys the host trusts; see
+    /// [`PtrRuntime::open_durable_with_attestors`].
+    ///
+    /// # Errors
+    /// As [`PtrRuntime::replay`], and the attestation refusals of a replayed record.
+    pub fn replay_with_attestors(
+        config: PtrConfig,
+        events: &[CommittedEvent],
+        attestors: expert::ExpertAttestorRegistry,
+    ) -> Result<Self, RuntimeError> {
         let mut runtime = Self::new(config)?;
+        runtime.attestors = attestors;
         for expected in events {
             runtime.validate_lifecycle_event(&expected.event)?;
             let semantic = runtime.prepare_semantic_event(Some(expected.index), &expected.event)?;

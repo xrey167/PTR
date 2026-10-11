@@ -217,6 +217,15 @@ impl ExpertDependencyIndex {
             .copied()
     }
 
+    /// Whether any committed record or supersession fixed a digest for `identity` at any
+    /// generation: the single-use test of a run identity.
+    pub(crate) fn names_identity(&self, identity: &str) -> bool {
+        self.digests
+            .range((identity.to_owned(), Generation(0))..)
+            .next()
+            .is_some_and(|((name, _), _)| name == identity)
+    }
+
     /// Whether a committed `InputInvalidated` revoked `identity` at `generation`.
     pub fn is_revoked(&self, identity: &str, generation: Generation) -> bool {
         self.revoked.contains(&(identity.to_owned(), generation))
