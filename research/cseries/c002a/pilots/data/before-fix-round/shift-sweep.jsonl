@@ -1,0 +1,12 @@
+{"shift": 1000, "shift_noise": 1200, "seed": 1001, "self": 177, "noisy": 208, "constant": 209, "err": 276, "id_err": 171, "signal": 36}
+{"shift": 1000, "shift_noise": 1200, "seed": 1002, "self": 180, "noisy": 208, "constant": 216, "err": 281, "id_err": 175, "signal": 35}
+{"shift": 1000, "shift_noise": 1200, "seed": 1003, "self": 178, "noisy": 209, "constant": 216, "err": 274, "id_err": 168, "signal": 39}
+{"shift": 1000, "shift_noise": 1400, "seed": 1001, "self": 230, "noisy": 254, "constant": 262, "err": 359, "id_err": 171, "signal": 42}
+{"shift": 1000, "shift_noise": 1400, "seed": 1002, "self": 234, "noisy": 258, "constant": 268, "err": 358, "id_err": 175, "signal": 33}
+{"shift": 1000, "shift_noise": 1400, "seed": 1003, "self": 233, "noisy": 257, "constant": 274, "err": 356, "id_err": 168, "signal": 46}
+{"shift": 1400, "shift_noise": 1400, "seed": 1001, "self": 233, "noisy": 257, "constant": 266, "err": 365, "id_err": 171, "signal": 43}
+{"shift": 1400, "shift_noise": 1400, "seed": 1002, "self": 241, "noisy": 263, "constant": 272, "err": 365, "id_err": 175, "signal": 30}
+{"shift": 1400, "shift_noise": 1400, "seed": 1003, "self": 239, "noisy": 261, "constant": 281, "err": 365, "id_err": 168, "signal": 47}
+{"shift": 1400, "shift_noise": 1600, "seed": 1001, "self": 282, "noisy": 297, "constant": 306, "err": 428, "id_err": 171, "signal": 38}
+{"shift": 1400, "shift_noise": 1600, "seed": 1002, "self": 298, "noisy": 310, "constant": 320, "err": 437, "id_err": 175, "signal": 22}
+{"shift": 1400, "shift_noise": 1600, "seed": 1003, "self": 288, "noisy": 300, "constant": 324, "err": 427, "id_err": 168, "signal": 46}

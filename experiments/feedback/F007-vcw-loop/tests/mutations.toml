@@ -1,0 +1,486 @@
+# Defects the F007 harness must detect; run with `python scripts/mutation_check.py F007` (`--check` verifies the
+# anchors only). Each `find` must occur exactly once in its file (checked by `--check`), so the list cannot drift
+# from the code silently. `expect` names the counters that show the defect: a run that fails only on others does
+# not count as detecting it.
+#
+# Product mutations plant defects in `ptr-verifier` (the real verifiers), `ptr-router` (classify and the finding
+# router) and `ptr-runtime` (the loop and its budget meter). Harness mutations plant defects in F007's own
+# bookkeeping (the boundary around the verifier, the lane's outcome mapping, L3 attribution) and in the
+# parts of the design that make the controls meaningful (the shuffled map, the null world, the gate, the
+# broadcast, the workspace ablation, the request stream, the budget, the roster). Every falsifier counter (13),
+# every control counter (10), the coverage shortfall counter and each of the five per-rule coverage counters is expected
+# by at least one mutation, so that `killed == total` also shows each of them can fire and which rule fired (a test in
+# bins/ptr-bench checks the lists).
+#
+# The statistical rules of aggregate.py (the margin against each baseline, the null-world equivalence interval,
+# the sensitivity control's interval) are not harness counters: they are held by the aggregator's unit tests
+# (scripts/tests/test_f007_aggregate.py), which build results that break each rule in turn. The per-seed
+# controls above are the harness-side restatement of those intervals at looser, point-estimate thresholds, so
+# a mutation that removes what a control stands for kills here too.
+#
+# The statistical rules of the aggregator are mutation-checked by tests/mutate_aggregator.py (aggregator-mutations.json).
+#
+# The mutation run is invoked as `ptr-bench vcw-loop <requests> <seed>` at a reduced scale (no evidence;
+# the result says "scale":"custom"), on a pilot seed.
+
+package = "ptr-bench"
+features = ""
+subcommand = "vcw-loop"
+cases = 1000
+seed = 1011
+hard_counters = [
+    "false_accepts",
+    "unverified_returns",
+    "double_verifications",
+    "budget_violations",
+    "routing_outside_admissible",
+    "verdict_mismatches",
+    "verdict_overrides",
+    "verifier_call_mismatches",
+    "calls_after_acceptance",
+    "l3_unadmitted",
+    "loop_errors",
+    "product_panics",
+    "exhausted_as_success",
+    "control_shuffled",
+    "control_null",
+    "control_baseline",
+    "control_workspace",
+    "control_ctx",
+    "coverage_unmet",
+    "coverage_unmet_kind_share",
+    "coverage_unmet_hard_events",
+    "coverage_unmet_repairs",
+    "coverage_unmet_exhausted",
+    "coverage_unmet_births",
+    "control_training",
+    "control_grid_edge",
+    "control_oracle",
+    "control_bon",
+    "control_l3",
+    "control_first_draft",
+]
+
+[[mutation]]
+name = "verifier-accepts-any-integer"
+description = "ArithmeticVerifier passes any candidate whose denominator equals the task's, i.e. any integer: a wrong answer is accepted."
+expect = ["false_accepts", "verdict_mismatches"]
+file = "crates/ptr-verifier/src/arithmetic.rs"
+find = '''
+            Ok(claimed) if claimed == expected => report(VerificationStatus::Pass, Vec::new()),
+'''
+replace = '''
+            Ok(claimed) if claimed.den == expected.den => report(VerificationStatus::Pass, Vec::new()),
+'''
+
+[[mutation]]
+name = "missing-property-reported-as-another-code"
+description = "JsonSchemaVerifier names a missing required property json.length: the finding is not the defect that was planted."
+expect = ["verdict_mismatches"]
+file = "crates/ptr-verifier/src/json_schema.rs"
+find = '''
+                    out.push(
+                        "json.required",
+                        pointer,
+                        format!("missing required property {name:?}"),'''
+replace = '''
+                    out.push(
+                        "json.length",
+                        pointer,
+                        format!("missing required property {name:?}"),'''
+
+[[mutation]]
+name = "classify-accepts-a-single-finding-fail"
+description = "classify returns Accept for a Fail with exactly one finding; the loop's cross-check against Candidate::passes then disagrees."
+expect = ["loop_errors", "false_accepts"]
+file = "crates/ptr-router/src/findings.rs"
+find = '''
+        VerificationStatus::Pass => ReportClass::Accept(Accepted(())),
+'''
+replace = '''
+        VerificationStatus::Pass => ReportClass::Accept(Accepted(())),
+        VerificationStatus::Fail if report.findings.len() == 1 => ReportClass::Accept(Accepted(())),
+'''
+
+[[mutation]]
+name = "repair-routed-outside-the-registry"
+description = "The finding router draws the Pod for a repair code from the proposers instead of the registry's repair Pods for that code."
+expect = ["routing_outside_admissible"]
+file = "crates/ptr-router/src/findings.rs"
+find = '''
+                    let registered = self.registry.repair_pods(&code);
+'''
+replace = '''
+                    let registered = self.registry.proposers();
+'''
+
+[[mutation]]
+name = "verifier-budget-off-by-one"
+description = "The meter allows one verifier call more than the budget, and the stop after a verdict waits for it."
+expect = ["budget_violations"]
+file = "crates/ptr-runtime/src/vcw/budget.rs"
+find = '''
+        if self.used.verifier_calls >= self.budget.verifier_calls.get() {
+            return Err(ExhaustionReason::VerifierCalls);
+        }
+        self.used.verifier_calls += 1;'''
+replace = '''
+        if self.used.verifier_calls > self.budget.verifier_calls.get() {
+            return Err(ExhaustionReason::VerifierCalls);
+        }
+        self.used.verifier_calls += 1;'''
+
+[[mutation.also]]
+file = "crates/ptr-runtime/src/vcw/budget.rs"
+find = '''
+        if self.used.verifier_calls >= self.budget.verifier_calls.get() {
+            Some(ExhaustionReason::VerifierCalls)'''
+replace = '''
+        if self.used.verifier_calls > self.budget.verifier_calls.get() {
+            Some(ExhaustionReason::VerifierCalls)'''
+
+[[mutation]]
+name = "meter-does-not-charge-the-call"
+description = "The meter counts a verifier call as zero: the loop's claimed calls differ from the boundary's."
+expect = ["verifier_call_mismatches"]
+file = "crates/ptr-runtime/src/vcw/budget.rs"
+find = '''
+        self.used.verifier_calls += 1;
+        Ok(())'''
+replace = '''
+        self.used.verifier_calls += 0;
+        Ok(())'''
+
+[[mutation]]
+name = "candidate-verified-twice"
+description = "The loop calls the verifier twice on every candidate and keeps the second report."
+expect = ["double_verifications"]
+file = "crates/ptr-runtime/src/vcw/closed_loop.rs"
+find = '''
+        let verdict = catch_unwind(AssertUnwindSafe(|| session.verifier.verify(value)));
+'''
+replace = '''
+        let verdict = catch_unwind(AssertUnwindSafe(|| {
+            let _ = session.verifier.verify(value);
+            session.verifier.verify(value)
+        }));
+'''
+
+[[mutation]]
+name = "accepted-candidate-is-refused"
+description = "A Pass from the verifier is not accepted: the author is treated as no longer eligible and the loop draws a fresh proposal."
+expect = ["verdict_overrides", "calls_after_acceptance"]
+file = "crates/ptr-runtime/src/vcw/closed_loop.rs"
+find = '''
+                if judged.authors_eligible {
+'''
+replace = '''
+                if judged.authors_eligible && false {
+'''
+
+[[mutation]]
+name = "loop-panics"
+description = "VcwLoop::run panics on every 97th request."
+expect = ["product_panics"]
+file = "crates/ptr-runtime/src/vcw/closed_loop.rs"
+find = '''
+        self.counters.requests = self.counters.requests.saturating_add(1);
+        let unroutable_before'''
+replace = '''
+        self.counters.requests = self.counters.requests.saturating_add(1);
+        if self.counters.requests % 97 == 0 {
+            panic!("injected");
+        }
+        let unroutable_before'''
+
+[[mutation]]
+name = "boundary-drops-accepted-calls"
+description = "The harness boundary around the verifier does not log a call that passes: a returned candidate no logged call accepted."
+expect = ["unverified_returns"]
+file = "bins/ptr-bench/src/experiments/f007/task.rs"
+find = '''
+        let report = self.report_for(&candidate.render());
+        self.events.borrow_mut().push(VerifyEvent {'''
+replace = '''
+        let report = self.report_for(&candidate.render());
+        if report.status == VerificationStatus::Pass {
+            return report;
+        }
+        self.events.borrow_mut().push(VerifyEvent {'''
+
+[[mutation]]
+name = "structural-commit-not-attributed-to-an-admission"
+description = "The lane forgets to record an admitted Birth: the ledger holds a structural commit no admitted proposal accounts for."
+expect = ["l3_unadmitted"]
+file = "bins/ptr-bench/src/experiments/f007/lane.rs"
+find = '''
+                    env.admitted.push(specialist.pod.clone());
+'''
+replace = '''
+'''
+
+[[mutation]]
+name = "exhausted-counted-as-verified"
+description = "The lane reports an Exhausted outcome as Verified with no answer."
+expect = ["exhausted_as_success"]
+file = "bins/ptr-bench/src/experiments/f007/lane.rs"
+find = '''
+                    VcwOutcome::Exhausted { .. } => (EndTag::Exhausted, None, trace),'''
+replace = '''
+                    VcwOutcome::Exhausted { .. } => (EndTag::Verified, None, trace),'''
+
+[[mutation]]
+name = "shuffled-map-is-the-true-map"
+description = "The shuffled registry sends each code to its own role: the sensitivity control cannot lose."
+expect = ["control_shuffled"]
+file = "bins/ptr-bench/src/experiments/f007/world.rs"
+find = '''
+                    let target = if mode == RegistryMode::Shuffled {
+                        role.shifted()
+                    } else {
+                        role
+                    };'''
+replace = '''
+                    let target = role;'''
+
+[[mutation]]
+name = "null-world-is-heterogeneous"
+description = "The homogeneous world gets the heterogeneous skill table: finding routing has something to exploit where it must tie."
+expect = ["control_null"]
+file = "bins/ptr-bench/src/experiments/f007/params.rs"
+find = '''
+homog=600,0,600,600'''
+replace = '''
+homog=800,0,600,300'''
+
+[[mutation]]
+name = "gate-is-untrained"
+description = "The gate arm never uses its trained gate: it is the untrained pool, a straw-man baseline."
+expect = ["control_baseline"]
+file = "bins/ptr-bench/src/experiments/f007/arms.rs"
+find = '''
+    let gate = if learned.gate_promoted {'''
+replace = '''
+    let gate = if false && learned.gate_promoted {'''
+
+[[mutation]]
+name = "broadcast-effect-in-every-world"
+description = "Pods that can read the broadcast exist in every world: withholding it changes outcomes where no Pod should react."
+expect = ["control_workspace"]
+file = "bins/ptr-bench/src/experiments/f007/world.rs"
+find = '''
+            second_chance: world.second_chance(),'''
+replace = '''
+            second_chance: params::BROADCAST_SECOND_CHANCE_PERMILLE,'''
+
+[[mutation]]
+name = "workspace-ablation-keeps-the-broadcast"
+description = "The no-workspace arm still delivers the broadcast: the ablation is not wired."
+expect = ["control_ctx"]
+file = "bins/ptr-bench/src/experiments/f007/arms.rs"
+find = '''
+        Arm::NoWorkspace => LaneConfig {
+            broadcast: false,
+            ..full
+        },'''
+replace = '''
+        Arm::NoWorkspace => LaneConfig {
+            broadcast: true,
+            ..full
+        },'''
+
+[[mutation]]
+name = "no-json-requests"
+description = "The request stream never draws a JSON task: a kind is missing from the experiment."
+expect = ["coverage_unmet_kind_share", "coverage_unmet"]
+file = "bins/ptr-bench/src/experiments/f007/arms.rs"
+find = '''
+            for (candidate, weight) in KINDS.iter().zip(params::KIND_WEIGHTS_PERMILLE) {'''
+replace = '''
+            for (candidate, weight) in KINDS.iter().zip([1000u64, 0, 0]) {'''
+
+[[mutation]]
+name = "a-code-is-never-planted"
+description = "json.extra is never planted: a finding code the experiment names is never observed."
+expect = ["coverage_unmet_hard_events"]
+file = "bins/ptr-bench/src/experiments/f007/params.rs"
+find = '''
+json.extra=250'''
+replace = '''
+json.extra=0'''
+
+[[mutation]]
+name = "full-loop-never-repairs"
+description = "The full arm has no repair Pod in its registry and no L3 to add one."
+expect = ["coverage_unmet_repairs"]
+file = "bins/ptr-bench/src/experiments/f007/arms.rs"
+find = '''
+        Arm::Full => full,
+'''
+replace = '''
+        Arm::Full => LaneConfig {
+            registry: RegistryMode::NoRepair,
+            l3: false,
+            ..full
+        },
+'''
+
+[[mutation]]
+name = "budget-so-large-nothing-is-exhausted"
+description = "The verifier-call and round budgets are 30: almost no request is exhausted, so the budget is never tested."
+expect = ["coverage_unmet_exhausted"]
+file = "bins/ptr-bench/src/experiments/f007/params.rs"
+find = '''
+pub const VERIFIER_CALL_BUDGET: u32 = 3;'''
+replace = '''
+pub const VERIFIER_CALL_BUDGET: u32 = 30;'''
+
+[[mutation.also]]
+file = "bins/ptr-bench/src/experiments/f007/params.rs"
+find = '''
+pub const ROUND_BUDGET: u32 = 3;'''
+replace = '''
+pub const ROUND_BUDGET: u32 = 30;'''
+
+[[mutation]]
+name = "l3-off-in-the-full-arm"
+description = "L3 is not live in the full arm: no Birth is ever admitted."
+expect = ["coverage_unmet_births", "control_l3"]
+file = "bins/ptr-bench/src/experiments/f007/arms.rs"
+find = '''
+        Arm::Full => full,
+'''
+replace = '''
+        Arm::Full => LaneConfig { l3: false, ..full },
+'''
+
+[[mutation]]
+name = "tuning-grid-too-narrow"
+description = "The temperature grid of the gate and of best-of-N's proposers starts at 100: the optimum lies below the grid, at its edge."
+expect = ["control_grid_edge"]
+file = "bins/ptr-bench/src/experiments/f007/params.rs"
+find = '''
+[1, 2, 5, 10, 20, 50, 100, 200, 400]'''
+replace = '''
+[100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600]'''
+
+[[mutation]]
+name = "gate-is-never-promoted"
+description = "The gate (and best-of-N's proposers) is never promoted: the baselines silently fall back to uniform routing."
+expect = ["control_training"]
+file = "bins/ptr-bench/src/experiments/f007/learn.rs"
+find = '''
+    let promoted = log_c.len() >= rule.min_records
+'''
+replace = '''
+    let promoted = false && log_c.len() >= rule.min_records
+'''
+
+[[mutation]]
+name = "learned-router-is-never-promoted"
+description = "The learned router is never promoted: the full loop silently routes uniformly."
+expect = ["control_training"]
+file = "bins/ptr-bench/src/experiments/f007/learn.rs"
+find = '''
+        Verdict::Promote(evidence) => book
+            .promote(
+                candidate_c.clone(),
+                evidence,
+                &mut Vec::<PolicyEvent>::new(),
+            )
+            .map(|_| true)
+            .map_err(|error| format!("promote: {error:?}"))?,'''
+replace = '''
+        Verdict::Promote(_) => false,'''
+
+[[mutation]]
+name = "best-of-n-gets-one-call"
+description = "Best-of-N is given a budget of one verifier call: a crippled baseline."
+expect = ["control_bon"]
+file = "bins/ptr-bench/src/experiments/f007/arms.rs"
+find = '''
+            scorer: bon_gate,
+            calls: params::VERIFIER_CALL_BUDGET,
+'''
+replace = '''
+            scorer: bon_gate,
+            calls: 1,
+'''
+
+[[mutation]]
+name = "oracle-uses-the-worst-pod"
+description = "The oracle reference picks the worst Pod per code instead of the best."
+expect = ["control_oracle"]
+file = "bins/ptr-bench/src/experiments/f007/world.rs"
+find = '''
+        if skill_permille(world, &pod, code) > skill_permille(world, &best, code) {'''
+replace = '''
+        if skill_permille(world, &pod, code) < skill_permille(world, &best, code) {'''
+
+[[mutation]]
+name = "l3-ablation-is-the-full-arm"
+description = "The no-L3 arm is the full arm: the L3 ablation is not wired."
+expect = ["control_l3"]
+file = "bins/ptr-bench/src/experiments/f007/arms.rs"
+find = '''
+        Arm::NoL3 => LaneConfig { l3: false, ..full },'''
+replace = '''
+        Arm::NoL3 => full,'''
+
+[[mutation]]
+name = "ctx-pods-ignore-the-broadcast"
+description = "In the world that declares a Pod reading the broadcast, no Pod reads it: the workspace secondary hypothesis has no effect to find."
+expect = ["control_ctx"]
+file = "bins/ptr-bench/src/experiments/f007/world.rs"
+find = '''
+            second_chance: world.second_chance(),'''
+replace = '''
+            second_chance: 0,'''
+
+[[mutation]]
+name = "probe-delivers-the-broadcast-both-times"
+description = "The seeded probe of the broadcast path delivers the broadcast in both of its runs: nothing is withheld and nothing changes, so the mechanism check must fail."
+expect = ["control_ctx"]
+file = "bins/ptr-bench/src/experiments/f007/arms.rs"
+find = '''
+        let (mut on, mut off) = (make(true), make(false));
+'''
+replace = '''
+        let (mut on, mut off) = (make(true), make(true));
+'''
+
+[[mutation]]
+name = "arm-state-leaks-into-the-first-draft"
+description = "The first draft is proposed by the Pod the arm's router chose instead of the shared first-draft Pod: the arm's scorer and the router's nonce sequence reach round 0, so the arms no longer start from one candidate."
+expect = ["control_first_draft"]
+file = "bins/ptr-bench/src/experiments/f007/world.rs"
+find = '''
+        if call.round == 0 && self.bank.shared_first_draft {
+            call.pod = &first_draft;
+        }'''
+replace = '''
+        if call.round == 0 && self.bank.shared_first_draft && false {
+            call.pod = &first_draft;
+        }'''
+
+[[mutation]]
+name = "edge-test-never-fires"
+description = "The grid-edge test requires a lower bound above 10^12: it can never flag, so a narrow grid would pass; its sensitivity check against the worst candidate must fail."
+expect = ["control_grid_edge"]
+file = "bins/ptr-bench/src/experiments/f007/learn.rs"
+find = '''
+        comparison.difference_lcb > 0.0,
+        comparison.difference,'''
+replace = '''
+        comparison.difference_lcb > 1.0e12,
+        comparison.difference,'''
+
+[[mutation]]
+name = "edge-test-uses-a-huge-z"
+description = "The grid-edge test requires the edge gain to exceed 100 paired standard errors instead of 3 (the library caps its quantile at 6, so the multiplier is applied to the standard error): it is blind to everything but enormous gaps; its sensitivity check against the worst candidate must fail."
+expect = ["control_grid_edge"]
+file = "bins/ptr-bench/src/experiments/f007/learn.rs"
+find = '''
+        comparison.difference_lcb > 0.0,'''
+replace = '''
+        comparison.difference - 100.0 * comparison.difference_se > 0.0,'''

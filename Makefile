@@ -223,6 +223,7 @@ ci-repository-invariants:
 	$(PYTHON) -m unittest discover -s research/embeddings/tests
 	$(PYTHON) research/embeddings/verify_manifest.py --regenerate
 	$(PYTHON) -m unittest discover -s research/consciousness/tests
+	$(PYTHON) -m unittest discover -s research/cseries/tests
 	$(PYTHON) -m unittest discover -s docs-site/tests
 	$(PYTHON) benchmarks/operator-routing/generator.py
 	$(PYTHON) -m unittest discover -s benchmarks/operator-routing/tests

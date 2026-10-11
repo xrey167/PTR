@@ -1,12 +1,16 @@
 # 38 — Consciousness-indicator properties as functional capability requirements
 
-Status: **design**, plus one executed CPU mechanism experiment: C001
-(`experiments/consciousness/C001-global-workspace/`), frozen at tag `c001-prereg`, 20 seeds
-(4001-4020), outcome **NOT_SHOWN** (neither supported nor refuted; section 6, item 1, and the
-STATUS.md C001 line). `experiments/registry.toml` on this branch keeps C001 at `prepared`, as its
-preregistration defines for NOT_SHOWN. Five further experiments are registered `planned`
-(C002-C006). C004, C007 and C008 are being built to freeze-ready (none is in this branch's
-registry as `prepared`, so none is frozen as far as this branch shows) and have no outcome. Nothing in this document is evidence that
+Status: **design**, plus four executed CPU mechanism experiments, none of which says anything about
+consciousness: C001 (`experiments/consciousness/C001-global-workspace/`, frozen at tag `c001-prereg`,
+20 seeds 4001-4020, verdict **NOT_SHOWN**, registry status `prepared` as its preregistration
+defines for NOT_SHOWN), C004 (`experiments/consciousness/C004-recurrent-integration/`, frozen at
+`c004-prereg`, 14 seeds 5001-5014, verdict **COMPLETED**, registry `completed`), C007
+(`experiments/consciousness/C007-metacognitive-self-model-cpu/`, `c007-prereg`, 20 seeds 6001-6020,
+verdict **FALSIFIED**, registry `failed`) and C008
+(`experiments/consciousness/C008-attention-schema-routing-cpu/`, `c008-prereg`, 20 seeds 7001-7020,
+verdict **FALSIFIED**, registry `failed`); each verdict is the one in that experiment's
+`results/run.json` (section 6 and the STATUS.md lines). The GPU experiments C002, C003, C005 and C006
+are registered `planned` and have no outcome. Nothing in this document is evidence that
 any PTR component has any of the properties below. The tables mark what exists in code, what
 is only a scaffold and what is missing; every requirement is an experiment with a baseline,
 ablations and a falsification rule (invariant 15).
@@ -117,7 +121,7 @@ behaviour; "missing" means nothing exists. Paths are relative to the repository 
 
 | ID | Indicator (Butlin et al. 2023) | Candidate PTR component | Exists today | Missing | Experiment |
 |---|---|---|---|---|---|
-| RPT-1 | Input modules using algorithmic recurrence | `ptr-core` latent recurrence; `model/burn-a0` latent refinement | Scaffold: `LatentReasoner::advance` only advances a step counter (`crates/ptr-core/src/latent_reasoner.rs:28`). Toy: `latent_steps` in the A0 model (`model/burn-a0/src/lib.rs:382`), M003 planned | A persistent recurrent latent state on a real model that feeds a workspace | C004; M003 |
+| RPT-1 | Input modules using algorithmic recurrence | `ptr-core` latent recurrence; `model/burn-a0` latent refinement | Scaffold: `LatentReasoner::advance` only advances a step counter (`crates/ptr-core/src/latent_reasoner.rs:28`). Toy: `latent_steps` in the A0 model (`model/burn-a0/src/lib.rs:382`); M003-v4 completed INCONCLUSIVE with no quality claim (STATUS.md M003-v4 line); C004 COMPLETED on a counter toy | A persistent recurrent latent state on a real model that feeds a workspace | C004; M003 |
 | RPT-2 | Input modules generating organised, integrated perceptual representations | typed semantic slots | Slots with roles (`crates/ptr-core/src/semantic_slots.rs:6`), typed attention (`typed_attention.rs`) | PTR has no sensory input modules; applicable only to text-derived representations | none (not targeted) |
 | GWT-1 | Multiple specialised systems capable of operating in parallel | Pods, isolates | `Pod` trait (`crates/ptr-pods/src/lib.rs:183` on the integration line), `PodRegistry` (`:278`), supervised isolates with bounded mailboxes in `ptr-exec` | Nothing for the property itself | C001 (toy modules), C006 |
 | GWT-2 | Limited-capacity workspace, a bottleneck and selective attention | `ptr-pods::workspace` (a deterministic contract, package A on the integration line) | `Workspace` (`crates/ptr-pods/src/workspace/mod.rs:360`): `WorkspaceConfig::slots` bound (`config.rs:138`), only verifier-passing proposals compete, order by effective bid then SHA-256 of (seed, revision, id) then id (`cycle.rs:109`). This is a hand-written rule, not a learned mechanism, and it is not persisted in `SemanticHost` (`crates/ptr-semdb/src/lib.rs:472`) or `Branch` (`crates/ptr-branch/src/branch.rs:48`). `EpistemicWorkspace` (`crates/ptr-core/src/epistemic_workspace.rs:4`) is a model-internal slot set | A learned or state-conditioned write; any task evidence that a bottleneck helps (C001 tests a learned-attention analogue, not this contract) | C001 (analogue); C006 (Pod level) |
@@ -176,15 +180,15 @@ flowchart LR
 The statuses below describe whether a **functional** property has been shown in a test; none is
 a statement about experience, and no system is trained or scored on statements about itself
 ([`docs/MODEL_WELFARE.md`](../MODEL_WELFARE.md), principle 2 above). Registry status is
-`experiments/registry.toml` on this branch.
+`experiments/registry.toml` on this branch (it keeps C001 at `prepared`; C004 `completed`; C007 and C008 `failed`, as their preregistrations recommend for FALSIFIED).
 
 | Indicator (functional property) | Experiment | Registry status | Outcome as recorded |
 |---|---|---|---|
 | GWT-2/GWT-3 (bottleneck, broadcast), learned analogue only | C001 | prepared (as defined for NOT_SHOWN) | NOT_SHOWN (`results/run.json`; STATUS.md C001 line): advantage over sparse all-to-all supported, over all-to-all and bandwidth-matched all-to-all straddles the margin; broadcast, capacity and competition not attributed |
 | GWT-2/3 for the deterministic `ptr-pods::workspace` contract | C006 (GPU) | planned | none; the contract has tests only |
-| RPT-1 | C004 | planned | none; built toward freeze-ready, not frozen |
-| HOT-2/HOT-3 (self-model predicts own errors), toy | C007 (stage A of C002) | not in this branch's registry | none; built toward freeze-ready, not frozen |
-| AST-1 (schema of the router's own attention), toy | C008 (stage A of C003) | not in this branch's registry | none; built toward freeze-ready, not frozen |
+| RPT-1 and the extrapolation clause of RPT-L1 (not RPT-L2), toy | C004 | completed | COMPLETED (`results/run.json`; STATUS.md C004 line): recurrent minus parameter-matched attention stack +782.6 per mille [769.5], minus reset-state +817.7 [812.0], margin 100; extrapolation-removed control passed (651.8 of 782.6 recovered); a modular-counter toy, close to a known answer, control criterion loosened after exploration (disclosed) |
+| HOT-2/HOT-3 (self-model predicts own errors), toy | C007 (stage A of C002) | failed | FALSIFIED (`results/run.json`; STATUS.md C007 line): Brier gain vs information-matched probe +0.13 per mille [-1.20, 1.45], vs own calibrated confidence -2.54 [-4.21, -0.87], margin 4; no positive-effect arm; HOT-L2/HOT-L3 unsupported, C002 untouched |
+| AST-1 (schema of the router's own attention), toy | C008 (stage A of C003) | failed | FALSIFIED (`results/run.json`; STATUS.md C008 line): beats schema-free, wide schema-free, heuristic and describe-only by 64-65 per mille (margin 25) but only +7.1 [4.8, 9.4] against a router reading the history directly; the gain comes from the history, not the schema form; AST-L2 unchanged, C003 untouched |
 | HOT/AST at OLMoE scale; self-report reliability | C002, C003, C005 (GPU) | planned | none |
 | AE-1 | M013 | planned | none |
 
@@ -237,9 +241,9 @@ measured evidence is the R011 gate path; nothing here is an experimental result.
 | Experiment | What runs on CPU | What needs a GPU |
 |---|---|---|
 | C001 global workspace | everything (8 shared-weight modules in training, 16 and 24 in evaluation, d=48; one seed is about 7 minutes of CPU time on a lightly loaded core: see the dry run of pilot seed 1010 in `research/consciousness/gw/pilots/dry/`) | nothing |
-| C002 metacognitive self-model | stage A: a toy model with a routing trace and an external probe | stage B: the OLMoE Pod-MoE with a self-model Pod |
-| C003 attention-schema routing | stage A: a toy router with synthetic loads | stage B: OLMoE L1 routing |
-| C004 recurrent integration | the toy recurrence versus feed-forward test (a0-cpu-4core) | the OLMoE-class variant and the M003 link |
+| C002 metacognitive self-model | stage A, registered separately as **C007**: a toy two-layer MoE classifier with routing traces, a self-model, an information-matched probe and calibrated own confidence (a0-cpu-4core; minutes per seed) | stage B (C002): the OLMoE Pod-MoE with a self-model Pod |
+| C003 attention-schema routing | stage A, registered separately as **C008**: a toy router under bursty cyclic demand with capacity limits, an attention schema used for control, a describe-only schema, a heuristic balancer and a router that reads the history directly; a construction-validity check on a world built so that a schema can help, which leaves AST-L2 unchanged (a0-cpu-4core; minutes per seed) | stage B (C003): OLMoE L1 routing |
+| C004 recurrent integration | a modular-counter toy: a gated recurrent net against a parameter-matched causal attention stack (FLOPs matched at the longest trained length only; the stack is not depth-matched to anything) and a reset-state ablation, judged at twice the trained length, with a control that trains the stack on the long length; **RPT-1 and the extrapolation clause of RPT-L1 only, not RPT-L2**, and a COMPLETED is close to a known answer (a0-cpu-4core; minutes per seed) | the OLMoE-class variant and the M003 link (not registered) |
 | C005 self-report reliability | nothing meaningful (needs a language model with injectable state) | all |
 | C006 workspace-gated Pod routing | none | all; a Pod-level run needs OLMoE-class Pods |
 
@@ -280,10 +284,33 @@ start of their hypothesis. They are not run before their CPU predecessor has a v
    **nothing changes**: C001 does not justify building a learned L2 prototype for C006, and GW-L1 and GW-L2 are
    not downgraded either. Scope: a learned-attention workspace on one synthetic modular task, not the
    `ptr-pods` workspace contract; it says nothing about consciousness.
-2. **C004 (CPU toy first).** Independent of C001; also informs M003. Registry status `planned` on this branch; being built to freeze-ready, not frozen, no outcome. C007 (CPU metacognitive self-model, stage A of C002) and C008 (CPU attention-schema routing, stage A of C003) are in the same state: built to freeze-ready, not in this branch's registry, no outcome.
-3. **C002 and C003 (CPU toy first).** Stage A tests the mechanism and the guards (no write path
-   to a gate); stage B needs the Pod-MoE training programme (doc 37 section 5) to reach an OLMoE
-   baseline. Neither is a claim about OLMoE until stage B is run.
+2. **C004 (CPU, frozen at `c004-prereg`, completed run, verdict COMPLETED).** Independent of C001; also
+   informs M003. **Outcome (verdict COMPLETED in `experiments/consciousness/C004-recurrent-integration/results/run.json`;
+   registry status `completed`; 14 seeds 5001-5014, all valid; mutation check 44 of 44 killed).** At twice the
+   trained length (12 steps; trained on 2 to 6) a gated recurrent net beats a parameter-matched causal
+   attention stack by +782.6 per mille [lower 769.5] and the reset-state ablation by +817.7 [lower 812.0]
+   (margin 100); both sensitivity controls resolve. The extrapolation-removed control passes: the stack trained on the long
+   length recovers 651.8 of the 782.6 (more than the required half), so the contrast is about length
+   extrapolation, not stack capacity. Scope: a modular-counter toy on CPU, close to a known answer
+   about a non-extrapolating architecture class. It supports **RPT-1 and the extrapolation clause of
+   RPT-L1 only, not RPT-L2** (no carried state across calls, no workspace link). The control criterion ("the in-length stack recovers more
+   than half of the recurrent advantage") was loosened after exploration on a pilot seed and is disclosed in the
+   preregistration; the one-half threshold is a verbal a-priori argument, and the control is applied only in
+   the supported branch, so a refutation stayed reachable.
+3. **C007 and C008 (the CPU stage A of C002 and C003, each registered as its own experiment; both frozen,
+   both FALSIFIED).** Both are expected-outcome calibration runs on toys.
+   - **C007** (HOT-2/HOT-3, `results/run.json` verdict FALSIFIED, registry `failed`; 20 seeds 6001-6020, mutation check 50 of 50 killed): on the shifted
+     split the self-model's Brier score is not better than the information-matched probe (+0.13 per mille
+     [-1.20, 1.45]) nor than the model's own calibrated confidence (-2.54 [-4.21, -0.87]; the own confidence is
+     better), margin 4. Sensitivity controls resolve and the null world shows no advantage, so the pipeline
+     can resolve a null; there is no positive-effect arm. HOT-L2 and HOT-L3 stay as requirements without
+     support; C002 (GPU, stage B) is untouched.
+   - **C008** (AST-1, `results/run.json` verdict FALSIFIED, registry `failed`; 20 seeds 7001-7020, mutation check 42 of 42 killed): the schema-controlled router beats the schema-free
+     router (+64.1 per mille [62.4]), a wider schema-free router (+65.4), the heuristic balancer (+64.6) and the
+     describe-only schema (+65.1) by more than the 25 per mille margin, but only +7.1 [4.8, 9.4] against a router
+     that reads the same history directly, so the refutation against `history_router` holds; attribution
+     (control versus shuffled schema) ATTRIBUTED. Reading: the gain comes from giving the router the demand history,
+     not from the schema form. **AST-L2 is unchanged**; C003 (GPU, stage B) is untouched.
 4. **C005 (GPU).** Pure measurement with a hard guard on training signals.
 5. **C006 (GPU).** Depends on the C001 verdict and on L2 Pods existing.
 6. **M013 (existing).** Carries AE-1; this track adds no agency experiment.
@@ -291,8 +318,8 @@ start of their hypothesis. They are not run before their CPU predecessor has a v
    experts and verifier-driven expert lifecycle ([37 section 11](37-pod-moe.md)); the C-series
    components plug into that loop.
 
-Order of cost: C004 stage A can run now (C001 has run); everything marked GPU waits for the GPU
-queue of doc 37 section 5.
+Order of cost: the CPU stage-A experiments C001, C004, C007 and C008 have run; everything marked GPU
+(C002, C003, C005, C006) waits for the GPU queue of doc 37 section 5.
 
 ## 7. Limits of this approach
 

@@ -1,0 +1,30 @@
+verifier-accepts-any-integer: killed {'false_accepts': 3936, 'verdict_mismatches': 3936, 'coverage_unmet': 1, 'coverage_unmet_hard_events': 1}
+missing-property-reported-as-another-code: killed {'verdict_mismatches': 5591, 'control_null': 1, 'coverage_unmet': 1, 'coverage_unmet_hard_events': 1}
+classify-accepts-a-single-finding-fail: killed {'loop_errors': 76666, 'control_shuffled': 1, 'control_baseline': 1, 'control_training': 2, 'control_grid_edge': 2, 'control_bon': 1, 'control_l3': 1, 'coverage_unmet': 3, 'coverage_unmet_repairs': 1, 'coverage_unmet_exhausted': 1, 'coverage_unmet_births': 1}
+repair-routed-outside-the-registry: killed {'routing_outside_admissible': 25944, 'control_shuffled': 1, 'control_ctx': 1, 'control_l3': 1, 'coverage_unmet': 1, 'coverage_unmet_repairs': 1}
+verifier-budget-off-by-one: killed {'budget_violations': 3793}
+meter-does-not-charge-the-call: killed {'budget_violations': 3793, 'verifier_call_mismatches': 27000}
+candidate-verified-twice: killed {'double_verifications': 49806, 'budget_violations': 15370, 'verdict_overrides': 11581, 'verifier_call_mismatches': 27000, 'calls_after_acceptance': 23211}
+accepted-candidate-is-refused: killed {'verdict_overrides': 38130, 'calls_after_acceptance': 31323, 'control_shuffled': 1, 'control_baseline': 1, 'control_bon': 1, 'control_l3': 1}
+loop-panics: killed {'product_panics': 1449}
+boundary-drops-accepted-calls: killed {'unverified_returns': 23211, 'verifier_call_mismatches': 23211, 'control_shuffled': 1, 'control_baseline': 1, 'control_bon': 1, 'control_l3': 1}
+structural-commit-not-attributed-to-an-admission: killed {'l3_unadmitted': 24}
+exhausted-counted-as-verified: killed {'exhausted_as_success': 3789, 'coverage_unmet': 1, 'coverage_unmet_exhausted': 1}
+shuffled-map-is-the-true-map: killed {'control_shuffled': 1}
+null-world-is-heterogeneous: killed {'control_null': 3}
+gate-is-untrained: killed {'control_baseline': 1}
+broadcast-effect-in-every-world: killed {'control_baseline': 1, 'control_workspace': 2}
+workspace-ablation-keeps-the-broadcast: killed {'control_ctx': 1}
+no-json-requests: killed {'control_l3': 1, 'coverage_unmet': 3, 'coverage_unmet_kind_share': 1, 'coverage_unmet_hard_events': 1, 'coverage_unmet_births': 1}
+a-code-is-never-planted: killed {'control_null': 1, 'coverage_unmet': 1, 'coverage_unmet_hard_events': 1}
+full-loop-never-repairs: killed {'control_workspace': 2, 'control_ctx': 1, 'coverage_unmet': 2, 'coverage_unmet_repairs': 1, 'coverage_unmet_births': 1}
+budget-so-large-nothing-is-exhausted: killed {'control_shuffled': 1, 'control_baseline': 1, 'control_l3': 1, 'coverage_unmet': 1, 'coverage_unmet_exhausted': 1}
+l3-off-in-the-full-arm: killed {'control_workspace': 1, 'control_l3': 1, 'coverage_unmet': 1, 'coverage_unmet_births': 1}
+tuning-grid-too-narrow: killed {'control_grid_edge': 6}
+gate-is-never-promoted: killed {'control_baseline': 1, 'control_training': 6}
+learned-router-is-never-promoted: killed {'control_training': 3}
+best-of-n-gets-one-call: killed {'control_bon': 1}
+oracle-uses-the-worst-pod: killed {'control_oracle': 1}
+l3-ablation-is-the-full-arm: killed {'control_l3': 1}
+ctx-pods-ignore-the-broadcast: killed {'control_ctx': 2}
+probe-delivers-the-broadcast-both-times: killed {'control_ctx': 1}

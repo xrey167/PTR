@@ -1,0 +1,72 @@
+{
+  "experiment_id": "F007",
+  "status": "prepared",
+  "scope": "the whole verifier-closed workspace loop (ptr-runtime VcwLoop with its finding router, learned router promoted through the off-policy gate, workspace, self-model and attention schema, and L3 through the ledger) on seeded SIMULATED expert Pods with declared per-(Pod, finding code) skill tables, over arithmetic, JSON-schema and small code tasks judged by the real ptr-verifier verifiers, against a trained softmax gate and best-of-N with the same verifier at a matched verifier-call budget. The skill tables are the assumption under test: a gain is a consequence of them, bounded by them. No claim about any model.",
+  "git_sha": "d10217a372e1bcc464338ce931fff09921cafb45",
+  "aggregated_at_git_sha": "7984ea51a91c2f43e987aa43703f9a3d857db92f",
+  "recorded_at": "2026-10-11T11:33:56.675169+00:00",
+  "preregistration_sha256": "5c84d959adf4edd75e123f75aeb05a6f0f8148c4bb8d3795f97b826efd8dfbd0",
+  "preregistration_rules_sha256": "7a2131faf3fd59a21731e503212ca8311ebae2a56cea60d0b97c78afa33d1423",
+  "criteria_sha256": "32aa9c44e0ae09f46a6b3e3f252faa76fcd3bbb9cce24c2488e833d30ba3798c",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- vcw-loop <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261011T100606.572784Z-seed-17.json",
+      "git_sha": "d10217a372e1bcc464338ce931fff09921cafb45",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261011T102458.412909Z-seed-29.json",
+      "git_sha": "ba133cea7fd46a714d920727356995215bb84e41",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261011T104239.436876Z-seed-43.json",
+      "git_sha": "4a33c13474444543f140008d1088a6bf4d7c6e27",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261011T105742.819387Z-seed-71.json",
+      "git_sha": "d49c5e7392aa0ebfc9bf5aa60fffa2de69074a2b",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261011T111504.653546Z-seed-101.json",
+      "git_sha": "95f1b296d7359135ba99a4d0fc063811b3a05686",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "fd71ffd54c4044c5e1c2eda613791f9515981e97d52b445a74a5b6b91269db5b",
+    "29": "0cacbf5c250055c3a7a7355727a88d54dcc2fedc4e4fae86fd783effe9f62f71",
+    "43": "8161791a79eeca6749d5528a4eab02bda43cb9508b5c7ddc01bf92a8140f7cbd",
+    "71": "ae3d8ab7f8a01f3453981031ea8603aa1a7b6e65186ed6406a75d851807822d5",
+    "101": "6d4dbf9c64a5fa07a8a766e315f854c0fce028fc9d84146d3bf2528e326e8b4a"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "mutation_checks": {
+    "killed": 33,
+    "total": 33,
+    "git_sha": "99d92379dee2e7ea0dc29e159e11a978e75f12fd",
+    "sha256": "110ae90c31a7053f4ebab459e7f660ff42da3c43a940f1700037eca2d0eeabf7"
+  },
+  "limitations": [
+    "the expert Pods are seeded simulations with declared skill tables; whether finding routing helps is decided by those tables (the assumption under test), and the null world shows only that the harness adds no advantage of its own where the tables are equal",
+    "a trained gate over task features can capture at most the kind-level skill; in the declared worlds the codes of one kind are served best by different Pods, so a task-feature gate is handicapped by construction, which is the structure finding routing exploits",
+    "no Pod reads the workspace broadcast outside the descriptive world that declares it, so the workspace ablation is an exact tie by construction (a wiring check), not a measurement of the workspace's value",
+    "the self-model acts only through bounded hint boosts; the ablation measures that path alone",
+    "L3 is Birth only, on one code that no initial Pod can repair; the baselines have no L3, and the effect of L3 is shown by the no-L3 arm",
+    "the learned arms are trained once per run seed on pilot-domain traffic with no online learning during evaluation; the reported intervals are over seeds and so include the variance of training",
+    "five seeds give a one-sided t interval with four degrees of freedom, which is wide; a small true gain is NOT_SHOWN, not absent",
+    "the workspace, the self-model and L3 are not discriminated by the primary world (the tie of the workspace is by construction, the self-model has no discriminating condition in this design and is untested, L3 acts on one rare code); the workspace and L3 have preregistered secondary hypotheses with margins derived from the planning model, the workspace secondary tests a harness-defined reader of the broadcast and not the workspace's value, and the L3 secondary has low power",
+    "best-of-N lacks any repair Pod, so a gain over it bundles having a repair Pod with routing it; the routing claim rests on the contrasts to the gate and to the shuffled map",
+    "success is verified success under the real verifiers; a task whose verifier is blind to a defect would count as success (the independent oracle counts these as false accepts, and none was expected)"
+  ],
+  "metrics_sha256": "f192382f0ef0c7f125c15c7a2d48986141385b6360c4188552574b01dd1eb330"
+}
