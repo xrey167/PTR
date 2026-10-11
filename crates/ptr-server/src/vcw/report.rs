@@ -11,7 +11,7 @@
 
 use std::collections::VecDeque;
 
-use ptr_ledger::CommittedEvent;
+use ptr_ledger::{CommittedEvent, LedgerEvent};
 use ptr_runtime::vcw::{ClassSummary, StepOrigin, TraceStep, VcwTrace};
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
@@ -27,8 +27,28 @@ pub(super) struct Retained {
     outcome: &'static str,
     backend: String,
     trace: Value,
-    /// First ledger index the request committed, and how many events.
-    committed: Option<(u64, u64, Vec<Value>)>,
+    /// `None` while the request runs: the report then has outcome `"running"` and `ledger: null`.
+    committed: Option<LedgerSummary>,
+}
+
+/// The ledger events one request committed: the first index, how many, and a bounded summary.
+pub(super) struct LedgerSummary {
+    first: u64,
+    count: u64,
+    events: Vec<Value>,
+}
+
+impl LedgerSummary {
+    /// Summarizes `events`, the slice of the ledger from the request's first event on. This is
+    /// the only work done while the runtime lock is held: at most [`MAX_REPORTED_EVENTS`]
+    /// encodings and digests, and no rendering of an event.
+    pub(super) fn of(events: &[CommittedEvent]) -> Self {
+        Self {
+            first: events.first().map_or(0, |event| event.index.0),
+            count: events.len() as u64,
+            events: summarize(events),
+        }
+    }
 }
 
 /// A bounded store of finished requests.
@@ -51,21 +71,24 @@ impl TraceStore {
         });
     }
 
-    /// Records how the request `id` ended and the ledger range it committed (`events` is the
-    /// slice of the ledger from the request's first event on), if it is still retained.
-    pub(super) fn finish(&mut self, id: &str, outcome: &'static str, events: &[CommittedEvent]) {
+    /// Records how the request `id` ended and the ledger range it committed, if it is still
+    /// retained.
+    pub(super) fn finish(&mut self, id: &str, outcome: &'static str, ledger: LedgerSummary) {
         if let Some(item) = self.items.iter_mut().rev().find(|item| item.id == id) {
             item.outcome = outcome;
-            let first = events.first().map_or(0, |event| event.index.0);
-            item.committed = Some((first, events.len() as u64, summarize(events)));
+            item.committed = Some(ledger);
         }
     }
 
     /// The report of `id`, or `None` if it is not retained. Never touches the runtime.
     pub(super) fn report(&self, id: &str) -> Option<Value> {
         let item = self.items.iter().rev().find(|item| item.id == id)?;
-        let ledger = item.committed.as_ref().map(|(first, count, events)| {
-            json!({ "first_index": first, "count": count, "events": events })
+        let ledger = item.committed.as_ref().map(|summary| {
+            json!({
+                "first_index": summary.first,
+                "count": summary.count,
+                "events": summary.events,
+            })
         });
         Some(json!({
             "id": item.id,
@@ -77,31 +100,46 @@ impl TraceStore {
     }
 }
 
-/// Kind, index, rendered size and a digest of each event; never the event's content, which can
-/// carry raw payload bytes.
+/// Kind, index, encoded size and a digest of each event; never the event's content, which can
+/// carry raw payload bytes. Size and digest come from the event's canonical encoding
+/// ([`ptr_ledger::encoded_event`], the bytes a log record frames), not from a rendering of it.
 fn summarize(events: &[CommittedEvent]) -> Vec<Value> {
     events
         .iter()
         .take(MAX_REPORTED_EVENTS)
         .map(|event| {
-            let text = format!("{:?}", event.event);
-            let digest = Sha256::digest(text.as_bytes());
+            let encoded = ptr_ledger::encoded_event(&event.event);
+            let digest = Sha256::digest(&encoded);
             json!({
                 "index": event.index.0,
-                "kind": event_kind(&text),
-                "bytes": text.len(),
+                "kind": event_kind(&event.event),
+                "bytes": encoded.len(),
                 "digest": hex(&digest[..8]),
             })
         })
         .collect()
 }
 
-/// The variant name of a `Debug` rendering of an enum value.
-fn event_kind(debug: &str) -> &str {
-    let end = debug
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or(debug.len());
-    &debug[..end]
+/// The variant name of an event. Only the name is rendered: the writer refuses the first
+/// character after it, so a derived `Debug` stops there and the fields are never formatted.
+fn event_kind(event: &LedgerEvent) -> String {
+    #[derive(Default)]
+    struct Name(String);
+    impl std::fmt::Write for Name {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            for c in text.chars() {
+                if !(c.is_ascii_alphanumeric() || c == '_') {
+                    return Err(std::fmt::Error);
+                }
+                self.0.push(c);
+            }
+            Ok(())
+        }
+    }
+    let mut name = Name::default();
+    // An error here is the early stop, not a failure.
+    let _ = std::fmt::write(&mut name, format_args!("{event:?}"));
+    name.0
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -194,14 +232,71 @@ fn trace_json(trace: &VcwTrace) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId};
+
+    fn raw(text: &str) -> CommittedEvent {
+        CommittedEvent {
+            index: CommitIndex(7),
+            event: LedgerEvent::CapsuleCommitted {
+                project: ProjectId::from("p"),
+                capsule: CapsuleId::from(text),
+                generation: Generation(1),
+            },
+        }
+    }
 
     #[test]
-    fn event_kind_is_the_variant_name() {
+    fn event_kind_is_the_variant_name_without_rendering_the_fields() {
+        assert_eq!(event_kind(&raw("x").event), "CapsuleCommitted");
+        // A payload that would dominate a full rendering does not change the kind.
         assert_eq!(
-            event_kind("RawEvidenceCommitted { a: 1 }"),
-            "RawEvidenceCommitted"
+            event_kind(&raw(&"y".repeat(1 << 20)).event),
+            "CapsuleCommitted"
         );
-        assert_eq!(event_kind("Unit"), "Unit");
-        assert_eq!(event_kind(""), "");
+    }
+
+    #[test]
+    fn size_and_digest_come_from_the_canonical_encoding_not_the_debug_text() {
+        let event = raw("secret-payload");
+        let summary = summarize(std::slice::from_ref(&event));
+        let encoded = ptr_ledger::encoded_event(&event.event);
+        assert_eq!(summary[0]["bytes"], encoded.len());
+        assert_ne!(summary[0]["bytes"], format!("{:?}", event.event).len());
+        let digest = Sha256::digest(&encoded);
+        assert_eq!(summary[0]["digest"], hex(&digest[..8]));
+        assert_eq!(summary[0]["index"], 7);
+        assert!(!summary[0].to_string().contains("secret-payload"));
+    }
+
+    #[test]
+    fn at_most_the_reported_events_are_summarized_but_all_are_counted() {
+        let events: Vec<CommittedEvent> = (0..MAX_REPORTED_EVENTS + 5)
+            .map(|i| raw(&i.to_string()))
+            .collect();
+        let summary = LedgerSummary::of(&events);
+        assert_eq!(summary.count, (MAX_REPORTED_EVENTS + 5) as u64);
+        assert_eq!(summary.events.len(), MAX_REPORTED_EVENTS);
+    }
+
+    #[test]
+    fn a_request_that_has_not_finished_reports_running_and_a_null_ledger() {
+        let mut store = TraceStore::default();
+        store.items.push_back(Retained {
+            id: "live".to_owned(),
+            outcome: "running",
+            backend: "simulated".to_owned(),
+            trace: json!({ "digest": "00" }),
+            committed: None,
+        });
+        let report = store.report("live").unwrap();
+        assert_eq!(report["outcome"], "running");
+        assert!(report["ledger"].is_null());
+        assert_eq!(report["trace"]["digest"], "00");
+        // Finishing it fills the ledger and the outcome.
+        store.finish("live", "verified", LedgerSummary::of(&[raw("a")]));
+        let report = store.report("live").unwrap();
+        assert_eq!(report["outcome"], "verified");
+        assert_eq!(report["ledger"]["count"], 1);
+        assert_eq!(report["ledger"]["first_index"], 7);
     }
 }
