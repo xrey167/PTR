@@ -508,7 +508,7 @@ status = "completed"
 [[experiment]]
 id = "C007"
 path = "consciousness/C007-metacognitive-self-model-cpu"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "C008"
