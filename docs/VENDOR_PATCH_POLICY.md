@@ -34,9 +34,15 @@ repository commit, not independent signatures or proof of upstream safety.
 The copied upstream lockfiles, examples and test data remain provenance material;
 they are not independent PTR products. Security scans discover all owned Cargo
 workspaces and audit their entire resolved graphs, including these patched
-packages. The four current owned workspaces are root, A0, fuzz and the Rust
-template. This is not a claim that optional GPU, Apple, HIP, CUDA or image-codec
-execution paths have been hardware-tested.
+packages. The six current owned workspaces are root, A0, fuzz, the Rust
+template, the PyO3 bindings (`bindings/ptr-py`) and the component-evaluation
+bench kit (`evaluations/bench/kit`); every further `evaluations/bench/*`
+workspace that carries a `Cargo.lock` joins automatically
+(`scripts/security_workspaces.py list` is the authority). A benchmark candidate
+whose graph carries an advisory is blocked unless a patch of the classes above
+is cheap; it never gets an ignore entry (`evaluations/SPIKE.md`). This is not a claim
+that optional GPU, Apple, HIP, CUDA or image-codec execution paths have been
+hardware-tested.
 
 Retirement rule: move each patch back to a compatible maintained upstream release
 when it contains the required change, rerun every affected feature/target/MSRV

@@ -1,0 +1,143 @@
+{
+  "schema_version": 2,
+  "experiment_id": "M002-v10-sweep-r2",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v80",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16876494848
+  },
+  "hardware_profile_record": {
+    "path": "hardware/a0-cpu-4core.toml",
+    "sha256": "929ce6339da92df03113c4176a59155336f123e7aed9c771db1614d0a99a0c1f",
+    "contents": {
+      "id": "a0-cpu-4core",
+      "os": "Ubuntu 24.04.4 LTS, Linux 6.18.44 x86_64",
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU (4 cores, 1 thread per core, 1 socket); AVX, AVX2, AVX-512F/BW/CD/DQ/VL/VNNI",
+      "ram_gib": 15.7,
+      "gpu": "none",
+      "gpu_memory_gib": 0,
+      "precision": [
+        "fp32"
+      ],
+      "notes": "Shared cloud container: timing is noisy and is recorded as a diagnostic only. Floating-point results are reproducible bit for bit only on this CPU feature set with the same binary, because the gemm kernel dispatches on AVX-512."
+    },
+    "unspecified_fields": []
+  },
+  "git_sha": "8a9eac99110a906f1cbe04d6e97faef0f2b3bbf3",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "M002-v10-sweep-r2",
+    "status": "prepared",
+    "hypothesis": "Which learning rate of the fixed grid 0.0025,0.005,0.0125,0.025 trains each arm of M002-v10, the plain baseline included, best on validation data (seed 17, validation only)? Sweep of the A0 baseline study v1. Successor of M002-v10-sweep, whose only seed was spent by a run killed before any output (no sweep result was observed): same protocol, grid, arms, seed and selection rule.",
+    "metrics": "validation accuracy, validation NLL and divergence per fold, arm and learning rate",
+    "baseline": "no external baseline: the plain baseline is swept as an arm with its own rate",
+    "falsification": "Not a hypothesis test: the select phase picks one rate per arm by the rule fixed before the sweep (best mean validation accuracy over folds, tie lower mean validation NLL, tie smaller lr, a diverged grid point ineligible). An incomplete or inconsistent sweep is refused by the select phase, not patched; a changed sweep is a successor experiment.",
+    "hardware_profile": "hardware/a0-cpu-4core.toml",
+    "entrypoint": "cargo +1.95.0 run --release --locked --quiet --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase baseline-v1-sweep --study <study> --arms <arms> --seed <seed> --steps <steps> --data <data> --folds <folds> --d-model <d_model> --rank <rank> --bias-limit <bias_limit> --metadata-dropout <metadata_dropout> --out -",
+    "seeds": [
+      17
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json"
+    ],
+    "preregistration_sha256": "d2068f93bb3e7a01b24d21238041d3311b28cb4c4e11806813394f8ebd7d1ead",
+    "preregistration_rules_sha256": "26c0bf91f4374680453cb10829a23fe822a2dd011d13a6869d481604604a45a5"
+  },
+  "manifest_sha256": "993214734195346e3c116a873ecd01e03b020487b72dbe0c8711722f7bf25291",
+  "cargo_lock_sha256": "b6aae57ccfbc83db4e455d209fc46f0dfd713754d36e34d841b4f35110eb868e",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/a0-cpu-4core.toml",
+  "rustc": null,
+  "status": "completed",
+  "started_at": "20261008T235008.469238Z",
+  "entrypoint": "entrypoint",
+  "seed": 17,
+  "parameters": {
+    "arms": "factorized-v2,factorized-v2-off,full,plain",
+    "bias_limit": "1",
+    "d_model": "48",
+    "data": "datasets/generated/operator_routing_v2",
+    "folds": "evidence-temporal=8c3bc2324e0eb770,evidence-tabular=9ff1e487932c4638,claim-interventional=fd11dbf9270b2f39",
+    "metadata_dropout": "0",
+    "rank": "8",
+    "steps": "1500",
+    "study": "m002-v10"
+  },
+  "command": [
+    "cargo",
+    "+1.95.0",
+    "run",
+    "--release",
+    "--locked",
+    "--quiet",
+    "--manifest-path",
+    "model/burn-a0/Cargo.toml",
+    "--example",
+    "a0_ablation",
+    "--",
+    "--phase",
+    "baseline-v1-sweep",
+    "--study",
+    "m002-v10",
+    "--arms",
+    "factorized-v2,factorized-v2-off,full,plain",
+    "--seed",
+    "17",
+    "--steps",
+    "1500",
+    "--data",
+    "datasets/generated/operator_routing_v2",
+    "--folds",
+    "evidence-temporal=8c3bc2324e0eb770,evidence-tabular=9ff1e487932c4638,claim-interventional=fd11dbf9270b2f39",
+    "--d-model",
+    "48",
+    "--rank",
+    "8",
+    "--bias-limit",
+    "1",
+    "--metadata-dropout",
+    "0",
+    "--out",
+    "-"
+  ],
+  "environment": {
+    "PATH": "/nix/var/nix/profiles/default/bin:/root/.local/bin:/root/.cargo/bin:/usr/local/go/bin:/opt/node22/bin:/opt/maven/bin:/opt/gradle/bin:/opt/rbenv/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "LC_CTYPE": "C.UTF-8",
+    "RUSTUP_HOME": "/root/.rustup",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONPYCACHEPREFIX": "/tmp/ptr-run-M002-v10-sweep-r2",
+    "CARGO_TARGET_DIR": "/tmp/ptr-run-M002-v10-sweep-r2/cargo-target",
+    "RUSTUP_TOOLCHAIN": "/root/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu"
+  },
+  "executable": {
+    "path": "/root/.cargo/bin/rustup",
+    "sha256": "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
+  },
+  "toolchain": {
+    "rustc": {
+      "path": "/root/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/rustc",
+      "sha256": "bff349e72704ff70bc08a234a3847338e797065bbedde5e556808bc87b7bf7c6"
+    },
+    "cargo": {
+      "path": "/root/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo",
+      "sha256": "841072d1d92f9e841d9ba5b0814182a0adf064acf4527cd120967b7bc49dcb66"
+    }
+  },
+  "finished_at": "2026-10-09T00:36:55.460956+00:00",
+  "exit_code": 0,
+  "stdout": "{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.51953125,\"val_nll\":1.433692218045251,\"val_ece15\":0.0889056985185518,\"ms_per_step\":49.27488032466667,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.50390625,\"val_nll\":1.4342953888561127,\"val_ece15\":0.09767323847907267,\"ms_per_step\":49.03005524466667,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.4609375,\"val_nll\":1.4819184117617654,\"val_ece15\":0.1302830004869173,\"ms_per_step\":53.391584719333345,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.74609375,\"val_nll\":0.9099694964312764,\"val_ece15\":0.22227789249712598,\"ms_per_step\":65.182018834,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.5234375,\"val_nll\":1.4352574463995562,\"val_ece15\":0.06724248297701899,\"ms_per_step\":49.092316876000005,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.46875,\"val_nll\":1.4558785613084093,\"val_ece15\":0.10744223536531615,\"ms_per_step\":49.29646715533334,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.546875,\"val_nll\":1.2682274587680777,\"val_ece15\":0.0986867554106228,\"ms_per_step\":53.433626236666676,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.72265625,\"val_nll\":0.9453174473569285,\"val_ece15\":0.19247659456292912,\"ms_per_step\":67.59452693066667,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"full\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.5,\"val_nll\":1.4455214296034344,\"val_ece15\":0.11350390232529815,\"ms_per_step\":14.370127211333333,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"full\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.5078125,\"val_nll\":1.5255178428548402,\"val_ece15\":0.11077417609386653,\"ms_per_step\":14.661285497333333,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"full\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.54296875,\"val_nll\":1.391163096445929,\"val_ece15\":0.08020804248202999,\"ms_per_step\":19.051806794,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"full\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.70703125,\"val_nll\":0.8973028075251852,\"val_ece15\":0.17286265299962375,\"ms_per_step\":29.610840609333334,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.3828125,\"val_nll\":2.409219871358076,\"val_ece15\":0.31313073818574033,\"ms_per_step\":10.476738505333334,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.375,\"val_nll\":4.749604161020336,\"val_ece15\":0.45729427995120114,\"ms_per_step\":11.482396788,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.3515625,\"val_nll\":10.274618581459789,\"val_ece15\":0.5655967511281793,\"ms_per_step\":12.468480601333335,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-temporal\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.3359375,\"val_nll\":10.48600640005733,\"val_ece15\":0.5765870605841699,\"ms_per_step\":13.317550951333333,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.48046875,\"val_nll\":1.4285877227251729,\"val_ece15\":0.12624243078757966,\"ms_per_step\":49.07753962533333,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.48828125,\"val_nll\":1.5777255983285252,\"val_ece15\":0.12534132264763287,\"ms_per_step\":50.924402974666656,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.47265625,\"val_nll\":1.5350746382759854,\"val_ece15\":0.12133934962963863,\"ms_per_step\":56.15618277400001,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.640625,\"val_nll\":1.032263872787004,\"val_ece15\":0.1097174646497315,\"ms_per_step\":64.53970702933333,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.49609375,\"val_nll\":1.4145045721096454,\"val_ece15\":0.09987688779977819,\"ms_per_step\":45.60782779,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.45703125,\"val_nll\":1.632087441691504,\"val_ece15\":0.1469161674392573,\"ms_per_step\":48.35059318599999,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.515625,\"val_nll\":1.4099614386934278,\"val_ece15\":0.06439901254856621,\"ms_per_step\":55.758996814666666,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.6328125,\"val_nll\":1.0744847981976897,\"val_ece15\":0.1236119119650469,\"ms_per_step\":63.98886637533334,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"full\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.53515625,\"val_nll\":1.4661263664731183,\"val_ece15\":0.10672913849665688,\"ms_per_step\":14.026807617333333,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"full\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.47265625,\"val_nll\":1.6286797757477007,\"val_ece15\":0.1398099806244973,\"ms_per_step\":14.436619210666668,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"full\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.5078125,\"val_nll\":1.4156756560773447,\"val_ece15\":0.10822582930984063,\"ms_per_step\":18.84642128533333,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"full\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.66015625,\"val_nll\":0.9819756643245857,\"val_ece15\":0.11835009819447462,\"ms_per_step\":27.87462138466667,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.42578125,\"val_nll\":2.1131249916357775,\"val_ece15\":0.28306748878873833,\"ms_per_step\":10.358085083999999,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.390625,\"val_nll\":4.162445275303321,\"val_ece15\":0.4671606470419141,\"ms_per_step\":11.292284296666667,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.37890625,\"val_nll\":9.08315863332671,\"val_ece15\":0.5445245675629391,\"ms_per_step\":12.022975979333333,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"evidence-tabular\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.34375,\"val_nll\":8.243129694465162,\"val_ece15\":0.5633229807129811,\"ms_per_step\":13.732088558000001,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.51953125,\"val_nll\":1.4366537045971288,\"val_ece15\":0.1037549892244572,\"ms_per_step\":48.12142004933333,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.51953125,\"val_nll\":1.4724549962801432,\"val_ece15\":0.1167063103779875,\"ms_per_step\":48.558544000000005,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.5546875,\"val_nll\":1.3966327425994982,\"val_ece15\":0.09921983618051461,\"ms_per_step\":52.11734396666666,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"factorized-v2\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.71875,\"val_nll\":0.9585699836207299,\"val_ece15\":0.1837037862056201,\"ms_per_step\":64.099121302,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.5234375,\"val_nll\":1.3673210858230274,\"val_ece15\":0.06264627147899739,\"ms_per_step\":47.421712186666674,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.51953125,\"val_nll\":1.490285120487421,\"val_ece15\":0.07629206042634266,\"ms_per_step\":51.22296879466667,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.53515625,\"val_nll\":1.4441900888467882,\"val_ece15\":0.11874142220002516,\"ms_per_step\":52.68145208866666,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"factorized-v2-off\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.67578125,\"val_nll\":1.002468499054496,\"val_ece15\":0.15317748947935522,\"ms_per_step\":64.03761384666666,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"full\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.5078125,\"val_nll\":1.4428096819752787,\"val_ece15\":0.10286692072188061,\"ms_per_step\":14.391283439999999,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"full\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.51171875,\"val_nll\":1.5444268078947854,\"val_ece15\":0.11107029151810965,\"ms_per_step\":14.908080528,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"full\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.5,\"val_nll\":1.4400769344224018,\"val_ece15\":0.08828228778659715,\"ms_per_step\":18.62106512,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"full\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.69140625,\"val_nll\":0.9583425033823306,\"val_ece15\":0.16395909924929955,\"ms_per_step\":27.820348682000002,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.0025,\"steps\":1500,\"val_accuracy\":0.36328125,\"val_nll\":2.323357640143165,\"val_ece15\":0.31466118520274583,\"ms_per_step\":10.629977116000001,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.005,\"steps\":1500,\"val_accuracy\":0.3203125,\"val_nll\":4.353541482681007,\"val_ece15\":0.5132652204630557,\"ms_per_step\":11.635306565999999,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.0125,\"steps\":1500,\"val_accuracy\":0.3125,\"val_nll\":10.67115976058115,\"val_ece15\":0.6052953097272162,\"ms_per_step\":13.028851136,\"nan\":0}\n{\"row\":\"sweep-baseline-v1\",\"study\":\"m002-v10\",\"fold\":\"claim-interventional\",\"arm\":\"plain\",\"seed\":17,\"lr\":0.025,\"steps\":1500,\"val_accuracy\":0.296875,\"val_nll\":9.738564634981078,\"val_ece15\":0.5946699840286389,\"ms_per_step\":13.510189140666666,\"nan\":0}\n",
+  "stderr": "timing phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=factorized-v2 lr=0.0025 ms_per_step=49.275\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=factorized-v2 lr=0.005 ms_per_step=49.030\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=factorized-v2 lr=0.0125 ms_per_step=53.392\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=factorized-v2 lr=0.025 ms_per_step=65.182\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=factorized-v2-off lr=0.0025 ms_per_step=49.092\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=factorized-v2-off lr=0.005 ms_per_step=49.296\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=factorized-v2-off lr=0.0125 ms_per_step=53.434\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=factorized-v2-off lr=0.025 ms_per_step=67.595\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=full lr=0.0025 ms_per_step=14.370\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=full lr=0.005 ms_per_step=14.661\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=full lr=0.0125 ms_per_step=19.052\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=full lr=0.025 ms_per_step=29.611\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=plain lr=0.0025 ms_per_step=10.477\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=plain lr=0.005 ms_per_step=11.482\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=plain lr=0.0125 ms_per_step=12.468\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-temporal arm=plain lr=0.025 ms_per_step=13.318\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=factorized-v2 lr=0.0025 ms_per_step=49.078\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=factorized-v2 lr=0.005 ms_per_step=50.924\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=factorized-v2 lr=0.0125 ms_per_step=56.156\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=factorized-v2 lr=0.025 ms_per_step=64.540\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=factorized-v2-off lr=0.0025 ms_per_step=45.608\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=factorized-v2-off lr=0.005 ms_per_step=48.351\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=factorized-v2-off lr=0.0125 ms_per_step=55.759\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=factorized-v2-off lr=0.025 ms_per_step=63.989\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=full lr=0.0025 ms_per_step=14.027\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=full lr=0.005 ms_per_step=14.437\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=full lr=0.0125 ms_per_step=18.846\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=full lr=0.025 ms_per_step=27.875\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=plain lr=0.0025 ms_per_step=10.358\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=plain lr=0.005 ms_per_step=11.292\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=plain lr=0.0125 ms_per_step=12.023\ntiming phase=baseline-v1-sweep study=m002-v10 fold=evidence-tabular arm=plain lr=0.025 ms_per_step=13.732\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=factorized-v2 lr=0.0025 ms_per_step=48.121\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=factorized-v2 lr=0.005 ms_per_step=48.559\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=factorized-v2 lr=0.0125 ms_per_step=52.117\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=factorized-v2 lr=0.025 ms_per_step=64.099\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=factorized-v2-off lr=0.0025 ms_per_step=47.422\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=factorized-v2-off lr=0.005 ms_per_step=51.223\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=factorized-v2-off lr=0.0125 ms_per_step=52.681\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=factorized-v2-off lr=0.025 ms_per_step=64.038\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=full lr=0.0025 ms_per_step=14.391\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=full lr=0.005 ms_per_step=14.908\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=full lr=0.0125 ms_per_step=18.621\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=full lr=0.025 ms_per_step=27.820\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=plain lr=0.0025 ms_per_step=10.630\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=plain lr=0.005 ms_per_step=11.635\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=plain lr=0.0125 ms_per_step=13.029\ntiming phase=baseline-v1-sweep study=m002-v10 fold=claim-interventional arm=plain lr=0.025 ms_per_step=13.510\n",
+  "launch_error": null,
+  "duration_ns": 2796923021663
+}

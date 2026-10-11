@@ -26,6 +26,7 @@ id = "tina-rs"
 source = "external"
 status = "to-evaluate"
 evidence = []
+note = "not obtainable: no crate of that name; the only match (crates.io tina) is an unrelated blocked framework; owner must name the intended project; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
 
 [[candidate]]
 id = "tokio-custom"

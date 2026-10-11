@@ -25,8 +25,11 @@ pub mod routing;
 pub mod sandbox;
 pub mod scopes;
 pub mod semantic;
+pub mod stepped;
 pub mod tensor_kv;
 pub mod tier;
+pub mod vcw;
+pub mod vcw_host;
 
 pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
 pub use directory::{InMemoryPodDirectory, PodDirectory};
@@ -98,6 +101,7 @@ pub use scopes::{
     CleanupError, ExecutionScope, ScopeCleanupCoordinator, ScopeError, ScopeEvent, ScopeEventKind,
     ScopeRegistry, ScopeState,
 };
+pub use stepped::{CancelPolicy, CancelledRun, RunStep, StepResources, SteppedRun};
 pub use tensor_kv::{
     ManagedKvHandle, ManagedKvMetadata, ManagedKvPageContext, ManagedKvRegistry,
     ManagedOnlineKvSnapshot, TensorKvError,
@@ -180,6 +184,11 @@ fn delta_carries_payload(encoded_delta: &[u8], key: &str, payload: &TypedPayload
             SemanticValue::Text(_) => false,
         })
 }
+
+// The unit tests of vcw_host share the host-side set-up of tests/expert_support, which names the
+// crate by its public path.
+#[cfg(test)]
+extern crate self as ptr_runtime;
 
 #[cfg(test)]
 mod delta_payload_tests {
@@ -393,8 +402,7 @@ use ptr_ledger::{
     MAX_RETAINED_RESPONSE,
 };
 use ptr_model_api::{
-    InferenceBackend, KvReuseTaint, ModelEvent, ModelObservation, ModelRequest, ModelResumeRequest,
-    ResumableInferenceBackend,
+    InferenceBackend, KvReuseTaint, ModelEvent, ModelRequest, ResumableInferenceBackend,
 };
 use ptr_pods::{EvidenceVerifier, PodEvidenceBundle, PodHypothesis, PodOutputKind, PodRegistry};
 use ptr_protocol::TypedPayload;
@@ -435,6 +443,19 @@ pub enum RuntimeError {
     StaleRevision {
         action: Revision,
         current: Revision,
+    },
+    /// A stepped run was ended because the semantic revision moved for a reason other than the
+    /// run's own writes (`bound` is the revision the run was bound to, `current` the store's),
+    /// before it did any more work. Only [`CancelledRun::into_error`] produces it. It is a saving
+    /// of work, not a safety check: the effect boundary refuses a stale action
+    /// ([`RuntimeError::StaleRevision`]) whatever this check did.
+    RunCancelled {
+        bound: Revision,
+        current: Revision,
+    },
+    /// A step was requested for a stepped run that already finished, was cancelled or failed.
+    SteppedRunEnded {
+        request: String,
     },
     UnknownGeneration {
         target: String,
@@ -1372,6 +1393,12 @@ impl PtrRuntime {
         self.live_generations.get(target).copied()
     }
 
+    /// The project a capsule was committed under, if the lifecycle authority knows the capsule.
+    #[must_use]
+    pub fn capsule_project(&self, capsule: &str) -> Option<&str> {
+        self.capsule_projects.get(capsule).map(String::as_str)
+    }
+
     /// Every lifecycle target and its current generation, ordered by target.
     /// Revocation tombstones are exposed separately by [`Self::revoked_generations`].
     pub fn live_generations(&self) -> impl Iterator<Item = (&str, Generation)> {
@@ -1597,14 +1624,7 @@ impl PtrRuntime {
         V: Verifier<TypedPayload> + ?Sized,
     {
         self.run_resumable_inner(
-            request_id,
-            project,
-            raw_text,
-            backend,
-            pods,
-            routing::PodSelection::Plain,
-            verifier,
-            max_rounds,
+            request_id, project, raw_text, backend, pods, None, verifier, max_rounds,
         )
     }
 
@@ -1635,7 +1655,7 @@ impl PtrRuntime {
             raw_text,
             backend,
             pods,
-            routing::PodSelection::Sampled(router),
+            Some(router),
             verifier,
             max_rounds,
         )
@@ -1649,7 +1669,7 @@ impl PtrRuntime {
         raw_text: impl Into<String>,
         backend: &B,
         pods: &PodRegistry,
-        selection: routing::PodSelection<'_>,
+        router: Option<&dyn PodSampler>,
         verifier: &V,
         max_rounds: usize,
     ) -> Result<ResumableRun, RuntimeError>
@@ -1657,145 +1677,9 @@ impl PtrRuntime {
         B: ResumableInferenceBackend + ?Sized,
         V: Verifier<TypedPayload> + ?Sized,
     {
-        let raw_text = raw_text.into();
-        // Same input taint as `run_model_run_resumable`, computed before the backend runs.
-        let input_taint = self.input_kv_taint(&request_id, &raw_text);
-        let _revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
-        let mut request = ModelRequest {
-            request_id: request_id.clone(),
-            semantic_context: self.snapshot().semantic_context(),
-            raw_text,
-        };
-        let mut pending = backend
-            .infer(&request)
-            .map_err(|error| RuntimeError::Model(error.0))?;
-
-        let mut run = ResumableRun {
-            kv_taint: input_taint,
-            ..ResumableRun::default()
-        };
-
-        for round in 0..=max_rounds {
-            let finished = pending
-                .iter()
-                .any(|event| matches!(event, ModelEvent::Finished));
-            let pod_requests = pending
-                .iter()
-                .filter_map(|event| match event {
-                    ModelEvent::PodRequested {
-                        capability,
-                        input_type,
-                        payload,
-                    } => Some((capability.clone(), input_type.clone(), payload.clone())),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let actions = pending
-                .iter()
-                .filter_map(|event| match event {
-                    ModelEvent::ActionReady(action) => Some(action.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-
-            run.model_events.extend(pending);
-
-            let control_count = pod_requests.len() + actions.len();
-            if control_count > 1 {
-                if !pod_requests.is_empty() && !actions.is_empty() {
-                    return Err(RuntimeError::MixedControlEvents);
-                }
-                return Err(RuntimeError::MultipleControlEvents {
-                    count: control_count,
-                });
-            }
-
-            if finished && control_count == 0 {
-                // Approximate input: request, generated text and actions are recorded
-                // taint-first before the run is returned. Exact input appends nothing.
-                self.record_input_taint(&request_id, run.kv_taint, &run.model_events)?;
-                self.emit(RuntimeEvent::RequestFinished(request_id));
-                return Ok(run);
-            }
-
-            if let Some(action) = actions.into_iter().next() {
-                run.action = Some(action);
-                self.record_input_taint(&request_id, run.kv_taint, &run.model_events)?;
-                return Ok(run);
-            }
-
-            let Some((capability, input_type, payload)) = pod_requests.into_iter().next() else {
-                return Err(RuntimeError::ModelNoProgress);
-            };
-
-            if round == max_rounds {
-                return Err(RuntimeError::ModelResumeLimit { max_rounds });
-            }
-
-            // A Pod in another project is unavailable in exactly the same
-            // words as a Pod that does not exist. Saying which it was would
-            // answer, across the boundary, whether that Pod exists.
-            let pod = self.select_pod(
-                &selection,
-                pods,
-                project,
-                &request_id,
-                &capability,
-                &input_type,
-                &payload,
-            )?;
-
-            if pod
-                .manifest()
-                .effects
-                .iter()
-                .any(|effect| !matches!(effect, ptr_types::Effect::Pure | ptr_types::Effect::Read))
-            {
-                return Err(RuntimeError::PodEffectRequiresActionBoundary {
-                    pod: pod.manifest().id.to_string(),
-                });
-            }
-
-            // Approximate input: the Request subject is recorded before any Pod output of this
-            // request is promoted, so promotion (which checks the request subject) refuses it.
-            self.record_input_request_taint(&request_id, run.kv_taint)?;
-            self.emit(RuntimeEvent::PodInvoked(pod.manifest().id.to_string()));
-            let output = pod
-                .invoke(TypedPayload {
-                    type_id: input_type,
-                    bytes: payload,
-                })
-                .map_err(RuntimeError::Pod)?;
-
-            let revision =
-                self.promote_verified_pod_output(&request_id, pod.manifest(), &output, verifier)?;
-            // A promoted output is clean (promotion refuses a tainted request or content), but
-            // the action it feeds carries the join of everything it consumed.
-            run.kv_taint = run
-                .kv_taint
-                .join(self.text_kv_taint(&output.bytes))
-                .join(self.request_kv_taint(&request_id));
-
-            let observation = ModelObservation {
-                revision,
-                source: pod.manifest().id.to_string(),
-                type_id: output.type_id.clone(),
-                payload: output.bytes.clone(),
-            };
-            run.observations.push(output);
-
-            request.semantic_context = self.snapshot().semantic_context();
-            pending = backend
-                .resume(&ModelResumeRequest {
-                    request_id: request_id.clone(),
-                    semantic_context: request.semantic_context.clone(),
-                    round: round as u32 + 1,
-                    observation,
-                })
-                .map_err(|error| RuntimeError::Model(error.0))?;
-        }
-
-        Err(RuntimeError::ModelResumeLimit { max_rounds })
+        self.run_resumable_blocking(
+            request_id, project, raw_text, backend, pods, router, verifier, max_rounds,
+        )
     }
 
     pub fn authorization_decision(&self, action: &ActionIr) -> AuthorizationDecision {

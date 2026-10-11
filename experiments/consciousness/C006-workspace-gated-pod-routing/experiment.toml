@@ -1,0 +1,12 @@
+version = 1
+id = "C006"
+status = "planned"
+hypothesis = "[GPU; needs the C001 result and OLMoE] Indicators GWT-1..4 at the Pod-MoE level: if C001 supports the workspace mechanism, does a limited-capacity typed workspace at L2 (shared state in SemDB or a branch overlay that Pods compete to write and whose content is broadcast to all Pods, with state-dependent routing queries) improve multi-Pod tasks over plain routing without a shared workspace and over a parameter-matched all-to-all Pod message bus? C001 tests a learned-attention analogue, not the deterministic ptr-pods::workspace contract, so this experiment is also the Pod-level test of that contract (bounded slots, bid competition after the verifier gate, bounded-mailbox broadcast). If C001 is refuted with power (guards hold, an upper bound below the margin) the learned-workspace variant is downgraded to exploratory; if it is not shown or invalid, nothing changes."
+metrics = "verified task success on multi-Pod tasks needing information from two or more Pods; out-of-distribution Pod combinations; tokens and calls per solved task; robustness to losing one Pod (revocation); workspace occupancy and ignition-style signals (descriptive only); paired differences over seeds"
+baseline = "plain ptr-router routing without a shared workspace; parameter- and call-matched all-to-all Pod message bus; no-broadcast workspace"
+falsification = "Falsified if the workspace-gated arm does not beat BOTH plain routing and the all-to-all bus on out-of-distribution Pod combinations at equal call budget by a pinned margin with a one-sided 95% paired bound over at least 5 seeds. The workspace contract arm is the implemented ptr-pods::workspace; the workspace is derived, non-authoritative state: any run in which workspace content reaches a gate, the verifier or a promotion without passing the normal path invalidates the run."
+hardware_profile = "hardware/rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

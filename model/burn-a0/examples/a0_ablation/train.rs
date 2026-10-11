@@ -20,6 +20,8 @@ pub const BATCH: usize = 128;
 pub const WARMUP: usize = 100;
 pub const EVAL_BATCH: usize = 500;
 const OPERATORS: usize = 11;
+const SEQUENCE: u64 = 72;
+const SLOTS: u64 = 6;
 const ECE_BINS: usize = 15;
 /// Parameters are counted as effective when any of the first this many
 /// batches gives them a non-zero gradient.
@@ -145,6 +147,37 @@ fn on(flag: bool) -> &'static str {
     }
 }
 
+/// Static forward-pass FLOP estimate of one A0 example (the formula the `meta`
+/// rows have always carried). It bakes in two latent refinement passes, so it
+/// does not move with `arm.latent_steps`; see [`a0_flops_latent_adjusted`].
+pub fn a0_flops_per_example(arm: &Arm, d_model: usize) -> u64 {
+    let width = d_model as u64;
+    let rank = arm.typed_attention_rank as u64;
+    8 * SEQUENCE * width * width
+        + 8 * SLOTS * width * width
+        + 4 * SLOTS * SEQUENCE * width
+        + 2 * SLOTS * SEQUENCE * rank
+        + 2 * SLOTS * width * OPERATORS as u64
+}
+
+/// The legacy estimate corrected for the arm's own refinement-pass count: each
+/// pass is one `d x d` projection over the six slots (`2 * 6 * d * d`), and the
+/// legacy formula already contains exactly two of them.
+pub fn a0_flops_latent_adjusted(arm: &Arm, d_model: usize) -> i64 {
+    let width = d_model as i64;
+    a0_flops_per_example(arm, d_model) as i64
+        + (arm.latent_steps as i64 - 2) * 2 * SLOTS as i64 * width * width
+}
+
+/// Static forward-pass FLOP estimate of one plain-transformer example.
+pub fn plain_flops_per_example(d_model: usize) -> u64 {
+    let width = d_model as u64;
+    4 * SEQUENCE * 2 * width * width
+        + 6 * SLOTS * 2 * width * width
+        + 4 * 2 * SEQUENCE * SLOTS * width
+        + 2 * SLOTS * width * OPERATORS as u64
+}
+
 /// Train `arm` on full batches of 128, reseeding model initialization with `seeds.init`.
 ///
 /// `seeds.order` controls epoch shuffles; each epoch drops its incomplete batch.
@@ -263,15 +296,7 @@ pub fn train(
     // Static forward-pass estimate used only for matched-compute validation.
     // Both M002-v5 arms execute this exact graph, including the factorized
     // branch; Off zeros its result only after the branch has run.
-    let sequence = 72_u64;
-    let slots = 6_u64;
-    let width = d_model as u64;
-    let rank = arm.typed_attention_rank as u64;
-    let model_flops = 8 * sequence * width * width
-        + 8 * slots * width * width
-        + 4 * slots * sequence * width
-        + 2 * slots * sequence * rank
-        + 2 * slots * width * OPERATORS as u64;
+    let model_flops = a0_flops_per_example(arm, d_model);
     rows.insert(
         0,
         format!(
@@ -381,12 +406,9 @@ pub fn train_plain(
         }
     }
     let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-    let sequence = 72_u64;
-    let latent_slots = 6_u64;
-    let model_flops = 4 * sequence * 2 * d_model as u64 * d_model as u64
-        + 6 * latent_slots * 2 * d_model as u64 * d_model as u64
-        + 4 * 2 * sequence * latent_slots * d_model as u64
-        + 2 * latent_slots * d_model as u64 * OPERATORS as u64;
+    let sequence = SEQUENCE;
+    let latent_slots = SLOTS;
+    let model_flops = plain_flops_per_example(d_model);
     rows.insert(
         0,
         format!(
@@ -515,7 +537,7 @@ pub fn score(model: &PtrA0, arm: &Arm, split: &Split, payloads: &Payloads) -> Sc
     score_calibrated(model, arm, split, payloads, 1.0, 0.0)
 }
 
-fn collect_logits(
+pub(crate) fn collect_logits(
     model: &PtrA0,
     arm: &Arm,
     split: &Split,
@@ -544,7 +566,7 @@ fn collect_logits(
     out
 }
 
-fn score_rows(rows: &[(usize, Vec<f32>)], temperature: f64, threshold: f64) -> Score {
+pub(crate) fn score_rows(rows: &[(usize, Vec<f32>)], temperature: f64, threshold: f64) -> Score {
     assert!(temperature.is_finite() && temperature > 0.0);
     assert!(threshold.is_finite() && (0.0..=1.0).contains(&threshold));
     let mut correct = 0;
@@ -625,11 +647,15 @@ pub fn score_calibrated(
 
 /// Deterministically fit one scalar temperature on validation NLL.
 pub fn fit_temperature(model: &PtrA0, arm: &Arm, split: &Split, payloads: &Payloads) -> f64 {
-    let rows = collect_logits(model, arm, split, payloads);
+    temperature_from_rows(&collect_logits(model, arm, split, payloads))
+}
+
+/// Grid 0.25..=4.0 step 0.01 minimising NLL on `rows`; a tie takes the lower value.
+pub(crate) fn temperature_from_rows(rows: &[(usize, Vec<f32>)]) -> f64 {
     (25..=400)
         .map(|step| step as f64 / 100.0)
         .map(|temperature| {
-            let score = score_rows(&rows, temperature, 0.0);
+            let score = score_rows(rows, temperature, 0.0);
             (temperature, score.nll)
         })
         .min_by(|left, right| {
@@ -649,7 +675,11 @@ pub fn fit_coverage_threshold(
     payloads: &Payloads,
     temperature: f64,
 ) -> f64 {
-    let rows = collect_logits(model, arm, split, payloads);
+    threshold_from_rows(&collect_logits(model, arm, split, payloads), temperature)
+}
+
+/// Confidence at the 90% retention rank of `rows` under `temperature`.
+pub(crate) fn threshold_from_rows(rows: &[(usize, Vec<f32>)], temperature: f64) -> f64 {
     let mut confidence: Vec<f64> = rows
         .iter()
         .map(|(_label, raw)| {
@@ -665,6 +695,36 @@ pub fn fit_coverage_threshold(
     confidence.sort_by(|left, right| right.total_cmp(left));
     let retained = ((confidence.len() as f64) * 0.90).ceil() as usize;
     confidence[retained.saturating_sub(1).min(confidence.len() - 1)]
+}
+
+/// Plain-transformer logits for a split, in the `(label, row)` form the shared
+/// scorers take. Uses the same token-only batch as training and `score_plain`.
+pub(crate) fn collect_logits_plain(
+    model: &PlainTransformer,
+    split: &Split,
+    d_model: usize,
+) -> Vec<(usize, Vec<f32>)> {
+    let device = Device::flex();
+    let payloads = Payloads::new(d_model);
+    let mut out = Vec::with_capacity(split.examples.len());
+    for chunk in split.examples.chunks(EVAL_BATCH) {
+        let chosen: Vec<&Example> = chunk.iter().collect();
+        let inputs = batch::build(
+            &chosen,
+            Batch::ContentFree { masked: false },
+            &payloads,
+            &device,
+        );
+        let logits: Vec<f32> = model
+            .forward(inputs.tokens)
+            .into_data()
+            .try_to_vec::<f32>()
+            .expect("f32 logits");
+        for (example, row) in chosen.iter().zip(logits.chunks(OPERATORS)) {
+            out.push((example.label, row.to_vec()));
+        }
+    }
+    out
 }
 
 /// The final row and PRED line for every test split.
@@ -744,7 +804,12 @@ pub fn evaluate_v5(
 /// Fixed-shape forward latency for the M002-v5 matched-compute gate. A warmup is
 /// discarded, then 20 identical batches are measured and the nearest-rank p95
 /// is reported per example. The run record binds the hardware profile.
-fn inference_latency_p95_ms(model: &PtrA0, arm: &Arm, split: &Split, payloads: &Payloads) -> f64 {
+pub(crate) fn inference_latency_p95_ms(
+    model: &PtrA0,
+    arm: &Arm,
+    split: &Split,
+    payloads: &Payloads,
+) -> f64 {
     let device = Device::flex();
     let chosen: Vec<&Example> = split.examples.iter().take(EVAL_BATCH).collect();
     assert!(!chosen.is_empty(), "latency split is non-empty");
@@ -791,6 +856,87 @@ pub fn evaluate_plain(trained: &PlainTrained, data: &Dataset, d_model: usize) ->
             ]
         })
         .collect()
+}
+
+/// Plain analogue of [`evaluate_v5`]: temperature and abstention threshold are
+/// fit on validation only, then held fixed for `test_iid` and `test_ood`.
+/// Emits the same `calibration`, `performance-v5` and `final-v5` rows (arm
+/// `plain-transformer`), so the two model kinds are scored by one contract.
+#[allow(dead_code)] // the shared-contract oracle exercised by tests/baseline_v1.rs
+pub fn evaluate_plain_v5(trained: &PlainTrained, data: &Dataset, d_model: usize) -> Vec<String> {
+    let model = trained.model.valid();
+    let validation = collect_logits_plain(&model, data.split("val"), d_model);
+    let temperature = temperature_from_rows(&validation);
+    let threshold = threshold_from_rows(&validation, temperature);
+    let latency_p95_ms = inference_latency_p95_ms_plain(&model, data.split("test_ood"), d_model);
+    let mut out = vec![
+        format!(
+            r#"{{"row":"calibration","arm":"plain-transformer","temperature":{temperature},"coverage_target":0.9,"confidence_threshold":{threshold}}}"#
+        ),
+        format!(
+            r#"{{"row":"performance-v5","arm":"plain-transformer","latency_p95_ms":{latency_p95_ms}}}"#
+        ),
+    ];
+    for name in ["test_iid", "test_ood"] {
+        let rows = collect_logits_plain(&model, data.split(name), d_model);
+        let result = score_rows(&rows, temperature, threshold);
+        out.push(format!(
+            r#"{{"row":"final-v5","arm":"plain-transformer","split":"{name}","n":{},"correct":{},"accuracy":{},"nll":{},"ece15":{},"temperature":{},"confidence_threshold":{},"covered":{},"coverage":{},"covered_correct":{},"selective_error":{},"abstained":{}}}"#,
+            result.n,
+            result.correct,
+            result.accuracy(),
+            result.nll,
+            result.ece,
+            result.temperature,
+            result.threshold,
+            result.covered,
+            result.coverage(),
+            result.covered_correct,
+            result.selective_error(),
+            result.n - result.covered,
+        ));
+        out.push(format!(
+            "PRED plain-transformer {name} {}",
+            result.predictions
+        ));
+        out.push(format!(
+            "DECISION plain-transformer {name} {}",
+            result.decisions
+        ));
+    }
+    out
+}
+
+/// Fixed-shape forward latency of the plain model, measured exactly as
+/// [`inference_latency_p95_ms`] measures an A0 arm (warm-up discarded, 20 batches,
+/// nearest-rank p95, per example).
+pub(crate) fn inference_latency_p95_ms_plain(
+    model: &PlainTransformer,
+    split: &Split,
+    d_model: usize,
+) -> f64 {
+    let device = Device::flex();
+    let payloads = Payloads::new(d_model);
+    let chosen: Vec<&Example> = split.examples.iter().take(EVAL_BATCH).collect();
+    assert!(!chosen.is_empty(), "latency split is non-empty");
+    let run = || {
+        let inputs = batch::build(
+            &chosen,
+            Batch::ContentFree { masked: false },
+            &payloads,
+            &device,
+        );
+        model.forward(inputs.tokens).into_data()
+    };
+    let _ = run();
+    let mut samples = Vec::with_capacity(20);
+    for _ in 0..20 {
+        let started = Instant::now();
+        let _ = run();
+        samples.push(started.elapsed().as_secs_f64() * 1000.0 / chosen.len() as f64);
+    }
+    samples.sort_by(f64::total_cmp);
+    samples[((samples.len() as f64 * 0.95).ceil() as usize).saturating_sub(1)]
 }
 
 /// Refuse numerical failures before converting logits to valid operator codes.

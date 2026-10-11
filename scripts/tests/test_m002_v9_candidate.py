@@ -1,12 +1,20 @@
 import copy
 import importlib.util
+import subprocess
+import tempfile
 import unittest
 import tomllib
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CANDIDATE = ROOT / "experiments/model/M002-v9-factorized-typed-attention"
+CANDIDATE_PATH = "experiments/model/M002-v9-factorized-typed-attention"
+CANDIDATE = ROOT / CANDIDATE_PATH
+# The commit that froze M002-v9 and ran its first seed. model/burn-a0 at this
+# commit has the Git-tree digest the study pins; the live tree no longer does
+# (the A0 lockfile and, for the successor study, the runner sources changed).
+FREEZE_COMMIT = "3ab2070a198ab5e8f782022a43c2f74016149496"
+TREE_ERROR = "M002-v9: implementation tree differs from its pinned Git digest"
 MANIFEST = {
     "id": "M002-v9",
     "status": "prepared",
@@ -36,48 +44,72 @@ def v9_labels(stdout):
 
 
 class M002V9CandidateTests(unittest.TestCase):
+    """The v9 binding is evaluated against the repository as the freeze commit
+    held it (a clone of this one, checked out detached at `FREEZE_COMMIT`), so
+    the checks stay meaningful although the live `model/burn-a0` moved on and
+    the study is superseded. The gate code under test is the live one."""
+
+    @classmethod
+    def setUpClass(cls):
+        held = subprocess.run(
+            ["git", "-C", str(ROOT), "cat-file", "-e", f"{FREEZE_COMMIT}^{{commit}}"],
+            capture_output=True,
+        )
+        if held.returncode != 0:
+            raise unittest.SkipTest(f"the M002-v9 freeze commit {FREEZE_COMMIT[:12]} is not in this clone's history")
+        scratch = tempfile.TemporaryDirectory(prefix="m002-v9-freeze-")
+        cls.addClassCleanup(scratch.cleanup)
+        cls.frozen_root = Path(scratch.name) / "repo"
+        for command in (
+            ["git", "clone", "--quiet", "--shared", "--no-checkout", str(ROOT), str(cls.frozen_root)],
+            ["git", "-C", str(cls.frozen_root), "checkout", "--quiet", "--detach", FREEZE_COMMIT],
+        ):
+            subprocess.run(command, check=True, capture_output=True)
+        cls.frozen_candidate = cls.frozen_root / CANDIDATE_PATH
+        cls.gates = load_module("m002_v9_frozen_gate", ROOT / "scripts/check_research_gates.py")
+
+    def frozen_config(self):
+        return tomllib.loads((self.frozen_candidate / "config.toml").read_text(encoding="utf-8"))["preregistration"]
+
     def test_superseded_candidate_is_no_longer_held_to_the_freeze_gate(self):
-        gates = load_module("m002_v9_gate", ROOT / "scripts/check_research_gates.py")
+        gates = self.gates
         real = tomllib.loads((CANDIDATE / "experiment.toml").read_text(encoding="utf-8"))
         self.assertEqual(real["status"], "superseded")
         self.assertEqual(gates.m002_v9_successor_freeze_errors(ROOT, CANDIDATE, real), [])
-        # Held to the gate as a prepared study, the one thing that fails is the
-        # tree digest: the A0 lockfile changed after the study was frozen.
-        self.assertEqual(
-            gates.m002_v9_successor_freeze_errors(ROOT, CANDIDATE, MANIFEST),
-            ["M002-v9: implementation tree differs from its pinned Git digest"],
-        )
+        # Held to the gate as a prepared study, the repository as it stood at the
+        # freeze satisfies the whole binding (fold identity, pilot archive,
+        # contract, pinned files, runner pair, tree digest) ...
+        frozen = {**MANIFEST, "entrypoint": real["entrypoint"]}
+        self.assertEqual(gates.m002_v9_successor_freeze_errors(self.frozen_root, self.frozen_candidate, frozen), [])
+        # ... while the live repository no longer does: the pinned runner sources
+        # and the Git-tree digest of model/burn-a0 changed after the supersession.
+        # That is why the study stays superseded rather than being re-pinned.
+        live = gates.m002_v9_successor_freeze_errors(ROOT, CANDIDATE, frozen)
+        self.assertIn(TREE_ERROR, live)
+        self.assertTrue(all(error.startswith("M002-v9:") for error in live))
 
     def test_runner_tree_digest_and_cross_study_pair_are_hard_requirements(self):
-        gates = load_module("m002_v9_runner_gate", ROOT / "scripts/check_research_gates.py")
-        config = tomllib.loads((CANDIDATE / "config.toml").read_text(encoding="utf-8"))["preregistration"]
-        self.assertEqual(gates.m002_v9_fold_binding_errors(ROOT, config), [])
-        # Everything but the tree digest still holds; the digest does not, since
-        # the A0 lockfile changed after v9 was frozen (see SUPERSEDED.md).
-        self.assertEqual(
-            gates.m002_versioned_runner_binding_errors(
-                ROOT, config, MANIFEST, "M002-v9", "factorized-v2-v9,factorized-v2-off-v9"
-            ),
-            ["M002-v9: implementation tree differs from its pinned Git digest"],
-        )
+        gates = self.gates
+        config = self.frozen_config()
+        root = self.frozen_root
+        pair = "factorized-v2-v9,factorized-v2-off-v9"
+        self.assertEqual(gates.m002_v9_fold_binding_errors(root, config), [])
+        self.assertEqual(gates.m002_versioned_runner_binding_errors(root, config, MANIFEST, "M002-v9", pair), [])
         invalid = dict(config)
         invalid["arm_pair"] = "factorized-v2-v8,factorized-v2-off-v8"
-        self.assertTrue(
-            gates.m002_versioned_runner_binding_errors(
-                ROOT, invalid, MANIFEST, "M002-v9", "factorized-v2-v9,factorized-v2-off-v9"
-            )
-        )
+        self.assertTrue(gates.m002_versioned_runner_binding_errors(root, invalid, MANIFEST, "M002-v9", pair))
         invalid = dict(config)
         invalid["implementation_tree_git_digest"] = "0" * 64
-        self.assertTrue(
-            gates.m002_versioned_runner_binding_errors(
-                ROOT, invalid, MANIFEST, "M002-v9", "factorized-v2-v9,factorized-v2-off-v9"
-            )
+        self.assertEqual(
+            gates.m002_versioned_runner_binding_errors(root, invalid, MANIFEST, "M002-v9", pair), [TREE_ERROR]
         )
+        invalid = dict(config)
+        invalid["runner_arm_table_sha256"] = "0" * 64
+        self.assertTrue(gates.m002_versioned_runner_binding_errors(root, invalid, MANIFEST, "M002-v9", pair))
 
     def test_arm_mode_is_checked_inside_each_arms_own_block(self):
-        gates = load_module("m002_v9_arm_block_gate", ROOT / "scripts/check_research_gates.py")
-        arm_table = (ROOT / "model/burn-a0/examples/a0_ablation/arms.rs").read_text(encoding="utf-8")
+        gates = self.gates
+        arm_table = (self.frozen_root / "model/burn-a0/examples/a0_ablation/arms.rs").read_text(encoding="utf-8")
         treatment, control = "factorized-v2-v9", "factorized-v2-off-v9"
         self.assertEqual(gates.m002_arm_block_binding_errors(arm_table, "M002-v9", treatment, control), [])
         control_block = arm_table[arm_table.index(f'name: "{control}"'):]
@@ -106,19 +138,18 @@ class M002V9CandidateTests(unittest.TestCase):
         self.assertEqual(len(gates.m002_arm_block_binding_errors("", "M002-v9", treatment, control)), 2)
 
     def test_entrypoint_must_pass_every_frozen_architecture_flag(self):
-        gates = load_module("m002_v9_flag_gate", ROOT / "scripts/check_research_gates.py")
-        config = tomllib.loads((CANDIDATE / "config.toml").read_text(encoding="utf-8"))["preregistration"]
-        manifest = tomllib.loads((CANDIDATE / "experiment.toml").read_text(encoding="utf-8"))
+        gates = self.gates
+        config = self.frozen_config()
+        manifest = tomllib.loads((self.frozen_candidate / "experiment.toml").read_text(encoding="utf-8"))
+        root = self.frozen_root
         pair = "factorized-v2-v9,factorized-v2-off-v9"
-        # The one error the frozen v9 binding keeps once burn-a0's lockfile moved on.
-        tree_error = "M002-v9: implementation tree differs from its pinned Git digest"
-        self.assertEqual(gates.m002_versioned_runner_binding_errors(ROOT, config, manifest, "M002-v9", pair), [tree_error])
+        self.assertEqual(gates.m002_versioned_runner_binding_errors(root, config, manifest, "M002-v9", pair), [])
         for flag, placeholder in gates.M002_ENTRYPOINT_FLAGS:
             with self.subTest(flag=flag):
                 self.assertIn(f"{flag} {placeholder}", manifest["entrypoint"])
                 dropped = {**manifest, "entrypoint": manifest["entrypoint"].replace(f"{flag} {placeholder}", "")}
-                errors = gates.m002_versioned_runner_binding_errors(ROOT, config, dropped, "M002-v9", pair)
-                self.assertEqual(sorted(errors), sorted([tree_error, f"M002-v9: entrypoint must pass {flag} {placeholder}"]))
+                errors = gates.m002_versioned_runner_binding_errors(root, config, dropped, "M002-v9", pair)
+                self.assertEqual(errors, [f"M002-v9: entrypoint must pass {flag} {placeholder}"])
 
     def test_adapter_restores_v9_identity_and_rejects_unknown_labels(self):
         v5_tests = load_module("m002_v5_fixture", ROOT / "scripts/tests/test_aggregate_m002_v5.py")

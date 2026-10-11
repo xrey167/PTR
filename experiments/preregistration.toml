@@ -92,7 +92,11 @@ nondeterminism_rerun_case = "int"
 low_cells = "str-list"
 
 # The four owner decisions (calibration_set_rule, adjudicators_see_intent,
-# harm_breakdown_namespaces, adjudication_protocol) block until signed.
+# harm_breakdown_namespaces, adjudication_protocol) were signed on 2026-10-09; what still
+# blocks is the protocol's digest, pinned at the freeze. The keys after
+# `adjudication_protocol` are the sizes of the simulated stream, the Monte-Carlo coverage
+# test, the held-out tests and the off-policy evaluation (PREREGISTRATION.md derives
+# each).
 [experiment.F003.required]
 seeds = "int-list"
 alpha_permille = "int"
@@ -105,6 +109,20 @@ calibration_set_rule = "str"
 adjudicators_see_intent = "bool"
 harm_breakdown_namespaces = "str"
 adjudication_protocol = "file"
+harness = "str"
+stream_branches = "int"
+slice_rate_permille = "int"
+adjudicator_error_permille = "int"
+policy_sizes = "int-list"
+mc_replicates = "int"
+coverage_test_level_ppm = "int"
+heldout_familywise_permille = "int"
+heldout_tests = "int"
+ope_logs = "int"
+ope_log_branches = "int"
+ope_bias_sigmas = "int"
+preregistration_text = "file"
+criteria = "file"
 
 # Design: experiments/retrieval/Q003-postgres-hybrid/PREREGISTRATION.md. The gating baseline is rag_reference; strong_retrieval
 # (BM25 + bge-m3 + RRF + bge-reranker-v2-m3, retrieval only) is reported on a subsample and never gated, but its models are
@@ -271,12 +289,29 @@ seeds = "int-list"
 public_regression_gate_permille = "int"
 backward_transfer_min_permille = "int"
 
+# The harness (bins/ptr-bench, m008) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text. The
+# pool and the vectors are the frozen artifact of research/embeddings. The recency buffer is configured
+# here (it has no baseline directory); the hybrid retrieval is the rag_reference baseline.
 [experiment.M008.required]
 seeds = "int-list"
+harness = "str"
 token_budget = "int"
 recency_window = "int"
 recency_buffer_baseline = "str"
 hybrid_retrieval_baseline = "str"
+embedding_model = "str"
+embedding_revision = "str"
+embedding_vectors_sha256 = "str"
+pool_sha256 = "str"
+preregistration_text = "file"
+criteria = "file"
+
+[[experiment.M008.baseline]]
+name = "rag_reference"
+path = "research/baselines/rag_reference/config.toml"
+keys = ["hybrid.embedding_model"]
+status_key = "status"
 
 [experiment.E005.required]
 seeds = "int-list"
@@ -498,6 +533,59 @@ control_deltas = "int"
 preregistration_text = "file"
 criteria = "file"
 
+# Design: docs/architecture/38-consciousness-indicators.md. The harness is research/consciousness/gw/harness.py;
+# its pinned values are the [pinned_thresholds] of the experiment's config.toml (a test pins this table to them).
+# learning rates are stored as integers in millionths, noise in thousandths.
+[experiment.C001.required]
+seeds = "int-list"
+harness = "str"
+ood_modules = "int-list"
+noise_milli = "int"
+n_train_modules = "int"
+n_types = "int"
+n_values = "int"
+slots = "int"
+top_k = "int"
+rounds = "int"
+d_model = "int"
+ffn_workspace = "int"
+train_size = "int"
+max_steps = "int"
+patience = "int"
+min_delta_permille = "int"
+eval_every = "int"
+batch_size = "int"
+param_tolerance_permille = "int"
+paired_margin_permille = "int"
+sensitivity_margin_permille = "int"
+graded_min_lower_permille = "int"
+guard_floor_permille = "int"
+guard_ceiling_permille = "int"
+max_untrained_workspace_seeds = "int"
+max_unconverged_seeds = "int"
+trained_margin_permille = "int"
+min_arms_trained = "int"
+chance_slack_permille = "int"
+eval_size = "int"
+min_eval_instances = "int"
+curve_eval_size = "int"
+probe_size = "int"
+drop_probe_size = "int"
+loss_window_evals = "int"
+auc_evals = "int"
+train_stream_offset = "int"
+eval_stream_offset = "int"
+weight_decay_micro = "int"
+grad_clip_milli = "int"
+probe_scale_milli = "int"
+arm_lr_micro = "str"
+arm_weight_decay_micro = "str"
+arm_d_list = "str"
+paired_t_support = "str"
+paired_t_refute = "str"
+preregistration_text = "file"
+criteria = "file"
+
 [experiment.R001.required]
 seeds = "int-list"
 harness = "str"
@@ -521,5 +609,249 @@ max_generations = "int"
 facts_per_capsule = "int"
 hard_honest_per_variant = "int"
 recall_floor_permille = "int"
+preregistration_text = "file"
+criteria = "file"
+
+# F001 (generate-verify-repair): mechanism scope with a seeded stub generator on a synthetic verifiable task (owner
+# decision 2026-10-09); no claim about the quality of any model's generations. `profiles` is the stub's per-slot skill
+# (per mille, name=p,...;name=p,...), `repair_q` the repair stub's per-slot success (per mille).
+[experiment.F001.required]
+seeds = "int-list"
+harness = "str"
+profiles = "str"
+budgets = "int-list"
+tasks_per_profile = "int"
+repair_q = "int"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.F002.required]
+seeds = "int-list"
+harness = "str"
+items = "int"
+gold_items = "int"
+contamination_permille = "int"
+bootstrap_interval_permille = "int"
+mvc_beta_milli = "int"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.S002.required]
+seeds = "int-list"
+harness = "str"
+cases_per_seed = "int"
+class_bump_early_permille = "int"
+class_bump_late_permille = "int"
+class_lifecycle_permille = "int"
+max_cancel_latency_rounds_max = "int"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.M001-v5-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str" }
+
+[[experiment.M001-v5-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M001-v5]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M001-v5.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v10-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str" }
+
+[[experiment.M002-v10-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v10]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M002-v10.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v2-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str" }
+
+[[experiment.M003-v2-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v2]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M003-v2.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v10-sweep-r2]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str", supersedes = "str" }
+
+[[experiment.M002-v10-sweep-r2.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M001-v6-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file_target = "str" }
+
+[[experiment.M001-v6-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M001-v6]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M001-v6.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v11-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file_target = "str" }
+
+[[experiment.M002-v11-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v11]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M002-v11.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v3-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file_target = "str" }
+
+[[experiment.M003-v3-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v3]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M003-v3.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v4]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M003-v4.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+# The harness (bins/ptr-bench, l001) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text. The table
+# holds every non-prose key of config.toml's [pinned_thresholds] (the choices the harness compiles in).
+[experiment.L001-v2.required]
+seeds = "int-list"
+harness = "str"
+seed_aggregation = "str"
+events_min = "int"
+events_max = "int"
+workloads_file = "int"
+workloads_ack = "int"
+workloads_engine = "int"
+raft_scenarios_per_kind = "int"
+raft_scenario_kinds = "str-list"
+unwind_idx_per_point = "int"
+child_idx_per_point = "int"
+engine_child_idx_per_point = "int"
+hang_watchdog_ms = "int"
+child_watchdog_ms = "int"
+hang_limit = "int"
+power_loss_policies = "str-list"
+sector_bytes = "int"
+log_points = "str-list"
+anchor_points = "str-list"
+engine_points = "str-list"
+sync_parent_point = "str"
+fault_drop_permille = "int"
+fault_duplicate_permille = "int"
+fault_reorder_permille = "int"
+min_scenarios_checked = "int"
+min_recoveries_with_acked_revocation = "int"
+min_revoked_pairs_denied = "int"
+min_crash_points_at_revocation = "int"
+min_workloads_file = "int"
+min_workloads_ack = "int"
+min_workloads_engine = "int"
+min_scenarios_raft = "int"
+min_recoveries_file = "int"
+min_recoveries_ack = "int"
+min_recoveries_engine = "int"
+min_members_replayed = "int"
+min_failpoint_hits = "int"
+min_images_lost_bytes = "int"
+min_rename_image_pairs = "int"
+min_lie_images = "int"
+min_child_aborts_file = "int"
+min_child_aborts_ack = "int"
+min_child_aborts_engine = "int"
+min_unwind_panics_observed = "int"
+min_leader_changes = "int"
+min_minority_proposals = "int"
+min_deposed_leader_restarts = "int"
+min_messages_dropped = "int"
+min_messages_duplicated = "int"
+min_messages_reordered = "int"
+min_revoke_then_recommit_histories = "int"
+min_subjects = "int"
+min_events = "int"
+min_probe_calibrated = "int"
+min_probe_dirty_seen = "int"
+min_probe_clean_checked = "int"
+max_refused_share_damaged_permille = "int"
+max_every_falsifier = "int"
+timing_gated = "bool"
+engine_lie_gated = "bool"
+preregistration_text = "file"
+criteria = "file"
+
+# F007 (vcw-loop): the whole verifier-closed workspace loop on SIMULATED expert Pods with declared per-(Pod, finding
+# code) skill tables; a mechanism check, no claim about any model. The margins are stated in
+# experiments/feedback/F007-vcw-loop/PREREGISTRATION.md and are `must-be-signed-...` until the owner signs.
+[experiment.F007.required]
+seeds = "int-list"
+harness = "str"
+requests_per_world = "int"
+verifier_call_budget = "int"
+primary_margin_permille = "int"
+equivalence_band_permille = "int"
+shuffled_control_margin_permille = "int"
+confidence_one_sided_permille = "int"
 preregistration_text = "file"
 criteria = "file"

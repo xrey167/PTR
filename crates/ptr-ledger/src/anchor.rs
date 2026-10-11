@@ -474,10 +474,22 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .truncate(true)
         .open(&scratch)?;
     file.write_all(bytes)?;
+    // Test-only instrumentation: one point after each of the four steps of a
+    // publication (write, fsync, rename, directory fsync). Compiled out without
+    // the `failpoints` feature, so the default build is byte-for-byte the same.
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("anchor.after_scratch_write_before_sync");
     file.sync_all()?;
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("anchor.after_scratch_sync_before_rename");
     drop(file);
     fs::rename(&scratch, path)?;
-    crate::file::sync_parent(path)
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("anchor.after_rename_before_dir_sync");
+    crate::file::sync_parent(path)?;
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("anchor.after_dir_sync");
+    Ok(())
 }
 
 /// Read one anchor only when its on-disk length is exact.

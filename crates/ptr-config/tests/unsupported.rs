@@ -99,11 +99,6 @@ fn unsupported_values_from_a_file_are_refused_at_load() {
 fn unsupported_values_from_the_environment_are_refused() {
     for (var, value, field) in [
         (
-            "PTR_CANCEL_STALE_REVISIONS",
-            "false",
-            "semantic.cancel_stale_revisions",
-        ),
-        (
             "PTR_RETAIN_RAW_EVIDENCE",
             "false",
             "semantic.retain_raw_evidence",
@@ -153,4 +148,26 @@ fn unsupported_cli_override_is_refused() {
     let mut config = PtrConfig::default();
     let error = overrides.apply_to(&mut config).unwrap_err();
     assert!(error.contains("runtime.max_parallel_candidates"));
+}
+
+#[test]
+fn stale_revision_cancellation_can_be_switched_off_by_file_and_environment() {
+    let from_file =
+        PtrConfig::from_toml_str("[semantic]\ncancel_stale_revisions = false\n").unwrap();
+    from_file.validate().unwrap();
+    assert!(!from_file.semantic.cancel_stale_revisions);
+
+    let mut from_env = PtrConfig::default();
+    assert!(from_env.semantic.cancel_stale_revisions, "on by default");
+    from_env
+        .apply_env([("PTR_CANCEL_STALE_REVISIONS", "false")])
+        .unwrap();
+    from_env.validate().unwrap();
+    assert!(!from_env.semantic.cancel_stale_revisions);
+
+    // It is a consumed setting now: it is no longer in the refused-unless-default group.
+    assert!(FIELD_DISPOSITIONS.iter().any(|(path, disposition)| {
+        *path == "semantic.cancel_stale_revisions"
+            && matches!(disposition, FieldDisposition::Consumed(_))
+    }));
 }

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "C004-recurrent-integration"
+path = "experiments/consciousness/C004-recurrent-integration"
+tests_dir = "tests"

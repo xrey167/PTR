@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-26  
-**Code footprint:** 2 Rust source files · 258 nonblank source lines · 2 integration-test files · 8 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-10  
+**Code footprint:** 2 Rust source files · 306 nonblank source lines · 2 integration-test files · 8 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -20,6 +20,9 @@
 - EventProducer/EventConsumer contract with at-least-once delivery, monotone commits bounded by the end, and event classes separating projections from telemetry
 - RuntimeEvent::ScopeLifecycle { scope, kind } carries a scope's ptr_types::ScopeId and ScopeLifecycleKind in the runtime event taxonomy; this crate only defines the variant (no producer inside ptr-events)
 - InMemoryBus reference implementation: bounded, refusing a publish rather than dropping a record some registered consumer has not committed, and refusing a registration beyond the end, which would let the next publish trim records the consumer never polled
+- RuntimeEvent::RunCancelled { request, bound, current } records that a stepped resumable run was ended before its next round because the semantic revision moved for a reason other than the run's own writes (emitted by ptr-runtime's steppable run); this crate only defines the variant, the effect boundary does not read it, and no shipped host steps runs, so nothing emits it in production today
+- RuntimeEvent::VcwFinished { request, outcome, trace_digest } records how a verifier-closed workspace request ended (verified, exhausted, escalated, not_admitted or failed) and the digest of its trace; emitted by ptr-runtime (PtrRuntime::record_vcw_finished) for ptr-server vcw path; observability only, no authority; ptr-events only defines the variant
+- RuntimeEvent::VcwPolicyChanged { scope, sequence, action, from, to, evidence } records that a host promoted or rolled back the routing policy of a verifier-closed loop (policy digests, the digest of the off-policy evidence a promotion rested on); emitted by ptr-runtime (PtrRuntime::record_vcw_policy_event). Observability of a host action, in memory, not a ledger event and no authority; not an audit record (lost on restart, not replayed, no gate record checked against it) until a ledger event exists
 
 ### Missing for the target architecture
 
@@ -37,7 +40,7 @@
 ### Linked experiments
 
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
-- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
+- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `frozen`
 
 ### Technology evaluations
 

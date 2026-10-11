@@ -1,0 +1,14 @@
+version = 1
+id = "M003-v4"
+status = "completed"
+hypothesis = "Does the tied latent recurrence (k=2) improve out-of-distribution routing accuracy by at least 0.02 over no recurrence (latent-0) at equal parameters in A0 on operator-routing v2, without a per-fold OOD calibration regression, and does the per-slot nonlinearity (full against latent-linear at matched parameters and FLOPs) carry the benefit? Token savings are not tested. The full A0 bundle against the pinned plain baseline is labelled bundle vs baseline, non-isolating."
+metrics = "OOD accuracy (sole primary endpoint: mean over three folds, paired over five seeds, delta_min 0.02); gated per fold on test_ood with raw logits: NLL, ECE15; IID accuracy; raw coverage and selective error; matched parameters; descriptive: total_params, flops_per_example, latent_steps, wall time, explicit_token_count, temperature-fitted diagnostics; latent_steps, explicit_token_count (non-PAD input tokens, identical across arms)"
+baseline = "latent-0 (no recurrence; isolating primary contrast) and latent-linear (affine-only recurrence; isolating secondary contrast); latent-1 is descriptive; the pinned plain baseline research/baselines/plain_model (ptr-burn-a0@matched-cross-attention-v1) for the bundle contrast"
+falsification = "Decided only by research/falsification/A0-baseline-v3-m003/criteria.toml and PREREGISTRATION.md. SUPPORTS needs every gate: OOD accuracy delta >= 0.02 with the paired 95% interval lower bound > 0 and positive in every fold; per fold on test_ood and raw logits the NLL delta upper bound <= 0 and the ECE15 mean delta <= 0 with upper bound <= 0.02; IID accuracy lower bound >= -0.01; coverage and selective-error gates; matched compute. Accuracy up with any calibration gate failed is NO-GO-CALIBRATION (INCONCLUSIVE; no quality claim). FALSIFIES needs the OOD accuracy interval upper bound below 0.02 with both arms learnable and compute matched. A missing seed, fold, arm or digest is a refusal, not a verdict."
+hardware_profile = "hardware/a0-cpu-4core.toml"
+entrypoint = "cargo +1.95.0 run --release --locked --quiet --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase baseline-v1 --study <study> --arms <arms> --seed <seed> --steps <steps> --data <data> --folds <folds> --d-model <d_model> --rank <rank> --bias-limit <bias_limit> --metadata-dropout <metadata_dropout> --lr-file <lr_file> --out -"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+preregistration_sha256 = "299b0abf14d1b01e1471935b7c550245cf823c5fda2f98958a40fa7dfa00f877"
+preregistration_rules_sha256 = "956a1704f03ffe424b80729b0df6204e9978b9bc44d20bba66a7263c297d5d2f"

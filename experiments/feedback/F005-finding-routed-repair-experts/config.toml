@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "F005-finding-routed-repair-experts"
+path = "experiments/feedback/F005-finding-routed-repair-experts"
+tests_dir = "tests"

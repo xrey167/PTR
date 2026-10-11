@@ -19,6 +19,7 @@ id = "sentrux"
 source = "external"
 status = "to-evaluate"
 evidence = []
+note = "not obtainable for Rust: the PyPI sentrux analyses Python only; owner must identify the intended tool; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
 
 [[candidate]]
 id = "compiler-tests-only"

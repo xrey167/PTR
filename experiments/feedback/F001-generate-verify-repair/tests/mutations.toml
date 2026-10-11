@@ -1,0 +1,404 @@
+# Defects the F001 harness must detect; run with `python scripts/mutation_check.py F001`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file (checked
+# by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
+# that show the defect: a run that fails only on others does not count as detecting it.
+#
+# The first twenty-one mutations plant defects in the product: `ptr-feedback` (`repair.rs`: the
+# loop; `candidate.rs`: the acceptance rule `Candidate::passes`, the critique and
+# `Population::best_verified`) and `ptr-verifier` (the fabric's hard-finding and level rules and the
+# contract verifier's payload-utf8 check). The last three plant defects in the harness itself, to show
+# that its analytic expectation, its forging boundary and its check of what reaches the verifier are not vacuous: each makes the harness's own
+# cross-check fire on a correct product. Every hard counter is expected by at least one mutation, so
+# that `killed == total` also shows each of the eighteen can fire (a test in bins/ptr-bench checks this
+# list against the harness).
+#
+# `repair_gain_shortfalls` and `draws_gain_shortfalls` count the strict comparative falsifiers (`repair_gain.b<B> >= 1`,
+# `draws_gain.b<B> >= 1`) that fail, so the two mutations that stop the repair arm from repairing
+# (`nothing-is-repairable`, `repairer-is-never-called`) name all eight of those rules: the arms are then the same run and every gain is 0.
+# `altered_candidates` is named by a harness mutation (the stub hands out a different action from the one it recorded), which stands for a
+# loop that alters a candidate between its production and its verification: the product is generic over T and cannot alter an
+# ActionIr, so a product mutation cannot.
+#
+# `accepted-candidate-confirmed-twice` expects `double_verifications` and `calls_after_acceptance`:
+# the confirming call is a second verification of the same candidate and a call after the report the
+# harness accepts.
+#
+# Not listed, on purpose: the round budget (`max_rounds`) is not binding in the harness (it equals the
+# verifier-call budget, which is reached first), so a defect in the rounds check is covered by the
+# crate's unit tests and not by this plan.
+#
+# The mutation run is invoked as `ptr-bench generate-verify-repair <cases> 17`: `cases` is the number
+# of tasks per profile (so the run is no evidence, and its scale is printed as "custom").
+
+package = "ptr-bench"
+features = ""
+subcommand = "generate-verify-repair"
+cases = 400
+seed = 17
+hard_counters = [
+    "false_accepts",
+    "unverified_returns",
+    "double_verifications",
+    "budget_violations",
+    "collateral_edits",
+    "exhausted_as_success",
+    "verdict_mismatches",
+    "verifier_call_mismatches",
+    "expectation_violations",
+    "product_panics",
+    "calls_after_acceptance",
+    "premature_exhaustions",
+    "missed_acceptances",
+    "trajectory_mismatches",
+    "selection_mismatches",
+    "repair_gain_shortfalls",
+    "draws_gain_shortfalls",
+    "altered_candidates",
+]
+
+[[mutation]]
+name = "accept-on-score"
+description = "The loop accepts a candidate whose report score is at least 0.5 instead of applying Candidate::passes."
+expect = ["false_accepts"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+            if candidate.passes(self.policy.required_level) {
+'''
+replace = '''
+            if candidate
+                .verification
+                .as_ref()
+                .is_some_and(|report| report.score.get() >= 0.5)
+            {
+'''
+
+[[mutation]]
+name = "hard-finding-check-removed"
+description = "Candidate::passes no longer refuses a Pass that carries a hard finding: the boundary's forged Pass is accepted."
+expect = ["false_accepts"]
+file = "crates/ptr-feedback/src/candidate.rs"
+find = '''
+    if report.findings.iter().any(|finding| finding.hard) {
+'''
+replace = '''
+    if false && report.findings.iter().any(|finding| finding.hard) {
+'''
+
+[[mutation]]
+name = "level-check-removed"
+description = "Candidate::passes no longer compares the report's level with the required one: a shallow Pass is accepted."
+expect = ["false_accepts"]
+file = "crates/ptr-feedback/src/candidate.rs"
+find = '''
+    level_rank(report.level) >= level_rank(required)
+'''
+replace = '''
+    level_rank(report.level) >= level_rank(required) || true
+'''
+
+[[mutation]]
+name = "status-check-removed"
+description = "Candidate::passes no longer requires the Pass status: a Disputed report at Deterministic level is accepted."
+expect = ["false_accepts"]
+file = "crates/ptr-feedback/src/candidate.rs"
+find = '''
+    if report.status != VerificationStatus::Pass {
+        return false;
+    }
+'''
+replace = '''
+    if false && report.status != VerificationStatus::Pass {
+        return false;
+    }
+'''
+
+[[mutation]]
+name = "budget-off-by-one"
+description = "The verifier-call budget check is one call late (> instead of >=): a run verifies one candidate too many."
+expect = ["budget_violations"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+            let stop = if usage.verifier_calls >= budget.max_verifier_calls {
+'''
+replace = '''
+            let stop = if usage.verifier_calls > budget.max_verifier_calls {
+'''
+
+[[mutation]]
+name = "premature-exhaustion"
+description = "The budget check is one call early: the loop gives up with a call left."
+expect = ["premature_exhaustions"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+            let stop = if usage.verifier_calls >= budget.max_verifier_calls {
+'''
+replace = '''
+            let stop = if usage.verifier_calls + 1 >= budget.max_verifier_calls {
+'''
+
+[[mutation]]
+name = "repaired-candidates-not-reverified"
+description = "A repaired candidate is given a made-up Pass report instead of being verified, so a repair is accepted unverified."
+expect = ["unverified_returns"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+            let report = self.verifier.verify(&value);
+'''
+replace = '''
+            let report = match &origin {
+                Origin::Repaired { .. } => ptr_verifier::VerificationReport {
+                    status: ptr_verifier::VerificationStatus::Pass,
+                    level: self.policy.required_level,
+                    score: ptr_types::Probability::new(1.0).expect("bounded"),
+                    findings: Vec::new(),
+                },
+                _ => self.verifier.verify(&value),
+            };
+'''
+
+[[mutation]]
+name = "exhaustion-returns-the-last-failure"
+description = "On exhaustion the loop returns its last (failed) candidate as Verified instead of Exhausted."
+expect = ["exhausted_as_success"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+                    outcome: Outcome::Exhausted { reason },
+'''
+replace = '''
+                    outcome: Outcome::Verified(steps[steps.len() - 1].candidate.clone()),
+'''
+
+[[mutation]]
+name = "critique-names-only-the-first-issue"
+description = "A critique keeps only the first hard-finding code of the report."
+expect = ["trajectory_mismatches"]
+file = "crates/ptr-feedback/src/candidate.rs"
+find = '''
+        let repairable = report.status == VerificationStatus::Fail && !issues.is_empty();
+'''
+replace = '''
+        issues.truncate(1);
+        let repairable = report.status == VerificationStatus::Fail && !issues.is_empty();
+'''
+
+[[mutation]]
+name = "stale-critique"
+description = "The loop keeps the first critique of the run and hands it to the repairer for every later repair."
+expect = ["collateral_edits"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+            let critique = candidate
+                .critique()
+                .expect("a verified candidate has a report");
+'''
+replace = '''
+            let fresh_critique = candidate
+                .critique()
+                .expect("a verified candidate has a report");
+            let critique = stale.get_or_insert(fresh_critique).clone();
+'''
+
+[[mutation.also]]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+        let mut origin = Origin::Initial;
+'''
+replace = '''
+        let mut origin = Origin::Initial;
+        let mut stale: Option<Critique> = None;
+'''
+
+[[mutation]]
+name = "wrong-verifier-call-count"
+description = "The usage of a run that ends accepted claims one verifier call too many."
+expect = ["verifier_call_mismatches"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+                    outcome: Outcome::Verified(candidate),
+                    trajectory: Trajectory { steps },
+                    usage,
+'''
+replace = '''
+                    outcome: Outcome::Verified(candidate),
+                    trajectory: Trajectory { steps },
+                    usage: Usage {
+                        verifier_calls: usage.verifier_calls + 1,
+                        ..usage
+                    },
+'''
+
+[[mutation]]
+name = "accepted-candidate-confirmed-twice"
+description = "Before returning an accepted candidate the loop verifies it a second time."
+expect = ["double_verifications", "calls_after_acceptance"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+            if candidate.passes(self.policy.required_level) {
+'''
+replace = '''
+            if candidate.passes(self.policy.required_level) {
+                let _confirmation = self.verifier.verify(&candidate.value);
+                usage.verifier_calls += 1;
+'''
+
+[[mutation]]
+name = "rewrite-fallback-panics"
+description = "The fresh draw that follows a critique that cannot be repaired is replaced by a panic."
+expect = ["product_panics"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+                    let fresh = generator.generate();
+'''
+replace = '''
+                    let fresh: T = unreachable!("a rejected candidate is repaired");
+'''
+
+[[mutation]]
+name = "acceptance-needs-a-deeper-level"
+description = "Candidate::passes demands a level strictly deeper than the required one, which nothing satisfies at the deepest level."
+expect = ["missed_acceptances"]
+file = "crates/ptr-feedback/src/candidate.rs"
+find = '''
+    level_rank(report.level) >= level_rank(required)
+'''
+replace = '''
+    level_rank(report.level) > level_rank(required)
+'''
+
+[[mutation]]
+name = "accepted-step-not-recorded"
+description = "The trajectory omits the accepted candidate's step."
+expect = ["trajectory_mismatches", "selection_mismatches"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+                steps.push(Step {
+                    candidate: candidate.clone(),
+                    origin,
+                    critique: None,
+                    decision: Decision::Accepted,
+                });
+'''
+replace = '''
+                let _ = &origin;
+'''
+
+[[mutation]]
+name = "best-verified-ignores-the-acceptance-rule"
+description = "Population::best_verified selects among every verified candidate, whatever its report."
+expect = ["selection_mismatches"]
+file = "crates/ptr-feedback/src/candidate.rs"
+find = '''
+            .filter(|candidate| candidate.passes(required))
+'''
+replace = '''
+            .filter(|candidate| candidate.verification.is_some())
+'''
+
+[[mutation]]
+name = "nothing-is-repairable"
+description = "A critique is never repairable: the repair arm becomes the rewrite-only arm."
+expect = ["expectation_violations", "repair_gain_shortfalls", "draws_gain_shortfalls"]
+file = "crates/ptr-feedback/src/candidate.rs"
+find = '''
+        let repairable = report.status == VerificationStatus::Fail && !issues.is_empty();
+'''
+replace = '''
+        let repairable = false && report.status == VerificationStatus::Fail && !issues.is_empty();
+'''
+
+[[mutation]]
+name = "fabric-ignores-hard-findings"
+description = "VerifierFabric no longer lets a hard finding force Fail: the lying stub's Pass with a hard finding stays a Pass."
+expect = ["verdict_mismatches"]
+file = "crates/ptr-verifier/src/lib.rs"
+find = '''
+        let status = if hard {
+            VerificationStatus::Fail
+        } else {
+'''
+replace = '''
+        let status = if false && hard {
+            VerificationStatus::Fail
+        } else {
+'''
+
+[[mutation]]
+name = "fabric-level-is-the-strongest"
+description = "VerifierFabric reports the strongest level of its members instead of the weakest."
+expect = ["verdict_mismatches"]
+file = "crates/ptr-verifier/src/lib.rs"
+find = '''
+            .min_by_key(|level| level_rank(*level))
+'''
+replace = '''
+            .max_by_key(|level| level_rank(*level))
+'''
+
+[[mutation]]
+name = "contract-verifier-skips-the-utf8-check"
+description = "ActionContractVerifier no longer reports payload-utf8."
+expect = ["verdict_mismatches"]
+file = "crates/ptr-verifier/src/lib.rs"
+find = '''
+        if contract.payload_encoding == PayloadEncoding::Utf8
+'''
+replace = '''
+        if false && contract.payload_encoding == PayloadEncoding::Utf8
+'''
+
+[[mutation]]
+name = "harness-analytic-model-ignores-the-noise"
+description = "The analytic expectation assumes the verifier accepts every defect-free candidate (harness defect)."
+expect = ["expectation_violations"]
+file = "bins/ptr-bench/src/experiments/f001/dp.rs"
+find = '''
+        let accepting = 1000 - noise.rejecting_permille();
+'''
+replace = '''
+        let accepting = 1000 - noise.rejecting_permille() * 0;
+'''
+
+[[mutation]]
+name = "harness-boundary-forges-nothing"
+description = "The boundary forges no Pass although the oracle expects it (harness defect)."
+expect = ["verdict_mismatches"]
+file = "bins/ptr-bench/src/experiments/f001/stub.rs"
+find = '''
+        if drawn == Mode::Forged && report.status == VerificationStatus::Fail {
+'''
+replace = '''
+        if false && drawn == Mode::Forged && report.status == VerificationStatus::Fail {
+'''
+
+[[mutation]]
+name = "repairer-is-never-called"
+description = "The loop never calls the repairer: every repairable critique is treated as a declined repair, so the repair arm is the rewrite-only arm."
+expect = ["repair_gain_shortfalls", "draws_gain_shortfalls"]
+file = "crates/ptr-feedback/src/repair.rs"
+find = '''
+                repairer.repair(&candidate, &critique)
+'''
+replace = '''
+                None::<T>
+'''
+
+[[mutation]]
+name = "harness-stub-hands-out-another-action"
+description = "The generator stub returns an action different from the one it recorded (harness defect standing for a loop that alters a candidate before verifying it)."
+expect = ["altered_candidates"]
+file = "bins/ptr-bench/src/experiments/f001/stub.rs"
+find = '''
+        if defect_mask(&action) != meant {
+            log.label_faults += 1;
+        }
+        action
+'''
+replace = '''
+        if defect_mask(&action) != meant {
+            log.label_faults += 1;
+        }
+        ActionIr {
+            target: format!("{}!", action.target),
+            ..action
+        }
+'''

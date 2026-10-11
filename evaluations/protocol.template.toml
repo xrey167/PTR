@@ -1,0 +1,76 @@
+# Template for evaluations/components/<component>/protocol.toml.
+# Format and rules: evaluations/PROTOCOL_FORMAT.md. Copy, fill in, commit, and only
+# then run the first evidence. A change after that is a new protocol_id.
+version = 1
+component = "allocator"
+protocol_id = "allocator-v1"
+hardware_profile = "hardware/cpu-4core-15gib.toml"
+bench_workspace = "evaluations/bench/kit"
+lockfile = "evaluations/bench/kit/Cargo.lock"
+
+[repetitions]
+warmup = 1
+measured = 5
+
+[workload]
+description = "What is run, on which data, at which sizes, with which seeds."
+seeds = [17, 29, 43, 71, 101]
+samples = 10000
+
+[[gate]]
+id = "outputs-digest-identical"
+criterion = "correctness"
+description = "PTR workload outputs are digest-identical across candidates."
+
+[[gate]]
+id = "no-rss-growth"
+criterion = "failure_semantics"
+description = "No RSS growth after N alloc/free cycles."
+
+[[metric]]
+id = "alloc_p99_ns"
+criterion = "latency"
+unit = "ns"
+direction = "lower"
+
+[[metric]]
+id = "peak_rss_kib"
+criterion = "memory"
+unit = "KiB"
+direction = "lower"
+
+[scoring]
+weights_from = "config.toml"
+excluded = ["research_flexibility"]
+method = "ratio-to-best"
+
+[scoring.proxies.license_fit]
+source = "cargo-deny"
+
+[scoring.proxies.integration_cost]
+parts = ["adapter_loc", "transitive_crates", "build_seconds"]
+
+[scoring.proxies.portability]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+[[candidate]]
+id = "system"
+kind = "incumbent"
+version = "std"
+
+# kind = "crate": version must equal the locked version of `lock_package` in `lockfile`.
+# (This template points at the kit itself so that it validates; replace it.)
+[[candidate]]
+id = "example-crate"
+kind = "crate"
+version = "0.1.0"
+lock_package = "ptr-evalkit"
+
+# kind = "binary" | "distro-package" | "python-package" pin a sha256 (and, for a
+# binary, an https url):
+# [[candidate]]
+# id = "some-server"
+# kind = "binary"
+# version = "1.2.3"
+# url = "https://github.com/OWNER/REPO/releases/download/v1.2.3/tool.tar.gz"
+# sha256 = "<64 hex characters>"

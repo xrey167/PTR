@@ -141,5 +141,5 @@ The Rust workspace is a compiling contract/scaffold baseline. Documentation inte
 - `make py-bindings` builds and tests `bindings/ptr-py` with maturin in a venv; CI does not run it.
 - GPU desktop setup and experiment runbook (Ubuntu 24.04, RTX 4090): [`docs/DESKTOP_SETUP.md`](docs/DESKTOP_SETUP.md).
 - Component and experiment registries are validated in CI.
-- L001 currently has a scoped five-seed reference crash-tail run under `experiments/lifecycle/L001-revocation-crash/results/`; it remains `running`, not completed.
+- L001 has a scoped five-seed reference crash-tail run under `experiments/lifecycle/L001-revocation-crash/results/` against the earlier v1 journal format; it is `superseded` by the planned L001-v2 (`experiments/lifecycle/L001-v2-revocation-crash`), which is not yet frozen or run for the record.
 - Release builds generate CycloneDX SBOMs and GitHub/Sigstore attestations.

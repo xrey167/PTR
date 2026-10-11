@@ -87,14 +87,35 @@ fn main() {
         "mailbox-backpressure" => {
             experiments::r001::run(strict_or_exit(experiments::r001::seed_from_args(&args)))
         }
+        // The harness of F002: one seed per run, no default seed.
+        "weak-supervision" => {
+            experiments::f002::run(strict_or_exit(experiments::f002::seed_from_args(&args)))
+        }
+        // The harness of F003: `<seed>` or the mutation checker's `<n> <seed>` with the same seed
+        // twice; no default seed, and a typo stops the run.
+        "calibrated-arbiter" => {
+            experiments::f003::run(strict_or_exit(experiments::f003::seed_from_args(&args)))
+        }
         // The harness of R007: one seed per run, no default seed.
         "span-forget" => experiments::r007::run(strict_or_exit(seed_arg(&args, "span-forget"))),
         // The harness of S001: `<seed>` (the pinned scale) or `<operations> <seed>` (the mutation checker's
         // form); no default seed, and a typo stops the run.
         "invalidation" => experiments::s001::run(&args[2..]),
+        // The harness of F001: `<seed>` (the pinned scale) or `<tasks> <seed>` (the mutation checker's
+        // form); no default seed, and a typo stops the run.
+        "generate-verify-repair" => experiments::f001::run(&args[2..]),
+        // The harness of F007: `<seed>` (the pinned scale), `<requests> <seed>` (the mutation checker's
+        // form) or `--preflight`; no default seed, and a typo stops the run.
+        "vcw-loop" => experiments::f007::run(&args[2..]),
+        // The harness of S002: `<seed>` (the pinned scale) or `<cases> <seed>` (the mutation checker's form);
+        // no default seed, and a typo stops the run.
+        "snapshot-cancellation" => experiments::s002::run(&args[2..]),
         // The harness of Q002: `<seed>` (the pinned scale) or `<capsules> <seed>` (the mutation checker's
         // form); no default seed, and a typo stops the run.
         "evidence-promotion" => experiments::q002::run(&args[2..]),
+        // The harness of M008: `<seed>` (the pinned scale), `<cases> <seed>` (the mutation checker's
+        // form) or `calibrate <pilot seed>...`; no default seed, and a typo stops the run.
+        "fast-weight-memory" => experiments::m008::run(&args[2..]),
         // The harness of R011: one seed per run, no default seed.
         "self-modification-safety" => {
             experiments::r011::run(strict_or_exit(seed_arg(&args, "self-modification-safety")))
@@ -107,6 +128,13 @@ fn main() {
         // (the mutation checker's form); no default seed, and a typo stops the run.
         #[cfg(feature = "postgres-experiments")]
         "postgres-hybrid" => experiments::q003::run(&args[2..]),
+        // The harness of L001-v2: `<seed>` (the pinned scale) or `<cases> <seed>` (the mutation
+        // checker's form); no default seed, and a typo stops the run. Its child processes run
+        // `revocation-crash-child`, which no one starts by hand.
+        #[cfg(feature = "ledger-experiments")]
+        "revocation-crash" => experiments::l001::run(&args[2..]),
+        #[cfg(feature = "ledger-experiments")]
+        "revocation-crash-child" => experiments::l001::child::run(&args[2..]),
         #[cfg(feature = "postgres-experiments")]
         "fastmem-revocation" => {
             experiments::l003::run(parse_usize(&args, 2, 20), parse_u64(&args, 3, 17))
@@ -117,8 +145,8 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: ptr-bench [all|semdb|mailbox|ledger-recovery|ledger-process-crash{}] [iterations] [seed]",
-                EXPERIMENT_COMMANDS
+                "usage: ptr-bench [all|semdb|mailbox|ledger-recovery|ledger-process-crash{}{}] [iterations] [seed]",
+                EXPERIMENT_COMMANDS, LEDGER_EXPERIMENT_COMMANDS
             );
             std::process::exit(2);
         }
@@ -129,9 +157,15 @@ fn main() {
 /// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
 const EXPERIMENT_COMMANDS: &str =
-    "|evidence-promotion|certified-branches|invalidation|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence|postgres-hybrid";
+    "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke|fastmem-revocation|projection-equivalence|postgres-hybrid";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "|evidence-promotion|certified-branches|invalidation|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
+const EXPERIMENT_COMMANDS: &str = "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|kv-reuse-smoke";
+
+/// The ledger experiment's subcommand, only when it is compiled in (usage text only).
+#[cfg(feature = "ledger-experiments")]
+const LEDGER_EXPERIMENT_COMMANDS: &str = "|revocation-crash";
+#[cfg(not(feature = "ledger-experiments"))]
+const LEDGER_EXPERIMENT_COMMANDS: &str = "";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)

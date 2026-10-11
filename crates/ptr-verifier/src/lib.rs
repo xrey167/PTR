@@ -1,3 +1,23 @@
+//! Verifier contract, aggregation and deterministic verifiers.
+//!
+//! Besides the [`Verifier`] contract, the [`VerifierFabric`] and the [`ActionContractVerifier`],
+//! the crate carries four deterministic task verifiers whose findings drive the finding router of
+//! the verifier-closed workspace loop: [`ArithmeticVerifier`], [`JsonSchemaVerifier`],
+//! [`CodeTestVerifier`] and [`FactVerifier`]. Their finding codes, which of them are hard and the
+//! repair role each maps to are one table, in [`codes`].
+
+pub mod arithmetic;
+pub mod code_test;
+pub mod codes;
+pub mod fact;
+pub mod json_schema;
+
+pub use arithmetic::ArithmeticVerifier;
+pub use code_test::{CodeTask, CodeTest, CodeTestVerifier, TestVisibility};
+pub use codes::{code_spec, codes_for_role, repair_role_for, CodeSpec, RepairRole, CODE_TABLE};
+pub use fact::{fact_key, BoundReport, FactClaim, FactVerifier};
+pub use json_schema::JsonSchemaVerifier;
+
 use ptr_types::{ActionIr, CapabilityId, Effect, Probability, TypeId, VerificationLevel};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,9 +66,18 @@ pub trait NamedVerifier<T>: Verifier<T> + Send + Sync {
 /// With no verifier the report is `Unknown` at `Unverified` with score 0. The
 /// fabric implements [`Verifier`], so it can be installed wherever a single
 /// verifier is expected.
-#[derive(Default)]
 pub struct VerifierFabric<T> {
     verifiers: Vec<Box<dyn NamedVerifier<T>>>,
+}
+
+// Not derived: a derive would require `T: Default`, and a fabric holds no `T`, so it could not
+// be built for a type such as `ActionIr`.
+impl<T> Default for VerifierFabric<T> {
+    fn default() -> Self {
+        Self {
+            verifiers: Vec::new(),
+        }
+    }
 }
 
 impl<T> VerifierFabric<T> {
@@ -424,6 +453,15 @@ mod tests {
             false,
         ));
         assert_eq!(fabric.verify(&0).status, VerificationStatus::Disputed);
+    }
+
+    #[test]
+    fn a_fabric_can_be_built_for_a_type_without_a_default() {
+        let mut fabric = VerifierFabric::<ActionIr>::default();
+        assert!(fabric.is_empty());
+        fabric.push(ActionContractVerifier::new(contract()));
+        assert!(!fabric.is_empty());
+        assert_eq!(fabric.verify(&action()).status, VerificationStatus::Pass);
     }
 
     #[test]

@@ -31,6 +31,12 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub mod vcw;
+
+pub use vcw::{
+    VcwApiError, VcwBuildError, VcwResponse, VcwService, VcwServiceParts, VcwTaskRequest,
+};
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ApiRequest {
     pub id: String,
@@ -290,6 +296,8 @@ pub struct ServerState {
     verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
     effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
     admission: Arc<RequestAdmission>,
+    /// The verifier-closed path; `None` unless installed with [`ServerState::with_vcw`].
+    vcw: Option<Arc<VcwService>>,
 }
 
 impl ServerState {
@@ -344,7 +352,42 @@ impl ServerState {
             verifier,
             effect_grants,
             admission,
+            vcw: None,
         }
+    }
+
+    /// Serve the verifier-closed path (`POST /v1/vcw/tasks`) from this state. The service's
+    /// Pods are made live in the runtime and its scope is created, under the runtime's lock.
+    /// Without this call the route does not exist.
+    ///
+    /// # Errors
+    /// [`VcwBuildError::Install`] when the runtime refuses the Pods or the scope.
+    pub fn with_vcw(mut self, service: VcwService) -> Result<Self, VcwBuildError> {
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| VcwBuildError::Install("runtime mutex poisoned".into()))?;
+            service.install(&mut runtime)?;
+        }
+        self.vcw = Some(Arc::new(service));
+        Ok(self)
+    }
+
+    /// The runtime behind the server, for hosts and tests that act on it directly (a
+    /// revocation, a read of the ledger). Holding the lock stops the server's requests.
+    pub fn runtime_handle(&self) -> Arc<Mutex<PtrRuntime>> {
+        Arc::clone(&self.runtime)
+    }
+
+    /// How many requests hold an admission slot now (working or waiting for the runtime).
+    pub fn requests_in_flight(&self) -> usize {
+        self.admission.in_flight()
+    }
+
+    /// The verifier-closed service, when installed.
+    pub fn vcw_service(&self) -> Option<&Arc<VcwService>> {
+        self.vcw.as_ref()
     }
 }
 
@@ -416,11 +459,42 @@ pub fn router_with_backend(
 }
 
 fn router_with_state(state: ServerState) -> Router {
-    Router::new()
+    let routes = Router::new()
         .route("/health", get(health))
         .route("/v1/requests", post(request))
-        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
-        .with_state(state)
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES));
+    // The verifier-closed path has its own, smaller body limit and exists only when installed.
+    let routes = if state.vcw.is_some() {
+        routes.merge(vcw::routes())
+    } else {
+        routes
+    };
+    routes.with_state(state)
+}
+
+/// The router of a [`ServerState`], for a state built with [`ServerState::with_vcw`].
+pub fn router_from_state(state: ServerState) -> Router {
+    router_with_state(state)
+}
+
+/// Serve a [`ServerState`].
+pub async fn serve_state(
+    listener: tokio::net::TcpListener,
+    state: ServerState,
+) -> std::io::Result<()> {
+    axum::serve(listener, router_with_state(state)).await
+}
+
+/// Like [`serve_state`], but stops accepting and returns once `shutdown` completes and the
+/// requests in flight have finished.
+pub async fn serve_state_until(
+    listener: tokio::net::TcpListener,
+    state: ServerState,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    axum::serve(listener, router_with_state(state))
+        .with_graceful_shutdown(shutdown)
+        .await
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, runtime: PtrRuntime) -> std::io::Result<()> {

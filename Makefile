@@ -1,4 +1,4 @@
-.PHONY: check test fmt py-bindings a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
+.PHONY: vcw-demo check test fmt bench-check py-bindings a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
 	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke release-package \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
@@ -30,6 +30,7 @@ check:
 fmt:
 	cargo fmt --all -- --check
 	cargo fmt --manifest-path model/burn-a0/Cargo.toml -- --check
+	cargo fmt --manifest-path evaluations/bench/kit/Cargo.toml -- --check
 
 # `bindings/ptr-py` is a PyO3 extension in its own excluded workspace, built with
 # maturin into a venv kept inside it (gitignored). Not a CI job: nothing in
@@ -43,6 +44,7 @@ py-bindings:
 	$(PY_BINDINGS)/.venv/bin/pip install -q maturin==$(MATURIN)
 	cargo fmt --manifest-path $(PY_BINDINGS)/Cargo.toml -- --check
 	cargo clippy --manifest-path $(PY_BINDINGS)/Cargo.toml --all-targets --locked -- -D warnings
+	cargo test --manifest-path $(PY_BINDINGS)/Cargo.toml --locked
 	cd $(PY_BINDINGS) && VIRTUAL_ENV="$(CURDIR)/$(PY_BINDINGS)/.venv" PATH="$(CURDIR)/$(PY_BINDINGS)/.venv/bin:$$PATH" maturin develop --locked
 	$(PY_BINDINGS)/.venv/bin/python -m unittest discover -s $(PY_BINDINGS)/tests -v
 
@@ -85,6 +87,14 @@ smoke-gpu:
 olmoe-sft-smoke:
 	PYTHONPATH=training/src $(TRAIN_PY) -m ptr_training.run --config $(OLMOE_SFT_CONFIG) --execute
 
+# Builds ptrd, starts it with config/vcw-demo.toml (verifier-closed path on, simulated experts, real
+# verifiers), sends a repaired and an exhausted request, prints trace, budget and ledger events read
+# back from the daemon, stops it and exits 0 only if every expected property held. With
+# PTR_VCW_QWEN_DIR set to a local checkpoint directory the CPU model is built in and used instead.
+vcw-demo:
+	cargo build -p ptrd --locked $(if $(PTR_VCW_QWEN_DIR),--features qwen-cpu)
+	$(PYTHON) scripts/vcw_demo.py
+
 a0: a0-stable a0-msrv
 
 a0-stable:
@@ -120,6 +130,16 @@ experiments-check:
 
 evals-check:
 	python3 scripts/run_component_eval.py validate
+	python3 scripts/check_component_protocols.py
+
+# The component-evaluation bench workspaces (evaluations/bench/*) are excluded from the
+# root workspace, so `make check`/`make test` reach none of them. Same commands as the
+# bench steps of CI's `quality` job.
+bench-check:
+	cargo fmt --manifest-path evaluations/bench/kit/Cargo.toml -- --check
+	cargo check --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked
+	cargo clippy --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked -- -D warnings
+	cargo test --manifest-path evaluations/bench/kit/Cargo.toml --locked
 
 msrv:
 	cargo +1.99.0 check --workspace --all-targets --locked
@@ -157,6 +177,10 @@ ci-quality:
 	cargo +stable clippy --manifest-path templates/rust-crate/Cargo.toml --all-targets --locked -- -D warnings
 	cargo +stable test -p ptr-observe --features tracing-adapter --locked
 	cargo +stable clippy -p ptr-observe --features tracing-adapter --all-targets --locked -- -D warnings
+	cargo +stable fmt --manifest-path evaluations/bench/kit/Cargo.toml -- --check
+	cargo +stable check --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked
+	cargo +stable clippy --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked -- -D warnings
+	cargo +stable test --manifest-path evaluations/bench/kit/Cargo.toml --locked
 
 ci-rust-stable:
 	cargo +stable check --workspace --all-targets --locked
@@ -190,6 +214,7 @@ ci-repository-invariants:
 	$(PYTHON) scripts/check_rust_conventions.py
 	$(PYTHON) scripts/run_experiment.py validate
 	$(PYTHON) scripts/run_component_eval.py validate
+	$(PYTHON) scripts/check_component_protocols.py
 	$(PYTHON) scripts/check_research_gates.py
 	$(PYTHON) -m unittest discover -s scripts/tests
 	$(PYTHON) -m unittest discover -s research/baselines/rag_reference/tests
@@ -197,6 +222,7 @@ ci-repository-invariants:
 	$(PYTHON) -m unittest discover -s research/baselines/strong_retrieval/tests
 	$(PYTHON) -m unittest discover -s research/embeddings/tests
 	$(PYTHON) research/embeddings/verify_manifest.py --regenerate
+	$(PYTHON) -m unittest discover -s research/consciousness/tests
 	$(PYTHON) -m unittest discover -s docs-site/tests
 	$(PYTHON) benchmarks/operator-routing/generator.py
 	$(PYTHON) -m unittest discover -s benchmarks/operator-routing/tests
@@ -206,6 +232,10 @@ ci-repository-invariants:
 ci-lifecycle-failpoints:
 	cargo +stable test -p ptr-ledger --features failpoints --test failpoints --locked
 	cargo +stable clippy -p ptr-ledger --features failpoints --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-ledger --features raft-engine-failpoints --test engine_failpoints --locked
+	cargo +stable clippy -p ptr-ledger --features raft-engine-failpoints --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-bench --features ledger-experiments --locked l001
+	cargo +stable clippy -p ptr-bench --features ledger-experiments --all-targets --locked -- -D warnings
 
 ci-ledger-raft-engine:
 	cargo +stable test -p ptr-ledger --features raft-engine-backend --test raft_engine --locked

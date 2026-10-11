@@ -35,8 +35,8 @@
 
 ### Linked experiments
 
-- [F002](../../experiments/feedback/F002-weak-supervision/README.md) — `planned`
-- [F003](../../experiments/feedback/F003-calibrated-arbiter/README.md) — `planned`
+- [F002](../../experiments/feedback/F002-weak-supervision/README.md) — `frozen`
+- [F003](../../experiments/feedback/F003-calibrated-arbiter/README.md) — `frozen`
 
 ### Technology evaluations
 

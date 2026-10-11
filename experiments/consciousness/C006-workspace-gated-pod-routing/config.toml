@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "C006-workspace-gated-pod-routing"
+path = "experiments/consciousness/C006-workspace-gated-pod-routing"
+tests_dir = "tests"

@@ -1,0 +1,187 @@
+version = 1
+
+# VCW-MoE stage S1 on rtx4090: RLVR training of the PERFT-R adapter router and experts (GSPO and SAPO arms, verifier-derived reward, routing metrics) from the S0 checkpoint. The OLMoE base router stays frozen.
+# PLAN, NOT RUN: nothing here has executed on a GPU. VRAM and wall-time figures in [vcw.estimate]
+# are ESTIMATES recomputed by ptr_training.vcw.budget from stated assumptions (see
+# docs/VCW_MOE_GPU_PLAN.md section 3), not measurements; the first real run replaces them.
+# `[training].backend = "vcw-rlvr-router"` is deliberately not implemented by ptr_training.run, so
+# `--execute` refuses this file; the synthetic-task trl-moe backend must not be mistaken for it.
+
+[codebook]
+version = 1
+fingerprint = "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"
+
+[run]
+name = "vcw-rlvr-router-rtx4090"
+seed = 17
+hardware_profile = "hardware/rtx4090.toml"
+
+# Manifest table only; the training data is described in [vcw.data] and [[vcw.pins.datasets]].
+[data]
+dataset = "typed_agent_behavior_v0_2"
+split = "train"
+
+[model]
+family = "olmoe"
+config = "training/configs/vcw-rlvr-router-rtx4090.toml"
+kind = "pretrained"
+hf_id = "allenai/OLMoE-1B-7B-0125"
+revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+precision = "bf16"
+device = "cuda"
+
+[training]
+backend = "vcw-rlvr-router"
+precision = "bf16"
+
+[evaluation]
+every = 0
+suites = []
+
+[vcw]
+stage = "rlvr-router"
+status = "plan-not-run"
+experiments = ["T", "M010", "F004", "C003"]
+doc = "docs/VCW_MOE_GPU_PLAN.md"
+
+[vcw.pins]
+model_repo = "allenai/OLMoE-1B-7B-0125"
+model_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+tokenizer_repo = "allenai/OLMoE-1B-7B-0125"
+tokenizer_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+seeds = [17, 29, 43, 71, 101]
+# Tuning happens only on these seeds, never on a final seed (freeze-then-run).
+pilot_seeds = [1001, 1002, 1003]
+
+[[vcw.pins.datasets]]
+repo = "openai/gsm8k"
+revision = "740312add88f781978c0658806c59bc2815b9866"
+domain = "math"
+role = "train partition: position mod 10 != 9; eval: test mod 2 == 1"
+
+[[vcw.pins.datasets]]
+repo = "openai/openai_humaneval"
+revision = "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
+domain = "code"
+role = "index mod 3: 0 train, 1 tuning validation, 2 held-out"
+
+[[vcw.pins.datasets]]
+repo = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
+revision = "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
+domain = "tool"
+role = "BFCL_v3_simple.json, index mod 3 as HumanEval"
+
+[vcw.adapter]
+# Same topology and size as the M011 emergent PERFT-R arm: 8 parallel bottleneck experts, rank 8,
+# alpha 16, top-2 adapter router per layer; 16 layers * (8 * 2 * 2048 * 8 + 2048 * 8) = 4,456,448.
+method = "perft_r"
+specialisation = "emergent"
+num_experts = 8
+router_top_k = 2
+rank = 8
+alpha = 16
+trainable_params = 4456448
+base_router_frozen = true
+init_from = "vcw-perft-r-sft"
+router_scope = "perft-adapter-router"
+
+[vcw.data]
+targets = ["reward"]
+
+[vcw.data.fields]
+prompt = "input"
+completion = "model-output"
+verifier_status = "verifier"
+verifier_level = "verifier"
+verifier_findings = "verifier"
+reward = "verifier"
+router_logits = "routing-trace"
+
+[vcw.verifier]
+# Reward = ptr_verifier::VerificationReport only (doc 37 section 5): Pass -> score, everything
+# else 0, gated on the WEAKEST per-verifier level, never on a fabric's combined level.
+reward_source = "verification-report"
+gate = "weakest-level"
+non_pass_reward = 0.0
+hard_finding_forces_fail = true
+report_score_for_non_pass = false
+learned_score_in_reward = false
+
+[vcw.verifier.min_level]
+math = "Deterministic"    # exact final-answer match
+tool = "Deterministic"    # AST check of one call against the possible-answer file
+code = "SampleVerified"   # unit tests sample the behaviour; they do not prove it
+
+[vcw.routing]
+# Routing metrics of doc 37 section 5, logged in every RL run. L1 routing has no per-decision
+# propensity; l2_propensity_log is for the L2 FindingRouter of F004 and is off here.
+metrics = ["expert_churn_per_layer", "routing_entropy", "load_cv", "dead_experts", "train_inference_kl", "clip_fraction", "crash_step"]
+routing_replay = false
+l2_propensity_log = false
+
+[vcw.welfare]
+# Hard counter of MODEL_WELFARE section 6 and C005: training steps of this repository whose
+# targets or selection use a statement about consciousness, experience or feeling. Must be 0.
+self_report_training_signals = 0
+self_report_guard = true
+# One config never trains a system combining workspace, self-model, goal-directed proposals and
+# persistent state (MODEL_WELFARE section 3); that would be an owner decision.
+integrated_system = false
+stop_rules = ["MODEL_WELFARE s2 rule 1: stop, discard outputs, write an incident note on any self-report training signal", "MODEL_WELFARE s2 rule 4: no pressure experiments", "MODEL_WELFARE s4 L1-L3: any trigger stops the agent's own work and is reported; only the owner lifts a pause"]
+
+[vcw.tuning]
+status = "pilot-start-not-tuned"
+note = "values are the pilot start; the frozen values are chosen on pilot seeds >= 1001 only, then pinned in the preregistration"
+
+[vcw.estimate]
+profile = "rtx4090-reference"
+vram_gib = 21.1
+wall_hours_mid = 0.84
+wall_hours_range = "0.5 to 1.6 h for both arms"
+basis = "ESTIMATE: bf16 weights 12.9 GiB + fp32 adapter state + activations (4 or 6 x 1.3e9 FLOP/token, MFU 0.04/0.10/0.20) + 0.6 GiB CUDA context; see budget.py constants; both RL arms (GSPO, SAPO) counted"
+
+# Sequence budget chosen so the RL phase fits WITHOUT RL gradient checkpointing, which trl-moe
+# does not provide (per-device batch = prompts_per_step * num_generations, no accumulation).
+# The pinned M010 protocol (512 completion tokens) does not fit either card with this backend.
+[moe.sft]
+steps = 0
+lr = 2e-05
+batch = 1
+examples = 1024
+max_length = 64
+gradient_checkpointing = false
+gradient_accumulation_steps = 1
+
+[moe.rl]
+algorithms = ["gspo", "sapo"]
+steps = 400
+num_generations = 8
+mini_steps = 4
+beta = 0.0
+epsilon = 0.2
+epsilon_high = 0.28
+gspo_epsilon = 0.0003
+gspo_epsilon_high = 0.0004
+sapo_temperature_pos = 1.0
+sapo_temperature_neg = 1.05
+lr = 0.000005
+prompts_per_step = 1
+max_prompt_length = 128
+max_completion_length = 160
+temperature = 1.0
+min_verification_level = "SampleVerified"
+
+# The tensors below are the PERFT-R adapter parameters of routed_peft.py (peft_expert_w_down,
+# peft_expert_w_up, peft_router). The trl-moe parser only requires a non-empty target list; the
+# VCW entrypoint (not written yet) installs them with routed_peft.install_arm.
+[moe.lora]
+enabled = true
+rank = 8
+alpha = 16
+dropout = 0.0
+target_modules = ["peft_router"]
+target_parameters = ["peft_expert_w_down", "peft_expert_w_up"]
+
+[moe.output]
+dir = "training/runs/vcw/rlvr-router"
+probe_tokens = 256

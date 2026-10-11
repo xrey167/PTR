@@ -1,0 +1,89 @@
+version = 1
+experiment_id = "M003-v3"
+study = "A0-baseline-v2"
+headline_contrast = "M003-v3-primary"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE-INTERRUPTED"
+go = false
+claim_scope = "none: the study was interrupted and produced no outcome"
+evidence_kind = "run-record"
+records_immutable = true
+paired_ci_sha256 = "23537d5a42a9372e47ac35c8cfc8fcc8ca318dffeea9ab7aea13e97207f789d1"
+criteria_sha256 = "88e38861c1fb323dfb1414a62112bdfe249cf90690ed66fedf7f7d155c8188e2"
+decision_script_sha256 = "0cbbcda8114f5510566662c8e67ed4af2dca3a0d1c6a4213862ee85419080db1"
+decision_core_sha256 = "8ee9539a790f44c57eaa751fa56dfa07bb0342d636bf65230650ad4f6fddb957"
+git_sha = "991e5f8108b90073660a589a1453103ad9f34c51"
+
+[reporting]
+required_label = "INCONCLUSIVE-INTERRUPTED"
+allow_quality_claim = false
+allow_bundle_claim_as_mechanism_evidence = false
+rerun_allowed = false
+
+[interrupted]
+seeds_interrupted = [71]
+seeds_completed = [17, 29, 43]
+seeds_not_run = [101]
+
+[[contrast]]
+id = "M003-v3-primary"
+role = "primary"
+isolating = true
+treatment = "full"
+control = "latent-0"
+compute = "equal-params"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE-INTERRUPTED"
+reason = "a confirmatory seed was interrupted (record started, no output, no exit code); no statistic is computed and the study is never rerun"
+quality_claim_allowed = false
+scope_note = "no outcome: the study was interrupted"
+claim = "the tied latent recurrence (k=2) improves OOD routing over no recurrence at equal parameters in A0 (compute differs by the recurrence itself)"
+
+[[contrast]]
+id = "M003-v3-nonlinearity"
+role = "secondary"
+isolating = true
+treatment = "full"
+control = "latent-linear"
+compute = "equal-params-flops"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE-INTERRUPTED"
+reason = "a confirmatory seed was interrupted (record started, no output, no exit code); no statistic is computed and the study is never rerun"
+quality_claim_allowed = false
+scope_note = "no outcome: the study was interrupted"
+claim = "the per-slot nonlinearity, not the extra affine parameters, carries the recurrence benefit in A0 (isolating)"
+
+[[contrast]]
+id = "M003-v3-bundle"
+role = "bundle"
+isolating = false
+treatment = "full"
+control = "plain"
+compute = "plain-params"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE-INTERRUPTED"
+reason = "a confirmatory seed was interrupted (record started, no output, no exit code); no statistic is computed and the study is never rerun"
+quality_claim_allowed = false
+scope_note = "no outcome: the study was interrupted"
+claim = "the A0 bundle beats the pinned plain baseline in A0; bundle vs baseline, non-isolating"
+
+[[source_record]]
+path = "experiments/model/M003-v3-latent-recurrence/results/run-20261009T181556.843522Z-seed-17.json"
+canonical_sha256 = "998c3343af4d51bb1993e1febe5962b801a1d40f5cf9783ee96cc1089eaca46c"
+
+[[source_record]]
+path = "experiments/model/M003-v3-latent-recurrence/results/run-20261009T190108.054257Z-seed-29.json"
+canonical_sha256 = "62945864ec43387531a479375590a18985e3272b0e80fea2787f0d456ac09eec"
+
+[[source_record]]
+path = "experiments/model/M003-v3-latent-recurrence/results/run-20261009T194214.358841Z-seed-43.json"
+canonical_sha256 = "5625043147746e735b51259360300223ded8bccf2571b762a3cfc40350b12aa4"
+
+[[source_record]]
+path = "experiments/model/M003-v3-latent-recurrence/results/run-20261009T201837.952950Z-seed-71.json"
+canonical_sha256 = "e6c11e8e3e6b5a01b4c84cdcec87c7a0552f9b6d76311a51631ffc344bd7afdd"
+
+[record_identity]
+mode = "single-commit-or-linear-history-results-only"
+decision_base_sha256 = "9060d1534a7c76e6cc74959e30803cb09c748f90e54b18fb22f5b1a7e5cf350f"
+commits = ["991e5f8108b90073660a589a1453103ad9f34c51", "50a429fd4100a241ca5f8847e95c220b21a6e7fd", "8fedda14b95b08cc84a80868cf0b787395d02991", "c47fce9e490527e2924625472c9ea954e07463c7"]

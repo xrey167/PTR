@@ -1,0 +1,89 @@
+# F001 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256);
+# no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
+# f001/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order, and every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and so a
+# parse error: no decimal literal exists, fractions are integer milli-units).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON result
+# object, separated by '.' (no key holds a '.', no array is indexed): "false_accepts" is a top-level key,
+# "success.repair.b4" the successes of the repair arm at budget 4, pooled over the three profiles.
+# A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a failed rule).
+# A reference compared with an integer literal or another reference must be a JSON integer (not a
+# boolean, not a float). Exact comparisons.
+# The manifest's "< N" prerequisites are written ">= N", its "> 0" violations "<= 0".
+#
+# The first eighteen falsifiers are the hard counters of the mutation plan. The eight strict comparative falsifiers are
+# CONSEQUENCES OF THE STUB'S STATED SKILL (per-slot probabilities and a repair probability fixed in the preregistration): they
+# test that the loop uses the verifier's verdicts and critiques correctly, not that any model repairs better than it rewrites.
+# repair_gain.b<N> is the pooled successes of the repair arm minus those of the rewrite-only arm at budget N; draws_gain.b<N>
+# is the rewrite-only arm's milli-draws per success minus the repair arm's. The exact analytic expectation (preregistration
+# section 4) gives gains of thousands at N in {2, 4, 8, 16}, so a floor of one detects a loop that silently stops repairing (the two
+# arms are then the same run: gain 0) without pretending to measure a size. At budget 1 the arms are the same run on the same
+# draws, so there is no gain rule there. Non-strict comparisons (repair >= rewrite, rewrite >= single, equal at budget 1) are
+# implied by common draws or hold with equality in the failure they would have to see, and are reported as descriptive
+# (the successes of each arm are in the JSON), not as falsifiers. repair_gain_shortfalls and draws_gain_shortfalls count the gain
+# rules that fail, so that a mutation of the plan can name them. draws_per_success.<arm>.b<N> is 1000 * slot draws / successes
+# (a very large number when the arm never succeeded).
+#
+# Rules that hold by construction or duplicate another (named so a reader does not mistake them for evidence):
+# profiles.<name>.tasks >= 1000 (the plan runs 2000 tasks per profile; the counter is a count of the plan), status_pass >= 1
+# and status_fail >= 1 (every task's first call is a Pass or a Fail on some candidate). The other
+# coverage rules are observed: status_unknown and status_disputed count verifier reports of those statuses in the boundary's log,
+# initial_fail_tasks the tasks whose first candidate was not accepted, repaired_successes the tasks accepted after a repair,
+# exhausted_runs the runs that returned Exhausted, lying_refused the reports of the lying stub or the forged Pass that the loop refused,
+# shallow_refused the Pass reports below Deterministic level that the loop refused.
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies F001 on that seed.
+# Decision: every seed must hold every coverage rule and every falsifier rule; COMPLETED iff so,
+# INVALID if a seed is missing, unresolvable, or its record does not describe the frozen run, FALSIFIED
+# otherwise.
+version = 1
+experiment = "F001"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "status_pass >= 1",
+  "status_fail >= 1",
+  "status_unknown >= 1",
+  "status_disputed >= 1",
+  "profiles.uniform.tasks >= 1000",
+  "profiles.heterogeneous.tasks >= 1000",
+  "profiles.hard.tasks >= 1000",
+  "initial_fail_tasks >= 500",
+  "repaired_successes >= 100",
+  "exhausted_runs >= 50",
+  "lying_refused >= 10",
+  "shallow_refused >= 1",
+]
+
+falsifiers = [
+  "false_accepts <= 0",
+  "unverified_returns <= 0",
+  "double_verifications <= 0",
+  "budget_violations <= 0",
+  "collateral_edits <= 0",
+  "exhausted_as_success <= 0",
+  "verdict_mismatches <= 0",
+  "verifier_call_mismatches <= 0",
+  "expectation_violations <= 0",
+  "product_panics <= 0",
+  "calls_after_acceptance <= 0",
+  "premature_exhaustions <= 0",
+  "missed_acceptances <= 0",
+  "trajectory_mismatches <= 0",
+  "selection_mismatches <= 0",
+  "repair_gain_shortfalls <= 0",
+  "draws_gain_shortfalls <= 0",
+  "altered_candidates <= 0",
+  "repair_gain.b2 >= 1",
+  "repair_gain.b4 >= 1",
+  "repair_gain.b8 >= 1",
+  "repair_gain.b16 >= 1",
+  "draws_gain.b2 >= 1",
+  "draws_gain.b4 >= 1",
+  "draws_gain.b8 >= 1",
+  "draws_gain.b16 >= 1",
+]

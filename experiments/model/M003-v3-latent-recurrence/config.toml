@@ -1,0 +1,57 @@
+version = 1
+kind = "workspace-area"
+name = "M003-v3-latent-recurrence"
+path = "experiments/model/M003-v3-latent-recurrence"
+tests_dir = "tests"
+
+# Frozen at the freeze commit (scripts/a0_baseline_study.py); every value is derived from
+# research/falsification/A0-baseline-v2/criteria.toml. A `must-be-pinned-before-prepared` value can only be known at the freeze.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+study = "m003-v2"
+arms = "full,latent-0,latent-1,latent-linear,plain"
+steps = 1500
+batch = 128
+d_model = 48
+rank = 8
+bias_limit = 1
+metadata_dropout = "0"
+router_mode = "calibrated-cosine-v2"
+data = "datasets/generated/operator_routing_v2"
+folds = "evidence-temporal=8c3bc2324e0eb770,evidence-tabular=9ff1e487932c4638,claim-interventional=fd11dbf9270b2f39"
+dataset_lock = "benchmarks/operator-routing-v2/splits.lock.json"
+dataset_lock_sha256 = "6a001b37e4adb81bae66f8abc50c9a461f07eea918c905179300cc8d353266a1"
+lr_grid = "0.0025,0.005,0.0125,0.025"
+lr_selection_rule = "best mean validation accuracy over folds; tie lower mean validation NLL; tie smaller lr; a diverged grid point is ineligible"
+sweep_seed = 17
+lr_file = "research/falsification/A0-baseline-v2/lr_M003-v3.tsv"
+lr_file_sha256 = "342659e883f382a7789e4b2fe7b7a2100575ebed8e67e0c24f8f25bfbecc064a"
+sweep_experiment = "M003-v3-sweep"
+primary_contrast = "M003-v3-primary"
+delta_min = "0.02"
+ood_nll_ci_upper_le = "0"
+ood_ece_mean_le = "0"
+ood_ece_ci_upper_le = "0.02"
+iid_accuracy_ci_lower_ge = "-0.01"
+plain_param_tolerance = "0.01"
+criteria = "research/falsification/A0-baseline-v2/criteria.toml"
+criteria_sha256 = "88e38861c1fb323dfb1414a62112bdfe249cf90690ed66fedf7f7d155c8188e2"
+preregistration_text = "research/falsification/A0-baseline-v2/PREREGISTRATION.md"
+preregistration_text_sha256 = "c1a1adf693467335152b7b92854735067ff23ebf939140092c10619f888d7ca3"
+decision_script = "scripts/aggregate_a0_baseline_v2.py"
+decision_script_sha256 = "0cbbcda8114f5510566662c8e67ed4af2dca3a0d1c6a4213862ee85419080db1"
+decision_core = "scripts/aggregate_m002_v5.py"
+decision_core_sha256 = "8ee9539a790f44c57eaa751fa56dfa07bb0342d636bf65230650ad4f6fddb957"
+decision_base = "scripts/aggregate_a0_baseline.py"
+decision_base_sha256 = "9060d1534a7c76e6cc74959e30803cb09c748f90e54b18fb22f5b1a7e5cf350f"
+runner_arm_table = "model/burn-a0/examples/a0_ablation/arms.rs"
+runner_arm_table_sha256 = "87d851d9bf69684f4f3836156842bc3eebd60956a1418da14010d160308c0261"
+runner_main = "model/burn-a0/examples/a0_ablation/main.rs"
+runner_main_sha256 = "62503b16d4c26d3d3d841028c1aab01235ec0a1b9232a57b3bb4562143369d91"
+runner_train = "model/burn-a0/examples/a0_ablation/train.rs"
+runner_train_sha256 = "c80560d44e017fcdb23f5090ba0335cd919424801a69b0957cd3471fd0f2a683"
+runner_baseline = "model/burn-a0/examples/a0_ablation/baseline.rs"
+runner_baseline_sha256 = "6dbbed029879e5dda78986b2a01a71cb186059bc1600fd91fe88bae020fe3c5b"
+implementation_tree = "model/burn-a0"
+implementation_tree_git_digest = "f19a68f850bdf8e4b8bfd45ac9d11e0adbf7b15ef8ab07a9c5fafcd477169b04"
+baseline_plain_model_sha256 = "585b1bb85f5343633b0877c6fdd6e85bb64519ae3fd2effe813018e28a561166"
