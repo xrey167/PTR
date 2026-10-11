@@ -132,6 +132,64 @@ class MutationCheckTests(unittest.TestCase):
         self.assertEqual(mod.classify(101, {}, plan, mutation)[0], "crashed")
         self.assertEqual(mod.classify(1, {}, plan, mutation)[0], "crashed")
 
+    def test_a_validity_mutation_is_killed_only_by_the_reason_the_aggregator_gives(self):
+        plan = {"hard_counters": ["lost"]}
+        mutation = {"name": "threads", "expect_invalid": "recorded strong_threads 4,"}
+        reasons = ["recorded strong_threads 4, not the pinned 1", "ran at scale 'custom'"]
+        self.assertEqual(mod.classify(1, {}, plan, mutation, "", reasons), ("killed", {}))
+        self.assertEqual(mod.classify(0, {}, plan, mutation, "", reasons)[0], "killed")
+        # Another reason, none, a stop, a crash and a counter-style failure are not kills.
+        self.assertEqual(mod.classify(1, {}, plan, mutation, "", ["recorded strong_threads None, not the pinned 1"])[0], "survived")
+        self.assertEqual(mod.classify(1, {}, plan, mutation, "", [])[0], "survived")
+        self.assertEqual(mod.classify(0, {}, plan, mutation)[0], "survived")
+        self.assertEqual(mod.classify(2, {}, plan, mutation, "harness stop [x]", reasons)[0], "failed-elsewhere")
+        self.assertEqual(mod.classify(101, {}, plan, mutation, "", reasons)[0], "crashed")
+        errors = mod.expectation_errors(
+            {"hard_counters": ["lost"], "mutation": [mutation, {"name": "both", "expect_invalid": "x", "expect": ["lost"]}, {"name": "blank", "expect_invalid": " "}]}
+        )
+        self.assertEqual(len(errors), 2, errors)
+
+    def test_the_reasons_come_from_the_experiments_aggregator(self):
+        root = ROOT / "experiments/retrieval/Q003-v3-postgres-hybrid"
+        plan = {"_root": str(root)}
+        reasons = mod.invalid_reasons(plan, {"benchmark": "postgres-hybrid", "experiment": "Q003-v3", "seed": 17,
+                                             "procedure": {"strong_arm": {"strong_threads": 4}}}, 1, 17)
+        self.assertTrue(any(r.startswith("the strong arm recorded strong_threads 4,") for r in reasons), reasons)
+        with self.assertRaises(SystemExit):
+            mod.invalid_reasons({}, {}, 1, 17)
+
+    def test_a_stop_mutation_is_killed_only_by_the_typed_stop_it_names(self):
+        plan = {"hard_counters": ["lost"]}
+        mutation = {"name": "stall", "expect_stop": "request-timeout"}
+        stop = "q003: harness stop [request-timeout]: bm25: no reply to search within 20 s\n"
+        self.assertEqual(mod.classify(2, {}, plan, mutation, stop), ("killed", {}))
+        # Exit 2 for another reason, a counter-style failure, a crash and a pass are not kills.
+        self.assertEqual(
+            mod.classify(2, {}, plan, mutation, "harness stop [driver-exited]: x")[0], "failed-elsewhere"
+        )
+        self.assertEqual(mod.classify(2, {}, plan, mutation, "")[0], "failed-elsewhere")
+        self.assertEqual(mod.classify(1, {"hard_failures": 1, "lost": 1}, plan, mutation, stop)[0], "crashed")
+        self.assertEqual(mod.classify(101, {}, plan, mutation, stop)[0], "crashed")
+        self.assertEqual(mod.classify(0, {}, plan, mutation, stop)[0], "survived")
+        # A counter mutation is not killed by a stop.
+        self.assertEqual(mod.classify(2, {}, plan, {"expect": ["lost"]}, stop)[0], "crashed")
+
+    def test_a_stop_mutation_names_a_reason_tag_and_no_counters(self):
+        plan = {
+            "hard_counters": ["a"],
+            "mutation": [
+                {"name": "fine", "expect_stop": "run-deadline"},
+                {"name": "both", "expect_stop": "run-deadline", "expect": ["a"]},
+                {"name": "bad", "expect_stop": "Run Deadline"},
+                {"name": "empty", "expect_stop": ""},
+                {"name": "typed", "expect_stop": 3},
+            ],
+        }
+        errors = mod.expectation_errors(plan)
+        self.assertEqual(len(errors), 4, errors)
+        self.assertFalse(any(error.startswith("fine:") for error in errors))
+        self.assertTrue(any(error.startswith("both: names counters and a stop") for error in errors))
+
     def test_the_last_json_line_is_the_result(self):
         stdout = 'Compiling\n{"a":1}\nnoise\n{"hard_failures":2}\n'
         self.assertEqual(mod.last_json_line(stdout), {"hard_failures": 2})

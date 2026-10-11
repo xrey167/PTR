@@ -24,7 +24,16 @@ expected counters fired. A run that fails only on other counters is recorded as
 `failed-elsewhere`: the defect may have broken something unrelated first (a
 query that no longer binds, say), which shows nothing about whether the
 harness sees the defect itself. Exiting any other way (a panic, a build
-failure, a timeout) or passing is recorded as it is. The record goes to the
+failure, a timeout) or passing is recorded as it is. A mutation that plants the
+failure of a driver or of the clock names a typed harness stop instead
+(`expect_stop = "request-timeout"`): it is killed when the harness exits with
+status 2 and its standard error holds `harness stop [request-timeout]`; exit 2
+with another reason is `failed-elsewhere`. A mutation that plants a record the
+aggregator must refuse names the validity reason instead (`expect_invalid = "<text>"`):
+the checker feeds the mutated harness's result and exit status to the experiment's
+`aggregate.judge_seed` and the mutation is killed when the harness ran to a verdict
+(exit 0 or 1) and one of the seed's `invalid` reasons starts with that text; anything
+else is `survived`, `failed-elsewhere` or `crashed`. The record goes to the
 experiment's `results/mutations.json`, written whole or not at all and stamped
 with the commit HEAD was at when the run started, before the plan was read, so
 a run that writes it refuses to start from a working tree with uncommitted or
@@ -51,8 +60,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as dt
+import importlib.util
 import json
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -62,6 +73,8 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# The tag of a typed harness stop (`harness stop [request-timeout]`).
+STOP_REASON = re.compile(r"[a-z]+(?:-[a-z]+)*")
 REGISTRY = ROOT / "experiments/registry.toml"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -84,6 +97,7 @@ def load_plan(exp_root: Path) -> dict:
     if not path.exists():
         raise SystemExit(f"{path.relative_to(ROOT)} does not exist")
     plan = load_toml(path)
+    plan["_root"] = str(exp_root)
     for key in ("package", "features", "subcommand", "cases", "seed"):
         if key not in plan:
             raise SystemExit(f"{path.relative_to(ROOT)}: missing {key!r}")
@@ -102,6 +116,22 @@ def expectation_errors(plan: dict) -> list[str]:
     hard = set(plan.get("hard_counters", []))
     errors = []
     for mutation in plan.get("mutation", []):
+        if "expect_invalid" in mutation:
+            # A record the aggregator refuses names the start of its validity reason instead of counters.
+            reason = mutation["expect_invalid"]
+            if "expect" in mutation or "expect_stop" in mutation:
+                errors.append(f"{mutation['name']}: names a validity reason and counters or a stop reason")
+            if not isinstance(reason, str) or not reason.strip():
+                errors.append(f"{mutation['name']}: expect_invalid {reason!r} is not a reason text")
+            continue
+        if "expect_stop" in mutation:
+            # A harness stop (exit 2) names its typed reason instead of counters.
+            reason = mutation["expect_stop"]
+            if "expect" in mutation:
+                errors.append(f"{mutation['name']}: names counters and a stop reason")
+            if not isinstance(reason, str) or not STOP_REASON.fullmatch(reason):
+                errors.append(f"{mutation['name']}: expect_stop {reason!r} is not a reason tag")
+            continue
         expected = mutation.get("expect", [])
         if not expected:
             errors.append(f"{mutation['name']}: no expected counter")
@@ -168,15 +198,50 @@ def last_json_line(stdout: str) -> dict:
     return {}
 
 
-def classify(returncode: int, metrics: dict, plan: dict, mutation: dict) -> tuple[str, dict]:
+def invalid_reasons(plan: dict, metrics: dict, returncode: int, seed: int) -> list[str]:
+    """The reasons the experiment's aggregator (`judge_seed` of its `aggregate.py`) finds
+    the mutated harness's result invalid. Raises SystemExit when the plan has no root or the
+    aggregator cannot be loaded: a mutation that needs it must not pass without it."""
+    root = plan.get("_root")
+    if root is None:
+        raise SystemExit("expect_invalid needs the experiment directory (the plan was not loaded by load_plan)")
+    root = Path(root)
+    spec = importlib.util.spec_from_file_location(f"_aggregate_{abs(hash(str(root)))}", root / "aggregate.py")
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"{root / 'aggregate.py'} cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    criteria = load_toml(root / "criteria.toml")
+    return list(module.judge_seed(metrics or None, returncode, criteria, seed)["invalid"])
+
+
+def classify(
+    returncode: int, metrics: dict, plan: dict, mutation: dict, stderr: str = "", invalid: list[str] | None = None
+) -> tuple[str, dict]:
     """The result of one run of a mutated harness and the hard counters that
-    fired."""
+    fired. A mutation that names a stop reason (`expect_stop`) is killed only
+    when the harness ends with exit status 2 and says
+    `harness stop [<reason>]` on its standard error: a typed stop of the
+    harness, which no counter shows."""
     fired = {
         key: value
         for key, value in metrics.items()
         if key in plan.get("hard_counters", []) and isinstance(value, int) and value > 0
     }
     hard = int(metrics.get("hard_failures", 0))
+    if "expect_invalid" in mutation:
+        # The harness must have run to a verdict, and the aggregator must refuse its record for the named reason.
+        if returncode not in (0, 1):
+            return ("failed-elsewhere" if returncode == 2 else "crashed"), fired
+        if any(reason.startswith(mutation["expect_invalid"]) for reason in invalid or []):
+            return "killed", fired
+        return "survived", fired
+    if "expect_stop" in mutation:
+        if returncode == 0:
+            return "survived", fired
+        if returncode == 2 and f"harness stop [{mutation['expect_stop']}]" in stderr:
+            return "killed", fired
+        return ("failed-elsewhere" if returncode == 2 else "crashed"), fired
     if returncode == 0:
         return "survived", fired
     if returncode == 1 and hard > 0:
@@ -333,7 +398,12 @@ def run_mutation(
         with own_writes(watch, originals):
             restore_originals(mutation["name"], kept, Path(run[0]))
     metrics = last_json_line(ran.stdout)
-    result, fired = classify(ran.returncode, metrics, plan, mutation)
+    reasons = (
+        invalid_reasons(plan, metrics, ran.returncode, seed)
+        if "expect_invalid" in mutation and ran.returncode in (0, 1)
+        else None
+    )
+    result, fired = classify(ran.returncode, metrics, plan, mutation, ran.stderr, reasons)
     outcome.update(
         result=result,
         exit_code=ran.returncode,
@@ -341,6 +411,11 @@ def run_mutation(
         expected=list(mutation.get("expect", [])),
         counters=fired,
     )
+    if "expect_stop" in mutation:
+        outcome["expected_stop"] = mutation["expect_stop"]
+    if "expect_invalid" in mutation:
+        outcome["expected_invalid"] = mutation["expect_invalid"]
+        outcome["invalid"] = [reason for reason in reasons or [] if reason.startswith(mutation["expect_invalid"])]
     if result != "killed":
         outcome["detail"] = ran.stderr[-2000:]
     return outcome
