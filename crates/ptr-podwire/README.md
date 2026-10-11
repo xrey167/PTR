@@ -73,7 +73,7 @@
 
 ### Linked experiments
 
-- [E007](../../experiments/system/E007-split-pod-kv/README.md) — `planned`
+- [E007](../../experiments/system/E007-split-pod-kv/README.md) — `frozen`
 
 ### Technology evaluations
 

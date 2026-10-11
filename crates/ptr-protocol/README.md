@@ -42,7 +42,7 @@
 
 - [R002](../../experiments/runtime/R002-unseen-pod-generalization/README.md) — `planned`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
-- [E007](../../experiments/system/E007-split-pod-kv/README.md) — `planned`
+- [E007](../../experiments/system/E007-split-pod-kv/README.md) — `frozen`
 
 ### Technology evaluations
 

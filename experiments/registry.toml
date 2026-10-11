@@ -283,7 +283,7 @@ status = "planned"
 [[experiment]]
 id = "E007"
 path = "system/E007-split-pod-kv"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "M002-a0v2-sweep-lr0p002"
