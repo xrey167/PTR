@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+Working method for all agents: AGENTS.md (binding).
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this repository is
@@ -27,7 +29,7 @@ make py-bindings                 # bindings/ptr-py: maturin develop into a venv,
 make release-package            # dist/: release tarball, CycloneDX SBOM, cargo metadata, SHA-256 (RELEASE_TOOLCHAIN=1.99.0 if stable is older)
 ```
 
-`make ci-local` covers the command steps of `.github/workflows/ci.yml` on Linux; each CI job is a target named `ci-<job>` (for example `ci-quality`, `ci-repository-invariants`, `ci-ledger-raft-rs`). It does not reproduce the editable training install (`pip install -e training`; `PYTHONPATH` is set instead), `security.yml` (needs cargo-audit and cargo-deny), `sdk.yml`, `burn-a0.yml` (use `make a0`), the Windows leg of `rust-stable` or the Python 3.11 leg of `python-training`. `scripts/tests/test_ci_local.py` fails if a CI step lacks a Makefile counterpart, so add both together. `ci-quality` runs fmt, `clippy -D warnings` and `RUSTDOCFLAGS="-D warnings"` docs on `stable`. `ci-repository-invariants` needs `origin/main` or `BASE=<commit>`. `ci-state-postgres` needs a local PostgreSQL 16+/pgvector and reads two variables: `PTR_PG_TEST_DSN` for the `ptr-pg` tests and `PTR_PG_EXPERIMENT_DSN` for the `ptr-bench` experiment steps.
+Local `stable` can be older than the MSRV; see AGENTS.md section 6 for running the `ci-*` recipes with `+1.99.0`. `make ci-local` covers the command steps of `.github/workflows/ci.yml` on Linux; each CI job is a target named `ci-<job>` (for example `ci-quality`, `ci-repository-invariants`, `ci-ledger-raft-rs`). It does not reproduce the editable training install (`pip install -e training`; `PYTHONPATH` is set instead), `security.yml` (needs cargo-audit and cargo-deny), `sdk.yml`, `burn-a0.yml` (use `make a0`), the Windows leg of `rust-stable` or the Python 3.11 leg of `python-training`. `scripts/tests/test_ci_local.py` fails if a CI step lacks a Makefile counterpart, so add both together. `ci-quality` runs fmt, `clippy -D warnings` and `RUSTDOCFLAGS="-D warnings"` docs on `stable`. `ci-repository-invariants` needs `origin/main` or `BASE=<commit>`. `ci-state-postgres` needs a local PostgreSQL 16+/pgvector and reads two variables: `PTR_PG_TEST_DSN` for the `ptr-pg` tests and `PTR_PG_EXPERIMENT_DSN` for the `ptr-bench` experiment steps.
 
 Backends are Cargo features, so a plain `--workspace` run does not exercise them; most have a dedicated CI job. Examples: `ptr-ledger` (`failpoints`, `raft-engine-backend`, `raft-rs-backend`), `ptr-state` (`turso-backend`), `ptr-net` (`iroh-backend`), `ptr-cluster`/`ptr-execwire`/`ptr-podwire` (`*-backend`), `ptr-storage` (`tier-opendal-*`), `ptr-pg` (`postgres-backend`), `ptr-observe` (`tracing-adapter`). Some integration tests are declared with `required-features`, so they silently do not build without the feature. No workflow enables `ptr-net`'s `wireguard-uapi-backend` and `wintun-backend` or the `candle-cuda` feature of `ptr-pods`/`ptr-runtime`, so nothing in CI compiles those paths.
 
@@ -50,7 +52,11 @@ Invariants in `docs/INVARIANTS.md` are binding: raw is never replaced by typed s
 
 ## Claude Code plugins
 
-The repo-local marketplace `.claude-plugin/marketplace.json` (name `ptr`) ships `ptr-dev` (skills such as `ptr-verify`, `ptr-results`, `ptr-new-experiment`, `ptr-offline-sync`, `experiment-run`; read-only agents `ptr-invariant-reviewer`, `ptr-claims-auditor`, `ptr-experiment-designer`; guard hooks that deny edits to `vendor/`, `training/runs/`, frozen experiments and a `.cargo/config.toml` `[env]` table) and `ptr-mods` (`/runs` pane, status line). Install with `claude plugin marketplace add ./` then `claude plugin install ptr-dev@ptr`; see `docs/CLAUDE_TOOLING.md`. GitHub is suspended, so GitLab is the primary remote: the skill `ptr-gitlab` and `docs/HOSTING.md` cover publishing, merge requests and the GitLab runner.
+The repo-local marketplace `.claude-plugin/marketplace.json` (name `ptr`) ships `ptr-dev` (skills such as `ptr-verify`, `ptr-results`, `ptr-new-experiment`, `ptr-offline-sync`, `experiment-run`; agents `ptr-invariant-reviewer`, `ptr-claims-auditor`, `ptr-experiment-designer`, `ptr-rereviewer`, `ptr-fact-checker`, `ptr-channel`; guard hooks that deny edits to `vendor/`, `training/runs/`, frozen experiments and a `.cargo/config.toml` `[env]` table) and `ptr-mods` (`/runs` pane, status line). Install with `claude plugin marketplace add ./` then `claude plugin install ptr-dev@ptr`; see `docs/CLAUDE_TOOLING.md`. GitHub is suspended, so GitLab is the primary remote: the skill `ptr-gitlab` and `docs/HOSTING.md` cover publishing, merge requests and the GitLab runner.
+
+## Head and channel sessions
+
+Multi-agent work follows `AGENTS.md` (roles, repository and research rules, freeze and merge discipline, hand-back formats). Details: `docs/FREEZE_PROCEDURE.md` (freeze), `docs/LOCAL_START.md` (local machine setup), `docs/agents/KICKOFF.md` (kickoff prompt and goal). The `ptr-dev` plugin (`docs/CLAUDE_TOOLING.md`) provides the read-only agents `ptr-invariant-reviewer`, `ptr-claims-auditor`, `ptr-experiment-designer`, `ptr-rereviewer` and `ptr-fact-checker`, and the coding-channel agent `ptr-channel`.
 
 ## Conventions and CI checks
 
