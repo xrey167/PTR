@@ -1,4 +1,4 @@
-# Desktop setup: Ubuntu 24.04 with one RTX 4090
+# Desktop setup: Ubuntu 24.04 with two RTX 3090 (originally written for one RTX 4090)
 
 **Kurzfassung (Deutsch).** Dieses Runbook richtet einen frisch installierten Desktop
 (Ubuntu 24.04 LTS, native, kein WSL2; eine NVIDIA RTX 4090 mit 24 GB) für PTR-Experimente
@@ -189,7 +189,7 @@ claude plugin install ptr-mods@ptr
 ```
 
 `ptr-dev` brings the `experiment-run` skill (how to run and monitor experiments), plus
-`ptr-verify`, `ptr-results`, `ptr-offline-sync` and others, three read-only review agents and
+`ptr-verify`, `ptr-results`, `ptr-offline-sync` and others, six agents (five read-only, one coding channel) and
 guard hooks. `ptr-mods` adds `/runs`, a pane with the newest run log, its PID and the GPU line.
 Example requests:
 
@@ -254,8 +254,9 @@ except for the following.
   `hardware/rtx3090.toml`; that is correct for this machine, so no manifest edit is needed
   (`GPU_HANDOVER.md` section 5 is resolved in favour of the 3090 profiles). The smoke configs
   `stage-moe-smoke-gpu.toml` and `stage-moe-olmoe-sft-smoke.toml` and the VCW `*-rtx4090.toml` configs
-  name `hardware/rtx4090.toml`; they run, but their manifests then carry the wrong profile name.
-  Pick the 3090 variant or a derived config before a run that is meant to be cited, and always record
+  name `hardware/rtx4090.toml`; each has a `-rtx3090` variant naming `hardware/rtx3090.toml`
+  (`make smoke-gpu` and `make olmoe-sft-smoke` pick them by default, `GPU_PROFILE=rtx3090`).
+  Use the 3090 variant for every run that is meant to be cited, and always record
   the real `nvidia-smi` output.
 - **One run per card.** Nothing in `training/` uses more than one GPU: the configs take
   `device = "cuda"`, the pipeline records `torch.cuda.get_device_name(0)` and peak memory of the
@@ -274,12 +275,15 @@ except for the following.
   confirmatory seed twice, and never two runs that both default to card 0.
 - **Frozen runs.** `scripts/run_experiment.py` passes a restricted environment and drops
   `CUDA_VISIBLE_DEVICES` (`GPU_HANDOVER.md` section 1.1 item 8), so a listed experiment's command
-  cannot be pinned to card 1 through the environment; it uses card 0. Either run frozen experiments
-  one at a time, or settle a pinning mechanism together with OD-3 before running two at once.
-  Exploratory and smoke runs are not affected.
-- **Doctor.** `scripts/gpu_doctor.py` prints `x2` for the card count but warns "expected an RTX 4090"
-  and probes torch on card 0 only; the WARN is expected on this machine. Check card 1 with
-  `CUDA_VISIBLE_DEVICES=1 training/.venv/bin/python -c 'import torch; print(torch.cuda.get_device_name(0))'`.
+  cannot be pinned to card 1 through the environment; it uses card 0. The same holds for the generated
+  freeze script: its `CUDA_VISIBLE_DEVICES` export reaches its own cargo, pilot and mutation steps but not
+  the seed runs. Run frozen seed runs one at a time until a reviewed runner change settles GPU pinning
+  (OD-3); the second card is for pilots, smokes, tuning and mutation runs. Exploratory and smoke runs are
+  not affected.
+- **Doctor.** `scripts/gpu_doctor.py` checks every visible card: a `gpu N` line per card, the summary
+  "2x NVIDIA GeForce RTX 3090, N MiB each", a torch allocation and matmul probe on every device, and a
+  `hardware profile` line that is OK and names `hardware/dual-rtx3090.toml`. A card that is not a 3090
+  or 4090 is an untested profile and gets a WARN.
 - **R003** declares `hardware/dual-rtx3090.toml`, the only profile in the plan that matches both
   cards, but it also needs a pinned backbone and a multi-GPU trainer that does not exist yet
   (`GPU_HANDOVER.md` step 14).

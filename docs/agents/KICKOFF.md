@@ -73,11 +73,12 @@ cards OK and names hardware/dual-rtx3090.toml. Fill os/cpu/ram_gib in hardware/d
 with measured values (one commit).
 
 STAGE 1. GPU smoke, no research claim. Step 1: make smoke-gpu; check metrics.json
-(hardware.device cuda, gpu name, peak memory) against the WP8 table in training/README.md.
+(hardware.device cuda, gpu name, peak memory): compare the metric ranges with the WP8 table in
+training/README.md (a CPU smoke baseline without peak memory) and record the peak memory as the new GPU baseline.
 Step 2: make olmoe-sft-smoke in the background (experiment-run skill, logs in
 training/runs/logs/), record torch peak and nvidia-smi peak. Step 3: derive the OLMoE step-3
 config from the step-2 measurement (copy training/configs/stage-moe-olmoe.toml, change only what
-GPU_HANDOVER step 3 lists, name the 3090 profile, list each change in the commit message), run it,
+GPU_HANDOVER step 3 lists, keep hardware/rtx3090.toml, list each change in the commit message), run it,
 read the first RL-phase peak. Use GPU_PROFILE=rtx3090 (the default): the -rtx3090 configs name the right profile.
 Their wall-time estimates are datasheet-based, not measured: replace them with the measurement.
 
@@ -218,7 +219,8 @@ Review for, in this order:
    assistant; English; typed structs and exhaustive match.
 4. Evidence: does each claim in docs or results have a baseline and failure criterion; are
    estimates labelled; do smoke results claim more than pipeline evidence.
-5. Reproduce: run the definition-of-done commands yourself; compare with the hand-back.
+5. Reproduce: the head explicitly asks you to run these DoD commands: <list the commands the head
+   wants run; read-only and Python checks by default>. Compare their output with the hand-back.
 
 Output (once): findings ranked P0 (blocks merge), P1 (must fix), P2 (nice to have), each as
 <path>:<line> - what is wrong - why - proposed fix; then commands run with real output; then a
