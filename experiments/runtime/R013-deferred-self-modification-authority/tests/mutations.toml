@@ -7,16 +7,21 @@
 # admission, the stale-evidence check of the gate configuration and of the evaluator, the dependency walk
 # of the route probe, the epoch condition and the source-edge closure of the fence sets (and a fence set
 # that takes every dependent), the expert dependency of the KV liveness oracle, the marker and the digest
-# reset of a restarted session, the artifact and proposal bindings of an attestation, the single use of a
-# run id, the requirement of attestation, the attestor's place in the block, the cause check of a readmission
-# and plant a panic. The last two plant defects in the harness itself (a replay that drops the last event, a pin
-# compared with the wrong constant), to show that its bookkeeping is not vacuous. Every hard counter is expected by
-# at least one mutation, so that `killed == total` also shows each of the sixteen can fire (a test in bins/ptr-bench
-# checks this list against the harness).
+# reset of a restarted session, the artifact, proposal and base-model bindings of an attestation at admission, the
+# signature check and the registry check of an attestation (a self-invented attestor), the replay-time re-check of a
+# recorded attestation, the live registration of an attestor key under a forged gate grant (the pre-review product), the single use of a run id (in any role, at any generation), the requirement of attestation
+# and its recording, the liveness check of an attestor, the cause check of a readmission and plant a panic. The
+# harness mutations plant defects in the harness itself (a replay that drops the last event, a pin compared with the
+# wrong constant, a case family that skips a cell) to show that its bookkeeping is not vacuous. The binding mutations
+# that remove only the admission-time check are killed by `wrong_typed_refusals`: the replay-time check still
+# refuses the attempt, with a different typed error than the one the case owes, which is a contract violation of the
+# product. Every hard counter is expected by at least one mutation, so that `killed == total` also shows each of the
+# twenty can fire (a test in bins/ptr-bench checks this list against the harness).
 #
-# Not listed, on purpose, because the harness cannot see them (limits, stated in the preregistration): the signature
-# of an attestation (there is none), the replay-time re-check of the artifact and proposal binding (there is none),
-# a raw ledger writer.
+# Not listed, on purpose, because the harness cannot or need not see them: a raw ledger writer; the scope of the
+# requirement to artifact-producing operations (a positive control that is refused ends the run with status 2, which
+# is no kill by definition); the reserved-prefix refusal of an unconsumed `run:` input on the plain path (the crate
+# tests in crates/ptr-runtime/tests/expert_attestation.rs hold it).
 #
 # The mutation run is invoked as `ptr-bench self-modification-authority 1 1001`: the same plan as a seed's, at a seed
 # that is not one of the experiment's, flagged `custom` and so no evidence.
@@ -34,6 +39,8 @@ hard_counters = [
     "descendants_routable_after_superseded_source_revocation",
     "mismatched_attestation_admissions",
     "unattested_admissions",
+    "untrusted_attestor_admissions",
+    "self_trusted_attestor_admissions",
     "revoked_attestor_evidence_admissions",
     "attestor_quarantine_readmissions_admitted",
     "inflight_fallback_incomplete",
@@ -42,6 +49,8 @@ hard_counters = [
     "bystanders_closed",
     "registry_replay_mismatches",
     "procedure_mismatches",
+    "wrong_typed_refusals",
+    "skipped_cells",
     "product_panics",
 ]
 
@@ -197,26 +206,149 @@ replace = '''
 
 [[mutation]]
 name = "attestation-artifact-not-compared"
-description = "The artifact digest of an attestation is not compared with the proposal's: the attestation of another run is admitted."
-expect = ["mismatched_attestation_admissions"]
+description = "The artifact digest of an attestation is not compared with the proposal's at admission: the attestation of another artifact reaches the replay-time check, which still refuses it, with another typed error than the one owed."
+expect = ["wrong_typed_refusals"]
 file = "crates/ptr-runtime/src/expert/attestation.rs"
 find = '''
-        if attestation.artifact_digest != expert_evidence_artifact_digest(proposal.op()) {
+        if claim.artifact_digest != expert_evidence_artifact_digest(proposal.op()) {
 '''
 replace = '''
-        if false && attestation.artifact_digest != expert_evidence_artifact_digest(proposal.op()) {
+        if false && claim.artifact_digest != expert_evidence_artifact_digest(proposal.op()) {
 '''
 
 [[mutation]]
 name = "attestation-proposal-not-compared"
-description = "The proposal an attestation names is not compared with the one being committed."
+description = "The proposal an attestation names is not compared with the one being committed at admission."
+expect = ["wrong_typed_refusals"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+        if claim.proposal_id != *proposal.proposal_id().as_bytes() {
+'''
+replace = '''
+        if false && claim.proposal_id != *proposal.proposal_id().as_bytes() {
+'''
+
+[[mutation]]
+name = "attestation-base-model-not-compared"
+description = "The base model an attestation names is not compared with the operation's at admission."
+expect = ["wrong_typed_refusals"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+        if claim.base_model != *first.base_model() {
+'''
+replace = '''
+        if false && claim.base_model != *first.base_model() {
+'''
+
+[[mutation]]
+name = "artifact-binding-not-checked-at-admission-or-replay"
+description = "The artifact binding is compared neither at admission nor against the recorded signature: the attestation of another artifact is admitted."
 expect = ["mismatched_attestation_admissions"]
 file = "crates/ptr-runtime/src/expert/attestation.rs"
 find = '''
-        if attestation.proposal_id != *proposal.proposal_id().as_bytes() {
+        if claim.artifact_digest != expert_evidence_artifact_digest(proposal.op()) {
 '''
 replace = '''
-        if false && attestation.proposal_id != *proposal.proposal_id().as_bytes() {
+        if false && claim.artifact_digest != expert_evidence_artifact_digest(proposal.op()) {
+'''
+
+[[mutation.also]]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+    verify(&claim, key, attestor.digest(), &signature_bytes)?;
+'''
+replace = '''
+    let _ = (&claim, key, &signature_bytes);
+'''
+
+[[mutation.also]]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+    if sha256(&claim.payload(attestor.digest())) != *signature.digest() {
+'''
+replace = '''
+    if false && sha256(&claim.payload(attestor.digest())) != *signature.digest() {
+'''
+
+[[mutation]]
+name = "replay-does-not-verify-the-recorded-attestation"
+description = "Neither the signature nor the recorded payload digest of a recorded attestation is re-checked against the record: the attestation of one proposal, carried by the record of another, replays."
+expect = ["mismatched_attestation_admissions"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+    verify(&claim, key, attestor.digest(), &signature_bytes)?;
+'''
+replace = '''
+    let _ = (&claim, key, &signature_bytes);
+'''
+
+[[mutation.also]]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+    if sha256(&claim.payload(attestor.digest())) != *signature.digest() {
+'''
+replace = '''
+    if false && sha256(&claim.payload(attestor.digest())) != *signature.digest() {
+'''
+
+[[mutation]]
+name = "replay-checks-the-payload-digest-only"
+description = "The replay-time signature check is gone but the recorded payload digest is still compared: the attestation carried by another proposal's record is still refused, but with AttestationMalformed instead of AttestationSignatureInvalid, a typed refusal other than the one owed."
+expect = ["wrong_typed_refusals"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+    verify(&claim, key, attestor.digest(), &signature_bytes)?;
+'''
+replace = '''
+    let _ = (&claim, key, &signature_bytes);
+'''
+
+[[mutation]]
+name = "signature-not-verified"
+description = "The signature of an attestation is not verified: a registered attestor's id carrying another key's signature is admitted."
+expect = ["untrusted_attestor_admissions"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+    key.verify_strict(&claim.payload(key_id), &Signature::from_bytes(signature))
+        .map_err(|_| ExpertAdmissionError::AttestationSignatureInvalid)
+'''
+replace = '''
+    let _ = (&claim, key_id, signature);
+    Ok(())
+'''
+
+[[mutation]]
+name = "self-invented-attestor-trusted"
+description = "The registry answers every unknown attestor with some registered key and the key id and the signature are not checked: an attestor the host never registered is admitted."
+expect = ["untrusted_attestor_admissions"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+        self.keys.get(&(attestor.to_owned(), epoch))
+'''
+replace = '''
+        self.keys
+            .get(&(attestor.to_owned(), epoch))
+            .or_else(|| self.keys.values().next())
+'''
+
+[[mutation.also]]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+    if expert_attestor_key_id(key) != *key_id {
+'''
+replace = '''
+    if false && expert_attestor_key_id(key) != *key_id {
+'''
+
+[[mutation.also]]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+    key.verify_strict(&claim.payload(key_id), &Signature::from_bytes(signature))
+        .map_err(|_| ExpertAdmissionError::AttestationSignatureInvalid)
+'''
+replace = '''
+    let _ = (&claim, key_id, signature);
+    Ok(())
 '''
 
 [[mutation]]
@@ -225,13 +357,44 @@ description = "A run id is not consumed by the record that names it: the same ru
 expect = ["mismatched_attestation_admissions"]
 file = "crates/ptr-runtime/src/expert.rs"
 find = '''
-            if role == ExpertInputRole::Training
-                && identity.starts_with(RUN_IDENTITY_PREFIX)
+            if identity.starts_with(RUN_IDENTITY_PREFIX)
+                && self.experts.dependency_index().names_identity(identity)
 '''
 replace = '''
             if false
-                && role == ExpertInputRole::Training
                 && identity.starts_with(RUN_IDENTITY_PREFIX)
+                && self.experts.dependency_index().names_identity(identity)
+'''
+
+[[mutation]]
+name = "run-id-checked-at-its-own-generation-only"
+description = "A run id is consumed only at the generation a record named it at: the run named at generation 2 is not seen as consumed."
+expect = ["mismatched_attestation_admissions", "wrong_typed_refusals"]
+file = "crates/ptr-runtime/src/expert.rs"
+find = '''
+                && self.experts.dependency_index().names_identity(identity)
+'''
+replace = '''
+                && self
+                    .experts
+                    .dependency_index()
+                    .registered_digest(identity, generation)
+                    .is_some()
+'''
+
+[[mutation]]
+name = "run-id-checked-in-the-training-role-only"
+description = "A run id is consumed only when named as a training input: the run named as an evaluation input is not seen as consumed."
+expect = ["mismatched_attestation_admissions", "wrong_typed_refusals"]
+file = "crates/ptr-runtime/src/expert.rs"
+find = '''
+            if identity.starts_with(RUN_IDENTITY_PREFIX)
+                && self.experts.dependency_index().names_identity(identity)
+'''
+replace = '''
+            if role == ExpertInputRole::Training
+                && identity.starts_with(RUN_IDENTITY_PREFIX)
+                && self.experts.dependency_index().names_identity(identity)
 '''
 
 [[mutation]]
@@ -240,21 +403,56 @@ description = "A grant that requires attestation admits an admission that carrie
 expect = ["unattested_admissions"]
 file = "crates/ptr-runtime/src/expert.rs"
 find = '''
-        if grant.attestation_required && attested == Attested::No {
+        if grant.attestation_required
+            && attested == Attested::No
 '''
 replace = '''
-        if false && grant.attestation_required && attested == Attested::No {
+        if false
+            && grant.attestation_required
+            && attested == Attested::No
 '''
 
 [[mutation]]
-name = "attestor-left-out-of-the-block"
-description = "The attestor is not recorded among the inputs of the expert it attested: its revocation reaches nobody and a proposal queued across it is admitted."
-expect = ["revoked_attestor_evidence_admissions", "fence_set_mismatches"]
+name = "requirement-not-recorded"
+description = "An admission under a grant that requires attestation does not record the requirement: a restart with a looser grant admits an unattested record, and the history replays."
+expect = ["unattested_admissions"]
 file = "crates/ptr-runtime/src/expert/attestation.rs"
 find = '''
-        training.push(attestor);
+        if grant.requires_attestation() {
 '''
 replace = '''
+        if false && grant.requires_attestation() {
+'''
+
+[[mutation]]
+name = "recorded-requirement-not-enforced"
+description = "The recorded requirement is not read back: an unattested artifact-producing record is admitted and replayed after a record that carries the marker."
+expect = ["unattested_admissions"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+        if !found.markers.is_empty() || policy_recorded {
+'''
+replace = '''
+        if !found.markers.is_empty() {
+'''
+
+[[mutation]]
+name = "attestor-liveness-not-checked"
+description = "A revoked attestor is not refused as an input: a proposal queued across the revocation of its attestor is admitted."
+expect = ["revoked_attestor_evidence_admissions"]
+file = "crates/ptr-runtime/src/expert.rs"
+find = '''
+        match self.input_status(identity, generation) {
+            Some(InputStatus::Revoked) => {
+'''
+replace = '''
+        match self
+            .input_status(identity, generation)
+            .filter(|status| {
+                !(identity.starts_with("attestor:") && matches!(status, InputStatus::Revoked))
+            })
+        {
+            Some(InputStatus::Revoked) => {
 '''
 
 [[mutation]]
@@ -319,13 +517,12 @@ description = "The harness compares the registry with a replay that drops the la
 expect = ["registry_replay_mismatches"]
 file = "bins/ptr-bench/src/experiments/r013/cases/mod.rs"
 find = '''
-        let replayed = rt.replayed()?;
+        let replayed = replay_attested(rt.runtime.committed_events())
 '''
 replace = '''
         let events = rt.events();
         let kept = events.len().saturating_sub(1);
-        let replayed = ptr_runtime::PtrRuntime::replay(ptr_config::PtrConfig::default(), &events[..kept])
-            .map_err(|error| format!("{error:?}"))?;
+        let replayed = replay_attested(&events[..kept])
 '''
 
 [[mutation]]
@@ -338,4 +535,72 @@ find = '''
 '''
 replace = '''
     let mut mismatches = i64::from(selection_digest() != params::SELECTION_DOMAIN);
+'''
+
+[[mutation]]
+name = "harness-skips-the-merge-cells-of-the-binding-case"
+description = "The binding case leaves out its Merge cells: the run is vacuous and the skipped cells are counted."
+expect = ["skipped_cells"]
+file = "bins/ptr-bench/src/experiments/r013/cases/attestor.rs"
+find = '''
+    for op in cx.shuffled("attestor.ops", &Op::ALL) {
+'''
+replace = '''
+    for op in cx
+        .shuffled("attestor.ops", &Op::ALL)
+        .into_iter()
+        .filter(|op| *op != Op::Merge)
+    {
+'''
+
+[[mutation]]
+name = "harness-skips-the-recorded-requirement-cells"
+description = "The attestor case family leaves out its recorded-requirement cells: the attempts after a reopen are never made, the run is vacuous and the skipped cells are counted. A second, attestor-side skip: the per-kind coverage rules are not each targeted, this one shows that the grouped attestor counters fall too."
+expect = ["skipped_cells"]
+file = "bins/ptr-bench/src/experiments/r013/cases/attestor.rs"
+find = '''
+    cx.sub("recorded_requirement");
+    recorded_requirement(cx)?;
+'''
+replace = '''
+    let _ = recorded_requirement;
+'''
+
+[[mutation]]
+name = "live-attestor-registration-under-a-forged-gate-grant"
+description = "The pre-review product: a live runtime registers an attestor key under any gate fence grant that revalidates, and a caller holding an admission grant assembles one from its binding: its own key becomes trusted and its self-signed attestation is admitted."
+expect = ["self_trusted_attestor_admissions"]
+file = "crates/ptr-runtime/src/expert/attestation.rs"
+find = '''
+    /// The attestor keys this runtime trusts.
+'''
+replace = '''
+    pub fn register_expert_attestor(
+        &mut self,
+        grant: &super::ExpertFenceGrant,
+        attestor: &str,
+        epoch: Generation,
+        key: VerifyingKey,
+    ) -> Result<(), RuntimeError> {
+        self.revalidate_grant(super::ExpertGrantKind::Gate, grant.binding())?;
+        self.attestors
+            .register(attestor, epoch, key)
+            .map_err(RuntimeError::Expert)
+    }
+
+    /// The attestor keys this runtime trusts.
+'''
+
+[[mutation.also]]
+file = "bins/ptr-bench/src/experiments/r013/cases/attestor.rs"
+find = '''
+    let _ = (rt, forged, who);
+'''
+replace = '''
+    let _ = rt.runtime.register_expert_attestor(
+        forged,
+        who.name,
+        Generation(who.epoch),
+        who.signing_key().verifying_key(),
+    );
 '''

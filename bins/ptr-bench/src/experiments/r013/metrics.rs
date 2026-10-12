@@ -16,7 +16,7 @@ pub fn attempt_members() -> Vec<&'static str> {
 }
 
 /// The metrics of the manifest, in its order (a test compares them with the file).
-pub const METRIC_NAMES: [&str; 33] = [
+pub const METRIC_NAMES: [&str; 41] = [
     // Coverage, observed.
     "adversarial_attempts_per_case",
     "structural_inflight_race_cases",
@@ -28,6 +28,10 @@ pub const METRIC_NAMES: [&str; 33] = [
     "attestation_proposal_mismatch_attempts",
     "attestation_missing_attempts",
     "attestation_run_reuse_attempts",
+    "attestation_base_model_mismatch_attempts",
+    "attestation_untrusted_attestor_attempts",
+    "forged_gate_grant_attempts",
+    "attestation_requirement_after_reopen_attempts",
     "attestation_binding_controls_accepted",
     "revoked_attestor_evidence_attempts",
     "revoked_attestor_evidence_controls_accepted",
@@ -41,6 +45,8 @@ pub const METRIC_NAMES: [&str; 33] = [
     "descendants_routable_after_superseded_source_revocation",
     "mismatched_attestation_admissions",
     "unattested_admissions",
+    "untrusted_attestor_admissions",
+    "self_trusted_attestor_admissions",
     "revoked_attestor_evidence_admissions",
     "attestor_quarantine_readmissions_admitted",
     "inflight_fallback_incomplete",
@@ -49,6 +55,8 @@ pub const METRIC_NAMES: [&str; 33] = [
     "bystanders_closed",
     "registry_replay_mismatches",
     "procedure_mismatches",
+    "wrong_typed_refusals",
+    "skipped_cells",
     "product_panics",
     // Descriptive: no rule reads them.
     "reactivation_attempts",
@@ -56,7 +64,7 @@ pub const METRIC_NAMES: [&str; 33] = [
 ];
 
 /// The counters whose sum is `hard_failures` and that `tests/mutations.toml` names.
-pub const HARD_COUNTERS: [&str; 16] = [
+pub const HARD_COUNTERS: [&str; 20] = [
     "structural_inflight_outputs_after_invalidation",
     "routable_descendants_after_source_authority_revocation",
     "reactivations_from_compromised_seed_admitted",
@@ -64,6 +72,8 @@ pub const HARD_COUNTERS: [&str; 16] = [
     "descendants_routable_after_superseded_source_revocation",
     "mismatched_attestation_admissions",
     "unattested_admissions",
+    "untrusted_attestor_admissions",
+    "self_trusted_attestor_admissions",
     "revoked_attestor_evidence_admissions",
     "attestor_quarantine_readmissions_admitted",
     "inflight_fallback_incomplete",
@@ -72,6 +82,8 @@ pub const HARD_COUNTERS: [&str; 16] = [
     "bystanders_closed",
     "registry_replay_mismatches",
     "procedure_mismatches",
+    "wrong_typed_refusals",
+    "skipped_cells",
     "product_panics",
 ];
 
@@ -161,6 +173,22 @@ pub fn coverage() -> Vec<String> {
         format!(
             "attestation_run_reuse_attempts >= {}",
             params::MIN_ATTESTATION_RUN_REUSE_ATTEMPTS
+        ),
+        format!(
+            "attestation_base_model_mismatch_attempts >= {}",
+            params::MIN_ATTESTATION_BASE_MODEL_MISMATCH_ATTEMPTS
+        ),
+        format!(
+            "attestation_untrusted_attestor_attempts >= {}",
+            params::MIN_ATTESTATION_UNTRUSTED_ATTEMPTS
+        ),
+        format!(
+            "forged_gate_grant_attempts >= {}",
+            params::MIN_FORGED_GATE_GRANT_ATTEMPTS
+        ),
+        format!(
+            "attestation_requirement_after_reopen_attempts >= {}",
+            params::MIN_ATTESTATION_REQUIREMENT_AFTER_REOPEN_ATTEMPTS
         ),
         format!(
             "attestation_binding_controls_accepted >= {}",

@@ -315,7 +315,9 @@ mod structure;
 use crate::manifest::ManifestBindingAuthority;
 use crate::{PtrRuntime, RuntimeError};
 pub use attestation::{
-    ExpertAttestation, ATTESTOR_IDENTITY_PREFIX, RUN_GENERATION, RUN_IDENTITY_PREFIX,
+    expert_attestor_key_id, ExpertAttestation, ExpertAttestationClaim, ExpertAttestorRegistry,
+    ATTESTATION_IDENTITY_PREFIX, ATTESTATION_POLICY_IDENTITY, ATTESTOR_IDENTITY_PREFIX,
+    MAX_ATTESTOR_NAME_BYTES, RUN_GENERATION, RUN_IDENTITY_PREFIX,
 };
 pub(crate) use authority::AuthorityState;
 pub use authority::{
@@ -506,11 +508,15 @@ impl ExpertAdmissionGrant {
         self
     }
 
-    /// The same grant requiring an attestation ([`ExpertAttestation`]): an admission that carries
-    /// none (every call of [`PtrRuntime::admit_expert_proposal`] and
+    /// The same grant requiring an attestation ([`ExpertAttestation`]): an artifact-producing
+    /// admission (Birth, Merge, Split, a Reactivate that creates a generation) that carries none
+    /// (every call of [`PtrRuntime::admit_expert_proposal`] and
     /// [`PtrRuntime::admit_expert_proposal_with_inputs`]) is refused as
-    /// [`ExpertAdmissionError::AttestationRequired`], before any other check. Host policy at
-    /// commit: it is not recorded, so replay cannot re-check it.
+    /// [`ExpertAdmissionError::AttestationRequired`], before any other check; Freeze, Retire,
+    /// Prune and unfreeze are not affected. The requirement is recorded: an attested admission
+    /// under this grant commits the policy marker in its dependency block, and from that record
+    /// on the ledger requires an attestation of every later artifact-producing record, replay
+    /// included, whatever grant a restarted host builds.
     #[must_use]
     pub fn with_required_attestation(mut self) -> Self {
         self.attestation_required = true;
@@ -693,9 +699,32 @@ pub enum ExpertAdmissionError {
     /// An attestation names another artifact than the one the proposal determines
     /// ([`expert_evidence_artifact_digest`]).
     AttestationArtifactMismatch,
-    /// The grant requires an attestation ([`ExpertAdmissionGrant::with_required_attestation`])
-    /// and the admission carries none.
+    /// An attestation names another base model than the one the operation's results are on.
+    AttestationBaseModelMismatch,
+    /// An attestation names other result experts (pods or generations) than the operation
+    /// creates.
+    AttestationResultMismatch,
+    /// An artifact-producing admission carries no complete attestation although the grant
+    /// requires one ([`ExpertAdmissionGrant::with_required_attestation`]) or the ledger has
+    /// recorded that attestation is required.
     AttestationRequired,
+    /// The attestation signature does not verify, strictly, under the registered key.
+    AttestationSignatureInvalid,
+    /// A recorded attestation is not in the canonical shape (one attestor, one run, one
+    /// signature, their digests consistent).
+    AttestationMalformed(String),
+    /// No key is registered for the attestor at that epoch
+    /// ([`ExpertAttestorRegistry`]).
+    AttestorUnknown { attestor: String, epoch: Generation },
+    /// The key id the attestation names is not the id of the key registered for the attestor at
+    /// that epoch.
+    AttestorKeyMismatch { attestor: String, epoch: Generation },
+    /// An attestor name outside 1 to [`MAX_ATTESTOR_NAME_BYTES`] bytes of `a-z`, `0-9`, `.`,
+    /// `_`, `-`.
+    InvalidAttestorName { name: String },
+    /// An input identity only an attested admission may set (`attestor:`, `run:`,
+    /// `attestation:`, `policy:attestation-required`).
+    ReservedInputIdentity { identity: String },
     /// A record names a training run (`run:` input) that an earlier committed record already
     /// named: a run id is single-use.
     RunIdReused { identity: String },
@@ -2306,7 +2335,10 @@ impl PtrRuntime {
         inputs: Option<ExpertInputs>,
         attested: Attested,
     ) -> Result<CommitIndex, RuntimeError> {
-        if grant.attestation_required && attested == Attested::No {
+        if grant.attestation_required
+            && attested == Attested::No
+            && !proposal.op().results().is_empty()
+        {
             return Err(RuntimeError::Expert(
                 ExpertAdmissionError::AttestationRequired,
             ));
@@ -3073,7 +3105,13 @@ impl PtrRuntime {
             .iter()
             .map(|source| key(source.pod(), source.generation()))
             .collect();
+        let policy_recorded = self
+            .experts
+            .dependency_index()
+            .registered_digest(ATTESTATION_POLICY_IDENTITY, RUN_GENERATION)
+            .is_some();
         let Some(block) = record.inputs() else {
+            attestation::check_record(&self.attestors, record, policy_recorded)?;
             self.check_inherited_inputs(&[], &results, &sources)?;
             return Ok(DependencyUpdate {
                 results,
@@ -3105,13 +3143,8 @@ impl PtrRuntime {
             let identity = input.identity();
             let generation = input.generation();
             self.check_input_live(role, identity, generation)?;
-            if role == ExpertInputRole::Training
-                && identity.starts_with(RUN_IDENTITY_PREFIX)
-                && self
-                    .experts
-                    .dependency_index()
-                    .registered_digest(identity, generation)
-                    .is_some()
+            if identity.starts_with(RUN_IDENTITY_PREFIX)
+                && self.experts.dependency_index().names_identity(identity)
             {
                 return Err(ExpertAdmissionError::RunIdReused {
                     identity: identity.to_owned(),
@@ -3144,6 +3177,7 @@ impl PtrRuntime {
                 digest: *input.digest(),
             });
         }
+        attestation::check_record(&self.attestors, record, policy_recorded)?;
         let own: Vec<InputKey> = seen.keys().cloned().collect();
         self.check_inherited_inputs(&own, &results, &sources)?;
         let split = |inputs: &[ExpertInputRef]| -> Vec<RecordedInput> {

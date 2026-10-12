@@ -14,9 +14,10 @@
 //! is no router and no training; "route" is a probe of `expert_route_admission`, and "direct
 //! append" is the public `PtrRuntime` surface (no claim against a raw ledger writer).
 //!
-//! The exit status is 1 when a coverage prerequisite is unmet or a falsifier is tripped, and 2
-//! when the harness itself cannot run: a refusal that is not the expected typed error, a
-//! fixture that does not build, a positive control that fails. Every panic of the code under
+//! The exit status is 1 when a coverage prerequisite is unmet or a falsifier is tripped (a
+//! refusal that is not the typed error the case owes is a falsifier: `wrong_typed_refusals`),
+//! and 2 when the harness itself cannot run: a request the fixtures cannot build, a fixture
+//! that does not build, a positive control that fails. Every panic of the code under
 //! test is contained and counted (`product_panics`) and falsifies.
 
 pub mod cases;
@@ -94,7 +95,7 @@ type Res<T> = Result<T, String>;
 /// What `--preflight` checks: the harness can run on this machine. It records nothing and
 /// reads no seed: one attested admission and one compound invalidation end to end, and the pins.
 pub fn preflight() -> Result<String, String> {
-    use crate::experiments::r011::cases::fixture::{Rt, Setup};
+    use crate::experiments::r011::cases::fixture::Setup;
     use cases::{admit_attested, Attestor};
     use ptr_pods::{ExpertInputs, StructuralOp};
     use ptr_runtime::expert::InputInvalidation;
@@ -104,7 +105,7 @@ pub fn preflight() -> Result<String, String> {
     if pins > 0 {
         return Err(format!("{pins} pins of the harness differ from the build"));
     }
-    let mut rt = Rt::fresh()?;
+    let mut rt = cases::fresh()?;
     let attestor = Attestor::new("preflight", 1);
     let op = StructuralOp::Birth {
         result: rt.spec("p"),
@@ -162,6 +163,19 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
     cx.tally
         .add("procedure_mismatches", procedure_mismatches()?);
     let order = cases::run_all(&mut cx)?;
+    // A cell the run did not execute leaves its coverage counter short. The run is vacuous
+    // then, and that is also counted as a hard counter (`skipped_cells`), so that the mutation
+    // plan can name a skipped cell like any other defect.
+    let (early, _) = cx.tally.metrics();
+    let skipped = judge(
+        &Json::Obj(early),
+        &cx.tally.unsupported_names(),
+        &metrics::coverage(),
+    )
+    .iter()
+    .filter(|check| check.status == Status::Fail)
+    .count();
+    cx.tally.add("skipped_cells", skipped as i64);
     let hard = metrics::hard_failures(&cx.tally);
 
     let (printed, gaps) = cx.tally.metrics();
@@ -232,7 +246,7 @@ pub fn execute(seed: u64, scale: Scale) -> Result<Report, String> {
             ),
             (
                 "attestor",
-                note("the attestor and the run are input identities (attestor:{name}, run:{hex}) recorded in the dependency block, so revocation, terminality and lineage are the existing dependency index's; the attestation itself is the host's assertion, not recorded and not signed: replay re-checks the attestor's liveness and the single use of the run id (both in the block) and does not re-check the artifact or proposal binding or that an attestation was presented; the artifact digest it binds is the one the operation determines, not weights"),
+                note("the attestor and the run are input identities (attestor:{name}, run:{hex}) recorded in the dependency block, so revocation, terminality and lineage are the existing dependency index's; the attestation is an Ed25519 signature by a key of the host's registry (fixed when the runtime is built, never changed by a grant) over the proposal, the artifact digest the operation determines (not weights), the base model, the results and the run id; attestor, run and signature are recorded in the block and replay re-verifies the signature and the bindings and the single use of the run id"),
             ),
             (
                 "race",
@@ -549,7 +563,7 @@ mod tests {
                 "{rule}: no '{sentence}' in the text"
             );
         }
-        assert_eq!(metrics::falsifiers().len(), 16);
+        assert_eq!(metrics::falsifiers().len(), 20);
     }
 
     #[test]

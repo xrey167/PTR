@@ -307,7 +307,7 @@ fn live_block() -> ExpertInputs {
 }
 
 fn dependency_cell(cx: &mut Cx, kind: DepKind, consume: Consume, path: Path) -> Res<()> {
-    let mut rt = Rt::fresh()?;
+    let mut rt = super::fresh()?;
     let setup = Setup::PRE;
     let birth = |rt: &Rt, pod: &str| StructuralOp::Birth {
         result: rt.spec(pod),

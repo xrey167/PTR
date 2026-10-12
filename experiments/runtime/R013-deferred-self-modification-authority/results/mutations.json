@@ -1,0 +1,510 @@
+{
+  "experiment_id": "R013",
+  "git_sha": "fc39d4bf0c7bf390762de0482e7167d4619cce21",
+  "recorded_at": "2026-10-11T21:50:27.395661+00:00",
+  "subcommand": "self-modification-authority",
+  "killed": 32,
+  "total": 32,
+  "mutations": [
+    {
+      "name": "inherited-inputs-not-checked",
+      "file": "crates/ptr-runtime/src/expert.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "reactivations_from_compromised_seed_admitted"
+      ],
+      "counters": {
+        "reactivations_from_compromised_seed_admitted": 6
+      }
+    },
+    {
+      "name": "stale-gate-config-evidence-accepted",
+      "file": "crates/ptr-runtime/src/expert/authority.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "reactivations_from_compromised_seed_admitted"
+      ],
+      "counters": {
+        "reactivations_from_compromised_seed_admitted": 3,
+        "compromised_reactivations_routable": 3
+      }
+    },
+    {
+      "name": "stale-evaluator-evidence-accepted",
+      "file": "crates/ptr-runtime/src/expert/authority.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "reactivations_from_compromised_seed_admitted"
+      ],
+      "counters": {
+        "reactivations_from_compromised_seed_admitted": 3,
+        "compromised_reactivations_routable": 3
+      }
+    },
+    {
+      "name": "dependency-walk-finds-nothing-dead",
+      "file": "crates/ptr-runtime/src/expert/dependency.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 12,
+      "expected": [
+        "reactivations_from_compromised_seed_admitted",
+        "compromised_reactivations_routable"
+      ],
+      "counters": {
+        "reactivations_from_compromised_seed_admitted": 6,
+        "compromised_reactivations_routable": 6
+      }
+    },
+    {
+      "name": "authority-fence-set-spares-the-newest-epoch",
+      "file": "crates/ptr-runtime/src/expert/authority.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 66,
+      "expected": [
+        "routable_descendants_after_source_authority_revocation"
+      ],
+      "counters": {
+        "routable_descendants_after_source_authority_revocation": 24,
+        "descendants_routable_after_superseded_source_revocation": 18,
+        "fence_set_mismatches": 24
+      }
+    },
+    {
+      "name": "fence-set-closure-ignores-the-source-edges",
+      "file": "crates/ptr-runtime/src/expert/dependency.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 36,
+      "expected": [
+        "descendants_routable_after_superseded_source_revocation",
+        "fence_set_mismatches"
+      ],
+      "counters": {
+        "fence_set_mismatches": 36
+      }
+    },
+    {
+      "name": "fence-set-takes-every-dependent",
+      "file": "crates/ptr-runtime/src/expert/dependency.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 50,
+      "expected": [
+        "bystanders_closed",
+        "fence_set_mismatches"
+      ],
+      "counters": {
+        "inflight_fallback_incomplete": 1,
+        "fence_set_mismatches": 35,
+        "bystanders_closed": 14
+      }
+    },
+    {
+      "name": "kv-oracle-treats-every-expert-as-live",
+      "file": "crates/ptr-runtime/src/kv_prefix.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 16,
+      "expected": [
+        "structural_inflight_outputs_after_invalidation"
+      ],
+      "counters": {
+        "structural_inflight_outputs_after_invalidation": 16
+      }
+    },
+    {
+      "name": "restart-does-not-mark-itself-restarted",
+      "file": "crates/ptr-runtime/src/kv_infer_session.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "inflight_fallback_incomplete"
+      ],
+      "counters": {
+        "inflight_fallback_incomplete": 2
+      }
+    },
+    {
+      "name": "restart-keeps-the-digest-of-the-cancelled-run",
+      "file": "crates/ptr-runtime/src/kv_infer_session.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "inflight_fallback_output_mismatches"
+      ],
+      "counters": {
+        "inflight_fallback_output_mismatches": 1
+      }
+    },
+    {
+      "name": "attestation-artifact-not-compared",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "wrong_typed_refusals"
+      ],
+      "counters": {
+        "wrong_typed_refusals": 3
+      }
+    },
+    {
+      "name": "attestation-proposal-not-compared",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "wrong_typed_refusals"
+      ],
+      "counters": {
+        "wrong_typed_refusals": 3
+      }
+    },
+    {
+      "name": "attestation-base-model-not-compared",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "wrong_typed_refusals"
+      ],
+      "counters": {
+        "wrong_typed_refusals": 3
+      }
+    },
+    {
+      "name": "artifact-binding-not-checked-at-admission-or-replay",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "mismatched_attestation_admissions"
+      ],
+      "counters": {
+        "mismatched_attestation_admissions": 4
+      }
+    },
+    {
+      "name": "replay-does-not-verify-the-recorded-attestation",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "mismatched_attestation_admissions"
+      ],
+      "counters": {
+        "mismatched_attestation_admissions": 1
+      }
+    },
+    {
+      "name": "replay-checks-the-payload-digest-only",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "wrong_typed_refusals"
+      ],
+      "counters": {
+        "wrong_typed_refusals": 1
+      }
+    },
+    {
+      "name": "signature-not-verified",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "untrusted_attestor_admissions"
+      ],
+      "counters": {
+        "untrusted_attestor_admissions": 3,
+        "wrong_typed_refusals": 1
+      }
+    },
+    {
+      "name": "self-invented-attestor-trusted",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 13,
+      "expected": [
+        "untrusted_attestor_admissions"
+      ],
+      "counters": {
+        "untrusted_attestor_admissions": 6,
+        "self_trusted_attestor_admissions": 6,
+        "wrong_typed_refusals": 1
+      }
+    },
+    {
+      "name": "run-id-reuse-allowed",
+      "file": "crates/ptr-runtime/src/expert.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "mismatched_attestation_admissions"
+      ],
+      "counters": {
+        "mismatched_attestation_admissions": 3,
+        "wrong_typed_refusals": 3
+      }
+    },
+    {
+      "name": "run-id-checked-at-its-own-generation-only",
+      "file": "crates/ptr-runtime/src/expert.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "mismatched_attestation_admissions",
+        "wrong_typed_refusals"
+      ],
+      "counters": {
+        "wrong_typed_refusals": 1
+      }
+    },
+    {
+      "name": "run-id-checked-in-the-training-role-only",
+      "file": "crates/ptr-runtime/src/expert.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "mismatched_attestation_admissions",
+        "wrong_typed_refusals"
+      ],
+      "counters": {
+        "wrong_typed_refusals": 1
+      }
+    },
+    {
+      "name": "attestation-requirement-ignored",
+      "file": "crates/ptr-runtime/src/expert.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "unattested_admissions"
+      ],
+      "counters": {
+        "unattested_admissions": 6
+      }
+    },
+    {
+      "name": "requirement-not-recorded",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "unattested_admissions"
+      ],
+      "counters": {
+        "unattested_admissions": 2,
+        "wrong_typed_refusals": 1
+      }
+    },
+    {
+      "name": "recorded-requirement-not-enforced",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "unattested_admissions"
+      ],
+      "counters": {
+        "unattested_admissions": 2,
+        "wrong_typed_refusals": 1
+      }
+    },
+    {
+      "name": "attestor-liveness-not-checked",
+      "file": "crates/ptr-runtime/src/expert.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "revoked_attestor_evidence_admissions"
+      ],
+      "counters": {
+        "revoked_attestor_evidence_admissions": 1
+      }
+    },
+    {
+      "name": "attestor-fence-readmittable",
+      "file": "crates/ptr-runtime/src/expert.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5,
+      "expected": [
+        "attestor_quarantine_readmissions_admitted"
+      ],
+      "counters": {
+        "attestor_quarantine_readmissions_admitted": 2,
+        "skipped_cells": 3
+      }
+    },
+    {
+      "name": "fence-set-derivation-panics-for-an-attestor",
+      "file": "crates/ptr-runtime/src/expert.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 28,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "skipped_cells": 25,
+        "product_panics": 3
+      }
+    },
+    {
+      "name": "harness-replays-without-the-last-event",
+      "file": "bins/ptr-bench/src/experiments/r013/cases/mod.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 36,
+      "expected": [
+        "registry_replay_mismatches"
+      ],
+      "counters": {
+        "registry_replay_mismatches": 36
+      }
+    },
+    {
+      "name": "harness-pins-the-wrong-suite-digest",
+      "file": "bins/ptr-bench/src/experiments/r013/mod.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "procedure_mismatches"
+      ],
+      "counters": {
+        "procedure_mismatches": 1
+      }
+    },
+    {
+      "name": "harness-skips-the-merge-cells-of-the-binding-case",
+      "file": "bins/ptr-bench/src/experiments/r013/cases/attestor.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 7,
+      "expected": [
+        "skipped_cells"
+      ],
+      "counters": {
+        "skipped_cells": 7
+      }
+    },
+    {
+      "name": "harness-skips-the-recorded-requirement-cells",
+      "file": "bins/ptr-bench/src/experiments/r013/cases/attestor.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "skipped_cells"
+      ],
+      "counters": {
+        "skipped_cells": 4
+      }
+    },
+    {
+      "name": "live-attestor-registration-under-a-forged-gate-grant",
+      "file": "crates/ptr-runtime/src/expert/attestation.rs",
+      "cases": 1,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "self_trusted_attestor_admissions"
+      ],
+      "counters": {
+        "self_trusted_attestor_admissions": 6
+      }
+    }
+  ]
+}

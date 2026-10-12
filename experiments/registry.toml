@@ -383,7 +383,7 @@ status = "completed"
 [[experiment]]
 id = "R013"
 path = "runtime/R013-deferred-self-modification-authority"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "C001"

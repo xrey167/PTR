@@ -38,7 +38,7 @@ pub const SEEDS: [u64; 5] = [17, 29, 43, 71, 101];
 
 /// The pinned adversarial suite: every attempt of a case counts for it once the runtime
 /// returned `Ok` (a violation) or the expected typed refusal.
-pub const ADVERSARIAL_CASES: [&str; 25] = [
+pub const ADVERSARIAL_CASES: [&str; 34] = [
     "reactivate_seed_retired_before_gate_config_revocation",
     "reactivate_seed_retired_before_evaluator_revocation",
     "reactivate_seed_retired_before_input_revocation",
@@ -61,6 +61,15 @@ pub const ADVERSARIAL_CASES: [&str; 25] = [
     "attestation_run_reuse_same_attestor",
     "attestation_run_reuse_plain_path",
     "attestation_run_reuse_after_reopen",
+    "attestation_run_reuse_evaluation_role",
+    "attestation_run_reuse_other_generation",
+    "attestation_base_model_mismatch",
+    "attestation_self_invented_attestor",
+    "attestation_forged_signature",
+    "attestation_forged_gate_grant",
+    "attestation_unattested_after_reopen",
+    "attestation_unattested_record_replayed",
+    "attestation_binding_replayed",
     "attestor_revoked_between_report_and_commit",
     "attestor_quarantine_readmission",
     "attestor_quarantine_reactivation_from_stale_view",
@@ -71,7 +80,7 @@ pub const SELECTION_DOMAIN: &str = "ptr.r013.corpus-selection.v1";
 
 /// The digest of the suite: each case name as the sequence of its bytes, in listed order.
 pub const SELECTION_DIGEST: &str =
-    "sha256:fba9387ebe8fa5ea2bb5c98855e9b9eb04e7b0085aa483ac76d4036b913d86e5";
+    "sha256:fb14e5ff97e6f8e593d153e0459de4d49978ce15ee64a06b5179e38026f6059e";
 
 /// The families of cells the plan runs, by the names the harness records them under.
 pub const DORMANT_KINDS: [&str; 4] = ["gate_config", "evaluator", "input", "attestor"];
@@ -97,11 +106,15 @@ pub const MIN_TRANSITIVE_AUTHORITY_CASES: i64 = 9;
 pub const MIN_REVOKE_WHILE_RETIRED_CASES: i64 = 3;
 pub const MIN_REACTIVATION_CONTROLS: i64 = 3;
 pub const MIN_SUPERSEDED_SOURCE_CASES: i64 = 6;
-pub const MIN_ATTESTATION_ARTIFACT_MISMATCH_ATTEMPTS: i64 = 3;
+pub const MIN_ATTESTATION_ARTIFACT_MISMATCH_ATTEMPTS: i64 = 4;
 pub const MIN_ATTESTATION_PROPOSAL_MISMATCH_ATTEMPTS: i64 = 3;
 pub const MIN_ATTESTATION_MISSING_ATTEMPTS: i64 = 6;
-pub const MIN_ATTESTATION_RUN_REUSE_ATTEMPTS: i64 = 4;
-pub const MIN_ATTESTATION_BINDING_CONTROLS: i64 = 8;
+pub const MIN_ATTESTATION_RUN_REUSE_ATTEMPTS: i64 = 6;
+pub const MIN_ATTESTATION_BASE_MODEL_MISMATCH_ATTEMPTS: i64 = 3;
+pub const MIN_ATTESTATION_UNTRUSTED_ATTEMPTS: i64 = 6;
+pub const MIN_FORGED_GATE_GRANT_ATTEMPTS: i64 = 3;
+pub const MIN_ATTESTATION_REQUIREMENT_AFTER_REOPEN_ATTEMPTS: i64 = 3;
+pub const MIN_ATTESTATION_BINDING_CONTROLS: i64 = 11;
 pub const MIN_REVOKED_ATTESTOR_EVIDENCE_ATTEMPTS: i64 = 1;
 pub const MIN_REVOKED_ATTESTOR_EVIDENCE_CONTROLS: i64 = 1;
 pub const MIN_ATTESTOR_QUARANTINE_READMISSION_ATTEMPTS: i64 = 8;
@@ -195,6 +208,22 @@ pub fn compiled() -> Vec<(&'static str, Leaf)> {
         (
             "min_attestation_run_reuse_attempts",
             int(MIN_ATTESTATION_RUN_REUSE_ATTEMPTS),
+        ),
+        (
+            "min_attestation_base_model_mismatch_attempts",
+            int(MIN_ATTESTATION_BASE_MODEL_MISMATCH_ATTEMPTS),
+        ),
+        (
+            "min_attestation_untrusted_attestor_attempts",
+            int(MIN_ATTESTATION_UNTRUSTED_ATTEMPTS),
+        ),
+        (
+            "min_forged_gate_grant_attempts",
+            int(MIN_FORGED_GATE_GRANT_ATTEMPTS),
+        ),
+        (
+            "min_attestation_requirement_after_reopen_attempts",
+            int(MIN_ATTESTATION_REQUIREMENT_AFTER_REOPEN_ATTEMPTS),
         ),
         (
             "min_attestation_binding_controls_accepted",

@@ -112,12 +112,16 @@ class CriteriaFileTests(unittest.TestCase):
             self.assertEqual(len(rules), len(set(rules)), key)
             for rule in rules:
                 aggregate.parse_rule(rule)
-        self.assertEqual(len(CRITERIA["coverage"]), 50)
-        self.assertEqual(len(CRITERIA["falsifiers"]), 16)
+        self.assertEqual(len(CRITERIA["coverage"]), 63)
+        self.assertEqual(len(CRITERIA["falsifiers"]), 20)
         for name in (
             "structural_inflight_outputs_after_invalidation",
             "reactivations_from_compromised_seed_admitted",
             "mismatched_attestation_admissions",
+            "untrusted_attestor_admissions",
+            "self_trusted_attestor_admissions",
+            "wrong_typed_refusals",
+            "skipped_cells",
             "attestor_quarantine_readmissions_admitted",
             "product_panics",
         ):
@@ -151,7 +155,7 @@ class CriteriaFileTests(unittest.TestCase):
         for left, op, right in rules:
             if op == "<=":
                 self.assertEqual(right, str(pinned["max_every_falsifier"]), left)
-        self.assertEqual(checked, 15)
+        self.assertEqual(checked, 19)
         self.assertEqual(CRITERIA["seed_aggregation"], pinned["seed_aggregation"])
         self.assertEqual(pinned["seeds"], SEEDS)
 
@@ -341,11 +345,11 @@ class R013Tests(unittest.TestCase):
     def test_the_stated_limits_are_in_the_config_and_the_aggregate(self):
         pinned = CONFIG["pinned_thresholds"]
         self.assertIn("R014", pinned["owner_decision_2026_10_10_scope"])
-        self.assertIn("not signed", pinned["stated_limit_attestation"])
+        self.assertIn("Ed25519", pinned["stated_limit_attestation"])
         self.assertIn("monotone", pinned["stated_limit_transitive_authority"])
         self.assertIn("raw ledger writer", pinned["stated_limit_raw_ledger_writer"])
         text = " ".join(aggregate.LIMITATIONS)
-        self.assertIn("neither signed nor recorded", text)
+        self.assertIn("not history", text)
         self.assertIn("epochs are monotone", text)
         self.assertIn("a raw ledger writer is outside the claim", text)
         self.assertIn("R014", text)

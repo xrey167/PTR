@@ -132,8 +132,8 @@ impl Path {
     pub fn apply(self, rt: &mut Rt) -> Res<()> {
         match self {
             Self::Normal => Ok(()),
-            Self::Lag => rt.reopen(),
-            Self::Restore => rt.compact_restore(),
+            Self::Lag => super::reopen(rt),
+            Self::Restore => super::restore(rt),
         }
     }
 }
