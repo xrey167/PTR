@@ -9,7 +9,11 @@ How a prepared experiment is frozen, run and finished with the same guarantees o
 On 2026-10-12 the tooling replayed the real E007 freeze in a scratch clone (from the pre-freeze commit 03f71143, tag
 `e007-replay`, never pushed): the generated script's freeze commit has the same parent and no diff against the real freeze
 commit 3c1076b9; the whole mutation check killed 59 of 59 and the pilot 1001 rerun was equal on all 137 outcome entries.
-The replay stopped before step 8 by design. Unit tests: `make freeze-tools-test`.
+A second replay from the mutation-evidence commit (aa6e3b2e, `--resume-from 7`) ran the pilot, preflight, prepare,
+the five seeds from `config.toml` and the aggregate (COMPLETED), then `finish_experiment.py status` and `stale`. It found
+one defect, now fixed with a regression test: step 8 left `./target` unless `FREEZE_CLEAN_TARGET=1`, and the runner refuses
+a checkout holding git-ignored files. When the tools are used from outside the checkout, pass `--root <checkout>` to
+`finish_experiment.py` before its subcommand. Unit tests: `make freeze-tools-test`.
 
 ## Roles
 
@@ -86,7 +90,7 @@ reviewed runner change settles GPU pinning (OD-3); the second card is for pilots
 
 `FREEZE_TRAILER` (the attribution lines of the commit message, set by the caller; empty by default), `FREEZE_LOGS`, `FREEZE_DISK_FLOOR_GB`
 (waitdisk floor, default from the spec, 6), `FREEZE_DISK_PATH`, `FREEZE_PILOT_TIMEOUT`, `FREEZE_SKIP_SEEDS`, `FREEZE_CLEAN_TARGET=1`
-(remove `./target` after heavy steps), `FREEZE_RESUME_FROM`.
+(remove `./target` after heavy steps; step 8 always removes it, because the runner refuses a checkout holding git-ignored files), `FREEZE_RESUME_FROM`.
 
 ## Resuming after a stop
 
