@@ -214,8 +214,9 @@ expect = ["acked_revocation_missing", "recovered_not_prefix"]
 file = "crates/ptr-ledger/src/raft_storage.rs"
 find = '''
     pub fn set_hard_state(&mut self, hard_state: &HardState) -> io::Result<()> {
-        self.hard_state = hard_state.clone();
+        let previous = std::mem::replace(&mut self.hard_state, hard_state.clone());
         self.persist_state()
+            .inspect_err(|_| self.hard_state = previous)
     }
 '''
 replace = '''
@@ -243,7 +244,10 @@ description = "A Raft member numbers the events it applies from 0 instead of 1."
 expect = ["reorder_or_duplicate_index"]
 file = "crates/ptr-ledger/src/raft_node.rs"
 find = '''
-            self.applied_events += 1;
+            self.applied_events = self
+                .applied_events
+                .checked_add(1)
+                .ok_or_else(|| "the count of applied events is exhausted".to_string())?;
             let index = CommitIndex(self.applied_events);
 '''
 replace = '''
