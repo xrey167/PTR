@@ -1,10 +1,10 @@
 # Claude Code tooling for PTR
 
-The repository ships two Claude Code plugins in a repo-local marketplace (`.claude-plugin/marketplace.json`, name `ptr`). They encode the repository's own workflows and rules so a local Claude Code session follows them without being told each time.
+The repository ships two Claude Code plugins in a repo-local marketplace (`.claude-plugin/marketplace.json`, name `ptr`). They encode the repository's own workflows and rules so a local Claude Code session follows them without being told each time. The working method for every agent (roles, rules, freeze and merge discipline, report formats) is `AGENTS.md`; the agents below implement its roles.
 
 | Plugin | Path | What it adds |
 |---|---|---|
-| `ptr-dev` | `.claude/plugins/ptr-dev/` | 8 skills, 3 read-only review agents, 2 guard hooks |
+| `ptr-dev` | `.claude/plugins/ptr-dev/` | 8 skills, 6 agents (5 read-only, 1 coding channel), 2 guard hooks |
 | `ptr-mods` | `.claude/plugins/ptr-mods/` | a `/runs` pane for GPU training runs and a status line |
 
 ## Install (once per machine)
@@ -37,7 +37,7 @@ Invoke by asking for the task, or explicitly as `/ptr-dev:<name>`.
 | `ptr-gitlab` | work with the GitLab remote (GitHub is suspended): publish with `scripts/publish_remote.py` (dry run first), draft MRs and pipeline status with `glab`, low-automation rules; background in `docs/HOSTING.md` |
 | `ptr-offline-sync` | move the repository between machines with git bundles (create, split, join, verify, apply), bash and PowerShell |
 | `ptr-status` | produce a short Done / In progress / Blocked / Next report |
-| `experiment-run` | run and monitor a GPU smoke run or experiment on the RTX 4090 desktop (`docs/DESKTOP_SETUP.md`) |
+| `experiment-run` | run and monitor a GPU smoke run or experiment on the Ubuntu desktop with two RTX 3090 (`hardware/dual-rtx3090.toml`) (`docs/DESKTOP_SETUP.md`) |
 
 `ptr-offline-sync` ships a helper, `.claude/plugins/ptr-dev/skills/ptr-offline-sync/scripts/ptr_bundle.py` (Python 3.11, stdlib only):
 
@@ -47,13 +47,18 @@ python3 .claude/plugins/ptr-dev/skills/ptr-offline-sync/scripts/ptr_bundle.py jo
 python3 .claude/plugins/ptr-dev/skills/ptr-offline-sync/scripts/ptr_bundle.py apply ../ptr-export/<bundle>
 ```
 
-### Agents (read-only)
+### Agents
 
 | Agent | Use it to |
 |---|---|
 | `ptr-invariant-reviewer` | review a diff against the 17 invariants in `docs/INVARIANTS.md`, `docs/COMPONENT_CONTRACTS.md` and the CLAUDE.md conventions; findings ranked P0 to P2 with file:line |
 | `ptr-claims-auditor` | check docs, STATUS files and write-ups for claims the evidence does not support |
 | `ptr-experiment-designer` | draft a falsifiable experiment design and the exact `new_experiment.py` command |
+| `ptr-rereviewer` | read-only adversarial re-review of a channel round: diff against the base, read-only and Python checks re-run, findings P0 to P2 with file:line, verdict |
+| `ptr-fact-checker` | read-only check of numbers, verdicts, hashes, tags, seed lists, mutation counts and file:line citations in changed docs against `results/`, `STALE.toml`, `registry.toml` and git tags; table of mismatches |
+| `ptr-channel` | the one agent that writes: a coding channel in a single worktree per `AGENTS.md`; never commits, pushes, merges, tags or freezes; one hand-back |
+
+The first five agents are read-only. `ptr-channel` is the exception and is bound by `AGENTS.md`; the head (the session that commits) is never delegated.
 
 ### Hooks
 
@@ -87,4 +92,4 @@ Checks: `claude plugin validate .claude/plugins/ptr-mods` and `claude plugin tes
 
 - Validate after every change: `claude plugin validate .claude/plugins/ptr-dev`, `claude plugin validate .claude/plugins/ptr-mods`, `claude plugin validate ./` (marketplace).
 - Skills name only commands that exist in the Makefile or `scripts/`; check new ones before adding them.
-- Agents stay read-only (`tools: Read, Grep, Glob, Bash` and a body that forbids writes).
+- Review agents stay read-only (`tools: Read, Grep, Glob, Bash` and a body that forbids writes). Only `ptr-channel` may write, and it may not commit.

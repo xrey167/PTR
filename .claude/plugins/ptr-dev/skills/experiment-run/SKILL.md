@@ -1,6 +1,6 @@
 ---
 name: experiment-run
-description: Run and monitor a PTR GPU experiment or smoke run on the local RTX 4090 desktop (make smoke-gpu, make olmoe-sft-smoke, M011 and later), then report the results with honest evidence labels. Use when asked to start, watch, compare or write up a training or experiment run.
+description: Run and monitor a PTR GPU experiment or smoke run on the local Ubuntu desktop with two RTX 3090 (hardware/dual-rtx3090.toml) (make smoke-gpu, make olmoe-sft-smoke, M011 and later), then report the results with honest evidence labels. Use when asked to start, watch, compare or write up a training or experiment run.
 ---
 
 # Run and monitor an experiment
@@ -81,7 +81,7 @@ PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.moe.m011 \
 # tests (about 35 s on CPU)
 PYTHONPATH=training/src training/.venv/bin/python -m unittest discover -s training/tests -p 'test_m011*'
 
-# real run on the RTX 4090 (downloads OLMoE and the three corpora at the pinned revisions),
+# real run on one RTX 3090 (pin it with CUDA_VISIBLE_DEVICES) (downloads OLMoE and the three corpora at the pinned revisions),
 # per arm: 1. tune once on the first pinned seed (8 trials, 500 steps each), frozen tuning.json
 python -m ptr_training.moe.m011 --arm mixlora --out runs/m011/mixlora/tune --model olmoe --tune
 # 2. every pinned seed at the full 2000 steps with the frozen hyperparameters
