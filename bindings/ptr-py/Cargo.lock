@@ -678,6 +678,7 @@ dependencies = [
  "prost-build",
  "protoc-bin-vendored",
  "ptr-types",
+ "sha2",
 ]
 
 [[package]]
