@@ -42,6 +42,8 @@ class GpuAssumption:
 GPUS = {
     "rtx4090-reference": GpuAssumption("rtx4090-reference", 24.0, 165.2, 1008.0),
     "rtx5090-reference": GpuAssumption("rtx5090-reference", 32.0, 209.5, 1792.0),
+    # Ampere GA102, bf16 tensor with fp32 accumulate is half rate on GeForce (71 dense), 936 GB/s.
+    "rtx3090-reference": GpuAssumption("rtx3090-reference", 24.0, 71.0, 936.2),
 }
 
 # ---- memory model assumptions -------------------------------------------------------------

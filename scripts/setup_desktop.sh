@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Set up a fresh Ubuntu 24.04 desktop with one NVIDIA GPU (RTX 4090 reference) so PTR
-# GPU experiments can run. Idempotent: every step checks first and skips what is done.
+# Set up a fresh Ubuntu 24.04 desktop with NVIDIA GPUs (reference hosts: two RTX 3090 or one
+# RTX 4090; the setup is the same, the driver sees every card) so PTR GPU
+# experiments can run. Idempotent: every step checks first and skips what is done.
 #
 #   scripts/setup_desktop.sh [--dry-run] [--yes]
 #
@@ -18,7 +19,7 @@ for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --yes|-y) ASSUME_YES=1 ;;
-    -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)" >&2; exit 2 ;;
   esac
 done

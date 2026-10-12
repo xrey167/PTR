@@ -71,6 +71,9 @@ class Fixture:
         (self.root / "training").mkdir()
         (self.root / "training" / "uv.lock").write_text(LOCK)
         (self.root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.99.0"\n')
+        for rel in ("hardware/rtx3090.toml", "hardware/rtx4090.toml", "hardware/dual-rtx3090.toml"):
+            (self.root / rel).parent.mkdir(exist_ok=True)
+            (self.root / rel).write_text("")
         if venv:
             py = self.root / "training" / ".venv" / "bin" / "python"
             py.parent.mkdir(parents=True)
@@ -120,7 +123,8 @@ class GpuPresent(unittest.TestCase):
     def test_parse_nvidia_smi(self):
         self.assertEqual(
             gd.parse_nvidia_smi(SMI_OK),
-            [{"name": "NVIDIA GeForce RTX 4090", "driver": "580.65.06", "memory_mib": 24564}],
+            [{"index": 0, "name": "NVIDIA GeForce RTX 4090", "driver": "580.65.06", "memory_mib": 24564,
+              "compute_cap": None}],
         )
         self.assertEqual(gd.parse_nvidia_smi("garbage\n"), [])
 
@@ -144,6 +148,139 @@ class GpuPresent(unittest.TestCase):
             got = {c.name: c for c in gd.collect(fx.options())}
         self.assertEqual(got["disk (repo)"].status, gd.WARN)
         self.assertTrue(got["disk (repo)"].hint)
+
+
+SMI_3090 = "NVIDIA GeForce RTX 3090, 580.65.06, 24576, 8.6\n"
+SMI_DUAL_3090 = SMI_3090 * 2
+SMI_4090_CAP = "NVIDIA GeForce RTX 4090, 580.65.06, 24564, 8.9\n"
+
+
+def device(index, name="NVIDIA GeForce RTX 3090", cap=(8, 6), **kw):
+    return {"index": index, "name": name, "capability": list(cap), "total_memory_mib": 24576,
+            "bf16": True, "matmul_ok": True, "alloc_ok": True, **kw}
+
+
+def probe_for(*devices):
+    return dict(GOOD_PROBE, device_name=devices[0]["name"], device_count=len(devices), devices=list(devices))
+
+
+class HardwareProfiles(unittest.TestCase):
+    def test_parse_with_and_without_compute_cap(self):
+        got = gd.parse_nvidia_smi(SMI_DUAL_3090)
+        self.assertEqual([g["index"] for g in got], [0, 1])
+        self.assertEqual(got[1]["compute_cap"], (8, 6))
+        self.assertEqual(got[0]["memory_mib"], 24576)
+        self.assertIsNone(gd.parse_nvidia_smi(SMI_OK)[0]["compute_cap"])
+        self.assertIsNone(gd.parse_capability("n/a"))
+        self.assertEqual(gd.parse_capability([8, 9]), (8, 9))
+
+    def test_card_kind_tested_and_untested(self):
+        self.assertEqual(gd.card_kind("NVIDIA GeForce RTX 3090"), "rtx3090")
+        self.assertEqual(gd.card_kind("NVIDIA GeForce RTX 4090"), "rtx4090")
+        for other in ("NVIDIA GeForce RTX 3090 Ti", "NVIDIA GeForce RTX 4090 D", "NVIDIA RTX A6000", "NVIDIA GeForce RTX 5090"):
+            self.assertIsNone(gd.card_kind(other), other)
+
+    def test_bf16_capability_covers_ampere_and_ada(self):
+        self.assertTrue(gd.bf16_capable((8, 6)))  # RTX 3090
+        self.assertTrue(gd.bf16_capable((8, 9)))  # RTX 4090
+        self.assertFalse(gd.bf16_capable((7, 5)))
+        self.assertIsNone(gd.bf16_capable(None))
+
+    def test_select_profile(self):
+        r3, r4 = "NVIDIA GeForce RTX 3090", "NVIDIA GeForce RTX 4090"
+        self.assertEqual(gd.select_profile([r4])[0], "hardware/rtx4090.toml")
+        self.assertEqual(gd.select_profile([r3])[0], "hardware/rtx3090.toml")
+        self.assertEqual(gd.select_profile([r3, r3])[0], "hardware/dual-rtx3090.toml")
+        self.assertIn("single-GPU runs: hardware/rtx3090.toml", gd.select_profile([r3, r3])[1])
+        self.assertEqual(gd.select_profile([r4, r4])[0], "hardware/rtx4090.toml")
+        for names in ([r3, r4], ["NVIDIA RTX A6000"], []):
+            profile, text = gd.select_profile(names)
+            self.assertIsNone(profile)
+            self.assertIn("untested profile", text)
+
+    def test_profile_files_named_by_the_doctor_exist(self):
+        for rel in (*gd.PROFILE_SINGLE.values(), gd.PROFILE_DUAL_3090):
+            self.assertTrue((ROOT / rel).is_file(), rel)
+
+    def test_dual_3090_all_ok(self):
+        fx = Fixture()
+        probe = probe_for(device(0), device(1))
+        got = collect(fx, fx.options(require_gpu=True), smi=(0, SMI_DUAL_3090, ""), probe=probe)
+        bad = {n: (c.status, c.detail) for n, c in got.items() if c.status != gd.OK and n != "hf hub"}
+        self.assertEqual(bad, {})
+        self.assertIn("2x NVIDIA GeForce RTX 3090", got["gpu"].detail)
+        self.assertIn("gpu 0", got)
+        self.assertIn("gpu 1", got)
+        self.assertIn("sm_86", got["gpu 1"].detail)
+        self.assertIn("dual-rtx3090.toml", got["hardware profile"].detail)
+        self.assertIn("2 device(s)", got["torch cuda"].detail)
+        self.assertEqual(gd.summarize(list(got.values()))["exit_code"], 0)
+
+    def test_single_4090_names_its_profile(self):
+        fx = Fixture()
+        got = collect(fx, fx.options(), smi=(0, SMI_4090_CAP, ""), probe=GOOD_PROBE)
+        self.assertEqual(got["hardware profile"].status, gd.OK)
+        self.assertIn("hardware/rtx4090.toml", got["hardware profile"].detail)
+
+    def test_missing_profile_file_warns(self):
+        fx = Fixture()
+        (fx.root / "hardware" / "rtx4090.toml").unlink()
+        got = collect(fx, fx.options(), smi=(0, SMI_4090_CAP, ""), probe=GOOD_PROBE)
+        self.assertEqual(got["hardware profile"].status, gd.WARN)
+
+    def test_untested_card_warns_but_does_not_fail(self):
+        fx = Fixture()
+        smi = "NVIDIA RTX A6000, 580.65.06, 49140, 8.6\n"
+        got = collect(fx, fx.options(require_gpu=True), smi=(0, smi, ""), probe=GOOD_PROBE)
+        self.assertEqual(got["gpu"].status, gd.WARN)
+        self.assertIn("untested profile", got["gpu"].hint)
+        self.assertEqual(got["hardware profile"].status, gd.WARN)
+        self.assertEqual(gd.summarize(list(got.values()))["fail"], 0)
+
+    def test_second_card_failure_is_reported_with_its_index(self):
+        fx = Fixture()
+        bad = device(1, matmul_ok=False, alloc_ok=False, error="OutOfMemoryError: CUDA out of memory")
+        got = collect(fx, fx.options(), smi=(0, SMI_DUAL_3090, ""), probe=probe_for(device(0), bad))
+        self.assertEqual(got["cuda matmul"].status, gd.FAIL)
+        self.assertIn("cuda:1", got["cuda matmul"].detail)
+        self.assertNotIn("cuda:0", got["cuda matmul"].detail)
+
+    def test_bf16_missing_on_one_card_names_it_and_hints_ampere_and_ada(self):
+        fx = Fixture()
+        probe = probe_for(device(0), device(1, bf16=False))
+        got = collect(fx, fx.options(require_gpu=True), smi=(0, SMI_DUAL_3090, ""), probe=probe)
+        self.assertEqual(got["bf16"].status, gd.FAIL)
+        self.assertIn("cuda:1", got["bf16"].detail)
+        self.assertIn("RTX 3090", got["bf16"].hint)
+        self.assertIn("RTX 4090", got["bf16"].hint)
+
+    def test_torch_seeing_fewer_cards_than_smi_warns(self):
+        fx = Fixture()
+        got = collect(fx, fx.options(), smi=(0, SMI_DUAL_3090, ""), probe=probe_for(device(0)))
+        self.assertEqual(got["torch devices"].status, gd.WARN)
+        self.assertIn("CUDA_VISIBLE_DEVICES", got["torch devices"].hint)
+
+    def test_small_card_warns(self):
+        fx = Fixture()
+        got = collect(fx, fx.options(), smi=(0, "NVIDIA GeForce RTX 3090, 580.1, 12288, 8.6\n", ""), probe=GOOD_PROBE)
+        self.assertEqual(got["gpu 0"].status, gd.WARN)
+        self.assertIn("20 GiB", got["gpu 0"].hint)
+
+    def test_compute_cap_query_falls_back_for_old_drivers(self):
+        fx = Fixture()
+        calls = []
+
+        def _run(cmd, timeout=60, cwd=None):
+            calls.append(cmd)
+            if "compute_cap" in cmd[1]:
+                return 2, "", 'Field "compute_cap" is not a valid field'
+            return 0, SMI_OK, ""
+
+        with mock.patch.object(gd, "run", _run), mock.patch.object(gd, "which", lambda n: "/usr/bin/" + n):
+            checks, gpus = gd.check_nvidia_smi(fx.options())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(gpus), 1)
+        self.assertEqual(checks[0].status, gd.OK)
 
 
 class GpuAbsent(unittest.TestCase):

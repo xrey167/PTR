@@ -67,13 +67,25 @@ release-package:
 	cd dist && sha256sum ptr-cyclonedx.json > ptr-cyclonedx.json.sha256
 	rm -rf dist/bin
 
-# GPU desktop (Ubuntu 24.04, one RTX 4090): docs/DESKTOP_SETUP.md. Not CI jobs, so no
-# ci-* counterpart. The two smoke targets run the training venv's python (the CUDA torch
-# wheel and ptr_py live there); `--execute` refuses a dirty tracked worktree. Both configs
-# are pipeline evidence only, never research results.
+# GPU desktop (Ubuntu 24.04; reference hosts: two RTX 3090 or one RTX 4090): docs/DESKTOP_SETUP.md.
+# Not CI jobs, so no ci-* counterpart. The two smoke targets run the training venv's python (the
+# CUDA torch wheel and ptr_py live there); `--execute` refuses a dirty tracked worktree. Both
+# configs are pipeline evidence only, never research results. They are single-GPU runs: on the
+# dual-3090 host they use one card (CUDA_VISIBLE_DEVICES=0 pins it).
+# GPU_PROFILE picks the config set: rtx3090 (default, also the per-card profile of the dual
+# host) or rtx4090 (the original configs without suffix). SMOKE_GPU_CONFIG and OLMOE_SFT_CONFIG
+# still override a single file.
 TRAIN_PY ?= training/.venv/bin/python
-SMOKE_GPU_CONFIG ?= training/configs/stage-moe-smoke-gpu.toml
-OLMOE_SFT_CONFIG ?= training/configs/stage-moe-olmoe-sft-smoke.toml
+GPU_PROFILE ?= rtx3090
+ifeq ($(GPU_PROFILE),rtx3090)
+GPU_CONFIG_SUFFIX := -rtx3090
+else ifeq ($(GPU_PROFILE),rtx4090)
+GPU_CONFIG_SUFFIX :=
+else
+$(error GPU_PROFILE must be rtx3090 or rtx4090, got '$(GPU_PROFILE)')
+endif
+SMOKE_GPU_CONFIG ?= training/configs/stage-moe-smoke-gpu$(GPU_CONFIG_SUFFIX).toml
+OLMOE_SFT_CONFIG ?= training/configs/stage-moe-olmoe-sft-smoke$(GPU_CONFIG_SUFFIX).toml
 
 desktop-setup:
 	scripts/setup_desktop.sh

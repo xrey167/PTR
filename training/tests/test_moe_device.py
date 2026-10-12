@@ -148,6 +148,18 @@ class GpuConfigTests(unittest.TestCase):
         self.assertEqual(_raw("stage-moe-olmoe-sft-smoke.toml")["run"]["hardware_profile"],
                          "hardware/rtx4090.toml")
 
+    def test_3090_variants_differ_from_4090_only_in_naming_and_profile(self):
+        for stem in ("stage-moe-smoke-gpu", "stage-moe-olmoe-sft-smoke"):
+            moe_config.load(CONFIGS / f"{stem}-rtx3090.toml")
+            ra, rb = _raw(f"{stem}.toml"), _raw(f"{stem}-rtx3090.toml")
+            self.assertEqual(rb["run"]["hardware_profile"], "hardware/rtx3090.toml")
+            self.assertEqual(rb["model"]["config"], f"training/configs/{stem}-rtx3090.toml")
+            for raw in (ra, rb):
+                raw["model"].pop("config")
+                raw["run"].pop("name")
+                raw["run"].pop("hardware_profile")
+            self.assertEqual(ra, rb)
+
     def test_olmoe_config_keeps_3090_profile_and_still_needs_opt_in(self):
         raw = _raw("stage-moe-olmoe.toml")
         self.assertEqual(raw["run"]["hardware_profile"], "hardware/rtx3090.toml")

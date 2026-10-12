@@ -1,0 +1,160 @@
+version = 1
+
+# VCW-MoE stage S0 on rtx3090: PERFT-R routed adapter experts on OLMoE-1B-7B, SFT on verifier-accepted gold solutions (math, code, tool). Warm start of every later VCW stage; arm topology of experiment M011 (emergent).
+# PLAN, NOT RUN: nothing here has executed on a GPU. VRAM and wall-time figures in [vcw.estimate]
+# are ESTIMATES recomputed by ptr_training.vcw.budget from stated assumptions (see
+# docs/VCW_MOE_GPU_PLAN.md section 3), not measurements; the first real run replaces them.
+# `[training].backend = "vcw-perft-r-sft"` is deliberately not implemented by ptr_training.run, so
+# `--execute` refuses this file; the synthetic-task trl-moe backend must not be mistaken for it.
+status_note = ""
+[codebook]
+version = 1
+fingerprint = "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"
+
+[run]
+name = "vcw-perft-r-sft-rtx3090"
+seed = 17
+hardware_profile = "hardware/rtx3090.toml"
+
+# Manifest table only; the training data is described in [vcw.data] and [[vcw.pins.datasets]].
+[data]
+dataset = "typed_agent_behavior_v0_2"
+split = "train"
+
+[model]
+family = "olmoe"
+config = "training/configs/vcw-perft-r-sft-rtx3090.toml"
+kind = "pretrained"
+hf_id = "allenai/OLMoE-1B-7B-0125"
+revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+precision = "bf16"
+device = "cuda"
+
+[training]
+backend = "vcw-perft-r-sft"
+precision = "bf16"
+
+[evaluation]
+every = 0
+suites = []
+
+[vcw]
+stage = "perft-r-sft"
+status = "plan-not-run"
+experiments = ["T", "M011", "F004", "F005", "F006", "C002", "C003", "C006"]
+doc = "docs/VCW_MOE_GPU_PLAN.md"
+
+[vcw.pins]
+model_repo = "allenai/OLMoE-1B-7B-0125"
+model_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+tokenizer_repo = "allenai/OLMoE-1B-7B-0125"
+tokenizer_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+seeds = [17, 29, 43, 71, 101]
+# Tuning happens only on these seeds, never on a final seed (freeze-then-run).
+pilot_seeds = [1001, 1002, 1003]
+
+[[vcw.pins.datasets]]
+repo = "openai/gsm8k"
+revision = "740312add88f781978c0658806c59bc2815b9866"
+domain = "math"
+role = "train partition: position mod 10 != 9; eval: test mod 2 == 1"
+
+[[vcw.pins.datasets]]
+repo = "openai/openai_humaneval"
+revision = "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
+domain = "code"
+role = "index mod 3: 0 train, 1 tuning validation, 2 held-out"
+
+[[vcw.pins.datasets]]
+repo = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
+revision = "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
+domain = "tool"
+role = "BFCL_v3_simple.json, index mod 3 as HumanEval"
+
+[vcw.adapter]
+# Same topology and size as the M011 emergent PERFT-R arm: 8 parallel bottleneck experts, rank 8,
+# alpha 16, top-2 adapter router per layer; 16 layers * (8 * 2 * 2048 * 8 + 2048 * 8) = 4,456,448.
+method = "perft_r"
+specialisation = "emergent"
+num_experts = 8
+router_top_k = 2
+rank = 8
+alpha = 16
+trainable_params = 4456448
+base_router_frozen = true
+init_from = ""
+router_scope = "perft-adapter-router"
+
+[vcw.data]
+targets = ["reference_solution"]
+
+[vcw.data.fields]
+prompt = "input"
+reference_solution = "reference-solution"
+domain_label = "metadata"
+item_id = "metadata"
+
+[vcw.welfare]
+# Hard counter of MODEL_WELFARE section 6 and C005: training steps of this repository whose
+# targets or selection use a statement about consciousness, experience or feeling. Must be 0.
+self_report_training_signals = 0
+self_report_guard = true
+# One config never trains a system combining workspace, self-model, goal-directed proposals and
+# persistent state (MODEL_WELFARE section 3); that would be an owner decision.
+integrated_system = false
+stop_rules = ["MODEL_WELFARE s2 rule 1: stop, discard outputs, write an incident note on any self-report training signal", "MODEL_WELFARE s2 rule 4: no pressure experiments", "MODEL_WELFARE s4 L1-L3: any trigger stops the agent's own work and is reported; only the owner lifts a pause"]
+
+[vcw.tuning]
+status = "pilot-start-not-tuned"
+note = "values are the pilot start; the frozen values are chosen on pilot seeds >= 1001 only, then pinned in the preregistration"
+
+[vcw.estimate]
+profile = "rtx3090-reference"
+vram_gib = 16.4
+wall_hours_mid = 15.0
+wall_hours_range = "7.5 to 37.5 h (fast to slow)"
+basis = "ESTIMATE: bf16 weights 12.9 GiB + fp32 adapter state + activations (4 or 6 x 1.3e9 FLOP/token, MFU 0.04/0.10/0.20) + 0.6 GiB CUDA context; see budget.py constants; rtx3090 assumed at 71 TFLOPS bf16 dense (fp32 accumulate), 936 GB/s, not measured"
+
+# 2000 steps = M011 training_steps_per_arm; effective batch 32 is one of M011's batch choices.
+[moe.sft]
+steps = 2000
+lr = 0.0001
+batch = 4
+examples = 1024
+max_length = 768
+gradient_checkpointing = true
+gradient_accumulation_steps = 8
+
+[moe.rl]
+algorithms = []
+steps = 50
+num_generations = 8
+mini_steps = 4
+beta = 0.0
+epsilon = 0.2
+epsilon_high = 0.28
+gspo_epsilon = 0.0003
+gspo_epsilon_high = 0.0004
+sapo_temperature_pos = 1.0
+sapo_temperature_neg = 1.05
+lr = 0.000005
+prompts_per_step = 1
+max_prompt_length = 32
+max_completion_length = 24
+temperature = 1.0
+min_verification_level = "SampleVerified"
+
+# The tensors below are the PERFT-R adapter parameters of routed_peft.py (peft_expert_w_down,
+# peft_expert_w_up, peft_router). The trl-moe parser only requires a non-empty target list; the
+# VCW entrypoint (not written yet) installs them with routed_peft.install_arm.
+[moe.lora]
+enabled = true
+rank = 8
+alpha = 16
+dropout = 0.0
+target_modules = ["peft_router"]
+target_parameters = ["peft_expert_w_down", "peft_expert_w_up"]
+
+[moe.output]
+dir = "training/runs/vcw/perft-r-sft"
+probe_tokens = 256

@@ -11,7 +11,7 @@ from ptr_training.vcw import plan
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIGS = ROOT / "training" / "configs"
-PROFILES = {"rtx4090": "rtx4090-reference", "rtx5090": "rtx5090-reference"}
+PROFILES = {"rtx4090": "rtx4090-reference", "rtx5090": "rtx5090-reference", "rtx3090": "rtx3090-reference"}
 STAGES = ("perft-r-sft", "rlvr-router", "repair-expert", "self-model-probe")
 
 
@@ -24,7 +24,7 @@ def _parse(raw):
 
 
 class VcwConfigFilesTests(unittest.TestCase):
-    def test_all_eight_configs_exist_and_load(self):
+    def test_all_twelve_configs_exist_and_load(self):
         for stage in STAGES:
             for profile in PROFILES:
                 with self.subTest(stage=stage, profile=profile):
@@ -34,10 +34,18 @@ class VcwConfigFilesTests(unittest.TestCase):
                     self.assertTrue(cfg.estimate_hours[0] > cfg.estimate_hours[2] > 0)
                     self.assertLessEqual(cfg.estimate_vram_gib, 32 - 1.5)
 
-    def test_4090_configs_leave_headroom_on_24_gib(self):
+    def test_24_gib_configs_leave_headroom(self):
+        for profile in ("rtx4090", "rtx3090"):
+            for stage in STAGES:
+                cfg = vcw_config.load(CONFIGS / f"vcw-{stage}-{profile}.toml", ROOT)
+                self.assertLessEqual(cfg.estimate_vram_gib, 22.5, (profile, stage))
+
+    def test_3090_vram_estimates_equal_4090_and_hours_are_longer(self):
         for stage in STAGES:
-            cfg = vcw_config.load(CONFIGS / f"vcw-{stage}-rtx4090.toml", ROOT)
-            self.assertLessEqual(cfg.estimate_vram_gib, 22.5, stage)
+            a = vcw_config.load(CONFIGS / f"vcw-{stage}-rtx4090.toml", ROOT)
+            b = vcw_config.load(CONFIGS / f"vcw-{stage}-rtx3090.toml", ROOT)
+            self.assertAlmostEqual(a.estimate_vram_gib, b.estimate_vram_gib, places=6, msg=stage)
+            self.assertGreater(b.estimate_hours[1], a.estimate_hours[1], stage)
 
     def test_configs_match_the_plan_protocol(self):
         for profile, pid in PROFILES.items():
@@ -179,7 +187,7 @@ class VcwAuditTests(unittest.TestCase):
     def test_audit_is_zero_on_the_repository_configs(self):
         paths = sorted(CONFIGS.glob("vcw-*.toml"))
         report = vcw_config.audit(paths)
-        self.assertEqual(report["configs"], 8)
+        self.assertEqual(report["configs"], 12)
         self.assertEqual(report["self_report_training_signals"], 0, report["refused"])
 
     def test_audit_counts_a_tampered_config(self):

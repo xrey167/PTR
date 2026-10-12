@@ -28,6 +28,13 @@ PROTOCOL = {
         "probe": {"micro_batch": 16, "seq_tokens": 320},
         "gen_batch": 32,
     },
+    "rtx3090-reference": {
+        "sft": {"micro_batch": 4, "accumulation": 8, "seq_tokens": 768, "steps": 2000},
+        "rl": {"prompts": 1, "generations": 8, "mini_steps": 4, "prompt_tokens": 128, "completion_tokens": 160, "steps": 400},
+        "repair": {"micro_batch": 2, "accumulation": 8, "seq_tokens": 1024, "steps": 1000},
+        "probe": {"micro_batch": 16, "seq_tokens": 320},
+        "gen_batch": 32,
+    },
     "rtx5090-reference": {
         "sft": {"micro_batch": 8, "accumulation": 4, "seq_tokens": 768, "steps": 2000},
         "rl": {"prompts": 1, "generations": 8, "mini_steps": 4, "prompt_tokens": 192, "completion_tokens": 256, "steps": 400},

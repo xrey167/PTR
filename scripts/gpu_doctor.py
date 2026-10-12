@@ -14,6 +14,11 @@ warning, so the CPU smoke path can still be checked; with it, it is a failure.
     python3 scripts/gpu_doctor.py --require-gpu    # what `make desktop-setup` ends with
     python3 scripts/gpu_doctor.py --offline --json out.json
 
+Every visible card is checked (name, memory, compute capability, a small torch allocation and
+matmul on each device). RTX 3090 and RTX 4090 are the tested cards; any other card is reported
+as an untested profile (a warning). The matching hardware profile file is printed:
+hardware/rtx3090.toml, hardware/rtx4090.toml, or hardware/dual-rtx3090.toml for two 3090.
+
 `ptrctl doctor` checks no GPU; this is the GPU-side counterpart.
 """
 
@@ -22,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,6 +44,17 @@ MIN_FREE_GB = 60.0
 MIN_DRIVER_FOR_CUDA = {13: 580, 12: 525}
 MIN_VRAM_MIB = 20 * 1024
 HF_URL = "https://huggingface.co"
+# bf16 tensor-core math needs compute capability 8.0 or newer: Ampere (RTX 3090 is sm_86) and
+# Ada (RTX 4090 is sm_89) both qualify.
+MIN_BF16_CAPABILITY = (8, 0)
+# Hardware profiles the repo ships for the tested desktop cards. Anything else is reported as an
+# untested profile (a warning, never a failure).
+PROFILE_SINGLE = {"rtx3090": "hardware/rtx3090.toml", "rtx4090": "hardware/rtx4090.toml"}
+PROFILE_DUAL_3090 = "hardware/dual-rtx3090.toml"
+_CARD_PATTERNS = {
+    "rtx3090": re.compile(r"\bRTX 3090\b(?! ?Ti)", re.IGNORECASE),
+    "rtx4090": re.compile(r"\bRTX 4090\b(?! ?(D|Ti)\b)", re.IGNORECASE),
+}
 
 OK, WARN, FAIL, SKIP = "ok", "warn", "fail", "skip"
 
@@ -59,15 +76,36 @@ try:
     out["torch_cuda_build"] = torch.version.cuda
     out["cuda_available"] = bool(torch.cuda.is_available())
     if out["cuda_available"]:
-        out["device_name"] = torch.cuda.get_device_name(0)
-        out["bf16"] = bool(torch.cuda.is_bf16_supported())
-        try:
-            a = torch.randn(256, 256, device="cuda")
-            out["matmul_ok"] = bool(torch.isfinite((a @ a).sum()).item())
-            torch.cuda.synchronize()
-        except Exception as exc:
-            out["matmul_ok"] = False
-            out["matmul_error"] = type(exc).__name__ + ": " + str(exc)[:200]
+        out["device_count"] = int(torch.cuda.device_count())
+        devices = []
+        for i in range(out["device_count"]):
+            d = {"index": i, "name": torch.cuda.get_device_name(i)}
+            try:
+                d["capability"] = list(torch.cuda.get_device_capability(i))
+                d["total_memory_mib"] = int(torch.cuda.get_device_properties(i).total_memory // (1024 * 1024))
+                with torch.cuda.device(i):
+                    d["bf16"] = bool(torch.cuda.is_bf16_supported())
+                dev = "cuda:%d" % i
+                a = torch.randn(256, 256, device=dev)
+                d["matmul_ok"] = bool(torch.isfinite((a @ a).sum()).item())
+                blob = torch.empty(64 * 1024 * 1024, dtype=torch.uint8, device=dev)
+                blob.fill_(1)
+                torch.cuda.synchronize(i)
+                d["alloc_ok"] = True
+                del blob
+            except Exception as exc:
+                d.setdefault("matmul_ok", False)
+                d["alloc_ok"] = False
+                d["error"] = type(exc).__name__ + ": " + str(exc)[:200]
+            devices.append(d)
+        out["devices"] = devices
+        # Device 0 keys kept for older consumers of this JSON.
+        if devices:
+            out["device_name"] = devices[0]["name"]
+            out["bf16"] = devices[0].get("bf16", False)
+            out["matmul_ok"] = devices[0].get("matmul_ok", False)
+            if "error" in devices[0]:
+                out["matmul_error"] = devices[0]["error"]
 except Exception as exc:
     out["torch_error"] = type(exc).__name__ + ": " + str(exc)[:200]
 try:
@@ -129,7 +167,11 @@ def gpu_missing(opts: Options, detail: str, hint: str, name: str = "gpu") -> Che
 
 
 def parse_nvidia_smi(text: str) -> list[dict]:
-    """Parse `--query-gpu=name,driver_version,memory.total --format=csv,noheader,nounits`."""
+    """Parse `--query-gpu=name,driver_version,memory.total[,compute_cap] --format=csv,noheader,nounits`.
+
+    The fourth column is optional (old drivers lack `compute_cap`); the result then has
+    `compute_cap` None. Cards keep the order nvidia-smi printed them in (their index).
+    """
     gpus = []
     for line in text.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
@@ -140,25 +182,66 @@ def parse_nvidia_smi(text: str) -> list[dict]:
             mem = int(float(parts[2]))
         except ValueError:
             continue
-        gpus.append({"name": name, "driver": driver, "memory_mib": mem})
+        cap = parse_capability(parts[3]) if len(parts) > 3 else None
+        gpus.append({"index": len(gpus), "name": name, "driver": driver, "memory_mib": mem, "compute_cap": cap})
     return gpus
 
 
-def check_nvidia_smi(opts: Options) -> tuple[list[Check], dict | None]:
+def parse_capability(text) -> tuple[int, int] | None:
+    """`"8.6"` or `[8, 6]` to `(8, 6)`; None when it is not a capability."""
+    if isinstance(text, (list, tuple)) and len(text) == 2:
+        return int(text[0]), int(text[1])
+    match = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", str(text))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def card_kind(name: str) -> str | None:
+    """`rtx3090` or `rtx4090` for the tested cards, None for any other name (including Ti/D variants)."""
+    for kind, pattern in _CARD_PATTERNS.items():
+        if pattern.search(name):
+            return kind
+    return None
+
+
+def bf16_capable(capability: tuple[int, int] | None) -> bool | None:
+    """Whether a compute capability supports bf16 tensor math; None when unknown."""
+    return None if capability is None else capability >= MIN_BF16_CAPABILITY
+
+
+def select_profile(names: list[str]) -> tuple[str | None, str]:
+    """The hardware profile file matching the visible cards, and a one-line description.
+
+    One 3090 or one 4090 select their single-card file; two 3090 select the dual profile
+    (their single-card file stays valid for single-GPU runs on one of them). Any other mix is
+    an untested profile and returns None.
+    """
+    kinds = [card_kind(n) for n in names]
+    if not names or any(k is None for k in kinds):
+        return None, "untested profile: " + (", ".join(sorted(set(names))) or "no GPU")
+    if set(kinds) == {"rtx3090"} and len(kinds) == 2:
+        return PROFILE_DUAL_3090, f"{PROFILE_DUAL_3090} (2x RTX 3090, PCIe only); single-GPU runs: {PROFILE_SINGLE['rtx3090']}"
+    if len(set(kinds)) == 1 and len(kinds) == 1:
+        return PROFILE_SINGLE[kinds[0]], PROFILE_SINGLE[kinds[0]]
+    if len(set(kinds)) == 1:
+        return PROFILE_SINGLE[kinds[0]], f"{PROFILE_SINGLE[kinds[0]]} per card ({len(kinds)}x, no multi-GPU profile)"
+    return None, "untested profile: mixed cards " + ", ".join(sorted(set(names)))
+
+
+def check_nvidia_smi(opts: Options) -> tuple[list[Check], list[dict]]:
     install = (
         "install driver 580: sudo apt install nvidia-driver-580-open, reboot "
         "(see docs/DESKTOP_SETUP.md, Secure Boot needs MOK enrolment)"
     )
     if which("nvidia-smi") is None:
-        return [gpu_missing(opts, "nvidia-smi not found", install)], None
-    code, out, err = run(
-        [
-            "nvidia-smi",
-            "--query-gpu=name,driver_version,memory.total",
-            "--format=csv,noheader,nounits",
-        ],
-        timeout=30,
-    )
+        return [gpu_missing(opts, "nvidia-smi not found", install)], []
+    query = "--query-gpu=name,driver_version,memory.total,compute_cap"
+    code, out, err = run(["nvidia-smi", query, "--format=csv,noheader,nounits"], timeout=30)
+    if code != 0:
+        # Drivers older than 510 do not know compute_cap; retry without it before giving up.
+        code, out, err = run(
+            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader,nounits"],
+            timeout=30,
+        )
     if code != 0:
         reason = (err or out).strip().splitlines()[:1]
         return [
@@ -167,29 +250,48 @@ def check_nvidia_smi(opts: Options) -> tuple[list[Check], dict | None]:
                 "nvidia-smi failed: " + (reason[0] if reason else f"exit {code}"),
                 "driver not loaded: reboot, check `sudo mokutil --sb-state` and `dmesg | grep -i nvidia`; " + install,
             )
-        ], None
+        ], []
     gpus = parse_nvidia_smi(out)
     if not gpus:
-        return [gpu_missing(opts, "nvidia-smi reported no GPU", install)], None
-    g = gpus[0]
-    checks = [
-        Check("nvidia-smi", OK, f"driver {g['driver']}"),
+        return [gpu_missing(opts, "nvidia-smi reported no GPU", install)], []
+    checks = [Check("nvidia-smi", OK, f"driver {gpus[0]['driver']}")]
+    tested = all(card_kind(g["name"]) for g in gpus)
+    for g in gpus:
+        cap = g["compute_cap"]
+        detail = f"{g['name']}, {g['memory_mib']} MiB" + (f", sm_{cap[0]}{cap[1]}" if cap else "")
+        small = g["memory_mib"] < MIN_VRAM_MIB
+        status = WARN if small or not card_kind(g["name"]) else OK
+        hint = ""
+        if small:
+            hint = "less than 20 GiB: the OLMoE SFT smoke config targets a 24 GiB card"
+        elif not card_kind(g["name"]):
+            hint = "untested profile: tested cards are RTX 3090 and RTX 4090; record the real GPU in the run manifest"
+        checks.append(Check(f"gpu {g['index']}", status, detail, hint))
+    names = ", ".join(sorted({g["name"] for g in gpus}))
+    checks.append(
         Check(
             "gpu",
-            OK if "4090" in g["name"] else WARN,
-            f"{g['name']}, {g['memory_mib']} MiB x{len(gpus)}",
-            "" if "4090" in g["name"] else "expected an RTX 4090 (hardware/rtx4090.toml); "
+            OK if tested and all(g["memory_mib"] >= MIN_VRAM_MIB for g in gpus) else WARN,
+            f"{len(gpus)}x {names}, {gpus[0]['memory_mib']} MiB" + (" each" if len(gpus) > 1 else ""),
+            "" if tested else "untested profile: tested cards are RTX 3090 and RTX 4090; "
             "record the real GPU in the run manifest",
-        ),
-    ]
-    if g["memory_mib"] < MIN_VRAM_MIB:
-        checks[-1] = Check(
-            "gpu",
-            WARN,
-            f"{g['name']}, {g['memory_mib']} MiB",
-            "less than 20 GiB: the OLMoE SFT smoke config targets a 24 GiB card",
         )
-    return checks, g
+    )
+    profile, text = select_profile([g["name"] for g in gpus])
+    if profile is None:
+        checks.append(
+            Check(
+                "hardware profile",
+                WARN,
+                text,
+                "no hardware/*.toml matches; pick the nearest by hand and record the real GPU in the run manifest",
+            )
+        )
+    elif not (opts.root / profile).is_file():
+        checks.append(Check("hardware profile", WARN, f"{text} (file missing)", f"restore {profile}"))
+    else:
+        checks.append(Check("hardware profile", OK, text))
+    return checks, gpus
 
 
 def check_python() -> Check:
@@ -248,7 +350,7 @@ def base_version(v: str) -> str:
     return v.split("+")[0]
 
 
-def check_torch(opts: Options, probe: dict | None, why: str, gpu: dict | None) -> list[Check]:
+def check_torch(opts: Options, probe: dict | None, why: str, gpus: list[dict]) -> list[Check]:
     if probe is None:
         return [Check("torch", FAIL, f"venv python could not be probed: {why}", "make desktop-setup")]
     if "torch_error" in probe:
@@ -274,12 +376,29 @@ def check_torch(opts: Options, probe: dict | None, why: str, gpu: dict | None) -
             gpu_missing(opts, f"torch.cuda.is_available() is False (CUDA build {cuda_build})", hint, "torch cuda")
         )
         return checks
-    checks.append(Check("torch cuda", OK, f"available, CUDA build {cuda_build}, {probe.get('device_name', '?')}"))
+    devices = probe.get("devices") or [
+        {"index": 0, "name": probe.get("device_name", "?"), "bf16": probe.get("bf16"),
+         "matmul_ok": probe.get("matmul_ok"), "alloc_ok": probe.get("matmul_ok"),
+         **({"error": probe["matmul_error"]} if "matmul_error" in probe else {})}
+    ]
+    names = ", ".join(d["name"] for d in devices)
+    checks.append(
+        Check("torch cuda", OK, f"available, CUDA build {cuda_build}, {len(devices)} device(s): {names}")
+    )
+    if gpus and len(devices) < len(gpus):
+        checks.append(
+            Check(
+                "torch devices",
+                WARN,
+                f"torch sees {len(devices)} of {len(gpus)} GPUs",
+                "check CUDA_VISIBLE_DEVICES; the dual-GPU profile needs both cards visible",
+            )
+        )
     major = int(str(cuda_build).split(".")[0]) if cuda_build else 0
     need = MIN_DRIVER_FOR_CUDA.get(major)
-    if need and gpu:
+    if need and gpus:
         try:
-            have = int(gpu["driver"].split(".")[0])
+            have = int(gpus[0]["driver"].split(".")[0])
         except ValueError:
             have = None
         if have is not None and have < need:
@@ -287,23 +406,35 @@ def check_torch(opts: Options, probe: dict | None, why: str, gpu: dict | None) -
                 Check(
                     "driver vs torch",
                     FAIL,
-                    f"driver {gpu['driver']} too old for CUDA {major} wheels (need >= {need})",
+                    f"driver {gpus[0]['driver']} too old for CUDA {major} wheels (need >= {need})",
                     "sudo apt install nvidia-driver-580-open and reboot",
                 )
             )
-    checks.append(
-        Check("bf16", OK, "supported")
-        if probe.get("bf16")
-        else Check("bf16", FAIL if opts.require_gpu else WARN, "not supported", "RTX 4090 supports bf16; check driver")
-    )
-    if probe.get("matmul_ok"):
-        checks.append(Check("cuda matmul", OK, "256x256 float32 finite"))
+    no_bf16 = [d for d in devices if not d.get("bf16")]
+    if not no_bf16:
+        checks.append(Check("bf16", OK, "supported" + (f" on all {len(devices)} devices" if len(devices) > 1 else "")))
     else:
+        checks.append(
+            Check(
+                "bf16",
+                FAIL if opts.require_gpu else WARN,
+                "not supported on " + ", ".join(f"cuda:{d['index']} {d['name']}" for d in no_bf16),
+                "bf16 needs compute capability >= 8.0; RTX 3090 (Ampere, sm_86) and RTX 4090 "
+                "(Ada, sm_89) both support it, so check the driver and the torch CUDA build",
+            )
+        )
+    bad = [d for d in devices if not (d.get("matmul_ok") and d.get("alloc_ok", True))]
+    if not bad:
+        checks.append(Check("cuda matmul", OK, f"256x256 float32 finite and 64 MiB allocation on {len(devices)} device(s)"))
+    else:
+        reason = "; ".join(
+            f"cuda:{d['index']} {d.get('error') or d.get('matmul_error') or 'result not finite'}" for d in bad
+        )
         checks.append(
             Check(
                 "cuda matmul",
                 FAIL,
-                probe.get("matmul_error", "result not finite"),
+                reason,
                 "driver/torch mismatch or GPU in a bad state: reboot, then rerun; see docs/DESKTOP_SETUP.md",
             )
         )
@@ -433,7 +564,7 @@ def check_rust(opts: Options) -> Check:
 
 def collect(opts: Options) -> list[Check]:
     checks: list[Check] = []
-    smi_checks, gpu = check_nvidia_smi(opts)
+    smi_checks, gpus = check_nvidia_smi(opts)
     checks += smi_checks
     checks.append(check_python())
     checks.append(check_uv())
@@ -443,7 +574,7 @@ def collect(opts: Options) -> list[Check]:
     if venv.status == OK:
         probe, why = probe_venv(opts)
     if venv.status == OK:
-        checks += check_torch(opts, probe, why, gpu)
+        checks += check_torch(opts, probe, why, gpus)
     else:
         checks.append(Check("torch", SKIP, "no training venv"))
     checks += check_versions(opts, probe)
