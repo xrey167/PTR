@@ -77,6 +77,11 @@ Not run yet: these steps were written and unit-tested on CPU only (device select
 
 `[model] device` is `"auto"` (default: CUDA when available, else CPU), `"cpu"` or `"cuda"`; `"cuda"` raises a `ConfigError` when CUDA is unavailable instead of silently running on CPU. SFT and TRL (`use_cpu`) use the model's device, and `metrics.json` `hardware` records `device`, `gpu`, `torch_cuda` (`torch.version.cuda`) and the peak `torch.cuda.max_memory_allocated`. `[moe.sft] gradient_checkpointing` and `gradient_accumulation_steps` reduce memory; see `src/ptr_training/moe/README.md`.
 
+RTX 3090 variants (the local host has two 24 GiB RTX 3090, PCIe, no NVLink; every config below is a single-GPU run on one card): each 4090 config has a `-rtx3090` counterpart that differs only in the hardware profile (`hardware/rtx3090.toml`) and in naming, with the same batch sizes because the memory is the same 24 GiB and the bf16 path is supported on Ampere:
+
+- `stage-moe-smoke-gpu-rtx3090.toml`, `stage-moe-olmoe-sft-smoke-rtx3090.toml` (`make smoke-gpu olmoe-sft-smoke`, default `GPU_PROFILE=rtx3090`; `GPU_PROFILE=rtx4090` selects the unsuffixed files)
+- `vcw-perft-r-sft-rtx3090.toml`, `vcw-rlvr-router-rtx3090.toml`, `vcw-repair-expert-rtx3090.toml`, `vcw-self-model-probe-rtx3090.toml`: same VRAM estimates as the 4090 files, wall-time estimates about 2.3 times longer because `vcw.budget` assumes 71 TFLOPS bf16 (fp32 accumulate) for the 3090 against 165.2 for the 4090. Plans, not measurements.
+
 Run order, each step only after the previous one worked:
 
 1. `make smoke-gpu` runs `configs/stage-moe-smoke-gpu.toml`: the tiny random OLMoE on CUDA (device plumbing check).

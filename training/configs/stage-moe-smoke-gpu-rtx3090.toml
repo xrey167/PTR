@@ -1,0 +1,97 @@
+version = 1
+
+# GPU variant of stage-moe-smoke.toml: the same tiny-random OlmoeForCausalLM pipeline smoke
+# (SFT, GSPO and SAPO arms, routing metrics), placed on the CUDA device of the RTX 3090 desktop
+# (hardware/rtx3090.toml) to check the device plumbing end to end: model on CUDA, SFT and TRL on
+# the same device, and device / GPU name / torch.version.cuda / peak memory in metrics.json.
+# Mechanism check only; it is not evidence about any claim, and it has NOT run on a GPU yet
+# (the development sandbox has none). `device = "cuda"` fails fast with a ConfigError when CUDA
+# is not available instead of falling back to CPU. Precision stays fp32, as in the CPU smoke:
+# that is the tiny model's exercised path. Differences from the CPU smoke: hardware_profile,
+# [model] device, run name, config path, [moe.output] dir and allow_unselected_backend comment.
+# The dataset/model fields exist because the run manifest requires them; the training data is
+# generated on the fly by ptr_training.moe.tasks.
+
+[codebook]
+version = 1
+fingerprint = "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"
+
+[run]
+name = "moe-pipeline-smoke-gpu-rtx3090"
+seed = 17
+hardware_profile = "hardware/rtx3090.toml"
+
+# trl-moe does NOT read this table (metrics.json: data_source = "synthetic-tasks"); it exists
+# because the run manifest requires it.
+[data]
+dataset = "typed_agent_behavior_v0_2"
+split = "train"
+
+[model]
+family = "olmoe-tiny-random"
+config = "training/configs/stage-moe-smoke-gpu-rtx3090.toml"
+kind = "tiny-random"
+layers = 2
+hidden = 64
+intermediate = 64
+heads = 4
+experts = 8
+top_k = 2
+max_positions = 64
+precision = "fp32"
+# "cuda" (not "auto"): refuse to run this config on CPU.
+device = "cuda"
+
+[training]
+backend = "trl-moe"
+# Explicit opt-in: the training-backend component decision is still unlocked and trl-peft is
+# to-evaluate, so `--execute` refuses this backend unless a config says it knowingly runs an
+# unselected backend. Outputs are labelled "unselected backend, pipeline evidence only".
+allow_unselected_backend = true
+precision = "fp32"
+
+[evaluation]
+every = 0
+suites = []
+
+[moe.sft]
+steps = 200
+lr = 0.003
+batch = 16
+examples = 256
+# >= longest prompt + answer + EOS (12 + 13 + 1) so no SFT example is truncated.
+max_length = 26
+
+[moe.rl]
+algorithms = ["gspo", "sapo"]
+steps = 16
+num_generations = 4
+mini_steps = 2
+# beta > 0 so the KL to the reference policy is logged (tiny model: the reference copy is cheap).
+beta = 0.04
+# Token-level clip values (grpo-style); not used by gspo (gspo_epsilon*) or sapo here.
+epsilon = 0.2
+epsilon_high = 0.28
+# GSPO paper (arXiv 2507.18071) sequence-level clip range.
+gspo_epsilon = 0.0003
+gspo_epsilon_high = 0.0004
+sapo_temperature_pos = 1.0
+sapo_temperature_neg = 1.05
+lr = 0.002
+prompts_per_step = 2
+max_prompt_length = 16
+# >= longest canonical answer + EOS over the task space ({"a":9,"b":9} = 13 chars + EOS).
+max_completion_length = 14
+temperature = 1.0
+
+[moe.lora]
+enabled = false
+
+# Interference gate compares the top-r left singular subspaces of each expert's down_proj
+# delta; full-rank subspaces of the 64-dim space overlap ~1.0 whatever happened (chance 1.0).
+[moe.gates]
+subspace_rank = 4
+
+[moe.output]
+dir = "training/runs/moe-smoke-gpu"
+probe_tokens = 64
