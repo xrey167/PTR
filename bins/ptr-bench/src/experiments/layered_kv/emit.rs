@@ -160,6 +160,24 @@ impl Tally {
         self.ints.insert(name.to_string(), value);
     }
 
+    /// Every integer counter, in name order (a harness that runs a case on its own tally
+    /// hands the counters back to the run's).
+    #[cfg_attr(not(feature = "ledger-experiments"), allow(dead_code))]
+    pub fn counters(&self) -> Vec<(String, i64)> {
+        self.ints
+            .iter()
+            .map(|(name, value)| (name.clone(), *value))
+            .collect()
+    }
+
+    /// Add the counters of another tally to this one.
+    #[cfg_attr(not(feature = "ledger-experiments"), allow(dead_code))]
+    pub fn absorb(&mut self, counters: &[(String, i64)]) {
+        for (name, value) in counters {
+            self.add(name, *value);
+        }
+    }
+
     pub fn set_json(&mut self, name: &str, value: Json) {
         self.json.insert(name.to_string(), value);
     }

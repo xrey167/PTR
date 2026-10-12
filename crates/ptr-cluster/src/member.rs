@@ -271,6 +271,11 @@ impl ClusterMember {
     ///
     /// Fallible because the count is persisted: a member that recorded it only in
     /// memory would renumber events the snapshot covers on its next restart.
+    ///
+    /// The refusals of the node pass through as `ClusterError::Node` text that starts with the
+    /// stable code of ptr-ledger's `NoSnapshotPending` (no installed snapshot is waiting) or
+    /// `NodeFailed` (the node must be restarted). The member has no `is_failed` accessor and no
+    /// typed variant; callers match the code at the start of the text.
     pub fn resume_with_applied(&self, applied_events: u64) -> Result<(), ClusterError> {
         self.locked()
             .resume_with_applied(applied_events)

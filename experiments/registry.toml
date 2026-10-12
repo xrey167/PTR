@@ -123,7 +123,7 @@ status = "completed"
 [[experiment]]
 id = "L002"
 path = "lifecycle/L002-raft-recovery"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "Q001"
@@ -508,6 +508,11 @@ status = "completed"
 [[experiment]]
 id = "E008"
 path = "system/E008-split-pod-extensions"
+status = "planned"
+
+[[experiment]]
+id = "R014"
+path = "runtime/R014-deferred-authority-mechanisms"
 status = "planned"
 
 [[experiment]]

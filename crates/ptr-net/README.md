@@ -55,7 +55,7 @@
 
 ### Linked experiments
 
-- [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
+- [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `frozen`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
 ### Technology evaluations

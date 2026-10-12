@@ -5161,7 +5161,7 @@ LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001",
     "M001-v6","M002-v11","M003-v3","M001-v6-sweep","M002-v11-sweep","M003-v3-sweep",
     # The successor study of the interrupted M003-v3 (A0-baseline-v3-m003); no sweep of its own.
     "M003-v4",
-    "L001-v2",
+    "L001-v2", "L002", "R013",
     "F007",
     # E007 (split-Pod KV, CPU part); E008 is planned and not listed in experiments/preregistration.toml.
     "E007")
