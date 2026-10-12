@@ -48,13 +48,14 @@ git clone https://gitlab.com/<user>/ptr.git ~/PTR      # token goes to the crede
 **Check.** In `~/PTR` (use the branch the apply script created or the cloned `main`):
 
 ```bash
-git log -1 --oneline        # wave 13 tip: a9b4a453 "Merge claude/dev-docs13 into integration (final evidence pass) ..."
-git cat-file -t 941f5ddb    # wave 12 tip exists: prints "commit"
+git merge-base --is-ancestor 941f5ddb HEAD && echo wave12-ok   # wave 12 tip is in your history
+git merge-base --is-ancestor a9b4a453 HEAD && echo wave13-ok   # wave 13 tip (final evidence pass) is in your history
+test -f AGENTS.md -a -d scripts/freeze && echo wave14-ok       # wave 14 applied (AGENTS.md, scripts/freeze/)
 git tag -l '*-prereg' | wc -l   # 32 at wave 13; the list includes q003v3-prereg, c001-prereg, r007-prereg
 git status --short          # empty
 ```
 
-If `git log -1` does not show the wave-13 merge, stop: wave 13 was not applied.
+If any of the three checks prints nothing (exit code 1), stop: that wave was not applied. Later waves on top are fine.
 
 ## b. Toolchains
 
@@ -87,10 +88,11 @@ already take or use a version). `make release-package RELEASE_TOOLCHAIN=1.99.0` 
    previews). It builds `training/.venv` with the locked CUDA torch wheel and installs `ptr_py`
    into it. Open a new shell afterwards.
 3. `make gpu-doctor`, stricter: `python3 scripts/gpu_doctor.py --require-gpu`. Must exit 0
-   (it warns below 60 GB free). On this machine expect a WARN "expected an RTX 4090" on the
-   `gpu` line (the line also prints `x2`): the script compares the name with 4090 only and the
-   torch checks probe GPU 0 only. Read the WARN as harmless; check GPU 1 yourself with
-   `CUDA_VISIBLE_DEVICES=1 training/.venv/bin/python -c 'import torch; print(torch.cuda.get_device_name(0), torch.cuda.is_available())'`.
+   (it warns below 60 GB free). On this machine expect a `gpu 0` and a `gpu 1` line (name, MiB,
+   `sm_86`), a summary line `gpu` reading "2x NVIDIA GeForce RTX 3090, N MiB each", a torch probe
+   (allocation and matmul, bf16) on every device, and a `hardware profile` line that is OK and
+   names `hardware/dual-rtx3090.toml` (single-card runs: `hardware/rtx3090.toml`). A card the doctor
+   does not know (not a 3090 or 4090) is reported as an untested profile with a WARN.
 4. Hugging Face: `training/.venv/bin/hf auth login` (read token typed at the prompt) and the
    pinned downloads of `GPU_HANDOVER.md` section 1.3 (about 14 GB for OLMoE). For frozen runs keep
    the default cache location; if the disk is small, make `~/.cache/huggingface` a symlink to the
@@ -195,7 +197,7 @@ channel's worktree and `target/` when it is merged, and keep at least **6 GB** f
 (the hard floor for one heavy build, `evaluations/BATCH_DECISIONS.md`) and preferably the 60 GB
 the doctor asks for. Heavy stacks (rocksdb, datafusion, torch) one at a time per disk. Never
 run a CPU build wave while a GPU run is in progress: it distorts timings. Two GPU runs may run
-at the same time, one per card (`CUDA_VISIBLE_DEVICES`), see `DESKTOP_SETUP.md` section 10. Note that
+at the same time, one per card (`CUDA_VISIBLE_DEVICES`), but not two frozen seed runs: see `DESKTOP_SETUP.md` section 10. Note that
 `scripts/mutation_check.py` runs `<root>/target/release/<package>` and ignores `CARGO_TARGET_DIR`
 (`STATUS.md`), so a freeze run needs the default target directory.
 

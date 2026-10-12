@@ -1,8 +1,10 @@
-# GPU handover: running the GPU-phase work on the RTX 4090 desktop
+# GPU handover: running the GPU-phase work on the local GPU desktop (originally written for one RTX 4090)
 
-Written 2026-10-08 for the PTR owner's Ubuntu 24.04 desktop (one NVIDIA RTX 4090, 24 GiB).
+Written 2026-10-08 for the PTR owner's Ubuntu 24.04 desktop, originally assuming one NVIDIA RTX 4090
+(24 GiB). The machine is two RTX 3090 (24 GiB each); read "4090" below as the reference card of the
+original text (section 5 and `DESKTOP_SETUP.md` section 10 state what changes).
 It is a plan, not a result. It was assembled from repository files on a machine without a
-GPU, nothing in it has run on the 4090, and no experiment mentioned here has evidence yet.
+GPU, nothing in it has run on a GPU, and no experiment mentioned here has evidence yet.
 
 Conventions used throughout:
 
@@ -52,7 +54,8 @@ Work top to bottom. Each item has a check; do not continue past a failed one.
 2. **Secure Boot.** `mokutil --sb-state`. With Secure Boot on, enrol the MOK key at the first
    reboot after the driver install, or disable Secure Boot (DESKTOP_SETUP step 1).
 3. **Driver.** `sudo apt install -y nvidia-driver-580-open`, reboot. Check: `nvidia-smi` shows
-   driver 580.x and "NVIDIA GeForce RTX 4090", 24564 MiB (DESKTOP_SETUP step 2). No system CUDA
+   driver 580.x and two lines "NVIDIA GeForce RTX 3090", about 24 GiB each (the original single-4090
+   text expected one RTX 4090, 24564 MiB; DESKTOP_SETUP step 2). No system CUDA
    toolkit is needed: the locked CUDA 13 torch wheels bring their own runtime. The experiment
    manifests of M016 and E006 pin driver `580.65.06` and CUDA 13.0 exactly
    (`software_stack`, `max_software_stack_mismatches = 0`). Which 580.x patch version apt
@@ -236,7 +239,7 @@ commands.
 
 - **Exists.** `training/configs/stage-moe-smoke-gpu.toml` (tiny random OLMoE: 2 layers,
   hidden 64, 8 experts, top-2, fp32, `device = "cuda"`, SFT 200 steps, then GSPO and SAPO 16
-  steps each, `hardware/rtx4090.toml`), Makefile target `smoke-gpu`. The config header says it
+  steps each, `hardware/rtx4090.toml`; on this machine the 3090 variant `stage-moe-smoke-gpu-rtx3090.toml`), Makefile target `smoke-gpu`. The config header says it
   has not run on a GPU.
 - **Commands.**
   ```bash
@@ -260,7 +263,7 @@ commands.
   fused `mlp.experts.gate_up_proj` / `down_proj` via `target_parameters`, router frozen,
   gradient checkpointing, micro-batch 2 times 4 accumulation steps, `max_length` 256, 50
   optimizer steps, `[moe.rl] algorithms = []`, `allow_unselected_backend = true`,
-  `hardware/rtx4090.toml`). Header: "NOT RUN anywhere yet".
+  `hardware/rtx4090.toml`; on this machine `stage-moe-olmoe-sft-smoke-rtx3090.toml`). Header: "NOT RUN anywhere yet".
 - **Commands.** Run it in the background with the `experiment-run` skill, or by hand:
   ```bash
   mkdir -p training/runs/logs
@@ -544,7 +547,7 @@ E002 and R003 are not unblocked. Nothing here can start before that decision (OD
 Not in the plan: M006 (needs a trained diffusion-style model, no GPU profile named) and R002
 (needs a trained tool-calling model; `benchmarks/ood-pods` holds no data).
 
-## 5. Hardware profile question: M010 to M015 name the RTX 3090, the owner has a 4090
+## 5. Hardware profile question (RESOLVED: two RTX 3090, keep `rtx3090.toml`): M010 to M015 name the RTX 3090, the original text assumed a 4090
 
 > **Resolved (owner fact, later than this text).** The owner's desktop has two RTX 3090 (24 GiB
 > each), not a 4090. OD-1 therefore resolves in favour of option A: the `hardware/rtx3090.toml`
@@ -584,7 +587,7 @@ Not in the plan: M006 (needs a trained diffusion-style model, no GPU profile nam
   freeze commit it would be impossible without a successor experiment. Also change E006's
   `gpu_compute_capability` to the value the 4090 reports.
 
-**Recommendation: B**, for M010 to M015 and E006, decided before the first prepared record of
+**Recommendation (superseded, kept as history; resolved in favour of A, see the note at the head of this section): B**, for M010 to M015 and E006, decided before the first prepared record of
 each. Reason: the profile is provenance, the owner's machine is a 4090, and `rtx4090.toml`
 already exists and is what the smoke configs use. For M016 (`rtx5090`, 32 GiB, with a
 measured speedup as the headline) the same logic applies: switch to `rtx4090` or do not run it
@@ -686,7 +689,7 @@ placeholder.
 | OD-8 | R004 | placeholders `public_regression_gate_permille`, `backward_transfer_min_permille`; also backbone, domain sequence, public suite, compute budget | placeholder + gap | pin values and name an OLMoE or other backbone | name the backbone first (it fixes what a gate value means), then pin both |
 | OD-9 | R003, E001, E002, E003, E004, E005 | pinned open backbone (ADR-0021, "separate later decision"); ADR-0015 coding backbone; `model.toml` fields; strong_rag revisions (`dense.revision`, `reranker.revision`, `answer.generator`, `answer.revision`) | gap | choose backbone and revisions / keep deferring | keep deferring until steps 4 to 13 have run |
 | OD-10 | E005 | `token_budget`, `full_context_baseline`, `agent_memory_baselines`, `baseline_strong_rag_sha256` | placeholder | pin each | after OD-9 |
-| OD-11 | R003 | declared `dual-rtx3090` profile (2 x 24 GiB) vs this single 4090 | gap | run on a different machine / change the profile in a successor / defer | defer with OD-9 |
+| OD-11 | R003 | declared `dual-rtx3090` profile (2 x 24 GiB) matches the two cards of this machine; the blocker is the missing backbone and multi-GPU trainer (original wording: vs a single 4090) | gap | change the profile in a successor / defer | defer with OD-9 |
 | OD-12 | M016 | start only after R006 is completed (R006 itself is CPU and needs its own preregistration and 5 seeds) | gap | complete R006 first / change M016's design | complete R006 first |
 
 Placeholders found in the GPU-phase manifests: only R004 (two keys) and E005 (four keys) hold
@@ -737,7 +740,7 @@ document (section 3), not measurements, and the first pilot seed replaces them.
    PY
    ```
 4. A clean tracked worktree, the environment outside the checkout for frozen runs (OD-3), and
-   one hardware profile chosen per experiment (`hardware/rtx4090.toml` recommended).
+   one hardware profile chosen per experiment (`hardware/rtx3090.toml`, or `hardware/dual-rtx3090.toml` for a two-card run; the original single-4090 text recommended `hardware/rtx4090.toml`).
 
 ### 10.2 Commands in order
 
@@ -753,9 +756,9 @@ On the GPU machine (each line starts only after the previous one is done and rec
 
 | # | Run | Entry | Expected output | Estimate, 4090 mid |
 |---|---|---|---|---|
-| V1 | pilot seeds 1001 to 1003 of S0 | `vcw-perft-r-sft-rtx4090.toml` via the P1 entrypoint | `metrics.json` with `hardware.peak_cuda_memory_allocated_gib` (compare 16.4), loss curve, trainable parameters 4,456,448 | 6.4 h per seed |
-| V2 | pilot seeds of S1, both arms | `vcw-rlvr-router-rtx4090.toml` | per-step reward, `expert_churn_per_layer`, `routing_entropy`, `load_cv`, `dead_experts`, `train_inference_kl`, `clip_fraction`, `crash_step`; peak memory (compare 21.1) | 0.84 h per seed |
-| V3 | pilot seeds of S2 (per-class and generic) | `vcw-repair-expert-rtx4090.toml` | transitions per finding class (each trained class must occur often enough to pin), peak memory (compare 15.5) | 2.1 h per arm |
+| V1 | pilot seeds 1001 to 1003 of S0 | `vcw-perft-r-sft-rtx3090.toml` via the P1 entrypoint | `metrics.json` with `hardware.peak_cuda_memory_allocated_gib` (compare 16.4), loss curve, trainable parameters 4,456,448 | 6.4 h per seed |
+| V2 | pilot seeds of S1, both arms | `vcw-rlvr-router-rtx3090.toml` | per-step reward, `expert_churn_per_layer`, `routing_entropy`, `load_cv`, `dead_experts`, `train_inference_kl`, `clip_fraction`, `crash_step`; peak memory (compare 21.1) | 0.84 h per seed |
+| V3 | pilot seeds of S2 (per-class and generic) | `vcw-repair-expert-rtx3090.toml` | transitions per finding class (each trained class must occur often enough to pin), peak memory (compare 15.5) | 2.1 h per arm |
 | V4 | pilot checks | harness | ceiling, floor, sensitivity, margin variance (VCW plan 4.5, 4.6), truncation rate at 160 completion tokens | minutes |
 | V5 | freeze commits and `prepare` for F005, F004, C002, C003 | section 3.1 | `prepared` records at HEAD | none |
 | V6 | T on final seeds 17, 29, 43, 71, 101 | the V1 to V3 entrypoints | `checkpoints.json` (adapter digests), committed | 11 h per seed |
@@ -831,8 +834,9 @@ CUDA machine independently and M014 and M015 last.
 **Preregistration.** Among the GPU experiments only C001 has a preregistration entry; every other
 one is `planned` with no entry, no freeze and no run. The head freezes.
 
-**Hardware.** `rtx3090.toml` and the manifests' current profile, `rtx4090.toml` (24 GiB, the
-recommended one) and `rtx5090.toml` (32 GiB); one profile per experiment (OD-1).
+**Hardware.** `rtx3090.toml` (24 GiB, the manifests' current profile and the right one for this machine, OD-1 resolved),
+`dual-rtx3090.toml`, `rtx4090.toml` (24 GiB, the original single-card recommendation) and `rtx5090.toml` (32 GiB);
+one profile per experiment (OD-1).
 
 **Retraining the base model** changes the `BaseModelRef` digest and generation, so all experts
 bound to the old base mismatch, the per-layer KV chain keys change from the first changed layer

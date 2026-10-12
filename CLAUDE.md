@@ -15,7 +15,7 @@ Toolchain is pinned in `rust-toolchain.toml` (1.99.0, also the workspace MSRV). 
 ```bash
 make check                       # cargo check --workspace --all-targets --locked
 make test                        # cargo test --workspace --locked
-make fmt                         # rustfmt check, root workspace AND model/burn-a0
+make fmt                         # rustfmt check: root workspace, model/burn-a0 AND evaluations/bench/kit
 cargo test -p ptr-ledger --locked                 # one crate
 cargo test -p ptr-ledger --locked <test_name>     # one test by name filter
 cargo test -p ptr-ledger --test failpoints --features failpoints --locked   # one integration target (feature-gated)

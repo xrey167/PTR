@@ -67,9 +67,13 @@ Secrets (DSNs, tokens) go into a file the generated script sources quietly (`env
    (1 is a recorded product finding, 2 a harness stop). Each seed is committed on its own. **Aggregate (step 10).**
 10. **Finish** (below), after the aggregate, as three commits.
 
-Parallel runs on the two GPUs of the desktop (RTX 3090 x2): give each experiment its own worktree and a spec with `gpu = 0` or `gpu = 1`. The
-generated script then exports `CUDA_VISIBLE_DEVICES=<index>` and prefixes every log line with `[ID gpu=N]`. Without `gpu` nothing is exported
-(CPU experiments). Use a separate `FREEZE_LOGS` and `CARGO_TARGET_DIR` per worktree. Never run two scripts in one worktree.
+GPU index on the two-card desktop (RTX 3090 x2): a spec with `gpu = 0` or `gpu = 1` makes the generated script export
+`CUDA_VISIBLE_DEVICES=<index>` and prefix every log line with `[ID gpu=N]`. Without `gpu` nothing is exported (CPU experiments). The export
+reaches the script's own cargo, pilot and mutation steps, but not the seed runs: they go through `scripts/run_experiment.py run`, whose command
+environment allows only `PATH`, `HOME`, `TMPDIR`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `LC_CTYPE`, `CARGO_HOME`, `RUSTUP_HOME` and the declared `PTR_*`
+variables, so a frozen seed run ignores it (both cards stay visible and the code uses `cuda:0`). Frozen seed runs therefore go one at a time until a
+reviewed runner change settles GPU pinning (OD-3); the second card is for pilots, smokes, tuning and mutation runs. Use a separate worktree,
+`FREEZE_LOGS` and `CARGO_TARGET_DIR` per script. Never run two scripts in one worktree.
 
 ## Runtime variables of the generated script
 
