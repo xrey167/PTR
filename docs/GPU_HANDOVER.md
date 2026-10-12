@@ -546,6 +546,16 @@ Not in the plan: M006 (needs a trained diffusion-style model, no GPU profile nam
 
 ## 5. Hardware profile question: M010 to M015 name the RTX 3090, the owner has a 4090
 
+> **Resolved (owner fact, later than this text).** The owner's desktop has two RTX 3090 (24 GiB
+> each), not a 4090. OD-1 therefore resolves in favour of option A: the `hardware/rtx3090.toml`
+> profile the M010 to M015 and E006 manifests already name is the right one, and
+> `gpu_compute_capability = "8.6"` of E006 is true on this machine. The two-card machine is
+> `hardware/dual-rtx3090.toml` (PCIe only, no NVLink). The text below is kept as written; read
+> "4090" in it as the reference card of the smoke configs, which name `hardware/rtx4090.toml` and
+> should be switched to a 3090 profile (or a derived config) before a run is cited. M016 (`rtx5090`)
+> and its measured speedup still need their own decision. Two independent runs, one per card, are
+> possible (`DESKTOP_SETUP.md` section 10); nothing in `training/` trains on both.
+
 **Facts.**
 
 - `experiment.toml` of M010, M011, M012, M013, M014 and M015 each set
@@ -642,6 +652,11 @@ asking for the task, or as `/ptr-dev:<name>`.
   when a prepared record would otherwise be patched.
 - **`ptr-offline-sync`, `ptr-gitlab`** for section 6.
 
+**Head sessions.** The end-to-end path from a powered-on machine to a running head session is in
+[`LOCAL_START.md`](LOCAL_START.md); the head prompt, the staged goal (this document's run order) and the
+channel, reviewer and fact-check brief templates are in [`agents/KICKOFF.md`](agents/KICKOFF.md). Use them
+instead of composing the requests by hand when a head session drives the work.
+
 Rules to state in the first message of each GPU session (they come from `CLAUDE.md`, the
 `experiment-run` skill and sections 2 and 3):
 
@@ -661,7 +676,7 @@ placeholder.
 
 | ID | Applies to | Key or item | Kind | Options | Recommendation |
 |---|---|---|---|---|---|
-| OD-1 | M010, M011, M012, M013, M014, M015, E006 (also M016, R003) | `hardware_profile` in `experiment.toml`; E006 `gpu_compute_capability = "8.6"`; M016 `rtx5090` | gap | keep 3090 as declared class / switch to `rtx4090` before freezing (section 5) | switch to `rtx4090` before the first prepared record |
+| OD-1 | M010, M011, M012, M013, M014, M015, E006 (also M016, R003) | `hardware_profile` in `experiment.toml`; E006 `gpu_compute_capability = "8.6"`; M016 `rtx5090` | gap | keep 3090 as declared class / switch to `rtx4090` before freezing (section 5) | resolved: the machine has two RTX 3090, keep `rtx3090.toml` (section 5, note at its head); the recommendation to switch to `rtx4090` no longer applies |
 | OD-2 | M006, M010 to M016, R002, R003, R008, E001 to E004, E006 | listing in `experiments/preregistration.toml` | gap | list before the first prepared record / leave unlisted (no freeze protection, per `CLAUDE.md`) | list, with the required keys of each, so the freeze gate covers them |
 | OD-3 | every GPU experiment | interpreter and environment of a frozen entrypoint (a listed run refuses git-ignored files such as `training/.venv`, and passes no `PYTHONPATH`) | gap | environment outside the checkout and a clean worktree / a wrapper in the repository / run unlisted | settle with the first entrypoint (M011) and reuse it |
 | OD-4 | M015 | teacher `Qwen/Qwen3-30B-A3B` does not fit 24 GiB (bf16 about 60 GB, estimate) | gap | pin a quantized or offloaded teacher / sample the teacher on other hardware and pin its output digest / choose a smaller teacher (successor manifest) / defer M015 | defer M015; if wanted, pin the teacher's precision and sampling location in the manifest before the freeze |
