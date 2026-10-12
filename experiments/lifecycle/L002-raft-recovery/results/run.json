@@ -1,0 +1,70 @@
+{
+  "experiment_id": "L002",
+  "status": "prepared",
+  "scope": "recovery of a clustered ledger in-process on one host, no network: the compaction cutover of AcknowledgedLedger with its ProtectedAnchor, crashed at each of its nine failpoints (in-process panic, fsync-honest power-loss images of the new log and of the anchor's publication) and appends above the new floor crashed at the eight log and anchor failpoints, with the runtime restored from the compacted snapshot and the retained records compared with an independent oracle (arm K); three in-process Raft members over FileRaftStorage on a deterministic router crashed at twelve storage failpoints and failed at two writes during isolation, snapshot recording and installation, a deposed leader and message faults, held to persist-before-send, no forgetting and convergence to a single-node reference within a pinned number of heartbeat rounds (arms S and G); power-loss images of a member's log; a forged snapshot that must be refused by its anchor",
+  "git_sha": "9b5c6e27bfd7d876ebf3096db4ccad36de986a7c",
+  "aggregated_at_git_sha": "6d32f425c0756fc3b97fac69a16b37d55ae9e59f",
+  "recorded_at": "2026-10-12T01:12:16.925473+00:00",
+  "preregistration_sha256": "7ddd010d63ab8005996f66e658ea91e69144a34b57ba48a761cc8f25e2d8e37d",
+  "preregistration_rules_sha256": "5c85863f72a69d43879c1b1bbab733aa6dde2eb8f84147a3b51840dfef73b6be",
+  "criteria_sha256": "71f6e78ab1122c2f8d36523b7d35815c123506838c8444c5f8e773d30265107f",
+  "entrypoint": "cargo run --release --locked -p ptr-bench --features ledger-experiments -- raft-recovery <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261012T004000.244675Z-seed-17.json",
+      "git_sha": "9b5c6e27bfd7d876ebf3096db4ccad36de986a7c",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261012T004716.869030Z-seed-29.json",
+      "git_sha": "4e09f984cf2024611f07e964b2f28c24acd75762",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261012T005358.735802Z-seed-43.json",
+      "git_sha": "8ade568f8c3fa9b114d589d9bbae71c907a2c596",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261012T010008.832914Z-seed-71.json",
+      "git_sha": "991613b4191bc8115ec4c60a18348971232da92d",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261012T010617.584203Z-seed-101.json",
+      "git_sha": "2796e4cb1004f50913f7dfa51aa3102dd601727c",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "379c564f55dae942b78f63b18831654839b241289f60adbdd8587032a416acdb",
+    "29": "d1a10635c1153c87b13c7dd20486abe080d56330b572d2f2aa0d8d4ac63e4126",
+    "43": "6428460939a4e60e9f429ffa24486640270af4b541e8f4e1e7399fa7175f92b2",
+    "71": "e9e5af56465ee08a38fdae07870ca6c8e7e6c4ae0875eef04b0ff6c08af9d742",
+    "101": "581a9d58cdf518d64571bd1563f1b90d6ba381581a604d10bdd546ffe62c6b13"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 32,
+    "total": 32,
+    "git_sha": "e7c4bb8501ce78365b1f2cae8dfa2faf24503b07",
+    "sha256": "0b88ba843ed400343252bfbb8a4a223d194ae378e01a044e23517a47267a8267"
+  },
+  "limitations": [
+    "power loss is a fsync-honest crash-image model: bytes synced before the crash are intact and nothing else is promised; it is not a real power cut, and images exist for the new log and the anchor of the cutover and for a member's log, not for a member's state or snapshot file",
+    "the process-abort class is an in-process panic at a failpoint (the unwinding drops the handles; no destructor of the code under test writes); child processes that call abort() are not repeated from L001-v2",
+    "the durability probe sees file data pages only; a missing directory fsync is outside what it detects, and the model takes the directory fsync on trust",
+    "the Raft members return all their messages from one call, so the order of persisting and sending inside RaftNode::drain is not observable; the checked contract is that nothing a call returns promises a vote or an append that is not in the member's files and that a failed write returns no message",
+    "three in-process members on a deterministic router: no sockets, no election timer, no membership change, no real wire (ptr-cluster, ptr-net); recovery time is a count of heartbeat rounds, not a duration",
+    "RaftEngineLedger is not touched (L001-v2's stated limit and owner decision stand)",
+    "synthetic seeded histories of 10 to 16 events; one process for the in-process arms, one machine profile"
+  ],
+  "metrics_sha256": "3034a2b70973b4524e38b7d4b146ff0703b68a19403ca951b96144065fd404cc"
+}
