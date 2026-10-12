@@ -481,3 +481,18 @@ class MakeFreezeScriptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StepEightCleansTheCheckoutTests(unittest.TestCase):
+    """Regression (E007 replay, 2026-10-12): the runner refuses a checkout holding target/, so the
+    generated script must remove it before preflight whatever FREEZE_CLEAN_TARGET says."""
+
+    def test_target_is_removed_before_preflight(self):
+        mod = load("make_freeze_script_t8", "make_freeze_script.py")
+        text = mod.generate({"id": "E9", "dir": "experiments/system/E9-x", "tag": "e9-prereg"})
+        step8 = text.index('STEP 8: preflight, prepare')
+        preflight = text.index('run_experiment.py preflight', step8)
+        block = text[step8:preflight]
+        self.assertIn("rm -rf target", block)
+        self.assertIn("git clean -ndX", block)
+

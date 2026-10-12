@@ -307,6 +307,10 @@ def generate(spec):
         w("")
     w('if [ "$START" -le 8 ]; then')
     w('say "STEP 8: preflight, prepare"')
+    # The runner refuses a checkout that holds git-ignored files (target/ above all): remove the
+    # build output of steps 3-7 unconditionally and stop if anything else ignored remains.
+    w("rm -rf target; clean")
+    w('IGN=$(git clean -ndX | sed "s/^Would remove //"); [ -z "$IGN" ] || { printf "%s\\n" "$IGN" | head >&2; stop 8 "git-ignored files remain; the runner refuses them" 7; }')
     w('python3 scripts/run_experiment.py preflight "$ID" | tail -1; [ "${PIPESTATUS[0]}" -eq 0 ] || stop 8 "preflight failed" 7')
     w('python3 scripts/run_experiment.py prepare "$ID" | tail -1; [ "${PIPESTATUS[0]}" -eq 0 ] || stop 8 "prepare failed" 7')
     w("clean")
