@@ -16,6 +16,9 @@ Target: a fresh Ubuntu 24.04 LTS desktop (native, not WSL2) with one NVIDIA RTX 
 (24 GiB, Ada, sm_89). The hardware profile is `hardware/rtx4090.toml`. Nothing here
 claims a research result: the smoke runs are pipeline evidence only (see step 7).
 
+**The owner's machine is two RTX 3090, not one 4090.** The text below says 4090 where it was
+written for the reference card; section 10 states what changes for two RTX 3090 (24 GiB each).
+
 Everything below was written and unit-tested on a machine without a GPU. The commands that
 need the GPU (driver install, `make smoke-gpu`, `make olmoe-sft-smoke`) have not been run
 on the 4090 by the author of this document; the first real run is the first real test.
@@ -196,6 +199,12 @@ Example requests:
   loss curve, labelled as pipeline evidence."
 - "Prepare the M011 run as its manifest describes; do not edit prepared experiment records."
 
+The whole path from a powered-on machine to a running head session (repository from git bundles
+or GitLab, toolchains, baseline checks with timings, plugins, worktree layout) is in
+[`docs/LOCAL_START.md`](LOCAL_START.md); the copy-paste prompts for the head session, a coding
+channel and the reviewers are in [`docs/agents/KICKOFF.md`](agents/KICKOFF.md). Use those two pages
+instead of the ad-hoc requests above when a head session drives the work.
+
 The ordered GPU run plan after the smoke runs, the per-experiment gaps and the open owner decisions are in
 [`docs/GPU_HANDOVER.md`](GPU_HANDOVER.md).
 
@@ -226,3 +235,51 @@ desktop as a GitLab runner tagged `ptr-gpu`, see `docs/HOSTING.md`.
   under `training/runs/` (not tracked), `cargo clean` for `target/`, and
   remove unused model revisions from `$HF_HOME/hub`. The doctor warns below 60 GB.
 - **`--execute` refuses to run.** The tracked worktree is dirty: commit or stash.
+
+## 10. Two RTX 3090 instead of one RTX 4090
+
+The owner's desktop has two RTX 3090 (Ampere, sm_86, 24 GiB each). Profiles:
+`hardware/dual-rtx3090.toml` ("2x NVIDIA GeForce RTX 3090, 24 GiB each, 48 GiB combined, PCIe-only
+(no NVLink bridge)") for the machine and `hardware/rtx3090.toml` (one card, 24 GiB; fp32, fp16,
+bf16, int8, no fp8) for single-card runs. NVLink is not assumed. Steps 1 to 9 apply unchanged
+except for the following.
+
+- **Driver.** Same: `nvidia-driver-580-open`. `nvidia-smi -L` must list two GPUs (index 0 and 1).
+  If only one shows, check the second card's power connectors, the slot and `lspci | grep -i nvidia`
+  before touching software.
+- **Memory.** Each run sees 24 GiB, the same as the 4090, so single-card fit estimates carry over
+  (they were computed for 24 GiB). Timings do not: the 3090 has a different architecture and no
+  fp8, so wall-time figures quoted for the 4090 do not transfer.
+- **Which hardware profile a run declares.** The M010 to M015 and E006 manifests already name
+  `hardware/rtx3090.toml`; that is correct for this machine, so no manifest edit is needed
+  (`GPU_HANDOVER.md` section 5 is resolved in favour of the 3090 profiles). The smoke configs
+  `stage-moe-smoke-gpu.toml` and `stage-moe-olmoe-sft-smoke.toml` and the VCW `*-rtx4090.toml` configs
+  name `hardware/rtx4090.toml`; they run, but their manifests then carry the wrong profile name.
+  Pick the 3090 variant or a derived config before a run that is meant to be cited, and always record
+  the real `nvidia-smi` output.
+- **One run per card.** Nothing in `training/` uses more than one GPU: the configs take
+  `device = "cuda"`, the pipeline records `torch.cuda.get_device_name(0)` and peak memory of the
+  default device, and no `DataParallel`, `DistributedDataParallel`, `device_map`, FSDP or ZeRO
+  path exists under `training/src` (checked by search). So there is no multi-GPU training here; the
+  48 GiB are not one pool. The supported use of the second card is a second, independent run:
+
+  ```bash
+  CUDA_VISIBLE_DEVICES=0 make smoke-gpu                       # run A on card 0
+  CUDA_VISIBLE_DEVICES=1 make olmoe-sft-smoke                 # run B on card 1, a different run
+  nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv
+  ```
+
+  Inside a run the pinned card is always `cuda:0`, so `metrics.json` shows the card name but not
+  the physical index; write the index into the run log and your notes. Never start the same
+  confirmatory seed twice, and never two runs that both default to card 0.
+- **Frozen runs.** `scripts/run_experiment.py` passes a restricted environment and drops
+  `CUDA_VISIBLE_DEVICES` (`GPU_HANDOVER.md` section 1.1 item 8), so a listed experiment's command
+  cannot be pinned to card 1 through the environment; it uses card 0. Either run frozen experiments
+  one at a time, or settle a pinning mechanism together with OD-3 before running two at once.
+  Exploratory and smoke runs are not affected.
+- **Doctor.** `scripts/gpu_doctor.py` prints `x2` for the card count but warns "expected an RTX 4090"
+  and probes torch on card 0 only; the WARN is expected on this machine. Check card 1 with
+  `CUDA_VISIBLE_DEVICES=1 training/.venv/bin/python -c 'import torch; print(torch.cuda.get_device_name(0))'`.
+- **R003** declares `hardware/dual-rtx3090.toml`, the only profile in the plan that matches both
+  cards, but it also needs a pinned backbone and a multi-GPU trainer that does not exist yet
+  (`GPU_HANDOVER.md` step 14).
