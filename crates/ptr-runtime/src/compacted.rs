@@ -1713,6 +1713,25 @@ impl PtrRuntime {
         trusted: CompactedAnchor,
         above_floor: &[CommittedEvent],
     ) -> Result<Self, RuntimeError> {
+        Self::restore_compacted_with_attestors(
+            config,
+            bytes,
+            trusted,
+            above_floor,
+            super::expert::ExpertAttestorRegistry::new(),
+        )
+    }
+
+    /// [`PtrRuntime::restore_compacted`] trusting the attestor keys the host holds: a record
+    /// above the floor that carries an attestation replays only under one of them (with
+    /// [`PtrRuntime::restore_compacted`] the registry is empty and such a record is refused).
+    pub fn restore_compacted_with_attestors(
+        config: PtrConfig,
+        bytes: &[u8],
+        trusted: CompactedAnchor,
+        above_floor: &[CommittedEvent],
+        attestors: super::expert::ExpertAttestorRegistry,
+    ) -> Result<Self, RuntimeError> {
         let (layout, (semantic, lifecycle, execution)) = compacted_sections(bytes, trusted)?;
         let semantic = SemanticDelta::decode(semantic).map_err(RuntimeError::Semantic)?;
         let lifecycle = LifecycleState::decode(lifecycle, layout)?;
@@ -1721,7 +1740,7 @@ impl PtrRuntime {
 
         let execution = ExecutionObligations::decode(execution)?;
 
-        let mut runtime = Self::new(config)?;
+        let mut runtime = Self::new_with_attestors(config, attestors)?;
         runtime.semdb = semdb;
         // Before the fence and the at-most-once memory are reinstated, this
         // runtime would answer a spent key by executing the effect again.

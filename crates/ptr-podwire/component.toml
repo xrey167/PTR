@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-podwire"
 maturity = "prototype"
-last_reviewed = "2026-09-22"
+last_reviewed = "2026-10-10"
 
 implemented = [
   "PodHost and PodClient carry one Pod invocation and its answer over ALPN_PODWIRE, composing ptr-pods' registry with ptr-net's transport so neither has to know about the other",
@@ -33,9 +33,14 @@ implemented = [
   "PodSession records a request id as uncertain after a timeout, transport failure, undecodable answer or failed answer validation and refuses a retry of that id with RequestUncertain; an identical re-send of an answered id is served from a bounded (256 entry) session cache and conflicting bytes under a used id are refused as DuplicateRequest; PodSession::recover_uncertain_request only forwards a UncertainRequest to a caller-supplied StatefulRequestRecovery, it performs no recovery itself",
   "The whole composition is feature-gated, so iroh stays out of every other workspace build exactly as ptr-net keeps its own backend out",
   "A requester dials only what the deployment wrote down: request takes a ptr-net PeerAddress, which has no public constructor, so a bare address does not satisfy the signature and an address handed over by a peer or read out of a payload cannot be dialled",
+  "src/chunk.rs, bounded chunking and reassembly of activation frames: chunk_frame cuts a frame into Ed25519-signed chunks (sign_chunk, resign_envelope), FrameAssembler is the receiving side with an injected clock (offer, abandon, expire take the time; nothing reads a clock or sleeps) and a registered verifying key per authenticated principal; it admits only the split-pod allowlist, verifies the signature over the envelope, then the tombstones, the signed deadline (expired, or too far ahead), the chunk digest, and reserves (principal, parent_operation_id, frame_id) in a principal-scoped table on the first accepted chunk; the table bounds incomplete frames plus retained completion and abandonment tombstones by max_frame_tombstones_per_principal and refuses a new frame with a typed FrameTableFull when it is full, never evicting a tombstone before its retention (completion: deadline + skew; abandonment: abandonment time + replay window, with replay_window >= max deadline lifetime + 2 skew checked by AssemblyPolicy::validate); a reorder window, a per-peer bound on incomplete frames and a bound on buffered chunks give typed OutOfWindow, TooManyIncompleteFrames and QueueOverflow; a duplicate chunk, a chunk whose chain, total, frame digest or deadline differs from the first (the frame is abandoned) and a complete payload whose digest is not the one every chunk carried, or that is no valid frame, are typed refusals; chunks of one tuple from any session of the principal join one assembly and exactly one delivery results; an abandoned frame (explicit, mismatching, or past its deadline) releases its chunks, reported by identity; covered by src/chunk.rs tests, tests/chunking.rs and the E007 harness",
+  "Review fixes of the assembler: the sender is authenticated before its content is decoded (the principal must be registered and the envelope or policy signature must verify before chunk bytes are copied); register_principal binds a principal to the one stage identity it may speak for (Rejection::StageNotBound); a signed SplitPolicy is verified, held until its deadline plus the skew and bound to its operation (Rejection::PolicyMismatch on a frame of another width or dtype); the chain inside the reassembled frame must be the chain the envelope signed (Rejection::ChainFrameMismatch); max_total_buffered_bytes bounds the bytes buffered over all principals (Rejection::GlobalBufferFull, invariant 8); a tuple is tombstoned or expired at every tick (a frame is expired from deadline plus skew on, a tombstone is kept while retain_until > now), tested at exactly deadline plus skew and at abandonment plus the replay window.",
+  "Fix round 2 of the assembler (amended in round 3): registering a principal again with the same key and stage identity (a reconnect) keeps its tombstones, verified policies and incomplete frames, so a delivered frame replayed after re-registration is still refused; a changed key or a changed stage identity drops the verified policies (a policy signed under a compromised old key stops binding and the new key can re-issue it) and releases the frames still being assembled (their chunks are reported once by expire) and tombstones them until their signed deadline plus the skew, so no chunk signed under the new key completes a frame begun under the old one, while the tombstones of delivered frames are kept; the assembler keeps the highest time it was given and treats an earlier time as that time, so a clock that steps back cannot revive a dropped tombstone; AssemblyPolicy::validate requires max_total_buffered_bytes >= max_frame_bytes (PolicyViolation::TotalBelowOneFrame).",
+  "Fix round 3 of the assembler: the chunk ids released by an expiry inside offer or abandon, by an identity or key change, or by a frame that failed to decode are kept in one buffer that only expire drains, so each is reported exactly once and none is lost; abandon reports its own chunks by its return value only (a later expire does not list them again); tests: key rotation drops policies and frames, offer and abandon neither lose nor repeat released ids.",
 ]
 
 missing = [
+  "The key-to-connection binding of a principal and the binding of a principal to one stage identity are registered by the deployment; nothing here derives them from a connection. The assembler is not carried by PodHost/PodClient yet.",
   "Authentication: the peer key is the one ptr-net reports the connection authenticated, and this crate takes the host's word that it passed that rather than something else",
   "Signed answers, and therefore any third-party evidence: inside one exchange the connection vouches for an answer's author and outside it nothing does",
   "A journaled access policy: the scope table is in memory, so it does not survive a restart and nothing records who was admitted to which project when",
@@ -44,6 +49,12 @@ missing = [
   "Session reuse by default: PodClient::request and request_v2 still open a connection per request; reuse is opt-in through PodSession, and the in-flight bound's Backpressure error is not exercised by any test in this crate",
   "Streaming, cancellation and partial answers: one request, one bounded answer",
   "Any claim about latency, throughput or behaviour under load; the tests establish protocol and isolation properties on localhost",
+  "Chunks cross as ordinary TypedPayloads of the existing request frame, one per request; the assembler is not wired into PodHost/PodClient (E008 carries the chunks over iroh), and the binding of a principal's verifying key to the authenticated connection is the caller's",
+  "A signed SplitPolicy is optional per operation and names no recipient: a frame that completes before its policy arrives is bound by nothing, and a frame or policy signed for one stage verifies at any receiver that registered the same upstream key (the chain's stage pins only the producer); a required-policy flag and a signed recipient identity are not built.",
+  "There is no per-principal byte cap: one authenticated principal can fill max_total_buffered_bytes with partial frames until their signed deadlines expire them, which starves other principals of buffer space (liveness only, bounded by the deadline lifetime).",
+  "A forward clock spike pins the assembler: the clock never goes back (it keeps the highest time seen), so one call with a time far in the future (a bad clock step, a test passing u64::MAX) makes every later chunk read Expired for good. The direction is safe (nothing is wrongly admitted), the cost is liveness only, and a restart of the receiver is the remedy.",
+  "A frame in flight is copied several times at completion (chunks, joined bytes, decoded tensor) and only the chunks count against the byte cap.",
+  "The release buffer of the assembler (ids of abandoned or expired frames' chunks, about 32 per frame) is drained only by expire(): a receiver that only calls offer() grows it without bound (no production caller exists; the E007 harness calls expire()). The duty to call expire() is part of the contract. The key-rotation policy drop and the release-once behaviour are covered by unit tests, not by planted E007 mutations.",
 ]
 
 next = [
@@ -51,7 +62,7 @@ next = [
   "Decide where the accept loop belongs before adding one, since a loop in the wrong place makes the scheduling implicit again",
 ]
 
-experiments = []
+experiments = ["E007"]
 evaluations = []
 decisions = [
   "ADR-0006-typed-isolate-runtime.md",

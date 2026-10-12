@@ -307,12 +307,18 @@
 //! [`PtrRuntime::admit_expert_proposal`] decides on a gate report. See the `structure` module
 //! source for the operators and bounds.
 
+mod attestation;
 mod authority;
 mod dependency;
 mod structure;
 
 use crate::manifest::ManifestBindingAuthority;
 use crate::{PtrRuntime, RuntimeError};
+pub use attestation::{
+    expert_attestor_key_id, ExpertAttestation, ExpertAttestationClaim, ExpertAttestorRegistry,
+    ATTESTATION_IDENTITY_PREFIX, ATTESTATION_POLICY_IDENTITY, ATTESTOR_IDENTITY_PREFIX,
+    MAX_ATTESTOR_NAME_BYTES, RUN_GENERATION, RUN_IDENTITY_PREFIX,
+};
 pub(crate) use authority::AuthorityState;
 pub use authority::{
     expert_authority_fence_set_digest, ExpertAdmissionEpochs, ExpertAuthorityChange,
@@ -468,6 +474,7 @@ pub struct ExpertAdmissionGrant {
     requirement: ExpertGateRequirement,
     binding: ExpertGrantBinding,
     evaluator: Option<[u8; 32]>,
+    attestation_required: bool,
 }
 
 impl ExpertAdmissionGrant {
@@ -486,6 +493,7 @@ impl ExpertAdmissionGrant {
             requirement,
             binding,
             evaluator: None,
+            attestation_required: false,
         }
     }
 
@@ -498,6 +506,26 @@ impl ExpertAdmissionGrant {
     pub fn with_evaluator(mut self, evaluator_id_digest: [u8; 32]) -> Self {
         self.evaluator = Some(evaluator_id_digest);
         self
+    }
+
+    /// The same grant requiring an attestation ([`ExpertAttestation`]): an artifact-producing
+    /// admission (Birth, Merge, Split, a Reactivate that creates a generation) that carries none
+    /// (every call of [`PtrRuntime::admit_expert_proposal`] and
+    /// [`PtrRuntime::admit_expert_proposal_with_inputs`]) is refused as
+    /// [`ExpertAdmissionError::AttestationRequired`], before any other check; Freeze, Retire,
+    /// Prune and unfreeze are not affected. The requirement is recorded: an attested admission
+    /// under this grant commits the policy marker in its dependency block, and from that record
+    /// on the ledger requires an attestation of every later artifact-producing record, replay
+    /// included, whatever grant a restarted host builds.
+    #[must_use]
+    pub fn with_required_attestation(mut self) -> Self {
+        self.attestation_required = true;
+        self
+    }
+
+    /// Whether the grant refuses an admission that carries no attestation.
+    pub fn requires_attestation(&self) -> bool {
+        self.attestation_required
     }
 
     /// The evaluator this grant names, if any.
@@ -666,6 +694,40 @@ pub enum ExpertAdmissionError {
     /// The grant requires a version 3 inputs block ([`ExpertGateRequirement::require_inputs`])
     /// and the admission carries none.
     InputsRequired,
+    /// An attestation names another proposal than the one being admitted.
+    AttestationProposalMismatch,
+    /// An attestation names another artifact than the one the proposal determines
+    /// ([`expert_evidence_artifact_digest`]).
+    AttestationArtifactMismatch,
+    /// An attestation names another base model than the one the operation's results are on.
+    AttestationBaseModelMismatch,
+    /// An attestation names other result experts (pods or generations) than the operation
+    /// creates.
+    AttestationResultMismatch,
+    /// An artifact-producing admission carries no complete attestation although the grant
+    /// requires one ([`ExpertAdmissionGrant::with_required_attestation`]) or the ledger has
+    /// recorded that attestation is required.
+    AttestationRequired,
+    /// The attestation signature does not verify, strictly, under the registered key.
+    AttestationSignatureInvalid,
+    /// A recorded attestation is not in the canonical shape (one attestor, one run, one
+    /// signature, their digests consistent).
+    AttestationMalformed(String),
+    /// No key is registered for the attestor at that epoch
+    /// ([`ExpertAttestorRegistry`]).
+    AttestorUnknown { attestor: String, epoch: Generation },
+    /// The key id the attestation names is not the id of the key registered for the attestor at
+    /// that epoch.
+    AttestorKeyMismatch { attestor: String, epoch: Generation },
+    /// An attestor name outside 1 to [`MAX_ATTESTOR_NAME_BYTES`] bytes of `a-z`, `0-9`, `.`,
+    /// `_`, `-`.
+    InvalidAttestorName { name: String },
+    /// An input identity only an attested admission may set (`attestor:`, `run:`,
+    /// `attestation:`, `policy:attestation-required`).
+    ReservedInputIdentity { identity: String },
+    /// A record names a training run (`run:` input) that an earlier committed record already
+    /// named: a run id is single-use.
+    RunIdReused { identity: String },
     /// A host time observation is below the highest one already observed.
     HostTimeRegressed { floor: Timestamp, found: Timestamp },
     /// A fence, escalation or retirement cites a revocation that is not one of the inputs the
@@ -2209,6 +2271,13 @@ fn check_evidence(
     check_report(report, &expected)
 }
 
+/// Whether an admission carries an attestation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Attested {
+    No,
+    Yes,
+}
+
 impl PtrRuntime {
     /// The expert registry as projected from admitted structural records.
     pub fn expert_registry(&self) -> &ExpertRegistryProjection {
@@ -2231,7 +2300,7 @@ impl PtrRuntime {
         report: &BoundGateReport,
         grant: &ExpertAdmissionGrant,
     ) -> Result<CommitIndex, RuntimeError> {
-        self.admit_expert_record(proposal, report, grant, None)
+        self.admit_expert_record(proposal, report, grant, None, Attested::No)
     }
 
     /// [`PtrRuntime::admit_expert_proposal`] for a proposal whose result expert(s) rest on the
@@ -2255,7 +2324,7 @@ impl PtrRuntime {
         grant: &ExpertAdmissionGrant,
         inputs: ExpertInputs,
     ) -> Result<CommitIndex, RuntimeError> {
-        self.admit_expert_record(proposal, report, grant, Some(inputs))
+        self.admit_expert_record(proposal, report, grant, Some(inputs), Attested::No)
     }
 
     fn admit_expert_record(
@@ -2264,7 +2333,16 @@ impl PtrRuntime {
         report: &BoundGateReport,
         grant: &ExpertAdmissionGrant,
         inputs: Option<ExpertInputs>,
+        attested: Attested,
     ) -> Result<CommitIndex, RuntimeError> {
+        if grant.attestation_required
+            && attested == Attested::No
+            && !proposal.op().results().is_empty()
+        {
+            return Err(RuntimeError::Expert(
+                ExpertAdmissionError::AttestationRequired,
+            ));
+        }
         check_evidence(&self.experts, proposal, inputs.as_ref(), report, grant)
             .map_err(RuntimeError::Expert)?;
         let invalid = |error: ptr_pods::ExpertProposalError| {
@@ -3027,7 +3105,13 @@ impl PtrRuntime {
             .iter()
             .map(|source| key(source.pod(), source.generation()))
             .collect();
+        let policy_recorded = self
+            .experts
+            .dependency_index()
+            .registered_digest(ATTESTATION_POLICY_IDENTITY, RUN_GENERATION)
+            .is_some();
         let Some(block) = record.inputs() else {
+            attestation::check_record(&self.attestors, record, policy_recorded)?;
             self.check_inherited_inputs(&[], &results, &sources)?;
             return Ok(DependencyUpdate {
                 results,
@@ -3059,6 +3143,13 @@ impl PtrRuntime {
             let identity = input.identity();
             let generation = input.generation();
             self.check_input_live(role, identity, generation)?;
+            if identity.starts_with(RUN_IDENTITY_PREFIX)
+                && self.experts.dependency_index().names_identity(identity)
+            {
+                return Err(ExpertAdmissionError::RunIdReused {
+                    identity: identity.to_owned(),
+                });
+            }
             let stale = || ExpertAdmissionError::InputDigestStale {
                 role,
                 identity: identity.to_owned(),
@@ -3086,6 +3177,7 @@ impl PtrRuntime {
                 digest: *input.digest(),
             });
         }
+        attestation::check_record(&self.attestors, record, policy_recorded)?;
         let own: Vec<InputKey> = seen.keys().cloned().collect();
         self.check_inherited_inputs(&own, &results, &sources)?;
         let split = |inputs: &[ExpertInputRef]| -> Vec<RecordedInput> {

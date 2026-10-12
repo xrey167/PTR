@@ -1,0 +1,118 @@
+# L002 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256);
+# no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
+# l002/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order, and every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and so a
+# parse error: no decimal literal exists).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON result
+# object, separated by '.' (no key holds a '.', no array is indexed): "stale_accepts" is a top-level key and
+# "failpoint_hits.raft_install_after_payload" the member of an object.
+# A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a failed rule).
+# A reference compared with an integer literal or another reference must be a JSON integer (not a
+# boolean, not a float). Exact comparisons.
+# The manifest's "< N" prerequisites are written ">= N" and its "> 0" violations "<= 0".
+#
+# Every coverage counter is read from an event the run observed (a failpoint that fired, an image that really is
+# shorter or holed, a snapshot a member really installed, a message the router really dropped, a leader the members
+# really elected); none is read from configuration. Rules that hold by construction of the plan and not by
+# measurement, named so a reader does not mistake them for evidence: cuts (the plan runs 12 cutovers per seed and
+# every one is counted when it ran), scenarios_group, scenarios_checked, tamper_controls, rename_image_pairs,
+# the nine cutover failpoint hits (once per cutover), injected_io_errors and unwind_panics_observed (each counts a
+# fault the plan asks for and the run saw happen), events_min, subjects_min and revoke_then_recommit_histories
+# (properties of the generated workloads, checked against the oracle's own reading of each history), and
+# probe_calibrated and probe_dirty_seen (one calibration of the durability probe on the scratch directory). The
+# measured ones are the recoveries, the images that lost bytes, the member failpoint hits (counted over a schedule
+# whose number of writes the product decides), the snapshots recorded and installed, the restarts between an
+# installation and its accounting, the messages dropped, the promises checked and probe_clean_checked.
+# The controls are not rules: a lie that does not fool the naive recovery, and a forged snapshot that its unanchored
+# take does not make dangerous, end the run with status 2, and aggregate.py reads the controls' records from the
+# result and calls a seed INVALID when they did not trip. The baselines' numbers, the refusals, the recovery rounds
+# and every wall-clock time are descriptive and are in no rule.
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies L002 on that seed.
+# Decision, in the order validity, falsifiers, controls: INVALID if a seed is missing, unresolvable, or its record does
+# not describe the frozen run (a control that did not trip, a counter missing or mistyped, an exit status that disagrees
+# with the rules), or the mutation evidence is absent or short, even when a falsifier fired in a record that can be read;
+# FALSIFIED if every seed can be judged and some seed misses a coverage rule or trips a falsifier; COMPLETED iff every seed
+# holds every coverage rule and every falsifier rule (and the mutation evidence counts every mutation of the plan killed).
+version = 1
+experiment = "L002"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "cuts >= 10",
+  "recoveries_cutover >= 200",
+  "recoveries_member >= 90",
+  "scenarios_group >= 36",
+  "scenarios_checked >= 36",
+  "failpoint_hits.compaction_before_build >= 10",
+  "failpoint_hits.ledger_create_after_write_before_sync >= 10",
+  "failpoint_hits.ledger_create_after_sync_before_dir_sync >= 10",
+  "failpoint_hits.compaction_after_log_built_before_anchor >= 10",
+  "failpoint_hits.anchor_after_scratch_write_before_sync >= 10",
+  "failpoint_hits.anchor_after_scratch_sync_before_rename >= 10",
+  "failpoint_hits.anchor_after_rename_before_dir_sync >= 10",
+  "failpoint_hits.anchor_after_dir_sync >= 10",
+  "failpoint_hits.compaction_after_anchor_before_install >= 10",
+  "failpoint_hits.ledger_sync_parent >= 10",
+  "failpoint_hits.raft_append_after_write_before_sync >= 10",
+  "failpoint_hits.raft_atomic_after_write_before_sync >= 10",
+  "failpoint_hits.raft_atomic_after_sync_before_rename >= 10",
+  "failpoint_hits.raft_state_after_rename_before_dir_sync >= 10",
+  "failpoint_hits.raft_snapshot_after_payload >= 10",
+  "failpoint_hits.raft_snapshot_after_state >= 10",
+  "failpoint_hits.raft_snapshot_after_log_rewrite >= 10",
+  "failpoint_hits.raft_compact_after_sync_before_rename >= 10",
+  "failpoint_hits.raft_compact_after_rename_before_dir_sync >= 10",
+  "failpoint_hits.raft_install_after_payload >= 10",
+  "failpoint_hits.raft_install_after_log_reset >= 10",
+  "failpoint_hits.raft_install_after_log_sync_before_rename >= 10",
+  "failpoint_hits.raft_append_before_write >= 10",
+  "failpoint_hits.raft_state_before_write >= 10",
+  "images_lost_bytes >= 1000",
+  "rename_image_pairs >= 10",
+  "lie_images >= 10",
+  "unwind_panics_observed >= 150",
+  "cuts_over_revocation >= 6",
+  "snapshots_recorded >= 100",
+  "snapshots_installed >= 40",
+  "restarts_between_install_and_resume >= 15",
+  "injected_io_errors >= 4",
+  "leader_changes >= 3",
+  "messages_dropped >= 20",
+  "promises_checked >= 400",
+  "promises_vote >= 100",
+  "tamper_controls >= 3",
+  "revoke_then_recommit_histories >= 40",
+  "recoveries_with_acked_revocation >= 150",
+  "revoked_pairs_denied >= 200",
+  "subjects_min >= 3",
+  "events_min >= 10",
+  "probe_calibrated >= 1",
+  "probe_dirty_seen >= 1",
+  "probe_clean_checked >= 300",
+]
+
+falsifiers = [
+  "stale_accepts <= 0",
+  "acked_revocation_missing <= 0",
+  "recovered_not_prefix <= 0",
+  "reorder_or_duplicate_index <= 0",
+  "unclassified_cutover <= 0",
+  "unjustified_refusals <= 0",
+  "orphan_hazard <= 0",
+  "promise_not_durable <= 0",
+  "member_regressed <= 0",
+  "reference_divergence <= 0",
+  "convergence_bound_exceeded <= 0",
+  "tampered_snapshot_accepted <= 0",
+  "unsynced_acks <= 0",
+  "product_panics <= 0",
+  "product_hangs <= 0",
+  "authority_mismatches <= 0",
+  "reference_mismatches <= 0",
+  "anchored_lie_accepted <= 0",
+]

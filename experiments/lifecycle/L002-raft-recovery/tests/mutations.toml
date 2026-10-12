@@ -1,0 +1,564 @@
+# Defects the L002 harness must detect; run with `python scripts/mutation_check.py L002`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file (checked
+# by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
+# that show the defect: a run that fails only on others does not count as detecting it.
+#
+# The first 27 mutations plant defects in `ptr-ledger` and `ptr-runtime`: the compaction cutover (the
+# new log's fsync and its directory, a record dropped from the new log, an anchor that keeps the old
+# floor, an open that reads the wrong log, an open without the epoch witness, a reclaim that takes the
+# live log), the runtime's restore from a compacted snapshot and its reading of a revoked generation,
+# a panic and a hang on the recovery path, and the Raft member (a failed write swallowed, the vote not
+# persisted, the covered events of a snapshot not persisted, an installed snapshot not marked pending
+# or not offered again, an anchor match that ignores the digest, a torn tail refused, the log not
+# synced at open, a lost snapshot never reported, entries of a light ready never applied, revocations
+# dropped on apply, events numbered from zero). Three more plant defects in the harness itself, to
+# show that its oracle and its bookkeeping are not vacuous. Two were added in fix round 3 and are listed last:
+# an anchored open that accepts a log shorter than its anchor (the second lie control, the live log cut
+# before an acknowledged revocation, had no mutant of its own) and a heal schedule that never changes the
+# leader (seen as a failed baseline, the one form in which the coverage rule leader_changes has a mutant). Every hard counter is expected by at least
+# one mutation, so that `killed == total` also shows each of the eighteen can fire (a test in
+# bins/ptr-bench checks this list against the harness). The mutations that restore the behavior the
+# first pilot found defective in the product (member-swallows..., snapshot-record-forgets-the-covered-events,
+# install-is-not-marked-pending, pending-snapshot-forgotten-by-open, torn-tail-refuses-to-open,
+# open-does-not-sync-the-log-it-read, lost-snapshot-is-never-reported) are the evidence that the fixes
+# are what the harness sees.
+#
+# Not listed, on purpose: a coverage rule is not a hard counter, so a mutant that only silences a coverage counter
+# is not a kill here (the rules are held by the harness test that sets each counter to a violation and by the
+# aggregator tests), and a control that stops tripping ends the run with status 2, which this checker records as
+# a crash. Not listed either, because the harness cannot see them (limits, stated in the preregistration):
+# - removing only the `sync_all` call inside `sync_parent`: the durability probe sees file data pages;
+# - sending the Raft `persisted_messages` before the persistence: the members return all their
+#   messages from one call, so no schedule of the router can tell the order inside it; what the
+#   harness checks is that nothing a call returns promises what is not in the files, and a write that
+#   fails returns no message (member-swallows-a-failed-append);
+# - a torn tail trimmed below the commit index: no schedule damages committed bytes, so it is a unit
+#   test of ptr-ledger (damage_below_the_committed_index_is_refused_not_trimmed) and not an entry here;
+# - a tail cut that drops valid records after a damaged one, and a committed-prefix check skipped while
+#   a snapshot is pending: the fsync-honest images never damage a record below the synced length and
+#   never lose committed bytes, so both are unit tests of ptr-ledger
+#   (a_damaged_record_with_valid_records_after_it_is_refused_above_the_commit_too,
+#   a_log_cut_below_the_commit_of_a_pending_snapshot_is_refused);
+# - the in-memory state running ahead of a state file that could not be written, and a served snapshot
+#   whose payload the state does not name: a unit test of ptr-ledger each
+#   (a_failed_snapshot_write_leaves_the_memory_as_the_disk_is,
+#   a_snapshot_payload_that_is_not_the_one_the_state_names_is_refused);
+# - a log cut at a record boundary below the commit index, a storage that goes on writing after an I/O error
+#   past a point of no return (the harness restarts a member after any failed call, so poisoning is invisible
+#   to it) and a resume that changes the node before its write succeeded: unit tests of ptr-ledger
+#   (a_log_cut_at_a_record_boundary_below_the_commit_is_refused_and_does_not_panic,
+#   an_error_past_the_point_of_no_return_poisons_the_storage_and_no_append_is_acknowledged,
+#   a_write_that_fails_part_way_poisons_and_loses_nothing_acknowledged,
+#   a_failed_resume_leaves_the_snapshot_offered_and_the_count_as_it_was).
+#
+# The mutation run is invoked as `ptr-bench raft-recovery <cases> 1001`: `cases` is the number of
+# cutover workloads (one scenario per failpoint in the group arms, so the run is no evidence, and
+# its scale is printed as "custom"). The seed is not one of the experiment's.
+
+package = "ptr-bench"
+features = "ledger-experiments"
+subcommand = "raft-recovery"
+cases = 2
+seed = 1001
+hard_counters = [
+    "stale_accepts",
+    "acked_revocation_missing",
+    "recovered_not_prefix",
+    "reorder_or_duplicate_index",
+    "unclassified_cutover",
+    "unjustified_refusals",
+    "orphan_hazard",
+    "promise_not_durable",
+    "member_regressed",
+    "reference_divergence",
+    "convergence_bound_exceeded",
+    "tampered_snapshot_accepted",
+    "unsynced_acks",
+    "product_panics",
+    "product_hangs",
+    "authority_mismatches",
+    "reference_mismatches",
+    "anchored_lie_accepted",
+]
+
+[[mutation]]
+name = "cutover-log-created-without-fsync"
+description = "create_from_log_above returns without synchronizing the new log: the cutover may name a file whose pages are still dirty."
+expect = ["unsynced_acks"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+        file.sync_all()?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.create_after_sync_before_dir_sync");
+'''
+replace = '''
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.create_after_sync_before_dir_sync");
+'''
+
+[[mutation]]
+name = "cutover-new-log-directory-not-synchronized"
+description = "The new log's directory is not synchronized: the cutover enters the directory synchronization once, not twice."
+expect = ["unsynced_acks"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+        sync_parent(path)?;
+        Self::from_verified_above(path, file, verified, bytes.len(), base)
+'''
+replace = '''
+        Self::from_verified_above(path, file, verified, bytes.len(), base)
+'''
+
+[[mutation]]
+name = "cutover-drops-a-retained-record"
+description = "compact builds the new log without the first record above the floor: the cutover is refused on a valid plan."
+expect = ["reference_mismatches"]
+file = "crates/ptr-ledger/src/acknowledged.rs"
+find = '''
+let retained = self.log.events()[offset..].to_vec();
+'''
+replace = '''
+let retained = self.log.events()[offset + 1..].to_vec();
+'''
+
+[[mutation]]
+name = "cutover-anchor-keeps-the-old-floor"
+description = "The anchor advance keeps the old floor: the new log is built and never named, so a crash after the anchor's rename recovers the old floor."
+expect = ["unclassified_cutover"]
+file = "crates/ptr-ledger/src/acknowledged.rs"
+find = '''
+self.anchors.advance_compacted(plan.base, plan.tail)?;
+'''
+replace = '''
+self.anchors.advance_compacted(anchor.base, plan.tail)?;
+'''
+
+[[mutation]]
+name = "open-reads-the-old-log-under-the-new-anchor"
+description = "open reads the log of floor 0 whatever the anchor names, so a set compacted before the crash is refused as a base mismatch."
+expect = ["unjustified_refusals", "unclassified_cutover"]
+file = "crates/ptr-ledger/src/acknowledged.rs"
+find = '''
+        let locked = FileLedger::lock_for_recovery(paths.log_path(anchor.base.index), anchor.base)?;
+        let split = locked.classify(anchor);
+        match split {
+'''
+replace = '''
+        let locked = FileLedger::lock_for_recovery(paths.log_path(CommitIndex(0)), anchor.base)?;
+        let split = locked.classify(anchor);
+        match split {
+'''
+
+[[mutation]]
+name = "open-ignores-the-epoch-witness"
+description = "open passes no witness to the anchor store: an anchor of an older epoch is accepted."
+expect = ["anchored_lie_accepted"]
+file = "crates/ptr-ledger/src/acknowledged.rs"
+find = '''
+let mut anchors = AnchorStore::open_expecting(paths.anchor_path(), key, minimum_epoch)?;
+'''
+replace = '''
+let mut anchors = AnchorStore::open_expecting(paths.anchor_path(), key, 0)?;
+'''
+
+[[mutation]]
+name = "reclaim-removes-the-live-log"
+description = "reclaim_orphans takes the live log for an orphan."
+expect = ["orphan_hazard"]
+file = "crates/ptr-ledger/src/acknowledged.rs"
+find = '''
+let orphans = self.paths.orphans(live)?;
+'''
+replace = '''
+let orphans = self.paths.orphans(CommitIndex(live.0 + 1))?;
+'''
+
+[[mutation]]
+name = "restore-forgets-the-revoked-generations"
+description = "A runtime restored from a compacted snapshot forgets the revoked pairs the snapshot holds."
+expect = ["stale_accepts"]
+file = "crates/ptr-runtime/src/compacted.rs"
+find = '''
+runtime.revoked_generations = lifecycle.revoked_generations;
+'''
+replace = '''
+runtime.revoked_generations = Default::default();
+'''
+
+[[mutation]]
+name = "tail-classification-panics"
+description = "The classification of a log against its anchor panics when a partial frame follows."
+expect = ["product_panics"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+        if anchor.base != self.base {
+            return Split::BaseMismatch;
+        }
+'''
+replace = '''
+        if self.prefix.incomplete {
+            panic!("injected product panic");
+        }
+        if anchor.base != self.base {
+            return Split::BaseMismatch;
+        }
+'''
+
+[[mutation]]
+name = "append-hangs-for-a-revocation"
+description = "An append of a revocation never returns."
+expect = ["product_hangs"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+    pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
+'''
+replace = '''
+    pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
+        if matches!(event, LedgerEvent::Revoked { .. }) {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3600));
+            }
+        }
+'''
+
+[[mutation]]
+name = "authorization-ignores-the-revocation"
+description = "The action boundary does not consult the revoked generations."
+expect = ["stale_accepts", "reference_mismatches"]
+file = "crates/ptr-runtime/src/lib.rs"
+find = '''
+            generation_revoked: self
+                .revoked_generations
+                .contains(&(action.target.clone(), action.generation)),
+'''
+replace = '''
+            generation_revoked: false,
+'''
+
+[[mutation]]
+name = "validity-reads-a-revoked-generation-as-live"
+description = "generation_validity answers Live for a revoked generation."
+expect = ["authority_mismatches", "reference_mismatches"]
+file = "crates/ptr-runtime/src/lib.rs"
+find = '''
+            return Some(Validity::Revoked);
+'''
+replace = '''
+            return Some(Validity::Live);
+'''
+
+[[mutation]]
+name = "member-swallows-a-failed-append"
+description = "A failed write of the entries is dropped and the call goes on to release the acknowledgement. The injected error never reaches the caller, which the plan sees as an injection that did not happen (reference_mismatches); promise_not_durable fires when the dropped write is a follower's."
+expect = ["promise_not_durable", "reference_mismatches"]
+file = "crates/ptr-ledger/src/raft_node.rs"
+find = '''
+                store
+                    .wl()
+                    .append(ready.entries())
+                    .map_err(|error| error.to_string())?;
+'''
+replace = '''
+                let _ = store.wl().append(ready.entries());
+'''
+
+[[mutation]]
+name = "member-does-not-persist-its-vote"
+description = "The hard state (term, vote, commit) is never written: a vote is granted that a restart forgets."
+expect = ["promise_not_durable", "member_regressed"]
+file = "crates/ptr-ledger/src/raft_storage.rs"
+find = '''
+    pub fn set_hard_state(&mut self, hard_state: &HardState) -> io::Result<()> {
+        let previous = std::mem::replace(&mut self.hard_state, hard_state.clone());
+        self.persist_state()
+            .inspect_err(|_| self.hard_state = previous)
+    }
+'''
+replace = '''
+    pub fn set_hard_state(&mut self, hard_state: &HardState) -> io::Result<()> {
+        self.hard_state = hard_state.clone();
+        Ok(())
+    }
+'''
+
+[[mutation]]
+name = "snapshot-record-forgets-the-covered-events"
+description = "record_snapshot does not persist how many events the snapshot covers: the leader numbers events from zero after a restart."
+expect = ["member_regressed", "reorder_or_duplicate_index"]
+file = "crates/ptr-ledger/src/raft_storage.rs"
+find = '''
+        self.applied = AppliedEvents::Counted(covered);
+'''
+replace = '''
+        let _ = covered;
+'''
+
+[[mutation]]
+name = "install-is-not-marked-pending"
+description = "An installed snapshot is not marked as waiting to be accounted for: a restart adopts it unvetted."
+expect = ["tampered_snapshot_accepted"]
+file = "crates/ptr-ledger/src/raft_storage.rs"
+find = '''
+        self.applied = AppliedEvents::SnapshotPending;
+'''
+replace = '''
+        self.applied = AppliedEvents::Counted(0);
+'''
+
+[[mutation]]
+name = "pending-snapshot-forgotten-by-open"
+description = "open does not offer a pending snapshot to the host again."
+expect = ["tampered_snapshot_accepted"]
+file = "crates/ptr-ledger/src/raft_node.rs"
+find = '''
+            installed: pending,
+'''
+replace = '''
+            installed: None,
+'''
+
+[[mutation]]
+name = "anchor-match-ignores-the-digest"
+description = "take_installed_snapshot_matching compares the index and not the digest: a forged payload at the right position is taken."
+expect = ["tampered_snapshot_accepted", "stale_accepts"]
+file = "crates/ptr-ledger/src/raft_node.rs"
+find = '''
+        if installed.digest != retained.digest {
+            return Err(SnapshotAnchorMismatch::Digest);
+        }
+'''
+replace = '''
+        let _ = retained.digest;
+'''
+
+[[mutation]]
+name = "torn-tail-refuses-to-open"
+description = "A member whose log ends in a torn record is refused instead of trimmed."
+expect = ["unjustified_refusals"]
+file = "crates/ptr-ledger/src/raft_storage.rs"
+find = '''
+        let Some(record) = parse_record(&bytes, at) else {
+            torn_at = Some(start);
+            break;
+        };
+'''
+replace = '''
+        let Some(record) = parse_record(&bytes, at) else {
+            return Err(invalid("raft log ends inside a record"));
+        };
+'''
+
+[[mutation]]
+name = "open-does-not-sync-the-log-it-read"
+description = "Opening an existing log does not synchronize what it read: a record a stopped process never synced is answered for."
+expect = ["unsynced_acks"]
+file = "crates/ptr-ledger/src/raft_storage.rs"
+find = '''
+            sync_opened_log(&log)?;
+'''
+replace = '''
+'''
+
+[[mutation]]
+name = "lost-snapshot-is-never-reported"
+description = "report_snapshot does nothing: a leader that handed a member a snapshot that was lost waits for it for ever."
+expect = ["convergence_bound_exceeded"]
+file = "crates/ptr-ledger/src/raft_node.rs"
+find = '''
+        self.node.report_snapshot(
+            peer,
+            match outcome {
+                SnapshotDelivery::Delivered => SnapshotStatus::Finish,
+                SnapshotDelivery::Failed => SnapshotStatus::Failure,
+            },
+        );
+'''
+replace = '''
+        let _ = (peer, outcome);
+'''
+
+[[mutation]]
+name = "member-skips-the-committed-entries-of-a-light-ready"
+description = "The entries a light ready commits are never applied: a follower ends shorter than the leader."
+expect = ["reference_divergence", "convergence_bound_exceeded"]
+file = "crates/ptr-ledger/src/raft_node.rs"
+find = '''
+            self.apply_committed(light.take_committed_entries())?;
+'''
+replace = '''
+'''
+
+[[mutation]]
+name = "member-drops-revocations-on-apply"
+description = "A committed revocation is not applied by the member that decoded it: the member never holds the workload, which the group arm sees as a history that is not the reference (it judges no authority, the cutover arm does)."
+expect = ["reference_divergence"]
+file = "crates/ptr-ledger/src/raft_node.rs"
+find = '''
+            let event = decode_event(entry.data.as_ref()).map_err(|error| error.to_string())?;
+'''
+replace = '''
+            let event = decode_event(entry.data.as_ref()).map_err(|error| error.to_string())?;
+            if matches!(event, LedgerEvent::Revoked { .. }) {
+                continue;
+            }
+'''
+
+[[mutation]]
+name = "member-numbers-events-from-zero"
+description = "The commit index of an applied event is taken before it is counted."
+expect = ["reorder_or_duplicate_index"]
+file = "crates/ptr-ledger/src/raft_node.rs"
+find = '''
+            self.applied_events = self
+                .applied_events
+                .checked_add(1)
+                .ok_or_else(|| "the count of applied events is exhausted".to_string())?;
+            let index = CommitIndex(self.applied_events);
+'''
+replace = '''
+            let index = CommitIndex(self.applied_events);
+            self.applied_events = self
+                .applied_events
+                .checked_add(1)
+                .ok_or_else(|| "the count of applied events is exhausted".to_string())?;
+'''
+
+[[mutation]]
+name = "snapshot-payload-shares-one-file-name"
+description = "The snapshot payload is written under one fixed name instead of the name of its own digest: a stop between the payload and the state that names it leaves the old state over the new bytes."
+expect = ["unjustified_refusals"]
+file = "crates/ptr-ledger/src/raft_storage.rs"
+find = '''
+fn payload_name(digest: &[u8; 32]) -> String {
+    let mut name = String::from("snapshot-");
+    for byte in digest {
+        name.push_str(&format!("{byte:02x}"));
+    }
+    name
+}
+'''
+replace = '''
+fn payload_name(_digest: &[u8; 32]) -> String {
+    String::from("snapshot-fixed")
+}
+'''
+
+[[mutation]]
+name = "install-resets-the-log-in-place"
+description = "The log is emptied in place before its replacement is renamed over it: a stop in between leaves a log that is not a log under a state that is waiting to be finished."
+expect = ["unjustified_refusals"]
+file = "crates/ptr-ledger/src/raft_storage.rs"
+find = '''
+        let scratch = write_scratch_log(&self.log_path, &[])?;
+'''
+replace = '''
+        let scratch = write_scratch_log(&self.log_path, &[])?;
+        self.log.set_len(0)?;
+'''
+
+[[mutation]]
+name = "open-applies-what-lies-above-a-pending-snapshot"
+description = "A snapshot that is waiting to be accounted for no longer holds back the committed entries above it, neither at open nor in apply_committed (either alone is covered by the other, which is why both are planted): they are numbered from an applied count the snapshot has not yet established, so the history a member presents is not a prefix of the workload."
+expect = ["recovered_not_prefix", "convergence_bound_exceeded"]
+file = "crates/ptr-ledger/src/raft_node.rs"
+find = '''
+        if member.installed.is_some() {
+            // Entries above a snapshot that is waiting to be accounted for were committed and
+            // are kept; they are applied, in order, once the host has accounted for it.
+            member.deferred = recovered;
+        } else {
+            member.apply_committed(recovered)?;
+        }
+'''
+replace = '''
+        member.apply_committed(recovered)?;
+'''
+
+[[mutation.also]]
+find = '''
+            if self.installed.is_some() {
+                // Not applied now, kept for later: raft does not hand these entries over again,
+'''
+replace = '''
+            if false {
+                // Not applied now, kept for later: raft does not hand these entries over again,
+'''
+
+[[mutation]]
+name = "harness-counts-the-record-in-flight-as-acknowledged"
+description = "The harness holds the record in flight to have been acknowledged."
+expect = ["recovered_not_prefix", "acked_revocation_missing"]
+file = "bins/ptr-bench/src/experiments/l002/cutover.rs"
+find = '''
+                            acked: case.cut.k + idx,
+                            attempted: case.cut.k + idx + 1,
+'''
+replace = '''
+                            acked: case.cut.k + idx + 1,
+                            attempted: case.cut.k + idx + 1,
+'''
+
+[[mutation]]
+name = "harness-oracle-authorizes-late-superseded-generations"
+description = "The oracle authorizes a superseded generation from 3 on."
+expect = ["authority_mismatches", "reference_mismatches"]
+file = "bins/ptr-bench/src/experiments/l001/model.rs"
+find = '''
+        self.live.get(subject) == Some(&generation)
+            && !self.revoked.contains(&(subject.to_owned(), generation))
+'''
+replace = '''
+        (self.live.get(subject) == Some(&generation)
+            || (generation >= 3 && self.live.get(subject).is_some_and(|live| *live > generation)))
+            && !self.revoked.contains(&(subject.to_owned(), generation))
+'''
+
+[[mutation]]
+name = "harness-oracle-forgets-late-revocations"
+description = "The oracle forgets revocations from the fourth on."
+expect = ["authority_mismatches", "reference_mismatches"]
+file = "bins/ptr-bench/src/experiments/l001/model.rs"
+find = '''
+                self.revoked.insert((subject.clone(), *generation));
+'''
+replace = '''
+                if self.revoked.len() < 3 {
+                    self.revoked.insert((subject.clone(), *generation));
+                }
+'''
+
+[[mutation]]
+name = "open-accepts-a-log-shorter-than-the-anchor"
+description = "The classification of a log against its anchor reads a log that holds less than the anchor covers as aligned, and the anchor store accepts an acknowledgment below its covered index, so the live log cut before an acknowledged revocation is opened and the anchor moved back (the second lie control). Two layers refuse that cut; planting one leaves the other, which refuses, so both are planted."
+expect = ["anchored_lie_accepted"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+            None if anchor.log.index.0 > self.tail().index.0 => Split::LostSuffix {
+                acknowledged: anchor.log.index,
+                present: self.tail().index,
+            },
+'''
+replace = '''
+            None if anchor.log.index.0 > self.tail().index.0 => Split::Aligned,
+'''
+
+[[mutation.also]]
+file = "crates/ptr-ledger/src/anchor.rs"
+find = '''
+        if next.epoch <= current.epoch || next.log.index.0 < current.log.index.0 {
+'''
+replace = '''
+        if next.epoch <= current.epoch {
+'''
+
+[[mutation]]
+name = "harness-schedule-never-deposes-the-leader"
+description = "The heal schedule asks the isolated leader itself to stand for election, so the leader never changes: the coverage rule leader_changes would be the only one to notice, and the harness counts a leader that cannot be deposed as a failed baseline."
+expect = ["reference_mismatches"]
+file = "bins/ptr-bench/src/experiments/l002/group.rs"
+find = '''
+            .filter(|id| *id != old && self.alive(*id))
+'''
+replace = '''
+            .filter(|id| *id == old && self.alive(*id))
+'''

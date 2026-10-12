@@ -275,7 +275,11 @@ impl FileLedger {
             .open(path)?;
         let mut file = LockedFile::new(file)?;
         file.write_all(bytes)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.create_after_write_before_sync");
         file.sync_all()?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.create_after_sync_before_dir_sync");
         sync_parent(path)?;
         Self::from_verified_above(path, file, verified, bytes.len(), base)
     }

@@ -1,0 +1,3 @@
+    Finished `release` profile [optimized] target(s) in 0.22s
+     Running `target/release/ptr-bench self-modification-authority 1001`
+seed 1001 is not one of the manifest's seeds [17, 29, 43, 71, 101]; this is a dry run

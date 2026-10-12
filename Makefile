@@ -235,7 +235,10 @@ ci-lifecycle-failpoints:
 	cargo +stable clippy -p ptr-ledger --features failpoints --all-targets --locked -- -D warnings
 	cargo +stable test -p ptr-ledger --features raft-engine-failpoints --test engine_failpoints --locked
 	cargo +stable clippy -p ptr-ledger --features raft-engine-failpoints --all-targets --locked -- -D warnings
+	cargo +stable test -p ptr-ledger --features raft-rs-backend,failpoints --test raft_storage_crash --locked
+	cargo +stable clippy -p ptr-ledger --features raft-rs-backend,failpoints --all-targets --locked -- -D warnings
 	cargo +stable test -p ptr-bench --features ledger-experiments --locked l001
+	cargo +stable test -p ptr-bench --features ledger-experiments --locked l002
 	cargo +stable clippy -p ptr-bench --features ledger-experiments --all-targets --locked -- -D warnings
 
 ci-ledger-raft-engine:
@@ -246,6 +249,7 @@ ci-ledger-raft-rs:
 	cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_rs --locked
 	cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_cluster --locked
 	cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_fence --locked
+	cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_storage_crash --locked
 	cargo +stable clippy -p ptr-ledger --features raft-rs-backend --all-targets --locked -- -D warnings
 
 ci-state-turso:
