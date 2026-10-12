@@ -208,7 +208,7 @@ status = "superseded"
 [[experiment]]
 id = "Q003-v3"
 path = "retrieval/Q003-v3-postgres-hybrid"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "E005"
