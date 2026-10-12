@@ -27,6 +27,8 @@ pub mod m008;
 #[cfg(feature = "postgres-experiments")]
 mod pg;
 pub mod q002;
+#[cfg(feature = "postgres-experiments")]
+pub mod q003;
 pub mod r001;
 pub mod r005;
 pub mod r006;

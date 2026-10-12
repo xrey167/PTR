@@ -5146,10 +5146,10 @@ class PreregistrationGateTests(unittest.TestCase):
         )
         self.assertEqual(gate(pinned),(0,[]))
 
-ENROLLED=("Q003","R004","E005")
+ENROLLED=("R004","E005")
 # The list also holds the experiments that ran or were superseded; they are no
 # part of the six this fixture moves to `prepared`.
-RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9")
+RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9","Q003")
 
 # Listed and held at `planned` until its freeze (its placeholders are pinned then, by the head
 # after the harness and the criteria are final); it is no part of the fixtures that move the six to
@@ -5163,6 +5163,10 @@ LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001",
     "M003-v4",
     "L001-v2", "L002", "R013",
     "F007",
+    # Superseded by Q003-v3 (INVALID, incomplete: seed 29 never ended); listed, prepared, never completed.
+    "Q003-v2",
+    "Q003-v3",
+
     # E007 (split-Pod KV, CPU part); E008 is planned and not listed in experiments/preregistration.toml.
     "E007")
 
@@ -5262,14 +5266,6 @@ class EnrolledExperimentTests(unittest.TestCase):
         pinned="'must-be-pinned-before-prepared'"
         signed="'must-be-signed-by-owner'"
         expected=[
-            f"Q003: preregistration key recall_margin_permille is a placeholder ({pinned})",
-            f"Q003: preregistration key embedding_model is a placeholder ({pinned})",
-            f"Q003: preregistration key embedding_revision is a placeholder ({pinned})",
-            f"Q003: preregistration key baseline_rag_reference_sha256 is a placeholder ({pinned})",
-            f"Q003: preregistration key baseline_strong_rag_sha256 is a placeholder ({pinned})",
-            "Q003: experiment.toml names no preregistration_sha256",
-            "Q003: experiment.toml names no preregistration_rules_sha256",
-            *strong_errors("Q003"),
             f"R004: preregistration key public_regression_gate_permille is a placeholder ({pinned})",
             f"R004: preregistration key backward_transfer_min_permille is a placeholder ({pinned})",
             "R004: experiment.toml names no preregistration_sha256",

@@ -198,7 +198,17 @@ status = "planned"
 [[experiment]]
 id = "Q003"
 path = "retrieval/Q003-postgres-hybrid"
-status = "planned"
+status = "superseded"
+
+[[experiment]]
+id = "Q003-v2"
+path = "retrieval/Q003-v2-postgres-hybrid"
+status = "superseded"
+
+[[experiment]]
+id = "Q003-v3"
+path = "retrieval/Q003-v3-postgres-hybrid"
+status = "completed"
 
 [[experiment]]
 id = "E005"

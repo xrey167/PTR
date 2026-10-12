@@ -130,6 +130,10 @@ fn main() {
         "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(
             &args, 2, 8, "requests",
         ))),
+        // The harness of Q003: `<seed>` (the pinned scale, the full strong arm) or `<queries> <seed>`
+        // (the mutation checker's form); no default seed, and a typo stops the run.
+        #[cfg(feature = "postgres-experiments")]
+        "postgres-hybrid" => experiments::q003::run(&args[2..]),
         // The harness of L001-v2: `<seed>` (the pinned scale) or `<cases> <seed>` (the mutation
         // checker's form); no default seed, and a typo stops the run. Its child processes run
         // `revocation-crash-child`, which no one starts by hand.
@@ -163,7 +167,7 @@ fn main() {
 /// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
 const EXPERIMENT_COMMANDS: &str =
-    "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|self-modification-authority|kv-reuse-smoke|fastmem-revocation|projection-equivalence";
+    "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|self-modification-authority|kv-reuse-smoke|fastmem-revocation|projection-equivalence|postgres-hybrid";
 #[cfg(not(feature = "postgres-experiments"))]
 const EXPERIMENT_COMMANDS: &str = "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|self-modification-authority|kv-reuse-smoke";
 

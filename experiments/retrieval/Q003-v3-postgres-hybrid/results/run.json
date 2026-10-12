@@ -1,0 +1,74 @@
+{
+  "experiment_id": "Q003-v3",
+  "status": "prepared",
+  "scope": "generation-joined retrieval in PostgreSQL: ptr_pg's search (a full-text list and a halfvec HNSW list, each joined to the lifecycle catalog of its snapshot before its limit, fused by weighted reciprocal rank fusion keyed by capsule and generation), its projector and upsert_document must never return a generation the harness's own live table does not call live, must leave no superseded or revoked document behind, must refuse every late write of a non-live generation with NotLive and store nothing, must answer a search the same way twice, must return the live document for the live-body probes through its lexical mode, and must have fused recall@10 at most 30 per mille below both that of the reference rag_reference (BM25 with OR semantics + cosine + RRF over the same MiniLM vectors, rebuilt from the live table at each checkpoint; a sanity floor) and that of the harness's own exact dense search over the live set (the sensitivity control); seeded synthetic live-lifecycle corpora of 2000 capsules of up to three generations (kept at generation 1, superseded once or twice, revoked at generation 1, 2 or 3) built through the projector and upsert_document with frozen MiniLM vectors, 1000 paraphrased queries per seed asked after the supersessions and after the revocations, stale rows of superseded and revoked generations planted by raw SQL into the derived table, late writes of non-live generations and probe queries that exercise the lexical mode; on natural-language queries ptr-pg's lexical list is empty (plainto_tsquery joins every term with AND), so its fused list is effectively its dense list and the recall comparison does not test the quality of a working lexical half; strong_retrieval (BM25 + bge-m3 dense + RRF + bge-reranker-v2-m3) answers a seeded subset of 200 answerable queries and is reported, never gated; nDCG@10, the recall of the lexical and vector lists alone, of the harness's exact dense search and of BM25 alone, the paired standard error against the reference, latency and index build time are descriptive",
+  "git_sha": "81dcc30cd774d3a5781eaa866524659b35cb7bae",
+  "aggregated_at_git_sha": "a920398869fad0a04fbbf9457011b3f2f89e3486",
+  "recorded_at": "2026-10-12T05:48:59.445463+00:00",
+  "preregistration_sha256": "241358cb35ae21b471e3c85a7896a00e95c9c765409488f2578d1e426387fed5",
+  "preregistration_rules_sha256": "325284e3ce6e5e121f0e99b2d2b449a95316e7076b240784f4c158d2e509e29e",
+  "criteria_sha256": "4dd84e99f6427baf3fa9b44d8d0b3a7a086bee1995e75f9cae9659de54433c1d",
+  "entrypoint": "cargo run --release --locked -p ptr-bench --features postgres-experiments -- postgres-hybrid <seed> --strong-threads 1",
+  "seeds": [
+    {
+      "seed": 43,
+      "record": "run-20261012T030111.924804Z-seed-43.json",
+      "git_sha": "81dcc30cd774d3a5781eaa866524659b35cb7bae",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261012T033407.925047Z-seed-71.json",
+      "git_sha": "612ffb6b1fb666ccc95837a5f3919a65e9a164c7",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261012T040824.538666Z-seed-101.json",
+      "git_sha": "9c68015915ad21b6b1d801e07b6cb3d3db0fee11",
+      "exit_code": 0
+    },
+    {
+      "seed": 131,
+      "record": "run-20261012T044150.453203Z-seed-131.json",
+      "git_sha": "e6e80eebb0f279c21e470f105b4a0677ace9d1ad",
+      "exit_code": 0
+    },
+    {
+      "seed": 173,
+      "record": "run-20261012T051518.189576Z-seed-173.json",
+      "git_sha": "cd68c972b51df957dcdc3af5f1a91c59400bfc7e",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "43": "490c59ddd14952cf3cc52c1bcb55d0dd3416fc3ce4baceb1a90c699ae72583e4",
+    "71": "aa771b59bf9a02396b962ab69343402d3231c60ca6f783d21612ddc1686339cb",
+    "101": "d432b7aff2fb75024158229773f3052d741859111283cd671497f3f0d0bf0208",
+    "131": "1989c2253c6ec78e8a253e3b9de30fe52bf2981030b24d00b51ee661670dd03b",
+    "173": "55bd6da28ce3cce800ac070acfca61311db25d949cc43f39dacfd59c1bfe31c7"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 28,
+    "total": 28,
+    "git_sha": "028daeba2dc1fbfe0b4ff5af597e84274126ded3",
+    "sha256": "4a85451329bcc005472d2b79adb2280a7df4604738c4d50381026191ce5d9c8d"
+  },
+  "limitations": [
+    "the claim is about a synthetic corpus of templated English facts (sixteen attributes, a few templates each, names from fixed lists): nothing is claimed about real text, a real query distribution or a corpus of another size; the vectors are frozen MiniLM and bge-m3 files, so the result says nothing about another embedding model; the five seeds and the pilot seeds draw from the same 2000-cue pool, so they are not independent corpora",
+    "the main queries are natural-language questions, which plainto_tsquery joins with AND term by term and no fact sentence satisfies, so ptr-pg's lexical mode returns no hit on them and its fused list is its vector list (main_query_lexical_hits counts it); this is a finding about ptr-pg's lexical half, recorded as a limitation and not tested as a falsifier; the lexical mode and its lifecycle join are exercised by the probe queries (a stale or a live body as the query), which are audited for stale hits and are never part of recall; recall against BM25 + cosine + RRF therefore compares an approximate-nearest-neighbour dense list with a hybrid whose lexical half is a weak OR-semantics BM25 on templated text, where fusion lowers the reference's recall below plain dense retrieval: ptr-pg being above the reference is mostly that artefact, not evidence of the quality of a ptr-pg hybrid; recall10_exact_cosine_permille (the harness's exact dense search) separates the HNSW approximation from the fusion effect",
+    "the recall rules are point estimates with one-sided margins and no stated power beyond the following: the rule against the reference is a sanity floor that trips only when ptr-pg's recall falls more than the margin below the reference's (912 for a reference at 942, far below the product, because the BM25-OR hybrid is worse than plain dense retrieval here); the rule against the harness's exact dense search is the sensitivity control and sees a smaller regression of the dense list (the pilot showed no deficit at all); neither tests the lexical half on natural-language queries",
+    "stale hits are judged against the harness's own live table, which is built from the workload's events by code that shares nothing with the product; the product's is_admissible is compared with it for every capsule and generation, so a disagreement of the table with the projection is a counted mismatch, but the table and the generator are the same author's and the lifecycle rules (live generation, tombstone) are the ones the product states",
+    "stale rows are planted by raw SQL into the derived table, which simulates an index that lags the ledger or a delete that failed; the real failure modes of the projector (a crash between the lifecycle change and the document delete) are the subject of L004, not of this experiment, and the product deletes a superseded or revoked document in the projector's own transaction, so without the plants a stale hit could not occur at all; the check that the projector leaves no residual row (projector_residual_rows) is the only place a missing delete shows, because the search join hides such rows",
+    "the baselines are rebuilt from the live table, so they hold no stale rows by construction and a baseline hit is never audited for staleness; the comparison is of recall only and the baselines are not under test; their drivers are Python processes on a JSON-lines bridge",
+    "the strong baseline answers a seeded subset of 200 answerable queries stratified by checkpoint and live generation, is never gated, and its cross-encoder runs in fp32 on shared CPU and is not bit-reproducible across machines or thread counts (rank order of well-separated candidates is stable, near ties may flip); its comparison with ptr-pg is reported with the discordant queries and a 95 percent upper bound on their share, not a standard error, which reads 0 when both arms hit every query; a run that resumed answers from an earlier run says so (procedure.strong_arm.resumed_queries)",
+    "the recall margin of 30 per mille is three paired standard errors of the difference at 1000 queries and recall about 0.9; the pilot (seeds outside the confirmatory five, same pool) measured a paired standard error of at most 10 per mille after the query count was raised from 400 to 1000; every run reports its own, descriptive and unjudged, because a noisy estimate must not make a seed vacuous; at zero true deficit a seed is falsified with probability about 0.1 percent per rule and seed (about 0.7 percent over the five seeds if they were independent, and they share one pool, so they are correlated), and a true deficit of 20 per mille would falsify 10 to 16 percent of seeds (SE 8 to 10), about 40 to 58 percent of five-seed experiments if independent",
+    "the declared seeds 43, 71, 101, 131 and 173 were never run against PostgreSQL before the freeze (the workload generator was run for their digests, nothing more; every development run, mutation run and pilot used seed 17 or a pilot seed from 1001 on), so the confirmatory evidence is blind on all five; seeds 17 and 29, which Q003 and Q003-v2 ran or reserved, were dropped for that reason, and the numbers Q003-v2's completed seed 17 produced steered no rule, threshold, margin or seed here",
+    "the HNSW list is approximate (pgvector iterative scan, ef_search 40): the recall of the vector mode against an exact cosine is part of what is measured; latency and index build time (the product's register_space rebuilding the index over the final corpus after every query) are descriptive on one local PostgreSQL 16 / pgvector 0.8 server, one session at a time, and are never judged",
+    "a late write is attempted for four kinds of non-live generation (superseded, revoked, ahead of the live one, a capsule never committed) in a quiescent database; races between the projector and a writer are the subject of the ptr-pg integration tests, not of this experiment"
+  ],
+  "metrics_sha256": "602b40ccd750d55d27e1aba10e642d93612f9c1f1bdd80ab9cb76dcba6c37bcc"
+}

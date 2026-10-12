@@ -1,0 +1,435 @@
+{
+  "experiment_id": "Q003-v3",
+  "git_sha": "028daeba2dc1fbfe0b4ff5af597e84274126ded3",
+  "recorded_at": "2026-10-12T02:29:59.466186+00:00",
+  "subcommand": "postgres-hybrid",
+  "killed": 28,
+  "total": 28,
+  "mutations": [
+    {
+      "name": "lexical-skips-the-lifecycle-join",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 80,
+      "expected": [
+        "stale_hits",
+        "planted_stale_returned"
+      ],
+      "counters": {
+        "stale_hits": 40,
+        "planted_stale_returned": 40
+      }
+    },
+    {
+      "name": "vector-skips-the-lifecycle-join",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 11480,
+      "expected": [
+        "stale_hits",
+        "planted_stale_returned"
+      ],
+      "counters": {
+        "stale_hits": 5740,
+        "planted_stale_returned": 5740
+      }
+    },
+    {
+      "name": "lifecycle-join-drops-the-tombstone-clause",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1796,
+      "expected": [
+        "stale_hits",
+        "planted_stale_returned"
+      ],
+      "counters": {
+        "stale_hits": 898,
+        "planted_stale_returned": 898
+      }
+    },
+    {
+      "name": "lifecycle-join-accepts-older-generations",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 10256,
+      "expected": [
+        "stale_hits",
+        "planted_stale_returned"
+      ],
+      "counters": {
+        "stale_hits": 5128,
+        "planted_stale_returned": 5128
+      }
+    },
+    {
+      "name": "upsert-skips-the-generation-check",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 12,
+      "expected": [
+        "late_write_accepted"
+      ],
+      "counters": {
+        "late_write_accepted": 12
+      }
+    },
+    {
+      "name": "upsert-ignores-tombstones",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8,
+      "expected": [
+        "late_write_accepted"
+      ],
+      "counters": {
+        "late_write_accepted": 8
+      }
+    },
+    {
+      "name": "late-write-is-refused-with-the-wrong-error",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "late_write_wrong_refusal"
+      ],
+      "counters": {
+        "late_write_wrong_refusal": 24
+      }
+    },
+    {
+      "name": "upsert-refuses-live-generations",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3691,
+      "expected": [
+        "product_errors"
+      ],
+      "counters": {
+        "recall_violation_vs_reference": 1,
+        "recall_violation_vs_exact": 1,
+        "lexical_probe_violation": 1,
+        "late_write_accepted": 12,
+        "product_errors": 3676
+      }
+    },
+    {
+      "name": "search-panics-on-some-capsules",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 440,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "recall_violation_vs_reference": 1,
+        "recall_violation_vs_exact": 1,
+        "lexical_probe_violation": 1,
+        "product_panics": 437
+      }
+    },
+    {
+      "name": "vector-list-keeps-one-hit",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "recall_violation_vs_reference"
+      ],
+      "counters": {
+        "recall_violation_vs_reference": 1,
+        "recall_violation_vs_exact": 1
+      }
+    },
+    {
+      "name": "fusion-ranks-worst-first",
+      "file": "crates/ptr-search/src/fusion.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "recall_violation_vs_reference"
+      ],
+      "counters": {
+        "recall_violation_vs_reference": 1,
+        "recall_violation_vs_exact": 1
+      }
+    },
+    {
+      "name": "oracle-forgets-supersessions",
+      "file": "bins/ptr-bench/src/experiments/q003/oracle.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 26353,
+      "expected": [
+        "stale_hits",
+        "lifecycle_projection_mismatches"
+      ],
+      "counters": {
+        "stale_hits": 19953,
+        "projector_residual_rows": 2050,
+        "lifecycle_projection_mismatches": 4350
+      }
+    },
+    {
+      "name": "generator-draws-another-workload",
+      "file": "bins/ptr-bench/src/experiments/q003/workload.rs",
+      "cases": 1000,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "workload_digest_mismatches"
+      ],
+      "counters": {
+        "workload_digest_mismatches": 1
+      }
+    },
+    {
+      "name": "projector-leaves-superseded-documents",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3232,
+      "expected": [
+        "projector_residual_rows"
+      ],
+      "counters": {
+        "projector_residual_rows": 3232
+      }
+    },
+    {
+      "name": "is-admissible-ignores-tombstones",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 400,
+      "expected": [
+        "lifecycle_projection_mismatches"
+      ],
+      "counters": {
+        "lifecycle_projection_mismatches": 400
+      }
+    },
+    {
+      "name": "vector-list-keeps-four-hits",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 1000,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "recall_violation_vs_exact"
+      ],
+      "counters": {
+        "recall_violation_vs_exact": 1
+      }
+    },
+    {
+      "name": "lexical-list-is-empty",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "lexical_probe_violation"
+      ],
+      "counters": {
+        "lexical_probe_violation": 1
+      }
+    },
+    {
+      "name": "vector-list-flips-on-alternate-searches",
+      "file": "crates/ptr-pg/src/adapters/search.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 16,
+      "expected": [
+        "nondeterministic_searches"
+      ],
+      "counters": {
+        "recall_violation_vs_reference": 1,
+        "recall_violation_vs_exact": 1,
+        "nondeterministic_searches": 14
+      }
+    },
+    {
+      "name": "projector-refuses-supersessions",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 400,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 33670,
+      "expected": [
+        "product_errors"
+      ],
+      "counters": {
+        "recall_violation_vs_reference": 1,
+        "recall_violation_vs_exact": 1,
+        "lexical_probe_violation": 1,
+        "stale_hits": 22168,
+        "planted_stale_returned": 2940,
+        "projector_residual_rows": 2382,
+        "product_errors": 1677,
+        "lifecycle_projection_mismatches": 4500
+      }
+    },
+    {
+      "name": "driver-reply-is-not-flushed",
+      "file": "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [],
+      "counters": {},
+      "expected_stop": "request-timeout"
+    },
+    {
+      "name": "driver-stalls-on-a-search",
+      "file": "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [],
+      "counters": {},
+      "expected_stop": "request-timeout"
+    },
+    {
+      "name": "driver-crashes-on-a-search",
+      "file": "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [],
+      "counters": {},
+      "expected_stop": "driver-exited"
+    },
+    {
+      "name": "driver-exits-nonzero-after-quit",
+      "file": "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [],
+      "counters": {},
+      "expected_stop": "driver-exited"
+    },
+    {
+      "name": "the-run-outlasts-its-deadline",
+      "file": "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [],
+      "counters": {},
+      "expected_stop": "run-deadline"
+    },
+    {
+      "name": "driver-sleeps-while-a-large-request-is-written",
+      "file": "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [],
+      "counters": {},
+      "expected_stop": "request-timeout"
+    },
+    {
+      "name": "driver-refuses-an-upsert",
+      "file": "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [],
+      "counters": {},
+      "expected_stop": "driver-refused"
+    },
+    {
+      "name": "driver-prints-a-line-that-is-not-a-reply",
+      "file": "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [],
+      "counters": {},
+      "expected_stop": "bad-reply"
+    },
+    {
+      "name": "strong-arm-records-the-default-thread-count",
+      "file": "bins/ptr-bench/src/experiments/q003/mod.rs",
+      "cases": 60,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 0,
+      "expected": [],
+      "counters": {},
+      "expected_invalid": "the strong arm recorded strong_threads 4,",
+      "invalid": [
+        "the strong arm recorded strong_threads 4, not the pinned 1"
+      ]
+    }
+  ]
+}

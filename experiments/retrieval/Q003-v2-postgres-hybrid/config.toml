@@ -1,0 +1,143 @@
+version = 1
+kind = "workspace-area"
+name = "Q003-v2-postgres-hybrid"
+path = "experiments/retrieval/Q003-v2-postgres-hybrid"
+tests_dir = "tests"
+
+# Frozen before Q003 leaves `planned` (experiments/preregistration.toml,
+# scripts/check_research_gates.py). Every value is decided; only the two digests of the
+# frozen text and criteria are `must-be-pinned-…` until the freeze commit, which also sets the
+# manifest's entrypoint and preregistration digests. The values below repeat
+# [pinned_thresholds] (a test compares them); the baselines' directory digests were
+# computed with scripts/check_research_gates.py directory_digest.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "postgres-hybrid"
+capsules = 2000
+queries = 1000
+strong_queries = 200
+# How far recall@10 of the fused list may fall below rag_reference's (a sanity floor) and below the harness's own exact dense
+# search over the live set (the sensitivity control) before Q003 is rejected as the default.
+recall_margin_permille = 30
+recall_exact_margin_permille = 30
+# recall@10 and nDCG@10, as the manifest's metrics name them.
+k = 10
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+embedding_revision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+pool_sha256 = "0a46e80db51a8a74596005a211acab9efad990303fba15fa6ea1f47aae432b05"
+vectors_sha256 = "4b5c350fcf2e5d59bd7bc77f7f8a671e1f0106e0630bd9423f7570733576a590"
+strong_vectors_sha256 = "b663def2cc044c2ef096fe0eae46d0da210f91ab8d7513472a8ee25e482751c6"
+# The digests of the baselines' directories, which freeze every setting and
+# the implementation of each with this table.
+baseline_rag_reference_sha256 = "a296a5ce889e8b16994217681388c994f34c1c2631af2d25f6e49063a8cf86ef"
+baseline_strong_retrieval_sha256 = "38b6cf753a61de053641944dfe019aaeb2cbfc1e9c54639a0fb7eef1849796a1"
+workload_digest_seed_17 = "fdfe7b7405bf9bc09b1c53233d10a29bfa3c1ff1b67afb2f6f1e7972ac7d23cb"
+workload_digest_seed_29 = "1abf7eaf710cfa64869ba8e93b461ff5fb467a6d6f75e9fabbf1b48b9486920d"
+workload_digest_seed_43 = "31c46173e56d6eefb2f4e5336899f34dff452bd9f81f3d704aac623df90769dd"
+workload_digest_seed_71 = "d98d3b3c9f7764d121191bea95d520bbf86d94894346cd08855f985d99f343e2"
+workload_digest_seed_101 = "918a27a7337e01afb733d1f757222015423418a9e91a5a35dda0f603244c47c9"
+preregistration_text = "experiments/retrieval/Q003-v2-postgres-hybrid/PREREGISTRATION.md"
+preregistration_text_sha256 = "35b05a0ed94eb5f7f915e0ad1426911a259df24689077f996ec2558623bc6b45"
+criteria = "experiments/retrieval/Q003-v2-postgres-hybrid/criteria.toml"
+criteria_sha256 = "06621ad5a68e9c96787bc86edd08abb4a51c5b701c543b3198d81224541a8cd5"
+
+# The preregistered choices of the harness (`ptr-bench postgres-hybrid`, bins/ptr-bench/src/experiments/q003/params.rs,
+# which fails its drift test if a compiled constant differs from this table). Q003 is planned, not frozen: the
+# [preregistration] table above repeats it, with the digests of the baselines' directories; the freeze pins the digests of the
+# text and the criteria.
+[pinned_thresholds]
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
+# The frozen inputs (research/embeddings/MANIFEST.toml): the text pool and the MiniLM vectors the product indexes and the
+# reference embeds with, and the bge-m3 vectors of the strong arm. The harness hashes each at start-up and exits 2 on a mismatch.
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+embedding_revision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+embedding_dimensions = 384
+strong_dimensions = 1024
+pool_path = "research/embeddings/pool-q003.jsonl"
+pool_sha256 = "0a46e80db51a8a74596005a211acab9efad990303fba15fa6ea1f47aae432b05"
+pool_rows = 12000
+vectors_path = "research/embeddings/vectors-q003.f16"
+vectors_sha256 = "4b5c350fcf2e5d59bd7bc77f7f8a671e1f0106e0630bd9423f7570733576a590"
+strong_vectors_path = "research/embeddings/vectors-q003-bge-m3.f16"
+strong_vectors_sha256 = "b663def2cc044c2ef096fe0eae46d0da210f91ab8d7513472a8ee25e482751c6"
+# The corpus: one capsule per cue of the pool, up to three generations (the three fact versions of the cue). The lifecycle
+# mix in permille of the capsules: live at generation 1, superseded once (live generation 2), superseded twice (live generation
+# 3), revoked at generation 1 and at generation 2; revoked at generation 3 takes the remainder.
+capsules = 2000
+stay_permille = 350
+superseded_once_permille = 250
+superseded_twice_permille = 200
+revoked_at_1_permille = 75
+revoked_at_2_permille = 62
+# The queries: per seed, one per distinct capsule, the paraphrase drawn by the seed. The first checkpoint (after every
+# supersession, before any revocation) takes first_checkpoint_percent of them, all answerable; the second (after the revocations)
+# the rest, of which revoked_target_percent of all queries ask for a revoked capsule (unanswerable). Each group is split evenly
+# over the live generations 1, 2 and 3 (revoked targets over the revoked generations).
+queries = 1000
+# The strong baseline answers this many of the answerable ones (a seeded subset stratified like them by checkpoint and live
+# generation; all of them when a shape has fewer). It is reported on that subset and never gated.
+strong_queries = 200
+first_checkpoint_percent = 30
+revoked_target_percent = 10
+# Raw-SQL plants beyond the ones the queries need (the predecessor generation of every superseded target, the revoked generation
+# of every revoked target): extra_plant_percent of queries, at each checkpoint, of other capsules.
+extra_plant_percent = 10
+# Probe queries, percent of queries: a planted row's own body as the query (stale), a live body as the query (live).
+stale_probe_percent = 5
+live_probe_percent = 5
+# Late writes of a non-live generation, percent of queries, per kind (superseded, revoked, ahead of the live generation, a
+# capsule never committed).
+late_superseded_percent = 2
+late_revoked_percent = 2
+late_future_percent = 1
+late_ghost_percent = 1
+repeat_queries = 20
+# The product's query: candidates per mode, equal weights (permille of 1), the customary rank constant; k of recall@k.
+search_limit = 40
+lexical_weight_permille = 1000
+vector_weight_permille = 1000
+rank_constant = 60
+k = 10
+# Coverage prerequisites (a run that misses one is vacuous) and falsifier bounds.
+min_planted_stale_rows = 200
+min_revoked_targets_queried = 50
+min_superseded_targets_queried = 400
+min_answerable_queries = 800
+min_retrieval_hits_per_mode = 1
+min_late_write_attempts = 50
+min_probe_queries = 90
+min_control_planted_returned = 50
+min_control_vector_returned = 50
+min_live_probe_lexical_self_hits = 45
+lexical_self_hit_percent = 90
+min_reference_queries = 1000
+min_strong_queries = 200
+min_recall10_reference_permille = 900
+# What the pilot had to confirm for the pinned query count: the paired standard error of the recall difference against
+# rag_reference. Descriptive in a run (every run reports its own); no rule reads it.
+pilot_recall_paired_se_permille = 10
+max_workload_digest_mismatches = 0
+max_stale_hits = 0
+max_planted_stale_returned = 0
+max_projector_residual_rows = 0
+max_nondeterministic_searches = 0
+max_late_write_accepted = 0
+max_late_write_wrong_refusal = 0
+max_product_errors = 0
+max_lifecycle_projection_mismatches = 0
+max_product_panics = 0
+# How far recall@10 of the fused list may fall below the reference's before Q003 is rejected as the default: three paired
+# standard errors of the difference at 1000 queries (about 900 answerable) and recall about 0.9 (pilot-confirmed, see PREREGISTRATION).
+recall_margin_permille = 30
+# The same margin against the harness's own exact dense search over the live set (the sensitivity control): the pilot seeds
+# 1001 to 1003 and the dry runs on 17 and 1001 showed the HNSW list equal to the exact search.
+recall_exact_margin_permille = 30
+timing_gated = false
+# The SHA-256 of the generated workload of each seed at the pinned shape, as measured at the freeze commit
+# (`postgres-hybrid --print-workload-digest <seed>`, experiments/retrieval/Q003-v2-postgres-hybrid/tests/pin_workload.py).
+workload_digest_seed_17 = "fdfe7b7405bf9bc09b1c53233d10a29bfa3c1ff1b67afb2f6f1e7972ac7d23cb"
+workload_digest_seed_29 = "1abf7eaf710cfa64869ba8e93b461ff5fb467a6d6f75e9fabbf1b48b9486920d"
+workload_digest_seed_43 = "31c46173e56d6eefb2f4e5336899f34dff452bd9f81f3d704aac623df90769dd"
+workload_digest_seed_71 = "d98d3b3c9f7764d121191bea95d520bbf86d94894346cd08855f985d99f343e2"
+workload_digest_seed_101 = "918a27a7337e01afb733d1f757222015423418a9e91a5a35dda0f603244c47c9"

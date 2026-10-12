@@ -1,0 +1,469 @@
+# Defects the Q003 harness must detect; run with `python3 scripts/mutation_check.py Q003`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file (checked
+# by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
+# that show the defect: a run that fails only on others does not count as detecting it.
+#
+# Most mutations plant defects in `ptr-pg` (the lifecycle join of the two search modes one clause at a time, the live check of
+# `upsert_document` one branch at a time, the error of a refused late write, an inverted live check, a panic in the hit conversion,
+# a vector list that keeps one hit or four, an empty lexical list, searches that differ from call to call, a projector that leaves
+# superseded documents behind or refuses supersessions, an `is_admissible` that ignores tombstones) and one in `ptr-search` (the
+# fusion order); two plant defects in the harness itself (its oracle and its generator), to show they are not vacuous: each makes
+# the counter its plan names fire without any defect in the product. `vector-list-keeps-four-hits` is the mid-severity
+# regression: it is run on the pilot seed 1001 at the pinned 1000 queries and trips the exact-search rule without tripping the
+# reference rule (the severity is recorded in the report). Every hard counter is expected by at least one mutation, so that
+# `killed == total` also shows each of the thirteen can fire (a test in bins/ptr-bench checks this list against the harness).
+#
+# Not listed, on purpose: a fusion keyed by capsule only (the lists after a correct lifecycle join
+# never hold two generations of one capsule, so nothing in this harness could show it; ptr-search's
+# own tests do); a limit applied before the lifecycle filter (it displaces live documents only when
+# planted rows crowd the 40 candidates of a mode, and whether that moves recall past the margin on
+# this corpus is not something this harness was shown to resolve, so no kill is claimed).
+#
+# The mutation run is invoked as `ptr-bench postgres-hybrid <cases> 17`: `cases` is the number of
+# queries (the result says `"scale":"custom"` and is no evidence). Most mutations run 400 queries
+# (the strong arm is not run in a custom-scale run: it is never gated); the generator mutation runs the pinned 1000,
+# because the workload digest is compared only at the pinned shape. The aggregator accepts only the full strong arm at the
+# pinned scale.
+
+package = "ptr-bench"
+features = "postgres-experiments"
+subcommand = "postgres-hybrid"
+cases = 400
+seed = 17
+hard_counters = [
+    "stale_hits",
+    "planted_stale_returned",
+    "projector_residual_rows",
+    "late_write_accepted",
+    "late_write_wrong_refusal",
+    "product_errors",
+    "lifecycle_projection_mismatches",
+    "product_panics",
+    "nondeterministic_searches",
+    "recall_violation_vs_reference",
+    "recall_violation_vs_exact",
+    "lexical_probe_violation",
+    "workload_digest_mismatches",
+]
+
+[[mutation]]
+name = "lexical-skips-the-lifecycle-join"
+description = "The lexical SQL no longer joins the lifecycle catalog: a stale or revoked row whose body matches the query text is returned by the lexical mode (the stale probes), and fused with the rest."
+expect = ["stale_hits", "planted_stale_returned"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+                         WHERE {live} \
+                           AND d.lexeme @@ q AND ($2::text IS NULL OR d.project = $2) \
+'''
+replace = '''
+                         WHERE d.lexeme @@ q AND ($2::text IS NULL OR d.project = $2) \
+'''
+
+[[mutation]]
+name = "vector-skips-the-lifecycle-join"
+description = "The vector SQL no longer joins the lifecycle catalog: the planted near-duplicates of superseded and revoked generations take slots in the vector list and the fused list."
+expect = ["stale_hits", "planted_stale_returned"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+                             WHERE d.space = '{id}' AND ($2::text IS NULL OR d.project = $2) \
+                               AND {live} \
+'''
+replace = '''
+                             WHERE d.space = '{id}' AND ($2::text IS NULL OR d.project = $2) \
+'''
+
+[[mutation]]
+name = "lifecycle-join-drops-the-tombstone-clause"
+description = "The lifecycle condition keeps the live-generation join and drops the tombstone anti-join: a revoked generation, which is still the capsule's live generation, is returned by both modes."
+expect = ["stale_hits", "planted_stale_returned"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+             AND NOT EXISTS (SELECT 1 FROM {projection}.tombstone t \
+                             WHERE t.subject = d.capsule AND t.generation = d.generation)"
+'''
+replace = '''
+             "
+'''
+
+[[mutation]]
+name = "lifecycle-join-accepts-older-generations"
+description = "The generation test of the lifecycle join is `>=` instead of `=`: every generation older than the capsule's live one passes (the planted superseded rows)."
+expect = ["stale_hits", "planted_stale_returned"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+                     WHERE l.target = d.capsule AND l.generation = d.generation) \
+'''
+replace = '''
+                     WHERE l.target = d.capsule AND l.generation >= d.generation) \
+'''
+
+[[mutation]]
+name = "upsert-skips-the-generation-check"
+description = "upsert_document takes the project of whatever live row the capsule has, whichever generation it holds: a late write of a superseded generation, or one ahead of the live one, is stored."
+expect = ["late_write_accepted"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+            Some(row) if row.get::<_, i64>(0) == generation => match row.get(1) {'''
+replace = '''
+            Some(row) => match row.get(1) {'''
+
+[[mutation]]
+name = "upsert-ignores-tombstones"
+description = "upsert_document no longer refuses a generation that carries a tombstone: a late write of a revoked generation, which is still the capsule's live one, is stored."
+expect = ["late_write_accepted"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+        if row.get::<_, bool>(0) {
+            return Err(not_live());
+        }
+'''
+replace = '''
+        let _ = row.get::<_, bool>(0);
+'''
+
+[[mutation]]
+name = "late-write-is-refused-with-the-wrong-error"
+description = "upsert_document refuses a non-live generation, but with DocumentConflict instead of NotLive: nothing is stored, and the refusal is not the contract's."
+expect = ["late_write_wrong_refusal"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+        let not_live = || PgError::NotLive {
+            target: capsule.to_owned(),
+            generation: document.generation.0,
+        };
+'''
+replace = '''
+        let not_live = || PgError::DocumentConflict {
+            capsule: capsule.to_owned(),
+            generation: document.generation.0,
+        };
+'''
+
+[[mutation]]
+name = "upsert-refuses-live-generations"
+description = "The generation test of upsert_document is inverted: live generations are refused (NotLive) and the non-live ones are stored; every live write errors."
+expect = ["product_errors"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+            Some(row) if row.get::<_, i64>(0) == generation => match row.get(1) {'''
+replace = '''
+            Some(row) if row.get::<_, i64>(0) != generation => match row.get(1) {'''
+
+[[mutation]]
+name = "search-panics-on-some-capsules"
+description = "Converting a row to a hit panics for capsules whose id ends in 7: the product panics on a query that returns one."
+expect = ["product_panics"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+            let capsule: String = row.get(0);
+            let generation = to_u64(row.get(1), "search_document")?;
+'''
+replace = '''
+            let capsule: String = row.get(0);
+            assert!(!capsule.ends_with('7'), "planted panic");
+            let generation = to_u64(row.get(1), "search_document")?;
+'''
+
+[[mutation]]
+name = "vector-list-keeps-one-hit"
+description = "The vector scan returns at most one row, whatever the query's limit: the fused list is the single nearest neighbour, so its recall@10 is the reference's recall@1."
+expect = ["recall_violation_vs_reference"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+                             LIMIT $3 \
+                         ) v \
+'''
+replace = '''
+                             LIMIT least($3::bigint, 1) \
+                         ) v \
+'''
+
+[[mutation]]
+name = "fusion-ranks-worst-first"
+description = "The fused list is sorted by ascending score: the least relevant of the 40 candidates come first, so the top 10 hold almost none of the relevant documents."
+expect = ["recall_violation_vs_reference"]
+file = "crates/ptr-search/src/fusion.rs"
+find = '''
+            b.score
+                .total_cmp(&a.score)
+'''
+replace = '''
+            a.score
+                .total_cmp(&b.score)
+'''
+
+[[mutation]]
+name = "oracle-forgets-supersessions"
+description = "A defect of the harness: its live table ignores supersessions, so a capsule stays at generation 1 for the oracle while the product (correctly) serves generation 2 and 3; the oracle calls the product's live hits stale, and its table and the projection disagree."
+expect = ["stale_hits", "lifecycle_projection_mismatches"]
+file = "bins/ptr-bench/src/experiments/q003/oracle.rs"
+find = '''
+            EventKind::Supersede { new, .. } => {
+                if let Some(entry) = self.entries.get_mut(&capsule) {
+                    entry.0 = new;
+                }
+            }
+'''
+replace = '''
+            EventKind::Supersede { .. } => {}
+'''
+
+[[mutation]]
+name = "generator-draws-another-workload"
+description = "A defect of the harness: the shuffle of the workload generator becomes a cyclic one, so the generated workload is not the pinned one and the workload digest differs (compared at the pinned shape)."
+expect = ["workload_digest_mismatches"]
+cases = 1000
+file = "bins/ptr-bench/src/experiments/q003/workload.rs"
+find = '''
+        items.swap(index, rng.index(index + 1));'''
+replace = '''
+        items.swap(index, rng.index(index));'''
+
+[[mutation]]
+name = "projector-leaves-superseded-documents"
+description = "The projector's delete of a superseded generation's documents is made to match nothing: every old generation's row stays in the derived table. Search still hides them (the join), so only the harness's check of the table for rows that are neither live nor planted sees the defect."
+expect = ["projector_residual_rows"]
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+                             WHERE capsule = $1 AND generation <> $2"
+'''
+replace = '''
+                             WHERE capsule = $1 AND generation <> $2 AND generation < 0"
+'''
+
+[[mutation]]
+name = "is-admissible-ignores-tombstones"
+description = "The product's own admissibility answer drops the tombstone anti-join, so a revoked generation, which is still the capsule's live one, is admissible: it disagrees with the harness's live table while search (which joins the tables itself) is unaffected."
+expect = ["lifecycle_projection_mismatches"]
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+                        AND NOT EXISTS (SELECT 1 FROM {projection}.tombstone t \
+                                        WHERE t.subject = $1 AND t.generation = $2) \
+'''
+replace = '''
+'''
+
+[[mutation]]
+name = "vector-list-keeps-four-hits"
+description = "The vector scan returns at most four rows, whatever the query's limit: the fused list is the four nearest neighbours, so recall@10 is the dense recall@4. A mid-severity regression: it falls clear of the exact-search rule's margin but not of the reference rule's (the reference is below plain dense retrieval), which is what the sensitivity control is for."
+expect = ["recall_violation_vs_exact"]
+cases = 1000
+seed = 1001
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+                             LIMIT $3 \
+                         ) v \
+'''
+replace = '''
+                             LIMIT least($3::bigint, 4) \
+                         ) v \
+'''
+
+[[mutation]]
+name = "lexical-list-is-empty"
+description = "The lexical SQL returns no row: the lexical half of the hybrid is dead. The main queries never use it (their lexical list is empty anyway), so only the live-body probes, which the lexical mode must answer with the live document itself, show it."
+expect = ["lexical_probe_violation"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+                         ORDER BY score DESC, d.capsule, d.generation LIMIT $3"
+'''
+replace = '''
+                         ORDER BY score DESC, d.capsule, d.generation LIMIT least($3::bigint, 0)"
+'''
+
+[[mutation]]
+name = "vector-list-flips-on-alternate-searches"
+description = "Every second search reverses its vector list: two searches in a row on an unchanged snapshot answer differently. The product is nondeterministic, which is a finding about the product (and halves its recall as a side effect)."
+expect = ["nondeterministic_searches"]
+file = "crates/ptr-pg/src/adapters/search.rs"
+find = '''
+            vector = hits(rows, VECTOR_BACKEND)?;
+'''
+replace = '''
+            vector = hits(rows, VECTOR_BACKEND)?;
+            {
+                static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                if CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 2 == 1 {
+                    vector.reverse();
+                }
+            }
+'''
+
+[[mutation]]
+name = "projector-refuses-supersessions"
+description = "The projector refuses every CapsuleSuperseded record with an error. The harness must count it (product_errors) and finish with exit status 1, not stop with exit 2: a projector that rejects the world's own records is a product failure."
+expect = ["product_errors"]
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+        check_record_text(committed)?;
+'''
+replace = '''
+        check_record_text(committed)?;
+        if matches!(committed.event, ptr_ledger::LedgerEvent::CapsuleSuperseded { .. }) {
+            return Err(PgError::InvalidRecord {
+                index,
+                reason: "planted refusal".into(),
+            });
+        }
+'''
+
+# Harness stops (Q003-v3). A harness stop is exit status 2 with a typed reason, never a counter, so these mutations name the
+# reason they must end with (`expect_stop`; scripts/mutation_check.py kills one only when the harness exits 2 and its standard
+# error holds `harness stop [<reason>]`). They plant the failure of a driver or of the clock, the cases Q003-v2's seed 29
+# could not tell from a deadlock, and shorten the harness's limits (params.rs) so that the stop shows within seconds; the limits
+# themselves (7,200 s a request, 86,400 s a run) are compared with config.toml by a unit test. Each runs 60 queries.
+
+[[mutation]]
+name = "driver-reply-is-not-flushed"
+description = "The BM25 driver no longer flushes its replies: they stay in a block-buffered pipe, the harness waits for a reply while the driver waits for the next request (the picture Q003-v2's diagnosis took for a deadlock). The harness must end the run with the request timeout, not wait."
+expect_stop = "request-timeout"
+cases = 60
+file = "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py"
+find = '''
+        out.write(json.dumps(reply, separators=(",", ":")) + "\n")
+        out.flush()
+'''
+replace = '''
+        out.write(json.dumps(reply, separators=(",", ":")) + "\n")
+'''
+[[mutation.also]]
+file = "bins/ptr-bench/src/experiments/q003/params.rs"
+find = "pub const REQUEST_TIMEOUT_SECONDS: u64 = 7_200;"
+replace = "pub const REQUEST_TIMEOUT_SECONDS: u64 = 20;"
+
+[[mutation]]
+name = "driver-stalls-on-a-search"
+description = "The BM25 driver sleeps instead of answering a search: a driver that is alive and silent. The request limit must fire and end the run with the typed timeout (exit 2)."
+expect_stop = "request-timeout"
+cases = 60
+file = "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py"
+find = '''
+                hits = self.bm25.search(query, limit=limit)
+'''
+replace = '''
+                __import__("time").sleep(600)
+                hits = self.bm25.search(query, limit=limit)
+'''
+[[mutation.also]]
+file = "bins/ptr-bench/src/experiments/q003/params.rs"
+find = "pub const REQUEST_TIMEOUT_SECONDS: u64 = 7_200;"
+replace = "pub const REQUEST_TIMEOUT_SECONDS: u64 = 20;"
+
+[[mutation]]
+name = "driver-crashes-on-a-search"
+description = "The BM25 driver raises an error it does not handle on a search and dies with a traceback and a non-zero exit status. The harness must end the run as a driver failure (exit 2, reason driver-exited, the status named), not hang and not report a run."
+expect_stop = "driver-exited"
+cases = 60
+file = "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py"
+find = '''
+                hits = self.bm25.search(query, limit=limit)
+'''
+replace = '''
+                raise RuntimeError("planted driver failure")
+                hits = self.bm25.search(query, limit=limit)
+'''
+
+[[mutation]]
+name = "driver-exits-nonzero-after-quit"
+description = "The BM25 driver answers the quit and then exits with status 3. A run whose driver ended badly must not pass as finished: the harness ends it with exit 2 and the reason driver-exited at the close."
+expect_stop = "driver-exited"
+cases = 60
+file = "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py"
+find = '''
+        if quit_requested:
+            return
+'''
+replace = '''
+        if quit_requested:
+            sys.exit(3)
+'''
+
+[[mutation]]
+name = "the-run-outlasts-its-deadline"
+description = "The BM25 driver stalls on a search (as above) while the request limit stays at its pinned two hours and the whole-run budget is shortened to 20 s: only the watchdog can end this run, with the typed reason run-deadline (exit 2)."
+expect_stop = "run-deadline"
+cases = 60
+file = "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py"
+find = '''
+                hits = self.bm25.search(query, limit=limit)
+'''
+replace = '''
+                __import__("time").sleep(600)
+                hits = self.bm25.search(query, limit=limit)
+'''
+[[mutation.also]]
+file = "bins/ptr-bench/src/experiments/q003/params.rs"
+find = "pub const RUN_DEADLINE_SECONDS: u64 = 86_400;"
+replace = "pub const RUN_DEADLINE_SECONDS: u64 = 20;"
+
+[[mutation]]
+name = "driver-sleeps-while-a-large-request-is-written"
+description = "The BM25 driver answers the reset of a load and then sleeps without reading, while the loader sends the whole corpus as one request line (far over the 64 KiB a pipe holds): the write blocks. Q003-v2 wrote on the calling thread before its timeout began and would hang here; the writer thread and the one bounded exchange must end the run with the typed timeout (exit 2)."
+expect_stop = "request-timeout"
+cases = 60
+file = "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py"
+find = '''
+        out.flush()
+        if quit_requested:
+            return
+'''
+replace = '''
+        out.flush()
+        if reply == {"ok": True} and not quit_requested:
+            __import__("time").sleep(600)
+        if quit_requested:
+            return
+'''
+[[mutation.also]]
+file = "bins/ptr-bench/src/experiments/q003/bridge.rs"
+find = "for batch in docs.chunks(200) {"
+replace = "for batch in docs.chunks(1_000_000) {"
+[[mutation.also]]
+file = "bins/ptr-bench/src/experiments/q003/params.rs"
+find = "pub const REQUEST_TIMEOUT_SECONDS: u64 = 7_200;"
+replace = "pub const REQUEST_TIMEOUT_SECONDS: u64 = 20;"
+
+[[mutation]]
+name = "driver-refuses-an-upsert"
+description = "The BM25 driver answers an upsert with ok false and an error. A refusal is the driver's, not a result: the harness must end the run with the typed stop driver-refused (exit 2) and must not count it as a product fault."
+expect_stop = "driver-refused"
+cases = 60
+file = "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py"
+find = '''
+                return {"ok": True, "upserted": len(docs)}
+'''
+replace = '''
+                return {"ok": False, "error": "planted refusal"}
+'''
+
+[[mutation]]
+name = "driver-prints-a-line-that-is-not-a-reply"
+description = "The BM25 driver writes a log line instead of a JSON reply. The harness must end the run with the typed stop bad-reply (exit 2), not read on and not guess."
+expect_stop = "bad-reply"
+cases = 60
+file = "experiments/retrieval/Q003-v3-postgres-hybrid/bm25_driver.py"
+find = '''
+        out.write(json.dumps(reply, separators=(",", ":")) + "\n")
+'''
+replace = '''
+        out.write("[the driver prints a log line, not a reply\n")
+'''
+
+[[mutation]]
+name = "strong-arm-records-the-default-thread-count"
+description = "The harness records the driver's default thread count (4) for the strong arm instead of the pinned one the command passes (the record is built from the arm's real option). The aggregator's thread-pin rule must find the record invalid: this mutation is killed by that validity rule (judge_seed gives the reason 'the strong arm recorded strong_threads 4'), not by a counter; the unmutated record at this scale holds null, a different reason."
+expect_invalid = "the strong arm recorded strong_threads 4,"
+cases = 60
+file = "bins/ptr-bench/src/experiments/q003/mod.rs"
+find = '''
+                        if strong_ran {
+                            Json::Int(i64::from(
+                                options
+                                    .strong_threads
+                                    .unwrap_or(params::DEFAULT_STRONG_THREADS),
+                            ))
+'''
+replace = '''
+                        if true {
+                            Json::Int(i64::from(params::DEFAULT_STRONG_THREADS))
+'''
