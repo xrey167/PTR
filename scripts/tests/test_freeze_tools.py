@@ -371,8 +371,10 @@ class MakeFreezeScriptTests(unittest.TestCase):
 
     def test_gpu_export_only_when_set(self):
         self.assertNotIn("CUDA_VISIBLE_DEVICES", self.generate())
+        self.assertNotIn("PTR_CUDA_DEVICE", self.generate())
         script = self.generate("--gpu", "1")
         self.assertIn("export CUDA_VISIBLE_DEVICES=$GPU", script)
+        self.assertIn("export PTR_CUDA_DEVICE=$GPU", script)
         self.assertIn("GPU=1", script)
         self.assertIn("gpu=$GPU", script)
         self.assertEqual(subprocess.run(["bash", "-n"], input=script, text=True).returncode, 0)

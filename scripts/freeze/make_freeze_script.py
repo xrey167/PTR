@@ -19,7 +19,8 @@ Spec keys (TOML; CLI flags of the same name with dashes override; list keys are 
                              package whose features get their own clippy and test run.
   sign                       placeholder = int table / --sign must-be-signed-x=INT for freeze_sign.py.
   env_file                   shell file sourced quietly (never printed) for DSNs and paths.
-  gpu                        optional GPU index: exports CUDA_VISIBLE_DEVICES and tags every log line.
+  gpu                        optional GPU index: exports CUDA_VISIBLE_DEVICES and PTR_CUDA_DEVICE (the
+                             latter reaches seed runs when the manifest declares it) and tags every log line.
   disk_floor_gb              waitdisk floor, default 6 (0 disables).
   work_paths                 path prefixes the work commit may contain (default: experiments crates
                              bins docs scripts/tests research STATUS.md).
@@ -192,6 +193,7 @@ def generate(spec):
     if gpu is not None:
         w(f"GPU={gpu}")
         w("export CUDA_VISIBLE_DEVICES=$GPU")
+        w("export PTR_CUDA_DEVICE=$GPU")
     w(f"ID={q(ident)}")
     w(f"D={q(d)}")
     w(f"TAG={q(tag)}")

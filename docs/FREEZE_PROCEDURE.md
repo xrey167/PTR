@@ -82,8 +82,7 @@ GPU index on the two-card desktop (RTX 3090 x2): a spec with `gpu = 0` or `gpu =
 `CUDA_VISIBLE_DEVICES=<index>` and prefix every log line with `[ID gpu=N]`. Without `gpu` nothing is exported (CPU experiments). The export
 reaches the script's own cargo, pilot and mutation steps, but not the seed runs: they go through `scripts/run_experiment.py run`, whose command
 environment allows only `PATH`, `HOME`, `TMPDIR`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `LC_CTYPE`, `CARGO_HOME`, `RUSTUP_HOME` and the declared `PTR_*`
-variables, so a frozen seed run ignores it (both cards stay visible and the code uses `cuda:0`). Frozen seed runs therefore go one at a time until a
-reviewed runner change settles GPU pinning (OD-3); the second card is for pilots, smokes, tuning and mutation runs. Use a separate worktree,
+variables, so `CUDA_VISIBLE_DEVICES` itself does not reach a seed run. GPU pinning of frozen seed runs (OD-3, decided 2026-10-13, no runner change): a GPU experiment's manifest declares `PTR_CUDA_DEVICE` in `command_environment` before its freeze (the runner passes declared `PTR_*` variables through, `scripts/run_experiment.py`), its entrypoint wrapper sets `CUDA_VISIBLE_DEVICES=$PTR_CUDA_DEVICE` and prints the index into its result JSON (the run record names the declared variable, never its value), and the freeze script's `gpu` field exports both variables. An experiment frozen without that declaration runs on card 0, one at a time. Use a separate worktree,
 `FREEZE_LOGS` and `CARGO_TARGET_DIR` per script. Never run two scripts in one worktree.
 
 ## Runtime variables of the generated script

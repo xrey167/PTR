@@ -277,8 +277,7 @@ except for the following.
   `CUDA_VISIBLE_DEVICES` (`GPU_HANDOVER.md` section 1.1 item 8), so a listed experiment's command
   cannot be pinned to card 1 through the environment; it uses card 0. The same holds for the generated
   freeze script: its `CUDA_VISIBLE_DEVICES` export reaches its own cargo, pilot and mutation steps but not
-  the seed runs. Run frozen seed runs one at a time until a reviewed runner change settles GPU pinning
-  (OD-3); the second card is for pilots, smokes, tuning and mutation runs. Exploratory and smoke runs are
+  the seed runs. GPU pinning of frozen seed runs (OD-3, decided 2026-10-13, no runner change): a GPU experiment's manifest declares `PTR_CUDA_DEVICE` in `command_environment` before its freeze (the runner passes declared `PTR_*` variables through, `scripts/run_experiment.py`), its entrypoint wrapper sets `CUDA_VISIBLE_DEVICES=$PTR_CUDA_DEVICE` and prints the index into its result JSON (the run record names the declared variable, never its value), and the freeze script's `gpu` field exports both variables. An experiment frozen without that declaration runs on card 0, one at a time. Exploratory and smoke runs are
   not affected.
 - **Doctor.** `scripts/gpu_doctor.py` checks every visible card: a `gpu N` line per card, the summary
   "2x NVIDIA GeForce RTX 3090, N MiB each", a torch allocation and matmul probe on every device, and a

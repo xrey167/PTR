@@ -99,8 +99,10 @@ Missing code (entrypoints, aggregators, lifecycle ops, pruning, GRPO) is built b
 Two independent GPU runs at a time are allowed (one per card, CUDA_VISIBLE_DEVICES=0 / =1) only
 when they are different experiments or different seeds, each logged with its GPU index; nothing
 in training/ trains on two cards, and a listed run_experiment.py run passes no
-CUDA_VISIBLE_DEVICES (it uses card 0), so frozen runs go one at a time unless a pinning mechanism
-is settled (log it with OD-3). Each confirmatory seed runs once; a spent seed is never rerun.
+CUDA_VISIBLE_DEVICES itself. OD-3 decides the pinning without a runner change: declare PTR_CUDA_DEVICE
+in the manifest's command_environment before the freeze, the entrypoint wrapper maps it to
+CUDA_VISIBLE_DEVICES and prints the index into its result JSON, the freeze spec sets gpu = 0 or 1.
+Without that declaration a frozen run uses card 0 and frozen runs go one at a time. Each confirmatory seed runs once; a spent seed is never rerun.
 
 STAGE 3. Component measurement study on the quiet desktop. Prerequisites from
 evaluations/BATCH_DECISIONS.md: a protocol.toml per component (evaluations/PROTOCOL_FORMAT.md), a
