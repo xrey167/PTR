@@ -1,4 +1,4 @@
-.PHONY: vcw-demo check test fmt bench-check py-bindings a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
+.PHONY: vcw-demo check test fmt bench-check py-bindings a0 a0-stable a0-msrv repo-check freeze-tools-test docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
 	desktop-setup gpu-doctor smoke-gpu olmoe-sft-smoke release-package \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
@@ -148,6 +148,9 @@ msrv:
 python-test:
 	python3 -m unittest discover -s training/tests
 	python3 -m unittest discover -s scripts/tests
+
+freeze-tools-test:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_freeze_tools
 
 manifest:
 	python3 scripts/hash_manifest.py
