@@ -93,7 +93,7 @@ docs/VCW_MOE_GPU_PLAN.md). For each experiment record the decision on the hardwa
 question: section 5 is resolved for this machine (the M010 to M015 and E006 manifests name
 hardware/rtx3090.toml, which is right; E006's compute capability 8.6 is true), so record the
 actual nvidia-smi output, driver, GPU index and the profile named, and flag any manifest that names
-another profile (M016 rtx5090, VCW rtx4090 configs, smoke configs) before its freeze.
+another profile (M016 rtx5090; use the -rtx3090 VCW and smoke configs) before its freeze.
 Missing code (entrypoints, aggregators, lifecycle ops, pruning, GRPO) is built by channels first.
 Two independent GPU runs at a time are allowed (one per card, CUDA_VISIBLE_DEVICES=0 / =1) only
 when they are different experiments or different seeds, each logged with its GPU index; nothing
