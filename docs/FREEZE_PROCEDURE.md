@@ -4,6 +4,13 @@ How a prepared experiment is frozen, run and finished with the same guarantees o
 `scripts/freeze/`; `scripts/tests/test_freeze_tools.py` tests them (`make freeze-tools-test`). Background:
 `experiments/README.md`, `experiments/preregistration.toml`, `scripts/experiment_records.py`.
 
+## Validation
+
+On 2026-10-12 the tooling replayed the real E007 freeze in a scratch clone (from the pre-freeze commit 03f71143, tag
+`e007-replay`, never pushed): the generated script's freeze commit has the same parent and no diff against the real freeze
+commit 3c1076b9; the whole mutation check killed 59 of 59 and the pilot 1001 rerun was equal on all 137 outcome entries.
+The replay stopped before step 8 by design. Unit tests: `make freeze-tools-test`.
+
 ## Roles
 
 Only the head freezes. A channel (a coding agent or a person working on the experiment) builds the harness,
