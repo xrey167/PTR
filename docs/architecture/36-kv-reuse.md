@@ -9,8 +9,7 @@ adapter and no GPU path, and the `candle-cuda` feature is not compiled in CI. Ev
 speed-up or hit rate is an **experiment** with a falsification rule (section E). Evidence
 status is in section E.1: R005 (Exact half, now marked stale), R006, R007, R009, R010 and
 R012 are `completed` in `experiments/registry.toml` on this branch, R008 and E006 are `planned`
-there, E007 is `planned` there but frozen on its own branch (tag `e007-prereg`, commit 3c1076b9, branch
-`claude/dev-e007`, registry `prepared` there) with results pending, and no experiment of this document has produced a GPU or engine result.
+there, E007 is `completed` (CPU part: preregistered at `e007-prereg`, freeze commit 3c1076b9, 5 seeds, mutation check 59 of 59 killed, verdict COMPLETED in `experiments/system/E007-split-pod-kv/results/run.json`; scope and limits in the E007 line of STATUS.md and in section E.1), E008 stays `planned` (the deferred mechanisms), and no experiment of this document has produced a GPU or engine result.
 Nothing here changes the authority order of ADR-0002: the ledger stays the only
 authority, and a KV block is derived state under invariants #3, #5 and #17.
 
@@ -449,7 +448,7 @@ ActivationFrame { boundary, positions, upstream_chain, input_lineage, mode, tain
 ```
 
 **Implementation status of the pipeline split (E007 core, 2026-10-10).** The CPU reference of this paragraph exists in a first, narrower form and
-is tested; nothing in it has run for the record (E007 is `planned`). `ptr-pods` has the stage execution (`Qwen2PagedStack::run_stage_in_regime`,
+is tested; its CPU part has run for the record (E007 `completed`, plumbing only: bit identity of a two-stage split on a tiny seeded model, in process, no socket or second host; E008 is `planned`). `ptr-pods` has the stage execution (`Qwen2PagedStack::run_stage_in_regime`,
 two stages are the whole stack bit for bit), `ptr-protocol::activation` the frame, chunk and policy schemas with the allowlist
 (`admit`), `ptr-podwire::chunk` the signed chunking and the reassembling `FrameAssembler` (reorder window, per-principal reservations and
 tombstones, deadlines, replay protection, typed refusals), and `ptr-runtime::split_stage` the downstream admission and cache that revalidate the
@@ -517,7 +516,7 @@ the "symlink" from the derived artifact to the base. It is the triple (`id`, `di
 * **As a dependency.** `ExpertInputRef::from_base_model` (`expert.rs:2155-2161`) turns it into
   the input `base-model:{id}` with the base's generation and digest (prefix
   `expert.rs:2040`). `ptr-runtime` derives that dependency from every version 3 expert record
-  (`crates/ptr-runtime/src/expert.rs:3037-3041`; module doc `:110-116`). An expert admitted
+  (`crates/ptr-runtime/src/expert.rs:3120-3126`; module doc `:110-116`). An expert admitted
   through `admit_expert_proposal` (version 2 records) names no inputs and is outside this
   mechanism.
 * **Compound invalidation.** Revoking `base-model:{id}` at generation g fences every version 3
@@ -528,7 +527,7 @@ the "symlink" from the derived artifact to the base. It is the triple (`id`, `di
   `InputRevoked`). A supersession must carry the digest the base was registered with
   (`InputBindingMismatch`, same file `:1010-1020`). The semantics of supersession
   (an expert built from a generation below the replacement is dead unless it was retrained
-  on the replacement) are in `crates/ptr-runtime/src/expert/dependency.rs:323-326`.
+  on the replacement) are in `crates/ptr-runtime/src/expert/dependency.rs:330-335`.
   **Evidence:** R011, status `completed` in `experiments/registry.toml`, verdict COMPLETED in
   `experiments/runtime/R011-self-modification-safety/results/run.json`: 43 of 43
   invalidation-matrix cells with 0 stale hits (STATUS.md, R011 line). The dedicated base-model
@@ -544,8 +543,7 @@ the "symlink" from the derived artifact to the base. It is the triple (`id`, `di
   `BaseModelRef` into a `KvChainIdentity`; the two carry the same id and generation by
   convention only. The CPU reference backend pins one base, `MODEL_NAME` at
   `Generation(1)` (`crates/ptr-runtime/src/kv_infer.rs:941-942`). **Namespace mismatch:** the KV base dependency is keyed by `identity.base_model` (the reference backend's `MODEL_NAME` at `Generation(1)`, `kv_infer.rs:941-942`), not by the expert-side `base-model:{id}`, so revoking `base-model:{id}` in the expert dependency index does not touch KV catalog entries. KV entries that depend on an expert are invalidated through the expert `KvDependency` (test `an_entry_depending_on_a_born_expert_hits_and_a_retire_invalidates_and_retires_it`, `crates/ptr-runtime/tests/kv_expert_e2e.rs:288`). **E007** (the split-Pod
-  check) is `planned` in `experiments/registry.toml` on this branch; its CPU test is in
-  progress on its own branch and is **not a result**.
+  check) is `completed` in `experiments/registry.toml` (verdict COMPLETED in its `results/run.json`); it covers the pipeline-split plumbing only and did not test the base-model kind of the invalidation matrix, which is E008 (`planned`). **Namespace scope of the split path (observation, not a recorded decision):** the prefix catalog salt hashes principal **and** project (`KvSalt::derive`, `crates/ptr-runtime/src/kv_prefix.rs:99-111`), while the split-frame assembler keeps its state per principal (`crates/ptr-podwire/src/chunk.rs:14-17`) and neither `ActivationFrame` (`ptr-protocol/src/activation.rs`) nor `ptr-runtime/src/split_stage.rs` mentions a project. Whether split-frame state must be partitioned per (principal, project) is not decided in this repository.
 * **Gate evidence bound to the exact base.** A `BoundGateReport` carries a `GateSubject` with
   `base_model_digest` (`crates/ptr-lineage/src/forgetting.rs:219`, `:244-266`); the plain
   `GateReport` "names no lineage or base model" (`forgetting.rs:175-180`).
@@ -623,7 +621,7 @@ R011's matrix is in doc 37, section 3.
 | R011 self-modification-safety | completed | COMPLETED; 43 of 43 invalidation-matrix cells with 0 stale hits (STATUS.md); the base-model revocation case is the test cited in section D (doc 37, section 3 has the matrix) | CPU reference, public `PtrRuntime` API |
 | R008 lossy-kv-tier | planned | no outcome | design only |
 | E006 engine-prefix-reuse | planned | no outcome | GPU and engine, not built |
-| E007 split-pod-kv | `planned` on this branch; `prepared` on `claude/dev-e007` (tag `e007-prereg`, commit 3c1076b9; `results/` holds only `.gitkeep` there) | frozen, results pending: no outcome, not a result | CPU test first, engine and GPU later |
+| E007 split-pod-kv | `completed` (tag `e007-prereg`, freeze commit 3c1076b9, 5 seeds, mutation check 59 of 59) | COMPLETED (`results/run.json`): bit-identical two-stage split through the real PodWire frame codec in process; every coverage and falsifier rule held. Limits: plumbing not math, no socket or second host, no latency claim; marked stale only by repository provenance (`results/STALE.toml`) | CPU part done; E008 (planned) carries the rest of the matrix, the engine and GPU |
 
 Everything else in this document (engine adapter, GPU numerics, speed-up and hit-rate claims
 on a real model) has no result. A completed row is a statement about the CPU reference path.
