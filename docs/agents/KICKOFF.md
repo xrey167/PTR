@@ -66,9 +66,11 @@ STAGE 0. Baseline green locally (report with timings): make check; make test; ma
 cargo clippy --workspace --all-targets --locked -- -D warnings; make docs-check; make repo-check;
 python3 scripts/run_experiment.py validate; python3 scripts/check_research_gates.py;
 PYTHONPATH=training/src make python-test; make py-bindings; make vcw-demo; make ci-local
-(feature jobs; needs rustup stable >= 1.99 and PostgreSQL via PTR_PG_TEST_DSN and
-PTR_PG_EXPERIMENT_DSN); make a0. Also: python3 scripts/gpu_doctor.py --require-gpu, nvidia-smi -L
-shows two cards (the doctor's "expected an RTX 4090" warning is expected; it probes card 0 only).
+(feature jobs; needs rustup stable >= 1.99, else run each ci-* recipe with +1.99.0, and
+PostgreSQL via PTR_PG_TEST_DSN and PTR_PG_EXPERIMENT_DSN); make a0; make freeze-tools-test.
+Also: nvidia-smi -L shows two cards; python3 scripts/gpu_doctor.py --require-gpu reports both
+cards OK and names hardware/dual-rtx3090.toml. Fill os/cpu/ram_gib in hardware/dual-rtx3090.toml
+with measured values (one commit).
 
 STAGE 1. GPU smoke, no research claim. Step 1: make smoke-gpu; check metrics.json
 (hardware.device cuda, gpu name, peak memory) against the WP8 table in training/README.md.
@@ -76,12 +78,13 @@ Step 2: make olmoe-sft-smoke in the background (experiment-run skill, logs in
 training/runs/logs/), record torch peak and nvidia-smi peak. Step 3: derive the OLMoE step-3
 config from the step-2 measurement (copy training/configs/stage-moe-olmoe.toml, change only what
 GPU_HANDOVER step 3 lists, name the 3090 profile, list each change in the commit message), run it,
-read the first RL-phase peak. The smoke configs name hardware/rtx4090.toml: derive 3090 copies
-rather than editing them in place if the manifest profile should be right.
+read the first RL-phase peak. Use GPU_PROFILE=rtx3090 (the default): the -rtx3090 configs name the right profile.
+Their wall-time estimates are datasheet-based, not measured: replace them with the measurement.
 
 STAGE 2. GPU experiments in the handover order, each frozen and run per docs/FREEZE_PROCEDURE.md
-(prepare branch, freeze commit, prepare, one run per seed 17 29 43 71 101, aggregate once,
-status, commit), each ending with a results write-up (ptr-results skill) and a welfare_check line
+(generate the script with scripts/freeze/make_freeze_script.py; seeds come from the
+experiment's config.toml, never retyped; aggregate once; finish with
+scripts/freeze/finish_experiment.py status + stale and three commits with explicit paths), each ending with a results write-up (ptr-results skill) and a welfare_check line
 where GPU_HANDOVER section 10.3 asks for it:
 M011, M012, M014, M010, M013, M015 (flag: the 30B teacher does not fit 24 GiB, OD-4; defer unless a
 conservative reversible pin is possible), R008, M016 (only after R006 is completed; flag its
@@ -112,13 +115,28 @@ green (Stage 0 list again), bundle for transfer (ptr_bundle.py create) or GitLab
 word; scripts/publish_remote.py --dry-run first), final report in German.
 
 RULES (compressed; AGENTS.md wins on conflict).
-Freeze: never edit a prepared, running, completed, failed or superseded experiment record; a
+Freeze procedure (docs/FREEZE_PROCEDURE.md, tools in scripts/freeze/): freeze_sign.py --dry-run
+first; gates, EnrolledExperimentTests and a clean tree before signing; guard_on/guard_off around
+signing; explicit paths only, never git add -A; the WHOLE mutation_check on the committed frozen
+tree with CARGO_TARGET_DIR unset, COMPLETED only if killed == total; pilot rerun compared with the
+committed pilots/pilot-<seed>.json (compare_pilot.py, declared timing keys only); preflight,
+prepare, seeds from config; a seed exit other than 0/1 stops; setsid nohup with a timeout and a
+CPU/GPU progress check; never edit a running script; STALE.toml names the first
+provenance-changing commit; tags are passed explicitly; after every merge digest_parents.py, then
+the gates; every preregistered experiment is in LISTED_UNFROZEN (scripts/tests/test_research_gates.py).
+Also: never edit a prepared, running, completed, failed or superseded experiment record; a
 change is a successor. Freeze commit has no must-be-pinned or must-be-signed string left; list the
 experiment in experiments/preregistration.toml before its first prepared record; one run per seed,
 runs committed before the next launch; aggregate once; no reruns, no deleting results, negative
 results are committed; no tuning on held-out data; deviations are quoted. A listed run refuses
 git-ignored files: put the Python environment outside the checkout and run from a clean worktree.
-Research: every claim has baseline, ablation, failure criteria; smoke is pipeline evidence only;
+Research: docs/INVARIANTS.md binding (#4, #5, #8, #11, #13); router, L3, self-model and experts
+never change gates, thresholds, verifiers or eligibility; doc 38 functional only,
+docs/MODEL_WELFARE.md; tuning only on pilot seeds >= 1001; thresholds never loosened after a pilot
+(disclose any loosening and the chronology); exit 1 = product finding, exit 2 = harness; validity
+(INVALID) before falsifier (FALSIFIED) before controls; report negative results, product findings
+and your own misdiagnoses; every claim has baseline, ablation, sensitivity control, failure
+criteria, no ceiling or strawman; smoke is pipeline evidence only;
 no "improves/outperforms/specialises" from it; a learned score never overrides a deterministic
 verifier; label estimates as estimates. Repo: crate changes also update component.toml and
 make docs; no edits under vendor/, training/runs/ (never commit), or .cargo/config.toml [env];
