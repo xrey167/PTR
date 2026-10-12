@@ -25,7 +25,7 @@ id = "lancedb-embedded"
 source = "external"
 status = "to-evaluate"
 evidence = []
-note = "owner licence decision required (MPL-2.0 option-ext) plus a new paste-alias vendor patch; not to be selected or run until decided; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
+note = "MPL-2.0 option-ext exception deferred (needs its own vendor patch; owner-delegated decision 2026-10-11, reversible); not granted, not run; see evaluations/BATCH_DECISIONS.md section Owner delegation decisions (2026-10-11)"
 
 [[candidate]]
 id = "hnsw-library"
@@ -43,6 +43,6 @@ evidence = ["../../../crates/ptr-pg/tests/postgres.rs"]
 [[candidate]]
 id = "vectorchord"
 source = "external"
-status = "to-evaluate"
+status = "rejected"
 evidence = []
-note = "owner licence decision required (AGPL-3.0); must not be selected or run until the owner decides; see evaluations/SPIKE.md (2026-10-09) and evaluations/BATCH_DECISIONS.md"
+note = "licence (AGPL-3.0), owner-delegated decision 2026-10-11, reversible; not selected, not run, not vendored; see evaluations/BATCH_DECISIONS.md section Owner delegation decisions (2026-10-11)"

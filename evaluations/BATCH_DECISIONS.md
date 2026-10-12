@@ -240,9 +240,41 @@ redpanda-kafka, tina-rs, serde-json-tree, sentrux, pg-duckdb, brin-signal.
 
 ## Open owner questions
 
+*Answered by delegation on 2026-10-11: see the section "Owner delegation decisions (2026-10-11)" at the end; the questions are kept as asked.*
+
 1. AGPL-3.0 (paradedb-pg-search, vectorchord): allow as external-process-only candidates, or retire? Not run until answered.
 2. MIT-0 into the `deny.toml` allow list (unblocks nemo-relay)?
 3. MPL-2.0 exception for `option-ext` (lancedb-embedded; gliclass-rs is also blocked by advisories)?
 4. Redpanda licence terms: acceptable for a benchmark-only container, and is a container host available?
 5. Which projects are meant by `tina-rs`, `serde-json-tree`, `sentrux` (Rust-capable), `brin-signal`?
 6. May system packages be installed for the runs (protoc, capnproto, pgvector 0.8.7 from PGDG, nats-server)?
+
+## Owner delegation decisions (2026-10-11)
+
+The owner delegated the open questions above ("do everything necessary in the best execution
+without my answers", about 20:25 on 2026-10-11). The head decided conservatively and
+reversibly; source: `finish-decisions.md` of the head, entry "Owner delegation". Each decision
+can be replaced by a later explicit owner decision. None of them is evidence, and no candidate
+became `preferred`.
+
+| # | Question above | Decision | Effect on the candidates |
+|---|---|---|---|
+| 1 | AGPL-3.0 (paradedb-pg-search, vectorchord) | Not used. A network-facing AGPL component would bind the project's licence choice. Not selected, not run, not vendored. | status `rejected`, note "licence (AGPL-3.0), owner-delegated decision 2026-10-11, reversible" |
+| 2 | MIT-0 into the `deny.toml` allow list | MIT-0 is strictly more permissive than MIT (no attribution clause), so it is allowed for `evaluations/bench/*` workspaces only, and only when the candidate is actually built. No build in this goal; `deny.toml` is not changed here. | nemo-relay: note only, status unchanged |
+| 3 | MPL-2.0 exception for `option-ext` | Deferred. It needs a new vendor patch, which `docs/VENDOR_PATCH_POLICY.md` treats as its own change. Not granted now. | lancedb-embedded: note only |
+| 4 | Redpanda terms | Not used (BSL, source-available, needs a container host). Event streaming stays on the open candidates. | redpanda-kafka: note only |
+| 5 | Unidentified projects (`tina-rs`, `serde-json-tree`, a Rust `sentrux`, `brin-signal`) | Marked not obtainable. No guess at a different project under the same name. | note only on each |
+| 6 | System package installs (protoc, capnproto, pgvector 0.8.7, nats-server) | No package is installed in this goal. They are prerequisites of the measurement study below, not of any open experiment. | none |
+
+**Recommended next study (not started in this goal).** Running a batch needs a new study; it
+is not required by the completion criteria of this goal. Its prerequisites, as listed in
+"Protocol and runner state" above:
+
+1. a `protocol.toml` per component (`evaluations/PROTOCOL_FORMAT.md`);
+2. a pinned bench workspace under `evaluations/bench/` with a re-spiked `Cargo.lock`;
+3. one adapter per candidate in that workspace;
+4. a quiet host (the present one is shared and `decision_grade = false`), so that durable-write
+   numbers can decide something.
+
+Until then no external candidate can be executed by `scripts/run_component_eval.py`, and
+the comparative evidence for these components stays absent.

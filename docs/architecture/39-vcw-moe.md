@@ -2,11 +2,11 @@
 
 Status: **specification of a design**. Parts of the substrate are implemented and tested on the
 integration line (the workspace contract, the finding router, the generate-verify-repair loop, the
-expert admission path); parts are in review on their package branches (self-model, attention
-schema, structure policy); the runtime composition of all of them, the end-to-end CPU experiment
-and every model-backed experiment do not exist yet. **No claim that VCW-MoE is useful is made or
-supported by any result in this repository.** The only measured piece is the loop mechanism with a
-seeded stub (F001), which is a mechanism check, not a result about any model. Every claim below is
+expert admission path, the runtime `VcwLoop`, the server path and `make vcw-demo`, all with
+simulated experts); the whole-loop CPU experiment F007 is COMPLETED on simulated experts (mechanism check, section 3.7); every model-backed experiment does not exist yet. **No claim that VCW-MoE is useful is made or
+supported by any result in this repository.** The measured pieces are mechanism checks, not results about any model: the loop mechanism with a
+seeded stub (F001), the gate path (R011), the learned-attention workspace analogue (C001, NOT_SHOWN),
+the revocation-crash substrate (L001-v2, completed) and the whole-loop check F007 (COMPLETED, simulated experts with declared skill tables, so the gain follows from those tables). Every claim below is
 an experiment with a baseline, ablations and a refutation rule (invariant 15, section 6).
 
 This document is the formal companion of [37 — Pod-MoE](37-pod-moe.md) (design of the three levels
@@ -312,8 +312,8 @@ baselines with a verdict). **There is no research result for any VCW-MoE compone
 
 | Component | Branch and file | State | Evidence |
 |---|---|---|---|
-| Self-model (trace statistics, calibration, advisory hints) | `claude/dev-pm-selfmodel`: `crates/ptr-router/src/self_model.rs` (`SelfModel`, `SelfContext`, `SelfModelHint`, `CalibrationTracker`, `HintPolicy`) | Uncommitted, in progress. The module documentation states the authority limits: `SelfModelHint` is plain advisory data and does not convert to `Accepted` or `RegistryUpdate` (`compile_fail` doctests), the model does not implement `AdmissibleScorer` | None. C002 stage A is the CPU toy test |
-| Attention schema (predicts routing, optional control inside the admissible set) | same branch: `crates/ptr-router/src/attention_schema.rs` (`AttentionSchema`, `ControlMode`, `SchemaLimits`) | Uncommitted, in progress. `AttentionSchema::apply_hints` re-weights inside the verifier-determined set; `ControlMode::ObserveOnly` exists as the describe-only arm | None. C003 stage A |
+| Self-model (trace statistics, calibration, advisory hints) | `claude/dev-pm-selfmodel`: `crates/ptr-router/src/self_model.rs` (`SelfModel`, `SelfContext`, `SelfModelHint`, `CalibrationTracker`, `HintPolicy`) | Uncommitted, in progress. The module documentation states the authority limits: `SelfModelHint` is plain advisory data and does not convert to `Accepted` or `RegistryUpdate` (`compile_fail` doctests), the model does not implement `AdmissibleScorer` | None in the repository for this branch's code. C002 stage A is the CPU toy test C007, verdict FALSIFIED (section 3.4) |
+| Attention schema (predicts routing, optional control inside the admissible set) | same branch: `crates/ptr-router/src/attention_schema.rs` (`AttentionSchema`, `ControlMode`, `SchemaLimits`) | Uncommitted, in progress. `AttentionSchema::apply_hints` re-weights inside the verifier-determined set; `ControlMode::ObserveOnly` exists as the describe-only arm | None in the repository for this branch's code. C003 stage A is the CPU toy test C008, verdict FALSIFIED (section 3.4) |
 | L3 structure policy | `claude/dev-pm-l3`: `crates/ptr-runtime/src/expert/structure.rs` (`StructurePolicy`, `StructurePolicyConfig`, `StructureObservation`, `StructureProposal`, `propose`, `unroutable_delta`); `crates/ptr-runtime/tests/expert_structure.rs` | Uncommitted, review fixes applied. Operators proposed: Birth, Reactivate (of a `Retired(GateFailed)` expert), Prune (by AIMER and usage, never the last demonstrated clearer of a code), Merge, Freeze; Split and Retire are never proposed. Results needing training are *requests* until the host supplies the trained manifest digest | Unit and integration tests only (48 plus 4 at the last report). Mutation check on the new rules killed 5 tests; this is not a preregistered experiment. **No evidence that the policy helps** |
 
 ### 3.3 Planned or not built
@@ -321,7 +321,7 @@ baselines with a verdict). **There is no research result for any VCW-MoE compone
 | Component | Status | Registered experiment |
 |---|---|---|
 | Runtime composition of workspace, finding router, repair loop, budgets, eligibility and structural ledger events as one path (package H; new path, old signatures unchanged) | Planned | none by itself; X exercises it |
-| End-to-end CPU experiment with stub experts: full loop against learned-gate routing, best-of-N with the verifier, and ablations without workspace, finding routing, self-model (package X) | Registered as F007 (`experiments/feedback/F007-vcw-loop`, planned, draft preregistration, not frozen, not run) | F007 |
+| End-to-end CPU experiment with stub experts: full loop against learned-gate routing, best-of-N with the verifier, and ablations without workspace, finding routing, self-model (package X) | Registered as F007 (`experiments/feedback/F007-vcw-loop`, registry `completed`, verdict COMPLETED in `results/run.json`, mechanism check on simulated experts; section 3.7) | F007 |
 | Categorical L2 off-policy estimator (37 section 2) | Built for the finding router (`ope.rs`, package VL); the contextual routing log of 37 section 2 and any estimate on a model-backed loop are not built | needed by F004, F005 |
 | Learned `AdmissibleScorer` | Built as a context-free Thompson bandit (`learning.rs`, package VL); a feature-based policy is not built. Learned critic Pod (advisory): not built | F004 |
 | Persistence of workspace content in SemDB or a branch overlay | Not built, not required by the contract | C006 |
@@ -333,9 +333,10 @@ baselines with a verdict). **There is no research result for any VCW-MoE compone
 |---|---|---|---|---|
 | F001 | Loop mechanism with a seeded stub | CPU | **Completed** (mechanism check) | Mechanism check |
 | R011 | No bypass of the gates by an L3 policy | CPU reference path | **Completed** (narrowed) | Mechanism check |
-| X | Whole loop with stub experts | CPU | Planned | Mechanism check (stub skill is declared; no model claim) |
-| C001 | Learned-attention workspace as an inductive bias | CPU, 10 seeds | Built to freeze-ready on the D branch, not frozen, not run | Mechanism check of a learned analogue |
-| C002 stage A, C003 stage A, C004 | Self-model, schema, recurrence on toys | CPU | Registered, planned | Mechanism check |
+| X (registered as F007, next row) | Whole loop with stub experts | CPU | see F007 | Mechanism check (stub skill is declared; no model claim) |
+| C001 | Learned-attention workspace as an inductive bias | CPU, 20 seeds (4001-4020) | Registry `prepared` (as defined for NOT_SHOWN), frozen at `c001-prereg`, run complete. **Outcome NOT_SHOWN** (`results/run.json`; STATUS.md): the workspace beats sparse all-to-all (+132 per mille, lower bound 65) but not all-to-all (+27 [-15, 70]) or bandwidth-matched all-to-all (+19 [-23, 60]) beyond the 30 per mille margin | Mechanism check of a learned analogue; not a result about the VCW workspace contract |
+| F007 | Whole verifier-closed loop (`VcwLoop`, finding router, learned router through the OPE gate, workspace, self-model, L3 through the ledger) against a trained softmax gate and best-of-N at matched verifier-call budget, on simulated expert Pods | CPU | Registry `completed`, frozen at `f007-prereg`, 5 seeds (17/29/43/71/101), all valid. **Outcome COMPLETED** (`experiments/feedback/F007-vcw-loop/results/run.json`, `results/metrics.json`): verified success +7.20 points over the trained gate (one-sided 95% bounds [6.51, 7.88]) and +6.35 over best-of-N [5.40, 7.31] in the heterogeneous-skill world, margin 3; all controls passed including the null-world ties; workspace secondary SUPPORTED (+2.16 [1.93, 2.39], an implementation check), L3 secondary NOT_SHOWN (+3.28 [-0.78, 7.34], low power), self-model untested | Mechanism check (a gain is a consequence of the declared skill tables; a homogeneous-skill world ties). It is the registered form of the experiment called X above |
+| C007 (C002 stage A), C008 (C003 stage A), C004 | Self-model, schema, recurrence on toys | CPU | C007 FALSIFIED (registry `failed`; Brier gain over probe +0.13 per mille [-1.20, 1.45], over own confidence -2.54 [-4.21, -0.87], margin 4). C008 FALSIFIED (registry `failed`; +7.1 per mille [4.8, 9.4] over a router that reads the history directly, margin 25: the gain comes from the history, not the schema form). C004 COMPLETED (registry `completed`; recurrent minus attention stack +782.6 per mille [769.5], extrapolation only). Sources: each `results/run.json`; doc 38 section 6. C002 and C003 themselves (GPU) stay `planned` | Mechanism check, calibration toys; no positive effect of a self-model or a schema was shown |
 | C002 stage B, C003 stage B, C005, C006 | Self-model, schema, self-report measurement, workspace at Pod level | GPU | Registered, planned | Research result (if run) |
 | F004, F005, F006 | Closed loop vs standard MoE and best-of-N; finding-routed repair; verifier-driven lifecycle | GPU, OLMoE-class Pods | Registered, planned | Research result (if run) |
 | M010-M015 | Base training programme on OLMoE (RLVR, PERFT-R, aux-free balancing, lifecycle) | GPU | Planned (WP8 smoke only) | Research result (if run) |
@@ -355,7 +356,7 @@ evaluate the component, not about running it: no component of the loop as built 
 
 | Component | Implemented | Tested | Experimentally evaluated | Needs a GPU |
 |---|---|---|---|---|
-| Workspace (bounded, verifier-gated) | `crates/ptr-pods/src/workspace/` | `crates/ptr-pods/tests/workspace.rs` (41) plus unit tests | None. C001 tests a *learned* analogue, not this contract; C001 is `planned` in `experiments/registry.toml` on this line (the package owner reports it as preparing; not visible here) | C006 (workspace at Pod level) |
+| Workspace (bounded, verifier-gated) | `crates/ptr-pods/src/workspace/` | `crates/ptr-pods/tests/workspace.rs` (41) plus unit tests | None for the contract. C001 tests a *learned* analogue, not this contract; its outcome is NOT_SHOWN (section 3.4) | C006 (workspace at Pod level) |
 | Finding router | `crates/ptr-router/src/findings.rs` (`FindingRouter`, `FindingRouteRecord`) | `crates/ptr-router/tests/findings.rs` (21), `tests/router.rs` (45) | None on the router itself. F001 exercises the loop with a stub generator, not this router | F005 (finding-routed repair experts) |
 | Learning router and OPE | `learning.rs`, `ope.rs`, `policy_book.rs` (package VL) | `crates/ptr-router/tests/learning.rs` (14), `src/ope_tests.rs`, `crates/ptr-runtime/tests/vcw_learning.rs` (7) | None for the VCW router. F003 (completed) calibrates a different object, the `ptr-branch` arbiter, and uses IPS and doubly robust estimators on synthetic data; it is substrate evidence for estimator code of that crate, not for this learner. The difference between two repair Pods in the tests is a configured fact | F004, F005 (model-backed log) |
 | Self-model and attention schema (functional, advisory) | `self_model.rs`, `attention_schema.rs`; `SelfStepTrace` in the loop trace | `crates/ptr-router/tests/self_model.rs` (20), `tests/attention_schema.rs` (19), `tests/authority_surface.rs` (2) | None. C002 and C003 stage A (CPU toys) are `planned` in the registry. Per doc 38 these are functional indicators (prediction of the system's own failures, control inside the admissible set), not claims about experience; `hint_mode = "trace-only"` is the default | C002 / C003 stage B |
@@ -458,6 +459,22 @@ and the generalist) but no Pod produced a candidate in the following rounds and 
 the loaded CPU; 1 of 6 verifier calls used), with no answer and no admission. That is one smoke
 run of the pipeline, not an evaluation: it shows that the model backend runs through the same
 path and that the loop refuses to answer when no candidate verifies.
+
+### 3.7 Evidence status of the VCW-MoE track
+
+Registry status is `experiments/registry.toml` on branch `claude/dev-docs13`; outcomes are those
+written in each experiment's `results/run.json` or the STATUS.md line.
+
+| Item | Status | Outcome and scope |
+|---|---|---|
+| `make vcw-demo` (`Makefile` target, `scripts/vcw_demo.py`, `config/vcw-demo.toml`) | Smoke path, not an experiment | Builds `ptrd` and drives `POST /v1/vcw/tasks` with simulated experts and the real verifiers, exiting non-zero if an expected property fails (`scripts/vcw_demo.py`, checks printed as `[ok]`/`[FAIL]`). CPU only. It shows the mechanism end to end; it is not run in CI by this document's checks and says nothing about model quality |
+| `ptr_py` binding (`bindings/ptr-py`, `make py-bindings`) | Built and tested by `make py-bindings` (fmt, clippy, `cargo test`, `maturin develop`, `unittest` over `bindings/ptr-py/tests/test_binding.py`, `test_vcw.py`); CI does not build it (root `README.md:141`) | Gives Python training code the governance checks plus read-only access to the VCW deterministic verifiers, the finding router with its propensity log and OPE estimators, the bounded workspace and an in-process loop simulation (`bindings/ptr-py/README.md:3`; modules `src/vcw.rs`, `routing.rs`, `verify.rs`, `workspace.rs`). A tooling surface, not evidence about any model. Needs Python >= 3.11 |
+| F007 `vcw-loop` | completed | COMPLETED (`experiments/feedback/F007-vcw-loop/results/run.json`; tag `f007-prereg`, freeze commit 99d92379; 5 seeds; mutation check 33 of 33). Full loop minus trained gate +7.20 points [6.51, 7.88], minus best-of-N +6.35 [5.40, 7.31], margin 3; without L3 the same (+7.16, +6.32); removing finding routing costs 16.1 points; controls passed, including null_tie_full_vs_shuffled +0.46 [+0.10, +0.83] inside the +-1.5 band (the control passed; that its lower bound lies above 0 is an observation the criteria do not judge). Workspace secondary SUPPORTED, L3 secondary NOT_SHOWN (power 0.31 by the preregistration's planning table, about 0.2 by the aggregator's note), self-model UNTESTED. **Simulated experts with declared per-(Pod, finding code) skill tables: the result is a consequence of those tables (the null world ties), not a statement about any real model or about best-of-N with a repair Pod** |
+| L001-v2 `revocation-crash` | completed | COMPLETED (`experiments/lifecycle/L001-v2-revocation-crash/results/run.json`; tag `l001v2-prereg`; mutation check 24 of 24). 13,771 recoveries; all falsifier rules held, with the stale-accept counter at 0 for the gated cases; `RaftEngineLedger` has no anchor, so its 90 stale accepts after a lie that drops acknowledged bytes are descriptive only (STATUS.md, owner decision of 2026-10-09). Other limits (single host, crash-image power model) are in STATUS.md. It is substrate evidence for the ledger that makes expert and Pod revocation durable; it does not evaluate the VCW loop |
+| R011 | completed | COMPLETED; no bypass of the gates by an L3 policy on a pinned adversarial suite, reference path |
+| F001 | completed | COMPLETED; loop mechanism with a seeded stub |
+| C001 | prepared (NOT_SHOWN) | See section 3.4 |
+| F004, F005, F006 (GPU) | planned | no outcome |
 
 ## 4. Related work and delimitation
 
@@ -610,8 +627,12 @@ are independent: they remove components from the definition without refuting the
 * Holds (mechanism checks, stub): the closed loop keeps its safety counters at 0 under noisy,
   lying and forged reports (F001); an L3 policy does not bypass the gates (R011).
 * Unknown: every statement about benefit.
-* Not run: C001, X, every GPU experiment. Nothing here is a negative result yet; negative results
-  will be reported as first-class artifacts.
+* Holds on simulated experts: the whole loop beats a trained gate and best-of-N at matched verifier calls in a world with declared heterogeneous skill, and ties where skill is equal (F007, COMPLETED).
+* Not shown: C001 (NOT_SHOWN, section 3.4): a learned workspace is not shown to beat dense
+  pairwise attention in its toy setting; this is neither support nor refutation. F007's L3 secondary is also NOT_SHOWN.
+* Falsified in toy form: C007 (a self-model does not beat an information-matched probe or the model's own confidence) and C008 (the schema-controlled router does not beat a router that reads the history directly). Neither touches the GPU stage B.
+* Not run: every GPU experiment. No negative result of a refutation has been recorded; negative
+  results will be reported as first-class artifacts.
 
 ## 7. Open questions and risks
 
