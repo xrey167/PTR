@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 9 Rust source files · 8923 nonblank source lines · 16 integration-test files · 192 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 8948 nonblank source lines · 16 integration-test files · 192 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- EgressRefused carries a count (at least one) and a bounded trace; reason code 5 TopicRequired
 - LedgerEvent::EgressRefused (tag 33): trace, source Pod revision, redacted target (host:port or topic, bounded, no whitespace) and a pinned reason code; the codec and check_encodable refuse every non-canonical form
 - encoded_event(event) is public: the canonical payload encoding of one event (the bytes a log record frames), so a reader that needs only a size or a digest of an event (the ptr-server vcw trace summary) takes it from the encoding instead of rendering the event
 - check_encodable refuses a MeshTunnelLifecycle event whose endpoint binding the decoder would refuse (for example a relayed route without a relay id), so an append path cannot write a record the log cannot read back
@@ -123,6 +124,7 @@
 
 ### Current automated checks
 
+- effect_record_tests: count zero and an over-long trace are refused
 - effect_record_tests: egress_refusal_round_trips_under_tag_33_and_the_codes_are_pinned and egress_refusal_refuses_every_non_canonical_form
 - the mesh tunnel event round-trips with tag 15 (effect_record_tests::mesh_tunnel_events_round_trip_with_a_stable_tag) and the protected-state reference round-trips with tag 14 without a payload marker in its bytes (semantic_origin_tests::protected_state_reference_round_trips_without_payload_or_key_material)
 - tests/pod_evidence.rs, tests/pod_output.rs (admission and hypothesis with payload and lineage) and the extended all_event_variants_roundtrip_across_reopen (now including ScopeLifecycle) reopen each new record from a FileLedger unchanged; the unknown-origin-kind test now refuses kinds 0, 6 and 255
