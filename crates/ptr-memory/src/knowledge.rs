@@ -1,6 +1,27 @@
 use crate::retention::{KnowledgeKey, KnowledgeLifecycle, KnowledgeObject, RawEvent};
 use ptr_types::{Generation, KnowledgeObjectId, RawEventId};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Sorted copy of everything a [`KnowledgeStore`] holds.
+pub(crate) struct KnowledgeExport {
+    pub(crate) raw: Vec<RawEvent>,
+    pub(crate) objects: Vec<KnowledgeObject>,
+    pub(crate) current: Vec<(KnowledgeObjectId, Generation)>,
+    pub(crate) lifecycle: Vec<LifecycleRecord>,
+    pub(crate) revisions: Vec<(KnowledgeObjectId, u64)>,
+}
+
+pub(crate) fn lifecycle_tag(lifecycle: KnowledgeLifecycle) -> u8 {
+    match lifecycle {
+        KnowledgeLifecycle::Hot => 0,
+        KnowledgeLifecycle::Warm => 1,
+        KnowledgeLifecycle::Cold => 2,
+        KnowledgeLifecycle::Pod => 3,
+        KnowledgeLifecycle::Archived => 4,
+        KnowledgeLifecycle::Invalidated => 5,
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LifecycleRecord {
@@ -306,6 +327,86 @@ impl KnowledgeStore {
             logical_id: id.clone(),
             generation,
         }) == KnowledgeLifecycle::Invalidated
+    }
+
+    /// Digest over the complete store state in a deterministic order: raw history, every
+    /// generation (content and recorded lifecycle), the current-generation pointers and the
+    /// per-object revision counters. Two stores with equal digests are indistinguishable through
+    /// this API.
+    pub fn state_digest(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        for (id, event) in &self.raw {
+            hasher.update(b"raw\0");
+            hasher.update(id.0.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(event.digest);
+            hasher.update(format!(
+                "{:?}{:?}{}",
+                event.role, event.session, event.timestamp.0
+            ));
+            if let Some(call) = &event.tool_call {
+                hasher.update(call.name.as_bytes());
+                hasher.update(&call.arguments);
+            }
+            if let Some(result) = &event.tool_result {
+                hasher.update(&result.output);
+            }
+        }
+        for (key, object) in &self.objects {
+            hasher.update(b"obj\0");
+            hasher.update(key.logical_id.0.as_bytes());
+            hasher.update(key.generation.0.to_le_bytes());
+            hasher.update(object.digest());
+        }
+        for (id, generation) in &self.current {
+            hasher.update(b"cur\0");
+            hasher.update(id.0.as_bytes());
+            hasher.update(generation.0.to_le_bytes());
+        }
+        for (key, record) in &self.lifecycle {
+            hasher.update(b"lc\0");
+            hasher.update(key.logical_id.0.as_bytes());
+            hasher.update(key.generation.0.to_le_bytes());
+            hasher.update([lifecycle_tag(record.lifecycle)]);
+            hasher.update(record.revision.to_le_bytes());
+        }
+        for (id, revision) in &self.revisions {
+            hasher.update(b"rev\0");
+            hasher.update(id.0.as_bytes());
+            hasher.update(revision.to_le_bytes());
+        }
+        hasher.finalize().into()
+    }
+
+    /// Complete content in sorted order, used for compaction snapshots and the mirror.
+    pub(crate) fn export(&self) -> KnowledgeExport {
+        KnowledgeExport {
+            raw: self.raw.values().cloned().collect(),
+            objects: self.objects.values().cloned().collect(),
+            current: self
+                .current
+                .iter()
+                .map(|(id, g)| (id.clone(), *g))
+                .collect(),
+            lifecycle: self.lifecycle.values().cloned().collect(),
+            revisions: self
+                .revisions
+                .iter()
+                .map(|(id, r)| (id.clone(), *r))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn restore_current(&mut self, id: KnowledgeObjectId, generation: Generation) {
+        self.current.insert(id, generation);
+    }
+
+    pub(crate) fn restore_lifecycle(&mut self, record: LifecycleRecord) {
+        self.lifecycle.insert(record.key.clone(), record);
+    }
+
+    pub(crate) fn restore_revision(&mut self, id: KnowledgeObjectId, revision: u64) {
+        self.revisions.insert(id, revision);
     }
 
     fn lifecycle_of(&self, key: &KnowledgeKey) -> KnowledgeLifecycle {
