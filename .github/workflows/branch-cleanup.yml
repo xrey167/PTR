@@ -138,6 +138,8 @@ jobs:
           set -euo pipefail
           open_heads=$(gh pr list --repo "$REPO" --state open --limit 1000 --json headRefName --jq '.[].headRefName')
           archived=0; skipped=0; failed=0
+          # No pathname expansion: a name such as '*' must never match files of the checkout.
+          set -f
           for name in $BRANCHES; do
             if ! git check-ref-format "refs/heads/$name"; then
               echo "skipped (invalid name): $name"; skipped=$((skipped + 1)); continue
@@ -152,23 +154,44 @@ jobs:
             sha=$(git ls-remote --heads origin "refs/heads/$name" | cut -f1)
             if [ -z "$sha" ]; then echo "skipped (no such branch): $name"; skipped=$((skipped + 1)); continue; fi
             tag="refs/tags/archive/$name"
-            existing=$(git ls-remote origin "$tag" | cut -f1)
-            if [ -n "$existing" ] && [ "$existing" != "$sha" ]; then
+            # An annotated tag lists its object and, as <tag>^{}, the commit it points to.
+            tag_lines=$(git ls-remote origin "$tag" "$tag^{}")
+            peeled=$(printf '%s\n' "$tag_lines" | awk -v r="$tag^{}" '$2 == r {print $1}')
+            [ -n "$peeled" ] || peeled=$(printf '%s\n' "$tag_lines" | awk -v r="$tag" '$2 == r {print $1}')
+            if [ -n "$peeled" ] && [ "$peeled" != "$sha" ]; then
               echo "failed (archive tag exists at another commit): $name"; failed=$((failed + 1)); continue
             fi
             if [ "$DRY_RUN" = "true" ]; then
               echo "would archive $name at $sha as archive/$name and delete it"; archived=$((archived + 1)); continue
             fi
             git fetch --quiet --depth=1 origin "$sha"
-            if [ -z "$existing" ] && ! git push origin "$sha:$tag"; then
-              echo "failed (tag push): $name"; failed=$((failed + 1)); continue
+            if [ -z "$peeled" ]; then
+              # One remote transaction: the tag is created (only if still absent) and the branch
+              # deleted (only if still at the archived commit), or neither happens.
+              if git push --atomic --force-with-lease="$tag:" --force-with-lease="refs/heads/$name:$sha" \
+                  origin "$sha:$tag" ":refs/heads/$name"; then
+                echo "archived and deleted: $name ($sha)"; archived=$((archived + 1))
+              else
+                echo "failed (branch moved or tag appeared since the check; nothing changed): $name"; failed=$((failed + 1))
+              fi
+              continue
             fi
-            # The branch is deleted only if it still points at the archived commit.
-            if git push --force-with-lease="refs/heads/$name:$sha" origin ":refs/heads/$name"; then
-              echo "archived and deleted: $name ($sha)"; archived=$((archived + 1))
+            # The archive tag already points at this commit: delete the branch only if it is
+            # still there, then make sure the tag survived; recreate it if something removed it.
+            if ! git push --force-with-lease="refs/heads/$name:$sha" origin ":refs/heads/$name"; then
+              echo "failed (moved since the check, or delete failed; tag kept): $name"; failed=$((failed + 1)); continue
+            fi
+            after=$(git ls-remote origin "$tag" "$tag^{}" | awk -v r="$tag" -v p="$tag^{}" '$2 == p {c=$1} $2 == r && !c {c=$1} END {print c}')
+            if [ "$after" != "$sha" ]; then
+              if git push --force origin "$sha:$tag"; then
+                echo "archived and deleted: $name ($sha; archive tag had changed and was restored)"; archived=$((archived + 1))
+              else
+                echo "failed (branch deleted, archive tag missing; restore with git push origin $sha:refs/heads/$name): $name"; failed=$((failed + 1))
+              fi
             else
-              echo "failed (moved since the check, or delete failed; tag kept): $name"; failed=$((failed + 1))
+              echo "archived and deleted: $name ($sha)"; archived=$((archived + 1))
             fi
           done
+          set +f
           echo "archived: $archived (dry_run=$DRY_RUN); skipped: $skipped; failed: $failed"
           [ "$failed" -eq 0 ]
