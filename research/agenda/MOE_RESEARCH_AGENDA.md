@@ -187,8 +187,19 @@ order, and each event has exactly one outcome:
    seen the effect and did not); **not shown** in every other case, including any interval that
    overlaps the margin. Equivalence rows (a difference must lie *within* a band) are supported when
    both bounds lie inside the band in every seed, refuted when one whole interval lies outside the
-   band in every seed, and not shown otherwise.
+   band in every seed, and not shown otherwise. **Same component in every seed:** when a row has
+   several components (for example exposure, AUC and utility), "in every seed" always applies to
+   one fixed component: a row is refuted only if the *same* component fails in every seed, and
+   failures that rotate between components across seeds are not shown. Support of a multi-component
+   row needs every component in every seed.
 4. **Thesis outcome**, a fixed function of the row outcomes given in each table.
+
+**Two levels of variability.** Within a seed, bounds come from resampling *items* (tasks,
+decisions, canaries, examples) against fixed trained models; they do not cover the variability of
+retraining. Retraining variability is covered by requiring the outcome in every one of the five
+confirmatory seeds, each of which retrains every model of the run. Where a row compares against a
+reference that is itself retrained more than once inside a seed (thesis C's gold), the bound also
+resamples that reference at the model level, as stated there.
 
 **Stage scoping.** A thesis about the OLMoE-class model is supported or refuted **only by its frozen
 GPU confirmatory stage**. A CPU stage is a harness check and a CPU-scoped result: its outcome is a
@@ -249,8 +260,28 @@ of +5 points).
 | Gate | Rule |
 |---|---|
 | V-A1 accounting | generation FLOPs of every arm within ±5% of A3; verifier calls per task exactly the budget; trainable parameters A1, A2, A3 (and A6's router excluded) within ±1%; identical task ids and order across arms (digest recorded) |
-| V-A2 hard counters | in every arm: false accepts, unverified returns and budget violations are 0. In the arms that edit an existing candidate (A1–A6): collateral edits are 0 (JSON: every field not named by a finding pointer byte-identical; arithmetic: not applicable; code: functions not named by a finding unchanged). In A0, which never edits a candidate: every verified candidate is a fresh sample from the base generator under the declared sampling configuration and seed (digest logged), and no candidate is ever modified after sampling |
+| V-A2 hard counters | in every arm: false accepts, unverified returns and budget violations are 0. In the arms that edit an existing candidate (A1–A6): collateral edits are 0, with the permitted edit region defined below. In A0, which never edits a candidate: every verified candidate is a fresh sample from the base generator under the declared sampling configuration and seed (digest logged), and no candidate is ever modified after sampling |
 | V-A3 coverage | at least 2,000 training transitions for every failure role used by A3 |
+| V-A4 collateral-check coverage | in every repair arm and every seed, the collateral check is computable (not exempt, see below) for at least 50% of repair steps; the exempt fraction is reported per arm |
+
+*Permitted edit region (computable from what the verifiers emit and what the dataset declares).*
+`Finding` carries only `code`, `message` and `hard` (`crates/ptr-verifier/src/lib.rs:32-36`); no
+finding names a function, and a code-test failure names only a test id
+(`crates/ptr-verifier/src/code_test.rs:905-919`). The region is therefore defined as follows.
+- **Code tasks:** every code task in the dataset declares its entry function and a list of
+  *frozen* functions that the prompt supplies and the solution must not change; the editable set
+  is the declared entry plus every function the candidate defines that is not frozen. A repair step
+  is collateral-free if every frozen function present in the input candidate is byte-identical in
+  the output. If the input or the output does not parse (for example after `code.syntax`), the
+  step is exempt.
+- **JSON tasks:** the schema-class findings emitted by `json_schema.rs` start their message with
+  the violating JSON pointer as `"<pointer>: <reason>"` (`crates/ptr-verifier/src/json_schema.rs:657-666`).
+  The permitted region of a step is the union of the subtrees at those pointers; every value outside
+  it must be byte-identical (compared on the parsed documents). A step is exempt if any finding of
+  its input report has no parseable pointer: `json.parse`, `json.oversize` and `json.depth` carry
+  none, the pointer may be shown as `(root)`, and a pointer longer than the display limit is
+  shortened with a trailing `...` by `shown` (`json_schema.rs:631-643`).
+- **Arithmetic tasks:** the candidate is a single value; every step is exempt.
 
 *Sensitivity controls (failure: run INVALID for every row that names the control).*
 
@@ -299,7 +330,7 @@ protocol, `tasks.py`, `reward.py`); F007's harness design, matched-call accounti
 plan (`experiments/feedback/F007-vcw-loop/`); F005's manifest as the record to supersede.
 
 **Minimal decisive experiment.** JSON-schema and arithmetic tasks only (deterministic
-verifiers, collateral-edit check is exact), three failure roles (format, value, schema), arms A0,
+verifiers; the collateral check is computable on JSON schema-class repairs), three failure roles (format, value, schema), arms A0,
 A1, A2, A3, A4 and both controls S+ and S0, 5 confirmatory GPU seeds. A2 here is the same parameter
 budget split into two domain experts (arithmetic, JSON), routed by task family. This is the smallest
 set on which every row D1–D4 and both controls they need can be judged. A5 and A6 may follow in a
@@ -413,8 +444,9 @@ resample.
 | Gate | Rule |
 |---|---|
 | V-B1 support | at most 2 of the 8 candidates refused by the positivity rule of `ope.rs`; refused candidates are excluded from every row |
-| V-B2 cohorts | no evaluation-cohort decision overlaps any candidate's training cohort (`OpeError::OverlapsTraining` semantics); cohort size equals the preregistered size |
-| V-B3 logging | every logged decision has a shadow score for every non-refused candidate; μ(S_i \| c_i) recomputed from the stored router input equals the logged value |
+| V-B2 cohorts | no exploration-cohort decision overlaps any candidate's training cohort (`OpeError::OverlapsTraining` semantics); the on-policy evaluation contexts are disjoint from the training and exploration cohorts; every cohort and the evaluation set have their preregistered sizes |
+| V-B3 logging | every logged decision has a shadow score for every non-refused candidate; μ(S_i \| c_i) recomputed from the stored router input equals the logged value; r(c_i, S_base) (for DB4 and SB0) is recorded for every logged decision |
+| V-B4 comparators and truth | V is computed for every non-refused candidate on the full evaluation set; the DM comparator is fitted on the training cohort only (digest of its training decisions recorded); the load-balance proxy is computed on the full evaluation set |
 
 *Sensitivity controls (failure: run INVALID for every row that names the control).*
 
@@ -520,9 +552,13 @@ exposure(X) − exposure(G), ΔAUC(X) = AUC(X) − AUC(G), Δutil(X) = utility(X
 **Bounds.** One-sided 95% percentile bounds from 2,000 paired bootstrap replicates per seed. Each
 replicate resamples items (canaries for exposure; member and non-member examples, stratified, for
 AUC; utility items within each retained shard), using the same resampled items for the arm and for
-the gold, and **draws the gold value of every resampled item from {G1, G2} with equal probability**
-instead of using the mean, so that the variability between gold retrains enters every bound. The
-statistic of a row is computed from the same replicate for all its components.
+the gold. In addition, each replicate **draws one whole gold retrain, G1 or G2 with equal
+probability, and uses it for every item of that replicate** (a model-level resample) instead of the
+per-item mean, so that the variability between gold retrains enters every bound. With only two gold
+retrains this model-level component is coarse: it can only reflect the observed spread of two
+retrains, not the full retraining distribution. The gold-agreement gate V-C1 is the guard that keeps
+that spread small relative to every band. The statistic of a row is computed from the same
+replicate for all its components.
 
 **Decision structure (proposed thresholds, frozen at preregistration).**
 
@@ -530,7 +566,7 @@ statistic of a row is computed from the same replicate for all its components.
 
 | Gate | Rule |
 |---|---|
-| V-C1 gold precision (checked first) | the two gold retrains of every schedule and seed agree within 0.5 bits of exposure and 0.02 AUC; otherwise the whole run is INVALID and a successor must preregister a higher-precision gold (more gold seeds with the tolerance set from their band, or a larger canary and member set) |
+| V-C1 gold precision (checked first) | the two gold retrains of every schedule and seed agree within 0.5 bits of exposure, 0.02 AUC and 0.5 utility points (half the ±1.0-point MATCH band); otherwise the whole run is INVALID and a successor must preregister a higher-precision gold (more gold seeds with the tolerance set from their band, or a larger canary and member set) |
 | V-C2 integrity | canary and member insertion manifests (counts, digests) match for every arm; members and non-members are disjoint and never trained on by G; compute is the analytic training FLOPs counted by the harness, and N_s's compute is within ±5% of L_s's |
 | V-C3 negative control | frozen-shared removal U: upper bound of Δexp ≤ 0.5 bits and both bounds of ΔAUC within ±0.03 and of Δutil within ±1.0 point. Under a correct harness this holds by construction: with frozen shared layers and per-expert router embeddings, the retained experts of U are trained with the same seeds as those of G1 and never see the revoked shard, so U equals G1 up to kernel nondeterminism, and V-C1 bounds the distance from G1 to the combined gold. A failure means the harness is biased |
 
@@ -552,7 +588,7 @@ descendant is reported only.*
 | Row | Quantity | Margin / band | Needs | Supported when | Refuted when |
 |---|---|---|---|---|---|
 | LEAK(s) | Δexp(U_s) and ΔAUC(U_s) | Δexp ≥ 2.0 bits **and** ΔAUC ≥ 0.05 | P-exp, P-mia | both lower bounds clear their margins in every seed | both upper bounds lie below their margins in every seed |
-| MATCH(L, s) | Δexp(L_s), ΔAUC(L_s), Δutil(L_s) | Δexp ≤ 0.5 bits; ΔAUC within ±0.03; Δutil within ±1.0 point | P-exp, P-mia | upper bound of Δexp ≤ 0.5 and both bounds of ΔAUC and of Δutil inside their bands, in every seed | in every seed, the lower bound of Δexp > 0.5, or the whole ΔAUC interval or the whole Δutil interval lies outside its band |
+| MATCH(L, s) | Δexp(L_s), ΔAUC(L_s), Δutil(L_s) | Δexp ≤ 0.5 bits; ΔAUC within ±0.03; Δutil within ±1.0 point | P-exp, P-mia | upper bound of Δexp ≤ 0.5 and both bounds of ΔAUC and of Δutil inside their bands, in every seed | the same component fails in every seed: either the lower bound of Δexp > 0.5 in every seed, or the whole ΔAUC interval lies outside ±0.03 in every seed, or the whole Δutil interval lies outside ±1.0 in every seed; failures that rotate between components across seeds are not shown |
 | COST(L, s) | compute(L_s) / compute(G1_s): training FLOPs of the closure retrain over those of one full gold retrain of schedule s, counted by the harness (no interval) | ≤ 0.50 | none | ratio ≤ 0.50 in every seed | ratio > 0.50 in every seed (labelled **K-C2** when ≥ 1.0 in every seed: the closure cascades to a full retrain); mixed seeds are not shown |
 | MATCH(N, s) | the MATCH criteria applied to N_s at L_s's compute | as MATCH(L, s) | P-exp, P-mia | as MATCH(L, s), for N_s | as MATCH(L, s), for N_s |
 
