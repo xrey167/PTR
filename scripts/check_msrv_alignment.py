@@ -6,16 +6,16 @@ under a root that carries a `clippy.toml` is linted at the *root's* MSRV, howeve
 much newer its own is, and every lint whose suggestion needs a newer compiler is
 suppressed.
 
-`model/burn-a0` requires 1.95 and was linted at the root's 1.85.0 for as long as
-it existed. Clippy is not silent about it — it prints "the MSRV in `clippy.toml`
+`model/burn-a0` requires 1.95 and was linted at the root's MSRV (then 1.85.0) until
+this checker existed. Clippy is not silent about it — it prints "the MSRV in `clippy.toml`
 and `Cargo.toml` differ" on every run — but the message is not a named lint, so
 `-D warnings` cannot promote it and the job exits 0. A printed warning nothing
 enforces is why this checker exists.
 
 Two details decide whether such a check works at all, and both are tested:
 
-* it compares **semantically**, because the root declares `rust-version = "1.85"`
-  against `msrv = "1.85.0"` and clippy treats those as the same version. A string
+* it compares **semantically**, because the root declares `rust-version = "1.99"`
+  against `msrv = "1.99.0"` and clippy treats those as the same version. A string
   comparison fails on this repository's own root workspace on day one;
 * it resolves `rust-version.workspace = true`, which every crate and both binaries
   use, so the comparison is against the version that actually governs the package.
