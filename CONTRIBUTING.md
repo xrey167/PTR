@@ -75,3 +75,9 @@ branch-cleanup → Run workflow): with `dry_run` on it lists every branch whose 
 `main`, with `dry_run` off it deletes them. `main` and the head branches of open pull requests
 are never deleted, no branch with a commit missing from `main` is, and every deletion is a
 compare-and-delete on the checked commit, so a branch pushed to in the meantime survives.
+
+To retire branches whose work is *not* in `main` (abandoned or superseded work), give their
+names in `archive_branches`: each one is first preserved as the tag `archive/<name>` at its
+current tip and only then deleted, again as a compare-and-delete. `main`, open pull request heads
+and names that do not exist are skipped; `dry_run` lists what would happen. Restore a branch with
+`git push origin archive/<name>:refs/heads/<name>`.

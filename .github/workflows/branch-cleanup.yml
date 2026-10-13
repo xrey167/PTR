@@ -3,6 +3,9 @@ name: branch-cleanup
 # - pull_request closed: the head branch of a same-repository PR merged into main is deleted.
 # - workflow_dispatch: every branch whose tip is an ancestor of main is listed and, with
 #   dry_run=false, deleted. main and the head branches of open PRs are never touched.
+# - workflow_dispatch with archive_branches: each named branch (not main, not an open PR head)
+#   is first preserved as the tag archive/<name> at its current tip and then deleted, whether or
+#   not main contains it. Only the branches named in the input are touched.
 # Safety: a branch is deleted only when the commit that was checked is contained in main, and
 # the deletion is a compare-and-delete (git push --force-with-lease=<ref>:<checked sha>), so a
 # branch that moves in between is kept. Branch names never go into an API URL and reach the
@@ -16,6 +19,10 @@ on:
         description: "List the branches only (true) or delete them (false)"
         type: boolean
         default: true
+      archive_branches:
+        description: "Whitespace-separated branch names to archive as tags archive/<name> and delete (empty: delete merged branches instead)"
+        type: string
+        default: ""
 permissions:
   contents: read
 concurrency:
@@ -64,7 +71,7 @@ jobs:
           git push --force-with-lease="$ref:$HEAD_SHA" origin ":$ref"
           echo "deleted: $HEAD_REF"
   merged-into-main:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.archive_branches == ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -107,4 +114,61 @@ jobs:
             fi
           done < <(git for-each-ref --format='%(objectname) %(refname)' refs/remotes/origin)
           echo "contained in $DEFAULT: $contained (dry_run=$DRY_RUN); kept: $kept; failed: $failed"
+          [ "$failed" -eq 0 ]
+  archive-and-delete:
+    if: github.event_name == 'workflow_dispatch' && inputs.archive_branches != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: true
+      - name: Archive the named branches as tags, then delete them
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          BRANCHES: ${{ inputs.archive_branches }}
+        run: |
+          set -euo pipefail
+          open_heads=$(gh pr list --repo "$REPO" --state open --limit 1000 --json headRefName --jq '.[].headRefName')
+          archived=0; skipped=0; failed=0
+          for name in $BRANCHES; do
+            if ! git check-ref-format "refs/heads/$name"; then
+              echo "skipped (invalid name): $name"; skipped=$((skipped + 1)); continue
+            fi
+            if [ "$name" = "$DEFAULT" ]; then
+              echo "skipped (default branch): $name"; skipped=$((skipped + 1)); continue
+            fi
+            if printf '%s\n' "$open_heads" | grep -Fxq -- "$name"; then
+              echo "skipped (open PR): $name"; skipped=$((skipped + 1)); continue
+            fi
+            # ls-remote fails on any transport or auth error; only an empty answer means gone.
+            sha=$(git ls-remote --heads origin "refs/heads/$name" | cut -f1)
+            if [ -z "$sha" ]; then echo "skipped (no such branch): $name"; skipped=$((skipped + 1)); continue; fi
+            tag="refs/tags/archive/$name"
+            existing=$(git ls-remote origin "$tag" | cut -f1)
+            if [ -n "$existing" ] && [ "$existing" != "$sha" ]; then
+              echo "failed (archive tag exists at another commit): $name"; failed=$((failed + 1)); continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "would archive $name at $sha as archive/$name and delete it"; archived=$((archived + 1)); continue
+            fi
+            git fetch --quiet --depth=1 origin "$sha"
+            if [ -z "$existing" ] && ! git push origin "$sha:$tag"; then
+              echo "failed (tag push): $name"; failed=$((failed + 1)); continue
+            fi
+            # The branch is deleted only if it still points at the archived commit.
+            if git push --force-with-lease="refs/heads/$name:$sha" origin ":refs/heads/$name"; then
+              echo "archived and deleted: $name ($sha)"; archived=$((archived + 1))
+            else
+              echo "failed (moved since the check, or delete failed; tag kept): $name"; failed=$((failed + 1))
+            fi
+          done
+          echo "archived: $archived (dry_run=$DRY_RUN); skipped: $skipped; failed: $failed"
           [ "$failed" -eq 0 ]
