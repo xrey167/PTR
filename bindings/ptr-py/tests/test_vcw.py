@@ -120,6 +120,23 @@ class RouterTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             ptr_py.classify_report(good_report(), required="unverified")  # level is fixed
 
+    def test_a_route_refused_for_capacity_spends_no_nonce(self):
+        limit = 65_536
+
+        def fill_settle_route(refuse_once):
+            router = new_router()
+            first = None
+            for i in range(limit):
+                decision = router.route(bad_report(), request_id=f"r{i}")
+                first = first if first is not None else decision["routes"][0]["decision_id"]
+            if refuse_once:
+                with self.assertRaises(ptr_py.PtrRouterError):
+                    router.route(bad_report(), request_id="over")
+            router.settle(first, "7")
+            return router.route(bad_report(), request_id="after")["routes"][0]["nonce"]
+
+        self.assertEqual(fill_settle_route(True), fill_settle_route(False))
+
     def test_propensity_equals_support_entry(self):
         router = new_router()
         for i in range(40):
@@ -409,12 +426,23 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaises(ptr_py.PtrWorkspaceError):
             ws.subscribe("p")
 
+    def test_unsubscribe_frees_the_place_so_churn_never_exhausts_the_limit(self):
+        ws = ptr_py.BoundedWorkspace("arithmetic", "1")
+        for round_ in range(20):
+            ids = [ws.subscribe(f"pod-{n}") for n in range(8)]
+            for subscriber in ids:
+                ws.unsubscribe(subscriber)
+            with self.assertRaises(ptr_py.PtrWorkspaceError):
+                ws.receive(ids[0])
+        with self.assertRaises(ptr_py.PtrWorkspaceError):
+            ws.unsubscribe(ids[0])
+
     def test_no_way_to_change_how_proposals_are_judged(self):
         public = {name for name in dir(ptr_py.BoundedWorkspace) if not name.startswith("_")}
         self.assertEqual(
             public,
-            {"submit", "subscribe", "run_cycle", "receive", "revision", "occupied", "pending", "slots",
-             "held_texts"},
+            {"submit", "subscribe", "unsubscribe", "run_cycle", "receive", "revision", "occupied",
+             "pending", "slots", "held_texts"},
         )
         ws = ptr_py.BoundedWorkspace("arithmetic", "1")
         for name in ("slots", "verifier", "required", "level", "config"):

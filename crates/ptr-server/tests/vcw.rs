@@ -824,6 +824,59 @@ fn a_pod_id_that_is_another_projects_capsule_is_refused() {
     }
 }
 
+#[tokio::test]
+async fn an_active_scope_of_another_project_under_the_service_name_is_not_adopted() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .create_scope(
+            ExecutionScope {
+                id: ScopeId::from("vcw-scope-vcw"),
+                parent: None,
+                session: SessionId::from("other"),
+                project: ProjectId::from("notes"),
+                created_at: Timestamp(1),
+                deadline: None,
+                state: ScopeState::Created,
+                cancellation_requested: false,
+            },
+            ScopeLeaseBinding::default(),
+        )
+        .unwrap();
+    let (_state, app) = server_from(runtime, &enabled());
+    // Adopting the foreign scope would make every admission fail with a project mismatch.
+    let (status, body) = post(&app, &arithmetic("own-scope")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["outcome"], "verified");
+}
+
+#[test]
+fn a_refusal_late_in_the_roster_commits_none_of_the_earlier_pods() {
+    let service = VcwService::from_config(&enabled(), &parts()).unwrap();
+    let last = service.pods().last().unwrap().0.clone();
+    assert!(service.pods().len() > 1);
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("notes"),
+            capsule: CapsuleId::from(last.0.as_str()),
+            generation: Generation(1),
+        })
+        .unwrap();
+    assert!(matches!(
+        service.install(&mut runtime),
+        Err(VcwBuildError::PodIdCollision { .. })
+    ));
+    let committed_for_vcw = runtime
+        .committed_events()
+        .iter()
+        .filter(|e| {
+            matches!(&e.event, LedgerEvent::CapsuleCommitted { project, .. }
+                if project == service.project())
+        })
+        .count();
+    assert_eq!(committed_for_vcw, 0);
+}
+
 #[test]
 fn a_configured_generation_that_differs_from_the_live_one_is_refused() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();

@@ -254,6 +254,16 @@ impl PyFindingRouter {
     }
 }
 
+/// The most decisions routing `report` can leave pending: one per distinct hard code of a
+/// repair, one proposer for a fallback, none for an accept.
+fn max_records(report: &ptr_verifier::VerificationReport) -> usize {
+    match classify(report, REQUIRED, &RouterLimits::default()) {
+        ReportClass::Accept(_) => 0,
+        ReportClass::Repair(codes) => codes.len(),
+        ReportClass::Fallback(_) => 1,
+    }
+}
+
 fn router_error(error: impl std::fmt::Display) -> PyErr {
     PtrRouterError::new_err(error.to_string())
 }
@@ -368,6 +378,20 @@ impl PyFindingRouter {
     ) -> PyResult<Bound<'py, PyDict>> {
         let id = RequestId::from(request_id);
         let digest: [u8; 32] = Sha256::digest(request_id.as_bytes()).into();
+        // Capacity is checked before the router samples: routing spends a nonce, so a refusal
+        // after it would make a retry draw differently. The state lock is held across routing
+        // so no other call can take the room in between.
+        let mut state = self.state();
+        if state
+            .pending
+            .len()
+            .saturating_add(max_records(&report.inner))
+            > MAX_PENDING
+        {
+            return Err(PtrRouterError::new_err(
+                "too many routing decisions await a candidate; settle some first",
+            ));
+        }
         let outcome = self
             .router
             .route(&FindingRouteRequest {
@@ -378,13 +402,7 @@ impl PyFindingRouter {
                 eligibility: &self.eligibility,
             })
             .map_err(router_error)?;
-        let mut state = self.state();
         let records = outcome.records();
-        if state.pending.len().saturating_add(records.len()) > MAX_PENDING {
-            return Err(PtrRouterError::new_err(
-                "too many routing decisions await a candidate; settle some first",
-            ));
-        }
         let mut ids: BTreeMap<*const FindingRouteRecord, usize> = BTreeMap::new();
         for record in records {
             let id = state.next_id;
