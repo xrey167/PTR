@@ -136,6 +136,8 @@ MATURIN_VERSION="$(sed -n 's/^MATURIN ?= *//p' Makefile | head -n1)"
 run uv pip install --python "$VENV/bin/python" "maturin==${MATURIN_VERSION:-1.15.0}"
 note "maturin develop runs with $VENV active so the module lands in that venv"
 if [ "$DRY_RUN" -eq 1 ]; then
+  # The dry run prints the command; $PATH stays literal on purpose.
+  # shellcheck disable=SC2016
   printf '  + VIRTUAL_ENV=%s/%s PATH=%s/%s/bin:$PATH maturin develop --uv --locked -m bindings/ptr-py/Cargo.toml\n' \
     "$ROOT" "$VENV" "$ROOT" "$VENV"
 else
