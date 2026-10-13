@@ -1,4 +1,4 @@
-# 37 — Crate layering
+# 41 — Crate layering
 
 Status: implemented as a CI check; the layer table is derived from the real dependency graph.
 

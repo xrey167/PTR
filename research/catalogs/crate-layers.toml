@@ -1,6 +1,6 @@
 # Crate layering for the root workspace, enforced by `scripts/check_crate_layering.py`.
 #
-# Rules (see docs/architecture/37-crate-layering.md):
+# Rules (see docs/architecture/41-crate-layering.md):
 #   1. A crate may depend (normal or build, optional included) only on crates of the
 #      same or a lower rank. `dev-dependencies` are exempt.
 #   2. A backend crate may be a direct dependency only of its owners.
