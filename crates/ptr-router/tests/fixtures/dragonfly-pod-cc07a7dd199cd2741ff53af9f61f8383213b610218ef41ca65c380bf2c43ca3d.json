@@ -1,0 +1,29 @@
+{
+  "cluster_key": "a0b2d2b88f74b1768cb37184a1805f72b9fd82ea848c2d0bffb5c1e4476d024d",
+  "digest": "54ef1f8b9d87a41f551396c0dd1650f9fb6b6fe91570df22ac6476c2d93a39b6",
+  "dims": 32,
+  "encoder": {
+    "id": "hashed-bow-32",
+    "revision": "1"
+  },
+  "gate": {
+    "alias_count": 2,
+    "alias_min_permille": 999,
+    "alias_threshold_permille": 800,
+    "negative_count": 14,
+    "negative_reject_permille": 0,
+    "negative_threshold_permille": 900,
+    "status": "not-activated"
+  },
+  "generation": 3,
+  "kind": "dragonfly-pod-address",
+  "pod_id": "supplier-kowalski",
+  "pod_identity": "pod:cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d",
+  "schema": 1,
+  "scoring": {
+    "cosine_weight": 12.0,
+    "metadata_weight": 3.0
+  },
+  "weights_file": "dragonfly-pod-cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d.bin",
+  "weights_sha256": "cf0881617c0a17f975e5f8504eb5fbf978e6307d8f38c621419510b8e61e0d70"
+}

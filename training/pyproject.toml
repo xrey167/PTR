@@ -31,10 +31,18 @@ moe = [
   "accelerate>=1.15.0,<2",
 ]
 
+# Production encoder for the Dragonfly pod-address trainer (ptr_training.dragonfly). The trainer
+# itself is pure Python and its tests use a deterministic stand-in encoder, so this extra is only
+# needed to train against a real sentence encoder.
+dragonfly = [
+  "sentence-transformers>=3.0,<6",
+]
+
 [project.scripts]
 ptr-dataset-validate = "ptr_training.validate_dataset:main"
 ptr-dataset-manifest = "ptr_training.make_manifest:main"
 ptr-train-run = "ptr_training.run:main"
+ptr-dragonfly-train = "ptr_training.dragonfly.train:main"
 
 [build-system]
 requires = ["setuptools>=68"]

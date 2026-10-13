@@ -1,0 +1,29 @@
+{
+  "cluster_key": "76d375c4bcf6a22fdca10c5c74d5b04302685d5995760fbc2fb1f3e793cb59ec",
+  "digest": "d6c77dca0e1417751b4e44e8a8ff00dc1eea661edf7ad9a4844b77699e97d892",
+  "dims": 32,
+  "encoder": {
+    "id": "hashed-bow-32",
+    "revision": "1"
+  },
+  "gate": {
+    "alias_count": 2,
+    "alias_min_permille": 998,
+    "alias_threshold_permille": 800,
+    "negative_count": 14,
+    "negative_reject_permille": 1000,
+    "negative_threshold_permille": 900,
+    "status": "activated"
+  },
+  "generation": 3,
+  "kind": "dragonfly-pod-address",
+  "pod_id": "supplier-mueller",
+  "pod_identity": "pod:e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1",
+  "schema": 1,
+  "scoring": {
+    "cosine_weight": 12.0,
+    "metadata_weight": 3.0
+  },
+  "weights_file": "dragonfly-pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.bin",
+  "weights_sha256": "c4ee7793a8bc914eac3e4854c0ac1150f7bbb938a66e8df1e6fed637263dca58"
+}
