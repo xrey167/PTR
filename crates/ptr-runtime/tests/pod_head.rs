@@ -83,21 +83,21 @@ fn a_stale_expected_head_is_refused_and_appends_nothing() {
     );
     assert_eq!(
         stale,
-        Err(RuntimeError::PodHead(PodHeadError::Conflict {
+        Err(RuntimeError::PodHead(Box::new(PodHeadError::Conflict {
             identity: identity(),
             expected: Some(revision("reader", 1)),
             actual: Some(revision("reader", 2)),
-        }))
+        })))
     );
     // A writer that believes there is no head yet.
     let first = advance(&mut runtime, None, revision("reader", 3));
     assert_eq!(
         first,
-        Err(RuntimeError::PodHead(PodHeadError::Conflict {
+        Err(RuntimeError::PodHead(Box::new(PodHeadError::Conflict {
             identity: identity(),
             expected: None,
             actual: Some(revision("reader", 2)),
-        }))
+        })))
     );
     assert_eq!(runtime.committed_events().len(), committed);
     assert_eq!(runtime.pod_head(&identity()), Some(&revision("reader", 2)));
@@ -114,11 +114,13 @@ fn the_generation_must_rise_strictly() {
                 Some(revision("reader", 2)),
                 revision("reader", generation)
             ),
-            Err(RuntimeError::PodHead(PodHeadError::NotAdvancing {
-                identity: identity(),
-                current: Generation(2),
-                requested: Generation(generation),
-            }))
+            Err(RuntimeError::PodHead(Box::new(
+                PodHeadError::NotAdvancing {
+                    identity: identity(),
+                    current: Generation(2),
+                    requested: Generation(generation),
+                }
+            )))
         );
     }
     assert_eq!(runtime.pod_head(&identity()), Some(&revision("reader", 2)));
@@ -138,11 +140,13 @@ fn a_revoked_generation_cannot_become_the_head() {
         .unwrap();
     assert_eq!(
         advance(&mut runtime, Some(revision("reader", 1)), candidate),
-        Err(RuntimeError::PodHead(PodHeadError::RevokedGeneration {
-            identity: identity(),
-            target,
-            generation: Generation(2),
-        }))
+        Err(RuntimeError::PodHead(Box::new(
+            PodHeadError::RevokedGeneration {
+                identity: identity(),
+                target,
+                generation: Generation(2),
+            }
+        )))
     );
     assert_eq!(runtime.pod_head(&identity()), Some(&revision("reader", 1)));
 }
@@ -216,10 +220,11 @@ fn replay_refuses_a_log_whose_head_move_does_not_match_the_head() {
     let mut duplicate = forged[0].clone();
     duplicate.index = ptr_types::CommitIndex(2);
     forged.push(duplicate);
-    assert!(matches!(
-        PtrRuntime::replay(PtrConfig::default(), &forged),
-        Err(RuntimeError::PodHead(PodHeadError::Conflict { .. }))
-    ));
+    let Err(RuntimeError::PodHead(error)) = PtrRuntime::replay(PtrConfig::default(), &forged)
+    else {
+        panic!("replay accepted a head move that names no head while one exists");
+    };
+    assert!(matches!(*error, PodHeadError::Conflict { .. }));
 }
 
 #[test]

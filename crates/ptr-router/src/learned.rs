@@ -145,8 +145,9 @@ pub enum RepresentationError {
     GateInconsistent,
     InvalidClusterKey,
     EncoderMismatch {
-        expected: EncoderRef,
-        actual: EncoderRef,
+        // Boxed so that `RouteError`, which wraps this, stays small.
+        expected: Box<EncoderRef>,
+        actual: Box<EncoderRef>,
     },
     /// The weights file does not have `(dims + 1) * 4` bytes.
     WeightsLength {
@@ -263,8 +264,10 @@ impl PodRepresentation {
             return Err(RepresentationError::WeightsDigestMismatch);
         }
         let mut values = weights
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk));
         let z: Vec<f32> = values.by_ref().take(dims).collect();
         let bias = values.next().ok_or_else(|| malformed("weights"))?;
 
@@ -524,7 +527,7 @@ fn hex_digest(value: &str) -> Option<[u8; 32]> {
         _ => None,
     };
     let mut digest = [0u8; 32];
-    for (slot, pair) in digest.iter_mut().zip(bytes.chunks_exact(2)) {
+    for (slot, pair) in digest.iter_mut().zip(bytes.as_chunks::<2>().0) {
         *slot = (nibble(pair[0])? << 4) | nibble(pair[1])?;
     }
     Some(digest)
@@ -695,8 +698,8 @@ impl RepresentationStore {
         }
         if representation.encoder() != &self.encoder {
             return Err(invalid(RepresentationError::EncoderMismatch {
-                expected: self.encoder.clone(),
-                actual: representation.encoder().clone(),
+                expected: Box::new(self.encoder.clone()),
+                actual: Box::new(representation.encoder().clone()),
             }));
         }
         if let Some(dims) = self.dims() {

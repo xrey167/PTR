@@ -495,7 +495,7 @@ pub enum RuntimeError {
     /// The taint registry refused a change, a replayed record or a restored state (fail closed).
     KvTaint(kv_taint::KvTaintError),
     /// A pod head move or a stored head was refused (see [`pod_head::PodHeadError`]).
-    PodHead(pod_head::PodHeadError),
+    PodHead(Box<pod_head::PodHeadError>),
     /// A learned pod representation could not be bound to its pod.
     PodRepresentation(pod_representation::PodRepresentationError),
     PodUnavailable {

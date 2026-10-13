@@ -72,8 +72,9 @@ impl PodHeads {
             let Some(identity) = key.strip_prefix(POD_HEAD_PREFIX) else {
                 break;
             };
-            let malformed =
-                || RuntimeError::PodHead(PodHeadError::MalformedEntry { key: key.clone() });
+            let malformed = || {
+                RuntimeError::PodHead(Box::new(PodHeadError::MalformedEntry { key: key.clone() }))
+            };
             let address = PodRevisionAddress::parse(value).map_err(|_| malformed())?;
             if identity.is_empty() {
                 return Err(malformed());
@@ -159,26 +160,28 @@ impl PtrRuntime {
         new: &PodRevisionAddress,
     ) -> Result<(), RuntimeError> {
         let invalid = || {
-            RuntimeError::PodHead(PodHeadError::InvalidAddress {
+            RuntimeError::PodHead(Box::new(PodHeadError::InvalidAddress {
                 identity: identity.clone(),
-            })
+            }))
         };
         new.validate().map_err(|_| invalid())?;
         let current = self.pod_heads.get(identity);
         if current != old {
-            return Err(RuntimeError::PodHead(PodHeadError::Conflict {
+            return Err(RuntimeError::PodHead(Box::new(PodHeadError::Conflict {
                 identity: identity.clone(),
                 expected: old.cloned(),
                 actual: current.cloned(),
-            }));
+            })));
         }
         if let Some(old) = old {
             if new.generation <= old.generation {
-                return Err(RuntimeError::PodHead(PodHeadError::NotAdvancing {
-                    identity: identity.clone(),
-                    current: old.generation,
-                    requested: new.generation,
-                }));
+                return Err(RuntimeError::PodHead(Box::new(
+                    PodHeadError::NotAdvancing {
+                        identity: identity.clone(),
+                        current: old.generation,
+                        requested: new.generation,
+                    },
+                )));
             }
         }
         let target = pod_lifecycle_target(new);
@@ -186,11 +189,13 @@ impl PtrRuntime {
             .revoked_generations
             .contains(&(target.clone(), new.generation))
         {
-            return Err(RuntimeError::PodHead(PodHeadError::RevokedGeneration {
-                identity: identity.clone(),
-                target,
-                generation: new.generation,
-            }));
+            return Err(RuntimeError::PodHead(Box::new(
+                PodHeadError::RevokedGeneration {
+                    identity: identity.clone(),
+                    target,
+                    generation: new.generation,
+                },
+            )));
         }
         Ok(())
     }

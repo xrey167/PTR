@@ -46,7 +46,7 @@ impl ClusterKey {
             _ => byte - b'a' + 10,
         };
         let mut digest = [0u8; 32];
-        for (slot, pair) in digest.iter_mut().zip(bytes.chunks_exact(2)) {
+        for (slot, pair) in digest.iter_mut().zip(bytes.as_chunks::<2>().0) {
             *slot = (nibble(pair[0]) << 4) | nibble(pair[1]);
         }
         Ok(Self(digest))
