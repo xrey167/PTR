@@ -102,6 +102,12 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(cli(src, "join", str(out)), 1)
         self.assertFalse((out / "repo.bundle").exists())
 
+    def test_parts_join_in_numeric_order(self):
+        names = [ptr_bundle.part_name(i) for i in (1000, 101, 10, 2, 0)]
+        ordered = sorted(names, key=lambda n: (n != ptr_bundle.BUNDLE_NAME, ptr_bundle.part_number(n)))
+        self.assertEqual(ordered, [ptr_bundle.part_name(i) for i in (0, 2, 10, 101, 1000)])
+        self.assertTrue(ptr_bundle.expected_name(ptr_bundle.part_name(1000)))
+
     def test_join_rejects_paths_outside_the_directory(self):
         out = self.root / "out"
         out.mkdir()

@@ -109,6 +109,21 @@ class PublishRemoteTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(git(self.src, 'config', 'remote.gitlab.url'), str(self.target))
 
+    def test_push_url_other_than_the_checked_url_is_refused(self):
+        self.assertEqual(self.run_script('--yes').returncode, 0)
+        before = git(self.target, 'for-each-ref')
+        git(self.src, 'config', 'remote.gitlab.pushurl', str(self.origin))
+        proc = self.run_script('--yes', url=False)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn('pushurl', proc.stderr)
+        self.assertEqual(git(self.target, 'for-each-ref'), before)
+        git(self.src, 'config', '--replace-all', 'remote.gitlab.pushurl',
+            'https://user:tok@gitlab.com/g/r.git')
+        proc = self.run_script('--yes', url=False)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn('credentials', proc.stderr)
+        self.assertNotIn('tok', proc.stdout)
+
     def test_diverged_branch_rejected_and_not_forced(self):
         git(self.other, 'checkout', '-q', 'main')
         git(self.other, 'checkout', '-q', '--orphan', 'alt')

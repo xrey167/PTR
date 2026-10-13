@@ -154,6 +154,25 @@ def ensure_remote(repo: str, name: str, url: str | None, set_url: bool, dry_run:
     return url
 
 
+def check_push_urls(repo: str, name: str, url: str) -> None:
+    """Refuse unless `git push` would publish to exactly `url`.
+
+    `remote.<name>.pushurl` replaces the URL for pushing and several push URLs are all used, so
+    checking and showing only `remote.<name>.url` could confirm one server while the push goes
+    to another or to several. Every effective push URL is credential-checked first."""
+    proc = git(repo, 'remote', 'get-url', '--push', '--all', name, check=False)
+    if proc.returncode != 0:
+        return  # the remote is not created yet (dry run): its push URL is `url` itself
+    push_urls = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    for push_url in push_urls:
+        check_url(push_url)
+    if push_urls != [url]:
+        raise PublishError(
+            f'remote {name!r} pushes to {push_urls!r}, not only to {url!r}; remove '
+            f'remote.{name}.pushurl (git config --unset-all remote.{name}.pushurl) or choose '
+            'another --name')
+
+
 def parse_porcelain(stdout: str) -> list[tuple[str, str, str]]:
     """Return (status, destination ref, detail) per ref line of `git push --porcelain`."""
     results = []
@@ -227,6 +246,7 @@ def run(args: argparse.Namespace) -> int:
     if not refs and not args.tags:
         raise PublishError(f'no branches match {patterns} in refs/heads or refs/remotes/origin')
     url = ensure_remote(repo, args.name, args.remote_url, args.set_url, args.dry_run)
+    check_push_urls(repo, args.name, url)
     cmd = ['git', 'push', '--porcelain', args.name, *[r.refspec for r in refs]]
     if args.tags:
         cmd.append('--tags')

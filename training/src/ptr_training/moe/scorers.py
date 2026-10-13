@@ -26,7 +26,18 @@ from fractions import Fraction
 
 # ---------------------------------------------------------------------------- GSM8K
 
-_NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?|-?\.\d+")
+# A numeric token is a maximal run of digits, commas and points (with an optional sign). It is
+# read only when it is a well-formed number: commas only as thousands separators (1,234,567),
+# at most one decimal point. One trailing `.` or `,` is sentence punctuation and is dropped.
+# A malformed token such as `1,2` or `1,,2` is not a number, so it can never match a reference.
+_TOKEN = re.compile(r"-?[\d.,]*\d[\d.,]*")
+_WELL_FORMED = re.compile(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|-?\.\d+")
+
+
+def _number_token(token: str) -> str | None:
+    if token[-1] in ".,":
+        token = token[:-1]
+    return token if _WELL_FORMED.fullmatch(token) else None
 
 
 def _to_fraction(token: str) -> Fraction | None:
@@ -47,10 +58,11 @@ def gsm8k_extract(text: str) -> Fraction | None:
     """Final numeric answer of a generation: the number after `####` if present, else the last
     number in the text."""
     region = text.rsplit("####", 1)[1] if "####" in text else text
-    found = _NUMBER.findall(region)
+    found = _TOKEN.findall(region)
     if not found:
         return None
-    return _to_fraction(found[0] if "####" in text else found[-1])
+    token = _number_token(found[0] if "####" in text else found[-1])
+    return None if token is None else _to_fraction(token)
 
 
 def score_gsm8k(generation: str, reference_final: str) -> bool:
@@ -260,7 +272,8 @@ def parse_call(text: str) -> tuple[str, dict] | None:
         return None
     kwargs = {}
     for kw in node.keywords:
-        if kw.arg is None:
+        # `**x` and a repeated keyword are invalid calls (the latter is a SyntaxError in Python).
+        if kw.arg is None or kw.arg in kwargs:
             return None
         try:
             kwargs[kw.arg] = ast.literal_eval(kw.value)

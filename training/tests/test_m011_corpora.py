@@ -148,6 +148,17 @@ class ScorerTests(unittest.TestCase):
         )
         self.assertFalse(scorers.run_humaneval(r["prompt"], net, r["test"], r["entry_point"]))
 
+    def test_gsm8k_reads_only_well_formed_numbers(self):
+        self.assertTrue(scorers.score_gsm8k("#### 1,234", "1234"))
+        self.assertTrue(scorers.score_gsm8k("The answer is 12.", "12"))
+        for malformed in ("#### 1,2", "#### 1,,2", "#### 12,34", "#### 1.2.3"):
+            self.assertIsNone(scorers.gsm8k_extract(malformed), malformed)
+            self.assertFalse(scorers.score_gsm8k(malformed, "12"), malformed)
+
+    def test_bfcl_rejects_a_repeated_keyword(self):
+        self.assertIsNone(scorers.parse_call("math.double(number=999, number=2)"))
+        self.assertEqual(scorers.parse_call("f(a=1, b=2)"), ("f", {"a": 1, "b": 2}))
+
     def test_humaneval_refuses_without_a_sandbox_or_an_opt_in(self):
         r = corpora.fixture_partitions()["humaneval"].train[0].reference
         with mock.patch.object(scorers, "_bwrap_usable", return_value=False), mock.patch.dict(
