@@ -15,9 +15,10 @@ in one rack, 18 compute trays of 4 GPUs and 2 CPUs each plus 9 NVLink switch tra
 GPU, LPDDR5X on every CPU, NVLink 6 as the scale-up fabric inside the rack and ConnectX-9 for
 scale-out between racks (NVIDIA product page and the Cisco/Supermicro data sheet; NVIDIA labels
 the figures preliminary). The figures themselves (transistor counts, bandwidth, price) play no
-role here; only the **structure** does. PTR's own hardware profiles are single PCIe GPUs
-(`hardware/rtx4090.toml`, `hardware/dual-rtx3090.toml`, "PCIe only, no NVLink", `docs/LOCAL_START.md:5`),
-so every "rack" in this document is a **logical** construct whose first instance is one
+role here; only the **structure** does. PTR's hardware is PCIe only: the owner's desktop has two
+RTX 3090 without an NVLink bridge (`hardware/dual-rtx3090.toml`, "PCIe only, no NVLink bridge
+assumed", `docs/LOCAL_START.md:5`), and `hardware/rtx4090.toml` is a single-card reference profile.
+So every "rack" in this document is a **logical** construct whose first instance is one
 workstation.
 
 ## 1. Why the pattern is interesting for Pods at all
@@ -39,7 +40,7 @@ Today that rule is **prose**. Nothing in `ptr-pods`, `ptr-runtime::placement` or
 `ptr-runtime::directory` can express "these Pods must share a device", "this stage may cross a
 host but not a WAN", or "this group is placed and fenced as one unit". `NodeRecord` knows a
 `zone: String` and a list of devices (`crates/ptr-runtime/src/placement.rs:33`); `Placement` is
-one Pod on one device (`:42`); `assign` places one Pod at a time (`:160`); `PodResourceProfile`
+one Pod on one device (`:42`); `assign` places one Pod at a time (`:171`); `PodResourceProfile`
 is RAM, VRAM and concurrency (`crates/ptr-pods/src/semantic.rs:59`); `ResourceRequirements`
 adds an optional `DeviceId` (`crates/ptr-pods/src/neural.rs:38`). The pipeline split of doc 36
 binds a `placement_epoch` into every `ActivationFrame` but has no notion of how far the two
@@ -95,7 +96,7 @@ In the rack, a tray is pulled and replaced as a whole; nothing inside it survive
 PTR's equivalents of "pull" are a failed heartbeat, a revoked device and a topology change,
 and today each of them revokes **per Pod**: `heartbeat` and `register_node` call
 `revoke_unavailable_leases`, `mark_node_failed` revokes every lease on the node
-(`crates/ptr-runtime/src/placement.rs:129-157`). A group of Pods that only make sense together
+(`crates/ptr-runtime/src/placement.rs:127-169`). A group of Pods that only make sense together
 (an attention stage with the expert Pods it routes to, or two pipeline stages that share a
 `placement_epoch`) can therefore end up half placed and half revoked, and the half that
 survives is routable with a stale partner.
@@ -226,7 +227,7 @@ end, not a field of the frame.
 Each follows `docs/architecture/19-research-method.md`: a baseline, an ablation, a refutation
 rule, registered with `scripts/new_experiment.py`. None is registered yet, and none has an id:
 the names below are working titles, and an id is assigned at registration (`L002`, `L003`
-and `E009` to `E012` are already taken).
+are taken; `E009` to `E012` are reserved by [41](41-pod-data-plane.md) for its experiments).
 
 | Id (proposed) | Claim | Baseline / ablation | Refuted if | CPU or GPU |
 |---|---|---|---|---|
@@ -238,9 +239,10 @@ and `E009` to `E012` are already taken).
 A **positive** result of any of these shows a mechanism, not a benefit. Whether tray-atomic
 placement or typed locality reduces anything a user can see (p95 latency of the doc 39 loop,
 `Exhausted` rate under a failing device) is a later, model-backed experiment on the F-series
-hardware plan (`docs/VCW_MOE_GPU_PLAN.md`), and the honest expectation on one workstation with one
-GPU is **no measurable difference**: one device is one tray is one rack. The value of the typing
-on that machine is that the rule exists and is tested before a second device appears.
+hardware plan (`docs/VCW_MOE_GPU_PLAN.md`), and the honest expectation on one workstation is a small
+difference at most: with one card, one device is one tray is one rack, and the owner's two
+RTX 3090 form one tray of two devices joined over PCIe. The value of the typing on that machine
+is that the rule exists and is tested before more devices or hosts appear.
 
 ## 6. Risks
 

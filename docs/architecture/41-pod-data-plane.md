@@ -13,15 +13,16 @@ The plan is cut into the five stages the owner named, in the order they build on
 | Stage | Topology | Carrier | Exists today |
 |---|---|---|---|
 | S1 | one host, several processes, zero or one GPU | shared memory and CUDA IPC handles | nothing; `TypedPayload` is `Vec<u8>` (`crates/ptr-protocol/src/lib.rs:17`) |
-| S2 | one host, several processes, several GPUs | device-to-device or via pinned host buffer | nothing; `CandleGpuTierBackend` is one device (`crates/ptr-pods/src/candle.rs:127`) |
+| S2 | one host, several processes, several GPUs | device-to-device or via pinned host buffer | nothing; `CandleGpuTierBackend` is one device (`crates/ptr-pods/src/candle.rs:120`) |
 | S3 | host RAM as an offload tier | pinned host buffers with prefetch | `CpuTierBackend` (unpinned `BTreeMap`, `crates/ptr-storage/src/tier.rs:383`), `TierResidencyController`, `LookaheadPrefetchPolicy` (`crates/ptr-runtime/src/tier.rs:648`, `:1774`) |
-| S4 | NVMe as an offload tier | file-backed chunks, verify-on-read | `FileTierBackend` (`crates/ptr-storage/src/tier.rs:485`), the `PTRKVP3` page format, the RTX 4090 GPU→CPU→NVMe→GPU roundtrip (`docs/POD_MASTER_PLAN.md`, section "Multi-Tier-Speicherhierarchie") |
+| S4 | NVMe as an offload tier | file-backed chunks, verify-on-read | `FileTierBackend` (`crates/ptr-storage/src/tier.rs:485`), the `PTRKVP3` page format, the RTX 4090 GPU→CPU→NVMe→GPU roundtrip recorded in the master plan (`docs/POD_MASTER_PLAN.md`, section "Multi-Tier-Speicherhierarchie") |
 | S5 | several hosts | signed chunking over Iroh QUIC | `chunk_frame`, `FrameAssembler` (`crates/ptr-podwire/src/chunk.rs:834`, `:301`), `ActivationFrame` (`crates/ptr-protocol/src/activation.rs:107`), downstream admission in `split_stage` (`crates/ptr-runtime/src/split_stage.rs`); E007 completed in process, E008 planned |
 
 The thing every stage shares, and the reason this is one plan rather than five, is section 1.
 Whether the plan is worth building, stage by stage, is section 7; the short answer is that S1,
-S3 and S4 pay for themselves on the owner's one-GPU machine, S2 is mostly S3 on that machine, and
-S5 is the already-planned E008.
+S3 and S4 pay for themselves on any single card, S2 matters on the owner's two RTX 3090 and runs
+through S3's pinned buffer unless peer access is probed as available, and S5 is the
+already-planned E008.
 
 ## 0. Facts checked before implementation
 
@@ -30,7 +31,7 @@ Read from the tree at the merge of #136, before any code was written for this pl
 - **No Pod runs outside the authority process today.** `ptrd` holds every Pod in process
   (`bins/ptrd/src/main.rs`, `PodRegistry::default()`); `ProtocolBinding::LocalWorker`
   (`crates/ptr-pods/src/protocol.rs:7`) and `PodTransport::LocalWorker`
-  (`crates/ptr-types/src/pod_address.rs:132`) name a local worker that nothing implements. S1 is
+  (`crates/ptr-types/src/pod_address.rs:134`) name a local worker that nothing implements. S1 is
   therefore the largest stage, not a small one.
 - **A device failure does not move a placement epoch.** `heartbeat` and `mark_node_failed`
   revoke state leases but leave every `Placement.epoch` unchanged
@@ -112,12 +113,12 @@ from the data side:
 | `Remote` | other host | `chunk_frame` over Iroh QUIC, `FrameAssembler` on the far side | one send, one reassembly |
 | `Bytes` | fallback | today's `TypedPayload` | copies |
 
-Two consequences of the owner's hardware. `DevicePeer` is **not available on an RTX 4090**:
-NVIDIA does not enable PCIe peer-to-peer on that card, so a second 4090 talks through
-`PinnedHost`. An RTX 3090 pair supports peer access over an NVLink bridge, which the owner's
-profile does not have (`hardware/dual-rtx3090.toml`, "PCIe only, no NVLink"); over plain PCIe,
-peer access on 3090s is driver-dependent and must be probed, not assumed. S2 therefore ships
-with `PinnedHost` as its working path and `DevicePeer` as a probed option.
+Two consequences of the hardware. The owner's desktop has two RTX 3090 over PCIe without an
+NVLink bridge (`hardware/dual-rtx3090.toml`, `docs/LOCAL_START.md:5`). Peer access between them
+over plain PCIe depends on the driver and the board and must be probed with
+`cudaDeviceCanAccessPeer`, never assumed; on an RTX 4090 pair PCIe peer access is, to the best of
+the author's knowledge, not offered by the driver (unverified here, no such hardware). S2
+therefore ships with `PinnedHost` as its working path and `DevicePeer` as a probed option.
 
 ## 3. The stages
 
@@ -142,7 +143,7 @@ that reads the same tensors. Today every Pod of the reference path runs inside `
   no admission grant; every output it produces is admitted by the authority process.
 
 **Scope guard.** No scheduler, no multi-tenant isolation beyond process boundaries, no
-sandboxing (that is `ptr-exec` and row J of the master plan). One worker per Pod placement.
+sandboxing (row J of the master plan, owned by `ptr-runtime` and `ptr-pods`). One worker per Pod placement.
 
 ### S2 — one host, several processes, several GPUs
 
@@ -159,7 +160,7 @@ its experts are **offloaded** (S3, S4), never dispatched per token across PCIe.
 
 ### S3 — host RAM as an offload tier
 
-**Why it matters on one GPU.** A 24 GiB card holds OLMoE's experts (about 12 GiB bf16) but not
+**Why it matters per card.** A 24 GiB card (both the RTX 3090 and the RTX 4090 profile) holds OLMoE's experts (about 12 GiB bf16) but not
 a second base model, a large KV working set and several adapter sets at once. The master plan's
 Multi-Tier slice already moves **KV pages** GPU→CPU→NVMe→GPU with digests and a new fencing
 lease. S3 widens that to **expert and adapter weights** and makes the CPU tier real:
@@ -179,7 +180,8 @@ lease. S3 widens that to **expert and adapter weights** and makes the CPU tier r
 
 **Honest limit.** Offloaded experts cost a PCIe copy per use. Per-token expert offload is a
 bandwidth-bound regime where the known systems (DeepSpeed-Inference, FlexGen, llama.cpp
-offload) are ten to fifty times slower than resident weights. S3 is for **request-level** Pod
+offload) are reported to be roughly ten to fifty times slower than resident weights (an
+estimate from the literature, not measured here; E010 measures the PTR path). S3 is for **request-level** Pod
 weights, adapters and KV working sets. An experiment that offloads L1 experts per token is a
 different claim and is not in this plan.
 
@@ -266,16 +268,17 @@ one card) is a later experiment on the F-series hardware plan and is not claimed
 - **S1: yes, now.** Process isolation of Pods is the missing half of "Pods leased via
   typestate": today a Pod that panics takes the authority process with it. S1 is also the
   precondition for a Python-side Pod and for every later stage, and it needs no GPU.
-- **S3 and S4: yes, on one GPU.** They are the only way to hold more than one base model,
+- **S3 and S4: yes, on any single card.** They are the only way to hold more than one base model,
   several adapter sets and a large KV working set on a 24 GiB card, and three quarters of the
   contracts exist. The risk is performance, and E011 and E010 measure it before anything
   depends on it.
-- **S2: conditionally.** On one 4090 it has no effect. On two 4090s its working carrier is the
-  pinned buffer of S3. It becomes its own thing only with cards that have peer access.
+- **S2: yes, on the owner's two RTX 3090.** Its working carrier is the pinned buffer of S3 unless
+  the probe finds peer access; on one card it has no effect.
 - **S5: yes, as E008**, already planned and registered; this document adds nothing to it but
   the shared handle contract.
 - **What never makes sense here:** per-token expert dispatch across PCIe or a network, and a
-  claim that any of this is "NVLink". The fabric is a hundred times slower and carries typed,
+  claim that any of this is "NVLink". The fabric is, as an estimate, around a hundred times slower (section 2: PCIe
+  against NVLink bandwidth) and carries typed,
   fenced, lineage-bound payloads instead of bytes. The second property is the one PTR needs;
   the first is the one it cannot have.
 
@@ -288,8 +291,8 @@ one card) is a later experiment on the F-series hardware plan and is not claimed
 - **Lifetime bugs.** A mapping that outlives its handle is a use-after-free across processes.
   Rule 3 (producer owns until acknowledged) and E009 are the mitigation; the admitted scope is
   the only place a pointer exists.
-- **Consumer GPUs.** Peer access on 4090s is absent and driver patches that enable it are out
-  of scope; the plan never depends on it.
+- **Consumer GPUs.** Peer access on consumer cards is driver-dependent and driver patches that
+  enable it are out of scope; the plan never depends on it.
 - **Scope creep toward a serving engine.** vLLM, SGLang and Mooncake already move KV and weights
   across tiers and hosts at scale. PTR's reason to build its own is the fenced, lineage-bound
   admission at every hop, not throughput. If an experiment shows the admission can be kept with
