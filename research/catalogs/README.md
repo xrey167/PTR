@@ -15,6 +15,7 @@ The catalog is deliberately broader than the current implementation. A row marke
 - `type-families.toml` — domain/runtime type families, current coverage and open additions.
 - `backend-slots.toml` — replaceable infrastructure/model/backend slots and evaluation ownership.
 - `component-contracts.toml` — required ports and cross-component contract responsibilities.
+- `crate-layers.toml` — crate layer ranks, backend-crate owners and the shrinking list of tolerated layering violations; enforced by `scripts/check_crate_layering.py`.
 - `rust-api-layout.toml` — target module, public-surface and function grouping for every Rust crate.
 
 ## Status vocabulary

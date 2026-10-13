@@ -48,7 +48,7 @@ The request flow spans many crates, so read these together:
 - **Wire/cluster**: `ptr-protocol` defines PodWire and converts prost-generated protobuf (`proto/`) into validated domain values. `ptr-net` is authenticated transport (Iroh). `ptr-cluster`, `ptr-execwire` and `ptr-podwire` each carry one protocol on its own ALPN over `ptr-net`.
 - **Model/training side**: `ptr-core` (research model: typed slots, latent recurrence), `model/burn-a0`, `ptr-feedback`, `ptr-fastmem`, `ptr-lineage`, `ptr-labeling`, `ptr-branch`, `ptr-analytics`, plus `training/` (Python, locked with `training/uv.lock`).
 
-Invariants in `docs/INVARIANTS.md` are binding: raw is never replaced by typed state, search never self-promotes to truth, uncommitted state is never authoritative, effects pass a hard security boundary requiring current revision/generation, queues are bounded, and a learned score cannot override a deterministic verifier contradiction. `docs/COMPONENT_CONTRACTS.md` and `docs/architecture/` hold the details. Backend-specific types must not leak into domain crates.
+Invariants in `docs/INVARIANTS.md` are binding: raw is never replaced by typed state, search never self-promotes to truth, uncommitted state is never authoritative, effects pass a hard security boundary requiring current revision/generation, queues are bounded, and a learned score cannot override a deterministic verifier contradiction. `docs/COMPONENT_CONTRACTS.md` and `docs/architecture/` hold the details. Backend-specific types must not leak into domain crates; `scripts/check_crate_layering.py` checks this against `research/catalogs/crate-layers.toml`.
 
 ## Claude Code plugins
 
