@@ -155,9 +155,12 @@ the ready-made testbed: three CPU-only trays in one logical rack.
 InterconnectClass = InProcess | SameDevice | SameHost | ScaleUpFabric | ScaleOut
 ```
 
-ordered from nearest to farthest, and a `LocalityRequirement { max_distance, anchor }` on
-`PodResourceProfile` (and on `ResourceRequirements` for neural Pods), where `anchor` is the
-tray, the rack or nothing. Placement refuses an assignment whose distance to the anchor exceeds
+ordered from nearest to farthest, and a `LocalityRequirement { max_distance, anchor_kind }` on
+`PodResourceProfile` (and on `ResourceRequirements` for neural Pods), where `anchor_kind` says
+whether the bound is measured from the Pod's tray, its rack or nothing. The requirement is
+topology-independent and part of the manifest; the **concrete** tray or rack it is measured from
+is a property of the `Placement`, chosen at placement time, so moving a Pod to a replacement tray
+or rack never changes its manifest identity. Placement refuses an assignment whose distance to the anchor exceeds
 `max_distance` (`PlacementError::LocalityViolation`). Routing enforces the same bound, but the
 bound is **loaded from the admitted profile of the resolved Pod**, never taken from the caller:
 `PodDirectory::resolve` (`crates/ptr-runtime/src/directory.rs`) today sees only caller-supplied
@@ -219,7 +222,7 @@ the generation it was placed for.
 | Piece | Crate | Shape | Touches |
 |---|---|---|---|
 | `InterconnectClass`, `RackId`, `TrayId`, `LocalityAnchor`, `LocalityRequirement` | `ptr-types` | closed enums and validated id newtypes, `Ord` on the class | nothing existing |
-| `PodResourceProfile.locality: Option<LocalityRequirement>`, `ResourceRequirements.locality` | `ptr-pods` | optional, `None` means `ScaleOut` (today's behaviour) | `PodSemanticManifest::digest` (the requirement is part of the manifest digest), `NeuralPodDescriptor::lineage_digest` |
+| `PodResourceProfile.locality: Option<LocalityRequirement>`, `ResourceRequirements.locality` | `ptr-pods` | optional, `None` means `ScaleOut` (today's behaviour) | `PodSemanticManifest::digest` (the topology-independent requirement, `max_distance` and `anchor_kind`, is part of the manifest digest; the concrete tray or rack id is not, it lives on the `Placement`), `NeuralPodDescriptor::lineage_digest` |
 | `NodeRecord.rack: Option<RackId>` | `ptr-runtime::placement` | host-declared | `register_node` (a rack change is a topology change and bumps the epoch) |
 | `TraySpec`, `TrayPlacement`, `assign_tray`, tray token in `FencedStateLease` | `ptr-runtime::placement` | all-or-nothing, one epoch, one token; a member revocation revokes the tray | `revoke_unavailable_leases`, `revoke_for_node`, `revoke_for_pod` |
 | `PlacementError::LocalityViolation`, `ResolveError::TooFar` | `ptr-runtime`, `ptr-types` | typed refusals | `assign`, `PodDirectory::resolve` |
@@ -244,8 +247,8 @@ are taken; `E009` to `E012` are reserved by [41](41-pod-data-plane.md) for its e
 |---|---|---|---|---|
 | locality-refusal (mechanism) | An L1 expert or a pipeline stage with a locality requirement can never be placed, routed or fed a frame across a link farther than its requirement, including after a rack re-declaration, a node failure and a replay | the same controller with `locality = None` (ablation); sensitivity: a planted placement one class too far must be refused | any placement, route or frame admission across the bound succeeds in any seed; or the refusal depends on a measured value | CPU |
 | tray-fence (mechanism, extends L001-v2) | A tray is never partially fenced: after a member device fails between `assign_tray` and the first use, no member's lease, KV page or frame of the old epoch is admitted | per-Pod placement of the same members (ablation); sensitivity: a planted surviving member must be detected by the harness when tray revocation is disabled | a surviving member serves a request of the old epoch in any seed | CPU |
-| link-classes (calibration, descriptive; the data-plane counterpart is E011 in [41](41-pod-data-plane.md)) | The declared classes order the measured activation-frame round trip on the owner's hardware: in-process < same-device < same-host (loopback QUIC) < LAN, each by a preregistered factor | baseline: the `Bytes` carrier over the same link; ablation: the same frame without chunking where it fits; sensitivity: an injected fixed delay on one class must reorder it measurably | the order is violated, or two classes are within the measurement noise (then the two classes are merged in the type, not the threshold tuned) | CPU and one GPU |
-| rack-kv-scope (mechanism) | Rack-scoped prefix sharing admits exactly the cross-request hits of the global scope for requests in one rack and none across racks, with the fencing and dependency rules of doc 36 unchanged | global sharing (ablation); sensitivity: a planted cross-rack request must be refused | a cross-rack hit, or a lost in-rack hit, or any doc 36 counter above 0 | CPU |
+| link-classes (calibration, descriptive; the data-plane counterpart is E011 in [41](41-pod-data-plane.md)) | The declared classes order the measured activation-frame round trip on the owner's hardware: in-process < same-device < same-host (loopback QUIC) < LAN, each by a preregistered factor | baseline: the `Bytes` carrier over the same link; ablation: the same frame without chunking where it fits; sensitivity: an injected fixed delay on one class must reorder it measurably | the order is violated, or two classes are within the measurement noise (then only the cost model is revised; classes are typed eligibility boundaries and are never merged or widened by a measurement, section 2.4) | CPU and one GPU |
+| rack-kv-scope (mechanism) | Rack-scoped prefix sharing admits exactly the cross-request hits of the global scope for requests in one rack and none across racks, with the fencing and dependency rules of doc 36 unchanged | global sharing (ablation); sensitivity: a planted cross-rack request must be refused | a cross-rack hit, a lost in-rack hit, or any doc 36 safety counter above 0 (stale-entry admissions, cross-principal or cross-project hits, hits after a dependency invalidation); doc 36 coverage counters must instead be above 0 for the run to be valid | CPU |
 
 A **positive** result of any of these shows a mechanism, not a benefit. Whether tray-atomic
 placement or typed locality reduces anything a user can see (p95 latency of the doc 39 loop,
@@ -257,9 +260,9 @@ is that the rule exists and is tested before more devices or hosts appear.
 
 ## 6. Risks
 
-- **Over-typing.** Five interconnect classes may be two too many; the link-class calibration is designed to merge
-  classes that do not separate rather than keep them. A class that no requirement ever names
-  should be removed.
+- **Over-typing.** Five interconnect classes may be two too many. A class that no requirement ever
+  names should be removed by a reviewed type change; the link-class calibration only informs that
+  decision and never merges classes by itself.
 - **Declared facts.** Rack membership and link classes are host declarations. A wrong
   declaration is not detected at run time; it is the same trust boundary as `AdmissionPolicy`
   and is stated as such. The link-class calibration is the only check.

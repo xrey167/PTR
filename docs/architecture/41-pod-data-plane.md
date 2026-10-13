@@ -88,6 +88,12 @@ TensorHandle {
 }
 ```
 
+A handle always describes a **dense, row-major, contiguous** tensor: there is no offset or
+stride beyond the locator's own offset, and `byte_len` is exactly the addressed span. A producer
+holding a sliced or transposed view materialises a contiguous copy before signing, and a
+consumer interprets the bytes only in that layout; so the digest, the length check and the
+tensor the consumer builds always refer to the same bytes.
+
 The codec v1 handle carries no `input_lineage`. Input lineage is instead **owned by the
 authority**: `parent_operation_id` names an operation the authority process started and recorded,
 including the generation of every semantic, memory and derived input that operation read, and
@@ -118,7 +124,9 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
 3a. **The bytes are committed and immutable.** The handle carries a `content_digest` of the tensor
    bytes, covered by the signature. After signing, the producer gives up write access until
    `Consumed` or reclaim. For `HostShm` and the CPU side of `PinnedHost` this is enforced by the
-   kernel: the region is a `memfd` sealed against writes before the handle is sent, and the
+   kernel: the region is a `memfd` sealed against writes and against resizing (`F_SEAL_WRITE`,
+   `F_SEAL_SHRINK`, `F_SEAL_GROW`, then `F_SEAL_SEAL`) before the handle is sent, the consumer
+   checks those seals and that the file covers `offset + byte_len` before mapping, and the
    consumer verifies the digest after mapping and before use, so there is no check-use race. For
    `CudaIpc` and `DevicePeer` no seal exists, so a mapped device allocation is never used
    directly under this contract: the consumer copies it into a **receiver-owned** allocation
@@ -161,8 +169,8 @@ from the data side:
 |---|---|---|---|
 | `InProcess` | same process | the tensor object itself (candle `Tensor` or a DLPack capsule across a language boundary) | yes |
 | `HostShm` | same host, other process, CPU tensor | `memfd` or a named shared mapping (`memmap2` is already in `Cargo.lock`), sealed read-only before the handle is sent | yes |
-| `CudaIpc` | same host, other process, same GPU | `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle` through `cudarc` with dynamic loading (0.19.10 is already in `Cargo.lock` through candle); event handle for stream ordering | yes |
-| `DevicePeer` | same host, other GPU, peer access available | `cudaMemcpyPeer` on a stream, or direct peer mapping | one device-to-device copy |
+| `CudaIpc` | same host, other process, same GPU | `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle` through `cudarc` with dynamic loading (0.19.10 is already in `Cargo.lock` through candle); event handle for stream ordering; the consumer copies into its own allocation (rule 3a) | no: one device-to-device copy |
+| `DevicePeer` | same host, other GPU, peer access available | `cudaMemcpyPeer` on a stream into a receiver-owned allocation; no direct peer mapping (rule 3a) | one device-to-device copy |
 | `PinnedHost` | same host, other GPU, no peer access; and the RAM tier | GPU→pinned host→GPU with two stream-ordered copies; the pinned buffer is itself a `HostShm` region | two copies |
 | `NvmeFile` | the NVMe tier | file-backed chunk, verify-on-read, `O_DIRECT` where the platform allows | one read |
 | `Remote` | other host | `chunk_frame` over Iroh QUIC, `FrameAssembler` on the far side | one send, one reassembly |
@@ -189,7 +197,8 @@ that reads the same tensors. Today every Pod of the reference path runs inside `
   serves with its signing key (the same registration the assembler already does per principal,
   `chunk.rs:344`), and control messages are the existing PodWire request and response types.
   Data goes by handle.
-- `HostShm` carrier: the producer creates a `memfd`, writes once, seals it against writes, and
+- `HostShm` carrier: the producer creates a `memfd`, writes once, seals it against writes and
+  resizing (rule 3a), and
   sends the descriptor with `SCM_RIGHTS` over the control socket in the same message as the
   handle; the locator names that descriptor slot (a `memfd` is anonymous and cannot be reopened
   by name). The consumer maps it read-only only after admission, verifies `content_digest`, and
@@ -275,8 +284,10 @@ token) that the in-process controller compares; it names no object, source, dest
 principal, deadline or nonce and carries no signature, so serialising it across hosts would let a
 live grant be replayed for another object or redirected to another backend. A remote transfer
 therefore carries an authenticated, single-use grant that binds the object digest, source,
-destination, principal, deadline and nonce, signed by the authority that issued it, and uses the
-chunk carrier; this is the Mooncake-like row of the master plan, section I, in its
+destination, principal, deadline and nonce **and the active-write binding** (generation,
+placement epoch, fencing token) of the object, signed by the authority that issued it; the
+receiver revalidates that binding against the current residency record at transfer time, so a
+placement fenced after the grant was issued makes the grant unusable. It uses the chunk carrier; this is the Mooncake-like row of the master plan, section I, in its
 simplest form (QUIC, no RDMA).
 
 **Later, not here.** RDMA (RoCE or InfiniBand) as a second remote carrier; GPUDirect RDMA. Both
@@ -325,7 +336,7 @@ names its sensitivity control; the table names the baseline. Ids are proposals.
 
 | Id | Claim | Baseline / ablation | Refuted if | Needs |
 |---|---|---|---|---|
-| E011-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes within the existing bounds (1 MiB to 64 MiB, the activation `MAX_FRAME_BYTES`; the `Bytes` baseline is chunked under PodWire's 4 MiB `MAX_BODY_BYTES`, and every compared carrier carries the same chunking) | `Bytes` at every size | the order is violated, or two adjacent carriers are within noise (then they merge in the type) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
+| E011-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes within the existing bounds (1 MiB to 64 MiB, the activation `MAX_FRAME_BYTES`; the `Bytes` baseline is chunked under PodWire's 4 MiB `MAX_BODY_BYTES`, and every compared carrier carries the same chunking) | `Bytes` at every size | the order is violated, or two adjacent carriers are within noise (then the carrier preference is revised; carriers are never merged, since a carrier is an eligibility boundary, not a cost estimate) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
 | E009-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, no mapping outlives its deadline plus skew, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any mapping alive after reclaim, any byte leak across a crash, in any seed | CPU for `HostShm`; GPU for `CudaIpc` |
 | E010-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | LRU without lookahead; unpinned RAM | a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor | CPU part (RAM and NVMe tiers, unpinned versus locked) here; the GPU leg on hardware |
 | E008 (registered) | two-stage split across a loopback socket (part B) with the extended frame (part A), bit-identical to the in-process split | E007 in process | any output difference, any admission of a frame with a stale epoch | CPU, one host |
