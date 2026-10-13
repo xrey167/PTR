@@ -272,6 +272,7 @@ same frozen run, 5 confirmatory GPU seeds.
 | A-5 | Transition coverage (validity gate) | At least 2,000 training transitions per failure role used by A3 | Specialists trained on too little data to differ |
 | A-6 | S+ and S0 worlds | S+ skill tables give analytic gaps of at least +8 points for A3 − A0, A1, A2, A4; S0 gives every repair arm identical success per code; both run through the GPU arms' evaluation and accounting code; control rules: S+ lower bounds ≥ +3, S0 bounds within ±1.5 | Controls that are not positive or null under a correct harness |
 | A-7 | Task mix, sampling configs, prompts, ranks | A0's success at budget 4 below 70% in the pilot; power ≥ 0.8 at a true effect of +5 | No headroom; an underpowered confirmatory run |
+| A-8 | Task cohorts (validity gate) | Three task cohorts with disjoint task ids **and** disjoint normalised-content hashes: repair-transition training (incl. tuning), pilot, confirmatory evaluation; the confirmatory 1,000 tasks per seed come only from the last; digests of all three recorded | Specialists or tuning that have seen evaluation tasks; pilot results leaking into the confirmatory estimate |
 
 ### Thesis B — Off-policy-auditable routing
 
@@ -309,10 +310,22 @@ estimated differences must vanish; it shows the harness does not manufacture dif
 |---|---|---|---|---|
 | DB1 | Kendall τ_b between V̂ and V over the candidates | ≥ 0.80 | SB+, SB0 | **K-B1**: thesis REFUTED |
 | DB2 | max over candidates of \|V̂ − V\| / (max V − min V) | ≤ 0.25 | SB+ | thesis REFUTED (estimates rank but are unusable as values) |
-| DB3 | τ_b(V̂, V) − max(τ_b(proxy, V), τ_b(DM, V)) | ≥ 0.15 | SB+, SB0 | **K-B3**: thesis REFUTED (propensity logging unnecessary) |
 | DB4 | exploration cost per logged decision: relative drop of mean r between the base set and the logged set | ≤ 1% | none (a measurement on the real model) | **K-B2**: thesis REFUTED |
+| DB3 (wording only) | τ_b(V̂, V) − max(τ_b(proxy, V), τ_b(DM, V)) | ≥ 0.15 | SB+, SB0 | **K-B3**: the superiority wording is dropped; the thesis outcome is unchanged |
 
-**Outcome.** REFUTED if any row is refuted; SUPPORTED if all four are supported; NOT_SHOWN otherwise.
+**Candidate set and spread (simple rules).** The rows are computed over one **common candidate
+set**, frozen before the confirmatory stage: the candidates that pass the positivity check in the
+pilot (at least 6 of the 8; checklist B-3). If any frozen candidate is refused in any confirmatory
+seed, DB1, DB2 and DB3 are NOT_SHOWN (the set differs between seeds); the claim is about the frozen
+set only. **Minimum spread:** if, in any seed, the lower bound of the on-policy spread max V − min V
+over the frozen set is below 0.02 (absolute, in probability units), DB1, DB2, DB3 and SB0 are
+NOT_SHOWN, because ranking and relative error are undefined without spread.
+
+**Outcome.** The accuracy thesis stands on DB1, DB2 and DB4: REFUTED if any of them is refuted;
+SUPPORTED if all three are supported; NOT_SHOWN otherwise. DB3 never changes that outcome: a
+supported thesis may say it "beats the load-balance proxy and the direct method" only if DB3 is
+supported; if DB3 is refuted the claim states that it does not; if DB3 is not shown, superiority is
+not asserted.
 
 **Compute.** CPU stage ≈ 10–15 CPU-h for 5 seeds on a tiny MoE (4 layers, 16 experts, top-2). GPU
 stage on the OLMoE base (64 experts, top-8) ≈ 30–50 GPU-h (50,000 one-decision passes per seed ≈
@@ -333,7 +346,8 @@ decisive: the same design on the OLMoE base's final MoE layer.
 |---|---|---|---|
 | B-1 | Logger and propensity verification (validity gate) | Every logged decision records the full base slate S_base, the swap indicator, the swapped slot and replacement, ε and the frozen logger parameters; μ(S \| c) is **recomputed from these records for every logged decision** (under the uniform single-slot logger, μ(S_base) = 1 − ε and each one-swap neighbour has ε / (k (N − k))) and must equal the logged value; router inputs are retained for a pinned subset only, for candidates added after collection | Unverifiable propensities; a gate that cannot be evaluated on most decisions |
 | B-2 | Shadow scoring | Every frozen candidate's slate distribution is recorded on every logged decision from the same router input (position t − 1, layer ℓ); a candidate without it on a decision is refused for that cohort | Estimating a target whose action probabilities are unknown |
-| B-3 | Cohorts (validity gate) | Learned candidates trained on a training cohort and snapshotted; a fresh, fixed-size exploration cohort per seed after the snapshot (proposed CPU 20,000, GPU 50,000 decisions); evaluation contexts disjoint from both; no overlap (`OpeError::OverlapsTraining`, `crates/ptr-router/src/ope.rs:36-38`); at most 2 of 8 candidates refused for positivity | Optimistic evaluation on training data; missing support |
+| B-3 | Cohorts and the common candidate set (validity gate) | Learned candidates trained on a training cohort and snapshotted; a fresh, fixed-size exploration cohort per seed after the snapshot (proposed CPU 20,000, GPU 50,000 decisions); evaluation contexts disjoint from both; no overlap (`OpeError::OverlapsTraining`, `crates/ptr-router/src/ope.rs:36-38`). The common candidate set is fixed from the pilot's positivity check (at least 6 of 8) and written into the manifest before the freeze | Optimistic evaluation on training data; rows computed over different candidate sets in different seeds |
+| B-9 | Minimum spread | The 0.02 spread floor and the noise scales of the two logit-noise candidates, chosen in the pilot so that the expected spread is at least 3× the floor | Ranking and relative-error rows judged on candidates with no measurable differences |
 | B-4 | Bound procedure | One-sided 95% bounds per seed; each replicate resamples exploration decisions and, independently, evaluation contexts, and recomputes V̂, V, the range, the comparators and DB4 from that replicate | Mixing estimands across replicates; a two-sample statistic without a combining rule |
 | B-5 | Comparators | Proxy: `load_cv` of each candidate's selected sets at the intervened decisions of the evaluation set, lower ranks higher. DM: one linear head per expert on the router input, ridge-fitted on the training cohort only, penalty by 5-fold CV inside it | A comparator tuned after seeing results |
 | B-6 | SB+ and SB0 | SB+: reward replaced by Σ_{e∈S} φ(c, e), φ = base-router softmax probability / k, true values computed exactly, rule lower bound τ_b ≥ 0.90. SB0: reward replaced by r(c, S_base), rule both bounds of V̂(π) − V̂(base) within ±0.25 × (real-world max V − min V) for every candidate | Controls that are not positive or null under a correct harness |
@@ -362,8 +376,8 @@ router fine-tune on mixed data, TIES-merged descendant, upcycled descendant, rea
 shard), compute-matched to L_s; **N_s** NPO with a retain loss (2404.05868) on U_s, compute-matched
 to L_s; **G_s** gold: the same schedule rebuilt without the revoked shard, two retrains.
 
-**Controls.** **Negative**: frozen-shared removal, where removal is exact by construction, so U
-must match the gold; it shows the assays are not biased. **P-exp** and **P-mia**: the revoked
+**Controls.** **Negative**: frozen-shared removal, where removal is exact by construction, built
+like the gold (two matched U runs, combined per item), so U must match the gold; it shows the assays are not biased. **P-exp** and **P-mia**: the revoked
 shard's canaries and its designated MIA member examples are also trained into a retained shard, so
 the "removed" model is known to leak on each assay; each shows its assay can see a leak.
 
@@ -395,8 +409,10 @@ S* whose transitive and direct closures differ).
   result; if H-C2 or H-C3 is refuted the remedy part is dropped and H-C1 stands as a measurement.
 
 **Compute.** Per seed: 4 per-shard experts; 3 retained-shard experts × 2 gold retrains; 18 mixing
-operations (6 schedules × arm and two golds); L, D and N for each schedule (18 jobs); P (1). CPU (tiny
-MoE): ≈ 47 small jobs per seed, ≈ 45–95 CPU-h for 5 seeds. GPU (LoRA experts per shard on the OLMoE
+operations (6 schedules × arm and two golds); L, D and N for each schedule (18 jobs); P (1); a
+second revoked-expert training for the matched negative control U2 (1). NPO tuning runs on pilot
+seeds only (12 trials per schedule, ≈ 6–12 GPU-h once, on card 1). CPU (tiny MoE): ≈ 48 small jobs
+per seed, ≈ 45–95 CPU-h for 5 seeds. GPU (LoRA experts per shard on the OLMoE
 base, ≈ 1 GPU-h per expert training, ≈ 0.5–1 GPU-h per mixing, L, D or N job): ≈ 29–47 GPU-h per
 seed, ≈ 145–235 GPU-h for 5 seeds, ≈ 6–10 days of serial card-0 time plus pilots and the mutation
 check.
@@ -420,10 +436,11 @@ frozen confirmatory seeds can support or refute H-C1–H-C4.
 | C-4 | Gold agreement (validity gate, checked first) | The two gold retrains of every schedule and seed agree within 0.5 bits of exposure, 0.02 AUC and 0.5 utility points; otherwise the run is INVALID and a successor needs a higher-precision gold | Bands narrower than the gold's own noise |
 | C-5 | Assays | Exposure: 32 canaries per shard, randomness space 10^6 (1802.08232), estimation method. MIA: 500 designated members of the revoked shard vs 500 matched non-members never trained on, loss-threshold AUC. Utility: exact-match accuracy in percentage points on 500 held-out items per retained shard, macro-averaged | Undefined or post-hoc metrics |
 | C-6 | Bound procedure | Paired bootstrap per seed over canaries, stratified member/non-member examples and utility items, the same items for arm and gold; one-sided 95% | Unpaired comparisons against the gold |
-| C-7 | Negative control | U in the frozen-shared schedule uses the same seeds for retained experts as gold retrain 1, so it equals that retrain up to kernel nondeterminism; rule: Δexposure upper bound ≤ 0.5, ΔAUC within ±0.03, Δutility within ±1.0 | A negative control that is not null under a correct harness |
+| C-7 | Negative control, built like the gold | Two matched U runs in the frozen-shared schedule, U1 and U2, whose retained experts use the seeds of gold retrains 1 and 2; the control's score per item is the mean of U1 and U2, exactly as the combined gold (C-3), so under a correct harness it equals the combined gold up to kernel nondeterminism; rule: Δexposure upper bound ≤ 0.5, ΔAUC within ±0.03, Δutility within ±1.0 | A negative control compared against a differently constructed reference, which would fail even under a correct harness |
 | C-8 | Positive controls | P trains the revoked canaries and members into a retained shard; rules: Δexposure(P) lower bound ≥ 4.0 bits, ΔAUC(P) lower bound ≥ 0.10, each gating its own assay | A null on an assay that could not see a leak |
 | C-9 | Closures and compute matching | Transitive and direct closures computed from the typed dependency graph with R011/R013 semantics (planned-succession versus live edges), checked by a conformance test; FLOPs counted by the harness; D_s and N_s within ±5% of L_s | Attributing the remedy to transitivity without a matched direct-only arm |
 | C-10 | Insertion integrity (validity gate) | Canary and member manifests (counts, digests) match for every arm; members and non-members disjoint; the gold never trains on them | Leaks or absences caused by bookkeeping |
+| C-11 | NPO tuning budget | NPO's hyperparameters (β, retain-loss weight, learning rate, steps within the compute match) searched on pilot seeds only, over a pinned search space with a pinned number of trials (proposed 12); selection rule: smallest pilot Δexposure subject to Δutility within ±1.0, on a selection set of canaries and members disjoint from the confirmatory ones; L and D use the original training recipes with no search, and that asymmetry is reported | A strawman baseline, or a baseline tuned on the confirmatory assays |
 
 ### 3.4 How the three theses relate to the existing programme
 
@@ -522,7 +539,8 @@ counts as model evidence.
 ### Thesis B
 - **Linearity may be badly violated.** The reward is a non-linear function of the layer output;
   the pseudoinverse estimator may be biased enough that a direct reward model ranks as well, in
-  which case DB3 is refuted (K-B3).
+  which case DB3 is refuted (K-B3) and the claim loses its superiority wording, even if the
+  estimator itself is accurate.
 - **Positivity.** Single-slot exploration only supports routers within one swap per token under the
   set-level view; the slate estimator relies on per-expert marginal support plus additivity to
   reach further. Routers that differ in many slots per token may be refused or badly estimated.
@@ -606,9 +624,10 @@ counts as model evidence.
   slate off-policy estimator ranks candidate routers by their per-decision value (the teacher-forced
   probability of the realized token y_t, read at input position t − 1 whose layer-ℓ routing is the
   intervened decision, all other decisions routed by the base router) in the same order
-  as on-policy evaluation (Kendall τ_b lower bound ≥ 0.80), at an exploration cost of at most 1%
-  relative drop in that probability per logged decision. Exploration at every routing decision is
-  not claimed. Unproven."
+  as on-policy evaluation (Kendall τ_b lower bound ≥ 0.80) over a frozen candidate set, at an
+  exploration cost of at most 1% relative drop in that probability per logged decision.
+  Exploration at every routing decision is not claimed; that it beats the load-balance proxy and a
+  direct reward model is claimed only if DB3 is supported. Unproven."
 - **New claim 28 (thesis C)**, draft, scoped to the schedules for which leakage is supported:
   "Removing an expert does not remove its training data's influence once shared layers are
   averaged, the router is fine-tuned on mixed data, or the expert is merged or upcycled; revocation
