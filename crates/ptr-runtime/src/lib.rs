@@ -282,6 +282,10 @@ fn digest_hex(digest: &ptr_types::Digest) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Most runtime events [`PtrRuntime::events`] retains (invariant 8). The ledger is the record of
+/// what happened; this log is observability.
+pub const MAX_RETAINED_EVENTS: usize = 65_536;
+
 const ACTION_PAYLOAD_VERSION: u8 = 1;
 const MAX_ACTION_FIELD_BYTES: usize = 64 * 1024;
 const MAX_ACTION_BODY_BYTES: usize = 1024 * 1024;
@@ -734,6 +738,7 @@ pub struct PtrRuntime {
     capsule_projects: BTreeMap<String, String>,
     revoked_generations: BTreeSet<(String, Generation)>,
     events: Vec<EventEnvelope>,
+    dropped_events: u64,
     next_event_sequence: u64,
     /// The host's policy for semantic writes that are not ingress; none until
     /// the host installs one. Not history: a runtime rebuilt from its log
@@ -831,6 +836,7 @@ impl PtrRuntime {
             capsule_projects: BTreeMap::new(),
             revoked_generations: BTreeSet::new(),
             events: Vec::new(),
+            dropped_events: 0,
             next_event_sequence: 1,
             semantic_grant: None,
             scopes: ScopeRegistry::default(),
@@ -900,8 +906,15 @@ impl PtrRuntime {
         &mut self.permissions
     }
 
+    /// The most recent runtime events, oldest first: at most [`MAX_RETAINED_EVENTS`]; older
+    /// ones are dropped (see [`PtrRuntime::dropped_events`]) and the sequences show the gap.
     pub fn events(&self) -> &[EventEnvelope] {
         &self.events
+    }
+
+    /// Runtime events dropped from the front of [`PtrRuntime::events`] because the log was full.
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped_events
     }
 
     pub fn committed_events(&self) -> &[CommittedEvent] {
@@ -2651,6 +2664,12 @@ impl PtrRuntime {
         event: LedgerEvent,
         semantic: Option<PreparedDelta>,
     ) -> Result<CommitIndex, RuntimeError> {
+        // A record the log format cannot hold is refused before the commit is marked uncertain:
+        // the durable ledger would refuse it without writing a byte, and the uncertainty mark
+        // would then fence this runtime for good; the in-memory ledger would keep a record
+        // that no export or durable log can hold.
+        ptr_ledger::check_encodable(&event)
+            .map_err(|error| RuntimeError::Ledger(error.to_string()))?;
         self.execution.begin_commit();
         let index = self.ledger.append(event)?;
         let committed = self
@@ -3362,6 +3381,14 @@ impl PtrRuntime {
     }
 
     fn emit(&mut self, event: RuntimeEvent) {
+        // Invariant 8: the in-process event log is bounded. When it is full the older half is
+        // dropped (amortized O(1) per event); sequences keep counting, so a reader sees the
+        // gap, and the ledger, not this log, is the record of what happened.
+        if self.events.len() >= MAX_RETAINED_EVENTS {
+            let dropped = self.events.len() - MAX_RETAINED_EVENTS / 2;
+            self.events.drain(..dropped);
+            self.dropped_events = self.dropped_events.saturating_add(dropped as u64);
+        }
         self.events.push(EventEnvelope {
             sequence: self.next_event_sequence,
             event,
