@@ -361,7 +361,23 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         | LedgerEvent::TierBackendLifecycle { .. }
         | LedgerEvent::TierObjectCommitted { .. }
         | LedgerEvent::TierReplicaLifecycle { .. } => Vec::new(),
+        // The head of a stable pod identity: `pod-head:<identity>` holds the canonical revision
+        // address of the current head. The ledger codec already refused a malformed address, so
+        // the fallback to an empty value is unreachable for a committed event.
+        LedgerEvent::PodHeadAdvanced { identity, new, .. } => vec![(
+            pod_head_key(&identity.0),
+            new.canonical_uri().unwrap_or_default(),
+        )],
     }
+}
+
+/// The prefix of every pod head key ([`pod_head_key`]).
+pub const POD_HEAD_PREFIX: &str = "pod-head:";
+
+/// The materialized key of one pod identity's head: `pod-head:<identity>`. Its value is the
+/// canonical `ptr://` revision address of the head.
+pub fn pod_head_key(identity: &str) -> String {
+    format!("{POD_HEAD_PREFIX}{identity}")
 }
 
 /// The prefix of every approximate-KV taint key: `kv-taint:<kind>:<hex digest>`.

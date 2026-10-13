@@ -14,9 +14,10 @@ pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};
 
 use ptr_types::{
     CapabilityId, CapsuleId, CommitIndex, Effect, FencingToken, Generation, MeshEndpointBinding,
-    MeshRouteKind, MeshTunnelEventKind, MeshTunnelLifecycleEvent, PeerId, PodId, ProjectId,
-    RequestId, Revision, ScopeId, ScopeLeaseBinding, ScopeLifecycleEvent, ScopeLifecycleKind,
-    SessionId, Timestamp, TraceId, TypeId, VerificationLevel,
+    MeshRouteKind, MeshTunnelEventKind, MeshTunnelLifecycleEvent, NamespaceId, PeerId, PodAddress,
+    PodId, PodIdentity, PodRevisionAddress, ProjectId, RequestId, Revision, ScopeId,
+    ScopeLeaseBinding, ScopeLifecycleEvent, ScopeLifecycleKind, SessionId, Timestamp, TraceId,
+    TypeId, VerificationLevel,
 };
 use std::collections::BTreeSet;
 use std::io;
@@ -336,6 +337,18 @@ pub enum LedgerEvent {
         class: ExpertAuthorityClass,
         fence_count: u32,
         fence_digest: [u8; 32],
+    },
+    /// The head of a stable pod identity moves (tag 32). `identity` is the value-free
+    /// [`PodIdentity`]; `old` is the head the writer observed (`None` for the first head) and
+    /// `new` the revision that becomes the head. The record is a compare-and-swap: the runtime
+    /// refuses it unless the committed head still equals `old`, and unless `new.generation` is
+    /// strictly above `old.generation`. This crate checks only the shape: both addresses are
+    /// valid and the generation rises. It cannot check `old` against the current head; the
+    /// runtime does that on commit and again on replay.
+    PodHeadAdvanced {
+        identity: PodIdentity,
+        old: Option<PodRevisionAddress>,
+        new: PodRevisionAddress,
     },
 }
 
@@ -1155,6 +1168,18 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_u32(&mut out, *fence_count);
             out.extend_from_slice(fence_digest);
         }
+        LedgerEvent::PodHeadAdvanced { identity, old, new } => {
+            out.push(32);
+            put_string(&mut out, &identity.0);
+            match old {
+                None => out.push(0),
+                Some(old) => {
+                    out.push(1);
+                    put_revision_address(&mut out, old);
+                }
+            }
+            put_revision_address(&mut out, new);
+        }
         LedgerEvent::ExecutionManifestRevoked {
             manifest_digest,
             generation,
@@ -1759,6 +1784,18 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             check_expert_authority_changed(&event)?;
             event
         }
+        32 => {
+            let identity = PodIdentity(cursor.string()?);
+            let old = match cursor.u8()? {
+                0 => None,
+                1 => Some(read_revision_address(&mut cursor)?),
+                other => return Err(presence_byte(other)),
+            };
+            let new = read_revision_address(&mut cursor)?;
+            let event = LedgerEvent::PodHeadAdvanced { identity, old, new };
+            check_pod_head_advanced(&event)?;
+            event
+        }
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1888,6 +1925,7 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
         LedgerEvent::KvTaintCommitted { .. } => check_kv_taint(event)?,
         LedgerEvent::InputInvalidated { .. } => check_input_invalidated(event)?,
         LedgerEvent::ExpertAuthorityChanged { .. } => check_expert_authority_changed(event)?,
+        LedgerEvent::PodHeadAdvanced { .. } => check_pod_head_advanced(event)?,
         LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
             endpoint: Some(endpoint),
             ..
@@ -2547,6 +2585,54 @@ fn scope_kind_from_code(code: u8) -> io::Result<ScopeLifecycleKind> {
             format!("unknown scope lifecycle code {other}"),
         )),
     }
+}
+
+/// A head move names a non-empty identity, two valid revision addresses and a strictly rising
+/// generation: the one canonical form. The decoder and the append paths both call this.
+fn check_pod_head_advanced(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::PodHeadAdvanced { identity, old, new } = event else {
+        return Ok(());
+    };
+    if identity.0.is_empty() {
+        return Err(integrity::invalid("PTR_LEDGER_POD_HEAD_IDENTITY"));
+    }
+    new.validate()
+        .map_err(|_| integrity::invalid("PTR_LEDGER_POD_HEAD_ADDRESS"))?;
+    if let Some(old) = old {
+        old.validate()
+            .map_err(|_| integrity::invalid("PTR_LEDGER_POD_HEAD_ADDRESS"))?;
+        if new.generation <= old.generation {
+            return Err(integrity::invalid("PTR_LEDGER_POD_HEAD_GENERATION"));
+        }
+    }
+    Ok(())
+}
+
+fn put_revision_address(out: &mut Vec<u8>, address: &PodRevisionAddress) {
+    put_string(out, &address.address.project.0);
+    put_string(out, &address.address.namespace.0);
+    put_string(out, &address.address.pod_id.0);
+    out.extend_from_slice(&address.semantic_revision);
+    put_u64(out, address.generation.0);
+}
+
+fn read_revision_address(cursor: &mut Cursor<'_>) -> io::Result<PodRevisionAddress> {
+    let project = ProjectId(cursor.string()?);
+    let namespace = NamespaceId(cursor.string()?);
+    let pod_id = PodId(cursor.string()?);
+    let address = PodAddress::new(project, namespace, pod_id)
+        .map_err(|_| integrity::invalid("PTR_LEDGER_POD_HEAD_ADDRESS"))?;
+    let semantic_revision = cursor.digest()?;
+    let generation = Generation(cursor.u64()?);
+    let revision = PodRevisionAddress {
+        address,
+        semantic_revision,
+        generation,
+    };
+    revision
+        .validate()
+        .map_err(|_| integrity::invalid("PTR_LEDGER_POD_HEAD_ADDRESS"))?;
+    Ok(revision)
 }
 
 fn put_u64(out: &mut Vec<u8>, value: u64) {
@@ -3219,6 +3305,85 @@ mod effect_record_tests {
             },
             fence_digest: [6; 32],
         }
+    }
+
+    fn head_address(pod: &str, generation: u64) -> PodRevisionAddress {
+        PodRevisionAddress {
+            address: PodAddress::new(
+                ProjectId::from("project"),
+                NamespaceId::from("ns"),
+                PodId::from(pod),
+            )
+            .unwrap(),
+            semantic_revision: [9; 32],
+            generation: Generation(generation),
+        }
+    }
+
+    fn head_event(old: Option<u64>, new: u64) -> LedgerEvent {
+        LedgerEvent::PodHeadAdvanced {
+            identity: PodIdentity::from("pod:stable"),
+            old: old.map(|generation| head_address("reader", generation)),
+            new: head_address("reader", new),
+        }
+    }
+
+    #[test]
+    fn pod_head_advance_round_trips_under_tag_32_with_and_without_an_old_head() {
+        for event in [head_event(None, 1), head_event(Some(1), 2)] {
+            check_encodable(&event).unwrap();
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 32);
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            for len in 0..encoded.len() {
+                assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
+            }
+            let mut padded = encoded.clone();
+            padded.push(0);
+            assert!(decode_event(&padded).is_err());
+        }
+    }
+
+    #[test]
+    fn pod_head_advance_refuses_every_non_canonical_form() {
+        let mut empty_identity = head_event(None, 1);
+        if let LedgerEvent::PodHeadAdvanced { identity, .. } = &mut empty_identity {
+            identity.0.clear();
+        }
+        let mut zero_revision = head_event(None, 1);
+        if let LedgerEvent::PodHeadAdvanced { new, .. } = &mut zero_revision {
+            new.semantic_revision = [0; 32];
+        }
+        let mut bad_segment = head_event(None, 1);
+        if let LedgerEvent::PodHeadAdvanced { new, .. } = &mut bad_segment {
+            new.address.pod_id = PodId::from("a/b");
+        }
+        let bad = [
+            empty_identity,
+            zero_revision,
+            bad_segment,
+            // The generation must rise strictly.
+            head_event(Some(2), 2),
+            head_event(Some(3), 2),
+        ];
+        for event in bad {
+            assert_eq!(
+                check_encodable(&event).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{event:?}"
+            );
+            assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
+        }
+    }
+
+    #[test]
+    fn pod_head_advance_refuses_an_unknown_presence_byte() {
+        let mut encoded = encode_event(&head_event(None, 1));
+        // tag, identity (length prefix + bytes), then the presence byte of `old`.
+        let presence_at = 1 + 4 + "pod:stable".len();
+        assert_eq!(encoded[presence_at], 0);
+        encoded[presence_at] = 2;
+        assert!(decode_event(&encoded).is_err());
     }
 
     #[test]

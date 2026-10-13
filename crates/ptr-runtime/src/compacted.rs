@@ -1750,6 +1750,8 @@ impl PtrRuntime {
         // The taint registry is a projection of the `kv-taint:` entries; a malformed one fails
         // closed rather than restoring a registry that forgets a taint.
         runtime.taint = super::kv_taint::TaintRegistry::from_materialized(&lifecycle.materialized)?;
+        // The pod heads are a projection of the `pod-head:` entries too.
+        runtime.pod_heads = super::pod_head::PodHeads::from_materialized(&lifecycle.materialized)?;
         runtime.state = MaterializedState {
             values: lifecycle.materialized,
             last_applied: trusted.floor.index.0,

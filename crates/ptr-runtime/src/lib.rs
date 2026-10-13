@@ -19,6 +19,7 @@ pub mod migration;
 pub mod neural;
 pub mod persistence;
 pub mod placement;
+pub mod pod_head;
 pub mod policy;
 pub mod protected_state;
 pub mod routing;
@@ -85,6 +86,7 @@ pub use placement::{
     DeviceHealth, DeviceRecord, FencedStateLease, FencingToken, NodeHealth, NodeRecord, Placement,
     PlacementEpoch, PlacementError, PodPlacementController,
 };
+pub use pod_head::{pod_lifecycle_target, AdvancePodHead, PodHeadError};
 #[cfg(feature = "oidc-http")]
 pub use policy::ReqwestPolicyBundleLoader;
 pub use policy::{
@@ -487,6 +489,8 @@ pub enum RuntimeError {
     },
     /// The taint registry refused a change, a replayed record or a restored state (fail closed).
     KvTaint(kv_taint::KvTaintError),
+    /// A pod head move or a stored head was refused (see [`pod_head::PodHeadError`]).
+    PodHead(pod_head::PodHeadError),
     PodUnavailable {
         capability: String,
         input_type: String,
@@ -758,6 +762,9 @@ pub struct PtrRuntime {
     /// Live approximate-KV taint subjects, projected from the committed `KvTaintCommitted`
     /// records; actions in it are refused by `authorize_action`.
     taint: kv_taint::TaintRegistry,
+    /// Head of each stable pod identity, projected from the committed `PodHeadAdvanced`
+    /// records.
+    pod_heads: pod_head::PodHeads,
 }
 
 impl PtrRuntime {
@@ -846,6 +853,7 @@ impl PtrRuntime {
             kv_catalog: None,
             semantic_edits: kv_prefix::SemanticEdits::default(),
             taint: kv_taint::TaintRegistry::default(),
+            pod_heads: pod_head::PodHeads::default(),
         })
     }
 
@@ -3071,6 +3079,10 @@ impl PtrRuntime {
             LedgerEvent::ExpertAuthorityChanged { .. } => {
                 self.validate_authority_changed_event(event)
             }
+            // A compare-and-swap on the head of one pod identity, checked again on replay.
+            LedgerEvent::PodHeadAdvanced { identity, old, new } => {
+                self.validate_pod_head_advance(identity, old.as_ref(), new)
+            }
         }
     }
 
@@ -3354,6 +3366,9 @@ impl PtrRuntime {
                     })?;
             }
             LedgerEvent::ProtectedStateCommitted { .. } => {}
+            LedgerEvent::PodHeadAdvanced { identity, new, .. } => {
+                self.pod_heads.set(identity.clone(), new.clone());
+            }
         }
 
         self.state.apply(committed);

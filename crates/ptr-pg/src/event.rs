@@ -115,7 +115,9 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
             ..
         }
         // The projection holds no taint table; taint records stay in the ledger.
-        | LedgerEvent::KvTaintCommitted { .. } => LifecycleChange::None,
+        | LedgerEvent::KvTaintCommitted { .. }
+        // A pod head is a `pod-head:` projection entry, not a lifecycle row.
+        | LedgerEvent::PodHeadAdvanced { .. } => LifecycleChange::None,
     }
 }
 
@@ -153,6 +155,7 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
         LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
         LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
+        LedgerEvent::PodHeadAdvanced { .. } => "pod.head_advanced",
     }
 }
 
@@ -239,6 +242,7 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
                 ptr_state::expert_authority_kind_name(*kind)
             )
         }
+        LedgerEvent::PodHeadAdvanced { identity, .. } => format!("pod-head:{identity}"),
     }
 }
 
