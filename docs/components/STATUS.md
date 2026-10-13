@@ -4,8 +4,8 @@
 > Refresh with `python3 scripts/update_component_docs.py --write`.
 
 **Component count:** 33  
-**Maturity distribution:** `foundation`: 1, `prototype`: 30, `scaffold`: 2  
-**Rust footprint:** 329 source files · 159337 nonblank source lines · 270 integration-test files · 3687 test markers (`#[test]`, `#[tokio::test]`)
+**Maturity distribution:** `foundation`: 1, `prototype`: 32  
+**Rust footprint:** 339 source files · 164011 nonblank source lines · 278 integration-test files · 3788 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -31,8 +31,8 @@
 | [ptr-pg](../../crates/ptr-pg/README.md) | `prototype` | 17 | 6672 | 2 | 161 | 46 | 13 | L004:completed, Q003:superseded, Q003-v2:superseded, Q003-v3:frozen | relational-substrate:open, materialized-state:open, lexical-search:open, local-vector-search:open, event-streaming:open |
 | [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 39 | 18480 | 26 | 323 | 52 | 12 | R002:planned, E001:planned, E007:frozen | environment-runtime:open |
 | [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 5 | 5097 | 4 | 78 | 33 | 15 | E007:frozen | — |
-| [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 3 | 957 | 2 | 30 | 8 | 6 | R002:planned, E001:planned, E007:frozen | network-codec:open, local-serialization:open |
-| [ptr-router](../../crates/ptr-router/README.md) | `scaffold` | 12 | 7188 | 7 | 146 | 24 | 12 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
+| [ptr-protocol](../../crates/ptr-protocol/README.md) | `prototype` | 7 | 3635 | 3 | 70 | 12 | 5 | R002:planned, E001:planned, E007:frozen | network-codec:open, local-serialization:open |
+| [ptr-router](../../crates/ptr-router/README.md) | `prototype` | 18 | 9184 | 14 | 207 | 30 | 9 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
 | [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 57 | 47833 | 91 | 1205 | 139 | 48 | E001:planned, E003:planned, E004:planned, E007:frozen, L001-v2:frozen, R011:frozen, R012:frozen | — |
 | [ptr-search](../../crates/ptr-search/README.md) | `prototype` | 3 | 1696 | 4 | 55 | 10 | 6 | Q001:planned, Q002:frozen, E002:planned, E003:planned | lexical-search:open, local-vector-search:open, gpu-vector-search:open, distributed-search:open, structural-code-search:open |
 | [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 1 | 126 | 2 | 8 | 6 | 4 | L001:superseded, E001:planned | security-context:open |
