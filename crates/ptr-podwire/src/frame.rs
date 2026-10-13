@@ -327,10 +327,7 @@ impl PodAddressBinding {
             (None, Some(requested)) => Some(requested),
             (current, None) => current,
         };
-        let origin_ts = match deadline {
-            Some(_) => Some(self.origin_ts.unwrap_or(now)),
-            None => None,
-        };
+        let origin_ts = deadline.map(|_| self.origin_ts.unwrap_or(now));
         let next = Self {
             source: Some(self.destination.address.clone()),
             destination,
