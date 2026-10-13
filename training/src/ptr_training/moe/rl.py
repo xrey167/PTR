@@ -31,6 +31,7 @@ from __future__ import annotations
 import math
 import tempfile
 
+from ptr_training.integrity import assert_step_count
 from ptr_training.moe.config import RlConfig
 from ptr_training.moe.reward import (
     LEVEL,
@@ -266,6 +267,7 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
             model.config._name_or_path = original_name_or_path  # undo the reference-dir redirect
             if is_peft and "ref" in model.peft_config:
                 model.delete_adapter("ref")
+        global_step = assert_step_count(trainer.state, cfg.steps, f"RL {algorithm}")
         history = [
             {k: _clean(v) for k, v in entry.items()} for entry in trainer.state.log_history
         ]
@@ -275,6 +277,7 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
     keys = sorted({k for h in merged.values() for k in h if isinstance(h[k], (int, float))})
     out = {
         "algorithm": algorithm,
+        "global_step": global_step,
         "grpo_overrides": grpo_overrides(algorithm, cfg),
         "log_history": history,
         "logged_metric_keys": keys,

@@ -12,8 +12,12 @@
 //!    This is the one that matters: a wrong address costs a failed request rather
 //!    than a request served by the wrong node, and the test proves the node actually
 //!    reached serves nothing.
-use ptr_net::{BookError, EndpointAddr, IrohTransport, PeerBook, ALPN_BLOB};
+use ptr_net::{BookError, EndpointAddr, IrohTransport, PeerBook};
 use ptr_types::NodeId;
+
+/// A label for these tests' own traffic. What is under test is where a peer is
+/// dialled, not what it speaks, so no PTR protocol's ALPN is borrowed for it.
+const TEST_ALPN: &[u8] = b"ptr-test/1";
 
 fn peer_of(address: &EndpointAddr) -> NodeId {
     NodeId(address.id.to_string())
@@ -119,8 +123,8 @@ async fn an_address_that_lies_about_a_peer_fails_rather_than_reaching_the_liar()
     // does succeed — so the failure was about the lie and not about this fixture, the
     // ALPN, or the requester.
     let requester = IrohTransport::bind(&[]).await.unwrap();
-    let honest = IrohTransport::bind(&[ALPN_BLOB]).await.unwrap();
-    let impostor = IrohTransport::bind(&[ALPN_BLOB]).await.unwrap();
+    let honest = IrohTransport::bind(&[TEST_ALPN]).await.unwrap();
+    let impostor = IrohTransport::bind(&[TEST_ALPN]).await.unwrap();
 
     let honest_addr = honest.direct_addr();
     let honest_id = honest_addr.id;
@@ -153,7 +157,7 @@ async fn an_address_that_lies_about_a_peer_fails_rather_than_reaching_the_liar()
     });
 
     requester
-        .request(located.into_address(), ALPN_BLOB, b"anything", 1024)
+        .request(located.into_address(), TEST_ALPN, b"anything", 1024)
         .await
         .expect_err("an address pointing one peer's id at another peer's socket");
     assert!(
@@ -172,7 +176,7 @@ async fn an_address_that_lies_about_a_peer_fails_rather_than_reaching_the_liar()
         honest.close().await;
     });
     let response = requester
-        .request(located.into_address(), ALPN_BLOB, b"ping", 1024)
+        .request(located.into_address(), TEST_ALPN, b"ping", 1024)
         .await
         .expect("the honest node at its own address answers");
     assert_eq!(response, b"pong");
@@ -185,7 +189,7 @@ async fn an_address_that_lies_about_a_peer_fails_rather_than_reaching_the_liar()
 async fn the_control_a_truthful_address_from_the_book_does_reach_its_peer() {
     // Without this, every refusal above would also be what a book that resolved
     // nothing, or a transport that connected to nobody, looks like.
-    let server = IrohTransport::bind(&[ALPN_BLOB]).await.unwrap();
+    let server = IrohTransport::bind(&[TEST_ALPN]).await.unwrap();
     let client = IrohTransport::bind(&[]).await.unwrap();
     let address = server.direct_addr();
 
@@ -200,7 +204,7 @@ async fn the_control_a_truthful_address_from_the_book_does_reach_its_peer() {
     });
 
     let response = client
-        .request(located.into_address(), ALPN_BLOB, b"ping", 1024)
+        .request(located.into_address(), TEST_ALPN, b"ping", 1024)
         .await
         .expect("an address the deployment recorded reaches its peer");
     assert_eq!(response, b"pong");

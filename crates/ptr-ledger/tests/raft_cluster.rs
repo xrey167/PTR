@@ -13,8 +13,8 @@ use ptr_ledger::raft_node::{
     decode_message, encode_message, MembershipChange, RaftNode, RetainedSnapshotAnchor,
     SnapshotAnchorMismatch, MAX_MESSAGE_BYTES,
 };
-use ptr_ledger::{CommittedEvent, LedgerEvent};
-use ptr_types::{CapsuleId, Generation, ProjectId};
+use ptr_ledger::{CommittedEvent, LedgerEvent, RetentionFloor};
+use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId};
 use raft::prelude::Message;
 use raft::StateRole;
 use std::collections::{HashSet, VecDeque};
@@ -636,6 +636,66 @@ fn a_leader_with_no_recorded_snapshot_cannot_invent_one_for_a_member_it_compacte
     );
     // It catches up by replay instead, because the log was never discarded.
     assert_eq!(cluster.events(3), cluster.events(1));
+}
+
+#[test]
+fn a_leader_refuses_to_compact_past_its_retained_floor_and_a_lagging_member_is_replayed() {
+    // The only durable snapshot the host holds covers four events, but the leader has
+    // committed five. Discarding the log through the fifth would leave it retained nowhere,
+    // so the leader keeps its log and member 3 is caught up by replay instead.
+    let temp = Temp::new("floor-replay");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    for generation in 1..=3 {
+        cluster.propose(1, generation).unwrap();
+    }
+    cluster.unreachable.insert(3);
+    for generation in 4..=5 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let covered = cluster.get(1).raft_committed();
+    let state = encode_state(&cluster.events(1)[..4]);
+
+    let refused = cluster
+        .node(1)
+        .record_snapshot_within(
+            covered,
+            state.clone(),
+            RetentionFloor::covering(CommitIndex(4)),
+        )
+        .expect_err("the fifth event is above the retained snapshot");
+    assert!(
+        refused.starts_with("PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR"),
+        "{refused}"
+    );
+    let overclaimed = cluster
+        .node(1)
+        .record_snapshot_within(
+            covered,
+            state.clone(),
+            RetentionFloor::covering(CommitIndex(6)),
+        )
+        .expect_err("a payload cannot cover an event that does not exist yet");
+    assert!(
+        overclaimed.starts_with("PTR_RAFT_SNAPSHOT_FLOOR_MISMATCH"),
+        "{overclaimed}"
+    );
+
+    cluster.unreachable.remove(&3);
+    cluster.heartbeat(1);
+    assert!(
+        cluster.node(3).take_installed_snapshot().is_none(),
+        "nothing was compacted, so there is no snapshot to send"
+    );
+    assert_eq!(cluster.events(3), cluster.events(1), "caught up by replay");
+
+    // The control: the floor the log actually produced is accepted, so the refusals above
+    // were about the floor and not about this leader.
+    let full = encode_state(&cluster.events(1));
+    cluster
+        .node(1)
+        .record_snapshot_within(covered, full, RetentionFloor::covering(CommitIndex(5)))
+        .expect("exactly the events the log produced");
 }
 
 #[test]

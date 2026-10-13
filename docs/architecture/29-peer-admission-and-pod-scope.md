@@ -145,8 +145,9 @@ Negative, one per route back in:
   (`33-pod-wire.md`), which is where the project scope below reaches across a
   network boundary — a requester cannot name a project, because the format has
   nowhere to put one, so the project comes from the same kind of host policy this
-  document describes for principals. `ALPN_MODEL`, `ALPN_BLOB` and `ALPN_EVENTS`
-  still carry nothing.
+  document describes for principals. The model, blob and events ALPNs, which
+  carried nothing, have been removed rather than left declared
+  (`07-network-protocol.md`).
 - **Pod project membership is declared, not proven.** A Pod says which project it
   serves in its own manifest. Whoever registers it decides that, exactly as
   whoever installs a grant decides its scope.

@@ -144,6 +144,14 @@ layer. Neither is delivered:
 - **Durable snapshot lifecycle is not implemented.** `ptr-runtime` snapshots are
   host-retained artifacts; PTR does not track, enumerate or reclaim them, which is
   why they appear as a declared boundary instead of a search path.
+- **A raft member's log is another retained copy, and the audit does not search
+  it.** Its compaction is bounded by the retention floor when the host records a
+  snapshot with `record_snapshot_within` — it cannot discard an entry the retained
+  snapshot does not cover (`31-cluster-integrity.md`) — but that bound runs one
+  way: nothing makes raft discard what the ledger's floor has already passed, so a
+  raft log can hold a record the ledger no longer does until its own snapshot is
+  recorded. Folding it in with `with_retained_elsewhere` is the host's, as for any
+  other artifact.
 - No retention *schedule* or policy engine exists. `RetentionPolicy` bounds how far
   a floor may rise; it does not express "erase subject X after N days".
 

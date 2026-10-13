@@ -23,11 +23,16 @@ pub enum RelayMode {
     DirectWithRelayFallback,
 }
 
+// An ALPN constant exists only when a protocol with a contract speaks it. The
+// model, blob and events ALPNs were declared ahead of any protocol and removed
+// rather than left declared: a name nothing speaks invites a first speaker with no
+// frame format, no bound and no refusal codes, and makes every listing of "the
+// ALPNs" overstate what the network carries.
+
+/// Raft traffic between cluster members (`ptr-cluster`).
 pub const ALPN_RAFT: &[u8] = b"ptr-raft/1";
+/// Pod access (`ptr-podwire`).
 pub const ALPN_PODWIRE: &[u8] = b"ptr-podwire/1";
-pub const ALPN_MODEL: &[u8] = b"ptr-model/1";
-pub const ALPN_BLOB: &[u8] = b"ptr-blob/1";
-pub const ALPN_EVENTS: &[u8] = b"ptr-events/1";
 /// The execution wire: an action requested across a network boundary.
 ///
 /// Its own ALPN rather than `ALPN_PODWIRE`, because the pod wire is Pod access and
