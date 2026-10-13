@@ -8,10 +8,12 @@
 //! committed entries can acknowledge a history it no longer has.
 
 use ptr_ledger::integrity::MAX_RECORD_BYTES;
-use ptr_ledger::raft_storage::FileRaftStorage;
-use ptr_ledger::{Attestation, LedgerEvent, SemanticOrigin, SingleNodeRaftConsensus};
-use ptr_types::{CapsuleId, Generation, ProjectId, Revision, VerificationLevel};
-use raft::prelude::{Entry, HardState};
+use ptr_ledger::raft_storage::{FileRaftStorage, SnapshotFloorRefusal};
+use ptr_ledger::{
+    Attestation, LedgerEvent, RetentionFloor, SemanticOrigin, SingleNodeRaftConsensus,
+};
+use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision, VerificationLevel};
+use raft::prelude::{ConfState, Entry, EntryType, HardState, Snapshot, SnapshotMetadata};
 use raft::Storage;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -456,4 +458,223 @@ fn an_origin_the_decoder_refuses_is_never_proposed() {
     let reopened = SingleNodeRaftConsensus::open(&temp.dir(), 1).unwrap();
     assert_eq!(reopened.committed_events().len(), 1);
     assert_eq!(reopened.committed_events()[0].event, accepted);
+}
+
+// Raft's log floor against the ledger's retention floor.
+
+fn typed_entry(index: u64, kind: EntryType, data: &[u8]) -> Entry {
+    Entry {
+        entry_type: kind as i32,
+        ..entry(index, 1, data)
+    }
+}
+
+/// A committed log whose raft indexes and ledger events disagree: a leader's empty entry
+/// (1), two events (2, 3), a configuration change (4) and a third event (5). Through raft
+/// index 4 the prefix produced two events; through 5, three.
+fn log_with_non_event_entries(temp: &Temp) -> FileRaftStorage {
+    let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    storage
+        .wl()
+        .append(&[
+            typed_entry(1, EntryType::EntryNormal, b""),
+            typed_entry(2, EntryType::EntryNormal, b"two"),
+            typed_entry(3, EntryType::EntryNormal, b"three"),
+            typed_entry(4, EntryType::EntryConfChange, b"conf"),
+            typed_entry(5, EntryType::EntryNormal, b"five"),
+        ])
+        .unwrap();
+    storage
+        .wl()
+        .set_hard_state(&HardState {
+            term: 1,
+            vote: 1,
+            commit: 5,
+        })
+        .unwrap();
+    storage
+}
+
+fn floor(events: u64) -> RetentionFloor {
+    RetentionFloor::covering(CommitIndex(events))
+}
+
+fn refusal_of(error: &std::io::Error) -> SnapshotFloorRefusal {
+    *error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<SnapshotFloorRefusal>())
+        .unwrap_or_else(|| panic!("not a floor refusal: {error}"))
+}
+
+#[test]
+fn compacting_short_of_the_retained_floor_is_refused_and_leaves_the_log_whole() {
+    let temp = Temp::new("floor-above");
+    let storage = log_with_non_event_entries(&temp);
+    let error = storage
+        .wl()
+        .record_snapshot_within(4, b"state".to_vec(), floor(1))
+        .expect_err("two events would leave raft with only one of them retained");
+    assert_eq!(
+        refusal_of(&error),
+        SnapshotFloorRefusal::AboveRetentionFloor {
+            index: 4,
+            events: CommitIndex(2),
+            floor: CommitIndex(1),
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .starts_with("PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR"),
+        "{error}"
+    );
+    assert_eq!(storage.first_index().unwrap(), 1, "nothing was discarded");
+    assert!(!storage.wl().is_poisoned(), "a refusal is not a fault");
+    drop(storage);
+
+    // Nothing reached the disk either: the reopened log still holds every entry and no
+    // snapshot is on offer.
+    let reopened = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    assert_eq!(reopened.first_index().unwrap(), 1);
+    assert_eq!(reopened.snapshot(0, 1).unwrap().get_metadata().index, 0);
+}
+
+#[test]
+fn a_payload_claiming_more_than_the_prefix_produced_is_refused() {
+    let temp = Temp::new("floor-mismatch");
+    let storage = log_with_non_event_entries(&temp);
+    let error = storage
+        .wl()
+        .record_snapshot_within(4, b"state".to_vec(), floor(3))
+        .expect_err("the third event is above index 4, so a member would apply it twice");
+    assert_eq!(
+        refusal_of(&error),
+        SnapshotFloorRefusal::FloorMismatch {
+            index: 4,
+            events: CommitIndex(2),
+            floor: CommitIndex(3),
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .starts_with("PTR_RAFT_SNAPSHOT_FLOOR_MISMATCH"),
+        "{error}"
+    );
+    assert_eq!(storage.first_index().unwrap(), 1);
+}
+
+#[test]
+fn the_floor_is_counted_in_ledger_events_not_raft_indexes() {
+    let temp = Temp::new("floor-exact");
+    let storage = log_with_non_event_entries(&temp);
+    // The raft index is the wrong number for the same position, in both directions.
+    for wrong in [4, 5] {
+        storage
+            .wl()
+            .record_snapshot_within(4, b"state".to_vec(), floor(wrong))
+            .expect_err("a raft index is not a ledger position");
+    }
+    storage
+        .wl()
+        .record_snapshot_within(4, b"state-at-4".to_vec(), floor(2))
+        .expect("exactly the events the prefix produced");
+    assert_eq!(storage.first_index().unwrap(), 5);
+    assert_eq!(storage.last_index().unwrap(), 5);
+    drop(storage);
+
+    // The coverage is persisted with the snapshot: the member reopens numbered from it,
+    // so the next snapshot's floor is two plus the one event above, not one.
+    let reopened = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    assert_eq!(reopened.first_index().unwrap(), 5);
+    reopened
+        .wl()
+        .record_snapshot_within(5, b"state-at-5".to_vec(), floor(1))
+        .expect_err("a count restarted from zero is the bug this refuses");
+    reopened
+        .wl()
+        .record_snapshot_within(5, b"state-at-5".to_vec(), floor(3))
+        .unwrap();
+    assert_eq!(
+        reopened.snapshot(0, 1).unwrap().data,
+        b"state-at-5".to_vec()
+    );
+}
+
+#[test]
+fn a_floor_of_zero_covers_a_prefix_with_no_events() {
+    let temp = Temp::new("floor-zero");
+    let storage = log_with_non_event_entries(&temp);
+    storage
+        .wl()
+        .record_snapshot_within(1, Vec::new(), floor(0))
+        .expect("the leader's empty entry produced no event");
+    assert_eq!(storage.first_index().unwrap(), 2);
+}
+
+#[test]
+fn the_self_attested_record_snapshot_still_counts_by_the_same_rule() {
+    // `record_snapshot` takes its floor from the log, so it cannot be refused for a floor;
+    // what it must do is persist the same count `record_snapshot_within` would.
+    let temp = Temp::new("floor-self");
+    let storage = log_with_non_event_entries(&temp);
+    storage.wl().record_snapshot(4, b"state".to_vec()).unwrap();
+    storage
+        .wl()
+        .record_snapshot_within(5, b"state".to_vec(), floor(3))
+        .expect("two events through 4 and one more through 5");
+}
+
+#[test]
+fn an_unaccounted_installed_snapshot_blocks_compaction_across_a_restart() {
+    let temp = Temp::new("floor-unaccounted");
+    {
+        let storage = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+        let mut core = storage.wl();
+        core.apply_snapshot(Snapshot {
+            data: b"installed".to_vec(),
+            metadata: Some(SnapshotMetadata {
+                index: 10,
+                term: 1,
+                conf_state: Some(ConfState {
+                    voters: vec![1],
+                    ..Default::default()
+                }),
+            }),
+        })
+        .unwrap();
+        core.append(&[entry(11, 1, b"after")]).unwrap();
+        core.set_commit(11).unwrap();
+        let error = core
+            .record_snapshot_within(11, b"mine".to_vec(), floor(1))
+            .expect_err("there is no base to count from");
+        assert_eq!(
+            refusal_of(&error),
+            SnapshotFloorRefusal::Unaccounted { snapshot_index: 10 }
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("PTR_RAFT_SNAPSHOT_UNACCOUNTED"),
+            "{error}"
+        );
+        core.record_snapshot(11, b"mine".to_vec())
+            .expect_err("the self-attested form has no base either");
+        assert_eq!(core.first_index(), 11);
+    }
+    let reopened = FileRaftStorage::open(&temp.dir(), &[1], &[]).unwrap();
+    let error = reopened
+        .wl()
+        .record_snapshot_within(10, b"mine".to_vec(), floor(0))
+        .expect_err("the marker is durable: still blocked after the restart");
+    assert!(matches!(
+        refusal_of(&error),
+        SnapshotFloorRefusal::Unaccounted { snapshot_index: 10 }
+    ));
+    // The control: accounting for the snapshot lifts the block.
+    reopened.wl().set_applied_events(4).unwrap();
+    reopened
+        .wl()
+        .record_snapshot_within(10, b"mine".to_vec(), floor(4))
+        .unwrap();
 }

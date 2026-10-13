@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-cluster"
 maturity = "prototype"
-last_reviewed = "2026-09-28"
+last_reviewed = "2026-10-13"
 
 implemented = [
   "ClusterMember carries raft messages between authenticated endpoints on ALPN_RAFT, composing ptr-ledger's RaftNode with ptr-net's transport so neither of them has to know about the other",
@@ -15,6 +15,7 @@ implemented = [
   "resume_with_applied inherits ptr-ledger's refusals unchanged and returns them as ClusterError::Node text that starts with the stable diagnostic code of ptr-ledger: NoSnapshotPending when no installed snapshot is waiting to be accounted for, and NodeFailed when the node was marked failed by an earlier error and must be restarted; a failed call leaves the member as it was and can be repeated",
   "take_installed_snapshot_matching lets a host that retains snapshot anchors out of band refuse a payload the elected leader sent but the host did not expect; take_installed_snapshot remains for deployments with no second channel and documents what it trusts",
   "propose_membership adds or removes one voter from the leader and drives it to quiescence, and voters() reports the group in ascending order",
+  "record_snapshot_within takes the RetentionFloor the payload covers, so a member's raft log is compacted only through the position whose entries produced exactly the events the retained snapshot covers; ptr-ledger's refusals come back as ClusterError::Node text that starts with the stable code; record_snapshot stays for hosts with no retained snapshot to name and takes its floor from the log",
   "Snapshot payloads are carried unread, and the test carries a real PTRCS006 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes",
   "No background loop, timer or retry policy: the caller drives accept and dispatch, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps",
   "The whole composition is feature-gated, so iroh and raft stay out of every other workspace build exactly as ptr-net and ptr-ledger keep their own backends out",
@@ -45,6 +46,7 @@ checks = [
   "a refused frame still receives an answer, and that answer is an empty batch",
   "refusing a stranger's frame does not take a serving member off the air: after the refusal an admitted member still reaches it, so an unadmitted peer cannot silence an admitted one by connecting once",
   "a member that cannot be reached is named in the report while the write is still decided by the majority that answered",
+  "a runtime's records ordered through raft and compacted exactly to a PTRCS006 snapshot's floor, with a second key spent above it, restart and restore from the snapshot plus raft's remainder: both keys are answered with their original outcome and neither executes again, while an unspent key does; a floor taken before the effect is refused with PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR and the settled attempt survives a restart in raft's log (tests/retention_floor.rs)",
   "a real PTRCS006 snapshot, exported by a runtime whose semantic value is a host write under a test grant, travels as the payload to a restarted member the leader compacted past, arrives byte for byte, and a runtime restores the state it described from exactly those bytes",
   "frame codec unit tests: round trip including an empty batch, every prefix refused, foreign bytes, trailing bytes, an unknown layout version, an invented count refused by the bound rather than by allocation, an oversize frame refused before parsing, and one distinct code per refusal",
 ]
