@@ -72,7 +72,10 @@ of section 2.4, `InProcess` nearest to `ScaleOut` farthest), so a node reachable
 can never be a rack member. The declaration is
 **host policy** (the operator says which nodes share a fabric), exactly like `AdmissionPolicy`
 says which peer is which principal ([29](29-peer-admission-and-pod-scope.md)): PTR cannot
-measure NVLink and must not pretend to. A node without a rack is a rack of one.
+measure NVLink and must not pretend to. A node without a rack is a rack of one: every scope
+comparison uses an effective scope `Declared(RackId) | Singleton(NodeId)`, so two undeclared
+nodes are two different racks and never share pages, while one undeclared node still shares
+within itself.
 
 **What the rack scopes.**
 
@@ -116,7 +119,10 @@ addition to its own. Any event that would revoke one member revokes the tray **a
 the placement of every member is revoked (removed, as a device failure already removes a
 placement since the device-fence change) in the same controller step, so `split_stage`, which
 reads only `Placement.epoch`, refuses a frame of any surviving member at once; a tray token in
-the leases alone would not reach activation frames. A tray is never partially fenced. Replacement is `assign_tray` under a new epoch; every in-flight activation
+the leases alone would not reach activation frames. In the same step every member's state and
+KV leases are removed and its open uses cancelled, because `validate_lease` consults the lease
+table and not the placements; a lease of a surviving member therefore cannot outlive the tray
+either. A tray is never partially fenced. Replacement is `assign_tray` under a new epoch; every in-flight activation
 frame, KV lease and state lease of the old epoch is refused at its next admission, which the
 existing `placement_epoch` revalidation in `split_stage`, `kv` and `tensor_kv` already does
 per Pod.
@@ -157,7 +163,10 @@ InterconnectClass = InProcess | SameDevice | SameHost | ScaleUpFabric | ScaleOut
 
 ordered from nearest to farthest, and a `LocalityRequirement { max_distance, anchor_kind }` on
 `PodResourceProfile` (and on `ResourceRequirements` for neural Pods), where `anchor_kind` says
-whether the bound is measured from the Pod's tray, its rack or nothing. The requirement is
+whether the bound is measured from the **device of a named co-placement partner** (for an L1
+expert, the stage that invokes it: `SameDevice` needs this), the Pod's tray, its rack or nothing.
+For a co-placement anchor the placement records the partner, and assignment and resolution
+require the same device as the partner's current placement. The requirement is
 topology-independent and part of the manifest; the **concrete** tray or rack it is measured from
 is a property of the `Placement`, chosen at placement time, so moving a Pod to a replacement tray
 or rack never changes its manifest identity. Placement refuses an assignment whose distance to the anchor exceeds

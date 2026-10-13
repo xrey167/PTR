@@ -79,6 +79,7 @@ TensorHandle {
   shape, dtype, byte_len,                // byte_len == product(shape) * size(dtype), overflow-checked;
                                          // rank and every dimension bounded; byte_len bounded per handle
   content_digest,                        // SHA-256 of the tensor bytes, signed with the rest
+  payload_type,                          // schema and argument slot of the tensor (what TypedPayload.type_id was)
   upstream_chain,                        // producer stage, base model, adapters, experts (as ActivationFrame)
   placement_epoch,                       // captured at production, revalidated at every use
   consumer,                              // the stage the handle is addressed to (audience)
@@ -97,10 +98,17 @@ tensor the consumer builds always refer to the same bytes.
 The codec v1 handle carries no `input_lineage`. Input lineage is instead **owned by the
 authority**: `parent_operation_id` names an operation the authority process started and recorded,
 including the generation of every semantic, memory and derived input that operation read, and
-admission and consumption both ask the authority whether every one of those inputs is still live
-at the current committed anchor. A handle whose operation is unknown, or whose operation read an
-input that has since been revoked or superseded, is refused, and the locator is never released.
-This keeps the stale-generation invariant without trusting a worker to report its own lineage.
+the **expected model-side chain** (stage, base model, adapters and experts with identity,
+generation, digest and fence epoch) and the **payload types** the operation accepts. Admission and
+consumption both ask the authority whether the operation is known, every input is still live at
+the current committed anchor, the handle's chain **equals** the expected chain exactly (a
+different but live adapter or expert is refused) and the handle's `payload_type` is one the
+operation accepts. Otherwise the handle is refused and the locator is never released. This keeps
+the stale-generation invariant without trusting a worker to report its own lineage. Operation
+records are bounded: a global and per-principal cap with a typed saturation refusal when a new
+operation is started, and retention until the operation's last possible handle deadline plus skew,
+after which the record is removed deterministically (so a live handle never meets a missing
+record, and abandoned calls cannot accumulate).
 The E008 frame fields (`input_lineage`, `mode`, `taint`) may later be carried in the handle as
 well; the authority check stays either way.
 
@@ -131,6 +139,12 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    `CudaIpc` and `DevicePeer` no seal exists, so a mapped device allocation is never used
    directly under this contract: the consumer copies it into a **receiver-owned** allocation
    (one device-to-device copy), verifies `content_digest` on that copy, and only then uses it.
+   Before copying, the consumer queries the imported allocation's actual base and size
+   (`cuMemGetAddressRange`) and refuses the handle unless `offset + byte_len` lies inside it,
+   overflow-checked, analogous to the file-extent check for `HostShm`. The producer exports each
+   tensor from a **dedicated, separately allocated staging buffer** (never a sub-allocation of a
+   pool), because CUDA IPC can expose the whole underlying allocation; an export therefore never
+   lets the consumer read adjacent tensors or weights.
    Zero-copy use of a producer-owned device allocation is outside the authenticated-content
    guarantee and is not offered.
 3b. **Bytes are bounded, not only handles.** Every handle has a maximum `byte_len`, and each
@@ -147,7 +161,11 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
 4. **A fence invalidates handles.** A placement epoch bump, a device revocation, a tray fence
    (doc 40) or a dependency invalidation makes every handle of the old epoch unadmittable at
    its next use, exactly as doc 36 section D cancels forks whose lineage includes an
-   invalidated generation. In-flight handles are not drained; they are refused.
+   invalidated generation. In-flight handles are not drained; they are refused. A refusal at
+   consume cannot reach computation that has already started on the bytes, so the runtime also
+   revalidates the operation (inputs, chain, placement) when it admits the **computed output**,
+   as split-stage revalidates before releasing an output today; an output derived from an input
+   revoked mid-computation is refused there, or the operation is cancelled on the invalidation.
 5. **The carrier is chosen by placement, never by the caller.** The runtime knows both
    placements and picks the nearest carrier both ends support (section 2). A request cannot
    name a carrier, as it cannot name an endpoint ([34](34-address-authority.md)).
@@ -286,8 +304,13 @@ live grant be replayed for another object or redirected to another backend. A re
 therefore carries an authenticated, single-use grant that binds the object digest, source,
 destination, principal, deadline and nonce **and the active-write binding** (generation,
 placement epoch, fencing token) of the object, signed by the authority that issued it; the
-receiver revalidates that binding against the current residency record at transfer time, so a
-placement fenced after the grant was issued makes the grant unusable. It uses the chunk carrier; this is the Mooncake-like row of the master plan, section I, in its
+receiver revalidates that binding against the current residency record at transfer time **and
+again, atomically, immediately before the destination replica becomes available**, discarding the
+transferred chunks if the binding no longer holds, so a placement fenced during a multi-chunk
+transfer cannot publish a stale replica. The local tier path has the same gap today
+(`TierResidencyController::transfer` validates the authorization before its asynchronous copy and
+not again when it finishes, `crates/ptr-runtime/src/tier.rs`); closing it is part of the S3
+package. It uses the chunk carrier; this is the Mooncake-like row of the master plan, section I, in its
 simplest form (QUIC, no RDMA).
 
 **Later, not here.** RDMA (RoCE or InfiniBand) as a second remote carrier; GPUDirect RDMA. Both
@@ -336,7 +359,7 @@ names its sensitivity control; the table names the baseline. Ids are proposals.
 
 | Id | Claim | Baseline / ablation | Refuted if | Needs |
 |---|---|---|---|---|
-| E011-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes within the existing bounds (1 MiB to 64 MiB, the activation `MAX_FRAME_BYTES`; the `Bytes` baseline is chunked under PodWire's 4 MiB `MAX_BODY_BYTES`, and every compared carrier carries the same chunking) | `Bytes` at every size | the order is violated, or two adjacent carriers are within noise (then the carrier preference is revised; carriers are never merged, since a carrier is an eligibility boundary, not a cost estimate) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
+| E011-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes within the existing bounds (1 MiB to 64 MiB, the activation `MAX_FRAME_BYTES`; the `Bytes` baseline is chunked under PodWire's 4 MiB `MAX_BODY_BYTES`, and every compared carrier carries the same chunking) | baseline: `Bytes` at every size; ablation: each carrier with its zero-copy step replaced by an explicit copy (isolates what the carrier saves); sensitivity: a planted fixed delay on one carrier must reorder it in the measured order, else the harness is blind | the order is violated, or two adjacent carriers are within noise (then the carrier preference is revised; carriers are never merged, since a carrier is an eligibility boundary, not a cost estimate) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
 | E009-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, no mapping outlives its deadline plus skew, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any mapping alive after reclaim, any byte leak across a crash, in any seed | CPU for `HostShm`; GPU for `CudaIpc` |
 | E010-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | LRU without lookahead; unpinned RAM | a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor | CPU part (RAM and NVMe tiers, unpinned versus locked) here; the GPU leg on hardware |
 | E008 (registered) | two-stage split across a loopback socket (part B) with the extended frame (part A), bit-identical to the in-process split | E007 in process | any output difference, any admission of a frame with a stale epoch | CPU, one host |
