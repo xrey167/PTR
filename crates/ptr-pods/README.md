@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 39 Rust source files · 18502 nonblank source lines · 26 integration-test files · 326 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 39 Rust source files · 18520 nonblank source lines · 26 integration-test files · 327 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -66,6 +66,7 @@
 - run_stage_in_regime takes a StageRun (span, residual, rows, StageRows::Prefill or DecodeStep, optional frame positions) instead of positional parameters; the frame's positions must be the next positions of the cache (Qwen2StackError::StagePositions), and a row that fails truncates the cache back to where the run started, so a failed run leaves the cache unchanged (the rollback helper is unit-tested with a position-offset cache and a revoked cache; a fault in the middle of a row is not injected).
 - A stage run that fails part-way is rolled back to the cache's sequence length before the run (not to its next position, which differs for a cache restored at a position offset), and a rollback that itself fails is reported together with the failed run's own error as Qwen2StackError::RollbackFailed (the cache then holds the rows of the failed run and must be discarded); a unit test with a position-offset cache and one with a revoked cache (the injected rollback fault) cover both; the position arithmetic of the admission is checked (an offset that overflows is a typed refusal, not a wrap or a panic).
 - PodSemanticManifest carries predicate and aliases, identity_descriptor() and cluster_key(); validate() derives the PodIdentityDescriptor and requires pod_identity to equal descriptor.identity() (ManifestError::IdentityMismatch { expected, actual }, InvalidIdentityDescriptor). A retrained pod (other artifact or generation) changes digest() and keeps identity and cluster key; an alias or role change needs a new identity. digest() covers predicate and aliases
+- QwenCpuStats counts decode_steps (single-token forward passes after prefill) directly, and decode_tokens_per_second divides them by decode time instead of generated_tokens minus requests, which an immediate end-of-turn request understated (unit test in src/qwen_cpu/generator.rs, feature qwen-cpu)
 
 ### Missing for the target architecture
 

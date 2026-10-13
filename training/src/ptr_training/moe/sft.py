@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 
+from ptr_training.integrity import assert_step_count
 from ptr_training.moe.config import SftConfig
 from ptr_training.moe.tasks import Task, sft_text
 
@@ -66,6 +67,7 @@ def run_sft(model, tokenizer, tasks: list[Task], cfg: SftConfig, seed: int) -> d
 
         enable_gradient_checkpointing(model)
     model.train()
+    optimizer_steps = 0
     for _ in range(cfg.steps):
         opt.zero_grad(set_to_none=True)
         step_loss = 0.0
@@ -84,6 +86,7 @@ def run_sft(model, tokenizer, tasks: list[Task], cfg: SftConfig, seed: int) -> d
                 step_aux.append(float(out.aux_loss.detach()))
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
+        optimizer_steps += 1
         losses.append(step_loss)
         if step_aux:
             aux.append(sum(step_aux) / len(step_aux))
@@ -92,7 +95,9 @@ def run_sft(model, tokenizer, tasks: list[Task], cfg: SftConfig, seed: int) -> d
         from ptr_training.moe.model import disable_gradient_checkpointing
 
         disable_gradient_checkpointing(model)
+    assert_step_count(optimizer_steps, cfg.steps, "SFT")
     return {
+        "optimizer_steps": optimizer_steps,
         "losses": losses,
         "aux_losses": aux,
         "nan": any(math.isnan(x) or math.isinf(x) for x in losses + aux),

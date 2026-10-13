@@ -227,6 +227,7 @@ ci-repository-invariants:
 	$(PYTHON) scripts/check_contract_citations.py
 	$(PYTHON) scripts/check_architecture_catalog.py
 	$(PYTHON) scripts/check_rust_conventions.py
+	$(PYTHON) scripts/check_crate_layering.py
 	$(PYTHON) scripts/run_experiment.py validate
 	$(PYTHON) scripts/run_component_eval.py validate
 	$(PYTHON) scripts/check_component_protocols.py

@@ -121,26 +121,35 @@ impl Shadow {
         );
         // The next estimate point is `1.5 * len + 1`. If the log can never hold that many, this
         // candidate has had its last estimate: freeze a fresh one and start its log over.
-        if log.len() + log.len() / 2 + 1 > MAX_LOG {
-            self.candidate = Some(self.learner.snapshot());
-            self.last_estimate_at = 0;
-        }
-        let Ok(comparison) = comparison else {
-            return;
-        };
-        let estimate = ShadowEstimate {
+        let rotate = log.len() + log.len() / 2 + 1 > MAX_LOG;
+        let estimate = comparison.ok().map(|comparison| ShadowEstimate {
             records: log.len(),
             difference: comparison.difference,
             lower_bound: comparison.difference_lcb,
-        };
-        runtime.record_vcw_shadow_estimate(
-            &format!("vcw-{}", self.kind.as_str()),
-            candidate.digest(),
-            log.len() as u64,
-            estimate.difference,
-            estimate.lower_bound,
-        );
-        self.latest = Some(estimate);
+        });
+        if let Some(estimate) = &estimate {
+            runtime.record_vcw_shadow_estimate(
+                &format!("vcw-{}", self.kind.as_str()),
+                candidate.digest(),
+                log.len() as u64,
+                estimate.difference,
+                estimate.lower_bound,
+            );
+        }
+        self.conclude(estimate, rotate);
+    }
+
+    /// Store the round's estimate, or, when the candidate is rotated, drop it: the report pairs
+    /// `latest` with the current candidate's digest, and an estimate of the previous candidate
+    /// must never be shown next to a fresh one (its own estimate is in the runtime events).
+    fn conclude(&mut self, estimate: Option<ShadowEstimate>, rotate: bool) {
+        if rotate {
+            self.candidate = Some(self.learner.snapshot());
+            self.last_estimate_at = 0;
+            self.latest = None;
+        } else if estimate.is_some() {
+            self.latest = estimate;
+        }
     }
 
     pub(super) fn report(&self) -> LearningReport {
@@ -150,5 +159,27 @@ impl Shadow {
             candidate: self.candidate.as_ref().map(LearnedPolicy::digest),
             latest: self.latest,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotating_the_candidate_drops_the_previous_candidates_estimate() {
+        let mut shadow =
+            Shadow::new(VcwTaskKind::Arithmetic, 7, Exploration::new(0.1).unwrap()).unwrap();
+        shadow.candidate = Some(shadow.learner.snapshot());
+        let estimate = ShadowEstimate {
+            records: 10,
+            difference: 0.25,
+            lower_bound: 0.1,
+        };
+        shadow.conclude(Some(estimate), false);
+        assert_eq!(shadow.report().latest, Some(estimate));
+        shadow.conclude(Some(estimate), true);
+        assert_eq!(shadow.report().latest, None);
+        assert!(shadow.report().candidate.is_some());
     }
 }

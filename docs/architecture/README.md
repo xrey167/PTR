@@ -54,6 +54,7 @@
 - [38-consciousness-indicators.md](38-consciousness-indicators.md) — functional consciousness-indicator properties (after Butlin, Long et al. 2023) mapped to PTR components and as capability requirements of Pods and the Pod-MoE; principles (indicators are not consciousness, no training on self-reports), CPU/GPU split and the C-series experiment roadmap (design; C001 CPU workspace experiment built, not frozen); welfare rules in [`../MODEL_WELFARE.md`](../MODEL_WELFARE.md)
 - [40-pod-linking.md](40-pod-linking.md) — pod linking: value-free pod identity and cluster key, ledger-committed head with compare-and-swap, advisory activation-gated learned pod addresses (Dragonfly) with abstention, revocation per pod; Symlink-LoRA as design only (R015, ADR-0023)
 - [39-vcw-moe.md](39-vcw-moe.md) — VCW-MoE: the Verifier-Closed Workspace MoE; formal specification (state, loop, acceptance predicate, invariants as constraints), component and evidence map, delimitation from related work, falsification plan and risks (design)
+- [41-crate-layering.md](41-crate-layering.md) — executable crate layering: layers and backend ownership as data in `research/catalogs/crate-layers.toml`, checked in CI by `scripts/check_crate_layering.py`; shrinking exception ratchet
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation

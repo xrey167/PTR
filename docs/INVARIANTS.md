@@ -11,7 +11,7 @@ These are architecture-level requirements. Implementations may strengthen them b
 7. **Hard effect boundary:** external effects require capability, permission, current revision/generation and required verification.
 8. **Backpressure:** core queues are bounded; saturation is explicit.
 9. **Single-owner isolate state:** shared mutation is not the default execution model.
-10. **Provider independence:** external libraries do not define PTR semantics.
+10. **Provider independence:** external libraries do not define PTR semantics. Backend crates are confined to their owner crates and dependencies point only down the layers, both checked by `scripts/check_crate_layering.py` (`docs/architecture/41-crate-layering.md`).
 11. **Verifier precedence:** deterministic contradiction cannot be overridden by a learned positive score. For merges it is enforced by `PtrRuntime::merge_branch`: a change the grant's verifiers do not admit is held whatever triage or a reviewer decides (ADR-0020).
 12. **Unknown is valid:** the system is allowed to preserve uncertainty.
 13. **Secret redaction:** generic inspection/telemetry never exposes secret/private values by default.

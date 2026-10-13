@@ -28,6 +28,7 @@ pub(super) struct Retained {
     backend: String,
     trace: Value,
     /// `None` while the request runs: the report then has outcome `"running"` and `ledger: null`.
+    /// The trace itself is `null` until the loop has finished.
     committed: Option<LedgerSummary>,
 }
 
@@ -58,17 +59,44 @@ pub(super) struct TraceStore {
 }
 
 impl TraceStore {
+    /// Registers the request `id` as running before its loop starts, with a `null` trace, so a
+    /// query during the loop answers `running` instead of 404.
+    pub(super) fn start(&mut self, id: &str, backend: &str) {
+        self.push(Retained {
+            id: id.to_owned(),
+            outcome: "running",
+            backend: backend.to_owned(),
+            trace: Value::Null,
+            committed: None,
+        });
+    }
+
+    /// Stores the trace of the finished loop of `id`: into its running entry if it is still
+    /// retained, else as a new entry.
     pub(super) fn insert(&mut self, id: &str, backend: &str, trace: &VcwTrace) {
-        if self.items.len() >= MAX_RETAINED_TRACES {
-            self.items.pop_front();
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .rev()
+            .find(|item| item.id == id && item.trace.is_null())
+        {
+            item.trace = trace_json(trace);
+            return;
         }
-        self.items.push_back(Retained {
+        self.push(Retained {
             id: id.to_owned(),
             outcome: "running",
             backend: backend.to_owned(),
             trace: trace_json(trace),
             committed: None,
         });
+    }
+
+    fn push(&mut self, item: Retained) {
+        if self.items.len() >= MAX_RETAINED_TRACES {
+            self.items.pop_front();
+        }
+        self.items.push_back(item);
     }
 
     /// Records how the request `id` ended and the ledger range it committed, if it is still
@@ -276,6 +304,22 @@ mod tests {
         let summary = LedgerSummary::of(&events);
         assert_eq!(summary.count, (MAX_REPORTED_EVENTS + 5) as u64);
         assert_eq!(summary.events.len(), MAX_REPORTED_EVENTS);
+    }
+
+    #[test]
+    fn a_started_request_reads_back_as_running_before_its_loop_has_a_trace() {
+        let mut store = TraceStore::default();
+        store.start("live", "simulated");
+        let report = store.report("live").unwrap();
+        assert_eq!(report["outcome"], "running");
+        assert!(report["trace"].is_null());
+        assert!(report["ledger"].is_null());
+        assert_eq!(store.items.len(), 1);
+        for i in 0..MAX_RETAINED_TRACES + 3 {
+            store.start(&format!("r{i}"), "simulated");
+        }
+        assert_eq!(store.items.len(), MAX_RETAINED_TRACES);
+        assert!(store.report("live").is_none());
     }
 
     #[test]
