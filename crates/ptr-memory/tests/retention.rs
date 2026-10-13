@@ -92,6 +92,7 @@ fn object(
         lifecycle,
         retrieval_keys: vec![],
         token_cost: 1,
+        validity: Default::default(),
     }
 }
 
@@ -572,4 +573,38 @@ fn successful_activation_invalidates_old_dependents_and_keeps_new_generation_lif
     store.transition(&id, KnowledgeLifecycle::Archived).unwrap();
     store.activate_generation(&id, Generation(2)).unwrap();
     assert_eq!(store.lifecycle(&id), Some(KnowledgeLifecycle::Archived));
+}
+
+#[test]
+fn an_objects_validity_is_half_open_and_part_of_its_digest_only_when_bounded() {
+    use ptr_types::KnowledgeValidity;
+    let unbounded = object("topic", KnowledgeLifecycle::Hot, vec![]);
+    assert!(unbounded.is_valid_at(Timestamp(0)));
+    assert!(unbounded.is_valid_at(Timestamp(u64::MAX)));
+
+    let mut bounded = unbounded.clone();
+    bounded.validity = KnowledgeValidity {
+        valid_from: Some(Timestamp(10)),
+        valid_until: Some(Timestamp(20)),
+    };
+    assert!(!bounded.is_valid_at(Timestamp(9)));
+    assert!(bounded.is_valid_at(Timestamp(10)), "the start is inside");
+    assert!(bounded.is_valid_at(Timestamp(19)));
+    assert!(!bounded.is_valid_at(Timestamp(20)), "the end is outside");
+
+    assert_ne!(
+        bounded.content_digest(),
+        unbounded.content_digest(),
+        "two objects that hold at different times are not the same content"
+    );
+    let mut shifted = bounded.clone();
+    shifted.validity.valid_until = Some(Timestamp(21));
+    assert_ne!(shifted.content_digest(), bounded.content_digest());
+    let mut unchanged = unbounded.clone();
+    unchanged.validity = KnowledgeValidity::ALWAYS;
+    assert_eq!(
+        unchanged.content_digest(),
+        unbounded.content_digest(),
+        "an unbounded validity leaves the digest of an older object untouched"
+    );
 }

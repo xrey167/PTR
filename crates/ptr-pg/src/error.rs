@@ -61,6 +61,12 @@ pub enum PgError {
     NotLive { target: String, generation: u64 },
     /// A value does not fit the signed 64-bit column it is stored in.
     OutOfRange { field: &'static str },
+    /// A search filter or a document's retrieval attributes were refused before any SQL
+    /// ran: `field` says which, `error` why.
+    InvalidSearchFilter {
+        field: &'static str,
+        error: ptr_search::FilterError,
+    },
     /// The connection string names a `host` that is not a Unix socket, a
     /// loopback address or `localhost`, or a `hostaddr` that is not a
     /// loopback address; this build has no TLS connector and refuses rather
@@ -261,6 +267,7 @@ impl PgError {
             Self::ProjectionBehind { .. } => "PTR_PG_PROJECTION_BEHIND",
             Self::NotLive { .. } => "PTR_PG_NOT_LIVE",
             Self::OutOfRange { .. } => "PTR_PG_OUT_OF_RANGE",
+            Self::InvalidSearchFilter { .. } => "PTR_PG_INVALID_SEARCH_FILTER",
             Self::TlsRequired { .. } => "PTR_PG_TLS_REQUIRED",
             Self::MultipleHosts { .. } => "PTR_PG_MULTIPLE_HOSTS",
             Self::DimensionMismatch { .. } => "PTR_PG_DIMENSION_MISMATCH",
@@ -347,6 +354,9 @@ impl fmt::Display for PgError {
                 write!(formatter, "{target:?} generation {generation} is not live")
             }
             Self::OutOfRange { field } => write!(formatter, "{field} exceeds the signed 64-bit range"),
+            Self::InvalidSearchFilter { field, error } => {
+                write!(formatter, "{field} refused: {error}")
+            }
             Self::TlsRequired { host } => write!(
                 formatter,
                 "{host:?} is not a loopback host and this build has no TLS connector"

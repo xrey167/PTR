@@ -54,11 +54,18 @@ pub const PROJECTION_MIGRATIONS: &[Migration] = &[
     },
 ];
 
-pub const DERIVED_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "search",
-    sql: include_str!("../migrations/derived/0001_search.sql"),
-}];
+pub const DERIVED_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "search",
+        sql: include_str!("../migrations/derived/0001_search.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "search_filters",
+        sql: include_str!("../migrations/derived/0002_search_filters.sql"),
+    },
+];
 
 pub const WORK_MIGRATIONS: &[Migration] = &[
     Migration {

@@ -71,6 +71,7 @@ pub fn search_document(
             Identifier::new(SPACE).expect("the space id is an identifier"),
             embedding.to_vec(),
         )),
+        attributes: Default::default(),
     }
 }
 
@@ -214,6 +215,7 @@ impl PgArm {
             lexical_weight: params::LEXICAL_WEIGHT_PERMILLE as f32 / 1000.0,
             vector_weight: params::VECTOR_WEIGHT_PERMILLE as f32 / 1000.0,
             rank_constant: params::RANK_CONSTANT as f32,
+            filter: Default::default(),
         };
         let outcome = guarded(
             &self.runtime,

@@ -60,6 +60,7 @@ fn knowledge() -> (KnowledgeStore, KnowledgeObject) {
         lifecycle: KnowledgeLifecycle::Hot,
         retrieval_keys: vec![],
         token_cost: 1,
+        validity: Default::default(),
     };
     let mut store = KnowledgeStore::default();
     store.register_object(object.clone()).unwrap();

@@ -147,6 +147,39 @@ impl IdentityContext {
     }
 }
 
+/// When a piece of knowledge holds, as a half-open interval in the same unit as [`Timestamp`]:
+/// `valid_from <= now < valid_until`. A missing bound is unbounded on that side, so the
+/// default value holds always. Half-open on purpose: two consecutive validities that meet at a
+/// boundary (`[a, b)` then `[b, c)`) never hold at the same instant and never leave a gap.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct KnowledgeValidity {
+    pub valid_from: Option<Timestamp>,
+    pub valid_until: Option<Timestamp>,
+}
+
+impl KnowledgeValidity {
+    /// A validity bounded on neither side.
+    pub const ALWAYS: Self = Self {
+        valid_from: None,
+        valid_until: None,
+    };
+
+    /// Whether the knowledge holds at `now`.
+    pub fn is_valid_at(&self, now: Timestamp) -> bool {
+        self.valid_from.is_none_or(|from| from.0 <= now.0)
+            && self.valid_until.is_none_or(|until| now.0 < until.0)
+    }
+
+    /// Whether the interval can ever hold: a validity whose end does not come after its start
+    /// holds at no instant and is a mistake, not a way to say "never".
+    pub fn is_well_formed(&self) -> bool {
+        match (self.valid_from, self.valid_until) {
+            (Some(from), Some(until)) => from.0 < until.0,
+            _ => true,
+        }
+    }
+}
+
 fn put_text(bytes: &mut Vec<u8>, value: &str) {
     bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
     bytes.extend_from_slice(value.as_bytes());

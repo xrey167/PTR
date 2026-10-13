@@ -151,6 +151,7 @@ impl KnowledgeObjectBuilder for BasicKnowledgeObjectBuilder {
                 .map(|token| RetrievalKey::from(token.as_str()))
                 .collect(),
             token_cost: event.tokens.len() as u32,
+            validity: Default::default(),
         })
     }
 }

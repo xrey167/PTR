@@ -1,6 +1,6 @@
 use ptr_types::{
-    EntityId, EventRole, Generation, KnowledgeObjectId, NamespaceId, PolicyVersion, Probability,
-    ProvenanceRef, RawEventId, RetrievalKey, SessionId, Timestamp,
+    EntityId, EventRole, Generation, KnowledgeObjectId, KnowledgeValidity, NamespaceId,
+    PolicyVersion, Probability, ProvenanceRef, RawEventId, RetrievalKey, SessionId, Timestamp,
 };
 use sha2::{Digest, Sha256};
 
@@ -141,6 +141,10 @@ pub struct KnowledgeObject {
     pub lifecycle: KnowledgeLifecycle,
     pub retrieval_keys: Vec<RetrievalKey>,
     pub token_cost: u32,
+    /// When this object holds, half-open (`valid_from <= now < valid_until`). The default
+    /// holds always. Part of the content digest only when it is bounded, so the digest of an
+    /// object written before validities existed does not change.
+    pub validity: KnowledgeValidity,
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -216,7 +220,27 @@ impl KnowledgeObject {
         for key in &self.retrieval_keys {
             field!("retrieval_key", key.0);
         }
+        if self.validity != KnowledgeValidity::ALWAYS {
+            field!(
+                "validity",
+                format!(
+                    "{}:{}",
+                    self.validity
+                        .valid_from
+                        .map_or(String::new(), |t| t.0.to_string()),
+                    self.validity
+                        .valid_until
+                        .map_or(String::new(), |t| t.0.to_string())
+                )
+            );
+        }
         Sha256::digest(canonical.as_bytes()).into()
+    }
+
+    /// Whether this object holds at `now`: the half-open validity check every reader of
+    /// knowledge repeats at the moment it relies on the object, not only when it retrieved it.
+    pub fn is_valid_at(&self, now: Timestamp) -> bool {
+        self.validity.is_valid_at(now)
     }
 }
 
