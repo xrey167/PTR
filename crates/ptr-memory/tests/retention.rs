@@ -1,10 +1,11 @@
 use ptr_memory::{
-    compile_structured, decide, BasicKnowledgeObjectBuilder, ConflictState,
-    DeterministicEntityExtractor, DeterministicTokenizer, EntityExtractor, Freshness,
-    InMemoryKvStateRuntime, KnowledgeKey, KnowledgeLifecycle, KnowledgeObject,
-    KnowledgeObjectBuilder, KnowledgeStore, KvStateRuntime, NamespaceContext, NamespaceResolver,
-    RetentionAction, RetentionCandidate, RetentionError, RetentionModel, RetentionReason,
-    RetentionScore, RetentionState, SemanticTokenizer, StaticNamespaceResolver, TokenBudget,
+    compile_selected_at, compile_structured, compile_structured_at, decide,
+    BasicKnowledgeObjectBuilder, ConflictState, DeterministicEntityExtractor,
+    DeterministicTokenizer, EntityExtractor, Freshness, InMemoryKvStateRuntime, KnowledgeKey,
+    KnowledgeLifecycle, KnowledgeObject, KnowledgeObjectBuilder, KnowledgeStore, KvStateRuntime,
+    NamespaceContext, NamespaceResolver, RetentionAction, RetentionCandidate, RetentionError,
+    RetentionModel, RetentionReason, RetentionScore, RetentionState, SemanticTokenizer,
+    StaticNamespaceResolver, TokenBudget,
 };
 use ptr_types::{
     AdapterVersion, EntityId, EventRole, EvidenceId, Generation, KnowledgeObjectId, ModelVersion,
@@ -573,6 +574,68 @@ fn successful_activation_invalidates_old_dependents_and_keeps_new_generation_lif
     store.transition(&id, KnowledgeLifecycle::Archived).unwrap();
     store.activate_generation(&id, Generation(2)).unwrap();
     assert_eq!(store.lifecycle(&id), Some(KnowledgeLifecycle::Archived));
+}
+
+#[test]
+fn an_expired_object_is_left_out_of_a_context_compiled_for_an_instant() {
+    use ptr_memory::ContextEntry;
+    use ptr_types::KnowledgeValidity;
+    let timed = |id: &str, from: Option<u64>, until: Option<u64>| {
+        let mut item = object(id, KnowledgeLifecycle::Hot, vec![]);
+        item.validity = KnowledgeValidity {
+            valid_from: from.map(Timestamp),
+            valid_until: until.map(Timestamp),
+        };
+        item
+    };
+    let objects = [
+        timed("always", None, None),
+        timed("current", Some(10), Some(20)),
+        timed("expired", Some(1), Some(10)),
+        timed("future", Some(20), None),
+    ];
+    let ids = |context: &ptr_memory::CompiledContext| -> Vec<String> {
+        context
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ContextEntry::Structured(object) => Some(object.id.0.clone()),
+                ContextEntry::Verbatim(_) => None,
+            })
+            .collect()
+    };
+    let at_15 = compile_structured_at(&objects, TokenBudget(100), Timestamp(15)).unwrap();
+    assert_eq!(ids(&at_15), ["always", "current"]);
+    assert_eq!(at_15.omitted_expired, 2);
+    // Half-open: the end is outside, the start inside.
+    let at_10 = compile_structured_at(&objects, TokenBudget(100), Timestamp(10)).unwrap();
+    assert_eq!(ids(&at_10), ["always", "current"]);
+    let at_20 = compile_structured_at(&objects, TokenBudget(100), Timestamp(20)).unwrap();
+    assert_eq!(ids(&at_20), ["always", "future"]);
+    // The audit path has no time rule and omits nothing.
+    let audit = compile_structured(&objects, TokenBudget(100)).unwrap();
+    assert_eq!(audit.entries.len(), 4);
+    assert_eq!(audit.omitted_expired, 0);
+    // A dependent of an omitted object is refused, not compiled without its basis.
+    let mut dependent = object(
+        "dependent",
+        KnowledgeLifecycle::Hot,
+        vec![key("expired", 1)],
+    );
+    dependent.validity = KnowledgeValidity::ALWAYS;
+    let candidates: Vec<ptr_memory::ContextCandidate> = [objects[2].clone(), dependent]
+        .into_iter()
+        .map(|object| ptr_memory::ContextCandidate {
+            object,
+            action: ptr_memory::RetentionAction::KeepStructured,
+            verbatim: None,
+            pinned: false,
+        })
+        .collect();
+    assert_eq!(
+        compile_selected_at(&candidates, TokenBudget(100), Timestamp(15)),
+        Err(ptr_memory::ContextCompileError::MissingDependency)
+    );
 }
 
 #[test]

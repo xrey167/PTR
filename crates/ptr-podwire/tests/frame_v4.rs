@@ -234,7 +234,7 @@ fn a_forwarded_binding_has_one_hop_less_a_visited_trail_and_a_deadline_that_neve
         generation: Generation(1),
     };
     let wider = origin
-        .forward_to(next.clone(), Some(Timestamp(9_999)))
+        .forward_to(next.clone(), Some(Timestamp(9_999)), Timestamp(150))
         .unwrap();
     assert_eq!(
         wider.deadline,
@@ -246,22 +246,40 @@ fn a_forwarded_binding_has_one_hop_less_a_visited_trail_and_a_deadline_that_neve
     assert_eq!(wider.visited, vec![origin.destination.address.clone()]);
     assert_eq!(wider.source, Some(origin.destination.address.clone()));
     let tighter = origin
-        .forward_to(next.clone(), Some(Timestamp(500)))
+        .forward_to(next.clone(), Some(Timestamp(500)), Timestamp(150))
         .unwrap();
     assert_eq!(tighter.deadline, Some(Timestamp(500)));
-    let silent = origin.forward_to(next.clone(), None).unwrap();
+    let silent = origin
+        .forward_to(next.clone(), None, Timestamp(150))
+        .unwrap();
     assert_eq!(
         silent.deadline,
         Some(Timestamp(1_000)),
         "a hop that asks nothing keeps the deadline"
     );
     // Not a hop to a Pod already visited, and not past the last hop.
-    assert!(wider.forward_to(origin.destination.clone(), None).is_err());
+    assert!(wider
+        .forward_to(origin.destination.clone(), None, Timestamp(150))
+        .is_err());
     let mut last = origin.clone();
     last.hop_limit = 1;
     assert_eq!(
-        last.forward_to(next, None),
+        last.forward_to(next.clone(), None, Timestamp(150)),
         Err(FrameError::InvalidField { field: "hop_limit" })
+    );
+    // A parent without a deadline that is forwarded with one becomes a V4 binding of its own.
+    let open = binding(None);
+    let child = open
+        .forward_to(next.clone(), Some(Timestamp(900)), Timestamp(150))
+        .unwrap();
+    assert_eq!(child.deadline, Some(Timestamp(900)));
+    assert_eq!(child.origin_ts, Some(Timestamp(150)));
+    let frame = encode_request_v2(&request(child)).unwrap();
+    assert_eq!(format_of(&frame), FORMAT_V4);
+    // The requested deadline must still lie after the relay's clock.
+    assert_eq!(
+        open.forward_to(next, Some(Timestamp(150)), Timestamp(150)),
+        Err(FrameError::InvalidField { field: "deadline" })
     );
 }
 

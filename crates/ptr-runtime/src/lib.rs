@@ -3370,6 +3370,13 @@ impl PtrRuntime {
         Ok(())
     }
 
+    /// Test hook: leave the execution state as a commit whose outcome is unknown does, so the
+    /// next append is refused.
+    #[cfg(test)]
+    pub(crate) fn mark_commit_uncertain_for_test(&mut self) {
+        self.execution.begin_commit();
+    }
+
     fn emit(&mut self, event: RuntimeEvent) {
         self.events.push(EventEnvelope {
             sequence: self.next_event_sequence,

@@ -8,6 +8,12 @@
 //!   concrete topic, never a filter, so a topic carrying a wildcard is refused before it is
 //!   matched. As in MQTT, a filter that starts with a wildcard does not match a `$`-prefixed
 //!   topic.
+//! - **No executor here binds a topic to the wire.** `TcpProtocolExecutor` and
+//!   `UdpProtocolExecutor` send a request's payload unchanged and read no topic from it, so the
+//!   `topic` a request declares cannot be checked against what is published. Under a topic
+//!   policy, or on an MQTT link, they refuse with `EgressRefusalReason::TopicUnverifiable`.
+//!   [`EgressPolicy::check_publication`] is the check for a future MQTT executor that takes the
+//!   topic from the frame it encodes.
 //! - **Destinations.** A host and a port are each listed or refused; the reason says which.
 //! - **Rate.** A [`FrameRateLimiter`] is a token bucket: it admits a burst of `max_per_window`
 //!   frames and refills at `max_per_window` per `window`. It is bounded by construction (one

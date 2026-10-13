@@ -12,7 +12,8 @@ pub use filter::{
     MAX_FILTER_TEXT_BYTES,
 };
 pub use resolver::{
-    AliasError, AliasTable, ResolveError, Resolved, MAX_ALIASES, MAX_ALIAS_WORDS, MAX_QUERY_WORDS,
+    AliasError, AliasTable, ResolveError, Resolved, MAX_ALIASES, MAX_ALIAS_BYTES, MAX_ALIAS_WORDS,
+    MAX_QUERY_BYTES, MAX_QUERY_WORDS,
 };
 
 pub use fusion::{

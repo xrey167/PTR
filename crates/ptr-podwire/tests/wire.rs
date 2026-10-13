@@ -462,7 +462,10 @@ async fn v4_client_refuses_an_expired_deadline_without_sending_anything() {
     );
     let refused = client.request_v2(located(raw.direct_addr()), &asked).await;
     assert!(
-        matches!(refused, Err(PodWireError::DeadlineExceeded { .. })),
+        matches!(
+            refused,
+            Err(PodWireError::DeadlineExceeded { sent: false, .. })
+        ),
         "{refused:?}"
     );
     assert_eq!(*invocations.lock().unwrap(), 0);
@@ -518,7 +521,7 @@ async fn v4_host_refuses_an_expired_deadline_before_invoking_the_pod() {
     assert!(
         matches!(
             served.unwrap().refused,
-            Some(PodWireError::DeadlineExceeded { .. })
+            Some(PodWireError::DeadlineExceeded { sent: true, .. })
         ),
         "the operator sees the real reason"
     );
@@ -553,7 +556,10 @@ async fn v4_deadline_bounds_the_wait_and_leaves_the_request_uncertain() {
     let started = std::time::Instant::now();
     let result = session.request_v2(&asked).await;
     assert!(
-        matches!(result, Err(PodWireError::DeadlineExceeded { .. })),
+        matches!(
+            result,
+            Err(PodWireError::DeadlineExceeded { sent: true, .. })
+        ),
         "{result:?}"
     );
     assert!(
@@ -563,6 +569,45 @@ async fn v4_deadline_bounds_the_wait_and_leaves_the_request_uncertain() {
     assert_eq!(session.uncertain_requests(), (Vec::new(), vec![304]));
     session.close().await;
     session_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v4_one_shot_client_tells_a_timeout_after_the_send_from_an_expiry_before_it() {
+    let client = PodClient::bind().await.unwrap();
+    let raw = IrohTransport::bind(&[ALPN_PODWIRE]).await.unwrap();
+    let address = located(raw.direct_addr());
+    let manifest = pod("alpha", &Arc::new(Mutex::new(0))).manifest().clone();
+    let responder = tokio::spawn(async move {
+        let session = raw.accept_session().await.unwrap();
+        let _incoming = session.accept_request(1 << 20).await.unwrap();
+        // Never answered: the requester's deadline ends the wait.
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    });
+    let sent = with_deadline(
+        request_v2("peer".into(), 305, &manifest, Generation(2), Revision(9)),
+        wall_clock_millis() + 400,
+    );
+    let after_send = client.request_v2(address.clone(), &sent).await;
+    assert!(
+        matches!(
+            after_send,
+            Err(PodWireError::DeadlineExceeded { sent: true, .. })
+        ),
+        "{after_send:?}"
+    );
+    let expired = with_deadline(
+        request_v2("peer".into(), 306, &manifest, Generation(2), Revision(9)),
+        2,
+    );
+    let before_send = client.request_v2(address, &expired).await;
+    assert!(
+        matches!(
+            before_send,
+            Err(PodWireError::DeadlineExceeded { sent: false, .. })
+        ),
+        "{before_send:?}"
+    );
+    responder.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

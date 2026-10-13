@@ -217,23 +217,35 @@ async fn an_unlisted_port_and_an_unlisted_topic_each_name_their_own_reason() {
     assert_eq!(
         refusal(topic_error),
         (
-            redact_topic("secrets/vault"),
-            EgressRefusalReason::TopicNotAllowed
+            "127.0.0.1:1883".to_owned(),
+            EgressRefusalReason::TopicUnverifiable
         ),
-        "a topic refusal names a digest of the topic, not the topic and not the broker"
+        "these executors cannot tie a declared topic to the wire, so any topic is refused"
     );
 
     let wildcard_error = UdpProtocolExecutor::default()
         .execute(request(
             ProtocolBinding::Udp,
-            allowed,
+            allowed.clone(),
             "127.0.0.1",
             1883,
             Some("sensors/#"),
         ))
         .await
         .unwrap_err();
-    assert_eq!(refusal(wildcard_error).1, EgressRefusalReason::InvalidTopic);
+    assert_eq!(
+        refusal(wildcard_error).1,
+        EgressRefusalReason::TopicUnverifiable
+    );
+    // The topic check itself, for an executor that reads the topic from its frame.
+    assert_eq!(
+        allowed.check_topic("secrets/vault"),
+        Err(EgressRefusalReason::TopicNotAllowed)
+    );
+    assert_eq!(
+        allowed.check_topic("sensors/#"),
+        Err(EgressRefusalReason::InvalidTopic)
+    );
 }
 
 #[tokio::test]
@@ -328,7 +340,7 @@ async fn a_policy_that_lists_topics_refuses_a_request_that_names_none() {
         refusal(error),
         (
             "127.0.0.1:1883".to_owned(),
-            EgressRefusalReason::TopicRequired
+            EgressRefusalReason::TopicUnverifiable
         ),
         "omitting the topic must not be a way around the topic policy"
     );
@@ -392,4 +404,49 @@ async fn a_future_millisecond_deadline_reaches_the_peer() {
     let response = TcpProtocolExecutor::default().execute(asked).await.unwrap();
     assert_eq!(response.output.bytes, b"ok");
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_declared_topic_under_a_topic_policy_is_refused_because_the_wire_is_not_read() {
+    // The declared topic is allowed; the payload could publish another. Refused, not trusted.
+    let allowed = policy(&["sensors/#"], &["127.0.0.1"], &[9]);
+    for protocol in [ProtocolBinding::Tcp, ProtocolBinding::Udp] {
+        let asked = request(
+            protocol.clone(),
+            allowed.clone(),
+            "127.0.0.1",
+            9,
+            Some("sensors/a"),
+        );
+        let error = match protocol {
+            ProtocolBinding::Tcp => TcpProtocolExecutor::default().execute(asked).await,
+            _ => UdpProtocolExecutor::default().execute(asked).await,
+        }
+        .unwrap_err();
+        assert_eq!(
+            refusal(error),
+            (
+                "127.0.0.1:9".to_owned(),
+                EgressRefusalReason::TopicUnverifiable
+            )
+        );
+    }
+    // An MQTT link is refused the same way even with an empty topic list.
+    let mqtt = request(
+        ProtocolBinding::Mqtt,
+        policy(&[], &["127.0.0.1"], &[9]),
+        "127.0.0.1",
+        9,
+        None,
+    );
+    assert_eq!(
+        refusal(
+            TcpProtocolExecutor::default()
+                .execute(mqtt)
+                .await
+                .unwrap_err()
+        )
+        .1,
+        EgressRefusalReason::TopicUnverifiable
+    );
 }

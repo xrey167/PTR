@@ -53,7 +53,11 @@ fn request_budget(
     };
     let now = now_millis();
     if now >= deadline {
-        return Err(PodWireError::DeadlineExceeded { deadline, now });
+        return Err(PodWireError::DeadlineExceeded {
+            deadline,
+            now,
+            sent: false,
+        });
     }
     let remaining = Duration::from_millis(deadline.0 - now.0);
     if remaining < configured {
@@ -70,6 +74,7 @@ fn timeout_error(bound_by: Option<Timestamp>) -> PodWireError {
         Some(deadline) => PodWireError::DeadlineExceeded {
             deadline,
             now: now_millis(),
+            sent: true,
         },
         None => PodWireError::Transport("the host did not answer in time".to_owned()),
     }
@@ -296,12 +301,15 @@ pub enum PodWireError {
         request_id: u64,
     },
     V2BindingUnavailable,
-    /// The request's absolute deadline passed before it was sent, before it was
-    /// executed, or while it waited for an answer. When it passed while waiting
-    /// the request is marked uncertain: the host may still have run it.
+    /// The request's absolute deadline passed. `sent` says whether the request had been sent:
+    /// `false` means it expired before anything left (nothing ran, a retry is safe with a new
+    /// deadline), `true` means it expired while waiting for the answer, so the host may still
+    /// have run it (a session marks the request uncertain; do not retry blindly). A host that
+    /// refuses an expired request reports it with `sent: true`.
     DeadlineExceeded {
         deadline: Timestamp,
         now: Timestamp,
+        sent: bool,
     },
 }
 
@@ -1390,7 +1398,11 @@ fn validate_answer(
 fn expired_deadline(request: &PodRequestV2) -> Option<PodWireError> {
     let deadline = request.address.as_ref()?.deadline?;
     let now = now_millis();
-    (now >= deadline).then_some(PodWireError::DeadlineExceeded { deadline, now })
+    (now >= deadline).then_some(PodWireError::DeadlineExceeded {
+        deadline,
+        now,
+        sent: true,
+    })
 }
 
 fn validate_answer_v2(

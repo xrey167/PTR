@@ -3233,6 +3233,7 @@ mod effect_record_tests {
             (EgressRefusalReason::InvalidTopic, 3),
             (EgressRefusalReason::RateLimited, 4),
             (EgressRefusalReason::TopicRequired, 5),
+            (EgressRefusalReason::TopicUnverifiable, 6),
         ];
         assert_eq!(pinned.len(), EgressRefusalReason::ALL.len());
         for (reason, code) in pinned {
@@ -3251,9 +3252,9 @@ mod effect_record_tests {
             padded.push(0);
             assert!(decode_event(&padded).is_err());
         }
-        assert_eq!(EgressRefusalReason::from_code(6), None);
+        assert_eq!(EgressRefusalReason::from_code(7), None);
         let mut unknown = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
-        *unknown.last_mut().unwrap() = 6;
+        *unknown.last_mut().unwrap() = 7;
         assert!(decode_event(&unknown).is_err());
     }
 

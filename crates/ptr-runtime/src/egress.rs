@@ -89,43 +89,77 @@ pub(crate) struct EgressRefusalWindows {
     pods: BTreeMap<PodRevisionAddress, PodWindow>,
 }
 
+/// A closed counter on its way to the ledger, with the window it was counted in so it can be
+/// put back where it came from if the append fails.
+type Closed = (u64, LedgerEvent);
+
 fn event_of(
+    window: u64,
     source: &PodRevisionAddress,
     key: &(u8, String),
     counter: &Counter,
-) -> Option<LedgerEvent> {
-    Some(LedgerEvent::EgressRefused {
-        trace_id: counter.trace_id.clone(),
-        source: source.clone(),
-        target: key.1.clone(),
-        count: counter.count,
-        reason: EgressRefusalReason::from_code(key.0)?,
-    })
+) -> Option<Closed> {
+    Some((
+        window,
+        LedgerEvent::EgressRefused {
+            trace_id: counter.trace_id.clone(),
+            source: source.clone(),
+            target: key.1.clone(),
+            count: counter.count,
+            reason: EgressRefusalReason::from_code(key.0)?,
+        },
+    ))
 }
 
 impl EgressRefusalWindows {
-    fn take_pod(&mut self, source: &PodRevisionAddress) -> Vec<LedgerEvent> {
+    fn take_pod(&mut self, source: &PodRevisionAddress) -> Vec<Closed> {
         self.pods
             .remove(source)
             .map(|pod| {
                 pod.counters
                     .iter()
-                    .filter_map(|(key, counter)| event_of(source, key, counter))
+                    .filter_map(|(key, counter)| event_of(pod.window, source, key, counter))
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    fn take_all(&mut self) -> Vec<LedgerEvent> {
+    fn take_all(&mut self) -> Vec<Closed> {
         std::mem::take(&mut self.pods)
             .into_iter()
             .flat_map(|(source, pod)| {
                 pod.counters
                     .iter()
-                    .filter_map(|(key, counter)| event_of(&source, key, counter))
+                    .filter_map(|(key, counter)| event_of(pod.window, &source, key, counter))
                     .collect::<Vec<_>>()
             })
             .collect()
+    }
+
+    /// Put a closed counter back into the window it came from, without the capacity eviction
+    /// and window rollover [`Self::absorb`] does: it is returned to the table it was taken from,
+    /// so the table cannot be larger than it was, and nothing it holds can be flushed away
+    /// unrecorded. Counts add; the overflow rule still applies to the distinct pairs.
+    fn restore(&mut self, window: u64, event: LedgerEvent) {
+        let LedgerEvent::EgressRefused {
+            trace_id,
+            source,
+            target,
+            count,
+            reason,
+        } = event
+        else {
+            return;
+        };
+        let pod = self.pods.entry(source).or_insert_with(|| PodWindow {
+            window,
+            counters: BTreeMap::new(),
+        });
+        let counter = pod
+            .counters
+            .entry((reason.code(), target))
+            .or_insert_with(|| Counter { trace_id, count: 0 });
+        counter.count = counter.count.saturating_add(count);
     }
 
     /// Count `count` refusals; return the events of whatever window this closed.
@@ -137,7 +171,7 @@ impl EgressRefusalWindows {
         target: &str,
         count: u32,
         window: u64,
-    ) -> Vec<LedgerEvent> {
+    ) -> Vec<Closed> {
         let mut closed = Vec::new();
         if !self.pods.contains_key(source) && self.pods.len() >= MAX_TRACKED_EGRESS_PODS {
             closed.extend(self.take_all());
@@ -256,38 +290,101 @@ impl PtrRuntime {
     /// rather than lost.
     fn commit_egress_events(
         &mut self,
-        events: Vec<LedgerEvent>,
+        events: Vec<Closed>,
     ) -> Result<Vec<CommitIndex>, RuntimeError> {
         let mut committed = Vec::with_capacity(events.len());
         let mut pending = events.into_iter();
-        while let Some(event) = pending.next() {
+        while let Some((window, event)) = pending.next() {
             match self.commit_settlement(event.clone()) {
                 Ok(index) => committed.push(index),
                 Err(error) => {
-                    for event in std::iter::once(event).chain(pending) {
-                        if let LedgerEvent::EgressRefused {
-                            trace_id,
-                            source,
-                            target,
-                            count,
-                            reason,
-                        } = event
-                        {
-                            // Counted into the window that is open now, not the one it left.
-                            let window = self
-                                .egress_refusals
-                                .pods
-                                .get(&source)
-                                .map_or(0, |pod| pod.window);
-                            let _ = self
-                                .egress_refusals
-                                .absorb(&source, &trace_id, reason, &target, count, window);
-                        }
+                    for (window, event) in std::iter::once((window, event)).chain(pending) {
+                        self.egress_refusals.restore(window, event);
                     }
                     return Err(error);
                 }
             }
         }
         Ok(committed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ptr_config::PtrConfig;
+    use ptr_types::{Generation, NamespaceId, PodAddress, PodId, ProjectId};
+
+    fn pod(n: usize) -> PodRevisionAddress {
+        PodRevisionAddress {
+            address: PodAddress::new(
+                ProjectId::from("p"),
+                NamespaceId::from("ns"),
+                PodId::from(format!("pod{n}").as_str()),
+            )
+            .unwrap(),
+            semantic_revision: [1; 32],
+            generation: Generation(1),
+        }
+    }
+
+    fn total(windows: &EgressRefusalWindows) -> u64 {
+        windows
+            .pods
+            .values()
+            .flat_map(|pod| pod.counters.values())
+            .map(|counter| u64::from(counter.count))
+            .sum()
+    }
+
+    fn record(n: usize, at: u64) -> EgressRefusalRecord {
+        EgressRefusalRecord {
+            trace_id: TraceId::from("t"),
+            source: pod(n),
+            target: "h:1".into(),
+            reason: EgressRefusalReason::HostNotAllowed,
+            observed_at: Timestamp(at),
+        }
+    }
+
+    #[test]
+    fn a_failed_flush_at_the_pod_capacity_loses_no_counter() {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        for n in 0..MAX_TRACKED_EGRESS_PODS {
+            runtime.record_egress_refusal(record(n, 1)).unwrap();
+        }
+        assert_eq!(runtime.egress_refusals.pods.len(), MAX_TRACKED_EGRESS_PODS);
+        // The append fails: the ledger is uncertain about a commit in flight.
+        runtime.mark_commit_uncertain_for_test();
+        // The 1025th Pod forces a flush of the full table, which fails.
+        let refused = runtime.record_egress_refusal(record(MAX_TRACKED_EGRESS_PODS, 2));
+        assert!(refused.is_err());
+        assert_eq!(
+            total(&runtime.egress_refusals),
+            MAX_TRACKED_EGRESS_PODS as u64 + 1,
+            "every counter of the table that failed to flush is still counted, and so is the \
+             refusal that triggered the flush"
+        );
+        assert_eq!(
+            runtime.egress_refusals.pods.len(),
+            MAX_TRACKED_EGRESS_PODS + 1,
+            "the table is larger than its capacity only while the ledger refuses appends"
+        );
+    }
+
+    #[test]
+    fn restore_returns_a_closed_counter_to_its_window_without_evicting_anything() {
+        let mut windows = EgressRefusalWindows::default();
+        let source = pod(0);
+        let trace = TraceId::from("t");
+        let reason = EgressRefusalReason::RateLimited;
+        windows.absorb(&source, &trace, reason, "h:1", 2, 7);
+        let taken = windows.take_all();
+        assert!(windows.pods.is_empty());
+        for (window, event) in taken {
+            windows.restore(window, event);
+        }
+        assert_eq!(total(&windows), 2);
+        assert_eq!(windows.pods[&source].window, 7);
     }
 }

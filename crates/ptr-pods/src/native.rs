@@ -178,7 +178,8 @@ fn validate_request(
     request: &NativeProtocolRequest,
     expected: &ProtocolBinding,
 ) -> Result<(), ProtocolError> {
-    if request.link.protocol != *expected
+    let mqtt = request.link.protocol == ProtocolBinding::Mqtt;
+    if (request.link.protocol != *expected && !mqtt)
         || request.endpoint.host.is_empty()
         || request.endpoint.port == 0
     {
@@ -191,11 +192,17 @@ fn validate_request(
         .egress_policy
         .check_endpoint(&request.endpoint.host, request.endpoint.port)
         .map_err(|reason| egress_refused(request, reason))?;
-    request
-        .link
-        .egress_policy
-        .check_publication(request.topic.as_deref())
-        .map_err(|reason| egress_refused(request, reason))?;
+    // These executors send `request.input` as it is and never read a topic out of it, so the
+    // topic a request declares is metadata they cannot tie to the wire: a Pod could declare an
+    // allowed topic and publish another. Under a topic policy, or on an MQTT link, they refuse
+    // (fail closed) instead of trusting the declaration. `EgressPolicy::check_publication` is
+    // for an executor that takes the topic from the frame it encodes.
+    if mqtt || !request.link.egress_policy.topics.is_empty() {
+        return Err(egress_refused(
+            request,
+            EgressRefusalReason::TopicUnverifiable,
+        ));
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ProtocolError::Deadline)?

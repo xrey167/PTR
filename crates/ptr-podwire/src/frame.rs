@@ -34,16 +34,22 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 
 /// The wall clock as a [`Timestamp`] in milliseconds since the Unix epoch, the unit of every
-/// deadline on the PodWire path. A clock before the epoch reads as zero, which expires every
-/// deadline rather than extending one.
+/// deadline on the PodWire path. A clock before the epoch reads as `u64::MAX`, which expires
+/// every deadline rather than extending one.
 pub fn unix_millis_now() -> Timestamp {
-    Timestamp(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| {
-                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-            }),
-    )
+    timestamp_of_clock(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH))
+}
+
+/// The timestamp a clock reading stands for. A clock that reads before the epoch cannot be
+/// trusted, so it reads as the **latest** instant, `u64::MAX`: every deadline is then already
+/// past (fail closed) and no request can be composed, instead of every deadline looking like
+/// it lies in the future.
+fn timestamp_of_clock(
+    reading: Result<std::time::Duration, std::time::SystemTimeError>,
+) -> Timestamp {
+    Timestamp(reading.map_or(u64::MAX, |elapsed| {
+        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+    }))
 }
 
 /// Marks a request. Foreign bytes are refused before anything is interpreted.
@@ -296,13 +302,18 @@ impl PodAddressBinding {
     /// the result, it is checked against this binding ([`Self::ensure_deadline_within`]), so a
     /// relay can neither extend the time it was given nor drop the deadline.
     ///
+    /// A binding without a deadline that is forwarded with one (`requested`) becomes a V4
+    /// binding whose `origin_ts` is `now`, the instant the relay composes the hop.
+    ///
     /// # Errors
     /// [`FrameError::InvalidField`] when no hop is left (`hop_limit` would reach zero), when the
-    /// destination was already visited, or when the result is not a valid binding.
+    /// destination was already visited, or when the result is not a valid binding (a deadline
+    /// not after its origin included).
     pub fn forward_to(
         &self,
         destination: PodRevisionAddress,
         requested: Option<Timestamp>,
+        now: Timestamp,
     ) -> Result<Self, FrameError> {
         let hop_limit = self
             .hop_limit
@@ -313,7 +324,12 @@ impl PodAddressBinding {
         visited.push(self.destination.address.clone());
         let deadline = match (self.deadline, requested) {
             (Some(_), Some(requested)) => Some(self.narrowed_deadline(requested)),
-            (current, _) => current,
+            (None, Some(requested)) => Some(requested),
+            (current, None) => current,
+        };
+        let origin_ts = match deadline {
+            Some(_) => Some(self.origin_ts.unwrap_or(now)),
+            None => None,
         };
         let next = Self {
             source: Some(self.destination.address.clone()),
@@ -324,7 +340,7 @@ impl PodAddressBinding {
             protocol: self.protocol.clone(),
             mesh: self.mesh.clone(),
             deadline,
-            origin_ts: self.origin_ts,
+            origin_ts,
         };
         next.validate()?;
         next.ensure_deadline_within(self)?;
@@ -1912,6 +1928,29 @@ mod tests {
             FrameError::NotUtf8 {
                 field: "capability"
             }
+        );
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn a_clock_before_the_epoch_expires_every_deadline_instead_of_extending_it() {
+        let before = UNIX_EPOCH.duration_since(UNIX_EPOCH + Duration::from_secs(1));
+        let now = timestamp_of_clock(before);
+        assert_eq!(now, Timestamp(u64::MAX));
+        // Any deadline is past, and no binding can be composed at this origin.
+        assert!(Timestamp(4_000_000_000_000) < now);
+    }
+
+    #[test]
+    fn a_working_clock_reads_whole_milliseconds() {
+        assert_eq!(
+            timestamp_of_clock(Ok(Duration::from_micros(1_500_900))),
+            Timestamp(1_500)
         );
     }
 }

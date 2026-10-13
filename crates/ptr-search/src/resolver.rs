@@ -18,6 +18,13 @@ pub const MAX_ALIASES: usize = 4096;
 /// The most words a query may have.
 pub const MAX_QUERY_WORDS: usize = 256;
 
+/// The most bytes a query may have, checked **before** it is split and lower-cased so an
+/// oversized input costs nothing.
+pub const MAX_QUERY_BYTES: usize = 4096;
+
+/// The most bytes an alias or a canonical name may have, checked before normalisation.
+pub const MAX_ALIAS_BYTES: usize = 256;
+
 /// The most words in one alias.
 pub const MAX_ALIAS_WORDS: usize = 8;
 
@@ -28,6 +35,8 @@ pub enum AliasError {
     Empty,
     /// An alias of more than [`MAX_ALIAS_WORDS`] words.
     TooLong { limit: usize, actual: usize },
+    /// An alias or canonical name over [`MAX_ALIAS_BYTES`] bytes.
+    TooManyBytes { limit: usize, actual: usize },
     /// The table holds [`MAX_ALIASES`] already.
     TableFull { limit: usize },
     /// The alias already names another canonical name.
@@ -43,6 +52,8 @@ pub enum ResolveError {
     Ambiguous { candidates: Vec<String> },
     /// A query over [`MAX_QUERY_WORDS`] words.
     QueryTooLong { limit: usize, actual: usize },
+    /// A query over [`MAX_QUERY_BYTES`] bytes.
+    QueryTooLarge { limit: usize, actual: usize },
 }
 
 impl ResolveError {
@@ -52,6 +63,7 @@ impl ResolveError {
             Self::Unknown => "PTR_SEARCH_RESOLVE_UNKNOWN",
             Self::Ambiguous { .. } => "PTR_SEARCH_RESOLVE_AMBIGUOUS",
             Self::QueryTooLong { .. } => "PTR_SEARCH_RESOLVE_QUERY_TOO_LONG",
+            Self::QueryTooLarge { .. } => "PTR_SEARCH_RESOLVE_QUERY_TOO_LARGE",
         }
     }
 }
@@ -65,6 +77,12 @@ impl fmt::Display for ResolveError {
                     formatter,
                     "the query names several: {}",
                     candidates.join(", ")
+                )
+            }
+            Self::QueryTooLarge { limit, actual } => {
+                write!(
+                    formatter,
+                    "the query is {actual} bytes, over the limit of {limit}"
                 )
             }
             Self::QueryTooLong { limit, actual } => {
@@ -117,6 +135,14 @@ impl AliasTable {
     /// Register `alias` for `canonical`. Registering the same pair again is a no-op; the same
     /// alias for another canonical name is a conflict, because the table is a function.
     pub fn add(&mut self, alias: &str, canonical: &str) -> Result<(), AliasError> {
+        for name in [alias, canonical] {
+            if name.len() > MAX_ALIAS_BYTES {
+                return Err(AliasError::TooManyBytes {
+                    limit: MAX_ALIAS_BYTES,
+                    actual: name.len(),
+                });
+            }
+        }
         let key = words(alias);
         if key.is_empty() || words(canonical).is_empty() {
             return Err(AliasError::Empty);
@@ -151,6 +177,12 @@ impl AliasTable {
     /// `Müller`). The canonical names that remain decide: none is [`ResolveError::Unknown`],
     /// more than one is [`ResolveError::Ambiguous`].
     pub fn resolve(&self, query: &str) -> Result<Resolved, ResolveError> {
+        if query.len() > MAX_QUERY_BYTES {
+            return Err(ResolveError::QueryTooLarge {
+                limit: MAX_QUERY_BYTES,
+                actual: query.len(),
+            });
+        }
         let query_words = words(query);
         if query_words.len() > MAX_QUERY_WORDS {
             return Err(ResolveError::QueryTooLong {

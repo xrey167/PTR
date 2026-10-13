@@ -23,17 +23,22 @@ pub enum EgressRefusalReason {
     RateLimited,
     /// The link's policy lists topics, so a publication must name one, and this one did not.
     TopicRequired,
+    /// The link's policy lists topics (or its protocol is MQTT) but the executor cannot tie a
+    /// declared topic to the bytes it sends: it does not read the topic from the frame, so a
+    /// Pod could declare an allowed topic and publish another. Refused rather than trusted.
+    TopicUnverifiable,
 }
 
 impl EgressRefusalReason {
     /// Every reason, so a test can hold the code table to account.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::HostNotAllowed,
         Self::PortNotAllowed,
         Self::TopicNotAllowed,
         Self::InvalidTopic,
         Self::RateLimited,
         Self::TopicRequired,
+        Self::TopicUnverifiable,
     ];
 
     /// The pinned wire and ledger code.
@@ -45,6 +50,7 @@ impl EgressRefusalReason {
             Self::InvalidTopic => 3,
             Self::RateLimited => 4,
             Self::TopicRequired => 5,
+            Self::TopicUnverifiable => 6,
         }
     }
 
@@ -57,6 +63,7 @@ impl EgressRefusalReason {
             Self::InvalidTopic => "invalid-topic",
             Self::RateLimited => "rate-limited",
             Self::TopicRequired => "topic-required",
+            Self::TopicUnverifiable => "topic-unverifiable",
         }
     }
 
@@ -69,6 +76,7 @@ impl EgressRefusalReason {
             3 => Some(Self::InvalidTopic),
             4 => Some(Self::RateLimited),
             5 => Some(Self::TopicRequired),
+            6 => Some(Self::TopicUnverifiable),
             _ => None,
         }
     }

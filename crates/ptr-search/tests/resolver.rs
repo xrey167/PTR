@@ -126,3 +126,45 @@ fn every_resolve_refusal_has_a_stable_code() {
         "PTR_SEARCH_RESOLVE_QUERY_TOO_LONG"
     );
 }
+
+#[test]
+fn input_is_bounded_in_bytes_before_it_is_normalised() {
+    use ptr_search::{MAX_ALIAS_BYTES, MAX_QUERY_BYTES};
+    let big = "a".repeat(MAX_QUERY_BYTES + 1);
+    assert_eq!(
+        table().resolve(&big),
+        Err(ResolveError::QueryTooLarge {
+            limit: MAX_QUERY_BYTES,
+            actual: MAX_QUERY_BYTES + 1
+        })
+    );
+    // At the bound the query is still processed (and unknown).
+    assert_eq!(
+        table().resolve(&"a".repeat(MAX_QUERY_BYTES)),
+        Err(ResolveError::Unknown)
+    );
+    let mut table = table();
+    let long = "b".repeat(MAX_ALIAS_BYTES + 1);
+    assert_eq!(
+        table.add(&long, "supplier:x"),
+        Err(AliasError::TooManyBytes {
+            limit: MAX_ALIAS_BYTES,
+            actual: MAX_ALIAS_BYTES + 1
+        })
+    );
+    assert_eq!(
+        table.add("fine", &long),
+        Err(AliasError::TooManyBytes {
+            limit: MAX_ALIAS_BYTES,
+            actual: MAX_ALIAS_BYTES + 1
+        })
+    );
+    assert_eq!(
+        ResolveError::QueryTooLarge {
+            limit: 1,
+            actual: 2
+        }
+        .code(),
+        "PTR_SEARCH_RESOLVE_QUERY_TOO_LARGE"
+    );
+}
