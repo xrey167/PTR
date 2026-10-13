@@ -139,14 +139,19 @@ def _bwrap_usable() -> bool:
 
 
 def sandbox_command(bwrap: str, workdir: str, argv: list[str]) -> list[str]:
-    """`argv` under bubblewrap: the host file system read-only, the home directories replaced by
-    empty tmpfs (the interpreter's own prefix is bound back read-only, since a venv often lives
-    under a home directory), a private /tmp with only `workdir` writable, new namespaces (no
-    network), the environment cleared and the sandbox killed with its parent."""
-    cmd = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
-    for hidden in sorted({os.path.expanduser("~"), "/root", "/home"}):
-        if os.path.isdir(hidden):
-            cmd += ["--tmpfs", hidden]
+    """`argv` under bubblewrap with an allowlisted root: an empty root holding only /usr and the
+    top-level links into it (or read-only binds where they are directories), the interpreter's
+    own prefix read-only (a venv often lives under a home directory), a fresh /dev, /proc and
+    private /tmp with only `workdir` writable, new namespaces (no network), the environment
+    cleared and the sandbox killed with its parent. Nothing else of the host is mounted: no
+    /etc, /home, /root, /run or /var, so no host secret and no Unix socket is reachable."""
+    cmd = [bwrap, "--ro-bind", "/usr", "/usr"]
+    for top in ("/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"):
+        if os.path.islink(top):
+            cmd += ["--symlink", os.readlink(top), top]
+        elif os.path.isdir(top):
+            cmd += ["--ro-bind", top, top]
+    cmd += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
     interpreter = {
         os.path.realpath(sys.prefix),
         os.path.realpath(sys.base_prefix),
@@ -154,7 +159,7 @@ def sandbox_command(bwrap: str, workdir: str, argv: list[str]) -> list[str]:
         os.path.dirname(os.path.abspath(sys.executable)),
     }
     for path in sorted(interpreter):
-        if os.path.isdir(path):
+        if os.path.isdir(path) and not path.startswith("/usr/"):
             cmd += ["--ro-bind", path, path]
     cmd += [
         "--bind", workdir, workdir, "--chdir", workdir,
@@ -292,9 +297,12 @@ class _Unmatchable:
 
 
 def _norm(value):
+    # A boolean is its own type: True must not match an allowed 1, nor False an allowed 0.
+    if isinstance(value, bool):
+        return ("bool", value)
     # Numbers stay as they are: Python compares int with int and int with float exactly, so
     # 1 == 1.0 still holds while 2**53 + 1 no longer equals 2**53 through a float round trip.
-    if isinstance(value, (bool, int, float)):
+    if isinstance(value, (int, float)):
         return value
     if isinstance(value, str):
         return value.strip().lower()

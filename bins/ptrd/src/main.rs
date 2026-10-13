@@ -462,7 +462,7 @@ fn read_key_file(path: &std::path::Path) -> Result<[u8; SAMPLING_KEY_LEN], KeyFi
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(KeyFileError::Missing)
+            return Err(KeyFileError::Missing);
         }
         Err(err) => return Err(unreadable(err)),
     };
@@ -631,9 +631,13 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
             let err = load_or_create_sampling_key(&dir.0).err().unwrap();
             assert!(err.contains("chmod 600"), "{err}");
-            // The key bytes must not appear in any rendering (Debug list or hex); the
-            // temp path may contain arbitrary digits, so match key-shaped text only.
-            assert!(!err.contains("[9, 9") && !err.contains("0909"), "{err}");
+            // The key bytes must not appear in any rendering (Debug list or hex). The
+            // temp path may contain arbitrary digits, so it is removed before matching.
+            let rest = err.replace(&path.display().to_string(), "");
+            assert!(
+                !rest.contains("[9, 9") && !rest.contains(&"09".repeat(32)),
+                "{err}"
+            );
         }
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
         assert!(load_or_create_sampling_key(&dir.0).is_ok());

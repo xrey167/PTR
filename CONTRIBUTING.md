@@ -65,3 +65,13 @@ review. It is a report, not a gate, so it is not part of `ci-local`.
 
 For a new infrastructure candidate use `python3 scripts/new_candidate.py <component> <id>`.
 For a new experiment use `python3 scripts/new_experiment.py <area>/<ID>-<name> --hypothesis "..." --metrics "..." --baseline "..." --falsification "..."` (optionally `--hardware-profile` and `--seeds`). It writes every key `experiments/schema.toml` requires and registers the experiment.
+## Merged branches are deleted automatically
+
+`.github/workflows/branch-cleanup.yml` deletes the head branch of a pull request from this
+repository once it is merged into `main` and `main` contains its merged commit; a branch that
+moved after the merge, that heads another open pull request, or whose pull request targeted
+another branch is kept. To clean up older branches, run the workflow by hand (Actions →
+branch-cleanup → Run workflow): with `dry_run` on it lists every branch whose tip is already in
+`main`, with `dry_run` off it deletes them. `main` and the head branches of open pull requests
+are never deleted, no branch with a commit missing from `main` is, and every deletion is a
+compare-and-delete on the checked commit, so a branch pushed to in the meantime survives.

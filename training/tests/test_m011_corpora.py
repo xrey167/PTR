@@ -1,6 +1,10 @@
 """M011 corpora, scorers and tuning sampler (pure Python; offline, no torch)."""
 
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import tomllib
 import unittest
 from unittest import mock
@@ -170,6 +174,40 @@ class ScorerTests(unittest.TestCase):
         self.assertFalse(scorers.score_bfcl("f(n=9007199254740993)", gt))
         self.assertTrue(scorers.score_bfcl("f(n=5.0)", [{"f": {"n": [5]}}]))
 
+    def test_bfcl_keeps_booleans_apart_from_zero_and_one(self):
+        self.assertFalse(scorers.score_bfcl("f(x=True)", [{"f": {"x": [1]}}]))
+        self.assertFalse(scorers.score_bfcl("f(x=0)", [{"f": {"x": [False]}}]))
+        self.assertTrue(scorers.score_bfcl("f(x=True)", [{"f": {"x": [True]}}]))
+        self.assertTrue(scorers.score_bfcl("f(x=1)", [{"f": {"x": [1]}}]))
+
+    def test_selection_digest_binds_the_scorer_reference(self):
+        import dataclasses
+
+        p = corpora.fixture_partitions()["humaneval"]
+        changed = [dataclasses.replace(p.train[0], reference={**p.train[0].reference, "test": "x"})]
+        self.assertNotEqual(corpora.selection_digest(p.train[:1]), corpora.selection_digest(changed))
+
+    def test_gsm8k_train_and_test_rows_with_the_same_index_do_not_collide(self):
+        rows = [{"question": f"q{i}?", "answer": f"#### {i}"} for i in range(40)]
+        tests = [{"question": f"t{i}?", "answer": f"#### {i}"} for i in range(40)]
+        parts = corpora.partition_gsm8k(rows, tests)
+        self.assertTrue(parts.validation and parts.evaluation)
+        self.assertEqual(corpora.corpus_report("gsm8k", parts)["validation_overlap_count"], 0)
+        self.assertNotEqual(parts.train[0].item_id, parts.evaluation[0].item_id)
+
+    def test_validation_overlap_counts_evaluation_ids_and_identical_prompts(self):
+        import dataclasses
+
+        p = corpora.fixture_partitions()["gsm8k"]
+        leaked_id = corpora.Partitions(
+            p.train, [dataclasses.replace(p.validation[0], item_id=p.evaluation[0].item_id)], p.evaluation
+        )
+        self.assertEqual(corpora.corpus_report("gsm8k", leaked_id)["validation_overlap_count"], 1)
+        leaked_text = corpora.Partitions(
+            p.train, [dataclasses.replace(p.validation[0], prompt=p.evaluation[0].prompt)], p.evaluation
+        )
+        self.assertEqual(corpora.corpus_report("gsm8k", leaked_text)["validation_overlap_count"], 1)
+
     def test_humaneval_refuses_without_a_sandbox_or_an_opt_in(self):
         r = corpora.fixture_partitions()["humaneval"].train[0].reference
         with mock.patch.object(scorers, "_bwrap_usable", return_value=False), mock.patch.dict(
@@ -181,16 +219,31 @@ class ScorerTests(unittest.TestCase):
 
     def test_sandbox_command_is_read_only_hides_homes_and_unshares(self):
         cmd = scorers.sandbox_command("/usr/bin/bwrap", "/tmp/work", ["python3", "-I", "c.py"])
-        self.assertEqual(cmd[:4], ["/usr/bin/bwrap", "--ro-bind", "/", "/"])
+        self.assertEqual(cmd[:4], ["/usr/bin/bwrap", "--ro-bind", "/usr", "/usr"])
+        # The host root is never bound wholesale, and nothing under /etc, /run or /var is (a
+        # home directory appears only as the interpreter's own prefix, if a venv lives there).
+        binds = [cmd[i + 1] for i, arg in enumerate(cmd) if arg in ("--ro-bind", "--bind")]
+        self.assertNotIn("/", binds)
+        for secret in ("/etc", "/run", "/var"):
+            self.assertFalse(any(b == secret or b.startswith(secret + "/") for b in binds), secret)
         self.assertIn("--unshare-all", cmd)
         self.assertIn("--clearenv", cmd)
         self.assertIn("--die-with-parent", cmd)
         self.assertEqual(cmd[cmd.index("--bind") + 1 : cmd.index("--bind") + 3], ["/tmp/work"] * 2)
         hidden = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--tmpfs"]
         self.assertIn("/tmp", hidden)
-        if os.path.isdir("/home"):
-            self.assertIn("/home", hidden)
         self.assertEqual(cmd[-4:], ["--", "python3", "-I", "c.py"])
+
+    @unittest.skipUnless(shutil.which("bwrap") and scorers._bwrap_usable(), "bubblewrap not usable")
+    def test_the_sandbox_sees_no_host_secrets_but_runs_python(self):
+        with tempfile.TemporaryDirectory() as work:
+            # A venv under a home directory makes its own prefix path appear, read-only; nothing
+            # else of the host may: no /etc, /run, /var or /root, and not this test file.
+            hidden = ("/etc", "/run", "/var", "/root", os.path.abspath(__file__))
+            probe = f"import os; print(sorted(p for p in {hidden!r} if os.path.exists(p)))"
+            cmd = scorers.sandbox_command(shutil.which("bwrap"), work, [sys.executable, "-I", "-c", probe])
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=True).stdout
+        self.assertEqual(out.strip(), "[]")
 
 
 class TuningTests(unittest.TestCase):

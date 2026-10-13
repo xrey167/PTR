@@ -207,6 +207,27 @@ impl Job {
                 if tests.len() > code_test::MAX_TESTS {
                     return Err(too_large("tests", code_test::MAX_TESTS));
                 }
+                // A suite no candidate can pass is refused here, not after the loop has spent
+                // the id and the verifier budget: it must be nonempty, uniquely named and of one
+                // arity (the entry function has a fixed number of arguments).
+                if tests.is_empty() {
+                    return Err(VcwApiError::BadRequest("tests must not be empty".into()));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                if let Some(duplicate) = tests.iter().find(|test| !seen.insert(test.id.as_str())) {
+                    return Err(VcwApiError::BadRequest(format!(
+                        "test id {:?} appears more than once",
+                        duplicate.id
+                    )));
+                }
+                if tests
+                    .iter()
+                    .any(|test| test.args.len() != tests[0].args.len())
+                {
+                    return Err(VcwApiError::BadRequest(
+                        "every test must pass the same number of arguments".into(),
+                    ));
+                }
                 let mut parsed = Vec::with_capacity(tests.len());
                 let mut encoded = Vec::with_capacity(tests.len());
                 for test in tests {
@@ -377,6 +398,37 @@ mod tests {
         }))
         .unwrap();
         Job::from_request(&task, VcwBackend::Simulated).unwrap()
+    }
+
+    fn code_task(tests: serde_json::Value) -> VcwTask {
+        serde_json::from_value(serde_json::json!({
+            "kind": "code",
+            "instruction": "Add one.",
+            "entry": "inc",
+            "tests": tests,
+            "reference": "def inc(x):\n    return x + 1\n",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_unpassable_code_suite_is_a_bad_request() {
+        for tests in [
+            serde_json::json!([]),
+            serde_json::json!([
+                {"id": "t", "args": [1], "expected": 2},
+                {"id": "t", "args": [2], "expected": 3},
+            ]),
+            serde_json::json!([
+                {"id": "a", "args": [1], "expected": 2},
+                {"id": "b", "args": [1, 2], "expected": 3},
+            ]),
+        ] {
+            assert!(matches!(
+                Job::from_request(&code_task(tests), VcwBackend::Simulated),
+                Err(VcwApiError::BadRequest(_))
+            ));
+        }
     }
 
     #[test]
