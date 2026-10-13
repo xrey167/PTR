@@ -186,5 +186,9 @@ A new candidate should be added with a reproducible benchmark and failure-semant
 [Durable semantic-state contract](../../docs/architecture/22-durable-semantic-state.md)
 records the new code/codec, ownership and replay boundaries. Publication follows
 successful journal append. Typed Pod bytes and source identity participate in
-semantic revisions. Logical removals do not erase log history; neural checkpoints
-and authenticated framing remain separate gates. Execution evidence is in the PR.
+semantic revisions. Logical removals do not erase log history. Neural checkpoints
+and authenticated framing were separate gates when this was written; checked framing
+and anchors ([23](../../docs/architecture/23-persistence-integrity.md),
+[24](../../docs/architecture/24-protected-anchors.md)) and neural-state admission
+([27](../../docs/architecture/27-neural-state-admission.md)) have since landed at
+library level. Execution evidence is in the PR.
