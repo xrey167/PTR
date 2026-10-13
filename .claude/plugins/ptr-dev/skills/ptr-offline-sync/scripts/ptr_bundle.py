@@ -124,10 +124,25 @@ def cmd_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def expected_name(name: str) -> bool:
+    """True only for the names `create` writes: the bundle itself or one of its parts."""
+    if name == BUNDLE_NAME:
+        return True
+    prefix = f"{BUNDLE_NAME}.part"
+    return name.startswith(prefix) and name[len(prefix):].isdigit() and name.isascii()
+
+
 def cmd_join(args: argparse.Namespace) -> int:
     directory = Path(args.dir).resolve()
     sums = read_sums(directory / SUMS_NAME)
     names = sorted(sums)
+    # The manifest comes from another machine: check every name before any path is opened, so
+    # an absolute path or a `../` entry can never make this read (and hash) a file elsewhere.
+    unexpected = [name for name in names if not expected_name(name)]
+    if unexpected:
+        raise BundleError(f"unexpected entries in {SUMS_NAME}: {unexpected}")
+    if BUNDLE_NAME in names and len(names) > 1:
+        raise BundleError(f"{SUMS_NAME} lists both {BUNDLE_NAME} and parts: {names}")
     for name in names:
         part = directory / name
         if not part.is_file():
@@ -140,8 +155,6 @@ def cmd_join(args: argparse.Namespace) -> int:
     if names == [BUNDLE_NAME]:
         print(f"single-file bundle, nothing to join: {target}")
     else:
-        if any(not n.startswith(f"{BUNDLE_NAME}.part") for n in names):
-            raise BundleError(f"unexpected entries in {SUMS_NAME}: {names}")
         with target.open("wb") as dst:
             for name in names:
                 with (directory / name).open("rb") as src:

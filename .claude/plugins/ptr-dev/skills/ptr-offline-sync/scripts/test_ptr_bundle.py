@@ -1,5 +1,6 @@
 """Tests for ptr_bundle.py using throwaway git repositories."""
 
+import argparse
 import os
 import subprocess
 import sys
@@ -100,6 +101,19 @@ class BundleTests(unittest.TestCase):
         part.write_bytes(bytes(data))
         self.assertEqual(cli(src, "join", str(out)), 1)
         self.assertFalse((out / "repo.bundle").exists())
+
+    def test_join_rejects_paths_outside_the_directory(self):
+        out = self.root / "out"
+        out.mkdir()
+        secret = self.root / "secret.txt"
+        secret.write_text("not part of any bundle\n")
+        digest = ptr_bundle.sha256_file(secret)
+        for name in ("../secret.txt", str(secret), "repo.bundle.part001/../../secret.txt"):
+            (out / "SHA256SUMS").write_text(f"{'0' * 64}  {name}\n")
+            with self.assertRaises(ptr_bundle.BundleError) as caught:
+                ptr_bundle.cmd_join(argparse.Namespace(dir=str(out)))
+            self.assertIn("unexpected entries", str(caught.exception))
+            self.assertNotIn(digest, str(caught.exception))
 
     def test_since_creates_incremental_bundle(self):
         src = self.root / "src"

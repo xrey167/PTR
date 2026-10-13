@@ -389,7 +389,7 @@ def check_torch(opts: Options, probe: dict | None, why: str, gpus: list[dict]) -
         checks.append(
             Check(
                 "torch devices",
-                WARN,
+                FAIL if opts.require_gpu else WARN,
                 f"torch sees {len(devices)} of {len(gpus)} GPUs",
                 "check CUDA_VISIBLE_DEVICES; the dual-GPU profile needs both cards visible",
             )

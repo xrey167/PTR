@@ -39,7 +39,9 @@ async fn main() {
         .or_else(|| std::env::var("PTR_CONFIG").ok())
         .unwrap_or_else(|| "config/default.toml".into());
 
-    let mut config = PtrConfig::from_path(&path).unwrap_or_else(|err| {
+    // Parsed here and validated by `apply_env` below, so the documented environment variables
+    // can complete the file (file -> environment -> CLI precedence).
+    let mut config = PtrConfig::parse_path(&path).unwrap_or_else(|err| {
         eprintln!("failed to load PTR config {path}: {err}");
         std::process::exit(2);
     });

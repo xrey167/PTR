@@ -123,11 +123,20 @@ impl PtrConfig {
         toml::from_str(input)
     }
 
+    /// Reads and validates a configuration file that must be complete on its own.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path.as_ref()).map_err(|e| e.to_string())?;
-        let config = Self::from_toml_str(&text).map_err(|e| e.to_string())?;
+        let config = Self::parse_path(path)?;
         config.validate()?;
         Ok(config)
+    }
+
+    /// Reads and parses a configuration file without validating it, for a host that completes
+    /// the file through overlays first (a `qwen-cpu` section whose model directory and digests
+    /// come from the `PTR_VCW_QWEN_*` variables). The caller validates after the overlays;
+    /// [`Self::apply_env`] does so itself.
+    pub fn parse_path(path: impl AsRef<Path>) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path.as_ref()).map_err(|e| e.to_string())?;
+        Self::from_toml_str(&text).map_err(|e| e.to_string())
     }
 
     pub fn apply_env<I, K, V>(&mut self, values: I) -> Result<(), String>

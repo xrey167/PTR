@@ -260,6 +260,13 @@ class HardwareProfiles(unittest.TestCase):
         self.assertEqual(got["torch devices"].status, gd.WARN)
         self.assertIn("CUDA_VISIBLE_DEVICES", got["torch devices"].hint)
 
+    def test_torch_seeing_fewer_cards_than_smi_fails_when_gpus_are_required(self):
+        fx = Fixture()
+        got = collect(
+            fx, fx.options(require_gpu=True), smi=(0, SMI_DUAL_3090, ""), probe=probe_for(device(0))
+        )
+        self.assertEqual(got["torch devices"].status, gd.FAIL)
+
     def test_small_card_warns(self):
         fx = Fixture()
         got = collect(fx, fx.options(), smi=(0, "NVIDIA GeForce RTX 3090, 580.1, 12288, 8.6\n", ""), probe=GOOD_PROBE)

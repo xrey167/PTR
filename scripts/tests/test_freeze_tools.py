@@ -316,6 +316,13 @@ class SmallToolsTests(unittest.TestCase):
             (tmp / "c.toml").write_text("[a]\nx = 1\n[preregistration]\nseeds = [17, 29]\n")
             done = run("config_seeds.py", str(tmp / "c.toml"))
             self.assertEqual(done.stdout.strip(), "17 29")
+            # A `seeds` list in an earlier table is never the confirmatory set.
+            (tmp / "p.toml").write_text(
+                "[pinned_thresholds]\nseeds = [1, 2]\n[preregistration]\nseeds = [17, 29]\n"
+            )
+            self.assertEqual(run("config_seeds.py", str(tmp / "p.toml")).stdout.strip(), "17 29")
+            (tmp / "n.toml").write_text("[pinned_thresholds]\nseeds = [1, 2]\n")
+            self.assertEqual(run("config_seeds.py", str(tmp / "n.toml")).returncode, 4)
             (tmp / "a.json").write_text(json.dumps({"k": 1, "t": 5, "n": [{"t": 1, "v": 2}]}))
             (tmp / "b.json").write_text(json.dumps({"k": 1, "t": 9, "n": [{"t": 7, "v": 2}]}))
             same = run("compare_pilot.py", str(tmp / "a.json"), str(tmp / "b.json"), "--timing-key", "t")
