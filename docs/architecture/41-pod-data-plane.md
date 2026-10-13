@@ -109,8 +109,13 @@ records are bounded: a global and per-principal cap with a typed saturation refu
 operation is started, and retention until the operation's last possible handle deadline plus skew,
 after which the record is removed deterministically (so a live handle never meets a missing
 record, and abandoned calls cannot accumulate).
-The E008 frame fields (`input_lineage`, `mode`, `taint`) may later be carried in the handle as
-well; the authority check stays either way.
+Codec v1 handles are **Exact only**, as `admit_frame` refuses any non-Exact upstream today
+(`ChainFault::NotExact`, `crates/ptr-runtime/src/split_stage.rs`): the operation record also holds
+the operation's KV reuse mode and taint, and a handle of an operation that is Approximate or
+carries any taint is refused at admission and at consumption, so Approximate-derived bytes can
+never reach an Exact namespace or shed their taint before `check_kv_taint`. Carrying `mode` and
+`taint` in the handle itself, together with the E008 frame fields (`input_lineage`), is a later
+codec version; the authority check stays either way.
 
 Rules, each the same as the one already enforced for frames and KV pages, restated for handles:
 
