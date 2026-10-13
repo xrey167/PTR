@@ -20,9 +20,9 @@ The plan is cut into the five stages the owner named, in the order they build on
 
 The thing every stage shares, and the reason this is one plan rather than five, is section 1.
 Whether the plan is worth building, stage by stage, is section 7; the short answer is that S1,
-S3 and S4 pay for themselves on any single card, S2 matters on the owner's two RTX 3090 and runs
-through S3's pinned buffer unless peer access is probed as available, and S5 is the
-already-planned E008.
+S3 and S4 pay for themselves on any single card, S2 has no hardware on the owner's two
+single-card PCs (section 0a) and is built on S3's pinned buffer, and S5, the already-planned
+E008, runs between those two PCs.
 
 ## 0. Facts checked before implementation
 
@@ -46,6 +46,23 @@ Read from the tree at the merge of #136, before any code was written for this pl
 - **Experiment ids.** `L002` and `L003` are taken and no `P` or `T` series exists. The
   experiments of section 6 are `E009` (handle fence), `E010` (offload roundtrip), `E011` (carrier
   calibration) and `E012` (the GPU part C split out of E008).
+
+## 0a. The owner's hardware (stated by the owner, 2026-10-13)
+
+Two PCs with one card each: one with an RTX 3090, one with an RTX 4090, both 24 GiB, both PCIe.
+The repository's profiles describe a different setup: `docs/LOCAL_START.md:5` and
+`hardware/dual-rtx3090.toml` name one desktop with two RTX 3090. This document follows the
+owner's statement; aligning those profiles is a separate change that touches experiment manifests
+and is not made here. Consequences for the stages:
+
+- **S1, S3, S4** run on either PC alone.
+- **S2** (several GPUs in one host) has no hardware today. It is built and tested on the
+  `PinnedHost` path with simulated devices, and is checked on a card pair only when one exists.
+- **S5** (several hosts) is directly testable: the two PCs are two hosts, so the LAN cells of
+  E008 part B and E011 run between them.
+- **CUDA carriers** (`CudaIpc`, CUDA-pinned host buffers) are checked on each PC separately;
+  the two cards being different generations (Ampere and Ada) is a second data point, not a
+  pair.
 
 ## 1. The one contract: a handle is a fenced payload
 
@@ -113,10 +130,9 @@ from the data side:
 | `Remote` | other host | `chunk_frame` over Iroh QUIC, `FrameAssembler` on the far side | one send, one reassembly |
 | `Bytes` | fallback | today's `TypedPayload` | copies |
 
-Two consequences of the hardware. The owner's desktop has two RTX 3090 over PCIe without an
-NVLink bridge (`hardware/dual-rtx3090.toml`, `docs/LOCAL_START.md:5`). Peer access between them
-over plain PCIe depends on the driver and the board and must be probed with
-`cudaDeviceCanAccessPeer`, never assumed; on an RTX 4090 pair PCIe peer access is, to the best of
+Two consequences for several cards in one host, which the owner does not have today (section
+0a). Peer access between two cards over plain PCIe depends on the driver and the board and must
+be probed with `cudaDeviceCanAccessPeer`, never assumed; on an RTX 4090 pair PCIe peer access is, to the best of
 the author's knowledge, not offered by the driver (unverified here, no such hardware). S2
 therefore ships with `PinnedHost` as its working path and `DevicePeer` as a probed option.
 
@@ -234,16 +250,17 @@ Every pull request: positive and negative tests (`docs/TESTING.md`), `component.
 
 1. **S1a** `ptr-protocol` handle types and the admission function with the `Bytes` and `HostShm`
    carriers, two processes, no GPU. Small; CPU-only CI.
-2. **S1b** `CudaIpc` on one GPU, two processes. Needs the owner's machine for the record.
+2. **S1b** `CudaIpc` on one GPU, two processes. Needs one of the owner's PCs for the record.
 3. **S3** `PinnedHostTierBackend` and per-expert weight objects with lookahead prefetch.
-   Medium; the GPU part needs the owner's machine.
+   Medium; the GPU part needs one of the owner's PCs.
 4. **S4** direct-read NVMe path and residency plan. Small on top of S3.
-5. **S2** carrier table, peer probe, two-device pipeline split in two workers. Needs two GPUs
-   for the record; the `PinnedHost` path is testable with one.
-6. **S5** E008 as registered, then cross-host tier transfer. Needs two hosts; the PTR-Research
-   LXD cluster is enough for the CPU part.
+5. **S2** carrier table, peer probe, two-device pipeline split in two workers. Needs two GPUs in
+   one host for the record, which the owner does not have; the `PinnedHost` path is testable
+   with one.
+6. **S5** E008 as registered, then cross-host tier transfer. Needs two hosts: the owner's
+   3090 PC and 4090 PC; the PTR-Research LXD cluster is enough for the CPU part.
 
-S2 comes after S3 on purpose: on the owner's hardware S2's working carrier **is** S3's pinned
+S2 comes after S3 on purpose: without peer access S2's working carrier **is** S3's pinned
 buffer, so S3 builds the piece S2 needs.
 
 ## 6. Experiments
@@ -272,10 +289,11 @@ one card) is a later experiment on the F-series hardware plan and is not claimed
   several adapter sets and a large KV working set on a 24 GiB card, and three quarters of the
   contracts exist. The risk is performance, and E011 and E010 measure it before anything
   depends on it.
-- **S2: yes, on the owner's two RTX 3090.** Its working carrier is the pinned buffer of S3 unless
-  the probe finds peer access; on one card it has no effect.
-- **S5: yes, as E008**, already planned and registered; this document adds nothing to it but
-  the shared handle contract.
+- **S2: build, but no hardware yet.** The owner's PCs have one card each, so S2 is built on the
+  pinned buffer of S3, tested with simulated devices, and checked on hardware only once a host
+  has two cards.
+- **S5: yes, as E008**, already planned and registered, and directly testable between the
+  owner's two PCs; this document adds nothing to it but the shared handle contract.
 - **What never makes sense here:** per-token expert dispatch across PCIe or a network, and a
   claim that any of this is "NVLink". The fabric is, as an estimate, around a hundred times slower (section 2: PCIe
   against NVLink bandwidth) and carries typed,

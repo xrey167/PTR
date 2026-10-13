@@ -15,9 +15,10 @@ in one rack, 18 compute trays of 4 GPUs and 2 CPUs each plus 9 NVLink switch tra
 GPU, LPDDR5X on every CPU, NVLink 6 as the scale-up fabric inside the rack and ConnectX-9 for
 scale-out between racks (NVIDIA product page and the Cisco/Supermicro data sheet; NVIDIA labels
 the figures preliminary). The figures themselves (transistor counts, bandwidth, price) play no
-role here; only the **structure** does. PTR's hardware is PCIe only: the owner's desktop has two
-RTX 3090 without an NVLink bridge (`hardware/dual-rtx3090.toml`, "PCIe only, no NVLink bridge
-assumed", `docs/LOCAL_START.md:5`), and `hardware/rtx4090.toml` is a single-card reference profile.
+role here; only the **structure** does. PTR's hardware is PCIe only: the owner has two PCs with
+one card each, an RTX 3090 and an RTX 4090 (stated by the owner on 2026-10-13; the repository's
+`docs/LOCAL_START.md:5` and `hardware/dual-rtx3090.toml` still describe one desktop with two
+RTX 3090, see [41](41-pod-data-plane.md) section 0a).
 So every "rack" in this document is a **logical** construct whose first instance is one
 workstation.
 
@@ -240,8 +241,8 @@ A **positive** result of any of these shows a mechanism, not a benefit. Whether 
 placement or typed locality reduces anything a user can see (p95 latency of the doc 39 loop,
 `Exhausted` rate under a failing device) is a later, model-backed experiment on the F-series
 hardware plan (`docs/VCW_MOE_GPU_PLAN.md`), and the honest expectation on one workstation is a small
-difference at most: with one card, one device is one tray is one rack, and the owner's two
-RTX 3090 form one tray of two devices joined over PCIe. The value of the typing on that machine
+difference at most: each of the owner's PCs has one card, so one device is one tray is one
+rack, and the two PCs are two racks joined over the LAN. The value of the typing on those machines
 is that the rule exists and is tested before more devices or hosts appear.
 
 ## 6. Risks
