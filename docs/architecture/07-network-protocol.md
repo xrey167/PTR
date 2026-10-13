@@ -15,6 +15,8 @@ flowchart LR
 
 PodWire defines semantics. Prost/Protobuf is a network encoding candidate. Iroh/QUIC is a transport candidate. rkyv is a trusted local data-plane candidate. DLPack carries tensors.
 
+What is built today differs from the diagram: the three wires spoken today (below) use hand-written, bounded and versioned binary frames (`PTRRAFTW` in `ptr-cluster`, `PTREXREQ`/`PTREXRCP` in `ptr-execwire`, `PTRPWREQ`/`PTRPWANS` and the V2/V3 frames in `ptr-podwire`) over the feature-gated Iroh transport of `ptr-net`, not Protobuf. Prost-generated messages from `proto/` are converted into validated domain values in `ptr-protocol` (and raft-rs carries its own protobuf messages inside `PTRRAFTW` batches), but no wire speaks the `proto/` schemas. No rkyv or DLPack path exists in the workspace.
+
 ## ALPN design
 
 One ALPN per protocol, because two protocols on one ALPN is how a request meant for

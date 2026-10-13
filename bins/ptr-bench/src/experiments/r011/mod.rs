@@ -840,7 +840,7 @@ mod tests {
         assert_eq!(refused, Ok(cases::Verdict::Refused));
     }
 
-    /// R011 is `planned` and its attempts are in the harness record of every seed
+    /// R011's attempts are in the harness record of every seed
     /// (`adversarial_attempts_per_case`), which aggregate.py carries into run.json and
     /// metrics.json: no file of the experiment names a separate attempts artifact that nothing
     /// writes.

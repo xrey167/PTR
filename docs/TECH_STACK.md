@@ -12,8 +12,8 @@ The table distinguishes **PTR semantics** from **current candidate technologies*
 | Inference | `ptr-model-api` | SGLang, vLLM, Burn native | TensorRT/custom |
 | Execution | `ptr-exec` | Tokio substrate + PTR isolates | Tina/Compio experiments |
 | Network | `ptr-net` | Iroh/QUIC | other QUIC/RPC |
-| Network codec | `ptr-protocol` | Prost/Protobuf | Cap'n Proto/FlatBuffers/etc |
-| Local archive | `ptr-protocol` | rkyv | postcard/bincode/etc |
+| Network codec | `ptr-protocol` | Prost/Protobuf (built: prost conversion into validated domain values; the three wires spoken today use hand-written bounded frames instead, doc 07) | Cap'n Proto/FlatBuffers/etc |
+| Local archive | `ptr-protocol` | rkyv (not used in the workspace) | postcard/bincode/etc |
 | Consensus | `ptr-ledger` | tikv/raft-rs | OpenRaft/custom |
 | Durable log | `ptr-ledger` | tikv/raft-engine | RocksDB/redb/custom WAL |
 | Materialized state | `ptr-state` | Turso/libSQL; PostgreSQL via `ptr-pg` | SQLite/Redb |
@@ -36,7 +36,7 @@ The table distinguishes **PTR semantics** from **current candidate technologies*
 | Ingress classification | `ptr-ingress` | GLiClass-rs | small classifier/custom head |
 | Stateful agent env | Pod/environment contract | ROCK | NeMo Gym/local |
 | Code quality verifier | `ptr-verifier` | Sentrux + compiler/tests | custom sensors |
-| Training orchestration | `training/` | NeMo RL, Unsloth, Data Designer | replaceable |
+| Training orchestration | `training/` | TRL/PEFT (`trl-moe` backend in `training/src/ptr_training/moe/`, built, unselected); NeMo RL, Unsloth, Data Designer | replaceable |
 | Outer-loop optimization | research/training | GEPA/DSPy | custom search/RL |
 
 ## Selection rule

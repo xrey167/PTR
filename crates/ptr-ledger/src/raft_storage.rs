@@ -796,6 +796,10 @@ impl Core {
     /// retains. A host that has a durable snapshot must call
     /// [`Core::record_snapshot_within`] with that snapshot's floor.
     pub fn record_snapshot(&mut self, index: u64, data: Vec<u8>) -> io::Result<()> {
+        // A poisoned storage answers with its own refusal before the log is counted: an
+        // install that failed after persisting `SnapshotPending` is also unaccounted, and the
+        // caller must restart the storage rather than account for that snapshot.
+        self.refuse_if_poisoned()?;
         let events = self.events_through(index)?;
         self.record_snapshot_within(index, data, RetentionFloor::covering(CommitIndex(events)))
     }

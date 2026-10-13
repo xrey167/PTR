@@ -20,7 +20,7 @@ Protection is intentionally opt-in so setup cannot accidentally lock out the own
 
     PTR_APPLY_BRANCH_PROTECTION=1 ./scripts/setup_github_repo.sh
 
-The template at `.github/branch-protection-main.json` requires quality, stable Linux/Windows, Rust 1.85 MSRV, repository-invariants and lifecycle-failpoint checks. It blocks force pushes/deletion, requires linear history and requires PR conversation resolution. Administrator enforcement remains disabled so the owner retains an emergency bypass.
+The template at `.github/branch-protection-main.json` requires quality, stable Linux/Windows, the Rust MSRV job (`rust-msrv`, Rust 1.99), repository-invariants and lifecycle-failpoint checks. It blocks force pushes/deletion, requires linear history and requires PR conversation resolution. Administrator enforcement remains disabled so the owner retains an emergency bypass.
 
 ## Current limitation
 

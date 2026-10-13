@@ -10,7 +10,7 @@ The repository/CI commands remain authoritative:
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 cargo test --workspace --locked
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 python scripts/check_repo.py
 python scripts/check_architecture_catalog.py
 python scripts/check_rust_conventions.py
@@ -55,7 +55,7 @@ a crate. So a nested workspace under a root that carries a `clippy.toml` is lint
 at the *root's* MSRV however much newer its own is, and every lint whose
 suggestion needs a newer compiler is quietly suppressed.
 
-`model/burn-a0` requires 1.95 and was linted at the root's 1.85.0. Clippy is not
+`model/burn-a0` requires 1.95 and was linted at the root's MSRV, then 1.85.0. Clippy is not
 silent about this — it prints *"the MSRV in `clippy.toml` and `Cargo.toml` differ;
 using `1.85.0` from `clippy.toml`"* on every run of that workflow — but the notice
 is not a named lint, so `-D warnings` cannot promote it and the job exits 0. A
@@ -65,11 +65,12 @@ printed warning that nothing enforces is indistinguishable from no warning.
 package declares that package's `rust-version`. Two details are load-bearing and
 both are tested in `scripts/tests/test_check_msrv_alignment.py`:
 
-- it compares **semantically**, because the root declares `rust-version = "1.85"`
-  against `msrv = "1.85.0"`, and a string comparison would fail on the root
+- it compares **semantically**, because the root declares `rust-version = "1.99"`
+  against `msrv = "1.99.0"`, and a string comparison would fail on the root
   workspace the day the check is added;
-- it resolves `rust-version.workspace = true`, which every crate and both binaries
-  use, so it compares the version that actually governs each package.
+- it resolves `rust-version.workspace = true`, which every binary and every crate
+  but `ptr-types` (which declares 1.95 for `model/burn-a0`) use, so it compares the
+  version that actually governs each package.
 
 A package that declares no `rust-version` — `fuzz`, `templates/rust-crate` — makes
 no claim, so there is nothing to contradict and nothing is reported.
@@ -77,7 +78,7 @@ no claim, so there is nothing to contradict and nothing is reported.
 ## Existing environments
 
 - Dev Container: `.devcontainer/`
-- GPU desktop (Ubuntu 24.04, one RTX 4090): [`docs/DESKTOP_SETUP.md`](DESKTOP_SETUP.md), `make desktop-setup`, `make gpu-doctor`
+- GPU desktop (Ubuntu 24.04, two RTX 3090; the runbook was written for one RTX 4090): [`docs/DESKTOP_SETUP.md`](DESKTOP_SETUP.md), `make desktop-setup`, `make gpu-doctor`
 - VS Code extension hints: rust-analyzer + TOML support
 - Emacs optional profile: `tooling/emacs/`
 

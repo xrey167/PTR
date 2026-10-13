@@ -629,7 +629,9 @@ the code before the fix:
   is a claim by whoever registers it rather than a proof.
 - **Reconciliation is not authenticated here.** `reconcile_effect` is a
   privileged host API like the rest of the gateway; who may call it is the
-  embedding host's question.
+  embedding host's question. ADR-0022 (D6) decides to make it take a
+  host-only `ReconciliationAuthority` capability that never crosses the wire
+  (spec S5, not built).
 - **A spent key is refused at admission, not at validation.** Validation refuses a
   second *live* attempt under a key, not an attempt under a spent one, so a host
   that commits an `EffectAttempted` record directly under a spent key can have it

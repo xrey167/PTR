@@ -33,10 +33,18 @@ prototypes. Burn A0 is a small trainable tensor experiment, not a pretrained
 language model: it has typed/raw attention, latent refinement and routing, but
 no full language-model backbone or demonstrated end-to-end superiority.
 
-S003 tests certified concurrent branch merges with simulated agents. Passing it
-would support that subsystem's bounded claim, not learned reasoning or language
-quality. PR #32 contains useful A0 ablation work, but its review and provenance
-issues must be settled before its reported outcomes guide architecture choices.
+S003 tests certified concurrent branch merges with simulated agents. It has
+completed (hard pass on every seed, `STATUS.md`), which supports that subsystem's
+bounded claim, not learned reasoning or language quality. PR #32 contained A0
+ablation work whose review and provenance issues had to be settled before its
+reported outcomes could guide architecture choices.
+
+*Status, 2026-10-13.* Steps 1 to 3 below have been carried out: S003 completed,
+the A0 study was redone as preregistered studies (A0-ablations-v2, A0-baseline-v2
+and A0-baseline-v3-m003), and their isolating contrasts are INCONCLUSIVE with no
+positive claim (M001-v6, M002-v11, M003-v4; `STATUS.md`). Steps 4 and 5 are open;
+connecting A0 to the runtime is decided "not now" until an A0 study passes its
+gates (ADR-0022, S8).
 
 ## Next scientific milestone
 

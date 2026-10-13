@@ -64,8 +64,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-inspect.mmd`](../../docs/diagrams/components/ptr-inspect.mmd)
 
-**Upstream:** domain crates  
-**Downstream:** ptrctl, ptr-observe, debugging
+**Upstream:** ptr-types  
+**Downstream:** none yet (no crate or binary consumes it)
 
 ## Mission
 

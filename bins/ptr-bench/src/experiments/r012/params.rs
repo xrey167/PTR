@@ -3,9 +3,9 @@
 //! The constants of the first section mirror the keys of `[pinned_thresholds]` in the
 //! experiment's `config.toml`, which is read at compile time; the drift test fails when a
 //! constant differs from the file, and when the file holds a key no constant mirrors. The
-//! second section holds the values of the `[preregistration]` table the draft preregistration
+//! second section holds the values of the `[preregistration]` table the preregistration
 //! pins (also compared with the file) and the values this harness chose where the file is
-//! silent. R012 is `planned`: nothing here is frozen.
+//! silent. R012 is frozen at its preregistration and has completed; the file is frozen with it.
 
 // The thresholds complete the compiled table the drift test compares with the file; the
 // harness evaluates most of them in `metrics`, and the rest only echo the table.
@@ -24,7 +24,7 @@ pub const EXPERIMENT_TOML: &str = include_str!(
 /// The subcommand of the harness (`ptr-bench <BENCHMARK> <seed>`).
 pub const BENCHMARK: &str = "approximate-taint-containment";
 
-/// The runner's command, as the draft preregistration states it. `experiment.toml` carries it
+/// The runner's command, as the preregistration states it. `experiment.toml` carries it
 /// from the freeze on (until then its `entrypoint` is empty).
 pub const ENTRYPOINT: &str =
     "cargo run --release --locked -p ptr-bench -- approximate-taint-containment <seed>";

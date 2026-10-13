@@ -28,7 +28,7 @@ implemented = [
 ]
 
 missing = [
-  "Pod resumption on the KV path; the taint registry is in memory and not rebuilt after a restart (see ptr-runtime)",
+  "Pod resumption on the KV path (the taint registry itself survives a restart: ptr-runtime rebuilds it from KvTaintCommitted events, tests/kv_taint_resumable.rs the_refusal_survives_a_restart_of_the_server)",
   "Streaming ModelEvent/WebSocket or SSE API",
   "Authentication/session/policy integration",
   "Readiness/admin endpoints beyond basic health",
