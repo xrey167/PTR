@@ -53,6 +53,7 @@
 - [37-pod-moe.md](37-pod-moe.md) — Pod-MoE: experts as pods on three levels (token, request, meta), gated self-modification through proposals, verifier and ledger; training programme and verified literature (design)
 - [38-consciousness-indicators.md](38-consciousness-indicators.md) — functional consciousness-indicator properties (after Butlin, Long et al. 2023) mapped to PTR components and as capability requirements of Pods and the Pod-MoE; principles (indicators are not consciousness, no training on self-reports), CPU/GPU split and the C-series experiment roadmap (design; C001 CPU workspace experiment built, not frozen); welfare rules in [`../MODEL_WELFARE.md`](../MODEL_WELFARE.md)
 - [39-vcw-moe.md](39-vcw-moe.md) — VCW-MoE: the Verifier-Closed Workspace MoE; formal specification (state, loop, acceptance predicate, invariants as constraints), component and evidence map, delimitation from related work, falsification plan and risks (design)
+- [40-pod-rack.md](40-pod-rack.md) — Pod racks and trays: the NVL72 composition pattern (scale-up domain, tray as the unit of placement and fencing, a host authority per tray, typed interconnect classes, tier scope) applied to Pod placement; proposed types, work order and the mechanism experiments that would justify each piece (design proposal, nothing implemented)
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation
