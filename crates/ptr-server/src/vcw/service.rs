@@ -648,11 +648,12 @@ impl VcwService {
                 }
                 Ok(scope) if scope.state.is_terminal() => {}
                 // An active scope is adopted only if this service could have made it: same
-                // project, no lease, no children. Anything else (another component's scope
+                // project and session, no lease, no children. Anything else (another component's scope
                 // under this name) is left alone and the next incarnation is tried, so answers
                 // are never admitted under a scope that refuses them.
                 Ok(scope) => {
                     let ours = scope.project == self.project
+                        && scope.session == self.session_id
                         && runtime
                             .scopes()
                             .lease(&id)
@@ -880,6 +881,10 @@ impl VcwService {
             Ok(run) => run,
             Err(error) => {
                 let digest = vcw.failed_trace().map_or([0; 32], |trace| *trace.digest());
+                // The trace of the failed loop is what its digest names: keep it readable too.
+                if let (Some(trace), Ok(mut traces)) = (vcw.failed_trace(), self.traces.lock()) {
+                    traces.insert(id, backend_tag(self.backend), trace);
+                }
                 return (
                     Err(VcwApiError::Internal(format!("vcw loop failed: {error}"))),
                     "failed",

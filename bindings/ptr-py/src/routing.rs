@@ -254,13 +254,18 @@ impl PyFindingRouter {
     }
 }
 
-/// The most decisions routing `report` can leave pending: one per distinct hard code of a
-/// repair, one proposer for a fallback, none for an accept.
-fn max_records(report: &ptr_verifier::VerificationReport) -> usize {
+/// The most decisions routing `report` can leave pending: one per distinct hard code that has a
+/// registered repair Pod, one proposer for a fallback when a proposer is registered, none for an
+/// accept. Codes and fallbacks no Pod can take come back `Unroutable` or `Escalate` and leave
+/// nothing pending, so they never count against the capacity.
+fn max_records(registry: &FindingRegistry, report: &ptr_verifier::VerificationReport) -> usize {
     match classify(report, REQUIRED, &RouterLimits::default()) {
         ReportClass::Accept(_) => 0,
-        ReportClass::Repair(codes) => codes.len(),
-        ReportClass::Fallback(_) => 1,
+        ReportClass::Repair(codes) => codes
+            .iter()
+            .filter(|code| !registry.repair_pods(code).is_empty())
+            .count(),
+        ReportClass::Fallback(_) => usize::from(!registry.proposers().is_empty()),
     }
 }
 
@@ -385,7 +390,7 @@ impl PyFindingRouter {
         if state
             .pending
             .len()
-            .saturating_add(max_records(&report.inner))
+            .saturating_add(max_records(self.router.registry(), &report.inner))
             > MAX_PENDING
         {
             return Err(PtrRouterError::new_err(

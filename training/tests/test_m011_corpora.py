@@ -187,6 +187,14 @@ class ScorerTests(unittest.TestCase):
         changed = [dataclasses.replace(p.train[0], reference={**p.train[0].reference, "test": "x"})]
         self.assertNotEqual(corpora.selection_digest(p.train[:1]), corpora.selection_digest(changed))
 
+    def test_gsm8k_train_and_test_rows_with_the_same_index_do_not_collide(self):
+        rows = [{"question": f"q{i}?", "answer": f"#### {i}"} for i in range(40)]
+        tests = [{"question": f"t{i}?", "answer": f"#### {i}"} for i in range(40)]
+        parts = corpora.partition_gsm8k(rows, tests)
+        self.assertTrue(parts.validation and parts.evaluation)
+        self.assertEqual(corpora.corpus_report("gsm8k", parts)["validation_overlap_count"], 0)
+        self.assertNotEqual(parts.train[0].item_id, parts.evaluation[0].item_id)
+
     def test_validation_overlap_counts_evaluation_ids_and_identical_prompts(self):
         import dataclasses
 

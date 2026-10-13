@@ -208,14 +208,17 @@ def cmd_join(args: argparse.Namespace) -> int:
                 f"but only {free} bytes are free at {directory}"
             )
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        # Opened outside the cleanup: if another process created the file first, O_EXCL fails
+        # and that file is not ours to remove.
+        fd = os.open(target, flags, 0o644)
         try:
-            with os.fdopen(os.open(target, flags, 0o644), "wb") as dst:
+            with os.fdopen(fd, "wb") as dst:
                 for name in names:
                     with (directory / name).open("rb") as src:
                         while block := src.read(CHUNK):
                             dst.write(block)
         except BaseException:
-            # Never leave a partial bundle behind.
+            # Never leave a partial bundle behind; this process created it.
             target.unlink(missing_ok=True)
             raise
         print(f"joined {len(names)} parts into {target}")

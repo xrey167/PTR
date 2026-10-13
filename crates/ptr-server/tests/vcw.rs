@@ -849,6 +849,31 @@ async fn an_active_scope_of_another_project_under_the_service_name_is_not_adopte
     assert_eq!(body["outcome"], "verified");
 }
 
+#[tokio::test]
+async fn an_active_scope_of_another_session_under_the_service_name_is_not_adopted() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .create_scope(
+            ExecutionScope {
+                id: ScopeId::from("vcw-scope-vcw"),
+                parent: None,
+                session: SessionId::from("other"),
+                project: ProjectId::from("vcw"),
+                created_at: Timestamp(1),
+                deadline: None,
+                state: ScopeState::Created,
+                cancellation_requested: false,
+            },
+            ScopeLeaseBinding::default(),
+        )
+        .unwrap();
+    let (_state, app) = server_from(runtime, &enabled());
+    // Admission requires the request's session; adopting this scope would refuse every answer.
+    let (status, body) = post(&app, &arithmetic("own-session")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["outcome"], "verified");
+}
+
 #[test]
 fn a_refusal_late_in_the_roster_commits_none_of_the_earlier_pods() {
     let service = VcwService::from_config(&enabled(), &parts()).unwrap();

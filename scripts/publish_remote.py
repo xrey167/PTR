@@ -154,6 +154,26 @@ def ensure_remote(repo: str, name: str, url: str | None, set_url: bool, dry_run:
     return url
 
 
+def rewrite_push_url(repo: str, url: str) -> str:
+    """`url` as git push would rewrite it: the longest matching `url.<base>.pushInsteadOf`
+    prefix wins, and only when none matches the longest `url.<base>.insteadOf` prefix applies
+    (git-config(1), url.<base>.pushInsteadOf)."""
+    proc = git(repo, 'config', '--get-regexp', r'^url\..*\.(pushinsteadof|insteadof)$',
+               check=False)
+    rules: dict[str, list[tuple[str, str]]] = {'pushinsteadof': [], 'insteadof': []}
+    for line in proc.stdout.splitlines():
+        key, _, prefix = line.partition(' ')
+        base, _, kind = key[len('url.'):].rpartition('.')
+        if kind.lower() in rules and prefix:
+            rules[kind.lower()].append((prefix, base))
+    for kind in ('pushinsteadof', 'insteadof'):
+        matches = [(prefix, base) for prefix, base in rules[kind] if url.startswith(prefix)]
+        if matches:
+            prefix, base = max(matches, key=lambda m: len(m[0]))
+            return base + url[len(prefix):]
+    return url
+
+
 def check_push_urls(repo: str, name: str, url: str) -> None:
     """Refuse unless `git push` would publish to exactly `url`.
 
@@ -161,16 +181,21 @@ def check_push_urls(repo: str, name: str, url: str) -> None:
     checking and showing only `remote.<name>.url` could confirm one server while the push goes
     to another or to several. Every effective push URL is credential-checked first.
 
-    The push URLs are derived from the configuration as it will be once `ensure_remote` has
-    run, so a dry run of `--set-url` checks the URL the real run would push to: configured
-    `pushurl` entries if there are any (set-url leaves them alone), else every configured `url`
-    entry when there are several (git pushes to all of them), else `url` itself."""
-    def config_all(key: str) -> list[str]:
-        proc = git(repo, 'config', '--get-all', f'remote.{name}.{key}', check=False)
+    Git resolves the push URLs, so `url.<base>.insteadOf` and `pushInsteadOf` rewrites are
+    applied exactly as `git push` would apply them. When the remote does not point at `url` yet
+    (a dry run of adding it or of `--set-url`), the configuration is not changed: a throwaway
+    remote name carrying `url` is resolved instead, unless the real remote has `pushurl` entries
+    (set-url leaves them alone) or several `url` entries (git pushes to all of them), in which
+    case those are what a real run would push to."""
+    def lines(proc) -> list[str]:
         return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
-    urls = config_all('url')
-    push_urls = config_all('pushurl') or (urls if len(urls) > 1 else [url])
+    configured = lines(git(repo, 'config', '--get-all', f'remote.{name}.url', check=False))
+    pushurls = lines(git(repo, 'config', '--get-all', f'remote.{name}.pushurl', check=False))
+    if configured == [url] or pushurls or len(configured) > 1:
+        push_urls = lines(git(repo, 'remote', 'get-url', '--push', '--all', name))
+    else:
+        push_urls = [rewrite_push_url(repo, url)]
     for push_url in push_urls:
         check_url(push_url)
     if push_urls != [url]:

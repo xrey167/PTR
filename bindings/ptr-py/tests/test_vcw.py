@@ -137,6 +137,18 @@ class RouterTests(unittest.TestCase):
 
         self.assertEqual(fill_settle_route(True), fill_settle_route(False))
 
+    def test_a_full_pending_map_still_answers_reports_that_route_to_no_pod(self):
+        router = ptr_py.FindingRouter(7, ["gen"], [("fa", ["arith.value"])])
+        for i in range(65_536):
+            router.route(bad_report(), request_id=f"r{i}")
+        with self.assertRaises(ptr_py.PtrRouterError):
+            router.route(bad_report(), request_id="over")
+        # A code no repair Pod is registered for leaves nothing pending, so it is still answered.
+        unroutable = ptr_py.verify_json_schema('{"type": "object", "required": ["a"]}', "{}")
+        decision = router.route(unroutable, request_id="free")
+        self.assertEqual(decision["kind"], "repair")
+        self.assertEqual(decision["routes"], [{"unroutable": "json.required"}])
+
     def test_propensity_equals_support_entry(self):
         router = new_router()
         for i in range(40):

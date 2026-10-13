@@ -12,6 +12,7 @@ implemented = [
   "Errors raise PtrVerifierError, PtrRouterError, PtrWorkspaceError (and its subclass PtrWorkspaceCapacityError) or PtrVcwError (ValueErrors); tests assert the public surface has no setter for gates, thresholds, verifiers or eligibility",
   "The gate decides: forgetting_gate_evaluate returns the ForgettingGate verdict, violations and accuracy-matrix metrics unchanged, and the bindings add no thresholds or logic of their own",
   "Follow-ups of #134: BoundedWorkspace.unsubscribe(id) ends a subscription so subscriber churn never exhausts the limit of 8 (test: 20 rounds of 8 subscribe/unsubscribe); FindingRouter.route checks the pending capacity (one decision per distinct hard code, one for a fallback, none for an accept) before the router samples, holding the state lock across routing, so a refused route spends no nonce (test: a refused route followed by a settle gives the same nonce as the same sequence without the refusal)",
+  "The route capacity bound counts only decisions that can be left pending: hard codes with a registered repair Pod and a fallback with a registered proposer; reports that route to no Pod (Unroutable, Escalate) are still answered when the pending map is full (test: test_a_full_pending_map_still_answers_reports_that_route_to_no_pod)",
 ]
 
 missing = [

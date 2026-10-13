@@ -88,12 +88,14 @@ class Partitions:
 # ----------------------------------------------------------------------------- example builders
 
 
-def gsm8k_example(index: int, row: dict) -> Example:
+def gsm8k_example(index: int, row: dict, split: str) -> Example:
+    """GSM8K has two source splits whose row indices both start at 0, so the id names the split:
+    `gsm8k:train:9` and `gsm8k:test:9` are different items."""
     return Example(
         corpus="gsm8k",
         domain="math",
         index=index,
-        item_id=f"gsm8k:{index}",
+        item_id=f"gsm8k:{split}:{index}",
         prompt=f"Question: {row['question']}\nAnswer:",
         answer=" " + row["answer"],  # leading space: BPE-natural token boundary
         reference={"final": scorers.gsm8k_reference(row["answer"])},
@@ -140,8 +142,8 @@ def partition_gsm8k(train_rows: list[dict], test_rows: list[dict]) -> Partitions
     train, validation = [], []
     for i, row in enumerate(train_rows):
         target = validation if i % VALIDATION_MODULUS_GSM8K == VALIDATION_RESIDUE_GSM8K else train
-        target.append(gsm8k_example(i, row))
-    evaluation = [gsm8k_example(i, row) for i, row in enumerate(test_rows)]
+        target.append(gsm8k_example(i, row, "train"))
+    evaluation = [gsm8k_example(i, row, "test") for i, row in enumerate(test_rows)]
     return Partitions(train, validation, evaluation)
 
 
