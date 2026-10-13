@@ -82,7 +82,7 @@ PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.moe.m011 \
 PYTHONPATH=training/src training/.venv/bin/python -m unittest discover -s training/tests -p 'test_m011*'
 
 # real run on one RTX 3090 (pin it with CUDA_VISIBLE_DEVICES) (downloads OLMoE and the three corpora at the pinned revisions),
-# per arm: 1. tune once on the first pinned seed (8 trials, 500 steps each), frozen tuning.json
+# per arm: 1. tune once on the pilot seed 1001 (8 trials, 500 steps each), frozen tuning.json
 python -m ptr_training.moe.m011 --arm mixlora --out runs/m011/mixlora/tune --model olmoe --tune
 # 2. every pinned seed at the full 2000 steps with the frozen hyperparameters
 python -m ptr_training.moe.m011 --arm mixlora --out runs/m011/mixlora --model olmoe --all-seeds \

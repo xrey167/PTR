@@ -68,13 +68,13 @@ elif [ "${VERSION_ID:-}" != "24.04" ]; then
   note "WARNING: Ubuntu ${VERSION_ID}, tested on 24.04"
 fi
 missing=()
-for tool in git curl cc pkg-config; do
+for tool in git curl cc pkg-config bwrap; do
   command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
   note "missing base tools: ${missing[*]}"
   note "install them yourself (this script never runs sudo):"
-  note "  sudo apt update && sudo apt install -y git curl build-essential pkg-config"
+  note "  sudo apt update && sudo apt install -y git curl build-essential pkg-config bubblewrap"
   [ "$DRY_RUN" -eq 1 ] || exit 1
 fi
 

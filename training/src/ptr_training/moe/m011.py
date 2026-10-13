@@ -48,9 +48,11 @@ PINS = {
     "domains": list(DOMAINS),
     "min_seeds": 5,
     "seeds": [17, 29, 43, 71, 101],
-    # TB1: tune on the first pinned seed only, each trial at 25% of the pinned step budget
-    # (rounded down, at least 1); the selected hyperparameters are frozen for every seed.
-    "tuning_protocol": {"seed_rule": "first pinned seed", "steps_fraction": 0.25},
+    # TB1: tune on the pilot seed only (>= 1001, never one of the confirmatory seeds), each trial
+    # at 25% of the pinned step budget (rounded down, at least 1); the selected hyperparameters
+    # are frozen for every confirmatory seed.
+    "tuning_seed": 1001,
+    "tuning_protocol": {"seed_rule": "pilot seed, never confirmatory", "steps_fraction": 0.25},
     "corpora": {
         k: {"repo": p.repo, "revision": p.revision, "config": p.config, "file": p.file}
         for k, p in corpora.PINNED_CORPORA.items()
@@ -144,7 +146,7 @@ def tuning_steps_for(budget_steps: int) -> int:
 def tuning_deviations(*, seed: int, steps: int, trials: int) -> list[dict]:
     """Departures of a tuning run from the pinned protocol (empty for a conforming run)."""
     pinned = {
-        "tuning_seed": PINS["seeds"][0],
+        "tuning_seed": PINS["tuning_seed"],
         "tuning_steps": tuning_steps_for(PINS["training_steps_per_arm"]),
         "tuning_trials_used": PINS["tuning_search_spec"]["trial_budget"],
     }
@@ -492,6 +494,13 @@ def run(args) -> int:
     from ptr_training.moe import routed_peft as rp
     from ptr_training.moe import scorers
 
+    # HumanEval scoring runs model-generated code: refuse before any training, not after it.
+    if scorers.sandbox_info()["filesystem"] == "refused":
+        raise SystemExit(
+            "m011: no bubblewrap sandbox for HumanEval (apt install bubblewrap); set "
+            f"{scorers.UNSANDBOXED_ENV}=1 only to accept running generated code as this user"
+        )
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     kind = args.model
@@ -692,14 +701,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_all_seeds(args) -> int:
-    """Desktop driver: (optionally tune on seeds[0]) then one full-budget run per pinned seed."""
+    """Desktop driver: (optionally tune on the pilot seed) then one full-budget run per pinned seed."""
     import copy
 
     out = Path(args.out)
     hparams = args.hparams
     if args.tune:
         t_args = copy.copy(args)
-        t_args.all_seeds, t_args.seed, t_args.out = False, PINS["seeds"][0], str(out / "tune")
+        t_args.all_seeds, t_args.seed, t_args.out = False, PINS["tuning_seed"], str(out / "tune")
         if (rc := run(t_args)) != 0:
             return rc
         hparams = str(out / "tune" / "tuning.json")
@@ -724,7 +733,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.seed is None:
         if not args.tune:
             parser.error("--seed is required unless --tune or --all-seeds")
-        args.seed = PINS["seeds"][0]
+        args.seed = PINS["tuning_seed"]
     return run(args)
 
 

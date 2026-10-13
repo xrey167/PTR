@@ -104,8 +104,8 @@ prescribed_routing = "masked by the task domain label in training and evaluation
 emergent_routing = "unmasked"
 expert_domain_assignment_expected_digest = "sha256:b9028e88fa67731865af758a396194920d13520504ef746198837cbab31035b4"
 expert_domain_assignment_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of prescribed_expert_domain_assignment"
-# Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
-tuning_seed = 17
+# Preregistered choices (TB1): hyperparameters are selected once, on the pilot seed 1001 (never one of the confirmatory seeds), with shortened trials, then frozen for every confirmatory seed's full-budget run.
+tuning_seed = 1001
 tuning_steps_fraction = 0.25
 tuning_steps_budget_key = "training_steps_per_arm"
 tuning_steps = 500

@@ -1,12 +1,20 @@
 """M011 entrypoint: tiny end-to-end run per arm on CPU (2 steps), tuning, hyperparameter reuse."""
 
 import json
+import os
 import math
 import tempfile
 import unittest
 from pathlib import Path
 
+from ptr_training.moe import scorers
 from ptr_training.moe.pipeline import stack_available
+
+
+def setUpModule():
+    # The end-to-end runs score HumanEval; without bubblewrap they use the recorded opt-in.
+    if not scorers._bwrap_usable():
+        os.environ.setdefault(scorers.UNSANDBOXED_ENV, "1")
 
 HAVE = stack_available(("torch", "transformers", "peft"))
 
@@ -79,14 +87,14 @@ class TinyEndToEndTests(unittest.TestCase):
     def test_tuning_protocol_tb1_and_frozen_hparams_across_seeds(self):
         with tempfile.TemporaryDirectory() as tmp:
             tune_dir = Path(tmp) / "tune"
-            # no --seed: tuning defaults to the first pinned seed; 4 steps -> 1 tuning step
+            # no --seed: tuning defaults to the pilot seed 1001; 4 steps -> 1 tuning step
             rc = m011.main(["--arm", "mixlora", "--out", str(tune_dir), "--tune",
                             "--tune-budget", "2", "--model", "tiny", "--device", "cpu",
                             "--max-steps", "4", "--eval-limit", "2"])
             self.assertEqual(rc, 0)
             tuning = json.loads((tune_dir / "tuning.json").read_text())
             run = json.loads((tune_dir / "run.json").read_text())
-            self.assertEqual((tuning["tuning_seed"], run["seed"], run["tuning_seed"]), (17, 17, 17))
+            self.assertEqual((tuning["tuning_seed"], run["seed"], run["tuning_seed"]), (1001, 1001, 1001))
             self.assertEqual((tuning["tuning_steps"], run["tuning_steps"]), (1, 1))
             self.assertEqual(tuning["tuning_trials_used"], 2)
             self.assertEqual(run["tuning_trials_used"], 2)
@@ -123,7 +131,7 @@ class TinyEndToEndTests(unittest.TestCase):
                 self.assertEqual(hp["batch_size"], tuning["selected"]["batch_size"])
                 self.assertEqual(final["training_steps"]["run"], 3)
                 self.assertEqual(final["seed"], seed)
-                self.assertEqual(final["tuning_seed"], 17)
+                self.assertEqual(final["tuning_seed"], 1001)
                 self.assertEqual(final["tuning_steps"], 1)
                 self.assertEqual(final["tuning_trials_used"], 2)
                 self.assertEqual(final["tuning_trial_set_digest"], tuning["trial_set_digest"])
@@ -155,7 +163,7 @@ class TinyEndToEndTests(unittest.TestCase):
                 run = json.loads((root / f"seed{seed}" / "run.json").read_text())
                 self.assertTrue((root / f"seed{seed}" / "metrics.json").exists())
                 self.assertEqual(run["hyperparameters"]["learning_rate"], tuning["selected"]["learning_rate"])
-                self.assertEqual(run["tuning_seed"], 17)
+                self.assertEqual(run["tuning_seed"], 1001)
                 seeds.append(run["seed"])
             self.assertEqual(seeds, [17, 29, 43, 71, 101])
 

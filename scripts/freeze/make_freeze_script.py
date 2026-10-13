@@ -329,10 +329,12 @@ def generate(spec):
     w("  waitdisk; clean")
     w(f'  rc=0; timeout {int(spec.get("seed_timeout", 100000))} python3 scripts/run_experiment.py run "$ID" --seed "$s" > "$LOGS/run-$s.log" 2>&1 || rc=$?')
     w('  say "seed $s EXIT $rc"')
+    # A timeout or harness failure (any exit but 0 or 1) stops before anything is staged, so a
+    # partial record is never committed as seed evidence; it stays in the tree for inspection.
+    w('  case $rc in 0|1) ;; *) stop 9 "seed $s exit $rc (nothing committed; inspect $D)" 3;; esac')
     w("  clean")
     w('  only_paths "$D/" || stop 9 "seed $s left changes outside the experiment" 3')
     w('  git add -- "$D" && git commit -q -m "research: record $ID seed $s$T" || stop 9 "seed $s commit failed" 3')
-    w('  case $rc in 0|1) ;; *) stop 9 "seed $s exit $rc" 3;; esac')
     w("done")
     w('say "RUNSDONE"')
     w("fi")

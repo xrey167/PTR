@@ -316,7 +316,7 @@ commands.
   (`perft_r_emergent`, `perft_r_prescribed`, `plain_lora`, `mixlora`) at a common target of
   4,456,448 trainable parameters (each within 1%), corpora GSM8K, HumanEval and BFCL
   `BFCL_v3_simple.json` at pinned revisions with pinned split rules, 2000 steps per arm,
-  tuning on seed 17 (8 trials of 500 steps, search space learning rate 1e-5 to 1e-3 and batch
+  tuning on the pilot seed 1001, never a confirmatory seed (8 trials of 500 steps, search space learning rate 1e-5 to 1e-3 and batch
   size 16, 32 or 64), seeds 17 29 43 71 101, the criteria in `experiment.toml`. The manifest
   and `config.toml` hold no `must-be-pinned` or `must-be-signed` string. The entrypoint module
   `training/src/ptr_training/moe/m011.py` exists with `routed_peft.py`, `corpora.py`,
@@ -351,11 +351,11 @@ commands.
     --arm perft_r_prescribed --seed 1 --out /tmp/m011-smoke --model tiny --max-steps 2 --eval-limit 3
   # short real-model GPU check before any freeze (exploratory)
   PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.moe.m011 \
-    --arm mixlora --seed 17 --out training/runs/m011/probe --model olmoe --corpora hf --max-steps 20
+    --arm mixlora --seed 1001 --out training/runs/m011/probe --model olmoe --corpora hf --max-steps 20
   ```
   The real runs per arm (tune once, then every seed) are in the `experiment-run` skill, under
   "M011". They run only after the freeze and through `run_experiment.py` as in section 3.
-- **Discipline.** Section 3. Tuning happens once, on seed 17, inside the preregistered
+- **Discipline.** Section 3. Tuning happens once, on the pilot seed 1001, inside the preregistered
   procedure; hyperparameters are then frozen for every seed. Any departure from the pinned
   seed, step count or 8 trials is recorded in `deviations` and must be quoted.
 
