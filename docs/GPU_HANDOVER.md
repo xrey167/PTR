@@ -1,8 +1,11 @@
 # GPU handover: running the GPU-phase work on the local GPU desktop (originally written for one RTX 4090)
 
 Written 2026-10-08 for the PTR owner's Ubuntu 24.04 desktop, originally assuming one NVIDIA RTX 4090
-(24 GiB). The machine is two RTX 3090 (24 GiB each); read "4090" below as the reference card of the
-original text (section 5 and `DESKTOP_SETUP.md` section 10 state what changes).
+(24 GiB). The owner's machines are now (inventory of 2026-10-13) two PCs with one card each, an RTX
+3090 (`hardware/rtx3090.toml`) and an RTX 4090 (`hardware/rtx4090.toml`); run every step on each PC
+with that PC's profile, and run the experiments whose manifests name `hardware/rtx3090.toml` on the
+3090 PC. Earlier notes below that speak of one machine with two RTX 3090 describe the superseded
+inventory.
 It is a plan, not a result. It was assembled from repository files on a machine without a
 GPU, nothing in it has run on a GPU, and no experiment mentioned here has evidence yet.
 
@@ -54,8 +57,8 @@ Work top to bottom. Each item has a check; do not continue past a failed one.
 2. **Secure Boot.** `mokutil --sb-state`. With Secure Boot on, enrol the MOK key at the first
    reboot after the driver install, or disable Secure Boot (DESKTOP_SETUP step 1).
 3. **Driver.** `sudo apt install -y nvidia-driver-580-open`, reboot. Check: `nvidia-smi` shows
-   driver 580.x and two lines "NVIDIA GeForce RTX 3090", about 24 GiB each (the original single-4090
-   text expected one RTX 4090, 24564 MiB; DESKTOP_SETUP step 2). No system CUDA
+   driver 580.x and one card, about 24 GiB: "NVIDIA GeForce RTX 3090" on the 3090 PC, "NVIDIA
+   GeForce RTX 4090" (24564 MiB) on the 4090 PC (DESKTOP_SETUP step 2). No system CUDA
    toolkit is needed: the locked CUDA 13 torch wheels bring their own runtime. The experiment
    manifests of M016 and E006 pin driver `580.65.06` and CUDA 13.0 exactly
    (`software_stack`, `max_software_stack_mismatches = 0`). Which 580.x patch version apt
@@ -684,7 +687,7 @@ placeholder.
 
 | ID | Applies to | Key or item | Kind | Options | Recommendation |
 |---|---|---|---|---|---|
-| OD-1 | M010, M011, M012, M013, M014, M015, E006 (also M016, R003) | `hardware_profile` in `experiment.toml`; E006 `gpu_compute_capability = "8.6"`; M016 `rtx5090` | gap | keep 3090 as declared class / switch to `rtx4090` before freezing (section 5) | resolved: the machine has two RTX 3090, keep `rtx3090.toml` (section 5, note at its head); the recommendation to switch to `rtx4090` no longer applies |
+| OD-1 | M010, M011, M012, M013, M014, M015, E006 (also M016, R003) | `hardware_profile` in `experiment.toml`; E006 `gpu_compute_capability = "8.6"`; M016 `rtx5090` | gap | keep 3090 as declared class / switch to `rtx4090` before freezing (section 5) | resolved: keep `rtx3090.toml` and run these experiments on the 3090 PC (owner inventory of 2026-10-13: two single-card PCs, 3090 and 4090; section 5, note at its head); the recommendation to switch to `rtx4090` no longer applies |
 | OD-2 | M006, M010 to M016, R002, R003, R008, E001 to E004, E006 | listing in `experiments/preregistration.toml` | gap | list before the first prepared record / leave unlisted (no freeze protection, per `CLAUDE.md`) | list, with the required keys of each, so the freeze gate covers them |
 | OD-3 | every GPU experiment | interpreter and environment of a frozen entrypoint (a listed run refuses git-ignored files such as `training/.venv`, and passes no `PYTHONPATH`) | gap | environment outside the checkout and a clean worktree / a wrapper in the repository / run unlisted | settle with the first entrypoint (M011) and reuse it **Decided 2026-10-13 (pinning part):** GPU pinning of frozen seed runs (OD-3, decided 2026-10-13, no runner change): a GPU experiment's manifest declares `PTR_CUDA_DEVICE` in `command_environment` before its freeze (the runner passes declared `PTR_*` variables through, `scripts/run_experiment.py`), its entrypoint wrapper sets `CUDA_VISIBLE_DEVICES=$PTR_CUDA_DEVICE` and prints the index into its result JSON (the run record names the declared variable, never its value), and the freeze script's `gpu` field exports both variables. An experiment frozen without that declaration runs on card 0, one at a time. |
 | OD-4 | M015 | teacher `Qwen/Qwen3-30B-A3B` does not fit 24 GiB (bf16 about 60 GB, estimate) | gap | pin a quantized or offloaded teacher / sample the teacher on other hardware and pin its output digest / choose a smaller teacher (successor manifest) / defer M015 | defer M015; if wanted, pin the teacher's precision and sampling location in the manifest before the freeze |

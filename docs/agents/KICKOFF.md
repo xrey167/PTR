@@ -70,8 +70,9 @@ PYTHONPATH=training/src make python-test; make py-bindings; make vcw-demo; make 
 (feature jobs; needs rustup stable >= 1.99, else run each ci-* recipe with +1.99.0, and
 PostgreSQL via PTR_PG_TEST_DSN and PTR_PG_EXPERIMENT_DSN); make a0; make freeze-tools-test.
 Also, on each PC: nvidia-smi -L shows one card; python3 scripts/gpu_doctor.py --require-gpu
-reports it OK and names hardware/rtx3090.toml or hardware/rtx4090.toml. Record the measured
-os/cpu/ram of each PC in the run manifests (one commit).
+reports it OK and names hardware/rtx3090.toml or hardware/rtx4090.toml. Note the measured
+os/cpu/ram of each PC in the Stage 0 report (not committed; each run manifest under the ignored
+training/runs/ records its own machine when the run happens).
 
 STAGE 1. GPU smoke, no research claim. Step 1: make smoke-gpu; check metrics.json
 (hardware.device cuda, gpu name, peak memory): compare the metric ranges with the WP8 table in
