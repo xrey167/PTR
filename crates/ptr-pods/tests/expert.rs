@@ -1,9 +1,10 @@
 use ptr_pods::{
-    ArtifactLifecycle, BaseModelDigest, BaseModelId, BaseModelRef, ExpertIdentityError,
-    ExpertLevel, ExpertOperationRequest, ExpertPodSpec, ExpertProposal, ExpertProposalError,
-    ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId,
-    ProposalParts, ProposerRef, RationaleDigest, RequestedOp, ResultIntent, RetiredReason,
-    StructuralOp, ZeroDigest,
+    ArtifactLifecycle, BaseModelDigest, BaseModelId, BaseModelRef, ExpertCommitRecord,
+    ExpertIdentityError, ExpertLevel, ExpertOperationRequest, ExpertPodSpec, ExpertProposal,
+    ExpertProposalError, ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind,
+    OperandCount, OperationId, OutcomeKind, ProposalParts, ProposerRef, RationaleDigest,
+    RequestedOp, ResultIntent, RetiredReason, StructuralOp, ZeroDigest,
+    MAX_EXPERT_COMMIT_RECORD_BYTES,
 };
 use ptr_types::{CommitIndex, Generation, PodId, ProjectId};
 
@@ -2114,4 +2115,321 @@ fn a_base_model_alias_is_a_different_base_model() {
     assert_ne!(x.proposal_id(), y.proposal_id());
     assert_ne!(x.operation_id(), y.operation_id());
     assert_eq!(x.operation_id(), freeze_on(base()).operation_id());
+}
+
+// ---- ExpertCommitRecord: canonical byte codec ----
+
+const EVIDENCE: [u8; 32] = [0xE1; 32];
+
+fn one_of_each_operation() -> Vec<StructuralOp> {
+    let frozen = |pod: &str| in_state(pod, ExpertState::Frozen);
+    let retired = target(
+        "c",
+        1,
+        ExpertLevel::Segment,
+        ExpertState::Retired(RetiredReason::GateFailed),
+    );
+    vec![
+        StructuralOp::Birth {
+            result: result("new"),
+        },
+        merge(vec![serving("a"), serving("b")]),
+        StructuralOp::Split {
+            source: serving("a"),
+            results: vec![result("x"), result("y")],
+        },
+        StructuralOp::Freeze {
+            target: serving("a"),
+        },
+        reactivate(retired, Some(spec("c", 2, ExpertLevel::Segment))),
+        reactivate(frozen("d"), None),
+        StructuralOp::Prune {
+            targets: vec![serving("a"), serving("b")],
+        },
+        StructuralOp::Retire {
+            target: frozen("a"),
+            reason: RetiredReason::Superseded,
+        },
+    ]
+}
+
+fn record_of(op: StructuralOp) -> ExpertCommitRecord {
+    ExpertCommitRecord::new(propose(op).unwrap(), EVIDENCE, 7).unwrap()
+}
+
+#[test]
+fn commit_record_round_trips_for_every_operation_kind() {
+    let mut kinds = Vec::new();
+    for op in one_of_each_operation() {
+        kinds.push(op.kind());
+        let record = record_of(op);
+        let bytes = record.encode_canonical();
+        assert_eq!(&bytes[..8], b"PTREXR01");
+        let decoded = ExpertCommitRecord::decode_canonical(&bytes).unwrap();
+        assert_eq!(decoded, record);
+        assert_eq!(decoded.encode_canonical(), bytes);
+        assert_eq!(decoded.evidence_digest(), &EVIDENCE);
+        assert_eq!(decoded.gate_epoch(), 7);
+        assert_eq!(
+            decoded.proposal().proposal_id(),
+            record.proposal().proposal_id()
+        );
+    }
+    kinds.sort_by_key(|k| k.to_string());
+    kinds.dedup();
+    assert_eq!(kinds.len(), 7);
+}
+
+#[test]
+fn commit_record_encoding_is_deterministic_and_covers_every_field() {
+    let base_op = || StructuralOp::Freeze {
+        target: serving("a"),
+    };
+    let a = record_of(base_op()).encode_canonical();
+    assert_eq!(a, record_of(base_op()).encode_canonical());
+    let other_epoch = ExpertCommitRecord::new(propose(base_op()).unwrap(), EVIDENCE, 8).unwrap();
+    let other_evidence =
+        ExpertCommitRecord::new(propose(base_op()).unwrap(), [0xE2; 32], 7).unwrap();
+    assert_ne!(a, other_epoch.encode_canonical());
+    assert_ne!(a, other_evidence.encode_canonical());
+}
+
+#[test]
+fn truncated_commit_records_are_rejected_at_every_length() {
+    for op in one_of_each_operation() {
+        let bytes = record_of(op).encode_canonical();
+        for len in 0..bytes.len() {
+            assert!(
+                matches!(
+                    ExpertCommitRecord::decode_canonical(&bytes[..len]),
+                    Err(ExpertProposalError::MalformedRecord(_))
+                ),
+                "prefix of {len} bytes decoded"
+            );
+        }
+    }
+}
+
+#[test]
+fn trailing_bytes_after_a_commit_record_are_rejected() {
+    for op in one_of_each_operation() {
+        let mut bytes = record_of(op).encode_canonical();
+        bytes.push(0);
+        assert_eq!(
+            ExpertCommitRecord::decode_canonical(&bytes),
+            Err(ExpertProposalError::MalformedRecord("trailing bytes"))
+        );
+    }
+}
+
+#[test]
+fn wrong_magic_and_unknown_tags_are_rejected() {
+    let bytes = record_of(StructuralOp::Freeze {
+        target: serving("a"),
+    })
+    .encode_canonical();
+    let mut bad_magic = bytes.clone();
+    bad_magic[7] = b'9';
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&bad_magic),
+        Err(ExpertProposalError::MalformedRecord("unknown magic"))
+    );
+    // The operation tag follows the magic, the proposal project (4 + 4), the proposer project
+    // (4 + 4), pod (4 + 4) and generation (8), observed_at (8) and the rationale digest (32).
+    let tag = 8 + 8 + 8 + 8 + 8 + 8 + 32;
+    assert_eq!(bytes[tag], 3);
+    let mut bad_tag = bytes.clone();
+    bad_tag[tag] = 7;
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&bad_tag),
+        Err(ExpertProposalError::MalformedRecord(
+            "unknown operation tag"
+        ))
+    );
+    // The option byte of a Reactivate result is 0 or 1 only.
+    let frozen = record_of(reactivate(in_state("d", ExpertState::Frozen), None)).encode_canonical();
+    let option = frozen.len() - 8 - 32 - 1;
+    assert_eq!(frozen[option], 0);
+    let mut bad_option = frozen.clone();
+    bad_option[option] = 2;
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&bad_option),
+        Err(ExpertProposalError::MalformedRecord("unknown option tag"))
+    );
+}
+
+#[test]
+fn an_oversized_count_is_refused_without_allocating() {
+    let mut bytes = record_of(StructuralOp::Prune {
+        targets: vec![serving("a")],
+    })
+    .encode_canonical();
+    let tag = 8 + 8 + 8 + 8 + 8 + 8 + 32;
+    assert_eq!(bytes[tag], 5);
+    bytes[tag + 1..tag + 5].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&bytes),
+        Err(ExpertProposalError::MalformedRecord(
+            "count exceeds the remaining bytes"
+        ))
+    );
+}
+
+#[test]
+fn bytes_of_an_invalid_proposal_are_rejected_on_decode() {
+    // A Freeze of a Serving target, with the target's state byte rewritten to Candidate: the
+    // bytes are well formed but the proposal does not validate.
+    let mut bytes = record_of(StructuralOp::Freeze {
+        target: serving("a"),
+    })
+    .encode_canonical();
+    let state = bytes.len() - 8 - 32 - 8 - 1;
+    assert_eq!(bytes[state], 2, "Serving");
+    bytes[state] = 0;
+    assert!(matches!(
+        ExpertCommitRecord::decode_canonical(&bytes),
+        Err(ExpertProposalError::WrongTargetState {
+            op: OpKind::Freeze,
+            state: ExpertState::Candidate,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn invalid_identities_and_zero_digests_are_rejected_on_decode() {
+    let good = record_of(StructuralOp::Freeze {
+        target: serving("a"),
+    })
+    .encode_canonical();
+    // The proposal project's bytes start after the magic and its length: "proj" -> "pr j".
+    let mut bad_id = good.clone();
+    bad_id[8 + 4 + 2] = b' ';
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&bad_id),
+        Err(ExpertProposalError::NonCanonicalProject)
+    );
+    // Zero rationale digest.
+    let rationale_at = 8 + 8 + 8 + 8 + 8 + 8;
+    let mut zero_rationale = good.clone();
+    zero_rationale[rationale_at..rationale_at + 32].fill(0);
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&zero_rationale),
+        Err(ExpertProposalError::MalformedRecord(
+            "rationale digest is all zero"
+        ))
+    );
+    // Zero evidence digest.
+    let mut zero_evidence = good.clone();
+    let at = good.len() - 8 - 32;
+    zero_evidence[at..at + 32].fill(0);
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&zero_evidence),
+        Err(ExpertProposalError::MalformedRecord(
+            "evidence digest is all zero"
+        ))
+    );
+    assert!(ExpertCommitRecord::new(
+        propose(StructuralOp::Freeze {
+            target: serving("a")
+        })
+        .unwrap(),
+        [0; 32],
+        1
+    )
+    .is_err());
+}
+
+#[test]
+fn oversize_commit_record_input_is_refused_before_parsing() {
+    assert_eq!(MAX_EXPERT_COMMIT_RECORD_BYTES, 1 << 20);
+    // Not even the magic is valid: only the length check can produce this error.
+    let oversize = vec![0xFF; MAX_EXPERT_COMMIT_RECORD_BYTES + 1];
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&oversize),
+        Err(ExpertProposalError::MalformedRecord(
+            "record exceeds the size limit"
+        ))
+    );
+    // At the limit the parser runs and reports the magic instead.
+    let at_limit = vec![0xFF; MAX_EXPERT_COMMIT_RECORD_BYTES];
+    assert_eq!(
+        ExpertCommitRecord::decode_canonical(&at_limit),
+        Err(ExpertProposalError::MalformedRecord("unknown magic"))
+    );
+}
+
+#[test]
+fn outcomes_follow_the_post_operation_state_table() {
+    use ExpertState::{Frozen, Retired, Serving, Superseded};
+    let outcome = |op: StructuralOp| -> Vec<(OutcomeKind, String, u64, ExpertState, u64)> {
+        op.outcomes()
+            .into_iter()
+            .map(|o| (o.kind, o.pod.0, o.generation.0, o.state, o.state_version))
+            .collect()
+    };
+    let pruned = Retired(RetiredReason::Pruned);
+    type Expected<'a> = Vec<(OutcomeKind, &'a str, u64, ExpertState, u64)>;
+    let cases: Vec<(StructuralOp, Expected<'_>)> = vec![
+        (
+            StructuralOp::Birth {
+                result: result("n"),
+            },
+            vec![(OutcomeKind::Result, "n", 1, Serving, 1)],
+        ),
+        (
+            merge(vec![serving("a"), serving("b")]),
+            vec![
+                (OutcomeKind::Operand, "a", 1, Superseded, 2),
+                (OutcomeKind::Operand, "b", 1, Superseded, 2),
+                (OutcomeKind::Result, "merged", 1, Serving, 1),
+            ],
+        ),
+        (
+            StructuralOp::Freeze {
+                target: serving("a"),
+            },
+            vec![(OutcomeKind::Operand, "a", 1, Frozen, 2)],
+        ),
+        (
+            reactivate(in_state("a", Frozen), None),
+            vec![(OutcomeKind::Operand, "a", 1, Serving, 2)],
+        ),
+        (
+            reactivate(
+                in_state("a", Retired(RetiredReason::GateFailed)),
+                Some(spec("a", 2, slot("a"))),
+            ),
+            vec![(OutcomeKind::Result, "a", 2, Serving, 1)],
+        ),
+        (
+            StructuralOp::Prune {
+                targets: vec![serving("a"), serving("b")],
+            },
+            vec![
+                (OutcomeKind::Operand, "a", 1, pruned, 2),
+                (OutcomeKind::Operand, "b", 1, pruned, 2),
+            ],
+        ),
+        (
+            StructuralOp::Retire {
+                target: serving("a"),
+                reason: RetiredReason::Superseded,
+            },
+            vec![(
+                OutcomeKind::Operand,
+                "a",
+                1,
+                Retired(RetiredReason::Superseded),
+                2,
+            )],
+        ),
+    ];
+    for (op, expected) in cases {
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(k, p, g, s, v)| (k, p.to_owned(), g, s, v))
+            .collect();
+        assert_eq!(outcome(op), expected);
+    }
 }

@@ -1,0 +1,105 @@
+version = 1
+experiment_id = "M001-v6"
+study = "A0-baseline-v2"
+headline_contrast = "M001-v6-primary"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE"
+go = false
+claim_scope = "A0 on the synthetic operator-routing v2 benchmark only (ADR-0021); no language-model claim"
+evidence_kind = "run-record"
+records_immutable = true
+paired_ci_sha256 = "69d660f4866c694558dc76ef382bbf480b4a97f694a681ff474f4a5d7ce0f013"
+criteria_sha256 = "88e38861c1fb323dfb1414a62112bdfe249cf90690ed66fedf7f7d155c8188e2"
+decision_script_sha256 = "0cbbcda8114f5510566662c8e67ed4af2dca3a0d1c6a4213862ee85419080db1"
+decision_core_sha256 = "8ee9539a790f44c57eaa751fa56dfa07bb0342d636bf65230650ad4f6fddb957"
+git_sha = "3947afe61f67475ce99387509e864556fbbbc188"
+
+[reporting]
+required_label = "INCONCLUSIVE"
+allow_quality_claim = false
+allow_bundle_claim_as_mechanism_evidence = false
+
+[[contrast]]
+id = "M001-v6-primary"
+role = "primary"
+isolating = true
+treatment = "full"
+control = "no-semantic-slots-masked"
+compute = "equal-params"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE"
+reason = "OOD accuracy improves but a non-calibration gate fails"
+failing_gates = ["coverage"]
+quality_claim_allowed = false
+scope_note = "isolating contrast of one mechanism inside A0"
+claim = "typed slot content improves OOD routing over index-tagged raw binding in A0 (isolating)"
+
+[contrast.gates]
+complete_finite_bound_evidence = true
+ood_accuracy = true
+positive_accuracy_each_fold = true
+ood_nll_each_fold = true
+ood_ece_each_fold = true
+iid_accuracy = true
+coverage = false
+selective_error = true
+matched_compute = true
+
+[contrast.ood_accuracy]
+mean_delta = 0.24244791666666665
+ci95 = [0.17522727017081555, 0.3096685631625178]
+
+[[contrast]]
+id = "M001-v6-bundle"
+role = "bundle"
+isolating = false
+treatment = "full"
+control = "plain"
+compute = "plain-params"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE"
+reason = "OOD accuracy improves but a non-calibration gate fails"
+failing_gates = ["coverage"]
+quality_claim_allowed = false
+scope_note = "bundle vs baseline, non-isolating: more than one mechanism differs"
+claim = "the A0 bundle (typed slots + typed attention + latent recurrence + calibrated router) beats the pinned plain baseline in A0; bundle vs baseline, non-isolating"
+
+[contrast.gates]
+complete_finite_bound_evidence = true
+ood_accuracy = true
+positive_accuracy_each_fold = true
+ood_nll_each_fold = true
+ood_ece_each_fold = true
+iid_accuracy = true
+coverage = false
+selective_error = true
+matched_compute = true
+
+[contrast.ood_accuracy]
+mean_delta = 0.2513020833333333
+ci95 = [0.22311887993784288, 0.2794852867288238]
+
+[[source_record]]
+path = "experiments/model/M001-v6-semantic-slots/results/run-20261009T115041.019544Z-seed-17.json"
+canonical_sha256 = "341c388260f52ebc5fccfeed0a8c8a6224258313523ed1065ba6ea88adb1ad56"
+
+[[source_record]]
+path = "experiments/model/M001-v6-semantic-slots/results/run-20261009T122048.972750Z-seed-29.json"
+canonical_sha256 = "d84e04450d82c8c545be899341f4c4153aafd8722acf24b37999fd4e2e06b3c8"
+
+[[source_record]]
+path = "experiments/model/M001-v6-semantic-slots/results/run-20261009T124829.276111Z-seed-43.json"
+canonical_sha256 = "e214d657a8c79d682666a3ddefa801659875b77aa8c978ee61e446e2d8ac06bc"
+
+[[source_record]]
+path = "experiments/model/M001-v6-semantic-slots/results/run-20261009T130935.420587Z-seed-71.json"
+canonical_sha256 = "aea1667480b1161b782fd5839cc1fbb04cfda445946daec73696e2f28149152a"
+
+[[source_record]]
+path = "experiments/model/M001-v6-semantic-slots/results/run-20261009T133206.754143Z-seed-101.json"
+canonical_sha256 = "e61e787a4275a1bf1480b61bb185e9274bb922d55728e384e5c2ce390a4c8256"
+
+[record_identity]
+mode = "single-commit-or-linear-history-results-only"
+decision_base_sha256 = "9060d1534a7c76e6cc74959e30803cb09c748f90e54b18fb22f5b1a7e5cf350f"
+commits = ["3947afe61f67475ce99387509e864556fbbbc188", "aed267e4837a39d806d87f1790bf25a99c8efa06", "a7760fd2f6fd84d2dfb42ab96b21a5cfefb4e3ac", "a0478a0ab81cd05b589a3a708b90921029cc7e23", "70ed319b81c247973cfef3eb1000382d6a6e03d2"]

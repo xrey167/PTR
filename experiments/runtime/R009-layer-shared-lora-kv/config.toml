@@ -1,0 +1,123 @@
+version = 1
+kind = "workspace-area"
+name = "R009-layer-shared-lora-kv"
+path = "experiments/runtime/R009-layer-shared-lora-kv"
+tests_dir = "tests"
+
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+test_model_layers = 4
+required_interior_first_adapted_layer = 2
+# Preregistered choices for this experiment (no code default exists).
+min_alora_prefix_reuse_attempts = 1
+min_adapter_revocations_performed = 1
+shared_fraction_tolerance = 0.0
+adapter_types_run = ["qkv_lora", "q_only_lora", "mlp_only_lora", "alora"]
+max_revoked_adapter_entry_hits = 0
+alora_invocation_offset_in_page = 7
+min_alora_boundary_page_cases = 1
+page_tokens = 16
+min_post_revocation_lookups_on_adapter_entries = 1
+# Preregistered choices for this experiment (no code default exists).
+sharing_measured_in = "kv_rows"
+shared_row_fraction_definition = "shared_kv_rows / total_kv_rows"
+min_adapter_revocations_per_type = 1
+min_adapter_reuse_attempts_per_type = 1
+# Preregistered choices for this experiment (no code default exists).
+min_input_revocations_performed = 1
+min_post_revocation_lookups_matching_tokens = 1
+max_revoked_lineage_entry_hits = 0
+min_same_tokens_different_generation_cases = 1
+min_invalidation_suppressed_arms = 1
+min_restore_arms = 1
+min_post_event_lookups = 1
+max_stale_hits = 0
+min_base_pages_before_revoke = 1
+min_adapter_entries_before_revocation = 1
+max_adapter_logits_bitwise_mismatch_count = 0
+qkv_lora_first_layers = [0, 2]
+q_only_lora_first_layers = [0, 2]
+mlp_only_lora_first_layers = [2]
+alora_invocation_position_tokens = 39
+prompt_tokens = 64
+claim_scope = "kv_memory_only"
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+weights = "seeded random (pinned seed and shape)"
+weight_seed = 20240607
+hidden_size = 64
+num_heads = 4
+num_kv_heads = 2
+head_dim = 16
+vocab_size = 256
+# Preregistered choices for this experiment (no code default exists).
+min_cross_adapter_attempts = 1
+min_old_generation_as_new_attempts = 1
+max_cross_adapter_hits = 0
+max_old_generation_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_restored_pre_revocation_entries = 1
+empty_restart_arm_role = "reported_separate_arm"
+# Preregistered choices for this experiment (no code default exists).
+min_inflight_adapter_revocation_race_cases = 1
+max_outputs_after_adapter_revocation = 0
+min_inflight_input_race_cases = 1
+max_outputs_after_input_invalidation = 0
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "adapter_types_run", "qkv_lora_first_layers", "alora_invocation_position_tokens", "prompt_tokens", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "required_interior_first_adapted_layer", "alora_invocation_offset_in_page", "page_tokens", "q_only_lora_first_layers", "mlp_only_lora_first_layers", "invalidation_coverage_matrix", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds"]
+# Preregistered choices for this experiment (no code default exists).
+adapter_restart_output_mismatches_max = 0
+# Preregistered choices for this experiment (no code default exists).
+invalidation_types = ["revocation", "supersession"]
+inflight_race_counters_reported = "per dependency kind x invalidation type"
+# Preregistered choices for this experiment (no code default exists).
+identity_set_checks = [["inflight_adapter_cancelled_request_id_set_digest", "inflight_adapter_restarted_request_id_set_digest"]]
+# Preregistered choices for this experiment (no code default exists).
+invalidation_coverage_matrix = { kinds = ["base_model", "adapter_generation", "semantic_input", "memory_input", "derived_input"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], cells = ["base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession", "adapter_generation_normal_revocation", "adapter_generation_normal_supersession", "adapter_generation_lag_revocation", "adapter_generation_lag_supersession", "adapter_generation_restore_revocation", "adapter_generation_restore_supersession", "adapter_generation_inflight_revocation", "adapter_generation_inflight_supersession", "semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_restore_revocation", "semantic_input_restore_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_restore_revocation", "memory_input_restore_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "derived_input_normal_revocation", "derived_input_normal_supersession", "derived_input_lag_revocation", "derived_input_lag_supersession", "derived_input_restore_revocation", "derived_input_restore_supersession", "derived_input_inflight_revocation", "derived_input_inflight_supersession"] }
+min_invalidation_matrix_cases_per_cell = 1
+max_invalidation_matrix_stale_hits_per_cell = 0
+invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
+# Preregistered choices for this experiment (no code default exists).
+tiny_model_config = { layers = 4, hidden_size = 64, num_heads = 4, num_kv_heads = 2, head_dim = 16, vocab_size = 256, weight_seed = 20240607 }
+tiny_model_config_digest = "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433a"
+tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
+tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
+moe_topology = "none: dense tiny decoder"
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "adapter"]
+dependency_list_narrowing_reason = "narrowed: the dense LoRA workload has no experts"
+
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "layer-shared-lora-kv"
+max_new_tokens = 8
+intermediate_size = 128
+rope_theta = "10000.0"
+rms_norm_eps = "1e-6"
+qk_norm = "disabled"
+lora_rank = 4
+lora_scale = "2.0"
+adapter_seed = 20240607
+adapter_layers = "every layer >= first adapted layer"
+alora_first_layer = 0
+alora_projections = "q, k, v"
+mlp_adapter_form = "residual-space correction of the MLP output"
+partial_hit_mode = "compute-then-adopt, checked"
+restart_resolution = "re-resolve to the live binding: supersession to the new generation, revocation to the base model"
+total_kv_rows_counts = "prompt rows of every layer"
+per_seed_role = "request order and race points"
+matrix_adapter_first_layer = 2
+corpus_selection_digest = "sha256:8093b0b8b9859c83a0a145a993e2158be39c31e2b80812a4f7da4ab0a6bb117e"
+preregistration_text = "experiments/runtime/R009-layer-shared-lora-kv/PREREGISTRATION.md"
+preregistration_text_sha256 = "16316c2a0d42769d37b1dacd84a60e132d50886c9a5b0264948f9109abbd08ad"
+criteria = "experiments/runtime/R009-layer-shared-lora-kv/criteria.toml"
+criteria_sha256 = "a8f310eb6939c21e4aad464bd0ca7033d2bde41be5cb6f1a1b64755173011ad2"

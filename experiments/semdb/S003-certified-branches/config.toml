@@ -74,4 +74,4 @@ min_cells_per_side = 6
 merge_wall_budget_us_p99 = 10000
 durable_roundtrip_every_cases = 8
 nondeterminism_rerun_case = 0
-low_cells = []
+low_cells = ["L1N2", "L2N2", "L2N4", "L2N8", "L3N2", "L3N4", "L3N8", "L4N2", "L4N4", "L4N8", "L4N16", "L5N2", "L5N4", "L5N8", "L5N16"]

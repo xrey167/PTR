@@ -1,0 +1,135 @@
+version = 1
+experiment_id = "M003-v4"
+study = "A0-baseline-v3-m003"
+headline_contrast = "M003-v4-primary"
+verdict = "INCONCLUSIVE"
+label = "NO-GO-CALIBRATION"
+go = false
+claim_scope = "A0 on the synthetic operator-routing v2 benchmark only (ADR-0021); no language-model claim"
+evidence_kind = "run-record"
+records_immutable = true
+paired_ci_sha256 = "c83d8bfda8ede8d0a6962654ec2d0b8f7100459bea20dccaeedd71c688d748c5"
+criteria_sha256 = "c90df47aece5319be75e14817eb0bbaa16771c703d4d03698f5a91c2a9aab54b"
+decision_script_sha256 = "733d31ecc002aa7486673acb938b3f5410610f2352087965b86a9c0d256986d3"
+decision_core_sha256 = "8ee9539a790f44c57eaa751fa56dfa07bb0342d636bf65230650ad4f6fddb957"
+git_sha = "d8da6c1f60086374cfe66fb0ede19a0f93509853"
+
+[reporting]
+required_label = "NO-GO-CALIBRATION"
+allow_quality_claim = false
+allow_bundle_claim_as_mechanism_evidence = false
+
+[[contrast]]
+id = "M003-v4-primary"
+role = "primary"
+isolating = true
+treatment = "full"
+control = "latent-0"
+compute = "equal-params"
+verdict = "INCONCLUSIVE"
+label = "NO-GO-CALIBRATION"
+reason = "OOD accuracy improves but a per-fold calibration gate fails; no quality claim"
+failing_gates = ["ood_nll_each_fold", "ood_ece_each_fold", "coverage"]
+quality_claim_allowed = false
+scope_note = "isolating contrast of one mechanism inside A0"
+claim = "the tied latent recurrence (k=2) improves OOD routing over no recurrence at equal parameters in A0 (compute differs by the recurrence itself)"
+
+[contrast.gates]
+complete_finite_bound_evidence = true
+ood_accuracy = true
+positive_accuracy_each_fold = true
+ood_nll_each_fold = false
+ood_ece_each_fold = false
+iid_accuracy = true
+coverage = false
+selective_error = true
+matched_compute = true
+
+[contrast.ood_accuracy]
+mean_delta = 0.03932291666666665
+ci95 = [0.015318126137775622, 0.06332770719555768]
+
+[[contrast]]
+id = "M003-v4-nonlinearity"
+role = "secondary"
+isolating = true
+treatment = "full"
+control = "latent-linear"
+compute = "equal-params-flops"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE"
+reason = "neither SUPPORTS nor FALSIFIES holds"
+failing_gates = ["ood_accuracy", "positive_accuracy_each_fold", "ood_nll_each_fold", "ood_ece_each_fold", "coverage"]
+quality_claim_allowed = false
+scope_note = "isolating contrast of one mechanism inside A0"
+claim = "the per-slot nonlinearity, not the extra affine parameters, carries the recurrence benefit in A0 (isolating)"
+
+[contrast.gates]
+complete_finite_bound_evidence = true
+ood_accuracy = false
+positive_accuracy_each_fold = false
+ood_nll_each_fold = false
+ood_ece_each_fold = false
+iid_accuracy = true
+coverage = false
+selective_error = true
+matched_compute = true
+
+[contrast.ood_accuracy]
+mean_delta = 0.010546874999999989
+ci95 = [-0.0055639393526414425, 0.02665768935264142]
+
+[[contrast]]
+id = "M003-v4-bundle"
+role = "bundle"
+isolating = false
+treatment = "full"
+control = "plain"
+compute = "plain-params"
+verdict = "INCONCLUSIVE"
+label = "INCONCLUSIVE"
+reason = "OOD accuracy improves but a non-calibration gate fails"
+failing_gates = ["coverage"]
+quality_claim_allowed = false
+scope_note = "bundle vs baseline, non-isolating: more than one mechanism differs"
+claim = "the A0 bundle beats the pinned plain baseline in A0; bundle vs baseline, non-isolating"
+
+[contrast.gates]
+complete_finite_bound_evidence = true
+ood_accuracy = true
+positive_accuracy_each_fold = true
+ood_nll_each_fold = true
+ood_ece_each_fold = true
+iid_accuracy = true
+coverage = false
+selective_error = true
+matched_compute = true
+
+[contrast.ood_accuracy]
+mean_delta = 0.2513020833333333
+ci95 = [0.22311887993784288, 0.2794852867288238]
+
+[[source_record]]
+path = "experiments/model/M003-v4-latent-recurrence/results/run-20261010T080839.750639Z-seed-17.json"
+canonical_sha256 = "fc322e9ea89339678c604d66fd8bb220bfbb822e633eb7cee4cb7fdd2bca6d05"
+
+[[source_record]]
+path = "experiments/model/M003-v4-latent-recurrence/results/run-20261010T083226.407449Z-seed-29.json"
+canonical_sha256 = "36340aad39b7c169a58b36bc538495c0e0bc822a5759ebb91dafbda5ebc7d97d"
+
+[[source_record]]
+path = "experiments/model/M003-v4-latent-recurrence/results/run-20261010T085338.631275Z-seed-43.json"
+canonical_sha256 = "7c8864e2a0c00f44b189af9c797cdfe328eb403f155f324be5ef6c5c96238abe"
+
+[[source_record]]
+path = "experiments/model/M003-v4-latent-recurrence/results/run-20261010T091649.341952Z-seed-71.json"
+canonical_sha256 = "93dbf675e7079796d2964524feecbc7a219ed0c3f930f031b75603eb6c93a3b7"
+
+[[source_record]]
+path = "experiments/model/M003-v4-latent-recurrence/results/run-20261010T093512.508502Z-seed-101.json"
+canonical_sha256 = "fa54c58b82976cf06402287c275c9b72ceb01cdf2b577485a5aa9d2acedcdeb0"
+
+[record_identity]
+mode = "single-commit-or-linear-history-results-only"
+decision_base_sha256 = "9060d1534a7c76e6cc74959e30803cb09c748f90e54b18fb22f5b1a7e5cf350f"
+commits = ["d8da6c1f60086374cfe66fb0ede19a0f93509853", "df6e3141e07117c228510fdb38638b4082ca8367", "21381e1056ca65cf6b09c3edc5c6a2e65b535e6d", "8fe4c89e5077c5670df3063d3e7de89487be8c33", "143002f99f8f9b468b406c090559ef82b33b7eb7"]

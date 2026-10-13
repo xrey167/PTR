@@ -1,0 +1,390 @@
+# Defects the C008 harness must detect. `python scripts/mutation_check.py C008 --check` verifies the anchors (every `find` occurs exactly
+# once in its file, so the plan cannot drift from the code silently). The mutations are RUN by `research/cseries/lib/run_mutations.py C008`
+# (planted in a throwaway copy, never in the working tree), not by scripts/mutation_check.py, which builds a Cargo package and cannot plant
+# a defect in a Python entrypoint. The keys `package`, `features`, `subcommand`, `cases` and `seed` exist only because the checker's plan
+# loader requires them; `subcommand` is the benchmark name the aggregator checks in results/mutations.json. `seed` is a pilot seed.
+#
+# A mutation is killed in one of three ways.
+#  1. STRUCTURAL counters and coverage rules (exit 1): the harness, run at the reduced scale of `runner_args` with the defect planted, exits 1
+#     and an expected structural counter or coverage counter fails.
+#  2. INTEGRITY counters and negative controls (exit 2): the harness exits 2 and its stderr lists an expected INTEGRITY counter or an
+#     expected negative control (`expect` entries "control:<name>").
+#  3. UNIT tests (entries with `unit_tests`, expect "unit:<name>"): defects in the pure derivations of the guard scalars, in the model
+#     formulas and in the balancer; the named tests (research/cseries/tests) pass in the unmutated copy and must fail in the planted one.
+# Every structural and integrity counter, every coverage counter and each negative control is expected by at least one mutation
+# (test_c008.py::PlanCoversTheRules).
+#
+# What kills each judged rule:
+#   headroom and trained-comparator guards, schema-trained guard, unconverged guard ... headroom-sign-flipped, schema-trained-ignores-the-floor,
+#                                  unconverged-guard-ignores-the-comparators (unit); the counts across seeds, the bounds, the quantiles, the
+#                                  controls and the null world: scripts/tests/test_c008_aggregate.py (hand-computed values)
+#   plateau protocol ........... best-checkpoint-not-restored, converged-flag-always-true, evaluation-stream-reuses-training,
+#                                  validation-stream-reuses-training (and the unit mutations of the protocol in the C004 plan's shared library
+#                                  tests: test_c004.TrainingProtocolTests, which this plan names too)
+#   FLOP and parameter matching (the tolerance guard) .. param-target-doubled, flop-target-doubled, the two detectors (blind), the formulas (unit)
+#   sensitivity controls (uniform router, epsilon routing) and the shuffled history .. epsilon-rate-ignored, shuffle-returns-the-real-history
+#   describe-only isolation and the schema's lack of authority .. describe-only-router-reads-the-schema, schema-writes-the-environment
+# aggregator wiring (Bonferroni refutation quantile, allowance counts, environment mismatch, one finished record per seed) are mutations of
+# the aggregator, which this plan cannot plant (it plants into the harness copy): scripts/tests/test_c008_aggregate.py.
+
+package = "c008-routing"
+features = ""
+subcommand = "c008"
+cases = 100
+seed = 1002
+runner_args = ["--set", "max_steps=300", "--set", "max_steps_null=200", "--set", "eval_every=50", "--set", "patience=4"]
+hard_counters = [
+    # Structural counters (exit 1), then integrity counters (exit 2): the order of research/cseries/c003a/c008_rules.py::HARD_COUNTERS.
+    "describe_only_influence",
+    "authority_leaks",
+    "nondeterminism",
+    "param_mismatch_arms",
+    "flop_mismatch_arms",
+    "history_router_blind",
+    "stream_overlap",
+    "reward_audit_mismatches",
+    "oracle_violations",
+    "schedule_errors",
+    "nonfinite_arms",
+    "checkpoint_mismatch_arms",
+    "convergence_mismatch_arms",
+    "epsilon_rate_errors",
+    "shuffle_errors",
+    # Not hard counters of the harness: coverage counters, negative controls and unit-test kills, listed because
+    # scripts/mutation_check.py requires every expected name to be in this list.
+    "arms_trained",
+    "eval_instances",
+    "null_eval_instances",
+    "control_influence_hits",
+    "control:stream_overlap",
+    "control:param_mismatch",
+    "control:flop_mismatch",
+    "control:reward_audit",
+    "control:authority_probe",
+    "control:influence_probe",
+    "control:describe_probe",
+    "control:history_probe",
+    "unit:headroom",
+    "unit:schema_trained",
+    "unit:unconverged_arms",
+    "unit:rate_error",
+    "unit:shuffle_error",
+    "unit:flop_formulas",
+    "unit:param_formulas",
+    "unit:bias_sign",
+    "unit:bias_only_heuristic",
+    "unit:schema_detached",
+    "unit:schedule_error",
+]
+
+[[mutation]]
+name = "describe-only-router-reads-the-schema"
+file = "research/cseries/c003a/c008_model.py"
+find = '        self.feeds_router = kind == "control"'
+replace = '        self.feeds_router = kind in ("control", "describe_only")'
+expect = ["describe_only_influence"]
+
+[[mutation]]
+name = "schema-writes-the-environment"
+file = "research/cseries/c003a/harness.py"
+find = "    return choices, probs, logits, prediction, base\n"
+replace = "    if override is not None and prediction is not None:\n        env.capacity[int(prediction.argmax())] += 1\n    return choices, probs, logits, prediction, base\n"
+expect = ["authority_leaks"]
+
+[[mutation]]
+name = "determinism-seed-dropped"
+file = "research/cseries/c003a/harness.py"
+find = """    torch.manual_seed(arm_seed(seed, "determinism:" + name))
+"""
+replace = ""
+expect = ["nondeterminism"]
+
+[[mutation]]
+name = "param-target-doubled"
+file = "research/cseries/c003a/harness.py"
+find = '    target_params = model.total_params("control", cfg, control_hidden)'
+replace = '    target_params = 2 * model.total_params("control", cfg, control_hidden)'
+expect = ["param_mismatch_arms"]
+
+[[mutation]]
+name = "flop-target-doubled"
+file = "research/cseries/c003a/harness.py"
+find = '    target_flops = model.batch_flops("control", cfg, control_hidden)'
+replace = '    target_flops = 2 * model.batch_flops("control", cfg, control_hidden)'
+expect = ["flop_mismatch_arms"]
+
+[[mutation]]
+name = "evaluation-stream-reuses-training"
+file = "research/cseries/c003a/harness.py"
+find = 'eval_streams = {w: make_stream(cfg, base + cfg["eval_offset"], cfg["eval_batches"], w == "null") for w in ("task", "null")}'
+replace = 'eval_streams = {w: make_stream(cfg, base + cfg["stream_offset"], cfg["eval_batches"], w == "null") for w in ("task", "null")}'
+expect = ["stream_overlap"]
+
+[[mutation]]
+name = "validation-stream-reuses-training"
+file = "research/cseries/c003a/harness.py"
+find = 'val_streams = {w: make_stream(cfg, base + cfg["val_offset"], cfg["val_batches"], w == "null") for w in ("task", "null")}'
+replace = 'val_streams = {w: make_stream(cfg, base + cfg["stream_offset"], cfg["val_batches"], w == "null") for w in ("task", "null")}'
+expect = ["stream_overlap"]
+
+[[mutation]]
+name = "verifier-ignores-capacity"
+file = "research/cseries/c003a/harness.py"
+find = "    return env.competent[classes, choices] & (rank < env.capacity[choices])"
+replace = "    return env.competent[classes, choices]"
+expect = ["reward_audit_mismatches", "oracle_violations"]
+
+[[mutation]]
+name = "reference-verifier-off-by-one"
+file = "research/cseries/c003a/c008_task.py"
+find = "        ok = e in (c, (c + 1) % experts) and used[e] < capacity"
+replace = "        ok = e in (c, (c + 1) % experts) and used[e] <= capacity"
+expect = ["reward_audit_mismatches"]
+
+[[mutation]]
+name = "oracle-ignores-the-secondary-expert"
+file = "research/cseries/c003a/c008_task.py"
+find = "        for k in (0, 1):\n            cap[c][experts + (c + k) % experts] = max(demand[c], 1)"
+replace = "        for k in (0,):\n            cap[c][experts + (c + k) % experts] = max(demand[c], 1)"
+expect = ["oracle_violations"]
+
+[[mutation]]
+name = "dwell-doubled-in-the-generator"
+file = "research/cseries/c003a/c008_task.py"
+find = "    return 0 if stationary else (batch_index // dwell) % regimes"
+replace = "    return 0 if stationary else (batch_index // (2 * dwell)) % regimes"
+expect = ["schedule_errors"]
+
+[[mutation]]
+name = "loss-is-infinite"
+file = "research/cseries/c003a/harness.py"
+find = '        loss = -(advantage * taken).mean() - cfg["arm_entropy_milli"][self.name] / 1000 * entropy'
+replace = '        loss = (-(advantage * taken).mean() - cfg["arm_entropy_milli"][self.name] / 1000 * entropy) * float("inf")'
+expect = ["nonfinite_arms"]
+
+[[mutation]]
+name = "best-checkpoint-not-restored"
+file = "research/cseries/lib/train.py"
+find = "    if best_state is not None:\n        net.load_state_dict(best_state)\n"
+replace = "    if False:\n        net.load_state_dict(best_state)\n"
+expect = ["checkpoint_mismatch_arms"]
+
+[[mutation]]
+name = "converged-flag-always-true"
+file = "research/cseries/lib/train.py"
+find = '        "converged": converged,'
+replace = '        "converged": True,'
+expect = ["convergence_mismatch_arms"]
+
+[[mutation]]
+name = "epsilon-rate-ignored"
+file = "research/cseries/c003a/harness.py"
+find = '                hit = torch.rand(cfg["tokens"], generator=gen) < eps_permille / 1000'
+replace = '                hit = torch.rand(cfg["tokens"], generator=gen) < 0.0'
+expect = ["epsilon_rate_errors"]
+
+[[mutation]]
+name = "shuffle-returns-the-real-history"
+file = "research/cseries/c003a/harness.py"
+find = "                use = torch.stack([pool[int(i)] for i in idx])"
+replace = "                use = history"
+expect = ["shuffle_errors"]
+
+[[mutation]]
+name = "a-null-arm-is-not-trained"
+file = "research/cseries/c003a/harness.py"
+find = """    "schema_free_null": ("schema_free", "null"),
+"""
+replace = ""
+expect = ["arms_trained"]
+
+[[mutation]]
+name = "evaluation-streams-halved"
+file = "research/cseries/c003a/harness.py"
+find = 'eval_streams = {w: make_stream(cfg, base + cfg["eval_offset"], cfg["eval_batches"], w == "null") for w in ("task", "null")}'
+replace = 'eval_streams = {w: make_stream(cfg, base + cfg["eval_offset"], cfg["eval_batches"] // 2, w == "null") for w in ("task", "null")}'
+expect = ["eval_instances", "null_eval_instances"]
+
+[[mutation]]
+name = "null-evaluation-stream-halved"
+file = "research/cseries/c003a/harness.py"
+find = 'eval_streams = {w: make_stream(cfg, base + cfg["eval_offset"], cfg["eval_batches"], w == "null") for w in ("task", "null")}'
+replace = 'eval_streams = {w: make_stream(cfg, base + cfg["eval_offset"], cfg["eval_batches"] if w == "task" else cfg["eval_batches"] // 2, w == "null") for w in ("task", "null")}'
+expect = ["null_eval_instances"]
+
+[[mutation]]
+name = "control-ignores-the-schema-output"
+file = "research/cseries/c003a/c008_model.py"
+find = "            given = prediction.detach() if self.feeds_router else torch.zeros_like(prediction)"
+replace = "            given = torch.zeros_like(prediction)"
+expect = ["control:influence_probe", "control_influence_hits"]
+
+[[mutation]]
+name = "overlap-detector-blind"
+file = "research/cseries/c003a/harness.py"
+find = "    return sum(1 for h in hashes if h in forbidden)"
+replace = "    return 0"
+expect = ["control:stream_overlap"]
+
+[[mutation]]
+name = "param-mismatch-detector-blind"
+file = "research/cseries/lib/common.py"
+find = "    return sum(1 for arm, n in counts.items() if arm != reference and 1000 * abs(n - ref) > tolerance_permille * ref)"
+replace = "    return 0"
+expect = ["control:param_mismatch"]
+
+[[mutation]]
+name = "flop-mismatch-detector-blind"
+file = "research/cseries/lib/common.py"
+find = "    return sum(1 for arm, n in flops.items() if arm != reference and 1000 * abs(n - ref) > tolerance_permille * ref)"
+replace = "    return 0"
+expect = ["control:flop_mismatch"]
+
+[[mutation]]
+name = "reward-audit-blind"
+file = "research/cseries/c003a/harness.py"
+find = "    return sum(1 for a, b in zip(fast, reference) if a != b)"
+replace = "    return 0"
+expect = ["control:reward_audit"]
+
+[[mutation]]
+name = "authority-digest-ignores-the-capacity"
+file = "research/cseries/c003a/harness.py"
+find = "        return hashlib.sha256(bytes(self.capacity.tolist()) + bytes(self.competent.flatten().tolist())).hexdigest()"
+replace = "        return hashlib.sha256(bytes(self.competent.flatten().tolist())).hexdigest()"
+expect = ["control:authority_probe"]
+
+[[mutation]]
+name = "describe-probe-blind"
+file = "research/cseries/c003a/harness.py"
+find = "    return int(float((torch.softmax(a, -1) - torch.softmax(b, -1)).abs().max()) > 1e-6)"
+replace = "    return 0"
+expect = ["control:describe_probe", "control:influence_probe"]
+
+[[mutation]]
+name = "headroom-sign-flipped"
+file = "research/cseries/c003a/c008_rules.py"
+find = "    return oracle_permille - comparator_permille"
+replace = "    return comparator_permille - oracle_permille"
+expect = ["unit:headroom"]
+unit_tests = ["test_c008.RuleDerivationTests.test_headroom_is_oracle_minus_comparator"]
+
+[[mutation]]
+name = "schema-trained-ignores-the-floor"
+file = "research/cseries/c003a/c008_rules.py"
+find = "    return int(gain_permille >= floor_permille)"
+replace = "    return int(gain_permille >= 0)"
+expect = ["unit:schema_trained"]
+unit_tests = ["test_c008.RuleDerivationTests.test_schema_trained_needs_the_floor_over_persistence"]
+
+[[mutation]]
+name = "gain-over-persistence-sign-flipped"
+file = "research/cseries/c003a/c008_rules.py"
+find = "    return int(round(1000 * (l1_persistence - l1_schema) / l1_persistence)) if l1_persistence > 0 else 0"
+replace = "    return int(round(1000 * (l1_schema - l1_persistence) / l1_persistence)) if l1_persistence > 0 else 0"
+expect = ["unit:schema_trained"]
+unit_tests = ["test_c008.RuleDerivationTests.test_the_gain_over_persistence_is_the_relative_l1_reduction"]
+
+[[mutation]]
+name = "unconverged-guard-ignores-the-comparators"
+file = "research/cseries/c003a/c008_rules.py"
+find = 'JUDGED_ARMS = ("control", "schema_free", "schema_free_wide", "heuristic", "describe_only", "history_router")'
+replace = 'JUDGED_ARMS = ("control",)'
+expect = ["unit:unconverged_arms"]
+unit_tests = ["test_c008.RuleDerivationTests.test_unconverged_guard_counts_the_judged_arms"]
+
+[[mutation]]
+name = "rate-error-only-checks-one-side"
+file = "research/cseries/c003a/c008_rules.py"
+find = "    return int(abs(1000 * changed - rate_permille * total) > slack_permille * total)"
+replace = "    return int(1000 * changed - rate_permille * total > slack_permille * total)"
+expect = ["unit:rate_error"]
+unit_tests = ["test_c008.RuleDerivationTests.test_rate_error_compares_the_measured_fraction_with_the_pinned_rate"]
+
+[[mutation]]
+name = "shuffle-error-threshold-ignored"
+file = "research/cseries/c003a/c008_rules.py"
+find = "    return int(1000 * same > ceiling_permille * total)"
+replace = "    return int(same > 0)"
+expect = ["unit:shuffle_error"]
+unit_tests = ["test_c008.RuleDerivationTests.test_shuffle_error_needs_more_than_the_ceiling"]
+
+[[mutation]]
+name = "schedule-error-counts-the-wrong-side"
+file = "research/cseries/c003a/harness.py"
+find = "    return int(1000 * mass < floor_permille * classes.numel())"
+replace = "    return int(1000 * mass > floor_permille * classes.numel())"
+expect = ["unit:schedule_error"]
+unit_tests = ["test_c008.HarnessTests.test_the_schedule_check_reads_the_hot_classes"]
+
+[[mutation]]
+name = "batch-flops-miss-the-schema"
+file = "research/cseries/c003a/c008_model.py"
+find = "        total += schema_flops(e, h, cfg[\"schema_hidden\"])"
+replace = "        total += 0"
+expect = ["unit:flop_formulas"]
+unit_tests = ["test_c008.ModelTests.test_flop_and_parameter_formulas_match_hand_counts"]
+
+[[mutation]]
+name = "total-params-miss-the-schema"
+file = "research/cseries/c003a/c008_model.py"
+find = "        total += schema_params(e, h, cfg[\"schema_hidden\"])"
+replace = "        total += 0"
+expect = ["unit:param_formulas"]
+unit_tests = ["test_c008.ModelTests.test_analytic_parameter_counts_equal_the_modules"]
+
+[[mutation]]
+name = "balancer-bias-moves-with-the-load"
+file = "research/cseries/c003a/c008_model.py"
+find = "            self.bias += rate * torch.sign(load.mean() - load)"
+replace = "            self.bias += rate * torch.sign(load - load.mean())"
+expect = ["unit:bias_sign"]
+unit_tests = ["test_c008.ModelTests.test_the_balancer_moves_its_bias_against_the_load"]
+
+[[mutation]]
+name = "every-arm-has-a-balancer"
+file = "research/cseries/c003a/c008_model.py"
+find = """        if self.kind == "heuristic":
+            self.bias += rate"""
+replace = """        if True:
+            self.bias += rate"""
+expect = ["unit:bias_only_heuristic"]
+unit_tests = ["test_c008.ModelTests.test_only_the_heuristic_arm_has_a_balancer"]
+
+[[mutation]]
+name = "control-feeds-the-schema-with-gradient"
+file = "research/cseries/c003a/c008_model.py"
+find = "            given = prediction.detach() if self.feeds_router else torch.zeros_like(prediction)"
+replace = "            given = prediction if self.feeds_router else torch.zeros_like(prediction)"
+expect = ["unit:schema_detached"]
+unit_tests = ["test_c008.ModelTests.test_the_policy_loss_does_not_reach_the_schema"]
+
+[[mutation]]
+name = "history-router-ignores-the-history"
+file = "research/cseries/c003a/c008_model.py"
+find = "            x = torch.cat([x, (self.experts * history).unsqueeze(0).expand(x.shape[0], -1)], dim=-1)"
+replace = "            x = torch.cat([x, (0 * self.experts * history).unsqueeze(0).expand(x.shape[0], -1)], dim=-1)"
+expect = ["history_router_blind"]
+
+[[mutation]]
+name = "history-probe-blinded"
+file = "research/cseries/c003a/harness.py"
+find = "    return int(moved > 1e-7)"
+replace = "    return 1"
+expect = ["control:history_probe"]
+
+[[mutation]]
+name = "history-router-width-doubled"
+file = "research/cseries/c003a/harness.py"
+find = '    history_hidden = model.match_hidden(target_params, lambda h: model.total_params("history_router", cfg, h))'
+replace = '    history_hidden = 2 * model.match_hidden(target_params, lambda h: model.total_params("history_router", cfg, h))'
+expect = ["param_mismatch_arms"]
+
+[[mutation]]
+name = "initial-weights-are-not-seeded"
+file = "research/cseries/c003a/harness.py"
+find = '''            torch.manual_seed(arm_seed(seed, "init:" + name))
+        arms[name] = model.Arm(kind, cfg, hidden[kind])'''
+replace = '''            pass
+        arms[name] = model.Arm(kind, cfg, hidden[kind])'''
+expect = ["nondeterminism"]

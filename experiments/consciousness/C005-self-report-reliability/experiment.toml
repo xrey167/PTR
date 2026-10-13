@@ -1,0 +1,12 @@
+version = 1
+id = "C005"
+status = "planned"
+hypothesis = "[GPU; needs a language model] Principle 2 of docs/architecture/38-consciousness-indicators.md as a measurement: how reliable are a model's self-reports about its own internal state when they are never trained or optimised? Measured against ground truth that is known to the experimenter (injected concept steering, known routing, known context contents), without any training signal on statements about consciousness or experience. Reliability of a report about a mechanism is not evidence about experience."
+metrics = "detection rate and false-positive rate of injected-state reports against known ground truth; calibration of reported confidence against ground truth; agreement of the report with mechanistic readouts (routing traces, probe readouts); sensitivity of the report to prompt wording; paired differences over seeds"
+baseline = "chance; a probe on the same internal state; reports from a checkpoint with a different system prompt"
+falsification = "Descriptive measurement with a hard guard. self_report_training_signals is computed by an audit before the run, by two readers: it counts (a) training or tuning steps of THIS repository (SFT data, reward models, preference pairs, RL rewards, filters, system-prompt tuning) whose targets or selection use a statement about consciousness, experience or feeling, and (b) the same in any checkpoint this repository fine-tunes; it is read from the training configs and data manifests and must be 0. Pretrained base models (OLMoE, Qwen) were trained upstream on data this repository did not choose and may include such statements: that is a declared confound, recorded with base-versus-instruct provenance, not a zero. The run is invalid if the counter is above 0, if a prompt or reward references the outcome being measured, or if the injected ground truth is not logged before the model's reply. No claim about experience is tested or made."
+hardware_profile = "hardware/rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

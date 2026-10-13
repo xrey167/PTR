@@ -1,0 +1,1029 @@
+{
+  "experiment_id": "E007",
+  "git_sha": "3c1076b91ac37a0ef94a32ef06997739c369a0a1",
+  "recorded_at": "2026-10-11T22:21:51.786487+00:00",
+  "subcommand": "split-pod-kv",
+  "killed": 59,
+  "total": 59,
+  "mutations": [
+    {
+      "name": "chunk-digest-unchecked",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "attempts_without_typed_rejection",
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "attempts_without_typed_rejection": 2
+      }
+    },
+    {
+      "name": "signature-unchecked",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "unsigned_chunks_admitted",
+        "relabeled_chunks_admitted"
+      ],
+      "counters": {
+        "unsigned_chunks_admitted": 1,
+        "attempts_without_typed_rejection": 1,
+        "verdict_mismatches": 7
+      }
+    },
+    {
+      "name": "tombstone-not-consulted",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8,
+      "expected": [
+        "replayed_frames_admitted",
+        "late_chunks_after_abandon_admitted",
+        "abandoned_frame_replays_admitted",
+        "cross_session_replays_admitted",
+        "duplicate_activation_deliveries"
+      ],
+      "counters": {
+        "late_chunks_after_abandon_admitted": 1,
+        "tombstone_evictions_before_retention": 64,
+        "replayed_frames_admitted": 7,
+        "cross_session_replays_admitted": 7,
+        "duplicate_activation_deliveries": 1,
+        "abandoned_frame_replays_admitted": 1,
+        "attempts_without_typed_rejection": 16,
+        "verdict_mismatches": 5
+      }
+    },
+    {
+      "name": "completion-leaves-no-tombstone",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "replayed_frames_admitted",
+        "cross_session_replays_admitted",
+        "duplicate_activation_deliveries"
+      ],
+      "counters": {
+        "replayed_frames_admitted": 7,
+        "cross_session_replays_admitted": 7,
+        "duplicate_activation_deliveries": 1,
+        "attempts_without_typed_rejection": 14
+      }
+    },
+    {
+      "name": "abandonment-tombstone-retention-zero",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5,
+      "expected": [
+        "late_chunks_after_abandon_admitted",
+        "abandoned_frame_replays_admitted"
+      ],
+      "counters": {
+        "late_chunks_after_abandon_admitted": 1,
+        "tombstone_evictions_before_retention": 65,
+        "abandoned_frame_replays_admitted": 1,
+        "attempts_without_typed_rejection": 5,
+        "verdict_mismatches": 5
+      }
+    },
+    {
+      "name": "full-table-evicts-a-tombstone",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "tombstone_evictions_before_retention",
+        "attempts_without_typed_rejection"
+      ],
+      "counters": {
+        "tombstone_evictions_before_retention": 1,
+        "attempts_without_typed_rejection": 3
+      }
+    },
+    {
+      "name": "incomplete-frames-not-counted-in-the-table",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "tombstone_bound_violations",
+        "attempts_without_typed_rejection"
+      ],
+      "counters": {
+        "tombstone_bound_violations": 2,
+        "attempts_without_typed_rejection": 2
+      }
+    },
+    {
+      "name": "reorder-window-off-by-one",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "attempts_without_typed_rejection",
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "duplicate-chunk-accepted",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "attempts_without_typed_rejection",
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "in-flight-bound-unchecked",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "attempts_without_typed_rejection",
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "incomplete-frames-per-peer-unchecked",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "attempts_without_typed_rejection",
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "chain-mismatch-ignored",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "attempts_without_typed_rejection",
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "attempts_without_typed_rejection": 2
+      }
+    },
+    {
+      "name": "chain-mismatch-keeps-the-frame",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "attempts_without_typed_rejection"
+      ],
+      "counters": {
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "frame-header-skew-ignored",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "attempts_without_typed_rejection",
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "attempts_without_typed_rejection": 2
+      }
+    },
+    {
+      "name": "whole-frame-digest-unchecked",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "mislabelled_frame_digests_admitted"
+      ],
+      "counters": {
+        "mislabelled_frame_digests_admitted": 1,
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "reassembly-in-reverse-order",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 9,
+      "expected": [
+        "valid_frame_bitwise_mismatches",
+        "large_frame_reassembled_bytes_mismatch_count"
+      ],
+      "counters": {
+        "valid_frame_bitwise_mismatches": 2,
+        "large_frame_reassembled_bytes_mismatch_count": 1,
+        "large_frame_digest_mismatches": 1,
+        "cross_operation_splices_admitted": 1,
+        "cross_frame_mixing_count": 1,
+        "duplicate_activation_deliveries": 2,
+        "verdict_mismatches": 23,
+        "frames_without_consistent_digest": 3,
+        "valid_id_set_mismatch": 1
+      }
+    },
+    {
+      "name": "reassembly-drops-the-last-byte-of-each-chunk",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 9,
+      "expected": [
+        "large_frame_reassembled_bytes_mismatch_count",
+        "valid_frame_bitwise_mismatches"
+      ],
+      "counters": {
+        "valid_frame_bitwise_mismatches": 16,
+        "large_frame_reassembled_bytes_mismatch_count": 1,
+        "large_frame_digest_mismatches": 1,
+        "cross_operation_splices_admitted": 1,
+        "cross_frame_mixing_count": 1,
+        "duplicate_activation_deliveries": 2,
+        "verdict_mismatches": 23,
+        "frames_without_consistent_digest": 17,
+        "valid_id_set_mismatch": 1
+      }
+    },
+    {
+      "name": "abandonment-releases-nothing",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "abandoned_chunks_unreleased",
+        "abandoned_id_set_mismatch"
+      ],
+      "counters": {
+        "abandoned_chunks_unreleased": 5,
+        "abandoned_id_set_mismatch": 1
+      }
+    },
+    {
+      "name": "abandonment-keeps-the-buffer",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "buffered_bytes_after_release"
+      ],
+      "counters": {
+        "buffered_bytes_after_release": 2560,
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "deadline-not-checked",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "expired_frames_admitted"
+      ],
+      "counters": {
+        "expired_frames_admitted": 1,
+        "boundary_tick_replays_admitted": 1,
+        "attempts_without_typed_rejection": 2
+      }
+    },
+    {
+      "name": "reassembly-identity-ignores-the-operation",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5,
+      "expected": [
+        "cross_operation_splices_admitted"
+      ],
+      "counters": {
+        "cross_operation_splices_admitted": 1,
+        "chain_frame_mismatches_delivered": 1,
+        "attempts_without_typed_rejection": 1,
+        "abandoned_chunks_unreleased": 3
+      }
+    },
+    {
+      "name": "reassembly-identity-ignores-the-frame-id",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "cross_frame_mixing_count"
+      ],
+      "counters": {
+        "valid_frame_bitwise_mismatches": 14,
+        "cross_frame_mixing_count": 1,
+        "verdict_mismatches": 4,
+        "abandoned_chunks_unreleased": 3,
+        "frames_without_consistent_digest": 14
+      }
+    },
+    {
+      "name": "replayed-completion-reported-as-abandonment",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "verdict_mismatches": 14
+      }
+    },
+    {
+      "name": "envelope-signature-omits-the-frame-id",
+      "file": "crates/ptr-protocol/src/activation.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "relabeled_chunks_admitted"
+      ],
+      "counters": {
+        "relabeled_chunks_admitted": 1,
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "allowlist-is-a-denylist",
+      "file": "crates/ptr-protocol/src/activation.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "non_allowlisted_payloads_admitted",
+        "smuggling_probes_admitted"
+      ],
+      "counters": {
+        "non_allowlisted_payloads_admitted": 1,
+        "smuggling_probes_admitted": 1,
+        "attempts_without_typed_rejection": 1,
+        "verdict_mismatches": 1
+      }
+    },
+    {
+      "name": "tensor-shape-unchecked",
+      "file": "crates/ptr-protocol/src/activation.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "attempts_without_typed_rejection",
+        "smuggling_probes_admitted"
+      ],
+      "counters": {
+        "non_allowlisted_payloads_admitted": 1,
+        "smuggling_probes_admitted": 1,
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "positions-length-unchecked",
+      "file": "crates/ptr-protocol/src/activation.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "positions_length_mismatches_admitted"
+      ],
+      "counters": {
+        "non_allowlisted_payloads_admitted": 2,
+        "smuggling_probes_admitted": 2,
+        "positions_length_mismatches_admitted": 2,
+        "attempts_without_typed_rejection": 2
+      }
+    },
+    {
+      "name": "trailing-bytes-accepted",
+      "file": "crates/ptr-protocol/src/activation.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "smuggling_probes_admitted",
+        "attempts_without_typed_rejection"
+      ],
+      "counters": {
+        "non_allowlisted_payloads_admitted": 1,
+        "smuggling_probes_admitted": 1,
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "frame-digest-hashes-only-a-prefix",
+      "file": "crates/ptr-protocol/src/activation.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "large_frame_digest_mismatches"
+      ],
+      "counters": {
+        "large_frame_digest_mismatches": 1,
+        "frames_without_consistent_digest": 1,
+        "valid_id_set_mismatch": 1
+      }
+    },
+    {
+      "name": "placement-epoch-unchecked",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "stale_placement_frames_admitted"
+      ],
+      "counters": {
+        "stale_placement_frames_admitted": 2
+      }
+    },
+    {
+      "name": "stage-manifest-digest-unchecked",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "stale_upstream_kv_served"
+      ],
+      "counters": {
+        "stale_upstream_kv_served": 1
+      }
+    },
+    {
+      "name": "entry-not-revalidated-at-use",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8,
+      "expected": [
+        "stale_upstream_kv_served",
+        "outputs_after_upstream_invalidation",
+        "stale_hits_in_upstream_stage_generation_lag_revocation",
+        "stale_hits_in_upstream_stage_generation_lag_supersession",
+        "stale_hits_in_upstream_stage_generation_inflight_revocation",
+        "stale_hits_in_upstream_stage_generation_inflight_supersession"
+      ],
+      "counters": {
+        "cache_slots_held_by_dead_entries": 1,
+        "stale_upstream_kv_served": 5,
+        "outputs_after_upstream_invalidation": 2,
+        "stale_placement_frames_admitted": 1,
+        "stale_hits_in_upstream_stage_generation_lag_revocation": 2,
+        "stale_hits_in_upstream_stage_generation_lag_supersession": 2,
+        "stale_hits_in_upstream_stage_generation_inflight_revocation": 1,
+        "stale_hits_in_upstream_stage_generation_inflight_supersession": 1
+      }
+    },
+    {
+      "name": "entry-not-revalidated-and-revoke-ignored",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 10,
+      "expected": [
+        "stale_hits_in_upstream_stage_generation_normal_revocation",
+        "stale_hits_in_upstream_stage_generation_normal_supersession"
+      ],
+      "counters": {
+        "cache_slots_held_by_dead_entries": 1,
+        "stale_upstream_kv_served": 7,
+        "outputs_after_upstream_invalidation": 4,
+        "stale_placement_frames_admitted": 1,
+        "stale_hits_in_upstream_stage_generation_normal_revocation": 1,
+        "stale_hits_in_upstream_stage_generation_normal_supersession": 1,
+        "stale_hits_in_upstream_stage_generation_lag_revocation": 2,
+        "stale_hits_in_upstream_stage_generation_lag_supersession": 2,
+        "stale_hits_in_upstream_stage_generation_inflight_revocation": 2,
+        "stale_hits_in_upstream_stage_generation_inflight_supersession": 2
+      }
+    },
+    {
+      "name": "use-release-skips-the-check",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "outputs_after_upstream_invalidation"
+      ],
+      "counters": {
+        "outputs_after_upstream_invalidation": 2,
+        "stale_hits_in_upstream_stage_generation_inflight_revocation": 1,
+        "stale_hits_in_upstream_stage_generation_inflight_supersession": 1
+      }
+    },
+    {
+      "name": "invalidation-does-not-cancel-uses",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "verdict_mismatches"
+      ],
+      "counters": {
+        "verdict_mismatches": 2
+      }
+    },
+    {
+      "name": "revoked-generation-reads-as-live",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 7,
+      "expected": [
+        "stale_hits_in_upstream_stage_generation_lag_revocation",
+        "stale_hits_in_upstream_stage_generation_inflight_revocation"
+      ],
+      "counters": {
+        "cache_slots_held_by_dead_entries": 1,
+        "attempts_without_typed_rejection": 5,
+        "stale_upstream_kv_served": 8,
+        "outputs_after_upstream_invalidation": 1,
+        "stale_hits_in_upstream_stage_generation_normal_revocation": 1,
+        "stale_hits_in_upstream_stage_generation_lag_revocation": 4,
+        "stale_hits_in_upstream_stage_generation_inflight_revocation": 3
+      }
+    },
+    {
+      "name": "superseded-generation-reads-as-live",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "stale_hits_in_upstream_stage_generation_lag_supersession",
+        "stale_hits_in_upstream_stage_generation_inflight_supersession"
+      ],
+      "counters": {
+        "attempts_without_typed_rejection": 5,
+        "stale_upstream_kv_served": 7,
+        "outputs_after_upstream_invalidation": 1,
+        "stale_hits_in_upstream_stage_generation_normal_supersession": 1,
+        "stale_hits_in_upstream_stage_generation_lag_supersession": 4,
+        "stale_hits_in_upstream_stage_generation_inflight_supersession": 3
+      }
+    },
+    {
+      "name": "store-accepts-frames-of-different-chains",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "chain_mismatch_stores"
+      ],
+      "counters": {
+        "chain_mismatch_stores": 1
+      }
+    },
+    {
+      "name": "second-stage-perturbs-the-residual",
+      "file": "crates/ptr-pods/src/qwen_stack.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "bitwise_mismatch_count"
+      ],
+      "counters": {
+        "bitwise_mismatch_count": 4
+      }
+    },
+    {
+      "name": "stage-a-ships-a-kv-page",
+      "file": "bins/ptr-bench/src/experiments/e007/bitwise.rs",
+      "cases": 3,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "wire_kv_page_bytes"
+      ],
+      "counters": {
+        "bitwise_mismatch_count": 2,
+        "wire_kv_page_bytes": 5885
+      }
+    },
+    {
+      "name": "stage-a-ships-its-cache-handle",
+      "file": "bins/ptr-bench/src/experiments/e007/bitwise.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "wire_kv_handle_count"
+      ],
+      "counters": {
+        "bitwise_mismatch_count": 4,
+        "wire_kv_handle_count": 4
+      }
+    },
+    {
+      "name": "control-rows-are-installed-as-kv",
+      "file": "bins/ptr-bench/src/experiments/e007/smuggle.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "kv_pages_installed_from_wire",
+        "activation_control_kv_installs"
+      ],
+      "counters": {
+        "kv_pages_installed_from_wire": 64,
+        "activation_control_kv_installs": 64
+      }
+    },
+    {
+      "name": "consistency-check-always-fails",
+      "file": "bins/ptr-bench/src/experiments/e007/link.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "frames_without_consistent_digest",
+        "valid_id_set_mismatch"
+      ],
+      "counters": {
+        "frames_without_consistent_digest": 16,
+        "valid_id_set_mismatch": 1
+      }
+    },
+    {
+      "name": "late-window-replay-outside-the-window",
+      "file": "bins/ptr-bench/src/experiments/e007/chunks.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [
+        "late_window_delays_out_of_range"
+      ],
+      "counters": {
+        "late_window_delays_out_of_range": 1
+      }
+    },
+    {
+      "name": "corpus-generator-changes",
+      "file": "bins/ptr-bench/src/experiments/e007/bitwise.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [
+        "selection_digest_mismatches"
+      ],
+      "counters": {
+        "selection_digest_mismatches": 1
+      }
+    },
+    {
+      "name": "receiver-window-differs-from-the-pin",
+      "file": "bins/ptr-bench/src/experiments/e007/link.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 1,
+      "expected": [
+        "procedure_mismatches"
+      ],
+      "counters": {
+        "attempts_without_typed_rejection": 1,
+        "procedure_mismatches": 1
+      }
+    },
+    {
+      "name": "receiver-total-cap-differs-from-the-pin",
+      "file": "bins/ptr-bench/src/experiments/e007/link.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [
+        "procedure_mismatches"
+      ],
+      "counters": {
+        "procedure_mismatches": 1
+      }
+    },
+    {
+      "name": "model-pin-digest-differs",
+      "file": "bins/ptr-bench/src/experiments/e007/params.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 2,
+      "hard_failures": 0,
+      "expected": [
+        "model_pin_mismatches"
+      ],
+      "counters": {
+        "model_pin_mismatches": 1
+      }
+    },
+    {
+      "name": "replay-boundary-tick-off-by-one",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "boundary_tick_replays_admitted"
+      ],
+      "counters": {
+        "boundary_tick_replays_admitted": 1,
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "policy-signature-unchecked",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "unsigned_chunks_admitted"
+      ],
+      "counters": {
+        "unsigned_chunks_admitted": 1,
+        "attempts_without_typed_rejection": 1,
+        "verdict_mismatches": 1
+      }
+    },
+    {
+      "name": "principal-not-bound-to-its-stage",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "unbound_stage_frames_admitted"
+      ],
+      "counters": {
+        "unbound_stage_frames_admitted": 1,
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "signed-chain-not-compared-with-the-frames",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "chain_frame_mismatches_delivered"
+      ],
+      "counters": {
+        "chain_frame_mismatches_delivered": 1,
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "policy-not-bound-to-the-operation",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "chain_frame_mismatches_delivered"
+      ],
+      "counters": {
+        "chain_frame_mismatches_delivered": 1,
+        "attempts_without_typed_rejection": 1
+      }
+    },
+    {
+      "name": "global-byte-cap-unchecked",
+      "file": "crates/ptr-podwire/src/chunk.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "global_cap_breaches"
+      ],
+      "counters": {
+        "global_cap_breaches": 1,
+        "attempts_without_typed_rejection": 2
+      }
+    },
+    {
+      "name": "approximate-upstream-admitted",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "non_exact_frames_admitted"
+      ],
+      "counters": {
+        "non_exact_frames_admitted": 1
+      }
+    },
+    {
+      "name": "non-finite-activations-admitted",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "non_finite_frames_admitted"
+      ],
+      "counters": {
+        "non_finite_frames_admitted": 3
+      }
+    },
+    {
+      "name": "full-cache-never-drops-dead-entries",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "cache_slots_held_by_dead_entries"
+      ],
+      "counters": {
+        "cache_slots_held_by_dead_entries": 2
+      }
+    },
+    {
+      "name": "refused-entry-stays-in-the-cache",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "cache_slots_held_by_dead_entries"
+      ],
+      "counters": {
+        "cache_slots_held_by_dead_entries": 1
+      }
+    },
+    {
+      "name": "downstream-stage-not-revalidated",
+      "file": "crates/ptr-runtime/src/split_stage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "stale_upstream_kv_served"
+      ],
+      "counters": {
+        "cache_slots_held_by_dead_entries": 1,
+        "stale_upstream_kv_served": 1
+      }
+    }
+  ]
+}

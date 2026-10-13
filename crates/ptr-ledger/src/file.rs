@@ -109,6 +109,9 @@ fn read_bounded(file: &mut File) -> io::Result<Vec<u8>> {
 pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
+        // Test-only: one point per directory synchronization, so a harness can count them.
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.sync_parent");
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -216,16 +219,28 @@ impl FileLedger {
         path: impl AsRef<Path>,
         trusted: LogAnchor,
     ) -> io::Result<Self> {
+        Self::recover_unacknowledged_tail_reporting(path, trusted).map(|(ledger, _)| ledger)
+    }
+
+    /// [`Self::recover_unacknowledged_tail`] that also says how many bytes of an all-zero tail
+    /// it trimmed (0 when none): a file extended whose data never reached the disk holds no
+    /// frame, so the trim loses no record, and `trusted` must still be a boundary of the
+    /// complete prefix (a log that lost acknowledged records is refused before any trim).
+    pub fn recover_unacknowledged_tail_reporting(
+        path: impl AsRef<Path>,
+        trusted: LogAnchor,
+    ) -> io::Result<(Self, usize)> {
         let path = path.as_ref();
         let mut file = lock_existing(path)?;
         let bytes = read_bounded(&mut file)?;
         let prefix = integrity::scan(&bytes)?;
         prefix.verified.require_anchor(trusted)?;
+        let trimmed = prefix.zero_tail;
         if prefix.incomplete {
-            file.set_len(prefix.complete_bytes as u64)?;
-            file.sync_all()?;
+            truncate_durably(&file, prefix.complete_bytes)?;
         }
-        Self::from_verified(path, file, prefix.verified, prefix.complete_bytes)
+        let ledger = Self::from_verified(path, file, prefix.verified, prefix.complete_bytes)?;
+        Ok((ledger, trimmed))
     }
 
     /// Create a new destination only after complete byte/anchor validation.
@@ -260,7 +275,11 @@ impl FileLedger {
             .open(path)?;
         let mut file = LockedFile::new(file)?;
         file.write_all(bytes)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.create_after_write_before_sync");
         file.sync_all()?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.create_after_sync_before_dir_sync");
         sync_parent(path)?;
         Self::from_verified_above(path, file, verified, bytes.len(), base)
     }
@@ -511,9 +530,9 @@ impl RecoverableLog {
         } else {
             prefix.complete_bytes
         };
+        let trimmed_zero_tail_bytes = prefix.zero_tail;
         if keep_bytes != length {
-            file.set_len(keep_bytes as u64)?;
-            file.sync_all()?;
+            truncate_durably(&file, keep_bytes)?;
         }
         let keep_events = target.index.0.saturating_sub(base.index.0) as usize;
         let mut events = prefix.verified.events;
@@ -527,11 +546,24 @@ impl RecoverableLog {
             acknowledged_records: if discard { 0 } else { complete_records },
             discarded_records: if discard { complete_records } else { 0 },
             incomplete_frame_removed: incomplete_frame,
+            trimmed_zero_tail_bytes,
             tail: target,
             origin: ledger.derived_origin(),
         };
         Ok((ledger, recovery))
     }
+}
+
+/// Shorten the log to `length` and make the new length durable. The trim only removes bytes
+/// that no recovery counted (a partial frame, or an all-zero tail), so a crash before the sync
+/// leaves a file that the next recovery trims again to the same state. Only the inode's size
+/// changes, so syncing the file is enough and the directory entry needs no sync.
+fn truncate_durably(file: &File, length: usize) -> io::Result<()> {
+    file.set_len(length as u64)?;
+    // Test-only: a crash between the truncation and its sync.
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("ledger.trim_after_truncate_before_sync");
+    file.sync_all()
 }
 
 /// Convert a nonrepairable split into the stable log error boundary.

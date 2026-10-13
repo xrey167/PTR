@@ -1,0 +1,2 @@
+{"arm": "schema_free", "best_val": 758, "converged": 1, "law": "full", "load_cv_milli": 748, "lr": 0.003, "rate": 0.05, "reward": 756, "seed": 1001, "set": {"entropy_coef_milli": 30}, "steps": 9500, "top1": 0, "wall_s": 49}
+{"arm": "schema_free", "best_val": 757, "converged": 1, "law": "full", "load_cv_milli": 758, "lr": 0.01, "rate": 0.05, "reward": 756, "seed": 1001, "set": {"entropy_coef_milli": 30}, "steps": 5250, "top1": 0, "wall_s": 23}

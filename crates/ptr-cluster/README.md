@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-28  
-**Code footprint:** 3 Rust source files · 726 nonblank source lines · 1 integration-test files · 15 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 3 Rust source files · 731 nonblank source lines · 1 integration-test files · 15 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -22,9 +22,10 @@
 - A member that cannot be reached is reported rather than raised: a leader that abandoned a proposal because one follower was down could not commit while any member is down, so a transport failure toward one peer is recorded and the round continues while a forged sender or a malformed frame still aborts
 - One exchange has a deadline, because how long to wait for a member is this layer's policy and not the peer's: without one a member that stopped answering holds up every round it appears in
 - resume_with_applied is fallible because the applied-event count it records is persisted: a member that kept it only in memory would renumber events a snapshot covers on its next restart
+- resume_with_applied inherits ptr-ledger's refusals unchanged and returns them as ClusterError::Node text that starts with the stable diagnostic code of ptr-ledger: NoSnapshotPending when no installed snapshot is waiting to be accounted for, and NodeFailed when the node was marked failed by an earlier error and must be restarted; a failed call leaves the member as it was and can be repeated
 - take_installed_snapshot_matching lets a host that retains snapshot anchors out of band refuse a payload the elected leader sent but the host did not expect; take_installed_snapshot remains for deployments with no second channel and documents what it trusts
 - propose_membership adds or removes one voter from the leader and drives it to quiescence, and voters() reports the group in ascending order
-- Snapshot payloads are carried unread, and the test carries a real PTRCS004 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes
+- Snapshot payloads are carried unread, and the test carries a real PTRCS006 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes
 - No background loop, timer or retry policy: the caller drives accept and dispatch, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
 - The whole composition is feature-gated, so iroh and raft stay out of every other workspace build exactly as ptr-net and ptr-ledger keep their own backends out
 
@@ -34,6 +35,7 @@
 - Discovery of a joining member's address: propose_membership changes who votes, but a new voter must still be admitted with an address out of band
 - The snapshot anchor travels from the authenticated leader rather than being retained independently, which is weaker than an out-of-band anchor: a compromised leader could send a consistent pair, and what this rules out is a stranger doing so
 - Session reuse: every exchange opens a connection, which is correct and wasteful
+- The member exposes no is_failed or is_poisoned accessor: ClusterError::Node carries the node's refusal as a String, so a caller learns that the node must be restarted only from the code at the start of that text (NodeFailed::CODE, PTR_RAFT_NODE_FAILED), never by asking, and there is no typed variant for it
 - Any claim about latency, throughput or behaviour under load; the tests establish protocol and identity properties on localhost
 
 ### Next milestones
@@ -61,7 +63,7 @@
 - a refused frame still receives an answer, and that answer is an empty batch
 - refusing a stranger's frame does not take a serving member off the air: after the refusal an admitted member still reaches it, so an unadmitted peer cannot silence an admitted one by connecting once
 - a member that cannot be reached is named in the report while the write is still decided by the majority that answered
-- a real PTRCS004 snapshot, exported by a runtime whose semantic value is a host write under a test grant, travels as the payload to a restarted member the leader compacted past, arrives byte for byte, and a runtime restores the state it described from exactly those bytes
+- a real PTRCS006 snapshot, exported by a runtime whose semantic value is a host write under a test grant, travels as the payload to a restarted member the leader compacted past, arrives byte for byte, and a runtime restores the state it described from exactly those bytes
 - frame codec unit tests: round trip including an empty batch, every prefix refused, foreign bytes, trailing bytes, an unknown layout version, an invented count refused by the bound rather than by allocation, an oversize frame refused before parsing, and one distinct code per refusal
 
 <!-- PTR:STATUS:END -->

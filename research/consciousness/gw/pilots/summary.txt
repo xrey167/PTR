@@ -1,0 +1,98 @@
+operating-point sweep (lr 0.003, d 32; 16-module accuracy per mille, seeds 1004 / 1005):
+  D 1024: all_to_all 329/587  bw_all_to_all 320/577  sparse_all_to_all 323/336  workspace 293/448  strongest pairwise mean 458.0
+  D 2048: all_to_all 774/729  bw_all_to_all 735/610  sparse_all_to_all 637/648  workspace 593/770  strongest pairwise mean 751.5
+  D 4096: all_to_all 781/817  bw_all_to_all 771/792  sparse_all_to_all 781/813  workspace 863/860  strongest pairwise mean 799.0
+  D 8192: all_to_all 821/829  bw_all_to_all 814/761  sparse_all_to_all 815/840  workspace 895/887  strongest pairwise mean 827.5
+  (* = hit the step cap)
+equal grid (D 2048, seeds 1004-1008; mean 16-module accuracy per mille; [n] = runs that hit the cap; '-' = not run):
+  workspace          lr 0.001 d 32: 402.4  lr 0.001 d 48: 559.0  lr 0.003 d 32: 731.2  lr 0.003 d 48: 785.2*  lr 0.006 d 48: 654.6  lr 0.012 d 48: -  lr 0.024 d 48: -
+  all_to_all         lr 0.001 d 32: 572.6  lr 0.001 d 48: 666.4  lr 0.003 d 32: 726.6  lr 0.003 d 48: 738.0  lr 0.006 d 48: 753.8*  lr 0.012 d 48: 345.6  lr 0.024 d 48: -
+  bw_all_to_all      lr 0.001 d 32: 565.8  lr 0.001 d 48: 677.4  lr 0.003 d 32: 692.2  lr 0.003 d 48: 731.8  lr 0.006 d 48: 738.4*  lr 0.012 d 48: 486.2  lr 0.024 d 48: -
+  sparse_all_to_all  lr 0.001 d 32: 418.0  lr 0.001 d 48: 594.8  lr 0.003 d 32: 655.8  lr 0.003 d 48: 674.0  lr 0.006 d 48: 696.0*  lr 0.012 d 48: 343.4  lr 0.024 d 48: -
+  no_broadcast       lr 0.001 d 32: 432.4  lr 0.001 d 48: 560.2  lr 0.003 d 32: 768.2*  lr 0.003 d 48: 765.8  lr 0.006 d 48: 573.0  lr 0.012 d 48: -  lr 0.024 d 48: -
+  competition_off    lr 0.001 d 32: 626.6  lr 0.001 d 48: 639.0  lr 0.003 d 32: 750.6  lr 0.003 d 48: 786.2  lr 0.006 d 48: 789.6*  lr 0.012 d 48: 340.4  lr 0.024 d 48: -
+  capacity_off       lr 0.001 d 32: 415.2  lr 0.001 d 48: 535.6  lr 0.003 d 32: 721.4  lr 0.003 d 48: 726.6*  lr 0.006 d 48: 608.4  lr 0.012 d 48: -  lr 0.024 d 48: -
+pinned cell per arm (every arm at d 48; the lr with the highest mean at d 48):
+  workspace          lr 0.003
+  all_to_all         lr 0.006
+  bw_all_to_all      lr 0.006
+  sparse_all_to_all  lr 0.006
+  no_broadcast       lr 0.003
+  competition_off    lr 0.006
+  capacity_off       lr 0.003
+paired differences at the pinned cells (d 48, pinned lr): workspace minus arm, 16 modules, per mille:
+  all_to_all         [45, 48, 54, 2, 8]  mean 31.4  sd 24.4  median 45
+  bw_all_to_all      [107, 56, 32, -9, 48]  mean 46.8  sd 42.0  median 48
+  sparse_all_to_all  [132, 75, 175, 50, 14]  mean 89.2  sd 64.4  median 75
+  no_broadcast       [31, 47, 73, 4, -58]  mean 19.4  sd 50.0  median 31
+  competition_off    [-1, 24, 4, -42, -7]  mean -4.4  sd 24.0  median -1
+  capacity_off       [14, 22, 371, -76, -38]  mean 58.6  sd 179.1  median 14
+sensitivity at lr 0.003 (round 3; crippled at width cap 384): all_to_all minus weak_all_to_all: [82, 40, 48, 44, 81] mean 59.0 sd 20.7
+sensitivity at lr 0.003 (round 3; crippled at width cap 384): all_to_all minus crippled_all_to_all: [421, 384, 395, 379, 389] mean 393.6 sd 16.4
+sensitivity at lr 0.006 (round 4; crippled at 413): all_to_all minus weak_all_to_all: [61, 47, 72, 55, 13] mean 49.6 sd 22.4
+sensitivity at lr 0.006 (round 4; crippled at 413): all_to_all minus crippled_all_to_all: [395, 421, 394, 403, 416] mean 405.8 sd 12.2
+learning-rate ladder at d 48 (mean 16-module accuracy per mille over seeds 1004-1008; [n] = runs capped; 'nc' = runs not converged):
+  workspace          0.001: 559.0 (steps max 9150, nc 0)   0.003: 785.2 (steps max 5100, nc 0)   0.006: 654.6 (steps max 4950, nc 0)
+  all_to_all         0.001: 666.4 (steps max 8100, nc 0)   0.003: 738.0 (steps max 6450, nc 0)   0.006: 753.8 (steps max 8400, nc 0)   0.012: 345.6 (steps max 2250, nc 0)
+  bw_all_to_all      0.001: 677.4 (steps max 11550, nc 0)   0.003: 731.8 (steps max 5100, nc 0)   0.006: 738.4 (steps max 5550, nc 0)   0.012: 486.2 (steps max 4950, nc 0)
+  sparse_all_to_all  0.001: 594.8 (steps max 6300, nc 0)   0.003: 674.0 (steps max 4500, nc 0)   0.006: 696.0 (steps max 6000, nc 0)   0.012: 343.4 (steps max 2100, nc 0)
+  no_broadcast       0.001: 560.2 (steps max 10950, nc 0)   0.003: 765.8 (steps max 7800, nc 0)   0.006: 573.0 (steps max 4950, nc 0)
+  competition_off    0.001: 639.0 (steps max 8850, nc 0)   0.003: 786.2 (steps max 4650, nc 0)   0.006: 789.6 (steps max 4350, nc 0)   0.012: 340.4 (steps max 2400, nc 0)
+  capacity_off       0.001: 535.6 (steps max 9600, nc 0)   0.003: 726.6 (steps max 7350, nc 0)   0.006: 608.4 (steps max 5700, nc 0)
+harness rule for 'workspace trained' (in-distribution accuracy >= no_comm + 100 per mille), per pilot seed: workspace ID / no_comm ID / trained
+  1004: 857 / 329 / 1
+  1005: 866 / 333 / 1
+  1006: 848 / 306 / 1
+  1007: 829 / 329 / 1
+  1008: 839 / 326 / 1
+  1009: 847 / 349 / 1
+  1010: 862 / 336 / 1
+  1011: 437 / 333 / 1
+  1012: 813 / 342 / 1
+  1013: 842 / 329 / 1
+  1014: 855 / 334 / 1
+  1015: 860 / 334 / 1
+  1016: 850 / 332 / 1
+  1017: 847 / 340 / 1
+  1018: 856 / 355 / 1
+  1019: 833 / 321 / 1
+  1020: 819 / 322 / 1
+round 6: fresh pilot seeds 1011-1020 and later (16-module accuracy per mille at d 48, lr 0.006 unless the arm is the workspace):
+  all_to_all             n 20   761  770  759  743  703  738  725  730  754  736  712  731  776  741  700  722  682  725  710  738
+  bw_all_to_all          n 10   791  750  726  749  731  745  690  743  710  766
+  crippled_all_to_all    n 10   325  338  321  349  335  340  322  330  340  318
+  sparse_all_to_all      n 10   722  730  650  728  650  632  800  490  731  680
+  weak_all_to_all        n 20   753  600  651  656  727  704  610  675  664  730  602  643  750  652  705  574  647  685  643  684
+  weak_d16               n  5   764  775  738  657  757
+  weak_d24               n  4   706  720  747  730
+  weak_dv1               n  8   794  330  507  480  503  455  321  346
+  weak_dv2               n  7   501  728  698  723  675  740  692
+  weak_dv3               n  5   697  704  732  724  677
+  weak_dv6               n  5   795  686  693  720  718
+  weak_k1                n  8   329  307  354  336  298  328  324  346
+  weak_k2                n  2   327  327
+  weak_lr001             n 10   618  686  716  736  694  768  722  748  749  710
+  weak_rounds2           n 10   727  739  735  702  708  679  715  691  700  702
+  weak_wd2000            n  1   568
+  workspace              n 10   367  767  769  792  819  813  809  769  789  773
+  weight-decay probe 0.0001   n  3 deficit mean   33.7 sd  41.9  [46, 68, -13]
+  weight-decay probe 0.001    n 10 deficit mean   80.5 sd  54.7  [97, 77, 80, 141, 32, -30, 108, 82, 164, 54]
+  weight-decay probe 0.003    n  2 deficit mean  233.5 sd   7.8  [228, 239]
+  all_to_all minus crippled_all_to_all    n 10 mean  410.1 sd  22.0 median 408.5  [436, 432, 438, 394, 368, 398, 403, 400, 414, 418]
+  all_to_all minus weak_all_to_all        n 20 mean   65.0 sd  51.4 median  61.0  [8, 170, 108, 87, -24, 34, 115, 55, 90, 6, 110, 88, 26, 89, -5, 148, 35, 40, 67, 54]
+  all_to_all minus weak_d16               n  5 mean    9.0 sd  50.9 median  -3.0  [-3, -5, 21, 86, -54]
+  all_to_all minus weak_d24               n  4 mean   32.5 sd  23.2 median  31.5  [55, 50, 12, 13]
+  all_to_all minus weak_dv1               n  8 mean  274.1 sd 149.7 median 273.0  [-33, 440, 252, 263, 200, 283, 404, 384]
+  all_to_all minus weak_dv2               n  7 mean   63.1 sd  88.9 median  33.0  [260, 42, 61, 20, 28, -2, 33]
+  all_to_all minus weak_dv3               n  5 mean   40.4 sd  22.7 median  27.0  [64, 66, 27, 19, 26]
+  all_to_all minus weak_dv6               n  5 mean   24.8 sd  50.6 median  23.0  [-34, 84, 66, 23, -15]
+  all_to_all minus weak_k1                n  8 mean  413.4 sd  24.0 median 406.0  [432, 463, 405, 407, 405, 410, 401, 384]
+  all_to_all minus weak_k2                n  2 mean  438.5 sd   6.4 median 438.5  [434, 443]
+  all_to_all minus weak_lr001             n 10 mean   27.2 sd  51.7 median   8.0  [143, 84, 43, 7, 9, -30, 3, -18, 5, 26]
+  all_to_all minus weak_rounds2           n 10 mean   32.1 sd  19.1 median  34.0  [34, 31, 24, 41, -5, 59, 10, 39, 54, 34]
+  workspace minus all_to_all         all ten seeds: n 10 mean    4.8 sd 144.4 median  38.0  [-394, -3, 10, 49, 116, 75, 84, 39, 35, 37]
+  workspace minus bw_all_to_all      all ten seeds: n 10 mean    6.6 sd 155.2 median  43.0  [-424, 17, 43, 43, 88, 68, 119, 26, 79, 7]
+  workspace minus sparse_all_to_all  all ten seeds: n 10 mean   65.4 sd 168.0 median  78.5  [-355, 37, 119, 64, 169, 181, 9, 279, 58, 93]
+  workspace minus all_to_all         the nine seeds on which the workspace trained: n  9 mean   49.1 sd  37.2 median  39.0  [-3, 10, 49, 116, 75, 84, 39, 35, 37]
+  workspace minus bw_all_to_all      the nine seeds on which the workspace trained: n  9 mean   54.4 sd  36.7 median  43.0  [17, 43, 43, 88, 68, 119, 26, 79, 7]
+  workspace minus sparse_all_to_all  the nine seeds on which the workspace trained: n  9 mean  112.1 sd  85.0 median  93.0  [37, 119, 64, 169, 181, 9, 279, 58, 93]

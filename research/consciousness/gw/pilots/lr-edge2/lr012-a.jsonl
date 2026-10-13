@@ -1,0 +1,12 @@
+{"seed": 1004, "D": 2048, "arm": "all_to_all", "lr": 0.012, "d": 48, "ffn": 137, "id": 338, "ood16": 346, "ood24": 326, "converged": 1, "steps": 2100, "best_val": 339, "loss_w": 1522474, "sec": 32}
+{"seed": 1004, "D": 2048, "arm": "bw_all_to_all", "lr": 0.012, "d": 48, "ffn": 147, "id": 800, "ood16": 722, "ood24": 670, "converged": 1, "steps": 4950, "best_val": 797, "loss_w": 258032, "sec": 107}
+{"seed": 1004, "D": 2048, "arm": "sparse_all_to_all", "lr": 0.012, "d": 48, "ffn": 137, "id": 329, "ood16": 345, "ood24": 326, "converged": 1, "steps": 1950, "best_val": 334, "loss_w": 1522733, "sec": 29}
+{"seed": 1004, "D": 2048, "arm": "competition_off", "lr": 0.012, "d": 48, "ffn": 64, "id": 373, "ood16": 341, "ood24": 332, "converged": 1, "steps": 2250, "best_val": 386, "loss_w": 1522324, "sec": 47}
+{"seed": 1005, "D": 2048, "arm": "all_to_all", "lr": 0.012, "d": 48, "ffn": 137, "id": 355, "ood16": 346, "ood24": 347, "converged": 1, "steps": 2100, "best_val": 357, "loss_w": 1516947, "sec": 29}
+{"seed": 1005, "D": 2048, "arm": "bw_all_to_all", "lr": 0.012, "d": 48, "ffn": 147, "id": 366, "ood16": 341, "ood24": 336, "converged": 1, "steps": 2250, "best_val": 376, "loss_w": 1517311, "sec": 28}
+{"seed": 1005, "D": 2048, "arm": "sparse_all_to_all", "lr": 0.012, "d": 48, "ffn": 137, "id": 333, "ood16": 346, "ood24": 349, "converged": 1, "steps": 1950, "best_val": 347, "loss_w": 1517486, "sec": 22}
+{"seed": 1005, "D": 2048, "arm": "competition_off", "lr": 0.012, "d": 48, "ffn": 64, "id": 373, "ood16": 356, "ood24": 339, "converged": 1, "steps": 2400, "best_val": 394, "loss_w": 1517130, "sec": 36}
+{"seed": 1006, "D": 2048, "arm": "all_to_all", "lr": 0.012, "d": 48, "ffn": 137, "id": 384, "ood16": 342, "ood24": 346, "converged": 1, "steps": 2250, "best_val": 397, "loss_w": 1531973, "sec": 26}
+{"seed": 1006, "D": 2048, "arm": "bw_all_to_all", "lr": 0.012, "d": 48, "ffn": 147, "id": 777, "ood16": 695, "ood24": 644, "converged": 1, "steps": 3150, "best_val": 768, "loss_w": 297725, "sec": 46}
+{"seed": 1006, "D": 2048, "arm": "sparse_all_to_all", "lr": 0.012, "d": 48, "ffn": 137, "id": 305, "ood16": 334, "ood24": 329, "converged": 1, "steps": 2100, "best_val": 340, "loss_w": 1532398, "sec": 23}
+{"seed": 1006, "D": 2048, "arm": "competition_off", "lr": 0.012, "d": 48, "ffn": 64, "id": 329, "ood16": 329, "ood24": 332, "converged": 1, "steps": 2100, "best_val": 380, "loss_w": 1532414, "sec": 31}

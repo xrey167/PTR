@@ -1,0 +1,98 @@
+version = 1
+kind = "workspace-area"
+name = "R008-lossy-kv-tier"
+path = "experiments/runtime/R008-lossy-kv-tier"
+tests_dir = "tests"
+
+[pinned_thresholds]
+
+# Preregistered choices for this experiment (no code default exists).
+min_top1_agreement = 0.98
+min_kv_memory_reduction = 2.0
+min_lossy_reuse_events = 1
+candidate_kv_keep_fractions = [0.5, 0.25, 0.125]
+best_configuration_rule = "highest kv_memory_reduction among configs with top1_agreement >= min_top1_agreement"
+kv_memory_reduction_definition = "exact_kv_bytes / lossy_kv_bytes"
+top1_agreement_definition = "fraction of positions where lossy argmax == exact argmax"
+# Preregistered choices for this experiment (no code default exists).
+lossy_kv_bytes_definition = "all tiers plus index and metadata"
+min_allow_approximate_false_attempts = 1
+max_lossy_hits_with_allow_approximate_false = 0
+context_length_tokens = 512
+agreement_positions = "last 128 positions of each 512-token prompt"
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+min_lossy_revocation_attempts = 1
+min_lossy_restart_attempts = 1
+max_lossy_hits_after_revocation = 0
+max_lossy_hits_after_restart = 0
+agreement_model = "Qwen/Qwen2.5-0.5B"
+agreement_model_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+agreement_model_layers = 24
+agreement_model_vocab_size = 151936
+agreement_model_hidden_size = 896
+# Preregistered choices for this experiment (no code default exists).
+valid_objects_surviving_restart_role = "reported_only"
+# Preregistered choices for this experiment (no code default exists).
+min_revoked_lossy_objects_present_before_revocation = 1
+min_revoked_lossy_objects_present_before_restart = 1
+# Preregistered choices for this experiment (no code default exists).
+min_restored_revoked_lossy_objects_after_restart = 1
+min_post_restart_lookups = 1
+min_lossy_supersession_attempts = 1
+max_lossy_hits_after_supersession = 0
+min_inflight_lossy_reuse_race_cases = 1
+max_inflight_lossy_outputs_after_invalidation = 0
+# Preregistered choices for this experiment (no code default exists).
+corpus = "openai/gsm8k test, concatenated problems cut into 512-token prompts"
+corpus_dataset = "openai/gsm8k"
+corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
+corpus_split = "test"
+corpus_selection_rule = "problems in index order concatenated and cut into consecutive 512-token prompts; the first 100 prompts"
+prompt_count = 100
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "context_length_tokens", "prompt_count", "candidate_kv_keep_fractions", "agreement_model_layers", "agreement_model_vocab_size", "agreement_model_hidden_size", "invalidation_coverage_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "declared_dependency_kinds", "production_modes", "derived_state_carriers", "lossy_algorithm", "tie_breaks"]
+# Preregistered choices for this experiment (no code default exists).
+allow_approximate_false_fallback_output_mismatches_max = 0
+# Preregistered choices for this experiment (no code default exists).
+invalidation_types = ["revocation", "supersession"]
+inflight_lossy_reuse_race_cases_reported = "per invalidation type"
+# Preregistered choices for this experiment (no code default exists).
+identity_set_checks = [["allow_approximate_false_attempt_id_set_digest", "allow_approximate_false_fallback_completed_id_set_digest"]]
+# Preregistered choices for this experiment (no code default exists).
+min_restored_superseded_lossy_objects_after_restart = 1
+supersession_arms = ["normal", "post_restart"]
+# Preregistered choices for this experiment (no code default exists).
+invalidation_coverage_matrix = { kinds = ["semantic_dependency", "memory_dependency", "derived_dependency", "base_model", "adapter_generation", "expert_generation"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], extra_types = { expert_generation = ["fence"] }, cells = ["semantic_dependency_normal_revocation", "semantic_dependency_normal_supersession", "semantic_dependency_lag_revocation", "semantic_dependency_lag_supersession", "semantic_dependency_restore_revocation", "semantic_dependency_restore_supersession", "semantic_dependency_inflight_revocation", "semantic_dependency_inflight_supersession", "memory_dependency_normal_revocation", "memory_dependency_normal_supersession", "memory_dependency_lag_revocation", "memory_dependency_lag_supersession", "memory_dependency_restore_revocation", "memory_dependency_restore_supersession", "memory_dependency_inflight_revocation", "memory_dependency_inflight_supersession", "derived_dependency_normal_revocation", "derived_dependency_normal_supersession", "derived_dependency_lag_revocation", "derived_dependency_lag_supersession", "derived_dependency_restore_revocation", "derived_dependency_restore_supersession", "derived_dependency_inflight_revocation", "derived_dependency_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession", "adapter_generation_normal_revocation", "adapter_generation_normal_supersession", "adapter_generation_lag_revocation", "adapter_generation_lag_supersession", "adapter_generation_restore_revocation", "adapter_generation_restore_supersession", "adapter_generation_inflight_revocation", "adapter_generation_inflight_supersession", "expert_generation_normal_revocation", "expert_generation_normal_supersession", "expert_generation_normal_fence", "expert_generation_lag_revocation", "expert_generation_lag_supersession", "expert_generation_lag_fence", "expert_generation_restore_revocation", "expert_generation_restore_supersession", "expert_generation_restore_fence", "expert_generation_inflight_revocation", "expert_generation_inflight_supersession", "expert_generation_inflight_fence"] }
+min_invalidation_matrix_cases_per_cell = 1
+max_invalidation_matrix_stale_hits_per_cell = 0
+invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
+# Preregistered choices for this experiment (no code default exists).
+min_lossy_hit_taint_cases = 1
+max_untainted_lossy_results = 0
+max_lossy_effects_admitted = 0
+# Preregistered choices for this experiment (no code default exists).
+model_checkpoint_repo = "Qwen/Qwen2.5-0.5B"
+model_checkpoint_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+tokenizer_repo = "Qwen/Qwen2.5-0.5B"
+tokenizer_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+moe_topology = "none: dense decoder, 24 layers"
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "adapter", "expert"]
+# Preregistered choices for this experiment (no code default exists).
+cache_namespace_partitioned_by_production_mode = true
+cache_namespace_partition = "KvSnapshotLossy objects only in a separate lossy tier, never in the Exact tier"
+production_modes = ["Exact", "Approximate"]
+# Preregistered choices for this experiment (no code default exists).
+derived_state_carriers = { tier_object = ["mode", "taint"], kv_page_transport = ["mode", "taint"] }
+# Preregistered choices for this experiment (no code default exists).
+lossy_algorithm = { retained_entry_selection = "top keep_fraction positions by key L2 norm per layer and head", reconstruction = "copy K and V of the nearest retained position", index_representation = "sorted int32 position list per layer and head" }
+lossy_algorithm_recorded_per_candidate_row = true
+min_lossy_algorithm_rows_recorded = 3
+# Preregistered choices for this experiment (no code default exists).
+tie_breaks = { equal_key_norm = "lower position index retained first", equidistant_omitted_position = "copy the lower-index (left) retained position" }

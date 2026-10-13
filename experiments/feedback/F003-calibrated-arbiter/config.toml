@@ -4,14 +4,55 @@ name = "F003-calibrated-arbiter"
 path = "experiments/feedback/F003-calibrated-arbiter"
 tests_dir = "tests"
 
+# Harness numerics that are not in the preregistered table's required keys: the verification mix,
+# the namespaces' score shape, the off-policy design and the controls. The harness
+# (`ptr-bench calibrated-arbiter`, bins/ptr-bench/src/experiments/f003/params.rs and model.rs)
+# mirrors every key here and in [preregistration]; its drift test fails when a compiled constant
+# differs from this file or this file holds a key no constant mirrors. The namespaces' harm tables
+# (anchors by score cell) are code and PREREGISTRATION.md, frozen with the commit.
+[pinned_thresholds]
+seed_aggregation = "every_seed_must_pass"
+# Share of branches by verification kind in permille, in the order eligible, fail, disputed,
+# unknown, latent_agreement, sample_verified, hard_finding.
+eligible_permille = 750
+kind_weights_permille = [750, 60, 40, 40, 40, 30, 40]
+# The namespaces note, task and cfg: their share of branches and how many uniform draws the
+# scorer's score is the maximum of.
+namespace_weights_permille = [500, 300, 200]
+namespace_score_maxes = [4, 3, 3]
+# Share of scores the scorer reports exactly on a grid point (rounded down to a multiple of 0.001).
+tied_permille = 300
+# The slice-rate z tests reject beyond this many thousandths of a standard deviation.
+slice_z_limit_milli = 4000
+# Every n-th Monte-Carlo replicate also runs the conformal rule against its oracle.
+crc_every = 20
+# The determinism rerun repeats this many replicates and logs.
+determinism_replicates = 100
+determinism_logs = 8
+# Off-policy evaluation: the logging policy, two supported targets and one the log cannot
+# support, the rewards of an auto-proposal (milli-units) and the bias bound in standard errors.
+ope_logging_threshold_permille = 500
+ope_target_thresholds_permille = [800, 650]
+ope_target_slice_rates_permille = [150, 300]
+ope_unsupported_threshold_permille = 300
+reward_safe_milli = 1000
+reward_harm_milli = -9000
+# The negative controls: the drifted held-out set draws harm at this multiple of the model's.
+drift_harm_factor = 3
+drift_samples = 1500
+control_fallback_threshold_permille = 700
+# The ungated descriptive Monte-Carlo arm: the adjudicator's error rate in permille.
+noisy_epsilon_permille = 20
+
 # Frozen before F003 leaves `planned` (experiments/preregistration.toml,
-# scripts/check_research_gates.py); the README's Design section gives the
-# reasons. A `must-be-pinned-…` value is still to be chosen, and a
-# `must-be-signed-…` value is an owner decision still to be taken: the owner
+# scripts/check_research_gates.py); the README's Design section and
+# PREREGISTRATION.md give the reasons. A `must-be-pinned-…` value is still to be
+# chosen, and a `must-be-signed-…` value is an owner decision still to be taken: the owner
 # signs it by committing the decided value in its place.
 [preregistration]
 # The confirmatory seeds, as experiment.toml declares them.
 seeds = [17, 29, 43, 71, 101]
+harness = "calibrated-arbiter"
 # Risk level alpha and confidence 1 - delta of Learn-then-Test
 # (ptr_branch::ThresholdRule::LearnThenTest), in permille.
 alpha_permille = 50
@@ -22,16 +63,37 @@ threshold_grid_steps = 1000
 # The fewest adjudications with which Learn-then-Test can certify any
 # threshold at alpha = delta = 0.05: 0.95^n <= 0.05 first holds at n = 59.
 min_adjudications_per_policy = 59
-# The "fixed uncalibrated threshold" baseline.
-uncalibrated_threshold_permille = "must-be-pinned-before-prepared"
-# Proposed: "every adjudication recorded before the policy version; held-out = every one after".
-calibration_set_rule = "must-be-signed-by-owner"
-# Proposed: false.
-adjudicators_see_intent = "must-be-signed-by-owner"
-# Proposed: the first `:`-separated segment of each changed key, descriptive only.
-harm_breakdown_namespaces = "must-be-signed-by-owner"
-# Proposed: experiments/feedback/F003-calibrated-arbiter/PROTOCOL.md, still to
-# be written. The protocol's content is frozen with the table:
-# adjudication_protocol_sha256 must be its digest.
-adjudication_protocol = "must-be-signed-by-owner"
-adjudication_protocol_sha256 = "must-be-pinned-before-prepared"
+# The "fixed uncalibrated threshold" baseline: the conventional "propose when the score is at
+# least one half" rule, the value S003's review policy uses (s003/params.rs).
+uncalibrated_threshold_permille = 500
+# Owner decisions of 2026-10-09 (scratchpad/finish-decisions.md), signed as proposed.
+calibration_set_rule = "every adjudication recorded before the policy version is calibration; every one after it is held out"
+adjudicators_see_intent = false
+harm_breakdown_namespaces = "first ':'-separated segment of each changed key; descriptive only"
+adjudication_protocol = "experiments/feedback/F003-calibrated-arbiter/PROTOCOL.md"
+# The protocol's SHA-256, pinned at the freeze once PROTOCOL.md is final.
+adjudication_protocol_sha256 = "ff3d4ae9657c2da5ab3605a8a6c964bdadca957dfcc9d2ee8a4a7126f41b1a67"
+# The simulated stream: branches per seed, the share of eligible branches reserved for
+# adjudication (the calibration slice), the simulated adjudicator's error rate, and the
+# adjudications after which a policy is recorded.
+stream_branches = 30000
+slice_rate_permille = 150
+adjudicator_error_permille = 2
+policy_sizes = [600, 1000, 1500, 2200]
+# Monte-Carlo coverage of the Learn-then-Test guarantee: replicates per seed and the level, in
+# parts per million, at which the exact binomial test of the violation count rejects.
+mc_replicates = 2000
+coverage_test_level_ppm = 1000
+# Held-out tests: familywise level in permille, split evenly over this many tests (the four
+# recorded policies of each of the five seeds).
+heldout_familywise_permille = 50
+heldout_tests = 20
+# Off-policy evaluation: logs per seed, branches per log, and the bias bound in standard errors.
+ope_logs = 200
+ope_log_branches = 4000
+ope_bias_sigmas = 4
+# The preregistration text and the decision rule, frozen with the table.
+preregistration_text = "experiments/feedback/F003-calibrated-arbiter/PREREGISTRATION.md"
+preregistration_text_sha256 = "b776ec4e04e30302e4394222ecfaa61f71242e40d65110ce3ea8d90c1b412c3a"
+criteria = "experiments/feedback/F003-calibrated-arbiter/criteria.toml"
+criteria_sha256 = "2f9d32e0748b853d04c50722b0b0f10087a09fc6e88872509b35d3b655f93a21"

@@ -87,3 +87,78 @@ fn certified_branches_zero_cases_emits_an_empty_run_for_boundary_seeds() {
         }
     }
 }
+
+#[test]
+fn kv_reuse_smoke_is_bitwise_equal_and_reuses_the_shared_prefix() {
+    let exe = env!("CARGO_BIN_EXE_ptr-bench");
+    let output = Command::new(exe)
+        .args(["kv-reuse-smoke", "3"])
+        .output()
+        .expect("run the KV reuse smoke");
+    assert!(
+        output.status.success(),
+        "a warm run differed from its cold twin: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1, "exactly one JSON line on stdout");
+    assert!(
+        stdout.starts_with(r#"{"benchmark":"kv-reuse-smoke","requests":3,"hit_tokens_total":128,"#)
+    );
+    assert!(stdout.contains(r#""bitwise_equal":true"#));
+    assert!(stdout.contains("not an R005 result"));
+}
+
+#[test]
+fn kv_reuse_smoke_refuses_a_bad_request_count() {
+    let exe = env!("CARGO_BIN_EXE_ptr-bench");
+    for bad in ["0", "1000", "many"] {
+        let output = Command::new(exe)
+            .args(["kv-reuse-smoke", bad])
+            .output()
+            .expect("run the KV reuse smoke");
+        assert_eq!(output.status.code(), Some(2), "{bad}");
+        assert!(output.stdout.is_empty(), "{bad}");
+    }
+}
+
+#[test]
+fn exact_prefix_reuse_needs_one_numeric_seed_and_prints_nothing_otherwise() {
+    let exe = env!("CARGO_BIN_EXE_ptr-bench");
+    // No seed, a typo and a negative seed stop the run before it starts: R005 has no default
+    // seed, and a typo must not run another seed than the one asked for.
+    for args in [
+        vec!["exact-prefix-reuse"],
+        vec!["exact-prefix-reuse", "1O1"],
+        vec!["exact-prefix-reuse", "-1"],
+        vec!["exact-prefix-reuse", ""],
+    ] {
+        let output = Command::new(exe)
+            .args(&args)
+            .output()
+            .expect("run the R005 harness");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("seed"),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn the_usage_lists_the_r005_harness_the_manifest_names() {
+    let exe = env!("CARGO_BIN_EXE_ptr-bench");
+    let output = Command::new(exe)
+        .arg("no-such-command")
+        .output()
+        .expect("run ptr-bench");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exact-prefix-reuse"));
+    // The manifest names this harness as its entrypoint; the run writes no record itself.
+    let manifest =
+        include_str!("../../../experiments/runtime/R005-exact-prefix-reuse/experiment.toml");
+    assert!(manifest.contains(
+        "entrypoint = \"cargo run --release --locked -p ptr-bench -- exact-prefix-reuse <seed>\""
+    ));
+}

@@ -2,6 +2,7 @@
 //! No acknowledgments, observations or model continuation precede a successful
 //! append. This reconstructs semantic state, not neural or execution checkpoints.
 use super::{PtrRuntime, RuntimeError};
+use crate::kv_taint::SemanticTaintBoundary;
 use crate::merge::{self, ChangeOrigin, SemanticChange};
 use ptr_events::RuntimeEvent;
 use ptr_ledger::{Attestation, LedgerEvent, MergeAuthorityRecord, SemanticOrigin};
@@ -55,6 +56,13 @@ pub fn pod_candidate_key(request: &RequestId, pod: &PodId, output_digest: &[u8; 
 impl PtrRuntime {
     /// Shared output-admission boundary for in-process and memory-controller
     /// callers. Effects never pass through this pure/read promotion path.
+    ///
+    /// Taint: the request subject and the output content are checked before the verifier runs.
+    /// The Pod's knowledge/artifact/reader/adapter bindings are NOT: the in-process Pod handle
+    /// ([`ptr_pods::DynPod`]) exposes only a [`PodManifest`], which carries no bindings, so the
+    /// binding join that [`PtrRuntime::admit_pod_output`] applies is unreachable here and a Pod
+    /// bound to tainted stored content is only caught when its output equals that content (a
+    /// stated limit). A caller that holds an execution manifest uses `admit_pod_output`.
     pub fn promote_verified_pod_output<V>(
         &mut self,
         request: &RequestId,
@@ -65,6 +73,39 @@ impl PtrRuntime {
     where
         V: Verifier<TypedPayload> + ?Sized,
     {
+        self.promote_verified_pod_output_bound(request, manifest, &[], output, verifier)
+    }
+
+    /// [`PtrRuntime::promote_verified_pod_output`] for a caller that knows the Pod's
+    /// bindings: a tainted binding (see `binding_kv_taint`) refuses the promotion with the same
+    /// typed error, before the verifier runs, nothing appended.
+    pub(crate) fn promote_verified_pod_output_bound<V>(
+        &mut self,
+        request: &RequestId,
+        manifest: &PodManifest,
+        bindings: &[&ptr_pods::LineageBinding],
+        output: &TypedPayload,
+        verifier: &V,
+    ) -> Result<Revision, RuntimeError>
+    where
+        V: Verifier<TypedPayload> + ?Sized,
+    {
+        // Approximate-KV taint: refused before the verifier runs, nothing appended. The request
+        // subject covers every output of a request whose model run was Approximate; the content
+        // subject covers stored tainted candidates and hypotheses presented again.
+        self.check_semantic_taint(
+            SemanticTaintBoundary::PromoteVerifiedPodOutput,
+            Some(request),
+            &[&output.bytes],
+        )?;
+        if let ptr_model_api::KvReuseTaint::Approximate { report_digest } =
+            self.binding_kv_taint(bindings)
+        {
+            return Err(RuntimeError::ApproximateSemanticContent {
+                boundary: SemanticTaintBoundary::PromoteVerifiedPodOutput,
+                report_digest,
+            });
+        }
         if manifest
             .effects
             .iter()
@@ -241,6 +282,18 @@ impl PtrRuntime {
                 key: key.to_owned(),
             });
         }
+        // Host-write laundering: tainted content (a Pod candidate or hypothesis payload, a
+        // tainted generation) written by a host is still that content. Exact whole-value
+        // digests only; a paraphrase is not detected.
+        let written: Vec<&[u8]> = delta
+            .upserts
+            .values()
+            .map(|value| match value {
+                SemanticValue::Text(text) => text.as_bytes(),
+                SemanticValue::Payload(payload) => payload.bytes.as_slice(),
+            })
+            .collect();
+        self.check_semantic_taint(SemanticTaintBoundary::HostWrite, None, &written)?;
         let encoded_delta = delta.encode().map_err(RuntimeError::Semantic)?;
         let prepared = self
             .semdb

@@ -361,11 +361,11 @@ fn framing_length_and_trusted_identity_are_all_required() {
     let anchor = reseal(&mut lengths, trusted.floor, trusted.revision);
     assert!(code(&lengths, anchor).contains("LengthMismatch"));
 
-    // Wrong magic. PTRCS004 is this build's format and PTRCS003 the earlier one
+    // Wrong magic. PTRCS006 is this build's format and PTRCS005, PTRCS004 and PTRCS003 the earlier ones
     // it still reads, so the unknown version has to be a later layout this
     // build has no rules for.
     let mut magic = reference.clone();
-    magic[..8].copy_from_slice(b"PTRCS005");
+    magic[..8].copy_from_slice(b"PTRCS007");
     let anchor = reseal(&mut magic, trusted.floor, trusted.revision);
     assert!(code(&magic, anchor).contains("UnsupportedVersion"));
 
@@ -431,7 +431,7 @@ fn a_noncanonical_lifecycle_section_is_rejected_even_when_resealed() {
 
     // A wrong lifecycle magic is a version failure, also independent of the digest.
     let mut magic = reference.clone();
-    magic[lifecycle_start..lifecycle_start + 8].copy_from_slice(b"PTRLC003");
+    magic[lifecycle_start..lifecycle_start + 8].copy_from_slice(b"PTRLC005");
     let anchor = reseal(&mut magic, trusted.floor, trusted.revision);
     let error = PtrRuntime::restore_compacted(PtrConfig::default(), &magic, anchor, &[])
         .err()
@@ -539,6 +539,23 @@ fn with_magics(
 ) -> (Vec<u8>, CompactedAnchor) {
     let mut bytes = bytes.to_vec();
     let start = lifecycle_start(&bytes);
+    // The fixtures hold no expert, so the registry block is its magic and a zero count (12
+    // bytes) and the evidence block its magic and two zero counts (16 bytes), in that order at
+    // the end of the lifecycle section. PTRLC003 has no evidence block, and the layouts before
+    // it have no registry block either.
+    let strip = |bytes: &mut Vec<u8>, size: usize, magic: &[u8; 8]| {
+        let length = u64::from_le_bytes(bytes[64..72].try_into().unwrap()) as usize;
+        let block = start + length - size;
+        assert_eq!(&bytes[block..block + 8], magic);
+        bytes.drain(block..block + size);
+        bytes[64..72].copy_from_slice(&(length as u64 - size as u64).to_le_bytes());
+    };
+    if lifecycle != b"PTRLC004" {
+        strip(&mut bytes, 16, b"PTREV001");
+    }
+    if lifecycle != b"PTRLC004" && lifecycle != b"PTRLC003" {
+        strip(&mut bytes, 12, b"PTREG001");
+    }
     bytes[..8].copy_from_slice(outer);
     bytes[start..start + 8].copy_from_slice(lifecycle);
     let anchor = reseal(&mut bytes, trusted.floor, trusted.revision);
@@ -630,9 +647,9 @@ fn a_snapshot_of_the_earlier_layout_restores_as_unattested() {
     // magics.
     let mut original = legacy_fixture();
     let snapshot = original.export_compacted_snapshot().unwrap();
-    assert_eq!(&snapshot.bytes()[..8], b"PTRCS004");
+    assert_eq!(&snapshot.bytes()[..8], b"PTRCS006");
     let start = lifecycle_start(snapshot.bytes());
-    assert_eq!(&snapshot.bytes()[start..start + 8], b"PTRLC002");
+    assert_eq!(&snapshot.bytes()[start..start + 8], b"PTRLC004");
     let (earlier, anchor) = with_magics(
         snapshot.bytes(),
         snapshot.anchor(),
@@ -751,7 +768,14 @@ fn a_lifecycle_section_whose_merge_entry_is_not_one_a_merge_projects_is_refused(
 fn mismatched_outer_and_lifecycle_versions_are_refused() {
     let original = legacy_fixture();
     let snapshot = original.export_compacted_snapshot().unwrap();
-    for (outer, lifecycle) in [(b"PTRCS004", b"PTRLC001"), (b"PTRCS003", b"PTRLC002")] {
+    for (outer, lifecycle) in [
+        (b"PTRCS006", b"PTRLC003"),
+        (b"PTRCS005", b"PTRLC004"),
+        (b"PTRCS005", b"PTRLC002"),
+        (b"PTRCS004", b"PTRLC003"),
+        (b"PTRCS004", b"PTRLC001"),
+        (b"PTRCS003", b"PTRLC002"),
+    ] {
         let (bytes, anchor) = with_magics(snapshot.bytes(), snapshot.anchor(), outer, lifecycle);
         assert_eq!(
             restore_error(&bytes, anchor),
@@ -759,7 +783,12 @@ fn mismatched_outer_and_lifecycle_versions_are_refused() {
         );
     }
     // The two pairs this build reads both restore.
-    for (outer, lifecycle) in [(b"PTRCS004", b"PTRLC002"), (b"PTRCS003", b"PTRLC001")] {
+    for (outer, lifecycle) in [
+        (b"PTRCS006", b"PTRLC004"),
+        (b"PTRCS005", b"PTRLC003"),
+        (b"PTRCS004", b"PTRLC002"),
+        (b"PTRCS003", b"PTRLC001"),
+    ] {
         let (bytes, anchor) = with_magics(snapshot.bytes(), snapshot.anchor(), outer, lifecycle);
         assert_eq!(restore_error(&bytes, anchor), None);
     }

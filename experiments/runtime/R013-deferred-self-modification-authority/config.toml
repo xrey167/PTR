@@ -1,0 +1,103 @@
+version = 1
+kind = "workspace-area"
+name = "R013-deferred-self-modification-authority"
+path = "experiments/runtime/R013-deferred-self-modification-authority"
+tests_dir = "tests"
+
+# The preregistered choices of the harness (`ptr-bench self-modification-authority`,
+# bins/ptr-bench/src/experiments/r013/params.rs, which fails its drift test if a compiled constant differs from this table).
+# R013 is listed in experiments/preregistration.toml; the [preregistration] table at the end of this file repeats these
+# values, and the head pins its two digests (and the suite's selection digest) at the freeze.
+# Keys that begin with owner_decision_ or stated_limit_ are prose and mirror no constant.
+[pinned_thresholds]
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
+# The pinned adversarial suite and its digest (domain ptr.r013.corpus-selection.v1, each case name as the sequence of its bytes).
+adversarial_cases = ["reactivate_seed_retired_before_gate_config_revocation", "reactivate_seed_retired_before_evaluator_revocation", "reactivate_seed_retired_before_input_revocation", "reactivate_seed_retired_before_input_revocation_laundered", "reactivate_seed_retired_before_attestor_revocation", "reactivate_seed_retired_before_attestor_revocation_laundered", "route_descendant_after_authority_revocation_gate_config", "route_descendant_after_authority_revocation_evaluator", "route_descendant_of_superseded_source_after_input_revocation", "route_descendant_of_superseded_source_after_attestor_revocation", "route_descendant_of_superseded_source_after_gate_config_revocation", "route_descendant_of_superseded_source_after_evaluator_revocation", "inflight_call_base_model_revocation", "inflight_call_base_model_supersession", "inflight_call_adapter_revocation", "inflight_call_adapter_supersession", "attestation_artifact_mismatch", "attestation_proposal_mismatch", "attestation_missing_under_requirement", "attestation_run_reuse_same_attestor", "attestation_run_reuse_plain_path", "attestation_run_reuse_after_reopen", "attestation_run_reuse_evaluation_role", "attestation_run_reuse_other_generation", "attestation_base_model_mismatch", "attestation_self_invented_attestor", "attestation_forged_signature", "attestation_forged_gate_grant", "attestation_unattested_after_reopen", "attestation_unattested_record_replayed", "attestation_binding_replayed", "attestor_revoked_between_report_and_commit", "attestor_quarantine_readmission", "attestor_quarantine_reactivation_from_stale_view"]
+selection_digest = "sha256:fb14e5ff97e6f8e593d153e0459de4d49978ce15ee64a06b5179e38026f6059e"
+# The families of cells the plan runs, by the names the harness records them under.
+dormant_kinds = ["gate_config", "evaluator", "input", "attestor"]
+paths = ["normal", "lag", "restore"]
+authority_kinds = ["gate_config", "evaluator"]
+authority_forms = ["merge", "split", "reactivate"]
+dependency_kinds = ["input", "attestor"]
+dependency_forms = ["merge", "split"]
+inflight_kinds = ["base_model", "adapter"]
+inflight_triggers = ["revocation", "supersession"]
+attestation_operations = ["birth", "merge", "reactivate"]
+# Coverage prerequisites: the plan's structural lower bound for one seed (PREREGISTRATION.md section 3).
+min_attempts_per_case = 1
+min_structural_inflight_race_cases = 2
+min_transitive_authority_cases = 9
+min_revoke_while_retired_cases = 3
+min_reactivation_controls = 3
+min_superseded_source_cases = 6
+min_attestation_artifact_mismatch_attempts = 4
+min_attestation_proposal_mismatch_attempts = 3
+min_attestation_missing_attempts = 6
+min_attestation_run_reuse_attempts = 6
+min_attestation_base_model_mismatch_attempts = 3
+min_attestation_untrusted_attestor_attempts = 6
+min_forged_gate_grant_attempts = 3
+min_attestation_requirement_after_reopen_attempts = 3
+min_attestation_binding_controls_accepted = 11
+min_revoked_attestor_evidence_attempts = 1
+min_revoked_attestor_evidence_controls_accepted = 1
+min_attestor_quarantine_readmission_attempts = 8
+min_attestor_quarantine_retrain_controls_accepted = 2
+# Falsifiers: every one of the twenty hard counters must be 0.
+max_every_falsifier = 0
+# Descriptive only (never gated): wall-clock time.
+timing_gated = false
+
+# Decisions and limits, in the words of PREREGISTRATION.md.
+owner_decision_2026_10_10_scope = "R013 is narrowed to Tier 1 (cases the existing runtime can answer: dormant seeds, transitive authority, superseded sources, in-flight base-model and adapter races) and Tier 2 (a minimal attestor mechanism: single-use run ids, artifact and proposal binding, terminal attestor revocation); the remainder moves to R014 (decided by the coordinating head of work package LR)."
+stated_limit_attestation = "the attestation is an Ed25519 signature by an attestor key the host registered: the registry is host configuration handed to the runtime's constructor, not history (it is not a ledger event, the host supplies it again at a restart and a replay against a registry that lacks a key refuses the record; the same key may be registered under two names; revoking one name does not revoke the key), the signature binds claims, not weights (the artifact digest it binds is the one the operation determines) and not the other training or evaluation inputs of the dependency block, the requirement for attestation is recorded with the first attested record admitted under a requiring grant so records before it may be unattested, and a global-revocation authority can burn a run id nobody has used; nothing here reads what the attestor read; a raw ledger writer is outside the claim"
+stated_limit_transitive_authority = "an authority's epochs are monotone, so a descendant admitted before a revocation is fenced by its own epoch; the cases see defects of the epoch bookkeeping, not a missing lineage rule"
+stated_limit_adapter = "the runtime has no adapter role: an adapter is an input identity in the training block"
+stated_limit_route = "a route is a probe of expert_route_admission; no production router consumes it"
+stated_limit_races = "every race is a sequenced interleaving in a single-writer runtime"
+stated_limit_raw_ledger_writer = "no protection against a raw ledger writer is claimed (the grant is not recorded, the report digest is unkeyed)"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml). Every value is
+# [pinned_thresholds]'s; the head pins the two digests when the text and the criteria are final.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "self-modification-authority"
+seed_aggregation = "every_seed_must_pass"
+adversarial_cases = ["reactivate_seed_retired_before_gate_config_revocation", "reactivate_seed_retired_before_evaluator_revocation", "reactivate_seed_retired_before_input_revocation", "reactivate_seed_retired_before_input_revocation_laundered", "reactivate_seed_retired_before_attestor_revocation", "reactivate_seed_retired_before_attestor_revocation_laundered", "route_descendant_after_authority_revocation_gate_config", "route_descendant_after_authority_revocation_evaluator", "route_descendant_of_superseded_source_after_input_revocation", "route_descendant_of_superseded_source_after_attestor_revocation", "route_descendant_of_superseded_source_after_gate_config_revocation", "route_descendant_of_superseded_source_after_evaluator_revocation", "inflight_call_base_model_revocation", "inflight_call_base_model_supersession", "inflight_call_adapter_revocation", "inflight_call_adapter_supersession", "attestation_artifact_mismatch", "attestation_proposal_mismatch", "attestation_missing_under_requirement", "attestation_run_reuse_same_attestor", "attestation_run_reuse_plain_path", "attestation_run_reuse_after_reopen", "attestation_run_reuse_evaluation_role", "attestation_run_reuse_other_generation", "attestation_base_model_mismatch", "attestation_self_invented_attestor", "attestation_forged_signature", "attestation_forged_gate_grant", "attestation_unattested_after_reopen", "attestation_unattested_record_replayed", "attestation_binding_replayed", "attestor_revoked_between_report_and_commit", "attestor_quarantine_readmission", "attestor_quarantine_reactivation_from_stale_view"]
+selection_digest = "sha256:fb14e5ff97e6f8e593d153e0459de4d49978ce15ee64a06b5179e38026f6059e"
+dormant_kinds = ["gate_config", "evaluator", "input", "attestor"]
+paths = ["normal", "lag", "restore"]
+authority_kinds = ["gate_config", "evaluator"]
+authority_forms = ["merge", "split", "reactivate"]
+dependency_kinds = ["input", "attestor"]
+dependency_forms = ["merge", "split"]
+inflight_kinds = ["base_model", "adapter"]
+inflight_triggers = ["revocation", "supersession"]
+attestation_operations = ["birth", "merge", "reactivate"]
+min_attempts_per_case = 1
+min_structural_inflight_race_cases = 2
+min_transitive_authority_cases = 9
+min_revoke_while_retired_cases = 3
+min_reactivation_controls = 3
+min_superseded_source_cases = 6
+min_attestation_artifact_mismatch_attempts = 4
+min_attestation_proposal_mismatch_attempts = 3
+min_attestation_missing_attempts = 6
+min_attestation_run_reuse_attempts = 6
+min_attestation_base_model_mismatch_attempts = 3
+min_attestation_untrusted_attestor_attempts = 6
+min_forged_gate_grant_attempts = 3
+min_attestation_requirement_after_reopen_attempts = 3
+min_attestation_binding_controls_accepted = 11
+min_revoked_attestor_evidence_attempts = 1
+min_revoked_attestor_evidence_controls_accepted = 1
+min_attestor_quarantine_readmission_attempts = 8
+min_attestor_quarantine_retrain_controls_accepted = 2
+max_every_falsifier = 0
+timing_gated = false
+preregistration_text = "experiments/runtime/R013-deferred-self-modification-authority/PREREGISTRATION.md"
+preregistration_text_sha256 = "dca98ba69c6803df81edf29636b2ce361ec06770d95ee5eaf1c9476b867b9343"
+criteria = "experiments/runtime/R013-deferred-self-modification-authority/criteria.toml"
+criteria_sha256 = "5328826e59a4d848159a68be4b0ebe6fbb727cf353c8fbb6cf6c66c87281d5b0"

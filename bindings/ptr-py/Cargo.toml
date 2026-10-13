@@ -1,8 +1,9 @@
 # PyO3 extension module `ptr_py`: PTR governance checks from ptr-lineage for Python
 # training code. Its own workspace (like model/burn-a0), excluded from the root one,
 # so `cargo ... --workspace` at the root never builds it and the root lockfile does
-# not gain pyo3. ptr-lineage depends only on ptr-types (sha2 only, no vendored crates),
-# so none of the root's [patch] vendored crates are needed here.
+# not gain pyo3. The VCW-MoE components (ptr-verifier, ptr-router, ptr-pods, ptr-runtime)
+# pull the root's vendored crates through ptr-runtime's ledger dependency, so the root's
+# [patch.crates-io] entries are repeated below with paths relative to this workspace.
 [package]
 name = "ptr-py"
 version = "0.1.0"
@@ -10,7 +11,7 @@ edition = "2021"
 rust-version = "1.99"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "Python bindings for PTR adapter-lineage governance checks"
+description = "Python bindings for PTR governance checks and the VCW-MoE verifier, router and workspace"
 
 [lib]
 name = "ptr_py"
@@ -18,6 +19,13 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ptr-lineage = { path = "../../crates/ptr-lineage" }
+ptr-types = { path = "../../crates/ptr-types" }
+ptr-semdb = { path = "../../crates/ptr-semdb" }
+ptr-verifier = { path = "../../crates/ptr-verifier" }
+ptr-router = { path = "../../crates/ptr-router" }
+ptr-pods = { path = "../../crates/ptr-pods" }
+ptr-runtime = { path = "../../crates/ptr-runtime" }
+sha2 = "=0.11.0"
 pyo3 = { version = "=0.29.3", features = ["extension-module", "abi3-py311"] }
 
 [workspace]

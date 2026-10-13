@@ -1,0 +1,6 @@
+{
+  "name": "ptr-dev",
+  "version": "0.1.0",
+  "description": "PTR development workflows: change-aware verification, crate and experiment workflows, honest result write-ups, offline git-bundle sync, read-only reviewers, and guard hooks for frozen or generated paths.",
+  "author": { "name": "PTR maintainers" }
+}

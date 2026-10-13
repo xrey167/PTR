@@ -1,0 +1,164 @@
+version = 1
+kind = "workspace-area"
+name = "M016-approximate-chunk-reuse"
+path = "experiments/model/M016-approximate-chunk-reuse"
+tests_dir = "tests"
+
+[pinned_thresholds]
+position_shifts = [16, 64, 256]
+min_top1_agreement = 0.99
+min_prefill_saving = 2.0
+# Preregistered choices for this experiment (no code default exists).
+candidate_recompute_fractions = [0.05, 0.10, 0.15, 0.20]
+single_k_must_meet_all_shifts = true
+# Preregistered choices for this experiment (no code default exists).
+min_secondary_index_lookups = 1
+nonaligned_insertion_tokens = [1, 7]
+min_nonaligned_insertion_cases_per_size = 1
+min_upstream_revocation_cases = 1
+max_revoked_upstream_page_reachable_count = 0
+# Preregistered choices for this experiment (no code default exists).
+live_lineage_results_tagged = "Approximate"
+# Preregistered choices for this experiment (no code default exists).
+chunk_tokens = 64
+candidate_k_tokens = [4, 7, 10, 13]
+prefill_speedup_definition = "full_prefill_wall_time / reuse_prefill_wall_time"
+top1_agreement_definition = "fraction of positions where argmax == full-prefill argmax"
+candidate_shift_results_artifact = "candidate_shift_results.json"
+incomplete_rows_ineligible = true
+# Preregistered choices for this experiment (no code default exists).
+calibration_prompts = 100
+heldout_prompts = 100
+recomputed_token_rule = "CacheBlend-style highest-deviation tokens, every layer >= 1"
+prompt_tokens = 512
+warmup_runs = 3
+timed_runs = 11
+prefill_speedup_statistic = "median"
+min_canary_removing_edit_cases = 1
+max_canary_logit_shift_after_removal = 0
+max_approximate_tag_violations = 0
+max_revoked_page_layers_reused = 0
+min_post_revocation_secondary_lookups_matching_content = 1
+min_invalidation_suppressed_arms = 1
+min_restore_arms = 1
+min_post_event_lookups = 1
+max_stale_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+expected_candidate_shift_cells = 20
+test_model = "Qwen/Qwen2.5-0.5B"
+test_model_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+test_model_layers = 24
+test_model_vocab_size = 151936
+reused_chunks_per_prompt = 7
+reused_tokens = 448
+suffix_tokens = 64
+min_live_lineage_insert_shift_cases = 1
+min_in_segment_insertion_cases = 1
+saving_measured_on = "live_lineage_insert_shift_path_only"
+candidate_recompute_rounding = "ceil_to_whole_tokens"
+k_selection_rule = "k_sel = smallest k in [4, 7, 10, 13] with calibration top1_agreement >= 0.99 at every shift; falsified if none"
+heldout_criteria = "k_sel: top1_agreement >= 0.99 and median prefill_speedup >= 2.0 at every shift"
+agreement_positions = "only positions whose K/V used approximate rows"
+flop_cost_model = "layer-token units; deviation-selection pass costs one layer over reused tokens; attention quadratic terms ignored"
+analytic_speedup_k4 = 4.68
+analytic_speedup_k7 = 3.95
+analytic_speedup_k10 = 3.42
+analytic_speedup_k13 = 3.01
+candidates_dropped_as_infeasible = []
+# Preregistered choices for this experiment (no code default exists).
+min_restored_pre_revocation_entries = 1
+empty_restart_arm_role = "reported_separate_arm"
+# Preregistered choices for this experiment (no code default exists).
+min_omitted_upstream_segment_cases = 1
+max_omitted_upstream_admissions = 0
+omitted_upstream_rule = "every original-prefix segment (identity, generation, digest) present in the requesting prefix as a multiset"
+# Preregistered choices for this experiment (no code default exists).
+min_upstream_supersession_cases = 1
+max_superseded_upstream_page_reachable_count = 0
+inflight_race_applicable = true
+# Preregistered choices for this experiment (no code default exists).
+corpus_dataset = "openai/gsm8k"
+corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
+calibration_split = "train"
+heldout_split = "test"
+corpus_selection_rule = "problems in index order concatenated and cut into consecutive 512-token prompts; the first 100 prompts of each split"
+calibration_and_heldout_disjoint = true
+calibration_selection_digest_recorded = true
+heldout_selection_digest_recorded = true
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "warmup_runs", "timed_runs", "position_shifts", "candidate_k_tokens", "calibration_prompts", "heldout_prompts", "chunk_tokens", "prompt_tokens", "test_model_layers", "test_model_vocab_size", "reused_chunks_per_prompt", "reused_tokens", "suffix_tokens", "candidate_recompute_fractions", "nonaligned_insertion_tokens", "hardware_profile", "run_json_records_hardware", "invalidation_coverage_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "shift_insert_ordinary_hit_sequences", "declared_dependency_kinds", "pod_output_kinds", "authoritative_sink_kinds", "software_stack", "production_modes", "derived_state_carriers"]
+# Preregistered choices for this experiment (no code default exists).
+timing_counts_recorded_per_cell = true
+max_timing_procedure_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+fresh_prefill_output_mismatches_max = 0
+# Preregistered choices for this experiment (no code default exists).
+invalidation_types = ["revocation", "supersession"]
+min_post_supersession_secondary_lookups_matching_content = 1
+# Preregistered choices for this experiment (no code default exists).
+identity_set_checks = [["invalidated_case_id_set_digest", "fresh_prefill_completed_case_id_set_digest"]]
+# Preregistered choices for this experiment (no code default exists).
+hardware_profile = "hardware/rtx5090.toml"
+run_json_records_hardware = ["gpu_model", "driver_version", "cuda_runtime_version", "torch_version", "vllm_version"]
+max_hardware_profile_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+invalidation_coverage_matrix = { kinds = ["semantic_lineage_segment", "memory_lineage_segment", "derived_lineage_segment", "base_model", "adapter_generation", "expert_generation"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], extra_types = { expert_generation = ["fence"] }, cells = ["semantic_lineage_segment_normal_revocation", "semantic_lineage_segment_normal_supersession", "semantic_lineage_segment_lag_revocation", "semantic_lineage_segment_lag_supersession", "semantic_lineage_segment_restore_revocation", "semantic_lineage_segment_restore_supersession", "semantic_lineage_segment_inflight_revocation", "semantic_lineage_segment_inflight_supersession", "memory_lineage_segment_normal_revocation", "memory_lineage_segment_normal_supersession", "memory_lineage_segment_lag_revocation", "memory_lineage_segment_lag_supersession", "memory_lineage_segment_restore_revocation", "memory_lineage_segment_restore_supersession", "memory_lineage_segment_inflight_revocation", "memory_lineage_segment_inflight_supersession", "derived_lineage_segment_normal_revocation", "derived_lineage_segment_normal_supersession", "derived_lineage_segment_lag_revocation", "derived_lineage_segment_lag_supersession", "derived_lineage_segment_restore_revocation", "derived_lineage_segment_restore_supersession", "derived_lineage_segment_inflight_revocation", "derived_lineage_segment_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession", "adapter_generation_normal_revocation", "adapter_generation_normal_supersession", "adapter_generation_lag_revocation", "adapter_generation_lag_supersession", "adapter_generation_restore_revocation", "adapter_generation_restore_supersession", "adapter_generation_inflight_revocation", "adapter_generation_inflight_supersession", "expert_generation_normal_revocation", "expert_generation_normal_supersession", "expert_generation_normal_fence", "expert_generation_lag_revocation", "expert_generation_lag_supersession", "expert_generation_lag_fence", "expert_generation_restore_revocation", "expert_generation_restore_supersession", "expert_generation_restore_fence", "expert_generation_inflight_revocation", "expert_generation_inflight_supersession", "expert_generation_inflight_fence"] }
+min_invalidation_matrix_cases_per_cell = 1
+max_invalidation_matrix_stale_hits_per_cell = 0
+invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
+# Preregistered choices for this experiment (no code default exists).
+min_shifted_reuse_inflight_race_cases_per_cell = 1
+max_shifted_reuse_inflight_outputs = 0
+max_shifted_reuse_inflight_cache_inserts = 0
+min_shifted_effect_boundary_cases = 1
+max_shifted_effects_admitted = 0
+min_shifted_taint_cases = 1
+max_untainted_shifted_results = 0
+inflight_consumption_interval = "returned or repacked K/V still being consumed after the secondary-index lookup"
+inflight_race_reason = "consumption-time shifted-reuse races: returned or repacked K/V still being consumed after the secondary-index lookup (S4)"
+restore_applicable = true
+# Preregistered choices for this experiment (no code default exists).
+min_raw_ancestor_omission_cases = 1
+max_reuse_after_raw_ancestor_removed = 0
+raw_ancestor_rule = "every raw ancestor (Raw, content_digest) recorded in the lineage must be present in the current request prefix, as a multiset"
+# Preregistered choices for this experiment (no code default exists).
+model_checkpoint_repo = "Qwen/Qwen2.5-0.5B"
+model_checkpoint_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+tokenizer_repo = "Qwen/Qwen2.5-0.5B"
+tokenizer_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+moe_topology = "none: dense decoder, 24 layers"
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+min_shift_insert_ordinary_hit_cases_per_sequence = 1
+shift_insert_ordinary_hit_sequences = ["shift_insert_then_ordinary_then_effect", "same_sequence_across_restart"]
+max_tainted_pages_served_as_exact = 0
+max_effects_admitted_from_tainted_results = 0
+tainted_namespace_rule = "approximate pages live only in a separate tainted namespace; never in the Exact catalog"
+# Preregistered choices for this experiment (no code default exists).
+declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "adapter", "expert"]
+# Preregistered choices for this experiment (no code default exists).
+pod_output_kinds = ["Observation", "Candidate", "Hypothesis", "ToolResult", "EnvironmentObservation", "StateDelta", "ActionProposal", "VerifiedResult"]
+authoritative_sink_kinds = ["StateDelta", "VerifiedResult", "ActionProposal", "promote_verified_pod_output"]
+stored_tainted_kinds = ["Observation", "Candidate", "Hypothesis", "ToolResult", "EnvironmentObservation"]
+min_tainted_pod_output_sink_cases_per_kind = 1
+max_tainted_outputs_admitted_at_authoritative_sinks = 0
+max_tainted_hypotheses_promoted_without_recompute = 0
+# Preregistered choices for this experiment (no code default exists).
+software_stack = { driver_version = "580.65.06", cuda_runtime_version = "13.0", torch_version = "2.13.0", vllm_version = "0.30.0", python = ">=3.10,<3.15" }
+software_stack_recorded_in_run_json = true
+max_software_stack_mismatches = 0
+software_stack_basis = "vLLM 0.30.0 requires torch==2.13.0 and its Docker default CUDA 13.0.3 (SGLang 0.5.21 also requires torch==2.13.0); driver 580.65.06 is the minimum Linux driver of CUDA 13.0"
+# Preregistered choices for this experiment (no code default exists).
+cache_namespace_partitioned_by_production_mode = true
+cache_namespace_partition = "approximate pages only in a separate tainted namespace, never in the Exact catalog"
+production_modes = ["Exact", "Approximate"]
+# Preregistered choices for this experiment (no code default exists).
+derived_state_carriers = { tainted_namespace_page = ["mode", "taint"] }
+# Preregistered choices for this experiment (no code default exists).
+min_tainted_authoritative_sink_cases_per_kind = 1
+authoritative_sink_cases = ["StateDelta", "VerifiedResult", "ActionProposal", "promote_verified_pod_output_tainted_hypothesis", "promote_verified_pod_output_tainted_candidate"]

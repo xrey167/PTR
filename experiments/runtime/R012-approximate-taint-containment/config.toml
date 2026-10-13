@@ -1,0 +1,99 @@
+version = 1
+kind = "workspace-area"
+name = "R012-approximate-taint-containment"
+path = "experiments/runtime/R012-approximate-taint-containment"
+tests_dir = "tests"
+
+[pinned_thresholds]
+# Split out of R005 on 2026-10-06 by owner decision: the Approximate-family thresholds below were moved verbatim from
+# experiments/runtime/R005-exact-prefix-reuse/config.toml (R005 keeps the Exact half). Keys under 'shared pins' are copied unchanged.
+# Preregistered choices for this experiment (no code default exists).
+max_approximate_run_actions_admitted = 0
+max_approximate_semdb_promotions = 0
+min_approximate_candidate_path_attempts = 1
+max_approximate_candidate_exact_admissions = 0
+min_approximate_action_admission_attempts = 1
+min_approximate_semdb_promotion_attempts = 1
+min_tainted_candidate_reload_attempts = 1
+max_taint_lost = 0
+min_fresh_exact_recomputation_controls = 1
+min_candidate_taint_hops = 2
+min_approximate_pod_result_promotion_attempts = 1
+max_approximate_pod_result_promotions_accepted = 0
+approximate_producer = "pinned stub backend returning KvReuseMode::Approximate"
+min_misclassified_revocable_as_raw_attempts = 1
+max_misclassified_raw_admissions = 0
+segment_kind_authority = "ingress record"
+min_approximate_output_reintroduced_as_raw_attempts = 1
+max_laundered_exact_admissions = 0
+runtime_produced_content_segment_kind = "Derived (never Raw), provenance and Approximate taint propagate until exact recomputation"
+min_exact_echo_cases = 1
+max_taint_cleared_by_echo = 0
+taint_clearance_rule = "only exact recomputation of the same derived value from its original untainted inputs with the same operation"
+derived_state_carriers = { ptr_catalog_entry = ["exact_only_guard"], taint_registry_subject = ["mode", "taint"], tainted_candidate = ["mode", "taint"] }
+# Shared pins, copied unchanged from R005 (same tiny seeded model and corpus generator).
+seed_aggregation = "every_seed_must_pass"
+weights = "seeded random (pinned seed and shape)"
+weight_seed = 20240607
+hidden_size = 64
+num_heads = 4
+num_kv_heads = 2
+head_dim = 16
+vocab_size = 256
+test_model_layers = 4
+dtype = "f32"
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+tiny_model_config = { layers = 4, hidden_size = 64, num_heads = 4, num_kv_heads = 2, head_dim = 16, vocab_size = 256, weight_seed = 20240607 }
+tiny_model_config_digest = "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433a"
+tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
+tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
+moe_topology = "none: dense tiny decoder"
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+cache_namespace_partitioned_by_production_mode = true
+cache_namespace_partition = "Exact-only catalog guard: no Approximate-produced entry is ever inserted or looked up (owner decision 2026-10-07); tainted candidates live in the runtime taint registry, not in a catalog namespace"
+production_modes = ["Exact", "Approximate"]
+procedure_parameters_recorded_per_cell = ["seeds", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed"]
+
+# Owner decisions of 2026-10-07 (binding; verbatim text in PREREGISTRATION.md section 4).
+taint_clearing_rule_2026_10_07 = "only a cold exact recomputation (kv_report == None) with the same recipe and clean inputs; always clears the Derivation subject; clears Content and Action subjects only on byte-identical recomputed digests; an echo never clears"
+raw_admission_rule_2026_10_07 = "Raw is admitted only when it equals the request's own ingress record, otherwise MisclassifiedRawSegment; tainted content resubmitted as Raw keeps its taint (fail closed, false positives accepted); exact whole-segment digest only"
+raw_laundering_not_detected = ["paraphrase", "substring", "whitespace edit"]
+max_live_taint_subjects = 65536
+taint_registry_when_full = "new Approximate ingest refused before anything is appended; never evict"
+taint_ledger_event = "KvTaintCommitted (tag 29), written taint-first"
+pod_output_kind_split = { refused_with_typed_error = ["StateDelta", "VerifiedResult", "ActionProposal", "promote_verified_pod_output"], stored_as_tainted = ["Observation", "Candidate", "ToolResult", "EnvironmentObservation", "Hypothesis"] }
+merge_and_semdb_promotion_of_tainted_content = "refused under every MergeAuthority, including Triage score 1.0"
+kv_catalog_guard = "Exact-only guard, no KvSalt change (protects R005 results)"
+approximate_producer_location = "harness-only (bins/ptr-bench/src/experiments/r012/stub.rs)"
+hop_definition = "one derivation step: a run whose input includes a segment derived from a previous run's output; candidate_taint_hops counts the longest such chain"
+attempt_definition = "an attempt counts only if it is made after the taint record is persisted (ledger append returned) and before any cold exact recomputation of the same recipe"
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "approximate-taint-containment"
+max_new_tokens = 8
+intermediate_size = 128
+rope_theta = "10000.0"
+rms_norm_eps = "1e-6"
+qk_norm_main = "disabled"
+base_checkpoint = "none (seeded random)"
+prompt_tokens = 64
+segment_tokens = 16
+hops_per_chain = 3
+corpus_generator_seed = 20240607
+selection_sequences = 48
+corpus_selection_digest = "sha256:9f48b499e6ec8735a762d8c746fbf6972d02c86c0b17f351a6680856350e3eef"
+stub_producer = "r012-stub-approximate-producer/1"
+generation_parameters = "max_new_tokens=8;prompt_tokens=64;greedy;byte-tokenizer"
+per_seed_role = "the seed orders the cases and assigns corpus prompts to them; the corpus is fixed by corpus_generator_seed"
+preregistration_text = "experiments/runtime/R012-approximate-taint-containment/PREREGISTRATION.md"
+preregistration_text_sha256 = "1ad0f0ba354b11787f66885c052787bb00073ff2822b7f46314668a08ec43ee6"
+criteria = "experiments/runtime/R012-approximate-taint-containment/criteria.toml"
+criteria_sha256 = "7fd3f6c6ebe32d39c9945863edb49eaafe96bb2c60b74c2d758f69bf71128256"

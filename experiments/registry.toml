@@ -88,17 +88,17 @@ status = "planned"
 [[experiment]]
 id = "S001"
 path = "semdb/S001-invalidation"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "S002"
 path = "semdb/S002-snapshot-cancellation"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "R001"
 path = "runtime/R001-mailbox-backpressure"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "R002"
@@ -113,12 +113,17 @@ status = "planned"
 [[experiment]]
 id = "L001"
 path = "lifecycle/L001-revocation-crash"
-status = "running"
+status = "superseded"
+
+[[experiment]]
+id = "L001-v2"
+path = "lifecycle/L001-v2-revocation-crash"
+status = "completed"
 
 [[experiment]]
 id = "L002"
 path = "lifecycle/L002-raft-recovery"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "Q001"
@@ -128,12 +133,12 @@ status = "planned"
 [[experiment]]
 id = "Q002"
 path = "retrieval/Q002-evidence-promotion"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "F001"
 path = "feedback/F001-generate-verify-repair"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "E001"
@@ -158,7 +163,7 @@ status = "planned"
 [[experiment]]
 id = "M008"
 path = "model/M008-fast-weight-memory"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "L003"
@@ -173,17 +178,17 @@ status = "completed"
 [[experiment]]
 id = "S003"
 path = "semdb/S003-certified-branches"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "F002"
 path = "feedback/F002-weak-supervision"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "F003"
 path = "feedback/F003-calibrated-arbiter"
-status = "planned"
+status = "completed"
 
 [[experiment]]
 id = "R004"
@@ -193,9 +198,344 @@ status = "planned"
 [[experiment]]
 id = "Q003"
 path = "retrieval/Q003-postgres-hybrid"
-status = "planned"
+status = "superseded"
+
+[[experiment]]
+id = "Q003-v2"
+path = "retrieval/Q003-v2-postgres-hybrid"
+status = "superseded"
+
+[[experiment]]
+id = "Q003-v3"
+path = "retrieval/Q003-v3-postgres-hybrid"
+status = "completed"
 
 [[experiment]]
 id = "E005"
 path = "system/E005-agent-memory-benchmark"
 status = "planned"
+
+[[experiment]]
+id = "R005"
+path = "runtime/R005-exact-prefix-reuse"
+status = "completed"
+
+[[experiment]]
+id = "R006"
+path = "runtime/R006-positional-reuse-oracle"
+status = "completed"
+
+[[experiment]]
+id = "R007"
+path = "runtime/R007-span-forget"
+status = "completed"
+
+[[experiment]]
+id = "R008"
+path = "runtime/R008-lossy-kv-tier"
+status = "planned"
+
+[[experiment]]
+id = "R009"
+path = "runtime/R009-layer-shared-lora-kv"
+status = "completed"
+
+[[experiment]]
+id = "R010"
+path = "runtime/R010-moe-expert-kv-revocation"
+status = "completed"
+
+[[experiment]]
+id = "R011"
+path = "runtime/R011-self-modification-safety"
+status = "completed"
+
+[[experiment]]
+id = "M016"
+path = "model/M016-approximate-chunk-reuse"
+status = "planned"
+
+[[experiment]]
+id = "M010"
+path = "model/M010-moe-rl-stability"
+status = "planned"
+
+[[experiment]]
+id = "M011"
+path = "model/M011-routed-peft"
+status = "planned"
+
+[[experiment]]
+id = "M012"
+path = "model/M012-lora-expert-balancing"
+status = "planned"
+
+[[experiment]]
+id = "M013"
+path = "model/M013-expert-lifecycle"
+status = "planned"
+
+[[experiment]]
+id = "M014"
+path = "model/M014-aimer-prune-recovery"
+status = "planned"
+
+[[experiment]]
+id = "M015"
+path = "model/M015-rlvr-vs-distill-passk"
+status = "planned"
+
+[[experiment]]
+id = "E006"
+path = "system/E006-engine-prefix-reuse"
+status = "planned"
+
+[[experiment]]
+id = "E007"
+path = "system/E007-split-pod-kv"
+status = "completed"
+
+[[experiment]]
+id = "M002-a0v2-sweep-lr0p002"
+path = "model/M002-a0v2-sweep-lr0p002"
+status = "prepared"
+
+[[experiment]]
+id = "M002-a0v2-sweep-lr0p005"
+path = "model/M002-a0v2-sweep-lr0p005"
+status = "prepared"
+
+[[experiment]]
+id = "M002-a0v2-sweep-lr0p0125"
+path = "model/M002-a0v2-sweep-lr0p0125"
+status = "prepared"
+
+[[experiment]]
+id = "M003-a0v2-sweep-lr0p002"
+path = "model/M003-a0v2-sweep-lr0p002"
+status = "prepared"
+
+[[experiment]]
+id = "M003-a0v2-sweep-lr0p005"
+path = "model/M003-a0v2-sweep-lr0p005"
+status = "prepared"
+
+[[experiment]]
+id = "M003-a0v2-sweep-lr0p0125"
+path = "model/M003-a0v2-sweep-lr0p0125"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-sweep-lr0p002"
+path = "model/M001-a0v2-sweep-lr0p002"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-sweep-lr0p005"
+path = "model/M001-a0v2-sweep-lr0p005"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-sweep-lr0p0125"
+path = "model/M001-a0v2-sweep-lr0p0125"
+status = "prepared"
+
+[[experiment]]
+id = "M004-a0v2-sweep-lr0p002"
+path = "model/M004-a0v2-sweep-lr0p002"
+status = "prepared"
+
+[[experiment]]
+id = "M004-a0v2-sweep-lr0p005"
+path = "model/M004-a0v2-sweep-lr0p005"
+status = "prepared"
+
+[[experiment]]
+id = "M004-a0v2-sweep-lr0p0125"
+path = "model/M004-a0v2-sweep-lr0p0125"
+status = "prepared"
+
+[[experiment]]
+id = "M002-a0v2-eval"
+path = "model/M002-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M003-a0v2-eval"
+path = "model/M003-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-eval"
+path = "model/M001-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M004-a0v2-eval"
+path = "model/M004-a0v2-eval"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-rerun"
+path = "model/M001-a0v2-rerun"
+status = "prepared"
+
+[[experiment]]
+id = "M001-a0v2-cont-no-semantic-slots"
+path = "model/M001-a0v2-cont-no-semantic-slots"
+status = "prepared"
+
+[[experiment]]
+id = "R012"
+path = "runtime/R012-approximate-taint-containment"
+status = "completed"
+
+[[experiment]]
+id = "R013"
+path = "runtime/R013-deferred-self-modification-authority"
+status = "completed"
+
+[[experiment]]
+id = "C001"
+path = "consciousness/C001-global-workspace"
+status = "prepared"
+
+[[experiment]]
+id = "C002"
+path = "consciousness/C002-metacognitive-self-model"
+status = "planned"
+
+[[experiment]]
+id = "C003"
+path = "consciousness/C003-attention-schema-routing"
+status = "planned"
+
+[[experiment]]
+id = "C004"
+path = "consciousness/C004-recurrent-integration"
+status = "completed"
+
+[[experiment]]
+id = "C005"
+path = "consciousness/C005-self-report-reliability"
+status = "planned"
+
+[[experiment]]
+id = "C006"
+path = "consciousness/C006-workspace-gated-pod-routing"
+status = "planned"
+
+[[experiment]]
+id = "F004"
+path = "feedback/F004-verifier-closed-pod-moe"
+status = "planned"
+
+[[experiment]]
+id = "F005"
+path = "feedback/F005-finding-routed-repair-experts"
+status = "planned"
+
+[[experiment]]
+id = "F006"
+path = "feedback/F006-verifier-driven-expert-lifecycle"
+status = "planned"
+
+[[experiment]]
+id = "M001-v5-sweep"
+path = "model/M001-v5-sweep"
+status = "prepared"
+
+[[experiment]]
+id = "M001-v5"
+path = "model/M001-v5-semantic-slots"
+status = "superseded"
+
+[[experiment]]
+id = "M002-v10-sweep"
+path = "model/M002-v10-sweep"
+status = "superseded"
+
+[[experiment]]
+id = "M002-v10"
+path = "model/M002-v10-typed-attention"
+status = "superseded"
+
+[[experiment]]
+id = "M003-v2-sweep"
+path = "model/M003-v2-sweep"
+status = "prepared"
+
+[[experiment]]
+id = "M003-v2"
+path = "model/M003-v2-latent-recurrence"
+status = "superseded"
+
+[[experiment]]
+id = "M004-v2"
+path = "model/M004-v2-operator-router"
+status = "planned"
+
+[[experiment]]
+id = "M002-v10-sweep-r2"
+path = "model/M002-v10-sweep-r2"
+status = "prepared"
+
+[[experiment]]
+id = "M001-v6-sweep"
+path = "model/M001-v6-sweep"
+status = "prepared"
+
+[[experiment]]
+id = "M001-v6"
+path = "model/M001-v6-semantic-slots"
+status = "completed"
+
+[[experiment]]
+id = "M002-v11-sweep"
+path = "model/M002-v11-sweep"
+status = "prepared"
+
+[[experiment]]
+id = "M002-v11"
+path = "model/M002-v11-typed-attention"
+status = "completed"
+
+[[experiment]]
+id = "M003-v3-sweep"
+path = "model/M003-v3-sweep"
+status = "prepared"
+
+[[experiment]]
+id = "M003-v3"
+path = "model/M003-v3-latent-recurrence"
+status = "superseded"
+
+[[experiment]]
+id = "M003-v4"
+path = "model/M003-v4-latent-recurrence"
+status = "completed"
+
+[[experiment]]
+id = "E008"
+path = "system/E008-split-pod-extensions"
+status = "planned"
+
+[[experiment]]
+id = "R014"
+path = "runtime/R014-deferred-authority-mechanisms"
+status = "planned"
+
+[[experiment]]
+id = "F007"
+path = "feedback/F007-vcw-loop"
+status = "completed"
+
+[[experiment]]
+id = "C007"
+path = "consciousness/C007-metacognitive-self-model-cpu"
+status = "failed"
+
+[[experiment]]
+id = "C008"
+path = "consciousness/C008-attention-schema-routing-cpu"
+status = "failed"

@@ -1,23 +1,41 @@
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use ptr_ledger::{integrity, LedgerEvent};
-use ptr_model_api::{ModelEvent, ReferenceEchoBackend, ResumableInferenceBackend};
+use ptr_model_api::{
+    KvReuseHint, KvReusingBackend, ModelError, ModelEvent, ModelRun, PromptSegment,
+    ReferenceEchoBackend, ResumableInferenceBackend, SegmentedModelRequest, Tokenizer,
+};
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
-use ptr_router::PodRouter;
+use ptr_router::{
+    CheckedRouter, NonceSequence, PodRouter, RouteRequest, RoutedChoice, RoutedError, SamplingKey,
+};
 use ptr_runtime::{
     execution::{ActionExecutor, ActionScope, ExecutionGrant, RequiredVerification},
-    PtrRuntime, RuntimeError,
+    PodSampler, PtrRuntime, RuntimeError,
 };
-use ptr_types::{CapabilityId, Effect, ProjectId, RequestId, TypeId, VerificationLevel};
-use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
+use ptr_types::{
+    CapabilityId, Effect, ProjectId, RequestId, SemanticContext, TypeId, VerificationLevel,
+};
+use ptr_verifier::{
+    ActionContract, ActionContractVerifier, Finding, PayloadEncoding, VerificationReport,
+    VerificationStatus, Verifier,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+pub mod vcw;
+
+pub use vcw::{
+    VcwApiError, VcwBuildError, VcwResponse, VcwService, VcwServiceParts, VcwTaskRequest,
+};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ApiRequest {
@@ -55,6 +73,10 @@ pub const MAX_REQUEST_TEXT_BYTES: usize = 1024 * 1024;
 /// Largest accepted request body. Named here instead of inherited from the
 /// framework's default, so a dependency upgrade cannot change it silently.
 pub const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
+/// Largest typed Pod output the default verifier accepts, in bytes.
+pub const MAX_POD_OUTPUT_BYTES: usize = 64 * 1024;
+/// Response header of the KV path: prompt tokens the backend served from its KV cache.
+pub const KV_HIT_TOKENS_HEADER: &str = "x-ptr-kv-hit-tokens";
 
 pub struct DemoNoteExecutor {
     data_dir: std::path::PathBuf,
@@ -145,16 +167,16 @@ impl ActionExecutor for DemoNoteExecutor {
 
 static NOTE_WRITE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-struct AllowActionVerifier;
-
-impl Verifier<ptr_types::ActionIr> for AllowActionVerifier {
-    fn verify(&self, _: &ptr_types::ActionIr) -> VerificationReport {
-        VerificationReport {
-            status: VerificationStatus::Pass,
-            level: VerificationLevel::Deterministic,
-            score: ptr_types::Probability::new(1.0).expect("one is valid"),
-            findings: vec![],
-        }
+/// The one action the demo grant admits, built from the `DEMO_*` constants.
+fn demo_note_contract() -> ActionContract {
+    ActionContract {
+        target: DEMO_NOTE_TARGET.into(),
+        operation: DEMO_NOTE_OPERATION.into(),
+        capability: CapabilityId::from(DEMO_NOTE_CAPABILITY),
+        input_type: TypeId::from(DEMO_NOTE_INPUT_TYPE),
+        effect: Effect::Mutation,
+        max_payload_bytes: MAX_DEMO_NOTE_BYTES,
+        payload_encoding: PayloadEncoding::Utf8,
     }
 }
 
@@ -173,7 +195,7 @@ pub fn demo_effect_grants(
                 effect: Effect::Mutation,
             },
             RequiredVerification::Deterministic,
-            AllowActionVerifier,
+            ActionContractVerifier::new(demo_note_contract()),
             DemoNoteExecutor::new(data_dir.clone()),
         )]
     })
@@ -185,14 +207,97 @@ pub struct HealthResponse {
     pub version: String,
 }
 
+/// A [`KvReusingBackend`] with the tokenizer and reuse hint the server calls it with.
+///
+/// The server encodes the request text as one `Raw` segment under `tokenizer`, so the
+/// backend sees caller-supplied text only; the runtime-side taint check is what keeps an
+/// Approximate run away from effects (see [`ServerBackend::KvReusing`]).
+#[derive(Clone)]
+pub struct KvBackend {
+    backend: Arc<dyn KvReusingBackend>,
+    tokenizer: Arc<dyn Tokenizer>,
+    hint: Option<KvReuseHint>,
+    max_prompt_tokens: Option<usize>,
+}
+
+impl KvBackend {
+    pub fn new(
+        backend: Arc<dyn KvReusingBackend>,
+        tokenizer: Arc<dyn Tokenizer>,
+        hint: Option<KvReuseHint>,
+    ) -> Self {
+        Self {
+            backend,
+            tokenizer,
+            hint,
+            max_prompt_tokens: None,
+        }
+    }
+
+    /// Refuse (413, before any runtime call) a request text that tokenizes to more than
+    /// `max` tokens; pass the backend's own prompt limit.
+    pub fn with_max_prompt_tokens(mut self, max: usize) -> Self {
+        self.max_prompt_tokens = Some(max);
+        self
+    }
+
+    fn check_prompt_length(&self, text: &str) -> Result<(), ApiError> {
+        let Some(maximum) = self.max_prompt_tokens else {
+            return Ok(());
+        };
+        let tokens = self.tokenizer.encode(text).len();
+        if tokens > maximum {
+            return Err(ApiError::PromptTooLong { tokens, maximum });
+        }
+        Ok(())
+    }
+
+    fn infer(
+        &self,
+        request_id: &RequestId,
+        context: SemanticContext,
+        text: &str,
+    ) -> Result<ModelRun, ModelError> {
+        let contract = |error: ptr_model_api::TokenContractError| {
+            ModelError(format!("segmented request refused: {error}"))
+        };
+        let segment =
+            PromptSegment::raw_from_text(self.tokenizer.as_ref(), text).map_err(contract)?;
+        let request = SegmentedModelRequest::new(
+            request_id.clone(),
+            context,
+            self.tokenizer.identity().clone(),
+            vec![segment],
+        )
+        .map_err(contract)?;
+        self.backend.infer_segmented(&request, self.hint.as_ref())
+    }
+}
+
+/// The model backend of a [`ServerState`].
+#[derive(Clone)]
+pub enum ServerBackend {
+    /// A plain backend: events go through the resumable flow (Pods, verifier, rounds).
+    Resumable(Arc<dyn ResumableInferenceBackend>),
+    /// A KV-reusing backend. KV-INGEST-INVARIANT: every `ModelRun` it returns reaches the
+    /// request flow only through `PtrRuntime::ingest_model_run` (via
+    /// `run_model_run_resumable`), which records Approximate taint so that
+    /// `authorize_action` refuses the action. The server never builds a `ResumableRun`
+    /// from a `ModelRun` itself. This path does not resume Pods.
+    KvReusing(KvBackend),
+}
+
 #[derive(Clone)]
 pub struct ServerState {
     runtime: Arc<Mutex<PtrRuntime>>,
-    backend: Arc<dyn ResumableInferenceBackend>,
-    router: PodRouter,
+    backend: ServerBackend,
+    router: Arc<dyn PodSampler>,
     pods: Arc<PodRegistry>,
     verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
     effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+    admission: Arc<RequestAdmission>,
+    /// The verifier-closed path; `None` unless installed with [`ServerState::with_vcw`].
+    vcw: Option<Arc<VcwService>>,
 }
 
 impl ServerState {
@@ -200,9 +305,9 @@ impl ServerState {
         Self::with_dependencies(
             runtime,
             Arc::new(ReferenceEchoBackend),
-            PodRouter,
+            Arc::new(NoPods),
             Arc::new(PodRegistry::default()),
-            Arc::new(AllowAllVerifier),
+            default_verifier(),
             Arc::new(Vec::new),
         )
     }
@@ -210,11 +315,35 @@ impl ServerState {
     pub fn with_dependencies(
         runtime: PtrRuntime,
         backend: Arc<dyn ResumableInferenceBackend>,
-        router: PodRouter,
+        router: Arc<dyn PodSampler>,
         pods: Arc<PodRegistry>,
         verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
         effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
     ) -> Self {
+        Self::with_backend(
+            runtime,
+            ServerBackend::Resumable(backend),
+            router,
+            pods,
+            verifier,
+            effect_grants,
+        )
+    }
+
+    /// Like [`ServerState::with_dependencies`] for either kind of [`ServerBackend`].
+    pub fn with_backend(
+        runtime: PtrRuntime,
+        backend: ServerBackend,
+        router: Arc<dyn PodSampler>,
+        pods: Arc<PodRegistry>,
+        verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
+        effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+    ) -> Self {
+        // Read before the runtime moves into its mutex.
+        let admission = Arc::new(
+            RequestAdmission::new(runtime.config.runtime.mailbox_capacity)
+                .expect("runtime.mailbox_capacity is validated non-zero by ptr-config"),
+        );
         Self {
             runtime: Arc::new(Mutex::new(runtime)),
             backend,
@@ -222,7 +351,69 @@ impl ServerState {
             pods,
             verifier,
             effect_grants,
+            admission,
+            vcw: None,
         }
+    }
+
+    /// Serve the verifier-closed path (`POST /v1/vcw/tasks`) from this state. The service's
+    /// Pods are made live in the runtime and its scope is created, under the runtime's lock.
+    /// Without this call the route does not exist.
+    ///
+    /// # Errors
+    /// [`VcwBuildError::Install`] when the runtime refuses the Pods or the scope.
+    pub fn with_vcw(mut self, service: VcwService) -> Result<Self, VcwBuildError> {
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| VcwBuildError::Install("runtime mutex poisoned".into()))?;
+            service.install(&mut runtime)?;
+        }
+        self.vcw = Some(Arc::new(service));
+        Ok(self)
+    }
+
+    /// The runtime behind the server, for hosts and tests that act on it directly (a
+    /// revocation, a read of the ledger). Holding the lock stops the server's requests.
+    pub fn runtime_handle(&self) -> Arc<Mutex<PtrRuntime>> {
+        Arc::clone(&self.runtime)
+    }
+
+    /// How many requests hold an admission slot now (working or waiting for the runtime).
+    pub fn requests_in_flight(&self) -> usize {
+        self.admission.in_flight()
+    }
+
+    /// The verifier-closed service, when installed.
+    pub fn vcw_service(&self) -> Option<&Arc<VcwService>> {
+        self.vcw.as_ref()
+    }
+}
+
+/// The production Pod router: `PodRouter` as the policy, sampled through `route_checked` with
+/// `key` and a nonce sequence of `instance` starting at counter 0. `instance` must be fresh for
+/// every process incarnation sharing `key` (nonce persistence across restarts is not done;
+/// a fresh instance id per process keeps nonces unique).
+pub fn checked_pod_router(key: SamplingKey, instance: [u8; 8]) -> Arc<dyn PodSampler> {
+    Arc::new(CheckedRouter::new(
+        PodRouter,
+        key,
+        NonceSequence::starting_at(instance, 0),
+    ))
+}
+
+/// The sampler of `ServerState::new`, whose registry is empty: it routes nothing, so there is
+/// no key and no draw.
+struct NoPods;
+
+impl PodSampler for NoPods {
+    fn route(&self, _: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RoutedError> {
+        Ok(None)
+    }
+
+    fn key_id(&self) -> [u8; 8] {
+        [0; 8]
     }
 }
 
@@ -233,7 +424,7 @@ pub fn router(runtime: PtrRuntime) -> Router {
 pub fn router_with_dependencies(
     runtime: PtrRuntime,
     backend: Arc<dyn ResumableInferenceBackend>,
-    router: PodRouter,
+    router: Arc<dyn PodSampler>,
     pods: Arc<PodRegistry>,
     verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
     effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
@@ -248,12 +439,62 @@ pub fn router_with_dependencies(
     ))
 }
 
+/// Like [`router_with_dependencies`] for either kind of [`ServerBackend`].
+pub fn router_with_backend(
+    runtime: PtrRuntime,
+    backend: ServerBackend,
+    router: Arc<dyn PodSampler>,
+    pods: Arc<PodRegistry>,
+    verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
+    effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+) -> Router {
+    router_with_state(ServerState::with_backend(
+        runtime,
+        backend,
+        router,
+        pods,
+        verifier,
+        effect_grants,
+    ))
+}
+
 fn router_with_state(state: ServerState) -> Router {
-    Router::new()
+    let routes = Router::new()
         .route("/health", get(health))
         .route("/v1/requests", post(request))
-        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
-        .with_state(state)
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES));
+    // The verifier-closed path has its own, smaller body limit and exists only when installed.
+    let routes = if state.vcw.is_some() {
+        routes.merge(vcw::routes())
+    } else {
+        routes
+    };
+    routes.with_state(state)
+}
+
+/// The router of a [`ServerState`], for a state built with [`ServerState::with_vcw`].
+pub fn router_from_state(state: ServerState) -> Router {
+    router_with_state(state)
+}
+
+/// Serve a [`ServerState`].
+pub async fn serve_state(
+    listener: tokio::net::TcpListener,
+    state: ServerState,
+) -> std::io::Result<()> {
+    axum::serve(listener, router_with_state(state)).await
+}
+
+/// Like [`serve_state`], but stops accepting and returns once `shutdown` completes and the
+/// requests in flight have finished.
+pub async fn serve_state_until(
+    listener: tokio::net::TcpListener,
+    state: ServerState,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    axum::serve(listener, router_with_state(state))
+        .with_graceful_shutdown(shutdown)
+        .await
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, runtime: PtrRuntime) -> std::io::Result<()> {
@@ -264,7 +505,7 @@ pub async fn serve_with_dependencies(
     listener: tokio::net::TcpListener,
     runtime: PtrRuntime,
     backend: Arc<dyn ResumableInferenceBackend>,
-    router: PodRouter,
+    router: Arc<dyn PodSampler>,
     pods: Arc<PodRegistry>,
     verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
     effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
@@ -272,6 +513,23 @@ pub async fn serve_with_dependencies(
     axum::serve(
         listener,
         router_with_dependencies(runtime, backend, router, pods, verifier, effect_grants),
+    )
+    .await
+}
+
+/// Like [`serve_with_dependencies`] for either kind of [`ServerBackend`].
+pub async fn serve_with_backend(
+    listener: tokio::net::TcpListener,
+    runtime: PtrRuntime,
+    backend: ServerBackend,
+    router: Arc<dyn PodSampler>,
+    pods: Arc<PodRegistry>,
+    verifier: Arc<dyn Verifier<TypedPayload> + Send + Sync>,
+    effect_grants: Arc<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+) -> std::io::Result<()> {
+    axum::serve(
+        listener,
+        router_with_backend(runtime, backend, router, pods, verifier, effect_grants),
     )
     .await
 }
@@ -286,7 +544,7 @@ async fn health() -> Json<HealthResponse> {
 async fn request(
     State(state): State<ServerState>,
     Json(input): Json<ApiRequest>,
-) -> Result<Json<ApiResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     if input.id.trim().is_empty() || input.text.trim().is_empty() {
         return Err(ApiError::BadRequest("id and text must be non-empty".into()));
     }
@@ -296,6 +554,22 @@ async fn request(
         )));
     }
 
+    // Bounded admission (Invariant #8): the runtime is serialised behind one
+    // mutex, so without a bound every waiting request would queue unboundedly.
+    // A request that finds the mailbox full is refused instead of waiting. The
+    // slot is taken before any blocking work and moves into the blocking task,
+    // so it stays held until that work ends even if this future is cancelled,
+    // and async workers stay free to refuse excess requests and serve /health.
+    let slot = state.admission.try_enter().ok_or(ApiError::Saturated)?;
+    tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        process_request(&state, input)
+    })
+    .await
+    .map_err(|error| ApiError::Internal(format!("request task failed: {error}")))?
+}
+
+fn process_request(state: &ServerState, input: ApiRequest) -> Result<Response, ApiError> {
     let mut runtime = state
         .runtime
         .lock()
@@ -313,18 +587,32 @@ async fn request(
             ));
         }
     }
-    let run = runtime
-        .run_resumable_with_pods_using_router(
-            RequestId::from(input.id.as_str()),
+    let request_id = RequestId::from(input.id.as_str());
+    let kv_hit_tokens = std::cell::Cell::new(None);
+    let run = match &state.backend {
+        ServerBackend::Resumable(backend) => runtime.run_resumable_with_pods_using_router(
+            request_id,
             &ProjectId::from("demo"),
-            input.text,
-            state.backend.as_ref(),
+            input.text.as_str(),
+            backend.as_ref(),
             state.pods.as_ref(),
-            &state.router,
+            state.router.as_ref(),
             state.verifier.as_ref(),
             4,
-        )
-        .map_err(ApiError::Runtime)?;
+        ),
+        ServerBackend::KvReusing(kv) => {
+            let text = input.text.as_str();
+            let id = request_id.clone();
+            // Before any runtime call: an over-long prompt must not reach the ledger.
+            kv.check_prompt_length(text)?;
+            runtime.run_model_run_resumable(request_id, text, |context| {
+                let run = kv.infer(&id, context, text)?;
+                kv_hit_tokens.set(Some(run.kv_report.map_or(0, |report| report.hit_tokens())));
+                Ok(run)
+            })
+        }
+    }
+    .map_err(ApiError::Runtime)?;
 
     let effect = if let Some(action) = run.action.as_ref() {
         if action.effect == Effect::Mutation
@@ -376,7 +664,7 @@ async fn request(
         })
         .collect::<String>();
 
-    Ok(Json(ApiResponse {
+    let body = Json(ApiResponse {
         id: input.id,
         revision: runtime.revision().0,
         text,
@@ -386,21 +674,172 @@ async fn request(
             .map(|output| format!("{}:{}", output.type_id, output.bytes.len()))
             .collect(),
         effect,
-    }))
+    });
+    // Read-only report of the KV path; absent for a plain backend.
+    Ok(match kv_hit_tokens.get() {
+        Some(hits) => ([(KV_HIT_TOKENS_HEADER, hits.to_string())], body).into_response(),
+        None => body.into_response(),
+    })
 }
 
-struct AllowAllVerifier;
-pub fn default_verifier() -> Arc<dyn Verifier<TypedPayload> + Send + Sync> {
-    Arc::new(AllowAllVerifier)
+/// Sizing and encoding rules for typed Pod output.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PayloadBounds {
+    pub max_bytes: usize,
+    /// Type ids whose bytes must be UTF-8 text.
+    pub textual_types: BTreeSet<TypeId>,
 }
-impl Verifier<TypedPayload> for AllowAllVerifier {
-    fn verify(&self, _: &TypedPayload) -> VerificationReport {
-        VerificationReport {
-            status: VerificationStatus::Pass,
-            level: VerificationLevel::Deterministic,
-            score: ptr_types::Probability::new(1.0).expect("one is valid"),
-            findings: vec![],
+
+impl Default for PayloadBounds {
+    fn default() -> Self {
+        Self {
+            max_bytes: MAX_POD_OUTPUT_BYTES,
+            textual_types: BTreeSet::from([TypeId::from(DEMO_NOTE_INPUT_TYPE)]),
         }
+    }
+}
+
+/// Deterministic verifier for typed Pod output: a non-empty type id, at most
+/// `max_bytes` of payload, and UTF-8 for the type ids listed as textual. It
+/// replaces an allow-all verifier: it cannot judge meaning, but it refuses
+/// output that is malformed or oversized, with hard findings
+/// (`type-id`, `payload-size`, `payload-utf8`).
+#[derive(Clone, Debug, Default)]
+pub struct PayloadBoundsVerifier {
+    bounds: PayloadBounds,
+}
+
+impl PayloadBoundsVerifier {
+    pub fn new(bounds: PayloadBounds) -> Self {
+        Self { bounds }
+    }
+}
+
+impl Verifier<TypedPayload> for PayloadBoundsVerifier {
+    fn verify(&self, payload: &TypedPayload) -> VerificationReport {
+        let mut findings = Vec::new();
+        let mut violation = |code: &str, message: String| {
+            findings.push(Finding {
+                code: code.into(),
+                message,
+                hard: true,
+            });
+        };
+        let type_id = payload.type_id.0.as_str();
+        if type_id.is_empty() || type_id.trim() != type_id {
+            violation(
+                "type-id",
+                "type id must be non-empty without edge whitespace".into(),
+            );
+        }
+        if payload.bytes.len() > self.bounds.max_bytes {
+            violation(
+                "payload-size",
+                format!(
+                    "payload is {} bytes, limit is {}",
+                    payload.bytes.len(),
+                    self.bounds.max_bytes
+                ),
+            );
+        }
+        if self.bounds.textual_types.contains(&payload.type_id)
+            && std::str::from_utf8(&payload.bytes).is_err()
+        {
+            violation("payload-utf8", "textual payload is not UTF-8".into());
+        }
+        let passed = findings.is_empty();
+        VerificationReport {
+            status: if passed {
+                VerificationStatus::Pass
+            } else {
+                VerificationStatus::Fail
+            },
+            level: VerificationLevel::Deterministic,
+            score: ptr_types::Probability::new(if passed { 1.0 } else { 0.0 })
+                .expect("bounded score"),
+            findings,
+        }
+    }
+}
+
+/// The default verifier: [`PayloadBounds::default`] (64 KiB, demo-note UTF-8).
+pub fn default_verifier() -> Arc<dyn Verifier<TypedPayload> + Send + Sync> {
+    default_verifier_with(PayloadBounds::default())
+}
+
+/// [`PayloadBoundsVerifier`] with caller-chosen bounds.
+pub fn default_verifier_with(
+    bounds: PayloadBounds,
+) -> Arc<dyn Verifier<TypedPayload> + Send + Sync> {
+    Arc::new(PayloadBoundsVerifier::new(bounds))
+}
+
+/// Bounds the requests the server works on or waits to work on at once.
+/// Capacity comes from `runtime.mailbox_capacity`; it is validated non-zero
+/// by `ptr-config`.
+#[derive(Debug)]
+pub struct RequestAdmission {
+    in_flight: AtomicUsize,
+    capacity: usize,
+}
+
+impl RequestAdmission {
+    /// Fails with [`AdmissionError::ZeroCapacity`] for a capacity of zero,
+    /// which would refuse every request.
+    pub fn new(capacity: usize) -> Result<Self, AdmissionError> {
+        if capacity == 0 {
+            return Err(AdmissionError::ZeroCapacity);
+        }
+        Ok(Self {
+            in_flight: AtomicUsize::new(0),
+            capacity,
+        })
+    }
+
+    /// Takes a slot, or `None` when all `capacity` slots are taken. Never waits.
+    pub fn try_enter(self: &Arc<Self>) -> Option<AdmissionGuard> {
+        let mut current = self.in_flight.load(Ordering::Acquire);
+        loop {
+            if current >= self.capacity {
+                return None;
+            }
+            match self.in_flight.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(AdmissionGuard {
+                        admission: Arc::clone(self),
+                    })
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::Acquire)
+    }
+}
+
+/// Why a [`RequestAdmission`] could not be built.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdmissionError {
+    /// Capacity must be at least one.
+    ZeroCapacity,
+}
+
+/// A taken admission slot, released on drop.
+#[derive(Debug)]
+pub struct AdmissionGuard {
+    admission: Arc<RequestAdmission>,
+}
+
+impl Drop for AdmissionGuard {
+    fn drop(&mut self) {
+        self.admission.in_flight.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -411,6 +850,13 @@ pub enum ApiError {
     Internal(String),
     Effect(String),
     EffectConflict(String),
+    /// The request mailbox is full.
+    Saturated,
+    /// The text tokenizes beyond the KV backend's prompt limit.
+    PromptTooLong {
+        tokens: usize,
+        maximum: usize,
+    },
 }
 
 impl ApiError {
@@ -468,17 +914,140 @@ fn hex_digest(bytes: &[u8; 32]) -> String {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            Self::Saturated => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(header::RETRY_AFTER, "1")],
+                    Json(serde_json::json!({ "error": "request mailbox saturated" })),
+                )
+                    .into_response();
+            }
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            // 409, not 422: the refusal depends on the server's KV-reuse state, not on the
+            // request's content, so no edit of the request fixes it and an identical
+            // request may be answered exactly once the cache state differs.
             Self::Runtime(RuntimeError::StaleRevision { .. })
             | Self::Runtime(RuntimeError::StaleGeneration { .. })
-            | Self::Runtime(RuntimeError::ExecutionFenced) => {
+            | Self::Runtime(RuntimeError::ExecutionFenced)
+            | Self::Runtime(RuntimeError::ApproximateStateAtEffectBoundary { .. }) => {
                 (StatusCode::CONFLICT, format!("{self:?}"))
             }
+            // 507, not 503: the registry never drains, so the condition is not transient
+            // and a Retry-After would invite retries that cannot succeed.
+            Self::Runtime(RuntimeError::KvTaintRegistryFull { .. }) => {
+                (StatusCode::INSUFFICIENT_STORAGE, format!("{self:?}"))
+            }
+            Self::PromptTooLong { .. } => (StatusCode::PAYLOAD_TOO_LARGE, format!("{self:?}")),
             Self::Runtime(error) => (StatusCode::UNPROCESSABLE_ENTITY, format!("{error:?}")),
             Self::Effect(message) => (StatusCode::UNPROCESSABLE_ENTITY, message),
             Self::EffectConflict(message) => (StatusCode::CONFLICT, message),
             Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn payload(type_id: &str, bytes: &[u8]) -> TypedPayload {
+        TypedPayload {
+            type_id: TypeId::from(type_id),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn checked_pod_router_reports_the_key_identity_and_routes_nothing_without_pods() {
+        let router = checked_pod_router(SamplingKey::from_bytes([7; 32]), [9; 8]);
+        assert_eq!(router.key_id(), SamplingKey::from_bytes([7; 32]).key_id());
+        assert_ne!(router.key_id(), NoPods.key_id());
+    }
+
+    #[test]
+    fn payload_bounds_accept_and_refuse_with_stable_codes() {
+        let verifier = PayloadBoundsVerifier::default();
+        assert_eq!(
+            verifier.verify(&payload("any", b"ok")).status,
+            VerificationStatus::Pass
+        );
+        let codes = |p: &TypedPayload| {
+            verifier
+                .verify(p)
+                .findings
+                .into_iter()
+                .map(|f| f.code)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(codes(&payload(" ", b"x")), ["type-id"]);
+        assert_eq!(
+            codes(&payload("any", &vec![0; MAX_POD_OUTPUT_BYTES + 1])),
+            ["payload-size"]
+        );
+        assert_eq!(
+            codes(&payload(DEMO_NOTE_INPUT_TYPE, &[0xff])),
+            ["payload-utf8"]
+        );
+        assert!(codes(&payload("binary", &[0xff])).is_empty());
+    }
+
+    #[test]
+    fn a_full_taint_registry_is_507_without_retry_after_and_a_long_prompt_is_413() {
+        let response =
+            ApiError::Runtime(RuntimeError::KvTaintRegistryFull { limit: 1 }).into_response();
+        assert_eq!(response.status(), StatusCode::INSUFFICIENT_STORAGE);
+        assert!(response.headers().get(header::RETRY_AFTER).is_none());
+        let response = ApiError::PromptTooLong {
+            tokens: 9,
+            maximum: 4,
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn admission_is_bounded_and_released_on_drop() {
+        let admission = Arc::new(RequestAdmission::new(2).unwrap());
+        let a = admission.try_enter().unwrap();
+        let _b = admission.try_enter().unwrap();
+        assert!(admission.try_enter().is_none());
+        drop(a);
+        assert_eq!(admission.in_flight(), 1);
+        assert!(admission.try_enter().is_some());
+    }
+
+    #[test]
+    fn zero_capacity_admission_is_rejected() {
+        assert_eq!(
+            RequestAdmission::new(0).unwrap_err(),
+            AdmissionError::ZeroCapacity
+        );
+    }
+
+    #[test]
+    fn padded_type_ids_are_refused() {
+        let verifier = PayloadBoundsVerifier::default();
+        for id in [" x", "x ", "\tx"] {
+            let report = verifier.verify(&payload(id, b"ok"));
+            assert_eq!(report.status, VerificationStatus::Fail, "{id:?}");
+            assert_eq!(report.findings[0].code, "type-id");
+        }
+    }
+
+    #[test]
+    fn default_verifier_with_applies_custom_bounds() {
+        let verifier = default_verifier_with(PayloadBounds {
+            max_bytes: 2,
+            textual_types: BTreeSet::new(),
+        });
+        assert_eq!(
+            verifier.verify(&payload("t", b"ab")).status,
+            VerificationStatus::Pass
+        );
+        assert_eq!(
+            verifier.verify(&payload("t", b"abc")).status,
+            VerificationStatus::Fail
+        );
     }
 }

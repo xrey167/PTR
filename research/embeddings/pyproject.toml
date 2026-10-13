@@ -1,0 +1,22 @@
+[project]
+name = "ptr-embeddings"
+version = "0.1.0"
+description = "Pinned CPU sentence embeddings (MiniLM) and bge-m3 vectors for Q003 and M008"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "torch==2.7.1",
+  "transformers==4.53.2",
+  "numpy==2.2.6",
+  "huggingface-hub",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

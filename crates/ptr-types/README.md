@@ -72,7 +72,7 @@
 ### Linked experiments
 
 - [M005](../../experiments/model/M005-epistemic-calibration/README.md) — `planned`
-- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `running`
+- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `superseded`
 
 ### Technology evaluations
 

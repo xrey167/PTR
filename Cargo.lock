@@ -4455,20 +4455,34 @@ version = "0.1.0"
 name = "ptr-bench"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "fail",
+ "ptr-analytics",
  "ptr-branch",
  "ptr-config",
  "ptr-core",
  "ptr-exec",
  "ptr-fastmem",
+ "ptr-feedback",
+ "ptr-labeling",
  "ptr-ledger",
+ "ptr-lineage",
+ "ptr-memory",
+ "ptr-model-api",
  "ptr-pg",
+ "ptr-pods",
+ "ptr-podwire",
+ "ptr-protocol",
+ "ptr-router",
  "ptr-runtime",
+ "ptr-search",
  "ptr-semdb",
  "ptr-state",
  "ptr-types",
  "ptr-verifier",
  "tokio",
  "tokio-postgres",
+ "toml",
 ]
 
 [[package]]
@@ -4598,6 +4612,7 @@ name = "ptr-lineage"
 version = "0.1.0"
 dependencies = [
  "ptr-types",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -4613,6 +4628,7 @@ name = "ptr-model-api"
 version = "0.1.0"
 dependencies = [
  "ptr-types",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -4663,12 +4679,15 @@ version = "0.1.0"
 dependencies = [
  "candle-core",
  "ed25519-dalek",
+ "ptr-feedback",
  "ptr-protocol",
  "ptr-storage",
  "ptr-types",
  "ptr-verifier",
  "safetensors 0.8.0",
+ "serde_json",
  "sha2 0.11.0",
+ "tokenizers",
  "tokio",
 ]
 
@@ -4676,6 +4695,7 @@ dependencies = [
 name = "ptr-podwire"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "ptr-config",
  "ptr-ledger",
  "ptr-net",
@@ -4697,15 +4717,19 @@ dependencies = [
  "prost-build",
  "protoc-bin-vendored",
  "ptr-types",
+ "sha2 0.11.0",
 ]
 
 [[package]]
 name = "ptr-router"
 version = "0.1.0"
 dependencies = [
+ "ptr-analytics",
+ "ptr-feedback",
  "ptr-pods",
  "ptr-protocol",
  "ptr-types",
+ "ptr-verifier",
  "sha2 0.11.0",
 ]
 
@@ -4720,7 +4744,9 @@ dependencies = [
  "ptr-core",
  "ptr-events",
  "ptr-exec",
+ "ptr-feedback",
  "ptr-ledger",
+ "ptr-lineage",
  "ptr-memory",
  "ptr-model-api",
  "ptr-pods",
@@ -4734,6 +4760,7 @@ dependencies = [
  "ptr-types",
  "ptr-verifier",
  "reqwest",
+ "rustls",
  "serde_json",
  "sha2 0.11.0",
 ]
@@ -4767,16 +4794,19 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "ptr-config",
+ "ptr-events",
  "ptr-ledger",
  "ptr-model-api",
  "ptr-pods",
  "ptr-protocol",
  "ptr-router",
  "ptr-runtime",
+ "ptr-semdb",
  "ptr-types",
  "ptr-verifier",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
  "tower",
 ]
@@ -4786,6 +4816,7 @@ name = "ptr-state"
 version = "0.1.0"
 dependencies = [
  "ptr-ledger",
+ "ptr-pods",
  "ptr-types",
  "tokio",
  "turso",
@@ -4815,6 +4846,7 @@ dependencies = [
 name = "ptr-verifier"
 version = "0.1.0"
 dependencies = [
+ "ptr-semdb",
  "ptr-types",
 ]
 

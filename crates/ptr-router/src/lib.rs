@@ -1,13 +1,55 @@
+mod attention_schema;
+mod findings;
+mod learning;
+mod ope;
+#[cfg(test)]
+mod ope_tests;
+mod policy_book;
 mod propensity;
 mod router;
 mod sampling;
+mod self_model;
+mod verifier_roles;
 
+pub use attention_schema::{
+    AttentionSchema, BalanceStrength, ControlArm, ControlConfig, ControlledScorer, SchemaError,
+    SchemaLimits, SchemaReport, TargetPower,
+};
+pub use findings::{
+    classify, Accepted, AdmissibleScorer, CodeRoute, EligibilitySnapshot, EscalationReason,
+    Exploration, ExplorationError, FallbackAction, FallbackPolicy, FallbackReason, FindingCode,
+    FindingRegistry, FindingRouteError, FindingRouteErrorKind, FindingRouteRecord,
+    FindingRouteRequest, FindingRouter, PodEligibility, RegistryChange, RegistryError,
+    RegistryGeneration, RegistryUpdate, ReportClass, RouteClass, RouteOutcome, RouterBuildError,
+    RouterConfig, RouterLimits, ScoringContext, UniformScorer,
+};
+pub use learning::{
+    ArmCounts, LearnedPolicy, LearnerConfig, LearningError, LoggedDecision, RewardModel,
+    RoutingLearner, VerifierReward, MAX_ARMS, MAX_DRAWS, MAX_LOG,
+};
+pub use ope::{
+    compare_policies, estimate_policy, Assessment, Comparison, Confidence, Estimator, OpeError,
+    PolicyEstimate, PromotionEvidence, PromotionGate, PromotionRefusal, PromotionRule, Verdict,
+    MIN_EFFECTIVE_SAMPLE_FLOOR, MIN_RECORDS_FLOOR, Z_FLOOR,
+};
+pub use policy_book::{
+    ActiveScorer, PolicyAction, PolicyBook, PolicyBookError, PolicyEvent, PolicySink, MAX_EVENTS,
+    MAX_VERSIONS,
+};
 pub use propensity::{Propensity, PropensityError};
 pub use router::{
     route_checked, CheckedRouter, DistributionError, PolicyFailure, RouteDistribution, RouteError,
     RouteFeatures, RouteRequest, RoutedChoice, RoutedError, Router,
 };
 pub use sampling::{DecisionNonce, NonceExhausted, NonceSequence, SamplingKey};
+pub use self_model::{
+    evaluate_prequential, shuffled_labels, BinReport, CalibrationError, CalibrationReport,
+    CalibrationTracker, CodeOutcome, ContextKey, FeatureMask, GlobalRateProbe, HintPolicy,
+    LinearProbe, LoggedPrediction, LookupTableProbe, PodRef, PrequentialReport, ReliabilityBin,
+    SelfContext, SelfModel, SelfModelHint, SelfModelLimits, SelfModelReport, SelfOutcome,
+    SelfPrediction, SelfRole, SelfTraceStep, TraceLearner, OVERSIZED_CODE,
+};
+pub use verifier_roles::{finding_codes_for_role, RepairRoleAssignments};
 
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, PodId, Probability, ProjectId, TypeId};

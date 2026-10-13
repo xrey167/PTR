@@ -164,7 +164,13 @@ impl ReferenceCausalAttentionExecutor {
             return Err(KvBackendError::ShapeMismatch);
         }
         let before = backend.snapshot(cache)?;
-        if before.schema.layer_count != 1
+        before.schema.validate_key_encoding()?;
+        // This executor applies no RoPE: it stores the projected key as is and attends to it
+        // as is. That is exactly the legacy `PostRope` contract (stored keys are what
+        // attention consumes). A `PreRope` cache promises that the consumer rotates at
+        // attention time, which this executor never does, so it is refused.
+        if before.schema.key_encoding() != crate::KvKeyEncoding::PostRope
+            || before.schema.layer_count != 1
             || before.schema.attention_heads != self.heads
             || before.schema.key_value_heads != self.heads
             || before.schema.attention_heads * before.schema.head_dim != self.weights.model_dim

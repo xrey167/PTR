@@ -1,0 +1,75 @@
+{
+  "experiment_id": "R001",
+  "status": "prepared",
+  "scope": "bounded typed mailboxes of ptr-exec (Mailbox and its cloneable MailboxSender) under overload: capacity never exceeded, ownership preserved (every offered message is delivered or handed back, never lost, duplicated or altered), admission identical to a VecDeque reference queue at every event, and tail latency and memory bounded; latency is gated in virtual ticks of a deterministic discrete-event simulation that uses the real Mailbox for every admission, compared with an unbounded std::sync::mpsc baseline through the same oracle; a threaded arm with real producer threads checks the ownership ledger and the capacity, while its wall-clock latency and resident set are descriptive only",
+  "git_sha": "43955ddcb53cc4eced65c07fdbaade30cc9dc523",
+  "aggregated_at_git_sha": "edc7c02ff295f64453347f7b968c1df357c5d61f",
+  "recorded_at": "2026-10-09T09:03:00.263996+00:00",
+  "preregistration_sha256": "2c6668cb7050b508b324378faee8f6961dce3eea00c05d2a620cf9fe885d6a77",
+  "preregistration_rules_sha256": "3d3ceda267b06e50d885013341da1a95984f0406e4e34b5ccef7f120d16097c8",
+  "criteria_sha256": "513c6d18ba3dfb529988e7e14c1f9c47bfda55a4a6abc043412d2eb425147eb8",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- mailbox-backpressure <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261009T082606.843593Z-seed-17.json",
+      "git_sha": "43955ddcb53cc4eced65c07fdbaade30cc9dc523",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261009T082752.119727Z-seed-29.json",
+      "git_sha": "93a06c9ddf1d45befc72a0e92ff3e89bc509e99e",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261009T082926.297228Z-seed-43.json",
+      "git_sha": "10cd79754a065ae1fbfe3e2bc57ab4ff2afaee91",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261009T083058.055910Z-seed-71.json",
+      "git_sha": "482077f5a696574a57c1c5ca02d93d1fb187ff84",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261009T083229.083130Z-seed-101.json",
+      "git_sha": "6adff8fd0ea6fa5348a85f87d7e236ef764b23ba",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "ca83536b1025b0fc7bfe52405ccf7062d0c9beddc136b87db513d7ee1f244fae",
+    "29": "eaeeea672e45eec89b25b303e9d12107235a263ae0e7d60c11d87ac3ed341c90",
+    "43": "06074c2ce06218d2befdb045e0b6c1549b3a6f7940b9da846a17f2ed24c55819",
+    "71": "c1f28b973192d7cfae39b38ec08e262a67c78dbc42dc22b3b6a59b8bc9e645ec",
+    "101": "601895da03b8b40d1284d223382201c0e36c02385e4b1b65c73064c9ff95c98e"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 27,
+    "total": 27,
+    "git_sha": "0ac934fe17cbe3037f13fc242653138b4c49e2d0",
+    "sha256": "b94a80fe2a2a11d5094d7f52ae7e392e403b0290d54717355eaa2fc21d53b343"
+  },
+  "limitations": [
+    "scope is ptr_exec::Mailbox and MailboxSender only; the RequestAdmission queue, supervision, restart, cancellation and async mailboxes are not covered",
+    "latency is virtual: the gate is wait in simulated ticks against the analytic bound capacity x S_max, not wall-clock time; the threaded arm's wall-clock latency and peak resident set are descriptive and never gated",
+    "the threaded arm checks exact counts only (every one of thousands of repeated fills admits exactly the capacity, an Ok after a returned close() is a violation, the ledger holds after the join, a closed mailbox returns every value); how the scheduler interleaves producers is not controlled, so its contended-stage totals vary between runs and are only required to show all three outcomes (admitted, Full, Closed)",
+    "the model is single-server with uniformly distributed service times and a fixed phase plan; it does not reproduce a real isolate's service distribution, and payload classes differ only in body size",
+    "a bounded mailbox that refuses is back-pressure, not delivery: a refused message is returned to the producer, and what the producer does next (retry, shed, escalate) is outside the claim",
+    "the reference queue is a VecDeque with a capacity written for this harness; agreement with it shows the Mailbox matches this model, not that the model is the only sound one",
+    "negative controls (an unbounded channel, a drop-oldest wrapper) and canaries (duplicating, mutating, lossy, LIFO, capacity+1, capacity x2, early refusal, ignored close, closed reported as empty) show the oracle can tell them from a sound queue; a passing mailbox is the expected outcome",
+    "the mutation checker's evidence (results/mutations.json) is about the harness, not the mailbox; COMPLETED requires it (every planned mutation killed) as a precondition of trusting a pass, so without it the verdict is INVALID, and it says nothing about the mailbox itself",
+    "wait_bound_violations and payload_bound_violations are corollaries of the capacity, FIFO and model rules and of the harness's own work-conserving consumer (they cannot trip unless those do), and the p99 rule is implied by wait_bound_violations; they are kept because they are the experiment's stated latency and memory claims, not as independent evidence",
+    "memory is the queue bound only: the live payload bytes follow from the queue depth; the mailbox's own allocation (the VecDeque buffer) is not gated and appears at most in the descriptive resident set",
+    "a panic or a hang of the product is a falsification (product_panics, product_hangs), contained by the harness; a hang is detected only in the threaded arm, by a 20 s watchdog; a panic in harness code itself is a harness fault (INVALID)",
+    "timings come from one shared cloud container; no capacity claim"
+  ],
+  "metrics_sha256": "63a9e60fe3e5967cde6dfb864a6193cb6421c1ab0bbfcffc39dec368e44dec8e"
+}

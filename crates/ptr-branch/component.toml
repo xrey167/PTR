@@ -44,7 +44,7 @@ missing = [
 
 next = [
   "Run S003 against serial execution and last-writer-wins baselines",
-  "Run F003 on adjudicated calibration slices",
+  "F003 completed on a simulated adjudicator (2 per mille error); a real-adjudication successor needs its own protocol",
 ]
 
 experiments = [

@@ -1,0 +1,125 @@
+version = 1
+kind = "workspace-area"
+name = "M015-rlvr-vs-distill-passk"
+path = "experiments/model/M015-rlvr-vs-distill-passk"
+tests_dir = "tests"
+
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+samples_per_problem = 256
+max_k = 256
+min_pass_at_1_gain_rlvr_points = 2.0
+max_pass_at_256_gain_rlvr_points = 2.0
+min_pass_at_256_gain_distill_points = 2.0
+# Preregistered choices for this experiment (no code default exists).
+sampling_temperature = 1.0
+sampling_top_p = 1.0
+distillation_data_disjoint_from_problem_set = true
+distillation_compute_matched_to_rlvr = true
+hyperparameters_frozen_before_seeds = true
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+min_seeds = 5
+teacher_model = "Qwen/Qwen3-30B-A3B"
+teacher_model_revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39"
+problem_set_dataset = "openai/gsm8k"
+problem_set_config = "main"
+problem_set_revision = "740312add88f781978c0658806c59bc2815b9866"
+problem_set_split = "test"
+problem_set_selection_rule = "all 1319 problems of the test split, in index order"
+problem_set_size = 1319
+problem_set_held_out = true
+bootstrap_resamples = 10000
+bootstrap_confidence = 0.95
+compute_matching_basis = "training FLOPs"
+compute_relative_tolerance = 0.01
+hyperparameter_tuning_budget_trials_per_arm = 8
+# Preregistered choices for this experiment (no code default exists).
+bootstrap_method = "paired bootstrap over problems"
+bootstrap_seed = 20240607
+no_gain_confirmed_only_if_ci_upper_at_most_points = 2.0
+inconclusive_if_ci_straddles_threshold = true
+# Preregistered choices for this experiment (no code default exists).
+student_base_model = "allenai/OLMoE-1B-7B-0125"
+student_base_model_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+student_base_model_recorded_in_run_json = true
+training_data_disjoint_from_test_split = true
+max_training_test_overlap_count = 0
+training_set_digest_recorded_per_arm = true
+# Preregistered choices for this experiment (no code default exists).
+corpus_train = "openai/gsm8k train items with position mod 10 != 9, for RLVR prompts and distillation prompts"
+corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
+corpus_train_split = "train"
+corpus_selection_rule = "training and distillation prompts: GSM8K train items with position mod 10 != 9 (6726 of 7473 items, in index order), the complement of the tuning-validation partition (mod 10 == 9, 747 items); evaluation: all 1319 test problems in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "samples_per_problem", "sampling_temperature", "sampling_top_p", "sampling_top_k", "max_new_tokens", "bootstrap_seed", "problem_set_size", "bootstrap_resamples", "bootstrap_confidence", "n_samples", "hyperparameter_tuning_budget_trials_per_arm", "decoding_fields", "teacher_samples_per_prompt", "teacher_temperature", "teacher_top_p", "teacher_top_k", "teacher_max_new_tokens", "teacher_seed", "distillation_filter", "distillation_selection", "validation_position_modulus", "validation_position_residue", "arm_matrix", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "tuning_search_spec", "arm_comparisons", "training_steps_per_arm", "tuning_seed", "tuning_steps", "selected_hyperparameters"]
+# Preregistered choices for this experiment (no code default exists).
+sampling_top_k = -1
+max_new_tokens = 512
+n_samples = 256
+decoding_parameters_recorded_per_arm = true
+max_decoding_parameter_mismatches = 0
+decoding_fields = ["temperature", "top_p", "top_k", "max_new_tokens", "n_samples"]
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_used_recorded_per_arm = true
+max_tuning_budget_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+teacher_samples_per_prompt = 4
+teacher_temperature = 0.7
+teacher_top_p = 0.95
+teacher_top_k = -1
+teacher_max_new_tokens = 512
+teacher_seed = 20240607
+distillation_filter = "verifier-passing only (exact final-answer match)"
+distillation_selection = "lowest sample index among passing samples per prompt"
+prompts_without_passing_sample = "dropped and counted as distill_prompts_dropped"
+distillation_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+validation_rule = "validation partition for tuning: items whose position within the training partition has index mod 10 == 9, excluded from training; tuning selects on validation only"
+validation_corpora = ["gsm8k_train"]
+validation_position_modulus = 10
+validation_position_residue = 9
+validation_excluded_from_training = true
+tuning_selects_on_validation_only = true
+max_validation_overlap_count = 0
+validation_overlap_counted_per_corpus = true
+validation_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+arm_matrix = [{ arm = "base", training = "none" }, { arm = "rlvr", training = "rlvr_gsm8k_train" }, { arm = "sft_distilled", training = "distillation_from_teacher" }]
+# Preregistered choices for this experiment (no code default exists).
+model_checkpoint_repo = "allenai/OLMoE-1B-7B-0125"
+model_checkpoint_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+tokenizer_repo = "allenai/OLMoE-1B-7B-0125"
+tokenizer_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+moe_topology = { layers = 16, num_experts = 64, top_k = 8, router_layout = "per-layer linear router, softmax then top-k, norm_topk_prob = false", router_aux_loss_coef = 0.01 }
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+tuning_search_spec = { space = { learning_rate = { type = "log_uniform", low = 1e-7, high = 1e-5 }, batch_size = { type = "choice", values = [32, 64, 128] }}, trial_budget = 8, sampler = "seeded random search", selection_seed = 20240607, objective = "validation pass_at_1", tie_break = "lowest trial index" }
+tuning_search_spec_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+tuned_arms = ["rlvr", "sft_distilled"]
+untrained_arms = ["base"]
+untrained_arm_tuning_trials = 0
+# Preregistered choices for this experiment (no code default exists).
+tuning_trials_required = 8
+tuning_trial_set_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+arm_comparisons = { base = "comparison baseline", rlvr = "compared with base", sft_distilled = "compared with base" }
+arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+training_prompt_set = { dataset = "openai/gsm8k", split = "train", rule = "position mod 10 != 9", size = 6726 }
+tuning_validation_set = { rule = "position mod 10 == 9", size = 747 }
+# Preregistered choice: the RLVR arm trains for this many optimizer steps; the distilled arm trains until training FLOPs match within compute_relative_tolerance.
+training_steps_per_arm = 1000
+# Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
+tuning_seed = 1001
+tuning_steps_fraction = 0.25
+tuning_steps_budget_key = "training_steps_per_arm"
+tuning_steps = 250
+tuning_steps_arithmetic = "tuning_steps = max(1, floor(0.25 * training_steps_per_arm)) = max(1, floor(0.25 * 1000)) = 250"
+selected_hyperparameters = "one value per axis of tuning_search_spec.space, from the best trial on tuning_seed at tuning_steps"
+selected_hyperparameters_frozen_for_all_seeds = true

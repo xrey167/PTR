@@ -1,0 +1,598 @@
+{
+  "experiment_id": "Q002",
+  "git_sha": "5e138c9c9be2234e39257db8d4e8bec0a543bb4e",
+  "recorded_at": "2026-10-09T10:56:41.061043+00:00",
+  "subcommand": "evidence-promotion",
+  "killed": 37,
+  "total": 37,
+  "mutations": [
+    {
+      "name": "resolver-skips-the-digest-check",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 40,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 40
+      }
+    },
+    {
+      "name": "resolver-compares-only-the-quote-prefix",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 24
+      }
+    },
+    {
+      "name": "resolver-ignores-the-offset",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 24
+      }
+    },
+    {
+      "name": "resolver-accepts-unknown-raw-events",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 60,
+      "expected": [
+        "wrong_refusal_reason"
+      ],
+      "counters": {
+        "wrong_refusal_reason": 60
+      }
+    },
+    {
+      "name": "resolver-panics-on-a-span-past-the-end",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "product_panics": 24
+      }
+    },
+    {
+      "name": "verifier-skips-the-subject-compare",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 72,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 72
+      }
+    },
+    {
+      "name": "verifier-skips-the-value-compare",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 30,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 30
+      }
+    },
+    {
+      "name": "verifier-treats-negation-as-a-match",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 30,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 30
+      }
+    },
+    {
+      "name": "verifier-reports-a-subject-mismatch-as-a-value-mismatch",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 72,
+      "expected": [
+        "wrong_refusal_reason"
+      ],
+      "counters": {
+        "wrong_refusal_reason": 72
+      }
+    },
+    {
+      "name": "verifier-over-refuses-honest-claims",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 74,
+      "expected": [
+        "recall_violation"
+      ],
+      "counters": {
+        "recall_violation": 1,
+        "hard_honest_refused": 4,
+        "wrong_refusal_reason": 6,
+        "stage_skip_unexpected": 63
+      }
+    },
+    {
+      "name": "observe-accepts-revoked",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 104,
+      "expected": [
+        "stale_or_revoked_promoted",
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 50,
+        "stale_or_revoked_promoted": 50,
+        "stage_skip_unexpected": 4
+      }
+    },
+    {
+      "name": "observe-accepts-disputed",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 103,
+      "expected": [
+        "stale_or_revoked_promoted",
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 50,
+        "stale_or_revoked_promoted": 50,
+        "stage_skip_unexpected": 3
+      }
+    },
+    {
+      "name": "observe-accepts-superseded",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 137,
+      "expected": [
+        "stale_or_revoked_promoted",
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 60,
+        "stale_or_revoked_promoted": 60,
+        "stage_skip_unexpected": 17
+      }
+    },
+    {
+      "name": "observe-misreports-the-wrong-stage",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 48,
+      "expected": [
+        "stage_skip_unexpected"
+      ],
+      "counters": {
+        "stage_skip_unexpected": 48
+      }
+    },
+    {
+      "name": "observe-without-the-stage-check",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 48,
+      "expected": [
+        "stage_skip_accepted"
+      ],
+      "counters": {
+        "stage_skip_accepted": 48
+      }
+    },
+    {
+      "name": "mark-possible-without-the-stage-check",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "stage_skip_accepted"
+      ],
+      "counters": {
+        "stage_skip_accepted": 24
+      }
+    },
+    {
+      "name": "promote-with-a-proof-without-the-stage-check",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 96,
+      "expected": [
+        "stage_skip_accepted"
+      ],
+      "counters": {
+        "stage_skip_accepted": 24,
+        "stage_skip_unexpected": 72
+      }
+    },
+    {
+      "name": "promote-ignores-the-proof-source",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 48,
+      "expected": [
+        "stage_skip_accepted"
+      ],
+      "counters": {
+        "stage_skip_accepted": 48
+      }
+    },
+    {
+      "name": "promote-without-a-held-source",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "stage_skip_accepted"
+      ],
+      "counters": {
+        "stage_skip_accepted": 24
+      }
+    },
+    {
+      "name": "observe-ignores-the-source-owner",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 144,
+      "expected": [
+        "stale_or_revoked_promoted",
+        "false_known_mechanism",
+        "stage_skip_accepted"
+      ],
+      "counters": {
+        "false_known_mechanism": 60,
+        "stale_or_revoked_promoted": 60,
+        "stage_skip_accepted": 24
+      }
+    },
+    {
+      "name": "owner-is-compared-on-the-capsule-only",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 60,
+      "expected": [
+        "stale_or_revoked_promoted",
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 30,
+        "stale_or_revoked_promoted": 30
+      }
+    },
+    {
+      "name": "owner-is-compared-on-the-generation-only",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 76,
+      "expected": [
+        "stale_or_revoked_promoted",
+        "false_known_mechanism",
+        "stage_skip_accepted"
+      ],
+      "counters": {
+        "false_known_mechanism": 30,
+        "stale_or_revoked_promoted": 30,
+        "stage_skip_accepted": 16
+      }
+    },
+    {
+      "name": "promote-compares-the-proof-by-raw-id-only",
+      "file": "crates/ptr-search/src/lib.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "stage_skip_accepted"
+      ],
+      "counters": {
+        "stage_skip_accepted": 24
+      }
+    },
+    {
+      "name": "verifier-skips-the-predicate-compare",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 24
+      }
+    },
+    {
+      "name": "verifier-folds-the-ascii-case-of-the-subject",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 24
+      }
+    },
+    {
+      "name": "verifier-reads-only-the-first-line",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 47,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 45,
+        "wrong_refusal_reason": 2
+      }
+    },
+    {
+      "name": "verifier-trims-the-statement",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 24
+      }
+    },
+    {
+      "name": "verifier-accepts-a-bare-not-value",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "false_known_mechanism"
+      ],
+      "counters": {
+        "false_known_mechanism": 24
+      }
+    },
+    {
+      "name": "verifier-rejects-non-ascii-tokens",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 148,
+      "expected": [
+        "hard_honest_refused"
+      ],
+      "counters": {
+        "recall_violation": 1,
+        "hard_honest_refused": 11,
+        "wrong_refusal_reason": 63,
+        "stage_skip_unexpected": 73
+      }
+    },
+    {
+      "name": "resolver-drops-the-empty-span-check",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 24,
+      "expected": [
+        "wrong_refusal_reason"
+      ],
+      "counters": {
+        "wrong_refusal_reason": 24
+      }
+    },
+    {
+      "name": "resolver-binds-the-first-occurrence-of-the-quote",
+      "file": "crates/ptr-search/src/source.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 7,
+      "expected": [
+        "hard_honest_refused"
+      ],
+      "counters": {
+        "hard_honest_refused": 6,
+        "wrong_refusal_reason": 1
+      }
+    },
+    {
+      "name": "harness-authority-revokes-the-wrong-generation",
+      "file": "bins/ptr-bench/src/experiments/q002/authority.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 104,
+      "expected": [
+        "stale_or_revoked_promoted"
+      ],
+      "counters": {
+        "false_known_mechanism": 50,
+        "stale_or_revoked_promoted": 50,
+        "stage_skip_unexpected": 4
+      }
+    },
+    {
+      "name": "harness-label-table-trusts-lookalike-subjects",
+      "file": "bins/ptr-bench/src/experiments/q002/world.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 97,
+      "expected": [
+        "oracle_label_mismatches"
+      ],
+      "counters": {
+        "recall_violation": 1,
+        "oracle_label_mismatches": 96
+      }
+    },
+    {
+      "name": "harness-stage-skip-driver-uses-the-hits-own-proof",
+      "file": "bins/ptr-bench/src/experiments/q002/arms.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 48,
+      "expected": [
+        "stage_skip_accepted"
+      ],
+      "counters": {
+        "stage_skip_accepted": 48
+      }
+    },
+    {
+      "name": "harness-generator-drifts-from-the-pinned-corpus",
+      "file": "bins/ptr-bench/src/experiments/q002/world.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "corpus_selection_digest_mismatches"
+      ],
+      "counters": {
+        "corpus_selection_digest_mismatches": 1
+      }
+    },
+    {
+      "name": "harness-expects-the-wrong-refusal-for-revoked-hits",
+      "file": "bins/ptr-bench/src/experiments/q002/world.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 55,
+      "expected": [
+        "wrong_refusal_reason"
+      ],
+      "counters": {
+        "wrong_refusal_reason": 50,
+        "stage_skip_unexpected": 4,
+        "corpus_selection_digest_mismatches": 1
+      }
+    },
+    {
+      "name": "harness-mechanism-drops-the-promoted-answers",
+      "file": "bins/ptr-bench/src/experiments/q002/arms.rs",
+      "cases": 36,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "task_success_violation"
+      ],
+      "counters": {
+        "task_success_violation": 1
+      }
+    }
+  ]
+}

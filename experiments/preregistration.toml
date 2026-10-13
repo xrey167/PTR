@@ -92,7 +92,11 @@ nondeterminism_rerun_case = "int"
 low_cells = "str-list"
 
 # The four owner decisions (calibration_set_rule, adjudicators_see_intent,
-# harm_breakdown_namespaces, adjudication_protocol) block until signed.
+# harm_breakdown_namespaces, adjudication_protocol) were signed on 2026-10-09; what still
+# blocks is the protocol's digest, pinned at the freeze. The keys after
+# `adjudication_protocol` are the sizes of the simulated stream, the Monte-Carlo coverage
+# test, the held-out tests and the off-policy evaluation (PREREGISTRATION.md derives
+# each).
 [experiment.F003.required]
 seeds = "int-list"
 alpha_permille = "int"
@@ -105,39 +109,249 @@ calibration_set_rule = "str"
 adjudicators_see_intent = "bool"
 harm_breakdown_namespaces = "str"
 adjudication_protocol = "file"
+harness = "str"
+stream_branches = "int"
+slice_rate_permille = "int"
+adjudicator_error_permille = "int"
+policy_sizes = "int-list"
+mc_replicates = "int"
+coverage_test_level_ppm = "int"
+heldout_familywise_permille = "int"
+heldout_tests = "int"
+ope_logs = "int"
+ope_log_branches = "int"
+ope_bias_sigmas = "int"
+preregistration_text = "file"
+criteria = "file"
 
+# Design: experiments/retrieval/Q003-postgres-hybrid/PREREGISTRATION.md. The gating baseline is rag_reference; strong_retrieval
+# (BM25 + bge-m3 + RRF + bge-reranker-v2-m3, retrieval only) is reported on a subsample and never gated, but its models are
+# pinned and its directory frozen with the table. strong_rag stays blocked and is not a baseline of Q003.
 [experiment.Q003.required]
 seeds = "int-list"
+harness = "str"
+capsules = "int"
+queries = "int"
+strong_queries = "int"
 recall_margin_permille = "int"
+recall_exact_margin_permille = "int"
 k = "int"
 embedding_model = "str"
 embedding_revision = "str"
+pool_sha256 = "str"
+vectors_sha256 = "str"
+strong_vectors_sha256 = "str"
+workload_digest_seed_17 = "str"
+workload_digest_seed_29 = "str"
+workload_digest_seed_43 = "str"
+workload_digest_seed_71 = "str"
+workload_digest_seed_101 = "str"
+preregistration_text = "file"
+criteria = "file"
 
 # rag_reference's reranker is "not-configured", a decided value rather than a
 # placeholder, so the keys are named one by one.
 [[experiment.Q003.baseline]]
 name = "rag_reference"
 path = "research/baselines/rag_reference/config.toml"
-keys = ["hybrid.embedding_model"]
+keys = ["hybrid.embedding_model", "hybrid.embedding_revision"]
 status_key = "status"
 
 [[experiment.Q003.baseline]]
-name = "strong_rag"
-path = "research/baselines/strong_rag/config.toml"
-keys = ["dense.revision", "reranker.revision", "answer.generator", "answer.revision"]
+name = "strong_retrieval"
+path = "research/baselines/strong_retrieval/config.toml"
+keys = ["dense.revision", "reranker.revision"]
 status_key = "status"
+
+# Q003-v2, the successor of the superseded Q003: the same required keys and baselines (the runner passes the declared
+# command_environment through). Design: experiments/retrieval/Q003-v2-postgres-hybrid/PREREGISTRATION.md. The gating baseline is rag_reference; strong_retrieval
+# (BM25 + bge-m3 + RRF + bge-reranker-v2-m3, retrieval only) is reported on a subsample and never gated, but its models are
+# pinned and its directory frozen with the table. strong_rag stays blocked and is not a baseline of Q003-v2.
+[experiment.Q003-v2.required]
+seeds = "int-list"
+harness = "str"
+capsules = "int"
+queries = "int"
+strong_queries = "int"
+recall_margin_permille = "int"
+recall_exact_margin_permille = "int"
+k = "int"
+embedding_model = "str"
+embedding_revision = "str"
+pool_sha256 = "str"
+vectors_sha256 = "str"
+strong_vectors_sha256 = "str"
+workload_digest_seed_17 = "str"
+workload_digest_seed_29 = "str"
+workload_digest_seed_43 = "str"
+workload_digest_seed_71 = "str"
+workload_digest_seed_101 = "str"
+preregistration_text = "file"
+criteria = "file"
+
+# rag_reference's reranker is "not-configured", a decided value rather than a
+# placeholder, so the keys are named one by one.
+[[experiment.Q003-v2.baseline]]
+name = "rag_reference"
+path = "research/baselines/rag_reference/config.toml"
+keys = ["hybrid.embedding_model", "hybrid.embedding_revision"]
+status_key = "status"
+
+[[experiment.Q003-v2.baseline]]
+name = "strong_retrieval"
+path = "research/baselines/strong_retrieval/config.toml"
+keys = ["dense.revision", "reranker.revision"]
+status_key = "status"
+
+# Q003-v3, the successor of the superseded Q003-v2: the same required keys (but for the workload digests of its five new seeds) and
+# the same baselines; the harness gains typed stops, timeouts and a watchdog. Design: experiments/retrieval/Q003-v3-postgres-hybrid/PREREGISTRATION.md. The gating baseline is rag_reference; strong_retrieval
+# (BM25 + bge-m3 + RRF + bge-reranker-v2-m3, retrieval only) is reported on a subsample and never gated, but its models are
+# pinned and its directory frozen with the table. strong_rag stays blocked and is not a baseline of Q003-v3.
+[experiment.Q003-v3.required]
+seeds = "int-list"
+harness = "str"
+capsules = "int"
+queries = "int"
+strong_queries = "int"
+recall_margin_permille = "int"
+recall_exact_margin_permille = "int"
+k = "int"
+embedding_model = "str"
+embedding_revision = "str"
+pool_sha256 = "str"
+vectors_sha256 = "str"
+strong_vectors_sha256 = "str"
+workload_digest_seed_43 = "str"
+workload_digest_seed_71 = "str"
+workload_digest_seed_101 = "str"
+workload_digest_seed_131 = "str"
+workload_digest_seed_173 = "str"
+preregistration_text = "file"
+criteria = "file"
+
+# rag_reference's reranker is "not-configured", a decided value rather than a
+# placeholder, so the keys are named one by one.
+[[experiment.Q003-v3.baseline]]
+name = "rag_reference"
+path = "research/baselines/rag_reference/config.toml"
+keys = ["hybrid.embedding_model", "hybrid.embedding_revision"]
+status_key = "status"
+
+[[experiment.Q003-v3.baseline]]
+name = "strong_retrieval"
+path = "research/baselines/strong_retrieval/config.toml"
+keys = ["dense.revision", "reranker.revision"]
+status_key = "status"
+
+# The harness (bins/ptr-bench, r005) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text.
+[experiment.R005.required]
+seeds = "int-list"
+harness = "str"
+max_new_tokens = "int"
+intermediate_size = "int"
+rope_theta = "str"
+rms_norm_eps = "str"
+qk_norm_main = "str"
+qk_norm_transform_arm = "str"
+ntk_factor = "str"
+ntk_original_max_positions = "int"
+over_capacity_prompt_tokens = "int"
+over_capacity_fill_prompts = "int"
+over_capacity_extra_prompts = "int"
+saturation_max_sessions = "int"
+saturation_excess_requests = "int"
+corpus_selection_digest_main = "str"
+corpus_selection_digest_nodes_only = "str"
+corpus_selection_digest_bytes_only = "str"
+semantic_liveness_model = "str"
+preregistration_text = "file"
+criteria = "file"
+static_evidence = "str-list"
+
+# The harness (bins/ptr-bench, r009) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text.
+[experiment.R009.required]
+seeds = "int-list"
+harness = "str"
+max_new_tokens = "int"
+intermediate_size = "int"
+rope_theta = "str"
+rms_norm_eps = "str"
+qk_norm = "str"
+lora_rank = "int"
+lora_scale = "str"
+adapter_seed = "int"
+adapter_layers = "str"
+alora_first_layer = "int"
+alora_projections = "str"
+mlp_adapter_form = "str"
+partial_hit_mode = "str"
+restart_resolution = "str"
+total_kv_rows_counts = "str"
+per_seed_role = "str"
+matrix_adapter_first_layer = "int"
+corpus_selection_digest = "str"
+preregistration_text = "file"
+criteria = "file"
+
+# The harness (bins/ptr-bench, r010) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text.
+[experiment.R010.required]
+seeds = "int-list"
+harness = "str"
+max_new_tokens = "int"
+prompt_tokens = "int"
+page_tokens = "int"
+intermediate_size = "int"
+rope_theta = "str"
+rms_norm_eps = "str"
+qk_norm = "str"
+moe_seed = "int"
+moe_layers = "str"
+expert_intermediate_size = "int"
+top_k_normalisation = "str"
+tie_break = "str"
+masked_expert = "str"
+revoked_expert_index = "int"
+batch_variant_capacity = "int"
+cobatch_requests = "int"
+expert_tracking = "str"
+partial_hit_mode = "str"
+restart_resolution = "str"
+per_seed_role = "str"
+corpus_selection_digest = "str"
+preregistration_text = "file"
+criteria = "file"
 
 [experiment.R004.required]
 seeds = "int-list"
 public_regression_gate_permille = "int"
 backward_transfer_min_permille = "int"
 
+# The harness (bins/ptr-bench, m008) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text. The
+# pool and the vectors are the frozen artifact of research/embeddings. The recency buffer is configured
+# here (it has no baseline directory); the hybrid retrieval is the rag_reference baseline.
 [experiment.M008.required]
 seeds = "int-list"
+harness = "str"
 token_budget = "int"
 recency_window = "int"
 recency_buffer_baseline = "str"
 hybrid_retrieval_baseline = "str"
+embedding_model = "str"
+embedding_revision = "str"
+embedding_vectors_sha256 = "str"
+pool_sha256 = "str"
+preregistration_text = "file"
+criteria = "file"
+
+[[experiment.M008.baseline]]
+name = "rag_reference"
+path = "research/baselines/rag_reference/config.toml"
+keys = ["hybrid.embedding_model"]
+status_key = "status"
 
 [experiment.E005.required]
 seeds = "int-list"
@@ -210,3 +424,870 @@ required = { seeds = "int-list", steps = "int", batch = "int", d_model = "int", 
 
 [experiment.M002-v9]
 required = { seeds = "int-list", steps = "int", batch = "int", d_model = "int", learning_rate = "str", data = "str", folds = "str", arm_pair = "str", rank = "int", bias_limit = "int", metadata_dropout = "str", dataset_lock = "file", criteria = "file", decision_script = "file", decision_core = "file", pilot_source_experiment = "str", pilot_selection = "file", factorized_contract = "file", runner_arm_table = "file", runner_main = "file", implementation_tree = "str", implementation_tree_git_digest = "str" }
+
+[experiment.M002-a0v2-sweep-lr0p002]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M002-a0v2-sweep-lr0p005]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M002-a0v2-sweep-lr0p0125]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M003-a0v2-sweep-lr0p002]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M003-a0v2-sweep-lr0p005]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M003-a0v2-sweep-lr0p0125]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M001-a0v2-sweep-lr0p002]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M001-a0v2-sweep-lr0p005]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M001-a0v2-sweep-lr0p0125]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M004-a0v2-sweep-lr0p002]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M004-a0v2-sweep-lr0p005]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M004-a0v2-sweep-lr0p0125]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr = "str" }
+
+[experiment.M002-a0v2-eval]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr_file = "file" }
+
+[experiment.M003-a0v2-eval]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr_file = "file" }
+
+[experiment.M001-a0v2-eval]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr_file = "file" }
+
+[experiment.M004-a0v2-eval]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr_file = "file" }
+
+[experiment.M001-a0v2-rerun]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr_file = "file" }
+
+[experiment.M001-a0v2-cont-no-semantic-slots]
+required = { seeds = "int-list", steps = "int", arms = "str", data = "str", data_fnv64 = "str", d_model = "int", lr_file = "file" }
+
+[experiment.R012.required]
+seeds = "int-list"
+harness = "str"
+max_new_tokens = "int"
+intermediate_size = "int"
+rope_theta = "str"
+rms_norm_eps = "str"
+qk_norm_main = "str"
+base_checkpoint = "str"
+prompt_tokens = "int"
+segment_tokens = "int"
+hops_per_chain = "int"
+corpus_generator_seed = "int"
+selection_sequences = "int"
+corpus_selection_digest = "str"
+stub_producer = "str"
+generation_parameters = "str"
+per_seed_role = "str"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.R011.required]
+seeds = "int-list"
+harness = "str"
+adversarial_case_count = "int"
+invalidation_matrix_cell_count = "int"
+corpus_selection_digest = "str"
+selection_domain = "str"
+case_order_label = "int"
+scenario_order_label = "int"
+per_seed_role = "str"
+fanout_experts = "int"
+fanout_id_len = "int"
+inflight_prompt_tokens = "int"
+max_new_tokens = "int"
+segment_tokens = "int"
+pre_regime_gate_epoch = "int"
+inflight_layer_j = "int"
+tiny_model_config_digest = "str"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.R007.required]
+seeds = "int-list"
+harness = "str"
+corpus_selection_digest = "str"
+selection_domain = "str"
+selection_sequences = "int"
+selection_sequence_tokens = "int"
+role_order_label = "int"
+probe_order_label = "int"
+per_seed_role = "str"
+canaries_in_span = "int"
+canary_bytes = "int"
+span_identity = "str"
+span_generation = "int"
+probe_headroom_tokens = "int"
+canary_logit_shift_unit = "str"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.R006.required]
+seeds = "int-list"
+harness = "str"
+corpus_selection_digest = "str"
+selection_domain = "str"
+selection_sequences = "int"
+selection_sequence_tokens = "int"
+role_order_label = "int"
+per_seed_role = "str"
+tiny_model_config_digest = "str"
+position_shift_tokens = "int-list"
+rolling_window_tokens = "int"
+reused_segment_tokens = "int"
+tail_tokens = "int"
+harness_max_prompt_tokens = "int"
+harness_max_new_tokens = "int"
+invalidation_matrix_cell_count = "int"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.S001.required]
+seeds = "int-list"
+harness = "str"
+sizes = "int-list"
+deltas_per_size = "int-list"
+local_class_max_closure_permille = "int"
+max_locality_ratio_permille_local = "int"
+min_local_class_deltas = "int"
+control_size = "int"
+control_deltas = "int"
+preregistration_text = "file"
+criteria = "file"
+
+# Design: docs/architecture/38-consciousness-indicators.md. The harness is research/consciousness/gw/harness.py;
+# its pinned values are the [pinned_thresholds] of the experiment's config.toml (a test pins this table to them).
+# learning rates are stored as integers in millionths, noise in thousandths.
+[experiment.C001.required]
+seeds = "int-list"
+harness = "str"
+ood_modules = "int-list"
+noise_milli = "int"
+n_train_modules = "int"
+n_types = "int"
+n_values = "int"
+slots = "int"
+top_k = "int"
+rounds = "int"
+d_model = "int"
+ffn_workspace = "int"
+train_size = "int"
+max_steps = "int"
+patience = "int"
+min_delta_permille = "int"
+eval_every = "int"
+batch_size = "int"
+param_tolerance_permille = "int"
+paired_margin_permille = "int"
+sensitivity_margin_permille = "int"
+graded_min_lower_permille = "int"
+guard_floor_permille = "int"
+guard_ceiling_permille = "int"
+max_untrained_workspace_seeds = "int"
+max_unconverged_seeds = "int"
+trained_margin_permille = "int"
+min_arms_trained = "int"
+chance_slack_permille = "int"
+eval_size = "int"
+min_eval_instances = "int"
+curve_eval_size = "int"
+probe_size = "int"
+drop_probe_size = "int"
+loss_window_evals = "int"
+auc_evals = "int"
+train_stream_offset = "int"
+eval_stream_offset = "int"
+weight_decay_micro = "int"
+grad_clip_milli = "int"
+probe_scale_milli = "int"
+arm_lr_micro = "str"
+arm_weight_decay_micro = "str"
+arm_d_list = "str"
+paired_t_support = "str"
+paired_t_refute = "str"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.R001.required]
+seeds = "int-list"
+harness = "str"
+capacities = "int-list"
+service_min_ticks = "int"
+service_max_ticks = "int"
+control_capacity = "int"
+threaded_producers = "int"
+threaded_fill_rounds = "int"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.Q002.required]
+seeds = "int-list"
+harness = "str"
+capsules = "int"
+healthy_capsules = "int"
+revoked_capsules = "int"
+disputed_capsules = "int"
+max_generations = "int"
+facts_per_capsule = "int"
+hard_honest_per_variant = "int"
+recall_floor_permille = "int"
+preregistration_text = "file"
+criteria = "file"
+
+# F001 (generate-verify-repair): mechanism scope with a seeded stub generator on a synthetic verifiable task (owner
+# decision 2026-10-09); no claim about the quality of any model's generations. `profiles` is the stub's per-slot skill
+# (per mille, name=p,...;name=p,...), `repair_q` the repair stub's per-slot success (per mille).
+[experiment.F001.required]
+seeds = "int-list"
+harness = "str"
+profiles = "str"
+budgets = "int-list"
+tasks_per_profile = "int"
+repair_q = "int"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.F002.required]
+seeds = "int-list"
+harness = "str"
+items = "int"
+gold_items = "int"
+contamination_permille = "int"
+bootstrap_interval_permille = "int"
+mvc_beta_milli = "int"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.S002.required]
+seeds = "int-list"
+harness = "str"
+cases_per_seed = "int"
+class_bump_early_permille = "int"
+class_bump_late_permille = "int"
+class_lifecycle_permille = "int"
+max_cancel_latency_rounds_max = "int"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.M001-v5-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str" }
+
+[[experiment.M001-v5-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M001-v5]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M001-v5.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v10-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str" }
+
+[[experiment.M002-v10-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v10]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M002-v10.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v2-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str" }
+
+[[experiment.M003-v2-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v2]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M003-v2.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v10-sweep-r2]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", lr_file_target = "str", supersedes = "str" }
+
+[[experiment.M002-v10-sweep-r2.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M001-v6-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file_target = "str" }
+
+[[experiment.M001-v6-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M001-v6]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M001-v6.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v11-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file_target = "str" }
+
+[[experiment.M002-v11-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v11]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M002-v11.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v3-sweep]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file_target = "str" }
+
+[[experiment.M003-v3-sweep.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v3]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M003-v3.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M003-v4]
+required = { seeds = "int-list", study = "str", arms = "str", steps = "int", batch = "int", d_model = "int", rank = "int", bias_limit = "int", metadata_dropout = "str", router_mode = "str", data = "str", folds = "str", dataset_lock = "file", lr_grid = "str", lr_selection_rule = "str", sweep_seed = "int", criteria = "file", preregistration_text = "file", decision_script = "file", decision_core = "file", runner_arm_table = "file", runner_main = "file", runner_train = "file", runner_baseline = "file", implementation_tree = "str", implementation_tree_git_digest = "str", decision_base = "file", lr_file = "file", sweep_experiment = "str", primary_contrast = "str", delta_min = "str", ood_nll_ci_upper_le = "str", ood_ece_mean_le = "str", ood_ece_ci_upper_le = "str", iid_accuracy_ci_lower_ge = "str", plain_param_tolerance = "str" }
+
+[[experiment.M003-v4.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+# The harness (bins/ptr-bench, l001) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text. The table
+# holds every non-prose key of config.toml's [pinned_thresholds] (the choices the harness compiles in).
+[experiment.L001-v2.required]
+seeds = "int-list"
+harness = "str"
+seed_aggregation = "str"
+events_min = "int"
+events_max = "int"
+workloads_file = "int"
+workloads_ack = "int"
+workloads_engine = "int"
+raft_scenarios_per_kind = "int"
+raft_scenario_kinds = "str-list"
+unwind_idx_per_point = "int"
+child_idx_per_point = "int"
+engine_child_idx_per_point = "int"
+hang_watchdog_ms = "int"
+child_watchdog_ms = "int"
+hang_limit = "int"
+power_loss_policies = "str-list"
+sector_bytes = "int"
+log_points = "str-list"
+anchor_points = "str-list"
+engine_points = "str-list"
+sync_parent_point = "str"
+fault_drop_permille = "int"
+fault_duplicate_permille = "int"
+fault_reorder_permille = "int"
+min_scenarios_checked = "int"
+min_recoveries_with_acked_revocation = "int"
+min_revoked_pairs_denied = "int"
+min_crash_points_at_revocation = "int"
+min_workloads_file = "int"
+min_workloads_ack = "int"
+min_workloads_engine = "int"
+min_scenarios_raft = "int"
+min_recoveries_file = "int"
+min_recoveries_ack = "int"
+min_recoveries_engine = "int"
+min_members_replayed = "int"
+min_failpoint_hits = "int"
+min_images_lost_bytes = "int"
+min_rename_image_pairs = "int"
+min_lie_images = "int"
+min_child_aborts_file = "int"
+min_child_aborts_ack = "int"
+min_child_aborts_engine = "int"
+min_unwind_panics_observed = "int"
+min_leader_changes = "int"
+min_minority_proposals = "int"
+min_deposed_leader_restarts = "int"
+min_messages_dropped = "int"
+min_messages_duplicated = "int"
+min_messages_reordered = "int"
+min_revoke_then_recommit_histories = "int"
+min_subjects = "int"
+min_events = "int"
+min_probe_calibrated = "int"
+min_probe_dirty_seen = "int"
+min_probe_clean_checked = "int"
+max_refused_share_damaged_permille = "int"
+max_every_falsifier = "int"
+timing_gated = "bool"
+engine_lie_gated = "bool"
+preregistration_text = "file"
+criteria = "file"
+
+# Design: docs/architecture/36-kv-reuse.md section D (the pipeline split) and experiments/system/E007-split-pod-kv/PREREGISTRATION.md.
+# The harness (bins/ptr-bench, e007) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text. The table
+# holds every non-prose key of config.toml's [pinned_thresholds] (the choices the harness compiles in).
+[experiment.E007.required]
+seeds = "int-list"
+harness = "str"
+seed_aggregation = "str"
+test_model_layers = "int"
+split_layer = "int"
+hidden_size = "int"
+num_heads = "int"
+num_kv_heads = "int"
+head_dim = "int"
+vocab_size = "int"
+weight_seed = "int"
+weights = "str"
+boundary_dtype = "str"
+tokenizer_pin = "str"
+moe_topology = "str"
+tiny_model_config_digest = "str"
+tiny_model_config_digest_rule = "str"
+max_model_pin_mismatches = "int"
+corpus = "str"
+corpus_generator_seed = "int"
+corpus_selection_rule = "str"
+corpus_selection_domain = "str"
+corpus_selection_digest = "str"
+max_selection_digest_mismatches = "int"
+max_procedure_mismatches = "int"
+sequences = "int"
+prompt_tokens_min = "int"
+prompt_tokens_max = "int"
+decode_steps = "int"
+page_tokens = "int"
+intermediate_size = "int"
+rope_theta = "str"
+rms_norm_eps = "str"
+key_encoding = "str"
+output_definition = "str"
+small_frame_chunk_bytes = "int"
+probe_chunk_bytes = "int"
+probe_frame_rows = "int"
+frame_budget_ms = "int"
+frame_spacing_ms = "int"
+large_frame_tokens = "int"
+large_frame_width = "int"
+large_frame_dtype = "str"
+large_frame_bytes = "int"
+max_body_bytes = "int"
+max_chunk_bytes = "int"
+large_frame_chunks = "int"
+large_frame_send_order = "int-list"
+reorder_window = "int"
+frame_deadline_ms = "int"
+max_incomplete_frames_per_peer = "int"
+max_chunks_in_flight = "int"
+max_frame_tombstones_per_principal = "int"
+clock_skew_bound_ms = "int"
+max_clock_skew_ms = "int"
+max_frame_deadline_lifetime_ms = "int"
+replay_window_ms = "int"
+replay_window_rule = "str"
+max_assembled_frame_bytes = "int"
+max_total_buffered_bytes = "int"
+tombstone_overcapacity_frames = "int"
+tombstone_stagger_ms = "int"
+late_window_replay_delay_range_ms = "int-list"
+late_window_replay_delay_range_rule = "str"
+chunk_envelope_authentication = "str"
+upstream_principal = "str"
+addressed_to = "str"
+stage_identity = "str"
+signing_key_seed = "int"
+chunk_header_fields = "str-list"
+chunk_digest_covers = "str-list"
+chunk_envelope_signed_fields = "str-list"
+reassembly_identity = "str"
+tombstone_bound = "str"
+completion_tombstone_retention = "str"
+abandonment_tombstone_retention = "str"
+saturation_behaviour = "str"
+session_policy = "str"
+invalidation_types = "str-list"
+invalidation_paths = "str-list"
+invalidation_coverage_matrix_kinds = "str-list"
+invalidation_coverage_matrix_cells = "str-list"
+invalidation_matrix_path_meaning = "str"
+invalidation_matrix_not_applicable = "str"
+revalidated_at_use = "str-list"
+adversarial_attempt_kinds = "str-list"
+valid_frame_cases = "str-list"
+smuggling_probe_kinds = "str-list"
+wire_kv_page_bytes_definition = "str"
+wire_capture = "str"
+transport = "str"
+min_attempts = "int"
+max_violations = "int"
+min_activation_frames_crossed = "int"
+min_valid_frames_sent = "int"
+min_large_frame_cases = "int"
+min_interleaved_frame_pairs = "int"
+min_interleaved_chunk_switches = "int"
+tombstones_retained_at_saturation = "int"
+abandoned_frames_in_saturation_case = "int"
+min_frames_accepted_after_tombstone_expiry = "int"
+min_stale_upstream_entries_before_revocation = "int"
+min_revoke_messages_dropped_or_delayed = "int"
+min_control_trips = "int"
+buffered_bytes_baseline = "int"
+min_stale_worker_frame_race_cases = "int"
+min_sequences_per_seed = "int"
+preregistration_text = "file"
+criteria = "file"
+
+# The harness (bins/ptr-bench, l002) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text. The table
+# holds every non-prose key of config.toml's [pinned_thresholds] (the choices the harness compiles in).
+[experiment.L002.required]
+seeds = "int-list"
+harness = "str"
+seed_aggregation = "str"
+events_min = "int"
+events_max = "int"
+cutover_workloads = "int"
+cuts_per_workload = "int"
+keep_records = "int-list"
+above_floor_idx_per_point = "int"
+crash_scenarios_per_point = "int"
+ioerr_scenarios_per_point = "int"
+heal_scenarios = "int"
+tamper_scenarios = "int"
+image_scenarios = "int"
+image_captures_per_scenario = "int"
+convergence_rounds = "int"
+election_attempts = "int"
+proposal_settle_rounds = "int"
+hang_watchdog_ms = "int"
+hang_limit = "int"
+power_loss_policies = "str-list"
+sector_bytes = "int"
+fault_drop_permille = "int"
+fault_duplicate_permille = "int"
+fault_reorder_permille = "int"
+cutover_points = "str-list"
+sync_parent_point = "str"
+above_floor_points = "str-list"
+member_points = "str-list"
+error_points = "str-list"
+scenario_kinds = "str-list"
+min_cuts = "int"
+min_recoveries_cutover = "int"
+min_recoveries_member = "int"
+min_scenarios_group = "int"
+min_scenarios_checked = "int"
+min_cutover_hits = "int"
+min_member_hits = "int"
+min_images_lost_bytes = "int"
+min_rename_image_pairs = "int"
+min_lie_images = "int"
+min_unwind_panics_observed = "int"
+min_cuts_over_revocation = "int"
+min_snapshots_recorded = "int"
+min_snapshots_installed = "int"
+min_restarts_between_install_and_resume = "int"
+min_injected_io_errors = "int"
+min_leader_changes = "int"
+min_messages_dropped = "int"
+min_promises_checked = "int"
+min_promises_vote = "int"
+min_tamper_controls = "int"
+min_revoke_then_recommit_histories = "int"
+min_recoveries_with_acked_revocation = "int"
+min_revoked_pairs_denied = "int"
+min_subjects = "int"
+min_events = "int"
+min_probe_calibrated = "int"
+min_probe_dirty_seen = "int"
+min_probe_clean_checked = "int"
+max_every_falsifier = "int"
+timing_gated = "bool"
+preregistration_text = "file"
+criteria = "file"
+
+# The harness (bins/ptr-bench, r013) prints one JSON object per seed; aggregate.py judges the five
+# seeds under the criteria file, which is frozen with the table, as is the preregistration text. The table
+# holds every non-prose key of config.toml's [pinned_thresholds] (the choices the harness compiles in).
+[experiment.R013.required]
+seeds = "int-list"
+harness = "str"
+seed_aggregation = "str"
+adversarial_cases = "str-list"
+selection_digest = "str"
+dormant_kinds = "str-list"
+paths = "str-list"
+authority_kinds = "str-list"
+authority_forms = "str-list"
+dependency_kinds = "str-list"
+dependency_forms = "str-list"
+inflight_kinds = "str-list"
+inflight_triggers = "str-list"
+attestation_operations = "str-list"
+min_attempts_per_case = "int"
+min_structural_inflight_race_cases = "int"
+min_transitive_authority_cases = "int"
+min_revoke_while_retired_cases = "int"
+min_reactivation_controls = "int"
+min_superseded_source_cases = "int"
+min_attestation_artifact_mismatch_attempts = "int"
+min_attestation_proposal_mismatch_attempts = "int"
+min_attestation_missing_attempts = "int"
+min_attestation_run_reuse_attempts = "int"
+min_attestation_base_model_mismatch_attempts = "int"
+min_attestation_untrusted_attestor_attempts = "int"
+min_forged_gate_grant_attempts = "int"
+min_attestation_requirement_after_reopen_attempts = "int"
+min_attestation_binding_controls_accepted = "int"
+min_revoked_attestor_evidence_attempts = "int"
+min_revoked_attestor_evidence_controls_accepted = "int"
+min_attestor_quarantine_readmission_attempts = "int"
+min_attestor_quarantine_retrain_controls_accepted = "int"
+max_every_falsifier = "int"
+timing_gated = "bool"
+preregistration_text = "file"
+criteria = "file"
+
+# F007 (vcw-loop): the whole verifier-closed workspace loop on SIMULATED expert Pods with declared per-(Pod, finding
+# code) skill tables; a mechanism check, no claim about any model. The margins are stated in
+# experiments/feedback/F007-vcw-loop/PREREGISTRATION.md and are `must-be-signed-...` until the owner signs.
+[experiment.F007.required]
+seeds = "int-list"
+harness = "str"
+requests_per_world = "int"
+verifier_call_budget = "int"
+primary_margin_permille = "int"
+equivalence_band_permille = "int"
+shuffled_control_margin_permille = "int"
+confidence_one_sided_permille = "int"
+preregistration_text = "file"
+criteria = "file"
+
+# Design: docs/architecture/38-consciousness-indicators.md, CPU stage-A experiments of research/cseries (C004, C007, C008). Each table restates the experiment's [pinned_thresholds]
+# (a test pins it); learning rates and the like are stored as integers in millionths, factors in thousandths.
+[experiment.C004.required]
+seeds = "int-list"
+harness = "str"
+train_lengths = "int-list"
+id_length = "int"
+primary_length = "int"
+secondary_lengths = "int-list"
+curve_extra_lengths = "int-list"
+pool_per_length = "int"
+d_embed = "int"
+d_hidden = "int"
+ff_layers = "int"
+ff_heads = "int"
+ff_positional = "str"
+ff_slope_scale_milli = "int"
+batch_size = "int"
+max_steps = "int"
+max_steps_null = "int"
+max_steps_control = "int"
+eval_every = "int"
+patience = "int"
+min_delta_permille = "int"
+loss_window_evals = "int"
+grad_clip_milli = "int"
+warmup_steps = "int"
+weight_decay_milli = "int"
+arm_lr_micro = "str"
+val_size = "int"
+eval_size = "int"
+curve_eval_size = "int"
+min_eval_instances = "int"
+min_arms_trained = "int"
+probe_size = "int"
+corruption_rate_permille = "int"
+corruption_slack_permille = "int"
+param_tolerance_permille = "int"
+flop_tolerance_permille = "int"
+chance_permille = "int"
+chance_slack_permille = "int"
+perm_label_slack_permille = "int"
+stream_offset = "int"
+train_floor_permille = "int"
+guard_ceiling_permille = "int"
+paired_margin_permille = "int"
+sensitivity_margin_permille = "int"
+graded_min_lower_permille = "int"
+null_world_margin_permille = "int"
+max_untrained_recurrent_seeds = "int"
+max_untrained_comparator_seeds = "int"
+max_unconverged_seeds = "int"
+paired_t_support = "str"
+paired_t_refute = "str"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.C007.required]
+seeds = "int-list"
+harness = "str"
+classes = "int"
+dim = "int"
+separation_milli = "int"
+noise_milli = "int"
+shift_milli = "int"
+shift_noise_milli = "int"
+hidden = "int"
+experts = "int"
+top_k = "int"
+model_steps = "int"
+model_batch = "int"
+model_lr_micro = "int"
+train_size = "int"
+cal_size = "int"
+val_size = "int"
+test_size = "int"
+probe_hidden = "int"
+probe_hidden2 = "int"
+probe_batch = "int"
+probe_lr_micro = "int"
+probe_weight_decay_milli = "int"
+base_term = "int"
+aux_weight_milli = "int"
+max_steps = "int"
+max_steps_control = "int"
+eval_every = "int"
+patience = "int"
+min_delta_permille = "int"
+loss_window_evals = "int"
+grad_clip_milli = "int"
+min_eval_instances = "int"
+min_arms_trained = "int"
+stream_offset = "int"
+id_error_low_permille = "int"
+id_error_high_permille = "int"
+noise_sigma_milli = "int"
+perm_slack_permille = "int"
+unchanged_ceiling_permille = "int"
+gate_threshold_milli = "int"
+signal_floor_permille = "int"
+head_gap_tolerance_permille = "int"
+shifted_error_low_permille = "int"
+shifted_error_high_permille = "int"
+paired_margin_permille = "int"
+sensitivity_margin_permille = "int"
+graded_min_lower_permille = "int"
+null_world_margin_permille = "int"
+max_untrained_seeds = "int"
+max_unconverged_seeds = "int"
+paired_t_support = "str"
+paired_t_refute = "str"
+preregistration_text = "file"
+criteria = "file"
+
+[experiment.C008.required]
+seeds = "int-list"
+harness = "str"
+experts = "int"
+tokens = "int"
+capacity = "int"
+regimes = "int"
+dwell = "int"
+hot_permille = "int"
+noise_milli = "int"
+history = "int"
+router_hidden = "int"
+schema_hidden = "int"
+heuristic_rate_milli = "int"
+law_form = "str"
+max_steps = "int"
+max_steps_null = "int"
+eval_every = "int"
+patience = "int"
+min_delta_permille = "int"
+loss_window_evals = "int"
+grad_clip_milli = "int"
+schema_lr_micro = "int"
+arm_lr_micro = "str"
+arm_entropy_milli = "str"
+val_batches = "int"
+eval_batches = "int"
+probe_batches = "int"
+min_eval_instances = "int"
+min_arms_trained = "int"
+stream_offset = "int"
+val_offset = "int"
+eval_offset = "int"
+probe_offset = "int"
+overlap_window = "int"
+param_tolerance_permille = "int"
+flop_tolerance_permille = "int"
+epsilon_permille = "int"
+epsilon_slack_permille = "int"
+shuffle_same_ceiling_permille = "int"
+schedule_floor_permille = "int"
+schema_floor_permille = "int"
+headroom_floor_permille = "int"
+comparator_floor_permille = "int"
+paired_margin_permille = "int"
+sensitivity_margin_permille = "int"
+graded_min_lower_permille = "int"
+null_world_margin_permille = "int"
+null_cost_band_permille = "int"
+max_untrained_schema_seeds = "int"
+max_unconverged_seeds = "int"
+paired_t_support = "str"
+paired_t_refute = "str"
+preregistration_text = "file"
+criteria = "file"

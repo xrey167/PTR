@@ -1,0 +1,51 @@
+{
+  "attempts": [
+    {
+      "d_model": 32,
+      "final_train_loss": 0.28780874609947205,
+      "final_val_accuracy": 0.882,
+      "lr": 0.005,
+      "ms_per_step": 10.323,
+      "nan": 0,
+      "rung": "base",
+      "steps": 1500,
+      "val_curve": [
+        0.661,
+        0.8045,
+        0.852,
+        0.861,
+        0.8655,
+        0.863,
+        0.8685,
+        0.8775,
+        0.872,
+        0.882
+      ]
+    }
+  ],
+  "chosen": {
+    "d_model": 32,
+    "final_train_loss": 0.28780874609947205,
+    "final_val_accuracy": 0.882,
+    "lr": 0.005,
+    "ms_per_step": 10.323,
+    "nan": 0,
+    "rung": "base",
+    "steps": 1500,
+    "val_curve": [
+      0.661,
+      0.8045,
+      0.852,
+      0.861,
+      0.8655,
+      0.863,
+      0.8685,
+      0.8775,
+      0.872,
+      0.882
+    ]
+  },
+  "outcome": "calibrated",
+  "r2": null,
+  "target_val_accuracy": 0.88
+}

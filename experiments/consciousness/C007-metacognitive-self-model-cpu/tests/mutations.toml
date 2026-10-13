@@ -1,0 +1,455 @@
+# Defects the C007 harness must detect. `python scripts/mutation_check.py C007 --check` verifies the anchors (every `find` occurs exactly once in
+# its file, so the plan cannot drift from the code silently). The mutations are RUN by `research/cseries/lib/run_mutations.py C007` (planted in a
+# throwaway copy, never in the working tree), not by scripts/mutation_check.py, which builds a Cargo package and cannot plant a defect in a Python
+# entrypoint. The keys `package`, `features`, `subcommand`, `cases` and `seed` exist only because the checker's plan loader requires them;
+# `subcommand` is the benchmark name the aggregator checks in results/mutations.json. `seed` is a pilot seed, never a declared one.
+#
+# A mutation is killed in one of three ways.
+#  1. STRUCTURAL counters and coverage rules (exit 1): the harness, run at the reduced scale of `runner_args` with the defect planted, exits 1 and
+#     an expected structural counter or coverage counter fails.
+#  2. INTEGRITY counters and negative controls (exit 2): the harness exits 2 and its stderr lists an expected INTEGRITY counter or an expected
+#     negative control (`expect` entries "control:<name>").
+#  3. UNIT tests (entries with `unit_tests`, expect "unit:<name>"): defects in the pure derivations, the metrics and the calibration; the named
+#     tests (research/cseries/tests) pass in the unmutated copy and must fail in the planted one.
+# Every structural and integrity counter, every coverage counter and each negative control is expected by at least one mutation
+# (test_c007.py::PlanCoversTheRules).
+#
+# What kills each judged rule:
+#   signal and error-band guards, unconverged guard ... signal-sign-flipped, error-band-is-exclusive, unconverged-guard-ignores-the-probe (unit); the
+#                                  counts across seeds, the bounds, the quantiles, the controls, the removal controls and the null world:
+#                                  scripts/tests/test_c007_aggregate.py (hand-computed values)
+#   plateau protocol ........... best-checkpoint-not-restored, converged-flag-always-true (the unit mutations of the protocol itself are in
+#                                  test_c004.TrainingProtocolTests, which the C004 plan names; the library is shared)
+#   information matching of the self-model and the probe ... probe-has-a-different-width, probe-trained-on-other-features, probe-has-an-auxiliary-loss
+#   the self-model's lack of authority (the hard write-path counter) ... head-training-writes-the-classifier, advice-writes-the-gate-threshold
+#   metrics (Brier, AUROC, ECE, risk-coverage, Platt) ... the unit mutations below and brier-accumulates-in-single-precision
+# aggregator wiring (Bonferroni refutation quantile, allowance counts, environment mismatch, one finished record per seed) are mutations of the
+# aggregator, which this plan cannot plant (it plants into the harness copy): scripts/tests/test_c007_aggregate.py.
+
+package = "c007-selfmodel"
+features = ""
+subcommand = "c007"
+cases = 100
+seed = 1002
+runner_args = ["--set", "model_steps=300", "--set", "max_steps=400", "--set", "max_steps_control=100", "--set", "eval_every=25", "--set", "patience=100"]
+hard_counters = [
+    # Structural counters (exit 1), then integrity counters (exit 2): the order of research/cseries/c002a/c007_rules.py::HARD_COUNTERS.
+    "model_write_paths",
+    "advice_leaks",
+    "nondeterminism",
+    "capacity_mismatch_arms",
+    "input_mismatches",
+    "aux_weight_errors",
+    "inert_treatment_arms",
+    "fit_split_errors",
+    "split_overlap",
+    "error_rate_errors",
+    "outcome_audit_mismatches",
+    "metric_audit_mismatches",
+    "permutation_leaks",
+    "shuffle_errors",
+    "noise_errors",
+    "nonfinite_arms",
+    "checkpoint_mismatch_arms",
+    "convergence_mismatch_arms",
+    # Not hard counters of the harness: coverage counters, negative controls and unit-test kills, listed because
+    # scripts/mutation_check.py requires every expected name to be in this list.
+    "arms_trained",
+    "id_eval_instances",
+    "shifted_eval_instances",
+    "null_eval_instances",
+    "advice_probe_hits",
+    "control:split_overlap",
+    "control:capacity",
+    "control:input_hash",
+    "control:outcome_audit",
+    "control:metric_audit",
+    "control:write_probe",
+    "control:advice_probe",
+    "control:shuffle_probe",
+    "control:treatment_probe",
+    "control:fit_probe",
+    "unit:head_gap",
+    "unit:base",
+    "unit:signal",
+    "unit:unconverged_arms",
+    "unit:band",
+    "unit:agreement",
+    "unit:unchanged",
+    "unit:confidence_score",
+    "unit:auroc",
+    "unit:ece",
+    "unit:risk_coverage",
+    "unit:platt",
+    "unit:brier",
+    "unit:feature_widths",
+    "unit:aux_mask",
+]
+
+[[mutation]]
+name = "head-training-writes-the-classifier"
+file = "research/cseries/c002a/harness.py"
+find = "            loss = torch.nn.functional.binary_cross_entropy_with_logits(net(fx[idx]), fy[idx])\n            if aux_weight > 0 and view == \"trace\":"
+replace = "            loss = torch.nn.functional.binary_cross_entropy_with_logits(net(fx[idx]), fy[idx])\n            classifiers[\"task\"].head.bias.data.add_(1e-3)\n            if aux_weight > 0 and view == \"trace\":"
+expect = ["model_write_paths"]
+
+[[mutation]]
+name = "advice-writes-the-gate-threshold"
+file = "research/cseries/c002a/harness.py"
+find = "    return advice > 0.5"
+replace = "    env.threshold = float(advice.mean())\n    return advice > 0.5"
+expect = ["advice_leaks"]
+
+[[mutation]]
+name = "determinism-seed-dropped"
+file = "research/cseries/c002a/harness.py"
+find = """    torch.manual_seed(arm_seed(seed, "determinism"))
+"""
+replace = ""
+expect = ["nondeterminism"]
+
+[[mutation]]
+name = "probe-has-a-different-width"
+file = "research/cseries/c002a/harness.py"
+find = '''        net = model.Predictor(fx.shape[1], cfg["late_width"] if view == "trace" else 0, cfg, base='''
+replace = '''        net = model.Predictor(fx.shape[1], cfg["late_width"] if view == "trace" else 0, {**cfg, "probe_hidden": cfg["probe_hidden"] + (8 if name == "probe_matched" else 0)}, base='''
+expect = ["capacity_mismatch_arms"]
+
+[[mutation]]
+name = "probe-trained-on-other-features"
+file = "research/cseries/c002a/harness.py"
+find = "        fx, vx = cal[key], val[key]"
+replace = '        fx, vx = (cal[key].flip(0), val[key]) if name == "probe_matched" else (cal[key], val[key])'
+expect = ["input_mismatches"]
+
+[[mutation]]
+name = "probe-has-an-auxiliary-loss"
+file = "research/cseries/c002a/harness.py"
+find = '        aux_weight = cfg[aux_key] / 1000 if aux_key else 0.0'
+replace = '        aux_weight = cfg["aux_weight_milli"] / 1000'
+expect = ["aux_weight_errors"]
+
+[[mutation]]
+name = "every-split-is-drawn-from-the-same-seed"
+file = "research/cseries/c002a/harness.py"
+find = "    draw = lambda n, shifted=False, g=\"data\": task.sample(gens[g], means, n, cfg, shifted=shifted, direction=direction, null=null)  # noqa: E731"
+replace = "    draw = lambda n, shifted=False, g=\"data\": task.sample(torch.Generator().manual_seed(7), means, n, cfg, shifted=shifted, direction=direction, null=null)  # noqa: E731"
+expect = ["split_overlap"]
+
+[[mutation]]
+name = "classifier-is-not-trained"
+file = "research/cseries/c002a/harness.py"
+find = '    for _ in range(cfg["model_steps"]):'
+replace = "    for _ in range(0):"
+expect = ["error_rate_errors"]
+
+[[mutation]]
+name = "verifier-outcome-flipped"
+file = "research/cseries/c002a/c007_task.py"
+find = "    return (logits.argmax(dim=-1) != labels).float()"
+replace = "    return (logits.argmax(dim=-1) == labels).float()"
+expect = ["outcome_audit_mismatches", "error_rate_errors"]
+
+[[mutation]]
+name = "brier-accumulates-in-single-precision"
+file = "research/cseries/c002a/c007_model.py"
+find = "    total = float(((p.double() - y.double()) ** 2).sum())"
+replace = "    total = float(((p - y) ** 2).sum())"
+expect = ["metric_audit_mismatches"]
+
+[[mutation]]
+name = "permutation-is-identity"
+file = "research/cseries/c002a/c007_task.py"
+find = "    return y[torch.randperm(y.shape[0], generator=gen)]"
+replace = "    return y"
+expect = ["permutation_leaks"]
+
+[[mutation]]
+name = "shuffle-is-the-identity"
+file = "research/cseries/c002a/harness.py"
+find = '    shuffled_rows = torch.randperm(task_shift["feats"].shape[0], generator=shuffle_gen)'
+replace = '    shuffled_rows = torch.arange(task_shift["feats"].shape[0])'
+expect = ["shuffle_errors"]
+
+[[mutation]]
+name = "noise-is-zero"
+file = "research/cseries/c002a/harness.py"
+find = '    noise = {k: torch.randn(p_self[k].shape, generator=noise_gen) * cfg["noise_sigma_milli"] / 1000 for k in p_self}'
+replace = '    noise = {k: torch.randn(p_self[k].shape, generator=noise_gen) * 0.0 for k in p_self}'
+expect = ["noise_errors"]
+
+[[mutation]]
+name = "loss-is-infinite"
+file = "research/cseries/c002a/harness.py"
+find = "            loss = torch.nn.functional.binary_cross_entropy_with_logits(net(fx[idx]), fy[idx])\n            if aux_weight > 0 and view == \"trace\":"
+replace = "            loss = torch.nn.functional.binary_cross_entropy_with_logits(net(fx[idx]), fy[idx]) * float('inf')\n            if aux_weight > 0 and view == \"trace\":"
+expect = ["nonfinite_arms"]
+
+[[mutation]]
+name = "best-checkpoint-not-restored"
+file = "research/cseries/lib/train.py"
+find = "    if best_state is not None:\n        net.load_state_dict(best_state)\n"
+replace = "    if False:\n        net.load_state_dict(best_state)\n"
+expect = ["checkpoint_mismatch_arms"]
+
+[[mutation]]
+name = "converged-flag-always-true"
+file = "research/cseries/lib/train.py"
+find = '        "converged": converged,'
+replace = '        "converged": True,'
+expect = ["convergence_mismatch_arms"]
+
+[[mutation]]
+name = "a-null-head-is-not-trained"
+file = "research/cseries/c002a/harness.py"
+find = """    "probe_matched_null": ("null", "trace", None, "true"),
+"""
+replace = ""
+expect = ["arms_trained"]
+
+[[mutation]]
+name = "in-distribution-test-halved"
+file = "research/cseries/c002a/harness.py"
+find = '"test_id": draw(cfg["test_size"]), "test_shift": draw(cfg["test_size"], shifted=True),'
+replace = '"test_id": draw(cfg["test_size"] // 2), "test_shift": draw(cfg["test_size"], shifted=True),'
+expect = ["id_eval_instances"]
+
+[[mutation]]
+name = "shifted-test-halved"
+file = "research/cseries/c002a/harness.py"
+find = '"test_id": draw(cfg["test_size"]), "test_shift": draw(cfg["test_size"], shifted=True),'
+replace = '"test_id": draw(cfg["test_size"]), "test_shift": draw(cfg["test_size"] // 2, shifted=True),'
+expect = ["shifted_eval_instances"]
+
+[[mutation]]
+name = "null-test-halved"
+file = "research/cseries/c002a/harness.py"
+find = '"test_id": draw(cfg["test_size"]), "test_shift": draw(cfg["test_size"], shifted=True),'
+replace = '"test_id": draw(cfg["test_size"]), "test_shift": draw(cfg["test_size"] // (2 if null else 1), shifted=True),'
+expect = ["null_eval_instances"]
+
+[[mutation]]
+name = "advice-probe-sees-nothing"
+file = "research/cseries/c002a/harness.py"
+find = "    return advice > 0.5"
+replace = "    return torch.zeros_like(advice, dtype=torch.bool)"
+expect = ["advice_probe_hits"]
+
+[[mutation]]
+name = "overlap-detector-blind"
+file = "research/cseries/c002a/harness.py"
+find = "    seen, total = {}, 0"
+replace = "    return 0\n    seen, total = {}, 0"
+expect = ["control:split_overlap"]
+
+[[mutation]]
+name = "capacity-comparison-blind"
+file = "research/cseries/c002a/c007_model.py"
+find = "    return sum(p.numel() for p in net.parameters())"
+replace = "    return 0"
+expect = ["control:capacity"]
+
+[[mutation]]
+name = "feature-digest-blind"
+file = "research/cseries/c002a/harness.py"
+find = "    return hashlib.sha256(repr(x.flatten().tolist()).encode()).hexdigest()[:16]"
+replace = '    return "x"'
+expect = ["control:input_hash"]
+
+[[mutation]]
+name = "mismatch-counter-blind"
+file = "research/cseries/c002a/harness.py"
+find = "    return sum(1 for x, y in zip(a, b) if x != y)"
+replace = "    return 0"
+expect = ["control:outcome_audit"]
+
+[[mutation]]
+name = "difference-test-inverted"
+file = "research/cseries/c002a/harness.py"
+find = "    return int(a != b)"
+replace = "    return int(a == b)"
+expect = ["control:metric_audit", "metric_audit_mismatches", "capacity_mismatch_arms", "input_mismatches"]
+
+[[mutation]]
+name = "parameter-digest-blind"
+file = "research/cseries/c002a/c007_model.py"
+find = "    return digest.hexdigest()"
+replace = '    return "x"'
+expect = ["control:write_probe"]
+
+[[mutation]]
+name = "environment-digest-ignores-the-threshold"
+file = "research/cseries/c002a/harness.py"
+find = "repr((self.outcomes.tolist(), self.gate.tolist(), self.threshold, self.model_digest))"
+replace = "repr((self.outcomes.tolist(), self.gate.tolist(), self.model_digest))"
+expect = ["control:advice_probe"]
+
+[[mutation]]
+name = "unchanged-test-blind"
+file = "research/cseries/c002a/c007_rules.py"
+find = "    return int(1000 * unchanged > ceiling_permille * total)"
+replace = "    return 0"
+expect = ["control:shuffle_probe", "unit:unchanged"]
+unit_tests = ["test_c007.RuleDerivationTests.test_unchanged_error_needs_more_than_the_ceiling"]
+
+[[mutation]]
+name = "signal-sign-flipped"
+file = "research/cseries/c002a/c007_rules.py"
+find = "    return (1000 * (constant_brier_micro - best_brier_micro)) // total"
+replace = "    return (1000 * (best_brier_micro - constant_brier_micro)) // total"
+expect = ["unit:signal"]
+unit_tests = ["test_c007.RuleDerivationTests.test_signal_is_the_brier_gain_over_the_constant_predictor"]
+
+[[mutation]]
+name = "unconverged-guard-ignores-the-probe"
+file = "research/cseries/c002a/c007_rules.py"
+find = 'JUDGED_ARMS = ("self_model", "probe_matched")'
+replace = 'JUDGED_ARMS = ("self_model",)'
+expect = ["unit:unconverged_arms"]
+unit_tests = ["test_c007.RuleDerivationTests.test_unconverged_guard_counts_the_judged_heads"]
+
+[[mutation]]
+name = "error-band-is-exclusive"
+file = "research/cseries/c002a/c007_rules.py"
+find = "    return int(not low_permille <= rate_permille <= high_permille)"
+replace = "    return int(not low_permille < rate_permille < high_permille)"
+expect = ["unit:band"]
+unit_tests = ["test_c007.RuleDerivationTests.test_band_error_is_inclusive_of_its_ends"]
+
+[[mutation]]
+name = "agreement-slack-ignored"
+file = "research/cseries/c002a/c007_rules.py"
+find = "    return int(1000 * same > (chance_permille + slack_permille) * total)"
+replace = "    return int(1000 * same > chance_permille * total)"
+expect = ["unit:agreement"]
+unit_tests = ["test_c007.RuleDerivationTests.test_agreement_error_needs_more_than_chance_plus_slack"]
+
+[[mutation]]
+name = "confidence-score-sign-flipped"
+file = "research/cseries/c002a/c007_model.py"
+find = "    p = (1.0 - probs.max(dim=-1).values).clamp(NATIVE_EPS, 1 - NATIVE_EPS)"
+replace = "    p = probs.max(dim=-1).values.clamp(NATIVE_EPS, 1 - NATIVE_EPS)"
+expect = ["unit:confidence_score"]
+unit_tests = ["test_c007.MetricTests.test_the_confidence_score_rises_as_the_model_gets_less_sure"]
+
+[[mutation]]
+name = "auroc-counts-ties-as-wins"
+file = "research/cseries/c002a/c007_model.py"
+find = "    return int(round(1000 * (greater + 0.5 * ties) / (pos.numel() * neg.numel())))"
+replace = "    return int(round(1000 * (greater + 1.0 * ties) / (pos.numel() * neg.numel())))"
+expect = ["unit:auroc"]
+unit_tests = ["test_c007.MetricTests.test_auroc_matches_hand_counts"]
+
+[[mutation]]
+name = "ece-unweighted-bins"
+file = "research/cseries/c002a/c007_model.py"
+find = "            total += float(mask.sum()) * abs(float(p[mask].mean()) - float(y[mask].mean()))"
+replace = "            total += p.numel() / bins * abs(float(p[mask].mean()) - float(y[mask].mean()))"
+expect = ["unit:ece"]
+unit_tests = ["test_c007.MetricTests.test_ece_matches_hand_counts"]
+
+[[mutation]]
+name = "risk-coverage-keeps-the-worst-first"
+file = "research/cseries/c002a/c007_model.py"
+find = "    order = p.argsort()"
+replace = "    order = p.argsort(descending=True)"
+expect = ["unit:risk_coverage"]
+unit_tests = ["test_c007.MetricTests.test_the_risk_coverage_area_keeps_the_most_confident_first"]
+
+[[mutation]]
+name = "platt-fit-without-intercept"
+file = "research/cseries/c002a/c007_model.py"
+find = "        loss = torch.nn.functional.binary_cross_entropy_with_logits(a * z + b, y)"
+replace = "        loss = torch.nn.functional.binary_cross_entropy_with_logits(a * z, y)"
+expect = ["unit:platt"]
+unit_tests = ["test_c007.MetricTests.test_platt_recovers_a_known_calibration"]
+
+[[mutation]]
+name = "brier-reference-sums-absolute-errors"
+file = "research/cseries/c002a/c007_model.py"
+find = "    return int(round(1e6 * sum((a - b) ** 2 for a, b in zip(p, y))))"
+replace = "    return int(round(1e6 * sum(abs(a - b) for a, b in zip(p, y))))"
+expect = ["unit:brier"]
+unit_tests = ["test_c007.MetricTests.test_brier_matches_hand_counts"]
+
+[[mutation]]
+name = "feature-widths-forget-the-entropy"
+file = "research/cseries/c002a/c007_model.py"
+find = '"probs": k, "entropy": 1}'
+replace = '"probs": k, "entropy": 0}'
+expect = ["unit:feature_widths"]
+unit_tests = ["test_c007.ModelTests.test_feature_widths_equal_the_trace"]
+
+[[mutation]]
+name = "auxiliary-view-keeps-the-late-features"
+file = "research/cseries/c002a/c007_model.py"
+find = "        masked = torch.cat([v[:, : v.shape[1] - self.late_width], torch.zeros_like(v[:, v.shape[1] - self.late_width :])], dim=-1)"
+replace = "        masked = v"
+expect = ["unit:aux_mask"]
+unit_tests = ["test_c007.ModelTests.test_the_auxiliary_view_masks_the_late_part"]
+
+[[mutation]]
+name = "aux-branch-never-runs"
+file = "research/cseries/c002a/harness.py"
+find = '            if aux_weight > 0 and view == "trace":'
+replace = '            if aux_weight > 0 and view == "trace" and False:'
+expect = ["inert_treatment_arms"]
+
+[[mutation]]
+name = "aux-term-is-counted-but-scaled-to-zero"
+file = "research/cseries/c002a/harness.py"
+find = "                loss = loss + aux_weight * (torch.nn.functional.cross_entropy(expert_logits, expert_target[idx])"
+replace = "                loss = loss + 0.0 * aux_weight * (torch.nn.functional.cross_entropy(expert_logits, expert_target[idx])"
+expect = ["inert_treatment_arms"]
+
+[[mutation]]
+name = "platt-baseline-fitted-on-the-shifted-split"
+file = "research/cseries/c002a/harness.py"
+find = '    fit_scores = torch.cat([model.confidence_score(task_cal["trace"]["probs"]), model.confidence_score(task_val["trace"]["probs"])])'
+replace = '    fit_scores = torch.cat([model.confidence_score(task_shift["trace"]["probs"][:2000]), model.confidence_score(task_shift["trace"]["probs"][2000:3000])])'
+expect = ["fit_split_errors"]
+
+[[mutation]]
+name = "head-recalibrated-on-the-shifted-split"
+file = "research/cseries/c002a/harness.py"
+find = '            val_logits = net(vx)'
+replace = '            val_logits = net(data[(world, "test_shift")][key][: vx.shape[0]])'
+expect = ["fit_split_errors"]
+
+[[mutation]]
+name = "head-gap-sign-flipped"
+file = "research/cseries/c002a/c007_rules.py"
+find = "    return (1000 * (head_sum_micro - reference_sum_micro)) // total"
+replace = "    return (1000 * (reference_sum_micro - head_sum_micro)) // total"
+expect = ["unit:head_gap"]
+unit_tests = ["test_c007.RuleDerivationTests.test_the_head_gap_is_how_far_the_head_is_above_the_reference"]
+
+[[mutation]]
+name = "base-term-dropped"
+file = "research/cseries/c002a/c007_model.py"
+find = "        return out if self.base is None else out + self.base[0] * v[:, -1] + self.base[1]"
+replace = "        return out"
+expect = ["unit:base"]
+unit_tests = ["test_c007.ModelTests.test_the_base_adds_the_calibrated_own_confidence_to_the_network_output"]
+
+[[mutation]]
+name = "base-reads-the-wrong-column"
+file = "research/cseries/c002a/c007_model.py"
+find = "        return out if self.base is None else out + self.base[0] * v[:, -1] + self.base[1]"
+replace = "        return out if self.base is None else out + self.base[0] * v[:, 0] + self.base[1]"
+expect = ["unit:base"]
+unit_tests = ["test_c007.ModelTests.test_the_base_adds_the_calibrated_own_confidence_to_the_network_output"]
+
+[[mutation]]
+name = "treatment-detector-blinded"
+file = "research/cseries/c002a/harness.py"
+find = "    return int(round(1e6 * largest)) if math.isfinite(largest) else -1"
+replace = "    return 1 + int(round(1e6 * largest)) if math.isfinite(largest) else -1"
+expect = ["control:treatment_probe"]
+
+[[mutation]]
+name = "fit-split-detector-blinded"
+file = "research/cseries/c002a/harness.py"
+find = '        "fit_probe": {"required_rule_tripped": differ(feature_digest(fit_scores), feature_digest(model.confidence_score(task_shift["trace"]["probs"]))) > 0},'
+replace = '        "fit_probe": {"required_rule_tripped": differ(feature_digest(fit_scores), feature_digest(fit_scores)) > 0},'
+expect = ["control:fit_probe"]

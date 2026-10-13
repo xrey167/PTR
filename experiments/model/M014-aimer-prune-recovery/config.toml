@@ -1,0 +1,110 @@
+version = 1
+kind = "workspace-area"
+name = "M014-aimer-prune-recovery"
+path = "experiments/model/M014-aimer-prune-recovery"
+tests_dir = "tests"
+
+[pinned_thresholds]
+pruning_fractions = [0.25, 0.5]
+
+# Preregistered choices for this experiment (no code default exists).
+recovery_sft_steps = 2000
+recovery_rl_steps = 1000
+recovery_budget_identical_across_arms = true
+# Preregistered choices for this experiment (ForgettingGate has no default; all four thresholds are caller-supplied).
+# Names follow crates/ptr-lineage/src/forgetting.rs ForgettingGate; values are accuracy fractions.
+gate_max_average_forgetting = 0.02
+gate_max_task_forgetting = 0.05
+gate_min_backward_transfer = -0.02
+gate_max_public_regression = 0.01
+# Preregistered choices for this experiment (no code default exists).
+vram_batch_size = 4
+vram_sequence_length = 2048
+quality_retention_definition = "quality_pruned_recovered / quality_unpruned_identical_recovery_control"
+# Preregistered choices for this experiment (no code default exists).
+pruned_experts_physically_removed = true
+quality_metric = "macro average task accuracy"
+quality_suite = "cais/mmlu @ c30699e8356da336a370243923dbaf21066bb9fe, all, test, questions 2000 to 3999 (the quality evaluation slice)"
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+min_seeds = 5
+recovery_sequences = [["sft", "gspo"], ["sft", "sapo"]]
+unpruned_control_with_identical_recovery = true
+full_matrix_required = "method x fraction x optimizer x seed"
+# Preregistered choices for this experiment (no code default exists).
+unpruned_control_per_sequence_and_seed = true
+control_matching = "each pruned row compared only with the unpruned control of the same recovery sequence and seed"
+max_unpruned_controls_missing = 0
+# Preregistered choices for this experiment (no code default exists).
+min_quality_retention_at_25pct = 0.95
+min_quality_retention_at_50pct = 0.90
+min_peak_vram_reduction_over_pruned_expert_parameter_fraction = 0.5
+aimer_noninferiority_margin = 0.01
+named_baseline_pruning_methods = ["random_expert_pruning", "usage_frequency_pruning"]
+thresholds_apply_per = "recovery sequence, pruning fraction, matched unpruned control"
+# Preregistered choices for this experiment (no code default exists).
+aimer_minus_best_baseline_retention_role = "reported_per_cell_information"
+comparative_falsifier = "non-inferiority only (aimer_noninferiority_margin = 0.01 versus every named baseline)"
+# Preregistered choices for this experiment (no code default exists).
+quality_suite_dataset = "cais/mmlu"
+quality_suite_revision = "c30699e8356da336a370243923dbaf21066bb9fe"
+quality_suite_config = "all"
+quality_suite_split = "test"
+quality_suite_selection_rule = "questions 2000 to 3999 in index order (the quality evaluation slice), macro average over subjects"
+forgetting_gate_public_suite_is_same_object_as_quality_suite = false
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "recovery_sft_steps", "recovery_rl_steps", "recovery_sequences", "vram_batch_size", "vram_sequence_length", "pruning_fractions", "named_baseline_pruning_methods", "pruned_model_revision", "gate_suite_range", "quality_eval_range", "recovery_sft_corpus_revision", "recovery_sft_corpus_size", "arm_matrix", "recovery_overlap_checks", "recovery_overlap_slices", "model_checkpoint_revision", "tokenizer_revision", "moe_topology", "recovery_protocol", "random_pruning", "usage_frequency_pruning", "arm_comparisons", "aimer_selection"]
+# Preregistered choices for this experiment (no code default exists).
+pruned_model = "allenai/OLMoE-1B-7B-0125"
+pruned_model_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+pruned_model_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+forgetting_gate_suite_selection_rule = "questions 0 to 1999 in index order of cais/mmlu all/test at the pinned revision"
+gate_suite_range = [0, 1999]
+quality_eval_range = [2000, 3999]
+max_suite_overlap_count = 0
+gate_and_eval_suites_disjoint = true
+# Preregistered choices for this experiment (no code default exists).
+recovery_sft_corpus = "openai/gsm8k"
+recovery_sft_corpus_revision = "740312add88f781978c0658806c59bc2815b9866"
+recovery_sft_corpus_config = "main"
+recovery_sft_corpus_split = "train"
+recovery_sft_corpus_size = 7473
+recovery_rl_prompts = "same GSM8K train prompts, verifiable final-answer reward"
+recovery_corpus_digest_recorded_in_run_json = true
+# Preregistered choices for this experiment (no code default exists).
+arm_matrix = [{ arm = "aimer_0.25_sft_gspo", method = "aimer", fraction = 0.25, sequence = "sft_gspo" }, { arm = "aimer_0.25_sft_sapo", method = "aimer", fraction = 0.25, sequence = "sft_sapo" }, { arm = "aimer_0.5_sft_gspo", method = "aimer", fraction = 0.5, sequence = "sft_gspo" }, { arm = "aimer_0.5_sft_sapo", method = "aimer", fraction = 0.5, sequence = "sft_sapo" }, { arm = "random_0.25_sft_gspo", method = "random", fraction = 0.25, sequence = "sft_gspo" }, { arm = "random_0.25_sft_sapo", method = "random", fraction = 0.25, sequence = "sft_sapo" }, { arm = "random_0.5_sft_gspo", method = "random", fraction = 0.5, sequence = "sft_gspo" }, { arm = "random_0.5_sft_sapo", method = "random", fraction = 0.5, sequence = "sft_sapo" }, { arm = "usage_frequency_0.25_sft_gspo", method = "usage_frequency", fraction = 0.25, sequence = "sft_gspo" }, { arm = "usage_frequency_0.25_sft_sapo", method = "usage_frequency", fraction = 0.25, sequence = "sft_sapo" }, { arm = "usage_frequency_0.5_sft_gspo", method = "usage_frequency", fraction = 0.5, sequence = "sft_gspo" }, { arm = "usage_frequency_0.5_sft_sapo", method = "usage_frequency", fraction = 0.5, sequence = "sft_sapo" }, { arm = "unpruned_control_sft_gspo", method = "unpruned", fraction = 0.0, sequence = "sft_gspo" }, { arm = "unpruned_control_sft_sapo", method = "unpruned", fraction = 0.0, sequence = "sft_sapo" }]
+# Preregistered choices for this experiment (no code default exists).
+recovery_training_corpus = "openai/gsm8k main train (all 7473 items), dedicated to SFT and GSPO/SAPO recovery"
+recovery_selection_rule = "all 7473 train items in index order"
+recovery_selection_digest_recorded_in_run_json = true
+recovery_overlap_checks = ["question_id", "normalized_text_hash"]
+recovery_overlap_slices = ["mmlu_gate_0_1999", "mmlu_quality_2000_3999"]
+max_recovery_training_eval_overlap = 0
+recovery_training_eval_overlap_reported = "per slice x check"
+# Preregistered choices for this experiment (no code default exists).
+model_checkpoint_repo = "allenai/OLMoE-1B-7B-0125"
+model_checkpoint_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+tokenizer_repo = "allenai/OLMoE-1B-7B-0125"
+tokenizer_revision = "9b0c1aa87e34a20052389dce1f0cf01da783f654"
+moe_topology = { layers = 16, num_experts = 64, top_k = 8, router_layout = "per-layer linear router, softmax then top-k, norm_topk_prob = false", router_aux_loss_coef = 0.01 }
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+recovery_protocol = { optimizer = "adamw", learning_rate = 1e-5, batch_size = 64, scheduler = "cosine", warmup_steps = 100, generation_temperature = 1.0, generation_top_p = 1.0, generation_max_new_tokens = 512, samples_per_prompt = 8, gspo_clip_epsilon_low = 3e-4, gspo_clip_epsilon_high = 4e-4, sapo_tau_pos = 1.0, sapo_tau_neg = 1.05 }
+random_pruning = { seed = 20240607, sampling_rule = "uniform without replacement over the experts of each layer, drawn with the pinned seed" }
+usage_frequency_pruning = { corpus = "openai/gsm8k", split = "train", items = "index 0 to 511", max_tokens = 512, batch_size = 16, tie_break = "lowest expert index", measure = "routed token count per expert, summed over layers" }
+selections_and_input_digest_recorded_in_run_json = true
+max_recovery_protocol_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+arm_comparisons = { aimer = "non-inferiority versus random and usage_frequency within 0.01 and floors versus the unpruned control", random = "named baseline", usage_frequency = "named baseline", unpruned = "matched control per recovery sequence and seed" }
+arm_coverage_per_seed = true
+# Preregistered choices for this experiment (no code default exists).
+aimer_selection = { weight_vector = "concat(gate_up_proj [2I, H], down_proj [H, I]) flattened row-major per expert", score = "ptr_lineage::aimer_score", ranking = "ptr_lineage::rank_experts_for_pruning, highest score first, stable on ties (lower expert index first), per layer", pruned_count = "round(f * 64)", pruned_counts = { f025 = 16, f050 = 32 }, source = "crates/ptr-lineage/src/aimer.rs" }
+recorded_selection_must_equal_recomputed = true
+max_aimer_selection_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+aimer_api_and_tensor_names = ["aimer_score", "down_proj", "gate_up_proj", "ptr_lineage", "rank_experts_for_pruning"]

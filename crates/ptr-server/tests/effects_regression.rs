@@ -62,7 +62,7 @@ fn note_app(dir: &TempDir) -> axum::Router {
     ptr_server::router_with_dependencies(
         runtime,
         Arc::new(ScenarioBackend),
-        Default::default(),
+        ptr_server::checked_pod_router(ptr_router::SamplingKey::from_bytes([7; 32]), [9; 8]),
         Arc::new(Default::default()),
         ptr_server::default_verifier(),
         ptr_server::demo_effect_grants(&dir.0),
@@ -185,7 +185,7 @@ async fn malformed_keys_are_rejected_before_inference_or_revision_changes() {
     let app = ptr_server::router_with_dependencies(
         PtrRuntime::new(PtrConfig::default()).unwrap(),
         backend.clone(),
-        Default::default(),
+        ptr_server::checked_pod_router(ptr_router::SamplingKey::from_bytes([7; 32]), [9; 8]),
         Arc::new(Default::default()),
         ptr_server::default_verifier(),
         Arc::new(Vec::new),

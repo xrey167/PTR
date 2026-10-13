@@ -1,0 +1,134 @@
+{
+  "schema_version": 2,
+  "experiment_id": "Q003-v2",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v114",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16874930176
+  },
+  "hardware_profile_record": {
+    "path": "hardware/default.toml",
+    "sha256": "ea754cf5ddb19c70de11237e9aedab43cbba4ac2e8ff8fec15d85b18699052d6",
+    "contents": {
+      "id": "unspecified",
+      "os": "unspecified",
+      "cpu": "unspecified",
+      "ram_gib": 0,
+      "gpu": "unspecified",
+      "gpu_memory_gib": 0,
+      "notes": "Replace with an explicit measured hardware profile before publishing benchmark results."
+    },
+    "unspecified_fields": [
+      "cpu",
+      "gpu",
+      "id",
+      "os"
+    ]
+  },
+  "git_sha": "aae1ebd222217b7c72c4039bc4bb2130fdc1e07b",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "Q003-v2",
+    "status": "prepared",
+    "hypothesis": "Does ptr-pg's generation-joined retrieval keep its lifecycle guarantees and stay within a pinned recall margin of a conventional hybrid reference? ptr_pg's search joins a full-text list and a halfvec HNSW list to the lifecycle catalog of their snapshot before each limit and fuses them by weighted reciprocal rank fusion keyed by capsule and generation; upsert_document refuses a generation that is not live. It is run on seeded live-lifecycle corpora of 2000 capsules of up to three generations (kept at generation 1, superseded once, superseded twice, or revoked at generation 1, 2 or 3) built through the projector and upsert_document, with frozen MiniLM vectors, 1000 paraphrased queries per seed asked at two checkpoints (after the supersessions; after the revocations), stale rows of superseded and revoked generations planted by raw SQL into the derived table, late writes of non-live generations, and probe queries that exercise the lexical mode. Against the harness's own live table no list (lexical, vector, fused) of any answer holds a non-live generation, no planted row is returned, the projector leaves no superseded or revoked document behind, no late write of a non-live generation is accepted, no search answers differently twice on an unchanged snapshot, the lexical mode returns the live document of at least 45 of 50 live-body probes, and the recall@10 of the fused list is no more than the pinned margin (30 per mille) below both that of rag_reference (BM25-OR + cosine + RRF over the same MiniLM vectors, rebuilt from the live table at each checkpoint), a sanity floor, and that of the harness's own exact dense search over the live set, the sensitivity control. On natural-language queries ptr-pg's lexical list is empty (plainto_tsquery ANDs every term; a finding about ptr-pg recorded as a limitation, not a falsifier), so its fused list is effectively its dense list and the recall leg compares that list with the reference; it does not test the quality of a working lexical half. strong_retrieval (BM25 + bge-m3 dense + RRF + bge-reranker-v2-m3, retrieval only) answers a stratified subset of 200 answerable queries and is reported beside it, never gated. nDCG@10, the recall of the lexical and vector lists alone, of the harness's exact dense search and of BM25 alone, latency and index build time are descriptive.",
+    "metrics": "queries, answerable_queries, unanswerable_queries, probe_queries, superseded_targets_queried, revoked_targets_queried, recall10_pg_permille, recall10_reference_permille, recall10_strong_permille, recall10_pg_on_strong_subset_permille, ndcg10_pg_permille, ndcg10_reference_permille, ndcg10_strong_permille, ndcg10_pg_on_strong_subset_permille, recall10_pg_deficit_vs_reference_permille, recall10_pg_deficit_vs_exact_permille, recall10_pg_deficit_vs_strong_permille, recall_violation_vs_reference, recall_violation_vs_exact, recall10_pg_lexical_only_permille, recall10_pg_vector_only_permille, recall10_exact_cosine_permille, recall10_bm25_only_permille, recall_paired_se_vs_reference_permille, strong_discordant_queries, strong_discordance_bound_permille, main_query_lexical_hits, live_probe_lexical_self_hits, lexical_probe_violation, stale_hits, stale_hits_by_list, planted_stale_rows, planted_stale_returned, projector_residual_rows, late_write_attempts, late_write_accepted, late_write_wrong_refusal, product_errors, lifecycle_projection_mismatches, product_panics, nondeterministic_searches, retrieval_hits, control_planted_returned, control_vector_returned, reference_queries, strong_queries, workload_digest_mismatches, latency_ns, index_build_ns",
+    "baseline": "research/baselines/strong_retrieval (BM25 + bge-m3 dense + RRF + bge-reranker-v2-m3, retrieval only) and research/baselines/rag_reference (BM25 + MiniLM cosine + RRF); BM25 alone is reported; strong_rag stays blocked",
+    "falsification": "The run is vacuous and counts as falsified if any coverage prerequisite is unmet (but see the harness-integrity guards at the end of this list and the verdict order in criteria.toml): planted_stale_rows < 200 (fewer than 200 stale rows were planted); revoked_targets_queried < 50 (fewer than 50 queries asked for a revoked capsule); superseded_targets_queried < 400 (fewer than 400 answerable queries asked for a capsule with a superseded generation); answerable_queries < 800 (fewer than 800 answerable queries); retrieval_hits.lexical < 1 (the lexical mode never returned a hit); retrieval_hits.vector < 1 (the vector mode never returned a hit); retrieval_hits.fused < 1 (the fused list never held a hit); late_write_attempts < 50 (fewer than 50 late writes of a non-live generation were attempted); probe_queries < 90 (fewer than 90 probe queries were asked); control_planted_returned < 50 (the no-live-join control returned a planted row fewer than 50 times, so it does not show the defect it exists to show); control_vector_returned < 50 (the no-live-join control's vector query returned the planted row fewer than 50 times); live_probe_lexical_self_hits < 45 (the lexical mode returned the live document for fewer than 45 of the 50 live-body probes: the lexical half, which only the probes exercise, is not working); reference_queries < 1000 (the reference arm did not answer every query); strong_queries < 200 (the strong arm did not answer its 200 queries (a development run without it, or a failure)); recall10_reference_permille < 900 (the reference's own recall@10 is below 900 per mille, so the recall rule against it is not evaluable; the aggregator judges such a seed on every other rule and, if none trips, INVALID); workload_digest_mismatches > 0 (the generated workload is not the pinned one (a harness-integrity guard: the aggregator judges a seed that trips it INVALID, not falsified)). Falsified if any of: stale_hits > 0 (any hit of any list that the harness's live table does not call live: any stale-generation hit is a hard failure); planted_stale_returned > 0 (a planted stale row was returned by any list); projector_residual_rows > 0 (the derived table holds a row that is not live, not planted and not an earlier late write: the projector left a superseded or revoked document behind); late_write_accepted > 0 (upsert_document accepted (or stored) a non-live generation); late_write_wrong_refusal > 0 (a late write of a non-live generation was refused with another error than NotLive); product_errors > 0 (a live write, a search, a projector record or an admissibility question returned an error); lifecycle_projection_mismatches > 0 (the product's is_admissible disagrees with the harness's live table for some capsule generation); product_panics > 0 (the code under test panicked); nondeterministic_searches > 0 (a search answered differently twice on an unchanged snapshot); recall10_pg_deficit_vs_reference_permille > 30 (recall@10 of the fused list is more than the margin below the reference's, a sanity floor against gross failure); recall10_pg_deficit_vs_exact_permille > 30 (recall@10 of the fused list is more than the margin below the harness's own exact dense search over the live set, the sensitivity control); any one of the 5 listed seeds misses any criterion above (every seed must pass). The deficits are max(0, baseline recall@10 - fused recall@10) in per mille over the answerable queries, with the margin 30 pinned in config.toml for each. The reference rule is a sanity floor (it trips only below the reference's recall minus 30 per mille, 912 for a reference at 942, because the BM25-OR hybrid is worse than plain dense retrieval on this templated corpus); the exact-search rule is the sensitivity control for a smaller regression of the dense list. Not tested and not a falsifier: the quality of ptr-pg's lexical half on natural-language queries (its lexical list is empty there, because plainto_tsquery joins every term with AND; main_query_lexical_hits counts it; only the live-body probes exercise the lexical mode). The strong baseline is never gated: it answers a seeded subset of 200 answerable queries stratified by checkpoint and live generation, and its recall@10, nDCG@10, the product's recall@10 and nDCG@10 on the same queries, the deficit against it, the discordant queries and a 95 percent upper bound on their share are descriptive. nDCG@10, the recall of the lexical and vector lists alone, of the harness's exact dense search and of BM25 alone, the paired standard error of the recall difference against the reference, every latency and the index build time are descriptive and never judged.",
+    "hardware_profile": "hardware/default.toml",
+    "entrypoint": "cargo run --release --locked -p ptr-bench --features postgres-experiments -- postgres-hybrid <seed>",
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "design": "../../../docs/architecture/35-agentic-substrate.md",
+    "command_environment": [
+      "PTR_PG_EXPERIMENT_DSN",
+      "PTR_Q003_STRONG_PYTHON",
+      "PTR_Q003_MODELS_ROOT"
+    ],
+    "preflight": "cargo run --release --locked -p ptr-bench --features postgres-experiments -- postgres-hybrid --preflight",
+    "preregistration_sha256": "03d84170902176dafff4df5f031ca8fadf7033c47f283e47700f8b0600fe346d",
+    "preregistration_rules_sha256": "66a7702afec67523f1415a73e2ae30e1e92b90ea05b29befb77065c9609e3c2f"
+  },
+  "manifest_sha256": "2c06e1b94e1d800195f88f442d1c591ba1bea7086e8a5ac96ef4904d57871cbc",
+  "cargo_lock_sha256": "13acc7ada0ee2ad26270fb5ca84dacb7eec7e816ddfd94a9b59622929b12683a",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/default.toml",
+  "rustc": null,
+  "status": "started",
+  "started_at": "20261010T200355.785810Z",
+  "entrypoint": "entrypoint",
+  "seed": 29,
+  "parameters": {},
+  "command": [
+    "cargo",
+    "run",
+    "--release",
+    "--locked",
+    "-p",
+    "ptr-bench",
+    "--features",
+    "postgres-experiments",
+    "--",
+    "postgres-hybrid",
+    "29"
+  ],
+  "command_environment": [
+    {
+      "name": "PTR_PG_EXPERIMENT_DSN",
+      "set": true,
+      "redaction": "applied"
+    },
+    {
+      "name": "PTR_Q003_STRONG_PYTHON",
+      "set": true,
+      "redaction": "applied"
+    },
+    {
+      "name": "PTR_Q003_MODELS_ROOT",
+      "set": true,
+      "redaction": "applied"
+    }
+  ],
+  "environment": {
+    "PATH": "/nix/var/nix/profiles/default/bin:/root/.local/bin:/root/.cargo/bin:/usr/local/go/bin:/opt/node22/bin:/opt/maven/bin:/opt/gradle/bin:/opt/rbenv/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "LC_CTYPE": "C.UTF-8",
+    "RUSTUP_HOME": "/root/.rustup",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONPYCACHEPREFIX": "/tmp/ptr-run-Q003-v2",
+    "CARGO_TARGET_DIR": "/tmp/ptr-run-Q003-v2/cargo-target",
+    "RUSTUP_TOOLCHAIN": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu"
+  },
+  "executable": {
+    "path": "/root/.cargo/bin/rustup",
+    "sha256": "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
+  },
+  "toolchain": {
+    "rustc": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc",
+      "sha256": "f3834d26669b03f6855fa54bd2381443123e860167bc0c7a8dd137e5cf6e5e4f"
+    },
+    "cargo": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/cargo",
+      "sha256": "e951141cc55a6cd7b9876d187bd30a3720e6086b99413af95e3b8de1cdd72f14"
+    }
+  }
+}

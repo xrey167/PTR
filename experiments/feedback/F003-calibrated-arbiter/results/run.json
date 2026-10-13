@@ -1,0 +1,80 @@
+{
+  "experiment_id": "F003",
+  "status": "prepared",
+  "scope": "the calibrated arbiter of ptr-branch (TriagePolicy::triage, calibration_draw, TriageOutcome::adjudicate, PolicyRecord::calibrate and held_out, certify_threshold, calibrate_threshold, evaluate_off_policy, doubly_robust) and the Clopper-Pearson bound of ptr-analytics, on a simulated branch stream with a deliberately overconfident scorer and a SIMULATED adjudicator with a known error rate (PROTOCOL.md; no person adjudicates anything): the Learn-then-Test guarantee holds over Monte-Carlo replicates (violations of the true adjudicated harm bound at most delta of the certified thresholds, within an exact-binomial tolerance), each recorded policy passes an exact one-sided held-out test of harm at most alpha at its Bonferroni share, no ineligible branch is auto-proposed, every decision, threshold, held-out set and bound equals an independent oracle's, and off-policy estimates of supported targets are unbiased while an unsupported target is refused; the claim is the mechanism's",
+  "git_sha": "260755f5a1623adb8857268a2f372cd737afa2b5",
+  "aggregated_at_git_sha": "bbec55c60c18a7cc36674840e606b2cf3736823b",
+  "recorded_at": "2026-10-09T22:33:54.094193+00:00",
+  "preregistration_sha256": "1f2dd4813570ad823abdd635d39b4508154dbf6e39f21b23c9944d9fd7b2475d",
+  "preregistration_rules_sha256": "410d00ce8e2870a79fd0a11b8b0b7c55748f2419950ce55c3abbf4ae161e8078",
+  "criteria_sha256": "2f9d32e0748b853d04c50722b0b0f10087a09fc6e88872509b35d3b655f93a21",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- calibrated-arbiter <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261009T171817.574459Z-seed-17.json",
+      "git_sha": "260755f5a1623adb8857268a2f372cd737afa2b5",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261009T173033.435664Z-seed-29.json",
+      "git_sha": "8939692abbc854bd82c3e31a9519d221be3544b4",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261009T174434.532858Z-seed-43.json",
+      "git_sha": "1b8f76fb2a3179e1f87c3b98b70a04be009d793a",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261009T175912.862218Z-seed-71.json",
+      "git_sha": "22de53933cc331f2f2555e1390cd03d7d44250ef",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261009T181228.786806Z-seed-101.json",
+      "git_sha": "e3fd94d7c658453e1affe8dcdfb905cd92594bf4",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "2052125725a89331a83d91a30b947d6801ffaf7725581df1140e1a701a522e34",
+    "29": "5b3d5a0c08db23836d55b24e3357db39cabbf9a77178d542f0f154c60ad944c0",
+    "43": "4fd3efc2cb42fea4e401aefd4120cbaf89b70a0d9dda90da46f7c0ed27df7875",
+    "71": "b333e997d2ef9bed19058548e7b3d84b6fd6fc3f3f7d67de012e77073fcc1d07",
+    "101": "ea525cf007ed3d730fbe5d169b5715be26823a2079192f177c7b174f72232358"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 29,
+    "total": 29,
+    "git_sha": "a92841e6edff2551c873e2576ffaef56be633224",
+    "sha256": "b4163b4c98729e7627c539fa7827abcf3867044cccbc9d0cc2eb9a90928042cf"
+  },
+  "limitations": [
+    "the adjudicator is a simulation (PROTOCOL.md): label = true harm XOR a hash-keyed flip at 2 per mille; nothing here says how well people judge harm, how consistent they are or what they cost; a real-adjudication successor needs its own protocol",
+    "the claim is scoped to the mechanism; the scorer, the namespaces' score and harm tables and the verification mix are synthetic, one process, one machine profile",
+    "the adjudicator's error rate is 2 per mille, not 20: Learn-then-Test starts its sequence at the first threshold with at least 59 admitted samples and stops at the first failure, so at 20 per mille the policy would certify nothing in about three calibrations of four and the experiment would have no subject (arithmetic in PREREGISTRATION.md); the guarantee is tested at the error rate the mechanism can use, and a noisier adjudicator is expected to escalate more, not to violate the bound",
+    "the held-out decision rule is the exact one-sided test of harm at most alpha, Bonferroni over 4 policies x 5 seeds; the literal rule of the manifest (an upper confidence bound above alpha on held-out adjudications is a hard failure) is reported and judged by nothing, because a correct policy fails it by construction (its true harm rate at the certified threshold approaches alpha from below as calibration grows)",
+    "coverage over replicates is tested against delta with an exact tolerance, so a defect that raises the violation rate by less than the tolerance (about 1.6 percentage points at 2000 replicates) is not seen by that rule alone; the oracle comparisons (threshold_mismatches) see such defects",
+    "mutants that the plan cannot kill are documented equivalents: `<=` to `<` in the Learn-then-Test test (a bound equal to alpha has probability zero) and swapping alpha and delta (both are 0.05)",
+    "off-policy evaluation tests unbiasedness of IPS and doubly robust estimates of two supported targets over 200 logs per seed at four standard errors; SNIPS is biased by design and descriptive; a bias smaller than the standard error of the mean over the logs is not seen",
+    "the slice-rate z tests (overall, per namespace, per score half) detect a non-uniform calibration_draw only when it moves the slice share by more than four standard deviations of the group",
+    "the harm breakdown by key namespace is descriptive and gates nothing",
+    "the 30 percent of scores placed exactly on a grid point are a test-sensitivity device that makes >= against > observable; with real-valued scores that mutant would be equivalent",
+    "the start rule of the fixed sequence is data-dependent; that the coverage guarantee holds with it is shown empirically for this scenario by the Monte-Carlo count, not proven; the ungated 20 per mille arm (descriptive.noisy_adjudicator_arm) reports how rarely it certifies under a noisier adjudicator",
+    "the held-out test detects an observed harm rate above about 7 percent and the coverage test (level 1e-3 per seed, not Bonferroni-split over seeds) a violation rate above about 6.5 percent; smaller deviations are seen only by the oracle comparisons",
+    "calibration_draw is the product's and is shared with the oracle's expected decision; its uniformity is judged by the slice-rate z tests only",
+    "the five seeds were run once at the pinned scale before the freeze (digests in PREREGISTRATION.md); the harness is deterministic, so the confirmatory runs reproduce them and are no blind confirmation",
+    "a seed on which no recorded policy certifies makes coverage unmet, which counts as FALSIFIED by the S001/R001 convention though it says nothing about the claim",
+    "the mutation checker's evidence (results/mutations.json) is about the harness, not the arbiter; COMPLETED requires it (every planned mutation killed) as a precondition of trusting a pass, so without it the verdict is INVALID, and it says nothing about the arbiter itself",
+    "a panic of the product is a falsification (product_panics), contained by the harness; a panic in harness code itself is a harness fault (INVALID); timings come from one shared cloud container; no capacity claim"
+  ],
+  "metrics_sha256": "74d459129369246ee0e4845ea6a36e260316906991bdc59a491a324b3436be6e"
+}

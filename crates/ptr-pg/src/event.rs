@@ -1,4 +1,4 @@
-use ptr_ledger::{CommittedEvent, LedgerEvent};
+use ptr_ledger::{CommittedEvent, InputInvalidationKind, LedgerEvent};
 use ptr_state::projection_entries;
 use ptr_types::{Generation, ProjectId};
 
@@ -65,6 +65,17 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
             subject: format!("procedure:{id}"),
             generation: *generation,
         },
+        // A compound revocation joins the revocation set like a `Revoked` record; a
+        // supersession is an expert-dependency floor the runtime keeps, not a lifecycle change.
+        LedgerEvent::InputInvalidated {
+            input,
+            generation,
+            kind: InputInvalidationKind::Revoked,
+            ..
+        } => LifecycleChange::Tombstone {
+            subject: input.clone(),
+            generation: *generation,
+        },
         LedgerEvent::SemanticDeltaCommitted {
             base_revision,
             revision,
@@ -91,7 +102,20 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::SessionRevoked { .. }
         | LedgerEvent::TierBackendLifecycle { .. }
         | LedgerEvent::TierObjectCommitted { .. }
-        | LedgerEvent::TierReplicaLifecycle { .. } => LifecycleChange::None,
+        | LedgerEvent::TierReplicaLifecycle { .. }
+        // The projection holds no expert catalog yet; structural records stay in the ledger.
+        | LedgerEvent::ExpertStructuralCommitted { .. }
+        | LedgerEvent::ExpertFenceCommitted { .. }
+        // An authority change moves an epoch the runtime keeps; the experts it fences are the
+        // runtime's too.
+        | LedgerEvent::ExpertAuthorityChanged { .. }
+        // A supersession changes no lifecycle row; the fenced experts are the runtime's.
+        | LedgerEvent::InputInvalidated {
+            kind: InputInvalidationKind::Superseded { .. },
+            ..
+        }
+        // The projection holds no taint table; taint records stay in the ledger.
+        | LedgerEvent::KvTaintCommitted { .. } => LifecycleChange::None,
     }
 }
 
@@ -124,6 +148,11 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::TierBackendLifecycle { .. } => "storage.tier_backend_lifecycle",
         LedgerEvent::TierObjectCommitted { .. } => "storage.tier_object_committed",
         LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
+        LedgerEvent::ExpertStructuralCommitted { .. } => "expert.structural_committed",
+        LedgerEvent::ExpertFenceCommitted { .. } => "expert.fence_committed",
+        LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
+        LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
+        LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
     }
 }
 
@@ -196,6 +225,20 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             backend_id,
             ..
         } => format!("tier-replica:{}:{backend_id}", hex_digest(root_digest)),
+        LedgerEvent::ExpertStructuralCommitted { project, .. }
+        | LedgerEvent::ExpertFenceCommitted { project, .. } => format!("project:{project}"),
+        // The first subject (the lowest in canonical order) partitions the record.
+        LedgerEvent::KvTaintCommitted { subjects, .. } => match subjects.first() {
+            Some((kind, digest)) => format!("kv-taint:{}:{}", kind.name(), hex_digest(digest)),
+            None => "kv-taint:none".to_owned(),
+        },
+        LedgerEvent::InputInvalidated { input, .. } => format!("expert-input:{input}"),
+        LedgerEvent::ExpertAuthorityChanged { kind, .. } => {
+            format!(
+                "expert-authority:{}",
+                ptr_state::expert_authority_kind_name(*kind)
+            )
+        }
     }
 }
 
@@ -212,10 +255,27 @@ pub fn event_payload(committed: &CommittedEvent) -> serde_json::Value {
         .into_iter()
         .map(|(key, value)| (key, serde_json::Value::String(value)))
         .collect();
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "commit_index": committed.index.0,
         "entries": entries,
-    })
+    });
+    // The record itself is opaque here; a consumer gets the digests that identify it.
+    if let LedgerEvent::ExpertStructuralCommitted {
+        op_kind,
+        proposal_id,
+        operation_id,
+        evidence_digest,
+        ..
+    } = &committed.event
+    {
+        payload["expert"] = serde_json::json!({
+            "op_kind": op_kind.code(),
+            "proposal_id": hex_digest(proposal_id),
+            "operation_id": hex_digest(operation_id),
+            "evidence_digest": hex_digest(evidence_digest),
+        });
+    }
+    payload
 }
 
 #[cfg(test)]
@@ -228,6 +288,90 @@ mod tests {
             index: CommitIndex(index),
             event,
         }
+    }
+
+    #[test]
+    fn expert_structural_events_have_a_topic_subject_and_digest_payload() {
+        let event = committed(
+            9,
+            LedgerEvent::ExpertStructuralCommitted {
+                project: ProjectId::from("p"),
+                op_kind: ptr_ledger::ExpertOpKind::Prune,
+                proposal_id: [1; 32],
+                operation_id: [2; 32],
+                evidence_digest: [3; 32],
+                record: vec![7],
+            },
+        );
+        assert_eq!(event_topic(&event.event), "expert.structural_committed");
+        assert_eq!(event_subject(&event), "project:p");
+        assert_eq!(lifecycle_change(&event), LifecycleChange::None);
+        let payload = event_payload(&event);
+        assert_eq!(payload["commit_index"], 9);
+        assert_eq!(payload["entries"], serde_json::json!({}));
+        assert_eq!(payload["expert"]["op_kind"], 5);
+        assert_eq!(payload["expert"]["proposal_id"], "01".repeat(32));
+        assert_eq!(payload["expert"]["evidence_digest"], "03".repeat(32));
+    }
+
+    #[test]
+    fn kv_taint_events_have_a_topic_subject_and_project_taint_entries() {
+        let event = committed(
+            6,
+            LedgerEvent::KvTaintCommitted {
+                subjects: vec![
+                    (ptr_ledger::KvTaintSubjectKind::Action, [1; 32]),
+                    (ptr_ledger::KvTaintSubjectKind::Content, [2; 32]),
+                ],
+                change: ptr_ledger::KvTaintChange::Record {
+                    report_digest: [3; 32],
+                    recipe_digest: [4; 32],
+                },
+            },
+        );
+        assert_eq!(event_topic(&event.event), "kv.taint_committed");
+        assert_eq!(
+            event_subject(&event),
+            format!("kv-taint:action:{}", "01".repeat(32))
+        );
+        assert_eq!(lifecycle_change(&event), LifecycleChange::None);
+        let approx = format!("approx:{}:{}", "03".repeat(32), "04".repeat(32));
+        assert_eq!(
+            event_payload(&event)["entries"],
+            serde_json::json!({
+                format!("kv-taint:action:{}", "01".repeat(32)): approx,
+                format!("kv-taint:content:{}", "02".repeat(32)): approx,
+            })
+        );
+    }
+
+    #[test]
+    fn expert_fence_events_have_a_topic_subject_and_project_the_fenced_entry() {
+        let event = committed(
+            4,
+            LedgerEvent::ExpertFenceCommitted {
+                project: ProjectId::from("p"),
+                pod: ptr_types::PodId::from("a"),
+                action: ptr_ledger::ExpertFenceAction::Fence,
+                cause: ptr_ledger::ExpertFenceCause::InputRevoked,
+                resume: ptr_ledger::ExpertFenceResume::Serving,
+                generation: Generation(2),
+                expected_state_version: 1,
+                epoch: 2,
+                revocation: Some(ptr_ledger::ExpertFenceRevocation {
+                    subject: "k".to_owned(),
+                    generation: Generation(1),
+                }),
+                evidence: None,
+            },
+        );
+        assert_eq!(event_topic(&event.event), "expert.fence_committed");
+        assert_eq!(event_subject(&event), "project:p");
+        assert_eq!(lifecycle_change(&event), LifecycleChange::None);
+        assert_eq!(
+            event_payload(&event)["entries"],
+            serde_json::json!({"expert:p/a": "2:fenced:2"})
+        );
     }
 
     #[test]
@@ -310,5 +454,72 @@ mod tests {
             assert_eq!(event_topic(&delta.event), "semantic.delta_committed");
             assert_eq!(event_subject(&delta), "revision:3");
         }
+    }
+
+    #[test]
+    fn an_input_invalidation_has_a_topic_a_subject_and_only_a_revocation_tombstones() {
+        let event = |kind| {
+            committed(
+                8,
+                LedgerEvent::InputInvalidated {
+                    input: "dataset:a".into(),
+                    generation: Generation(2),
+                    binding_digest: [1; 32],
+                    kind,
+                    fence_count: 3,
+                    fence_digest: [2; 32],
+                },
+            )
+        };
+        let revoked = event(InputInvalidationKind::Revoked);
+        assert_eq!(event_topic(&revoked.event), "expert.input_invalidated");
+        assert_eq!(event_subject(&revoked), "expert-input:dataset:a");
+        assert_eq!(
+            lifecycle_change(&revoked),
+            LifecycleChange::Tombstone {
+                subject: "dataset:a".into(),
+                generation: Generation(2)
+            }
+        );
+        let payload = event_payload(&revoked);
+        assert_eq!(payload["commit_index"], 8);
+        assert_eq!(payload["entries"]["revoked:dataset:a"], "2");
+        assert_eq!(
+            payload["entries"]["expert-input:9:dataset:a:2"],
+            format!("revoked:3:{}", "02".repeat(32))
+        );
+        // A supersession is the runtime's floor, not a lifecycle row.
+        let superseded = event(InputInvalidationKind::Superseded {
+            old_generation: Generation(2),
+            new_generation: Generation(3),
+            new_digest: [4; 32],
+            replacement_ref: [5; 32],
+        });
+        assert_eq!(lifecycle_change(&superseded), LifecycleChange::None);
+        assert_eq!(event_topic(&superseded.event), "expert.input_invalidated");
+    }
+
+    #[test]
+    fn an_authority_change_has_a_topic_a_subject_an_entry_and_no_lifecycle_row() {
+        let change = committed(
+            9,
+            LedgerEvent::ExpertAuthorityChanged {
+                kind: ptr_ledger::ExpertAuthorityKind::Evaluator,
+                id_digest: [1; 32],
+                epoch: 4,
+                class: ptr_ledger::ExpertAuthorityClass::TighteningRotation,
+                fence_count: 2,
+                fence_digest: [2; 32],
+            },
+        );
+        assert_eq!(event_topic(&change.event), "expert.authority_changed");
+        assert_eq!(event_subject(&change), "expert-authority:evaluator");
+        assert_eq!(lifecycle_change(&change), LifecycleChange::None);
+        let payload = event_payload(&change);
+        assert_eq!(payload["commit_index"], 9);
+        assert_eq!(
+            payload["entries"]["expert-authority:evaluator"],
+            format!("4:{}:tightening:2:{}", "01".repeat(32), "02".repeat(32))
+        );
     }
 }

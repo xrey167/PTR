@@ -1,0 +1,19 @@
+{
+  "name": "ptr",
+  "owner": { "name": "PTR maintainers" },
+  "description": "Claude Code plugins that ship with the PTR repository.",
+  "plugins": [
+    {
+      "name": "ptr-dev",
+      "source": "./.claude/plugins/ptr-dev",
+      "description": "Skills, read-only review agents and guard hooks for working in PTR.",
+      "version": "0.1.0"
+    },
+    {
+      "name": "ptr-mods",
+      "source": "./.claude/plugins/ptr-mods",
+      "description": "Live mods: a /runs pane for GPU training runs and a status line with branch, changes and a docs-freshness hint.",
+      "version": "0.1.0"
+    }
+  ]
+}

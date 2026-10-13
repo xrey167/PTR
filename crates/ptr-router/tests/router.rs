@@ -1251,3 +1251,15 @@ fn width_correction_handles_a_large_distribution_quickly() {
     assert_eq!(widths_of(&distribution).iter().sum::<u64>(), RESOLUTION);
     assert!(started.elapsed() < Duration::from_secs(60));
 }
+
+#[test]
+fn checked_router_exposes_the_key_id_and_is_shareable_across_threads() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<CheckedRouter<PodRouter>>();
+    let router = CheckedRouter::new(PodRouter, key(), nonces());
+    assert_eq!(router.key_id(), key().key_id());
+    assert_ne!(
+        router.key_id(),
+        SamplingKey::from_bytes([0x5b; 32]).key_id()
+    );
+}

@@ -1,0 +1,74 @@
+{
+  "experiment_id": "R005",
+  "status": "prepared",
+  "scope": "the Exact half of R005 on the CPU reference path: a token-keyed, salt-bound radix prefix catalog over 16-token KV pages, a tiny seeded Qwen2 stack, PtrRuntime as the ledger-anchored liveness oracle, bare catalogs for the dependency kinds the stack backend does not carry",
+  "git_sha": "4c36edb1572e3ecb49ce57f73873677d184b73cc",
+  "aggregated_at_git_sha": "08b077597b8713ec4d2dca037d5b46e398107a79",
+  "recorded_at": "2026-10-06T10:38:59.706597+00:00",
+  "preregistration_sha256": "ee5f9e8d701f8c3f097a3eeb98d08e3284418d4efeabdd72ef8cec7ec78594d9",
+  "preregistration_rules_sha256": "21698169ae96bbda7ce4e81e31c168aabc73b6be2d369cf8595562badfe46191",
+  "criteria_sha256": "10c871186da2932bd2d232a0d2c0b14a4787ee81b069f8e941bd7bfda2e682d8",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- exact-prefix-reuse <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261006T102330.681884Z-seed-17.json",
+      "git_sha": "4c36edb1572e3ecb49ce57f73873677d184b73cc",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261006T102625.553943Z-seed-29.json",
+      "git_sha": "0f95b992d3cbda005c28922c6a2d4b93010c6d58",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261006T102920.737442Z-seed-43.json",
+      "git_sha": "e738c275530cf1a30bdd5d84a7ca1f13aab72caa",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261006T103218.582211Z-seed-71.json",
+      "git_sha": "b95afb6936e54a4aee249e1801d2a526ddbcd787",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261006T103515.392815Z-seed-101.json",
+      "git_sha": "f6003d7fc149d63eba5ee8bb06978155e9ff9402",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "d4931a3061e2ca018bb85c2aa09ccd0029d30fe44be7850b71c921e468c4dd2c",
+    "29": "3560e52df21db295c07b22952c869636bbe32000320a7e8ab53d5b3dc89f999c",
+    "43": "e3704bd04110b6d34303ef65f8f6c3817a305cc4bd63bc4b09ad1169a3b45e79",
+    "71": "9b3ccc905f4ad72ea4d2818faad3b7533818055de9602380b84cca08dbdcbc6a",
+    "101": "0f99231ba7419afb4ca639487557e1a41f4093e6ea17ff0fd7e2a5b3fb781d1c"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [
+    {
+      "command": "cargo test -p ptr-pods --locked --doc KvForkWitness",
+      "exit_code": 0,
+      "output_sha256": "9b721797a634a076489b99d3524fa3eb27d9af017f9597d7497d5503ed9753ef"
+    },
+    {
+      "command": "cargo test -p ptr-pods --locked witness_tests::second_consume_of_the_same_witness_state_is_refused",
+      "exit_code": 0,
+      "output_sha256": "d622fb17e3e23db78e87d9d129d9a3175e785759574200c7559d2028174dd0a8"
+    }
+  ],
+  "limitations": [
+    "the code under test is the CPU reference path with a tiny seeded model; no GPU, no large model",
+    "witness reuse is evidenced statically (a compile_fail doctest and a unit test), not by a runtime attempt",
+    "an in-flight base-model, adapter or expert invalidation is observed on a bare catalog; no output exists to count",
+    "KV page bytes are the catalog's charged bytes; the backend exposes no resident-byte accounting",
+    "the semantic liveness rule compares generations, not content: a caller citing the current generation for stale content is not detected (a documented open risk)",
+    "timings come from one shared cloud container; no capacity claim"
+  ],
+  "metrics_sha256": "70b3b56ba644833d9ae8b99e898c364d562b8541f9599de3a2a0e300b105b492"
+}

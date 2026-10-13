@@ -1,0 +1,12 @@
+version = 1
+id = "M004-v2"
+status = "planned"
+hypothesis = "Does a learned operator router beat the frozen router and the pinned baseline? Planned and deferred: not run at A0 (ADR-0021 item 2); the comparison needs the pretrained LM baseline of the GPU phase."
+metrics = "regret; quality-cost utility; route accuracy (to be preregistered with the GPU-phase study)"
+baseline = "LLM-only + deterministic router (to be pinned in the GPU phase)"
+falsification = "Not run at A0 (ADR-0021 item 2). No criterion is preregistered here and none may be inferred from M001-v5, M002-v10 or M003-v2; a successor is preregistered before any run."
+hardware_profile = "hardware/a0-cpu-4core.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+mod vcw;
+
+pub use vcw::{
+    VcwBackend, VcwExperts, VcwHintMode, VcwLearning, VcwPods, VcwQwenCpu, VcwServiceConfig,
+    VcwSimulation, VcwTaskKind, MAX_VCW_BUDGET, MAX_VCW_NAME_BYTES, MAX_VCW_NEW_TOKENS,
+    MAX_VCW_REQUEST_MS, VCW_REPAIR_ROLES,
+};
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CliOverrides {
     pub config_path: Option<String>,
@@ -67,7 +75,16 @@ impl CliOverrides {
         Ok(out)
     }
 
+    /// Applies the CLI overrides and validates the result.
     pub fn apply_to(&self, config: &mut PtrConfig) -> Result<(), String> {
+        self.overlay(config);
+        config.validate()
+    }
+
+    /// Applies the CLI overrides without validating, for a host that validates once after every
+    /// layer (file, environment, CLI), so the highest-precedence layer can still correct a value
+    /// a lower layer left invalid.
+    pub fn overlay(&self, config: &mut PtrConfig) {
         if let Some(bind) = &self.bind {
             config.server.bind = bind.clone();
         }
@@ -92,7 +109,6 @@ impl CliOverrides {
         if let Some(value) = self.require_live_generation {
             config.action_boundary.require_live_generation = value;
         }
-        config.validate()
     }
 }
 
@@ -106,6 +122,8 @@ pub struct PtrConfig {
     pub observability: ObservabilityConfig,
     pub research: ResearchConfig,
     pub model: ModelConfig,
+    /// The optional verifier-closed workspace request path; off by default.
+    pub vcw: VcwServiceConfig,
 }
 
 impl PtrConfig {
@@ -113,14 +131,37 @@ impl PtrConfig {
         toml::from_str(input)
     }
 
+    /// Reads and validates a configuration file that must be complete on its own.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path.as_ref()).map_err(|e| e.to_string())?;
-        let config = Self::from_toml_str(&text).map_err(|e| e.to_string())?;
+        let config = Self::parse_path(path)?;
         config.validate()?;
         Ok(config)
     }
 
+    /// Reads and parses a configuration file without validating it, for a host that completes
+    /// the file through overlays first (a `qwen-cpu` section whose model directory and digests
+    /// come from the `PTR_VCW_QWEN_*` variables). The caller validates after the overlays;
+    /// [`Self::apply_env`] does so itself.
+    pub fn parse_path(path: impl AsRef<Path>) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path.as_ref()).map_err(|e| e.to_string())?;
+        Self::from_toml_str(&text).map_err(|e| e.to_string())
+    }
+
+    /// Applies the `PTR_*` environment overrides and validates the result.
     pub fn apply_env<I, K, V>(&mut self, values: I) -> Result<(), String>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        self.overlay_env(values)?;
+        self.validate()
+    }
+
+    /// Applies the `PTR_*` environment overrides without validating the whole configuration
+    /// (a value that does not parse is still refused), for a host that validates once after the
+    /// CLI layer too.
+    pub fn overlay_env<I, K, V>(&mut self, values: I) -> Result<(), String>
     where
         I: IntoIterator<Item = (K, V)>,
         K: AsRef<str>,
@@ -167,13 +208,30 @@ impl PtrConfig {
                 "PTR_REQUIRE_EXPERIMENT_MANIFEST" => {
                     self.research.require_experiment_manifest = parse_bool(key, value)?;
                 }
+                "PTR_VCW_ENABLED" => self.vcw.enabled = parse_bool(key, value)?,
+                "PTR_VCW_QWEN_MODEL_DIR" => {
+                    self.vcw.experts.qwen_cpu.model_dir = value.to_owned();
+                }
+                "PTR_VCW_QWEN_WEIGHTS_SHA256" => {
+                    self.vcw.experts.qwen_cpu.weights_sha256 = value.to_owned();
+                }
+                "PTR_VCW_QWEN_CONFIG_SHA256" => {
+                    self.vcw.experts.qwen_cpu.config_sha256 = value.to_owned();
+                }
+                "PTR_VCW_QWEN_TOKENIZER_SHA256" => {
+                    self.vcw.experts.qwen_cpu.tokenizer_sha256 = value.to_owned();
+                }
+                "PTR_VCW_QWEN_TOKENIZER_CONFIG_SHA256" => {
+                    self.vcw.experts.qwen_cpu.tokenizer_config_sha256 = value.to_owned();
+                }
                 _ => {}
             }
         }
-        self.validate()
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.check_supported_settings().map_err(|e| e.to_string())?;
         if self.server.bind.trim().is_empty() {
             return Err("server.bind must not be empty".into());
         }
@@ -183,10 +241,58 @@ impl PtrConfig {
         if self.runtime.max_parallel_candidates == 0 {
             return Err("runtime.max_parallel_candidates must be greater than zero".into());
         }
+        self.vcw.validate()?;
         match self.runtime.mode.as_str() {
             "standalone" | "cluster" => Ok(()),
             other => Err(format!("unsupported runtime.mode: {other}")),
         }
+    }
+
+    /// Refuses every setting the system cannot honour. A field that no code
+    /// reads must not be silently accepted with a non-default value, so each
+    /// one is either refused here or listed as consumed in
+    /// [`FIELD_DISPOSITIONS`].
+    pub fn check_supported_settings(&self) -> Result<(), UnsupportedSetting> {
+        let defaults = Self::default();
+        if !self.semantic.retain_raw_evidence {
+            return Err(UnsupportedSetting {
+                field: "semantic.retain_raw_evidence",
+                reason: "must be true: raw evidence is never replaced by typed state (Invariant)",
+            });
+        }
+        let not_supported_yet = [
+            (
+                "observability.structured_tracing",
+                self.observability.structured_tracing == defaults.observability.structured_tracing,
+            ),
+            (
+                "observability.async_backtrace",
+                self.observability.async_backtrace == defaults.observability.async_backtrace,
+            ),
+            (
+                "research.allow_unlocked_components",
+                self.research.allow_unlocked_components
+                    == defaults.research.allow_unlocked_components,
+            ),
+            (
+                "research.require_experiment_manifest",
+                self.research.require_experiment_manifest
+                    == defaults.research.require_experiment_manifest,
+            ),
+            (
+                "runtime.max_parallel_candidates",
+                self.runtime.max_parallel_candidates == defaults.runtime.max_parallel_candidates,
+            ),
+        ];
+        for (field, is_default) in not_supported_yet {
+            if !is_default {
+                return Err(UnsupportedSetting {
+                    field,
+                    reason: "only the default value is supported; changing it is not supported yet (no component reads this setting)",
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Validation for the standalone daemon boundary. Library defaults remain
@@ -215,6 +321,201 @@ impl PtrConfig {
         Ok(())
     }
 }
+
+/// A configuration value the system cannot honour, refused at load time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnsupportedSetting {
+    pub field: &'static str,
+    pub reason: &'static str,
+}
+
+impl std::fmt::Display for UnsupportedSetting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unsupported setting {}: {}", self.field, self.reason)
+    }
+}
+
+impl std::error::Error for UnsupportedSetting {}
+
+/// What happens to a configuration field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FieldDisposition {
+    /// Read by the named component; any value valid per `validate` is honoured.
+    Consumed(&'static str),
+    /// Nothing reads it; any non-default value is refused by
+    /// `check_supported_settings`.
+    RefusedUnlessDefault,
+}
+
+/// Every leaf configuration field and its disposition. A test compares this
+/// table against the serialized default configuration, so a new field without
+/// a consumer or a validation rule fails the build.
+pub const FIELD_DISPOSITIONS: &[(&str, FieldDisposition)] = &[
+    (
+        "server.bind",
+        FieldDisposition::Consumed("ptrd, ptr-server"),
+    ),
+    ("server.data_dir", FieldDisposition::Consumed("ptrd")),
+    ("model.backend", FieldDisposition::Consumed("ptrd")),
+    (
+        "runtime.mode",
+        FieldDisposition::Consumed("ptrd (validate_daemon)"),
+    ),
+    (
+        "runtime.mailbox_capacity",
+        FieldDisposition::Consumed("ptr-server RequestAdmission"),
+    ),
+    (
+        "runtime.max_parallel_candidates",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "semantic.cancel_stale_revisions",
+        FieldDisposition::Consumed(
+            "ptr-runtime SteppedRun only; no shipped host (ptr-server, ptrd) steps runs, so no production effect",
+        ),
+    ),
+    (
+        "semantic.retain_raw_evidence",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "action_boundary.require_capability",
+        FieldDisposition::Consumed("ptr-runtime"),
+    ),
+    (
+        "action_boundary.require_live_generation",
+        FieldDisposition::Consumed("ptr-runtime"),
+    ),
+    (
+        "action_boundary.require_current_revision",
+        FieldDisposition::Consumed("ptr-runtime"),
+    ),
+    (
+        "observability.structured_tracing",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "observability.async_backtrace",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "research.allow_unlocked_components",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "research.require_experiment_manifest",
+        FieldDisposition::RefusedUnlessDefault,
+    ),
+    (
+        "vcw.enabled",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.project",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.kinds",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.max_verifier_calls",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.max_rounds",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.max_request_ms",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.hint_mode",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.learning",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.exploration_floor",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.proposer",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.format_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.value_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.schema_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.code_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.resource_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.fact_repair",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.pods.generation",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.backend",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.simulated.seed",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.simulated.default_repair_success",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.simulated.decline_on_failure",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.model_dir",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.weights_sha256",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.config_sha256",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.tokenizer_sha256",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.tokenizer_config_sha256",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+    (
+        "vcw.experts.qwen_cpu.max_new_tokens",
+        FieldDisposition::Consumed("ptr-server, ptrd (vcw path)"),
+    ),
+];
 
 fn is_loopback_bind(bind: &str) -> bool {
     let Ok(address) = bind.parse::<std::net::SocketAddr>() else {
@@ -283,6 +584,13 @@ impl Default for RuntimeConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SemanticConfig {
+    /// Whether a stepped resumable run (`ptr_runtime::SteppedRun`) is cancelled, before the
+    /// effect boundary, when the semantic revision moved for a reason other than the run's own
+    /// writes. `false` switches the cooperative cancellation off; the hard effect boundary is
+    /// unaffected by either value. **No shipped host steps runs** (`ptr-server` and `ptrd` call
+    /// the blocking entry points, which force the cancellation off), so this setting has no
+    /// effect on any production path today; only a host that drives `step_resumable_run` itself
+    /// sees it. "Consumed" here means read by that API, not enforced anywhere in production.
     pub cancel_stale_revisions: bool,
     pub retain_raw_evidence: bool,
 }

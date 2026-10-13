@@ -28,12 +28,19 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-STUDY_DIR = ROOT / "research/falsification/A0-ablations-v1"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import a0_study  # noqa: E402
+
+# The active study; v1 unless `--study v2` (`use_study`). v2 has no in-tree
+# commit constant: its preregistration is the commit its tag names, so the tag
+# must exist (a tag cannot be recorded inside the commit it names).
+STUDY = a0_study.V1
+STUDY_DIR = STUDY.path
 CRITERIA = STUDY_DIR / "criteria.toml"
-PREREG_TAG = "a0-ablation-prereg-v1"
+PREREG_TAG = STUDY.prereg_tag
 # The preregistration commit is part of the branch history; a fresh clone need
 # not reconstruct a tag by hand. A present tag must name this same commit.
-PREREG_COMMIT = "45b2d5491e40171dd242d0bac6cf7d78d9c70746"
+PREREG_COMMIT = STUDY.prereg_commit
 RERUN_SEED = 17
 G6_CHECKS = frozenset({"cargo_test", "self_test", "benchmark_tests", "aggregator_tests", "config_tests"})
 DATA_DIR = ROOT / "datasets/generated/operator_routing_v1"
@@ -51,6 +58,16 @@ TEST_SPLITS = (
 
 
 # ------------------------------------------------------------------------ statistics
+
+
+def use_study(key: str) -> None:
+    """Select the study to aggregate (v1 by default)."""
+    global STUDY, STUDY_DIR, CRITERIA, PREREG_TAG, PREREG_COMMIT
+    STUDY = a0_study.STUDIES[key]
+    STUDY_DIR = STUDY.path
+    CRITERIA = STUDY_DIR / "criteria.toml"
+    PREREG_TAG = STUDY.prereg_tag
+    PREREG_COMMIT = STUDY.prereg_commit
 
 
 def paired(comparator: list[float], ablated: list[float], t_critical: float) -> dict:
@@ -444,6 +461,11 @@ def sha256(path: Path) -> str:
 
 def preregistration_ref() -> str:
     """Resolve the in-tree frozen identity and reject a conflicting tag."""
+    if PREREG_COMMIT is None:
+        try:
+            return git("rev-parse", "--verify", f"{PREREG_TAG}^{{commit}}").strip()
+        except subprocess.CalledProcessError as error:
+            raise ValueError(f"tag {PREREG_TAG} is missing: the {STUDY.name} preregistration is the commit it names") from error
     try:
         commit = git("rev-parse", "--verify", f"{PREREG_COMMIT}^{{commit}}").strip()
     except subprocess.CalledProcessError as error:
@@ -677,9 +699,7 @@ def correctness_evidence(evidence: dict, evaluated_commit: str | None, logs: Pat
     tails = {
         "cargo_test": ["+1.95.0", "test", "--locked", "--manifest-path", "model/burn-a0/Cargo.toml"],
         "self_test": ["--phase", "self-test", "--data", "datasets/generated/operator_routing_v1", "--data-fnv64", data_fnv],
-        "benchmark_tests": ["-m", "unittest", "discover", "-s", "benchmarks/operator-routing/tests"],
-        "aggregator_tests": ["-m", "unittest", "scripts/tests/test_a0_ablation_aggregate.py"],
-        "config_tests": ["-m", "unittest", "scripts/tests/test_a0_ablation_config.py"],
+        **a0_study.python_check_tails(STUDY),
     }
     for name in sorted(G6_CHECKS & set(checks)):
         check = checks[name]
@@ -691,7 +711,8 @@ def correctness_evidence(evidence: dict, evaluated_commit: str | None, logs: Pat
         if command_ok:
             program = Path(argv[0]).name
             command_ok = (program == "cargo" if name == "cargo_test" else
-                          argv[0].endswith("model/burn-a0/target-a0-study/release/examples/a0_ablation") if name == "self_test" else
+                          argv[0].endswith("/release/examples/a0_ablation" if STUDY.hardened
+                                           else "model/burn-a0/target-a0-study/release/examples/a0_ablation") if name == "self_test" else
                           re.fullmatch(r"python(?:3(?:\.\d+)?)?", program) is not None)
         if not command_ok:
             problems.append(f"{name}: command is not the required correctness check")
@@ -751,10 +772,188 @@ def sweep_evidence(evaluated_commit: str | None, records: dict[str, dict] | None
     return {"pass": True, "detail": "selected rates reproduce the archived frozen sweep"}
 
 
+# ------------------------------------------------------------------------ v2 (hardened)
+#
+# Each v2 process is one seed of a listed experiment (scripts/a0_study.py). The
+# hardened runner commits every record before the next launch, so records name
+# different commits; G4 therefore compares code trees, not commit ids.
+
+V2_RECORD_PATH = re.compile(r"^experiments/model/M00[1-4]-a0v2-[^/]+/results/run-[^/]+\.json$")
+V2_DIRECTORY = re.compile(r"^experiments/model/(M00[1-4]-a0v2-[^/]+)/")
+EVAL_TAG = "a0-ablations-v2-eval"
+SHARED_REGISTRIES = ("experiments/registry.toml", "experiments/preregistration.toml")
+
+
+def v2_load() -> tuple[dict, dict, dict]:
+    """(records by family and path, paths by kind and family, sweep records by path)
+    from every v2 experiment directory. Only run records with a seed count; a
+    prepared record names no seed."""
+    loaded = {family: {} for family in a0_study.FAMILIES}
+    paths = {kind: {family: [] for family in a0_study.FAMILIES} for kind in ("eval", "rerun", "contingency")}
+    sweeps = {}
+    for directory in sorted((ROOT / "experiments/model").glob("M00[1-4]-a0v2-*")):
+        classified = STUDY.classify(directory.name)
+        if classified is None:
+            continue
+        kind, family = classified
+        for path in sorted((directory / "results").glob("run-*.json")):
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if "seed" not in record:
+                continue
+            if kind == "sweep":
+                sweeps[path] = record
+            else:
+                loaded[family][path] = record
+                paths[kind][family].append(path)
+    return loaded, paths, sweeps
+
+
+def code_changes(base: str, head: str) -> list[str]:
+    """Files that differ between two commits other than the study's run records,
+    its G6 logs, and the registration of its later-stage experiments (checked by
+    `registration_violations`): the part of the tree that can change what runs."""
+    names = git("diff", "--name-only", f"{base}..{head}").split()
+    return [name for name in names if not (V2_RECORD_PATH.match(name) or name.startswith(f"{STUDY.directory}/logs/")
+                                           or later_stage_path(name))]
+
+
+def later_stage_path(name: str) -> bool:
+    """A file of a v2 experiment that is registered after the sweep (evaluation,
+    rerun, contingency), or one of the two shared registries."""
+    if name in SHARED_REGISTRIES:
+        return True
+    match = V2_DIRECTORY.match(name)
+    classified = STUDY.classify(match.group(1)) if match else None
+    return classified is not None and classified[0] != "sweep"
+
+
+def registration_violations(base: str, head: str) -> list[str]:
+    """The shared registries may only gain entries of later-stage v2 experiments."""
+    problems = []
+    for name in SHARED_REGISTRIES:
+        old = git("show", f"{base}:{name}")
+        new = git("show", f"{head}:{name}")
+        if not new.startswith(old):
+            problems.append(f"{name}: not append-only since {base[:12]}")
+            continue
+        added = new[len(old):]
+        pattern = r'^id = "([^"]+)"' if name.endswith("registry.toml") else r"^\[experiment\.([^\].]+)\]"
+        for exp_id in re.findall(pattern, added, flags=re.M):
+            classified = STUDY.classify(exp_id)
+            if classified is None or classified[0] == "sweep":
+                problems.append(f"{name}: adds {exp_id}, which is no later-stage v2 experiment")
+    return problems
+
+
+def v2_freeze_violations(changed: list[str]) -> list[str]:
+    """G4's diff condition for v2, from the preregistration tag to the evaluation
+    commit: the learning-rate selection, run records, and the registration of the
+    later-stage experiments. Sweep experiments' other files cannot change."""
+    return [name for name in changed
+            if name not in {f"{STUDY.directory}/lr_selection.tsv", f"{STUDY.directory}/lr_selection.json"}
+            and not V2_RECORD_PATH.match(name) and not later_stage_path(name)]
+
+
+def v2_provenance(records: dict[str, dict]) -> dict:
+    """G4's record condition for v2: every record from a clean tree with an empty
+    tracked diff. The commit differs by record; `v2_code_identity` binds the code."""
+    dirty = sorted(name for name, r in records.items() if r.get("git_dirty") is not False)
+    unverified = sorted(name for name, r in records.items()
+                        if type(r.get("schema_version")) is not int or r["schema_version"] < 2
+                        or r.get("git_tracked_diff_sha256") != hashlib.sha256(b"").hexdigest())
+    return {"dirty": dirty, "unverified_clean_source": unverified, "pass": bool(records) and not dirty and not unverified}
+
+
+def run_identity(record: dict) -> str:
+    """Host, toolchain and executable of a hardened record (not its environment,
+    which names the experiment's own scratch directory)."""
+    return json.dumps([record.get("host"), record.get("toolchain"), record.get("executable")], sort_keys=True)
+
+
+def v2_code_identity(base: str, sweeps: dict[str, dict], records: dict[str, dict]) -> dict:
+    """Every record ran the code of the evaluation commit `base` (the commit G6
+    tested): sweep records at ancestors of it, later records at descendants,
+    each differing from it only by record, log and later-stage registration files."""
+    problems = []
+    for name, record in {**sweeps, **records}.items():
+        sha = record.get("git_sha", "")
+        is_sweep = name in sweeps
+        pair = (sha, base) if is_sweep else (base, sha)
+        if subprocess.run(["git", "merge-base", "--is-ancestor", *pair], cwd=ROOT).returncode != 0:
+            problems.append(f"{name}: commit {str(sha)[:12]} is not {'an ancestor' if is_sweep else 'a descendant'} of {base[:12]}")
+            continue
+        if not is_sweep:
+            problems += [f"{name}: code differs from the evaluation commit in {path}" for path in code_changes(base, sha)]
+    identities = {run_identity(r) for r in {**sweeps, **records}.values()}
+    if len(identities) > 1:
+        problems.append("host, toolchain or executable differ between records")
+    if any(not r.get("toolchain") or not r.get("executable") for r in {**sweeps, **records}.values()):
+        problems.append("a record names no toolchain or executable")
+    return {"pass": not problems, "detail": problems}
+
+
+def v2_sweep_evidence(base: str | None, sweeps: dict[str, dict]) -> dict:
+    """The committed selection reproduces from the sweep records held at the evaluation commit."""
+    try:
+        if not base:
+            raise ValueError("no evaluation commit")
+        spec = importlib.util.spec_from_file_location("a0_study_driver", ROOT / "scripts/run_a0_ablation_study.py")
+        driver = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(driver)
+        driver.use_study(STUDY.key)
+        for name in sweeps:
+            if json.loads(git("show", f"{base}:{name}")) != sweeps[name]:
+                raise ValueError(f"{name}: differs at the evaluation commit")
+        selected = driver.v2_selection_table()
+        archived = json.loads(git("show", f"{base}:{STUDY.directory}/lr_selection.json"))
+        if selected != archived:
+            raise ValueError("selected learning rates differ from the validated sweep")
+        lines = ["arm\tlr\tval_accuracy\tflag"]
+        lines += [f"{row['arm']}\t{row['lr']}\t{row['val_accuracy']}\t{row['flag']}" for row in selected]
+        if git("show", f"{base}:{STUDY.directory}/lr_selection.tsv").rstrip("\n") != "\n".join(lines):
+            raise ValueError("TSV learning rates differ from the validated sweep")
+    except (ValueError, KeyError, TypeError, OSError, subprocess.CalledProcessError, SystemExit) as error:
+        return {"pass": False, "detail": str(error)}
+    return {"pass": True, "detail": "selected rates reproduce from the frozen sweep records"}
+
+
+def final_rows(record: dict) -> list[dict]:
+    """The `final` rows (arm, split, accuracy) a record's stdout printed."""
+    rows = []
+    for line in record.get("stdout", "").splitlines():
+        if line.startswith("{"):
+            row = json.loads(line)
+            if row.get("row") == "final":
+                rows.append(row)
+    return rows
+
+
+def v2_stock_cross_check(chosen: dict, tables: dict, seeds: list[int]) -> list[str]:
+    """Agreement with the runner's own rows. The stock `run_experiment.py
+    aggregate` refuses records from more than one commit, which hardened
+    per-seed records always are, so this compares each record's printed `final`
+    rows with the independently scored table (the stock aggregate's input, per
+    record) and the per-arm means over the seeds."""
+    mismatch = []
+    for kind in ("eval", "contingency"):
+        table = tables.get(kind)
+        for family, by_key in chosen.get(kind, {}).items():
+            for record in by_key.values():
+                for row in final_rows(record):
+                    cell = ((table or {}).get(row["arm"], {}).get(record["seed"], {}).get(row["split"]))
+                    if cell is None or not isinstance(row.get("accuracy"), (int, float)) \
+                            or abs(row["accuracy"] - cell["accuracy"]) > 1e-12:
+                        mismatch.append(f"{kind}/{family}/{row['arm']}/{record['seed']}/{row['split']}")
+    return mismatch
+
+
 def main(argv: list[str] | None = None) -> int:
     """Verify frozen criteria, score study records, and write gates, verdicts, and metrics."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.parse_args(argv)
+    parser.add_argument("--study", choices=sorted(a0_study.STUDIES))
+    chosen_study = parser.parse_args(argv).study
+    if chosen_study is not None:
+        use_study(chosen_study)
     try:
         frozen_ref = preregistration_ref()
         changed_inputs = frozen_input_violations()
@@ -771,12 +970,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # Every study record, by kind and experiment; the tables use one completed
     # record per (experiment, seed), and the gates see all of them.
-    loaded = {e: load_records(e) for e in EXPERIMENTS}
-    paths = {
-        kind: {e: [p for p, r in loaded[e].items() if r.get("entrypoint") == entrypoint]
-               for e in EXPERIMENTS}
-        for kind, entrypoint in STUDY_KINDS.items()
-    }
+    sweeps: dict = {}
+    if STUDY.hardened:
+        loaded, paths, sweeps = v2_load()
+    else:
+        loaded = {e: load_records(e) for e in EXPERIMENTS}
+        paths = {
+            kind: {e: [p for p, r in loaded[e].items() if r.get("entrypoint") == entrypoint]
+                   for e in EXPERIMENTS}
+            for kind, entrypoint in STUDY_KINDS.items()
+        }
     records = {str(p.relative_to(ROOT)): loaded[e][p]
                for by_experiment in paths.values() for e, ps in by_experiment.items() for p in ps}
     by_name = {id(r): name for name, r in records.items()}
@@ -837,25 +1040,58 @@ def main(argv: list[str] | None = None) -> int:
 
     # G4: every record clean, one commit, descended from the tag, and between the
     # tag and that commit only the lr selection and the sweep records changed.
-    origin = provenance(records)
-    sha = origin["shas"][0] if len(origin["shas"]) == 1 else None
-    ancestor = sha is not None and subprocess.run(["git", "merge-base", "--is-ancestor", frozen_ref, sha], cwd=ROOT).returncode == 0
-    stray = ["(no single commit)"]
-    if ancestor:
-        changed = git("diff", "--name-only", f"{frozen_ref}..{sha}").split()
-        def entrypoint_at(path: str) -> str | None:
-            """Read a record's entrypoint at the evaluation commit, or None on lookup failure."""
-            try:
-                return json.loads(git("show", f"{sha}:{path}")).get("entrypoint")
-            except (subprocess.CalledProcessError, json.JSONDecodeError):
-                return None  # deleted, or not a record: not a sweep record either
-        stray = freeze_violations(changed, entrypoint_at)
-    prereg_unchanged = at_tag("research/falsification/A0-ablations-v1/PREREGISTRATION.md") == (STUDY_DIR / "PREREGISTRATION.md").read_bytes()
-    sweep = sweep_evidence(sha, records)
-    gates["G4"] = {"pass": origin["pass"] and ancestor and not stray and prereg_unchanged and sweep["pass"],
-                   "detail": {"records": len(records), "shas": origin["shas"], "dirty": origin["dirty"], "unverified_clean_source": origin["unverified_clean_source"],
-                              "tag_is_ancestor": ancestor, "changed_beyond_lr_selection_and_sweep": stray,
-                              "preregistration_unchanged": prereg_unchanged, "sweep": sweep}}
+    g6_path = STUDY_DIR / "logs/g6.json"
+    g6 = json.loads(g6_path.read_text()) if g6_path.exists() else {}
+    if STUDY.hardened:
+        base = g6.get("git_sha") if isinstance(g6.get("git_sha"), str) else None
+        origin = v2_provenance({**records, **{str(p.relative_to(ROOT)): r for p, r in sweeps.items()}})
+        sweep_named = {str(p.relative_to(ROOT)): r for p, r in sweeps.items()}
+        ancestor = base is not None and subprocess.run(["git", "merge-base", "--is-ancestor", frozen_ref, base], cwd=ROOT).returncode == 0
+        stray = ["(no evaluation commit)"]
+        if ancestor:
+            stray = v2_freeze_violations(git("diff", "--name-only", f"{frozen_ref}..{base}").split())
+            stray += registration_violations(frozen_ref, base)
+        identity_gate = v2_code_identity(base, sweep_named, records) if base else {"pass": False, "detail": ["no evaluation commit"]}
+        if identity_gate["pass"]:
+            later = {r.get("git_sha") for r in records.values()}
+            for later_sha in sorted(x for x in later if x):
+                stray += registration_violations(base, later_sha)
+        prereg_unchanged = at_tag(f"{STUDY.directory}/PREREGISTRATION.md") == (STUDY_DIR / "PREREGISTRATION.md").read_bytes()
+        sweep = v2_sweep_evidence(base, sweep_named)
+        # The evaluation commit is pinned by a tag once it exists; a present tag must agree.
+        try:
+            tagged = git("rev-parse", "--verify", f"{EVAL_TAG}^{{commit}}").strip()
+        except subprocess.CalledProcessError:
+            tagged = None
+        eval_tag_ok = tagged is None or tagged == base
+        gates["G4"] = {"pass": origin["pass"] and ancestor and not stray and prereg_unchanged and sweep["pass"] and identity_gate["pass"] and eval_tag_ok,
+                       "detail": {"records": len(records), "sweep_records": len(sweeps), "dirty": origin["dirty"],
+                                  "unverified_clean_source": origin["unverified_clean_source"],
+                                  "evaluation_commit": base, "evaluation_tag_agrees": eval_tag_ok, "tag_is_ancestor": ancestor,
+                                  "changed_beyond_lr_selection_records_and_later_stage_registration": stray,
+                                  "code_identity": identity_gate, "preregistration_unchanged": prereg_unchanged,
+                                  "sweep": sweep}}
+        sha = base
+    else:
+        origin = provenance(records)
+        sha = origin["shas"][0] if len(origin["shas"]) == 1 else None
+        ancestor = sha is not None and subprocess.run(["git", "merge-base", "--is-ancestor", frozen_ref, sha], cwd=ROOT).returncode == 0
+        stray = ["(no single commit)"]
+        if ancestor:
+            changed = git("diff", "--name-only", f"{frozen_ref}..{sha}").split()
+            def entrypoint_at(path: str) -> str | None:
+                """Read a record's entrypoint at the evaluation commit, or None on lookup failure."""
+                try:
+                    return json.loads(git("show", f"{sha}:{path}")).get("entrypoint")
+                except (subprocess.CalledProcessError, json.JSONDecodeError):
+                    return None  # deleted, or not a record: not a sweep record either
+            stray = freeze_violations(changed, entrypoint_at)
+        prereg_unchanged = at_tag("research/falsification/A0-ablations-v1/PREREGISTRATION.md") == (STUDY_DIR / "PREREGISTRATION.md").read_bytes()
+        sweep = sweep_evidence(sha, records)
+        gates["G4"] = {"pass": origin["pass"] and ancestor and not stray and prereg_unchanged and sweep["pass"],
+                       "detail": {"records": len(records), "shas": origin["shas"], "dirty": origin["dirty"], "unverified_clean_source": origin["unverified_clean_source"],
+                                  "tag_is_ancestor": ancestor, "changed_beyond_lr_selection_and_sweep": stray,
+                                  "preregistration_unchanged": prereg_unchanged, "sweep": sweep}}
 
     # G5: the binary's counts equal score.py's, on every scored process.
     disagree = [f"{e['arm']}/{e['seed']}/{e['split']}" + (f" ({kind})" if kind != "eval" else "")
@@ -864,14 +1100,14 @@ def main(argv: list[str] | None = None) -> int:
     gates["G5"] = {"pass": not disagree and not all_problems, "detail": {"disagreements": disagree, "problems": all_problems}}
 
     # G6: the correctness logs the driver wrote at the evaluation commit.
-    g6_path = STUDY_DIR / "logs/g6.json"
-    g6 = json.loads(g6_path.read_text()) if g6_path.exists() else {}
     gates["G6"] = correctness_evidence(g6, sha, g6_path.parent, lock["data_fnv1a64"])
 
     # Cross-check against the stock runner aggregate: per-arm mean accuracy per split,
     # for the evaluation and, where it ran, the contingency.
     stock_mismatch = []
-    for kind, scores_table in (("eval", table), ("contingency", contingency)):
+    if STUDY.hardened:
+        stock_mismatch = v2_stock_cross_check(chosen, {"eval": table, "contingency": contingency}, seeds)
+    for kind, scores_table in (() if STUDY.hardened else (("eval", table), ("contingency", contingency))):
         entrypoint = STUDY_KINDS[kind]
         for experiment in EXPERIMENTS:
             if not paths[kind][experiment]:
@@ -921,12 +1157,17 @@ def main(argv: list[str] | None = None) -> int:
                        for line in r["stdout"].splitlines() if line.startswith('{"row":"meta"')})
 
     for experiment in EXPERIMENTS:
-        document = {"study": "A0-ablations-v1", "scope": "A0-internal ablation on synthetic operator-routing v1; not this manifest's baseline comparison",
+        document = {"study": STUDY.name, "scope": "A0-internal ablation on synthetic operator-routing v1; not this manifest's baseline comparison",
                     "arms": {arm: per_split(table, arm) for arm in arms_run(experiment, "eval")}}
         if experiment in chosen["contingency"]:
             document["contingency_steps"] = criteria["learnability"]["contingency_steps"]
             document["contingency_arms"] = {arm: per_split(contingency, arm) for arm in arms_run(experiment, "contingency")}
-        out_path = ROOT / "experiments" / EXPERIMENTS[experiment] / "results/a0_internal_metrics.json"
+        if STUDY.hardened:
+            # Not into the listed experiments' results directories, which the runner holds to HEAD.
+            out_path = STUDY_DIR / "metrics" / f"{experiment}.json"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            out_path = ROOT / "experiments" / EXPERIMENTS[experiment] / "results/a0_internal_metrics.json"
         out_path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (STUDY_DIR / "results.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({cid: v.get("verdict") for cid, v in result["verdicts"].items()}, indent=2))

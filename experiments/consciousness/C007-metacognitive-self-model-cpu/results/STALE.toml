@@ -1,0 +1,3 @@
+results_git_sha = "870ad3b634b22311b37e28c518023ad8577764b3"
+stale_since = "ee393aa1277bdbb46683949e7237918155e386e6"
+reason = "No code under test changed after C007's seed records and mutation check. ee393aa1 records the failed status and the result in STATUS.md and regenerates the component docs, which the repository-wide provenance counts as a change; the merge into the integration line then brings unrelated work. C007 was preregistered at c007-prereg (145c75f8). No rerun under the same preregistration follows (each seed runs once)."

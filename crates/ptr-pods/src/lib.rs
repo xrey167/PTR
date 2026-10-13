@@ -14,6 +14,7 @@ mod evidence;
 mod expert;
 mod hypothesis;
 mod kv;
+mod kv_chain;
 mod manifest;
 mod native;
 mod neural;
@@ -21,11 +22,18 @@ mod output;
 mod paged_kv;
 mod protocol;
 mod qwen;
+#[cfg(feature = "qwen-cpu")]
+mod qwen_cpu;
+mod qwen_lora;
+mod qwen_moe;
+mod qwen_stack;
 mod runtime;
 mod semantic;
+mod text_generator;
 mod tier_storage;
 mod transport;
 mod turns;
+mod workspace;
 pub use adapter::{AdapterError, NeuralPodAdapter};
 pub use attention::{
     CausalAttentionInput, CausalAttentionOutput, CausalAttentionWeights, KvContinuationExecutor,
@@ -42,17 +50,24 @@ pub use evidence::{
     EvidenceVerifier, PodEvidenceBundle, ReplayedEvidence,
 };
 pub use expert::{
-    BaseModelDigest, BaseModelId, BaseModelRef, ExpertIdentityError, ExpertLevel,
-    ExpertOperationRequest, ExpertPodSpec, ExpertProposal, ExpertProposalError, ExpertState,
-    ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId, ProposalId,
-    ProposalParts, ProposerRef, RationaleDigest, RequestedOp, ResultIntent, RetiredReason,
-    StructuralOp, ZeroDigest,
+    BaseModelDigest, BaseModelId, BaseModelRef, ExpertCommitRecord, ExpertEvidence,
+    ExpertIdentityError, ExpertInputError, ExpertInputRef, ExpertInputs, ExpertLevel,
+    ExpertOperationRequest, ExpertOutcome, ExpertPodSpec, ExpertProposal, ExpertProposalError,
+    ExpertState, ExpertTarget, ExpertTargetInit, ManifestDigest, OpKind, OperandCount, OperationId,
+    OutcomeKind, ProposalId, ProposalParts, ProposerRef, RationaleDigest, RequestedOp,
+    ResultIntent, RetiredReason, StructuralOp, ZeroDigest, MAX_EXPERT_COMMIT_RECORD_BYTES,
+    MAX_EXPERT_INPUTS_PER_ROLE, MAX_EXPERT_INPUT_IDENTITY_BYTES,
 };
 pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
 pub use kv::{
     InMemoryKvCache, InMemoryKvTensorBackend, KvBackendError, KvCacheLayout, KvCacheTier,
-    KvLayerSnapshot, KvPageTable, KvTensorBackend, KvTensorDType, KvTensorSchema, KvTensorSnapshot,
-    TensorRef,
+    KvKeyEncoding, KvLayerSnapshot, KvPageTable, KvTensorBackend, KvTensorDType, KvTensorSchema,
+    KvTensorSnapshot, TensorRef,
+};
+pub use kv_chain::{
+    derive_adapted_kv_layer_chains, derive_adapted_kv_layer_chains_in_regime,
+    derive_kv_layer_chains, derive_kv_layer_chains_in_regime, KvAdaptedChains, KvChainError,
+    KvChainIdentity, KvLayerChains,
 };
 pub use manifest::{
     ArtifactLifecycle, ExecutionManifest, LifecycleGate, LineageBinding,
@@ -66,9 +81,12 @@ pub use neural::{
 };
 pub use output::{OutputError, PodOutput, PodOutputKind};
 pub use paged_kv::{
-    InMemoryKvSnapshotLease, InMemoryPagedKvBackend, InMemoryPagedKvCache, KvPageBinding,
-    KvPageEntry, KvPageId, KvPageMetrics, KvPageSize, KvPageSnapshot, KvPageState, KvPagedSnapshot,
-    KvPrefixKey, KvRuntimeLeaseBinding, KvSharedPrefix, PagedKvTensorBackend,
+    InMemoryKvSnapshotLease, InMemoryPagedKvBackend, InMemoryPagedKvCache, KvAdapterLayering,
+    KvAdoptError, KvAdoptReport, KvForkAuthority, KvForkWitness, KvLayerAdoptRequest,
+    KvLayerForkRequest, KvLayerPublishRequest, KvLayerRange, KvPageBinding, KvPageEntry, KvPageId,
+    KvPageMetrics, KvPageSize, KvPageSnapshot, KvPageState, KvPagedSnapshot, KvPrefixKey,
+    KvRuntimeLeaseBinding, KvSharedPrefix, KvWitnessRejection, KvWitnessRevoker, KvWitnessState,
+    PagedKvTensorBackend,
 };
 pub use protocol::{
     ConnectionScope, DeliveryMode, EgressPolicy, MessagePattern, NativeProtocolExecutor,
@@ -77,7 +95,25 @@ pub use protocol::{
 };
 pub use qwen::{
     Qwen2Activation, Qwen2DecoderInput, Qwen2DecoderOutput, Qwen2DecoderWeights, Qwen2LayerConfig,
-    Qwen2LinearWeights, Qwen2PagedDecoder, Qwen2RopeScaling,
+    Qwen2LinearWeights, Qwen2PagedDecoder, Qwen2RopeRegime, Qwen2RopeScaling,
+};
+#[cfg(feature = "qwen-cpu")]
+pub use qwen_cpu::{
+    chat_prompt, QwenCpu, QwenCpuError, QwenCpuOptions, QwenCpuStats, QwenDigests, QwenModelConfig,
+    DEFAULT_MAX_WEIGHTS_BYTES,
+};
+pub use qwen_lora::{
+    Qwen2Adapter, Qwen2AdapterError, Qwen2AdapterKind, Qwen2AdapterLayer, Qwen2AdapterProjection,
+    Qwen2AdapterSpec, Qwen2LoraPair, QWEN2_ADAPTER_PINNED_RANK, QWEN2_ADAPTER_PINNED_SCALE,
+};
+pub use qwen_moe::{
+    Qwen2Expert, Qwen2Moe, Qwen2MoeError, Qwen2MoeLayer, Qwen2MoeSpec, Qwen2RoutingMode,
+    RoutingCounts, RoutingDeterminism,
+};
+pub use qwen_stack::{
+    Qwen2Binding, Qwen2CobatchedOutput, Qwen2PagedStack, Qwen2QkNorm, Qwen2StackConfig,
+    Qwen2StackError, Qwen2StackInput, Qwen2StackLayerWeights, Qwen2StackOutput, Qwen2StackWeights,
+    Qwen2StageOutput, StageRows, StageRun,
 };
 pub use runtime::{
     ArtifactCatalog, ArtifactError, ExecutorError, ExecutorFactory, HealthStatus,
@@ -88,12 +124,29 @@ pub use semantic::{
     ManifestError, ModelVariant, PodKind, PodResourceProfile, PodSemanticManifest,
     SemanticPodLifecycle,
 };
+pub use text_generator::{
+    GenerationError, GenerationOutput, GenerationRequest, ModelIdentity, StopReason, TextGenerator,
+    MAX_NEW_TOKENS_LIMIT,
+};
 pub use tier_storage::{
     ArtifactTierAdapter, ArtifactTierBinding, KvTierAdapter, KvTierBinding, ModelWeightTierAdapter,
     ModelWeightTierBinding, PagedKvTierAdapter, PodTierError,
 };
 pub use transport::{PodWireRequest, PodWireResponse, TransportError};
 pub use turns::{DuplexSession, PodTurnEvent, PodTurnKind, TurnError};
+pub use workspace::{
+    check_verification_gate, AuthorRegistry, Authority, Bid, CycleHost, CycleReport, Displacement,
+    DisplacementPolicy, FindingRecord, FindingVisibility, GateRefusal, HostFinding, PayloadRef,
+    PinRequest, Proposal, ProposalInit, Refusal, RefusalKind, RefusalReason, RetireReason,
+    RetireRequest, RetiredRecord, Revalidation, SlotContent, SlotDecay, SlotIndex, Standing,
+    SubmitError, SubscribeRequest, SubscriberId, SubscriberStats, UnboundedResidencyRisk,
+    UnrestrictedAuthors, VerifierIdentity, Workspace, WorkspaceConfig, WorkspaceConfigError,
+    WorkspaceConfigInit, WorkspaceCounters, WorkspaceError, WorkspaceProposalError,
+    WorkspaceProposalId, WorkspaceRevision, WorkspaceSnapshot, MAX_FINDINGS_PER_REFUSAL,
+    MAX_FINDING_CODE_BYTES, MAX_FINDING_MESSAGE_BYTES, MAX_HOST_FINDINGS_PER_CYCLE,
+    MAX_PENDING_PROPOSALS, MAX_RETIRED_LOG, MAX_SNAPSHOT_FINDINGS, MAX_SUBSCRIBER_MAILBOX,
+    MAX_VERIFIER_NAME_BYTES, MAX_WORKSPACE_SLOTS, MAX_WORKSPACE_SUBSCRIBERS, VERIFIER_PANIC_CODE,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodManifest {

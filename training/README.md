@@ -69,4 +69,24 @@ Eval is 32 held-out tasks (16 arith, 16 json), overlap with training prompts 0. 
 | Gate status (`init_to_sft`, `sft_to_rl_gspo`, `sft_to_rl_sapo`) | `ok`, `interference_informative: true` |
 | Non-finite values / parameters | none / 0 |
 
-Caveats: GSPO lowered the pass rate relative to SFT and SAPO raised it, but with 32 tasks and one seed the difference is within noise. Churn is measured on 64 tokens. Overlap values near the chance level of 0.0625 mean the expert deltas are not distinguishable from random subspaces at this scale. The stored GSPO `clip_ratio_per_step` series matches the TRL log history (`clip_ratio/region_mean`, 0 to 0.75, peak at step 12). An earlier run of the PR #124 head showed all zeros because the series were built from a pre-filtered list of log entries instead of entries grouped by step; TRL logs `clip_ratio/*` on every optimizer step but `reward` only on generation steps, and `merge_log_history` now groups entries by `step` before building any series (commit af1cf71f, test `training/tests/test_moe_rl_series.py`). SAPO has no clip series because TRL 1.14.1 logs no `clip_ratio/*` keys for `loss_type=sapo`.
+Caveats: GSPO lowered the pass rate relative to SFT and SAPO raised it, but with 32 tasks and one seed the difference is within noise. Churn is measured on 64 tokens. All 36 overlap values (0.084 to 0.493) lie above the chance level of 0.0625 and the gate classifies every pair as informative, but at 0.24M parameters, random init and one seed this is not evidence of expert specialisation. The stored GSPO `clip_ratio_per_step` series matches the TRL log history (`clip_ratio/region_mean`, 0 to 0.75, peak at step 12). An earlier run of the PR #124 head showed all zeros because the series were built from a pre-filtered list of log entries instead of entries grouped by step; TRL logs `clip_ratio/*` on every optimizer step but `reward` only on generation steps, and `merge_log_history` now groups entries by `step` before building any series (commit af1cf71f, test `training/tests/test_moe_rl_series.py`). SAPO has no clip series because TRL 1.14.1 logs no `clip_ratio/*` keys for `loss_type=sapo`.
+
+## GPU path (one 24 GB GPU, RTX 4090 desktop)
+
+Not run yet: these steps were written and unit-tested on CPU only (device selection, gradient accumulation and checkpointing are covered by `training/tests/test_moe_device.py`). The `hardware/rtx4090.toml` profile they name is added separately. All three runs are pipeline smokes on the unselected `trl-moe` backend, not evidence.
+
+`[model] device` is `"auto"` (default: CUDA when available, else CPU), `"cpu"` or `"cuda"`; `"cuda"` raises a `ConfigError` when CUDA is unavailable instead of silently running on CPU. SFT and TRL (`use_cpu`) use the model's device, and `metrics.json` `hardware` records `device`, `gpu`, `torch_cuda` (`torch.version.cuda`) and the peak `torch.cuda.max_memory_allocated`. `[moe.sft] gradient_checkpointing` and `gradient_accumulation_steps` reduce memory; see `src/ptr_training/moe/README.md`.
+
+RTX 3090 variants (the local host has two 24 GiB RTX 3090, PCIe, no NVLink; every config below is a single-GPU run on one card): each 4090 config has a `-rtx3090` counterpart that differs only in the hardware profile (`hardware/rtx3090.toml`) and in naming, with the same batch sizes because the memory is the same 24 GiB and the bf16 path is supported on Ampere:
+
+- `stage-moe-smoke-gpu-rtx3090.toml`, `stage-moe-olmoe-sft-smoke-rtx3090.toml` (`make smoke-gpu olmoe-sft-smoke`, default `GPU_PROFILE=rtx3090`; `GPU_PROFILE=rtx4090` selects the unsuffixed files)
+- `vcw-perft-r-sft-rtx3090.toml`, `vcw-rlvr-router-rtx3090.toml`, `vcw-repair-expert-rtx3090.toml`, `vcw-self-model-probe-rtx3090.toml`: same VRAM estimates as the 4090 files, wall-time estimates about 2.3 times longer because `vcw.budget` assumes 71 TFLOPS bf16 (fp32 accumulate) for the 3090 against 165.2 for the 4090. Plans, not measurements.
+
+Run order, each step only after the previous one worked:
+
+1. `make smoke-gpu` runs `configs/stage-moe-smoke-gpu.toml`: the tiny random OLMoE on CUDA (device plumbing check).
+2. `make olmoe-sft-smoke` runs `configs/stage-moe-olmoe-sft-smoke.toml`: real `allenai/OLMoE-1B-7B-0125` (pinned revision), bf16, LoRA, SFT only, gradient checkpointing, batch 2 x 4 accumulation steps, max_length 256, 50 steps. Estimated (not measured) to fit in 24 GB: about 12.9 GB of bf16 weights plus LoRA/optimizer state and checkpointed activations.
+3. `configs/stage-moe-olmoe.toml` (SFT + GSPO + SAPO, 3090 profile, not opted in) stays unrun until step 2 shows the measured peak memory.
+
+Both Makefile targets are added by a separate change; until then run
+`PYTHONPATH=training/src python -m ptr_training.run --config training/configs/<config>.toml --execute` from a clean tree.

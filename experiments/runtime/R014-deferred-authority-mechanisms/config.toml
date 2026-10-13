@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R014-deferred-authority-mechanisms"
+path = "experiments/runtime/R014-deferred-authority-mechanisms"
+tests_dir = "tests"

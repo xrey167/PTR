@@ -54,12 +54,12 @@
 ### Next milestones
 
 - Run S003 against serial execution and last-writer-wins baselines
-- Run F003 on adjudicated calibration slices
+- F003 completed on a simulated adjudicator (2 per mille error); a real-adjudication successor needs its own protocol
 
 ### Linked experiments
 
-- [S003](../../experiments/semdb/S003-certified-branches/README.md) — `planned`
-- [F003](../../experiments/feedback/F003-calibrated-arbiter/README.md) — `planned`
+- [S003](../../experiments/semdb/S003-certified-branches/README.md) — `frozen`
+- [F003](../../experiments/feedback/F003-calibrated-arbiter/README.md) — `frozen`
 
 ### Technology evaluations
 

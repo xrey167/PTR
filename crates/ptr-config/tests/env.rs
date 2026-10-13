@@ -23,3 +23,42 @@ fn invalid_environment_override_fails_closed() {
         .apply_env([("PTR_MAILBOX_CAPACITY", "not-a-number")])
         .is_err());
 }
+
+#[test]
+fn the_environment_can_complete_a_qwen_section_the_file_leaves_empty() {
+    let directory =
+        std::env::temp_dir().join(format!("ptr-config-qwen-env-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("ptr.toml");
+    std::fs::write(
+        &path,
+        "[vcw]\nenabled = true\nkinds = [\"arithmetic\"]\n\n[vcw.experts]\nbackend = \"qwen-cpu\"\n",
+    )
+    .unwrap();
+    assert!(
+        PtrConfig::from_path(&path).is_err(),
+        "the file alone lacks the qwen-cpu pins"
+    );
+
+    let mut config = PtrConfig::parse_path(&path).unwrap();
+    let digest = "ab".repeat(32);
+    config
+        .apply_env([
+            ("PTR_VCW_QWEN_MODEL_DIR", "/models/qwen"),
+            ("PTR_VCW_QWEN_WEIGHTS_SHA256", digest.as_str()),
+            ("PTR_VCW_QWEN_CONFIG_SHA256", digest.as_str()),
+            ("PTR_VCW_QWEN_TOKENIZER_SHA256", digest.as_str()),
+            ("PTR_VCW_QWEN_TOKENIZER_CONFIG_SHA256", digest.as_str()),
+        ])
+        .unwrap();
+    assert_eq!(config.vcw.experts.qwen_cpu.model_dir, "/models/qwen");
+
+    let mut incomplete = PtrConfig::parse_path(&path).unwrap();
+    assert!(
+        incomplete
+            .apply_env([("PTR_VCW_QWEN_MODEL_DIR", "/models/qwen")])
+            .is_err(),
+        "apply_env still validates the completed configuration"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}

@@ -32,9 +32,15 @@
 //! What this is not: it is not a daemon. Nothing here loops, ticks or retries. A
 //! caller drives `serve_once` and `request`.
 mod access;
+mod chunk;
 mod frame;
 
 pub use access::{answer, PodAccessPolicy, PodScope, PolicyError};
+pub use chunk::{
+    chunk_frame, resign_envelope, sign_chunk, sign_policy, AbandonError, AssemblyPolicy, ChunkId,
+    ChunkingError, DeliveredFrame, FrameAssembler, FrameMeta, MismatchField, Offered,
+    PolicyViolation, Rejection, Released,
+};
 pub use frame::{
     decode_answer, decode_answer_v2, decode_request, decode_request_v2, encode_answer,
     encode_answer_v2, encode_request, encode_request_v2, request_digest, FrameError,

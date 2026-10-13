@@ -1,0 +1,25 @@
+seed 1002 is not one of the manifest's seeds [43, 71, 101, 131, 173]; this is a dry run
+postgres-hybrid: checkpoint 1: query 0/300, strong arm 1 s so far
+postgres-hybrid: heartbeat: elapsed 600 s, phase "checkpoint 1: query 46/300", 179 requests answered, strong search in flight for 7 s, slowest request strong search 16 s
+postgres-hybrid: checkpoint 1: query 50/300, strong arm 579 s so far
+postgres-hybrid: checkpoint 1: query 100/300, strong arm 803 s so far
+postgres-hybrid: checkpoint 1: query 150/300, strong arm 803 s so far
+postgres-hybrid: checkpoint 1: query 200/300, strong arm 803 s so far
+postgres-hybrid: checkpoint 1: query 250/300, strong arm 803 s so far
+postgres-hybrid: checkpoint 2: query 0/700, strong arm 805 s so far
+postgres-hybrid: heartbeat: elapsed 1200 s, phase "checkpoint 2: query 23/700", 803 requests answered, strong search in flight for 2 s, slowest request strong search 16 s
+postgres-hybrid: checkpoint 2: query 50/700, strong arm 1353 s so far
+postgres-hybrid: heartbeat: elapsed 1800 s, phase "checkpoint 2: query 81/700", 971 requests answered, strong search in flight for 6 s, slowest request strong search 16 s
+postgres-hybrid: checkpoint 2: query 100/700, strong arm 1827 s so far
+postgres-hybrid: checkpoint 2: query 150/700, strong arm 2148 s so far
+postgres-hybrid: checkpoint 2: query 200/700, strong arm 2198 s so far
+postgres-hybrid: checkpoint 2: query 250/700, strong arm 2198 s so far
+postgres-hybrid: checkpoint 2: query 300/700, strong arm 2198 s so far
+postgres-hybrid: checkpoint 2: query 350/700, strong arm 2198 s so far
+postgres-hybrid: checkpoint 2: query 400/700, strong arm 2198 s so far
+postgres-hybrid: checkpoint 2: query 450/700, strong arm 2198 s so far
+postgres-hybrid: checkpoint 2: query 500/700, strong arm 2198 s so far
+postgres-hybrid: heartbeat: elapsed 2400 s, phase "checkpoint 2: query 511/700", 1891 requests answered, reference search in flight for 0 s, slowest request strong search 16 s
+postgres-hybrid: checkpoint 2: query 550/700, strong arm 2198 s so far
+postgres-hybrid: checkpoint 2: query 600/700, strong arm 2198 s so far
+postgres-hybrid: checkpoint 2: query 650/700, strong arm 2198 s so far

@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-29  
-**Code footprint:** 1 Rust source files · 377 nonblank source lines · 3 integration-test files · 10 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-08  
+**Code footprint:** 1 Rust source files · 1150 nonblank source lines · 3 integration-test files · 17 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -27,10 +27,18 @@
 - projection_entries is the one event-to-entries mapping, shared by the reference, Turso and ptr-pg so no backend can project an event differently
 - projection_entries now maps the newer ledger variants: ProtectedStateCommitted projects protected:<domain>:<logical_id>:generation/revision/ciphertext (the ciphertext digest as lowercase hex, never the ciphertext), MeshTunnelLifecycle projects mesh:<network>:<peer>:revision/state, and ExecutionManifestAdmitted/Revoked project execution-manifest:<digest hex>:state as admitted/revoked
 - ScopeLifecycle, PodEvidenceCommitted, PodOutputAdmitted, PodHypothesisCommitted, PolicyBundleActivated/Revoked and SessionRevoked deliberately project no entries (they advance last_applied only); the match over LedgerEvent stays exhaustive
+- ExpertStructuralCommitted projects one entry per expert the operation leaves in a new state: expert:<project>/<pod> = <generation>:<state>:<state_version> (state names from expert_state_name, retirement reasons joined with '-'), derived from the record through ptr_pods StructuralOp::outcomes so the projection and the runtime registry share one state table; a record that does not decode projects nothing (the runtime refuses it before commit)
+- ExpertFenceCommitted projects the one expert it names: Fence and Escalate as <generation>:fenced:<epoch>, Retire as <generation>:retired-input-revoked:<epoch> and Readmit as <generation>:serving|frozen:<epoch> per the event's resume state, where the epoch is the event's new state version (the expert's fence epoch), so the materialized value an oracle reads no longer carries an earlier epoch (a_fence_event_projects_fenced_at_its_epoch_and_a_readmission_serving_at_the_next, which also covers the retirement)
+- KvTaintCommitted projects one entry per subject: kv-taint:<kind>:<hex digest> = approx:<report hex>:<recipe hex> for a Record and cleared:<recompute hex> for a Clear (a_kv_taint_event_projects_one_entry_per_subject); the runtime registry that rebuilds from these entries is not built yet
+- Projection of InputInvalidated (ledger tag 30, R011 WP3): expert-input:<identity byte length>:<identity>:<generation> holds revoked:<fence count>:<hex fence digest> or superseded:<new generation>:<hex new digest>:<fence count>:<hex fence digest>, and a revocation also projects revoked:<identity> as a Revoked record does. The event names the fenced experts by count and digest only, so this stateless projection writes no expert: key for them; the runtime, which derives the set from its dependency index, writes those. A version 3 ExpertCommitRecord additionally projects expert-inputs:<project>/<pod> = <generation>:<training>:<evaluation>:<hex block digest> for every expert it creates. Key and value parsers (parse_expert_input_key, parse_expert_input_entry, parse_expert_inputs_generation) accept exactly what the writers write
+- Projection of ExpertAuthorityChanged (ledger tag 31, R011 WP4): expert-authority:<kind name> (gate-config or evaluator) holds <epoch>:<hex identity digest>:<class name>:<fence count>:<hex fence digest> and records the latest change of that kind; parse_expert_authority_key and parse_expert_authority_entry are the strict inverses a compacted-snapshot restore checks the authority state against. The experts the change fenced are not in the event; the runtime writes their expert: keys
 
 ### Missing for the target architecture
 
 - Rebuild equivalence tests across every backend (the PostgreSQL projection is compared with the reference in ptr-pg; L004 extends it)
+- The expert: rows a plain projection writes are NOT authoritative after a tag-30 or tag-31 fence (R011 WP3b): projection_entries writes only the invalidated input, the count and the digest (or the new standing), so a consumer that applies only it shows the fenced experts as Serving; the ptr-runtime materialized state, whose runtime writes the fenced rows from its dependency index, is the only place they are marked (materialized_state_marks_the_fenced_experts_but_a_naive_projection_replay_does_not, ptr-runtime tests/expert_review_fixes.rs). Nothing may route from a plain projection
+- The per-expert effect of a tag-30 fence is not derivable from the event, so a projection backend that applies only projection_entries (the Turso reference, ptr-pg) records the invalidated input, the count and the digest but not which expert: keys moved; only the runtime's materialized state holds them
+- The per-expert effect of a tag-31 authority change is not derivable from the event (count and digest only), so a projection backend that applies only projection_entries (the Turso reference, ptr-pg) records the new standing but not which experts the change fenced
 
 ### Next milestones
 
@@ -40,8 +48,8 @@
 
 ### Linked experiments
 
-- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `running`
-- [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
+- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `superseded`
+- [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `frozen`
 - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
 
 ### Technology evaluations
@@ -64,6 +72,8 @@
 - workspace fmt/check/test/clippy
 - unit test that only the exact next index is applicable and every other index is classified as duplicate, out-of-order or gap
 - ptr-pg postgres test replays a mixed log and compares every entry with MaterializedState
+- an_input_invalidation_projects_the_input_and_never_guesses_the_fenced_experts, the_input_key_and_value_parsers_accept_exactly_what_the_writers_write and a_version_3_record_commits_to_its_dependency_block_per_created_expert (versions 1 and 2 project exactly what they did)
+- an_authority_change_projects_one_entry_per_kind_and_the_value_parses_back: the entry for each kind, the strict key and value parsers (leading zero, zero epoch, unknown class, bad count or digest and extra fields refused)
 
 <!-- PTR:STATUS:END -->
 

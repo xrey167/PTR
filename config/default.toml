@@ -26,3 +26,45 @@ async_backtrace = false
 [research]
 allow_unlocked_components = true
 require_experiment_manifest = true
+
+# The verifier-closed workspace request path (POST /v1/vcw/tasks). Off by default: with
+# enabled = false the endpoint does not exist.
+[vcw]
+enabled = false
+project = "vcw"
+kinds = ["arithmetic", "json_object", "code", "fact"]
+max_verifier_calls = 8
+max_rounds = 4
+hint_mode = "trace-only"
+learning = "off"
+max_request_ms = 30000
+exploration_floor = 0.05
+
+[vcw.pods]
+proposer = "vcw-proposer"
+format_repair = "vcw-format-repair"
+value_repair = "vcw-value-repair"
+schema_repair = "vcw-schema-repair"
+code_repair = "vcw-code-repair"
+resource_repair = "vcw-resource-repair"
+fact_repair = "vcw-fact-repair"
+generation = 1
+
+# No default backend: an enabled section must set `backend = "simulated"` or "qwen-cpu"
+# ("unset" is refused while enabled). Simulated answers are client-authored (they are drawn from
+# the request's `reference`).
+[vcw.experts]
+backend = "unset"
+
+[vcw.experts.simulated]
+seed = 1
+default_repair_success = 1.0
+decline_on_failure = false
+
+[vcw.experts.qwen_cpu]
+model_dir = ""
+weights_sha256 = ""
+config_sha256 = ""
+tokenizer_sha256 = ""
+tokenizer_config_sha256 = ""
+max_new_tokens = 0

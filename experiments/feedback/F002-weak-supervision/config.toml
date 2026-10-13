@@ -3,3 +3,78 @@ kind = "workspace-area"
 name = "F002-weak-supervision"
 path = "experiments/feedback/F002-weak-supervision"
 tests_dir = "tests"
+
+# Preregistered choices for this experiment (no code default exists). Draft only: F002 is
+# planned, not frozen, and no [preregistration] table exists yet. Every key is mirrored by a
+# constant of bins/ptr-bench/src/experiments/f002/params.rs and a unit test fails on drift.
+[pinned_thresholds]
+seed_aggregation = "every_seed_must_pass"
+seeds = [17, 29, 43, 71, 101]
+# Never confirmatory: the pilot that decides the form of the Brier and ECE gain gates runs on these.
+pilot_seeds = [1001, 1002, 1003]
+classes = 4
+probabilistic_functions = 5
+verifier_functions = 4
+items = 2000
+gold_items = 600
+class_prior_permille = [400, 300, 200, 100]
+# Accuracy of each probabilistic function lf_a .. lf_e; W1 and W2 use the first, W3 the second.
+accuracy_heterogeneous_permille = [850, 750, 650, 600, 550]
+accuracy_homogeneous_permille = [700, 700, 700, 700, 700]
+# Row-major [true class][voted class]: the relative weight of each wrong vote.
+wrong_class_weights = [0, 5, 3, 2, 5, 0, 2, 3, 3, 2, 0, 5, 2, 3, 5, 0]
+votes_per_item = [2, 3, 5]
+votes_per_item_weight_permille = [250, 500, 250]
+# lf_d and lf_e: lf_e repeats lf_d's vote with this probability when both vote (W1, W2).
+correlated_pair = [3, 4]
+correlated_copy_permille = 600
+verifier_coverage_sound_permille = [500, 400, 300, 200]
+verifier_coverage_contaminated_permille = [800, 700, 600, 500]
+contamination_permille = 80
+min_probability_permille = 700
+calibration_bins = 10
+ds_max_iterations = 1000
+ds_tolerance_ppm = 1
+ds_smoothing_milli = 1000
+model_oracle_tolerance_ppm = 1
+metric_tolerance_nano = 1
+wilson_z_milli = 1960
+acquisition_budget = 100
+# Sharpening exponent of the descriptive calibrated vote share, fitted on pilot seeds only.
+mvc_beta_milli = 1700
+bootstrap_resamples = 2000
+bootstrap_seed = 20261009
+bootstrap_interval_permille = 950
+# Decided at the pilot, before any confirmatory seed (PREREGISTRATION.md section 7).
+brier_gate_on_lower_bound = true
+ece_gate_on_lower_bound = true
+min_worlds_run = 3
+min_determined_seen = 1
+min_estimated_seen = 1
+min_unknown_seen = 1
+min_disputed_seen = 1
+min_vetoed_items = 200
+min_gold_items = 500
+min_fewer_than_three_warnings = 1
+min_budget_cells = 3
+min_correlated_pair_items = 50
+min_contaminated_vetoes = 1
+min_active_set_probes = 1
+min_gold_guard_probes = 4
+min_acquisition_items = 1
+max_violations = 0
+min_gain_ppm = 1
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml).
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "weak-supervision"
+items = 2000
+gold_items = 600
+contamination_permille = 80
+bootstrap_interval_permille = 950
+mvc_beta_milli = 1700
+preregistration_text = "experiments/feedback/F002-weak-supervision/PREREGISTRATION.md"
+preregistration_text_sha256 = "9db7c74f078de3d21f772532f2a2490a7dd6d0322298b00972d36c4f2939e908"
+criteria = "experiments/feedback/F002-weak-supervision/criteria.toml"
+criteria_sha256 = "df23d868be06b4d22ca873080668b0596123f4273476959bc3b3930f20fcdc64"

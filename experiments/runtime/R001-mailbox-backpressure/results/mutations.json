@@ -1,0 +1,495 @@
+{
+  "experiment_id": "R001",
+  "git_sha": "0ac934fe17cbe3037f13fc242653138b4c49e2d0",
+  "recorded_at": "2026-10-09T09:02:59.249098+00:00",
+  "subcommand": "mailbox-backpressure",
+  "killed": 27,
+  "total": 27,
+  "mutations": [
+    {
+      "name": "capacity-plus-one",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 66645,
+      "expected": [
+        "capacity_violations",
+        "model_divergences",
+        "payload_bound_violations",
+        "threaded_capacity_violations"
+      ],
+      "counters": {
+        "silent_drops": 1,
+        "ownership_violations": 1,
+        "capacity_violations": 19162,
+        "model_divergences": 25935,
+        "wait_bound_violations": 596,
+        "payload_bound_violations": 8754,
+        "closed_path_mismatches": 4,
+        "threaded_capacity_violations": 12192
+      }
+    },
+    {
+      "name": "capacity-doubled",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 88727,
+      "expected": [
+        "wait_bound_violations",
+        "capacity_violations",
+        "payload_bound_violations"
+      ],
+      "counters": {
+        "capacity_violations": 22942,
+        "model_divergences": 29728,
+        "wait_bound_violations": 2004,
+        "payload_bound_violations": 11138,
+        "closed_path_mismatches": 18,
+        "threaded_capacity_violations": 22897
+      }
+    },
+    {
+      "name": "full-drops-the-oldest",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 408209,
+      "expected": [
+        "silent_drops",
+        "ownership_violations",
+        "threaded_ledger_violations"
+      ],
+      "counters": {
+        "silent_drops": 7094,
+        "ownership_violations": 7094,
+        "capacity_violations": 18163,
+        "model_divergences": 9033,
+        "threaded_ledger_violations": 142825,
+        "threaded_capacity_violations": 224000
+      }
+    },
+    {
+      "name": "full-reported-as-closed",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 37325,
+      "expected": [
+        "model_divergences",
+        "closed_path_mismatches"
+      ],
+      "counters": {
+        "model_divergences": 7182,
+        "closed_path_mismatches": 30143
+      }
+    },
+    {
+      "name": "delivery-is-lifo",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 16362,
+      "expected": [
+        "fifo_violations",
+        "model_divergences",
+        "threaded_ledger_violations"
+      ],
+      "counters": {
+        "fifo_violations": 404,
+        "model_divergences": 2278,
+        "wait_bound_violations": 278,
+        "threaded_ledger_violations": 13402
+      }
+    },
+    {
+      "name": "receive-loses-the-message",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 89391,
+      "expected": [
+        "silent_drops",
+        "ownership_violations",
+        "threaded_ledger_violations"
+      ],
+      "counters": {
+        "silent_drops": 14280,
+        "ownership_violations": 14280,
+        "capacity_violations": 14112,
+        "model_divergences": 14418,
+        "threaded_ledger_violations": 14302,
+        "threaded_capacity_violations": 17999
+      }
+    },
+    {
+      "name": "refuses-one-early",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 38731,
+      "expected": [
+        "spurious_refusals",
+        "model_divergences",
+        "threaded_capacity_violations"
+      ],
+      "counters": {
+        "model_divergences": 31963,
+        "spurious_refusals": 4766,
+        "closed_path_mismatches": 2,
+        "threaded_capacity_violations": 2000
+      }
+    },
+    {
+      "name": "depth-stale-after-receive",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 29068,
+      "expected": [
+        "model_divergences"
+      ],
+      "counters": {
+        "ownership_violations": 11942,
+        "model_divergences": 17126
+      }
+    },
+    {
+      "name": "close-does-nothing",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 12809,
+      "expected": [
+        "closed_path_mismatches",
+        "model_divergences"
+      ],
+      "counters": {
+        "model_divergences": 2072,
+        "closed_path_mismatches": 869,
+        "threaded_ledger_violations": 9868
+      }
+    },
+    {
+      "name": "drained-closed-reports-empty",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 275,
+      "expected": [
+        "closed_path_mismatches"
+      ],
+      "counters": {
+        "model_divergences": 136,
+        "closed_path_mismatches": 139
+      }
+    },
+    {
+      "name": "sender-clone-forks-the-queue",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 16337,
+      "expected": [
+        "threaded_ledger_violations",
+        "threaded_capacity_violations"
+      ],
+      "counters": {
+        "closed_path_mismatches": 256,
+        "threaded_ledger_violations": 32,
+        "threaded_capacity_violations": 16049
+      }
+    },
+    {
+      "name": "close-reaches-only-the-owner-handle",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1337,
+      "expected": [
+        "closed_path_mismatches",
+        "model_divergences"
+      ],
+      "counters": {
+        "model_divergences": 1036,
+        "closed_path_mismatches": 301
+      }
+    },
+    {
+      "name": "send-panics-when-full",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 151164,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "model_divergences": 16,
+        "product_panics": 151148
+      }
+    },
+    {
+      "name": "receive-panics-when-empty",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8596,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "model_divergences": 1,
+        "product_panics": 8595
+      }
+    },
+    {
+      "name": "send-hangs-in-a-producer-thread",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "product_hangs"
+      ],
+      "counters": {
+        "product_hangs": 1
+      }
+    },
+    {
+      "name": "send-checks-len-outside-the-lock",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 69,
+      "expected": [
+        "threaded_capacity_violations"
+      ],
+      "counters": {
+        "threaded_capacity_violations": 69
+      }
+    },
+    {
+      "name": "send-ignores-close-when-queue-is-empty",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 44196,
+      "expected": [
+        "threaded_ledger_violations",
+        "closed_path_mismatches",
+        "model_divergences"
+      ],
+      "counters": {
+        "silent_drops": 1,
+        "ownership_violations": 2,
+        "model_divergences": 398,
+        "closed_path_mismatches": 21924,
+        "threaded_ledger_violations": 21871
+      }
+    },
+    {
+      "name": "send-checks-full-before-closed",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 60,
+      "expected": [
+        "closed_path_mismatches",
+        "model_divergences"
+      ],
+      "counters": {
+        "model_divergences": 36,
+        "closed_path_mismatches": 24
+      }
+    },
+    {
+      "name": "receive-reports-closed-while-nonempty",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1387,
+      "expected": [
+        "closed_path_mismatches",
+        "silent_drops",
+        "model_divergences"
+      ],
+      "counters": {
+        "silent_drops": 140,
+        "ownership_violations": 146,
+        "model_divergences": 960,
+        "closed_path_mismatches": 140,
+        "threaded_ledger_violations": 1
+      }
+    },
+    {
+      "name": "close-clears-the-queue",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1813,
+      "expected": [
+        "silent_drops",
+        "ownership_violations",
+        "model_divergences"
+      ],
+      "counters": {
+        "silent_drops": 140,
+        "ownership_violations": 572,
+        "model_divergences": 960,
+        "closed_path_mismatches": 140,
+        "threaded_ledger_violations": 1
+      }
+    },
+    {
+      "name": "owner-drop-does-not-close",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5,
+      "expected": [
+        "closed_path_mismatches"
+      ],
+      "counters": {
+        "silent_drops": 1,
+        "ownership_violations": 2,
+        "closed_path_mismatches": 2
+      }
+    },
+    {
+      "name": "peak-depth-never-raised",
+      "file": "crates/ptr-exec/src/mailbox.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 12,
+      "expected": [
+        "model_divergences"
+      ],
+      "counters": {
+        "model_divergences": 12
+      }
+    },
+    {
+      "name": "ledger-blind-to-duplicates",
+      "file": "bins/ptr-bench/src/experiments/r001/ledger.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "canary_misses"
+      ],
+      "counters": {
+        "canary_misses": 1
+      }
+    },
+    {
+      "name": "ledger-blind-to-mutation",
+      "file": "bins/ptr-bench/src/experiments/r001/ledger.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "canary_misses"
+      ],
+      "counters": {
+        "canary_misses": 1
+      }
+    },
+    {
+      "name": "wait-bound-loose",
+      "file": "bins/ptr-bench/src/experiments/r001/params.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "canary_misses"
+      ],
+      "counters": {
+        "canary_misses": 1
+      }
+    },
+    {
+      "name": "schedule-drawn-from-the-clock",
+      "file": "bins/ptr-bench/src/experiments/r001/sim.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 39,
+      "expected": [
+        "determinism_mismatches"
+      ],
+      "counters": {
+        "determinism_mismatches": 39
+      }
+    },
+    {
+      "name": "model-ignores-the-close",
+      "file": "bins/ptr-bench/src/experiments/r001/sim.rs",
+      "cases": 17,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2081,
+      "expected": [
+        "closed_path_mismatches",
+        "model_divergences"
+      ],
+      "counters": {
+        "model_divergences": 1524,
+        "closed_path_mismatches": 556,
+        "canary_misses": 1
+      }
+    }
+  ]
+}

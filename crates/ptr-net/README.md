@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-03  
-**Code footprint:** 4 Rust source files · 1369 nonblank source lines · 5 integration-test files · 46 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 4 Rust source files · 1394 nonblank source lines · 5 integration-test files · 48 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -55,7 +55,7 @@
 
 ### Linked experiments
 
-- [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
+- [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `frozen`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
 ### Technology evaluations
@@ -77,6 +77,7 @@
 - ptr-net tests/mesh.rs: invitation_acceptance_creates_direct_or_relayable_membership, revoked_membership_cannot_resolve_an_endpoint_or_reuse_invitation, invitation_rejects_cross_network_peer_identity, late_activation_cannot_resurrect_a_revoked_membership, a_later_activation_keeps_the_admitted_key_digest_and_is_not_rejected, stale_route_changes_are_rejected_after_a_newer_route, a_revocation_wins_a_shared_revision_so_the_end_state_is_revoked_in_either_order
 - ptr-net tests/tunnel.rs: reference_tunnel_is_fenced_and_cleanup_is_idempotent, reference_rotation_keeps_the_callers_lease_valid, reference_rotation_rejects_an_empty_peer_id_and_a_zero_key, reference_revoke_establish_and_release_are_idempotent_and_fenced, stale_lease_cannot_revoke_a_new_fenced_lease, invalid_profile_is_rejected_before_tunnel_activation, userspace_executor_binds_device_io_to_the_fenced_lifecycle, revoke_tears_down_the_interface_and_release_does_not_remove_it_twice, rotation_keeps_the_original_lease_valid_and_removes_the_old_peer, rotation_rejects_an_all_zero_key, failed_peer_configuration_does_not_leak_the_interface_and_allows_retry, failed_cleanup_keeps_ownership_so_a_retry_removes_the_leaked_interface, failed_cleanup_can_still_be_released, rotation_that_cannot_remove_either_peer_fails_closed, rotation_rollback_failure_with_a_stuck_interface_keeps_ownership_for_release, revoking_a_lease_revoked_with_a_stuck_interface_retries_the_removal (fake device), and with feature wireguard-uapi-backend on Linux linux_device::{remove_peer_sends_a_remove_request_for_the_registered_key, rotation_that_keeps_the_wireguard_key_does_not_remove_the_replacement, the_same_peer_in_two_networks_keeps_two_keys} against a mock socket; wintun_dll_and_driver_are_loadable_when_provisioned is Windows-only and skips without WINTUN_DLL
 - workspace fmt/check/test/clippy
+- tunnel::wireguard_name_tests (non-root) cover validate_interface_name under wireguard-uapi-backend; CI job feature-gates clippy-checks and tests that feature on Linux and the Windows leg of rust-stable checks wintun-backend
 
 <!-- PTR:STATUS:END -->
 

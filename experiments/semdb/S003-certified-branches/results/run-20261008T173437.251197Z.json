@@ -1,0 +1,69 @@
+{
+  "schema_version": 2,
+  "experiment_id": "S003",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v80",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16876494848
+  },
+  "hardware_profile_record": {
+    "path": "hardware/default.toml",
+    "sha256": "ea754cf5ddb19c70de11237e9aedab43cbba4ac2e8ff8fec15d85b18699052d6",
+    "contents": {
+      "id": "unspecified",
+      "os": "unspecified",
+      "cpu": "unspecified",
+      "ram_gib": 0,
+      "gpu": "unspecified",
+      "gpu_memory_gib": 0,
+      "notes": "Replace with an explicit measured hardware profile before publishing benchmark results."
+    },
+    "unspecified_fields": [
+      "cpu",
+      "gpu",
+      "id",
+      "os"
+    ]
+  },
+  "git_sha": "38769d2bcbfe6563085be813814b5689a4c195b2",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "S003",
+    "status": "prepared",
+    "hypothesis": "Do dependency-certified agent branches avoid lost updates and phantoms while merging more concurrent work than serial execution?",
+    "metrics": "lost updates; undetected phantoms; certified merge rate; conflict rate; merge latency",
+    "baseline": "serial execution; last-writer-wins branches; key-level optimistic locking without range digests",
+    "falsification": "Any lost update or undetected phantom is a hard failure; no throughput gain over serial execution at conflict rates below 10% rejects the default.",
+    "hardware_profile": "hardware/default.toml",
+    "entrypoint": "cargo run --release --locked -p ptr-bench -- certified-branches <cases_per_seed> <seed>",
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "design": "../../../docs/architecture/35-agentic-substrate.md",
+    "preregistration_sha256": "2e9118979f59e943baf92fab45f4ac8f3dfeff62af87896305711edc866ba757",
+    "preregistration_rules_sha256": "94e7be5bf51f5dc0fe7c4f9f248479d1f4c33b3d692055ff5c23597d1d3d09b2"
+  },
+  "manifest_sha256": "97ed92884446ba863142357bc46cb908d410c2cf55019bc5d2c2e3860c06fa22",
+  "cargo_lock_sha256": "b6aae57ccfbc83db4e455d209fc46f0dfd713754d36e34d841b4f35110eb868e",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/default.toml",
+  "status": "prepared",
+  "prepared_at": "20261008T173437.251197Z"
+}

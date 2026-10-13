@@ -1,0 +1,141 @@
+# C004 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256); no rule changes after a run.
+# Per-seed rules (coverage, falsifiers, integrity) are what the harness itself judges (research/cseries/c004/rules.py); the guards and
+# the paired rules are judged by aggregate.py. A unit test pins the lists to the harness, in order.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .  A token is an integer literal iff it matches -?[0-9]+; any other token is a reference: a path of
+# object keys from the root of the harness's single JSON result object, separated by '.'. A reference that is missing, null, a
+# boolean or a float makes the seed INVALID. Exact comparisons.
+#
+# coverage: a rule that does not hold makes the seed vacuous (a defect: counts as FALSIFIED, kind structural): an arm not trained, an
+#   evaluation set smaller than pinned, a probe that could not see the influence it exists to rule out.
+# falsifiers: the STRUCTURAL counters (a defect of the recurrent arm, the feed-forward arm or an isolated ablation); each must be 0;
+#   the harness exits 1.
+#   reset_carry_leaks: replacing an early step moved the read-out of the reset-state ablation (it must not: the state is reset).
+#   ff_causal_leaks: replacing the last step moved the read-out of the feed-forward stack at an earlier position (it is causal).
+#   nondeterminism: two identical short trainings of the recurrent or the feed-forward arm disagreed.
+# integrity: harness-integrity counters (a defect of the task or the harness, not of an arm); each must be 0; the harness exits 2 and
+#   the seed, hence the experiment, is INVALID (never FALSIFIED).
+#   param_mismatch_arms / flop_mismatch_arms: arms whose parameter count (tolerance param_tolerance_permille) or analytic FLOPs at the
+#       longest trained length (tolerance flop_tolerance_permille) differ from the recurrent arm's: the tolerance guard.
+#   length_leaks: a sequence length of the extrapolation evaluations that a TRAINING BATCH actually had (observed during training).
+#   train_eval_overlap / val_eval_overlap: an evaluation sequence identical to a training or a validation sequence.
+#   nonfinite_arms / checkpoint_mismatch_arms / convergence_mismatch_arms: loss and plateau-protocol bookkeeping, audited independently.
+#   label_mismatches: a label that differs from an independent recomputation.
+#   reset_above_chance: the reset-state ablation beat chance by more than chance_slack_permille (the task leaks its answer to the last step).
+#   perm_label_leaks: the label permutation left more labels in place than chance allows (it did not destroy the association).
+#   corruption_rate_errors: the corrupted-input control changed a fraction of the sequences that differs from its pinned rate.
+# guards: per-seed validity guards. A seed that fails one is UNINFORMATIVE: the experiment is INVALID, never FALSIFIED.
+#   comparator_primary_permille: the feed-forward comparator's accuracy at the primary length must leave room for the margin: it must not be at or above the
+#   saturation ceiling of 980 per mille. A competent comparator (0.90, say) is not saturated; it yields a refutation, not INVALID. Counts across seeds (aggregate.py, [paired]): recurrent_trained / feedforward_trained (an arm that did not reach
+#   train_floor_permille in distribution: more than max_untrained_*_seeds make the experiment INVALID; an untrained comparator is a
+#   strawman) and unconverged_judged_arms (a judged arm at the step cap).
+#
+# [paired]: over the declared seeds (n = seeds_required; the one-sided t quantiles for n - 1 degrees of freedom pinned as strings):
+#   COMPLETED iff both lower one-sided 95% bounds (t_support) of recurrent minus feedforward and recurrent minus reset_state on `metric`
+#   (accuracy at the primary length) are at or above margin_permille;
+#   FALSIFIED (refuted) iff the guards hold, the controls resolve and, for one comparator, the upper bound at t_refute (one-sided
+#   95% / 2, Bonferroni over the two) is below margin_permille: the advantage is BELOW THE MARGIN (this is not "no advantage");
+#   NOT_SHOWN otherwise (nothing is concluded, no requirement is downgraded).
+#   sensitivity_gross: recurrent minus the same net trained on permuted labels must reach margin_permille (a label-permutation control
+#   removes the learned association; the pipeline resolves a collapse to chance).
+#   extrapolation_removed: the feed-forward stack trained with the primary length in its training set (feedforward_inlength) must recover more than share_permille/1000
+#   (one half) of the recurrent arm's advantage over the stack: the lower one-sided bound of (inlength - stack) - share (recurrent - stack) must be at least zero, else the
+#   SUPPORTED contrast is one of capacity and the experiment is INVALID. It is read only when the contrast is supported (decision order: validity, then the contrast, then
+#   this control for the supported branch), so a competent stack, which gains little from seeing the length, yields FALSIFIED (refuted) and not INVALID. Loosened after
+#   exploration (seed 1002), because the stack is optimisation-limited (empirical): the first criterion (the in-length stack within the margin of the recurrent arm) could not
+#   be met; the one-half threshold is a verbal a-priori argument, not from the planning model; depth 5 was chosen as the shallowest depth at which the in-length stack
+#   reaches 0.80, which is tuning toward the control (at depth 4 the share would have been about 67 percent).
+#   sensitivity_graded: recurrent minus the same trained net on corrupted inputs (a known deficit of about the margin's size) must be
+#   above min_lower_permille.
+#   null_permuted / null_window: worlds in which recurrence can have no advantage (permuted labels: both arms at chance; the sum
+#   of the last two steps: no integrated state needed). In neither direction may the lower bound of the contrast reach the margin; if
+#   it does, the pipeline invents effects and the experiment is INVALID.
+#   max_untrained_recurrent_seeds, max_untrained_comparator_seeds, max_unconverged_seeds: allowances across the seeds.
+#
+# Patterns (stated in advance):
+#   Supports: guards hold; the recurrent arm beats the feed-forward stack and the reset-state ablation by the margin at 12 steps, and the stack trained on the 12-step length recovers more than half of the contrast.
+#   Refutes: guards and controls hold and the advantage over a comparator is below the margin with power.
+#   Uninformative (INVALID): a saturated comparator, an untrained arm, an arm at the step cap, an unresolved control, a null world that
+#     shows an effect, a harness-integrity counter.
+# Decision: COMPLETED / FALSIFIED / NOT_SHOWN / INVALID as above; exit status of aggregate.py 0 / 1 / 3 / 2.
+version = 1
+experiment = "C004"
+seed_aggregation = "paired_one_sided_t_bound_three_outcomes"
+
+coverage = [
+  "arms_trained >= 8",
+  "id_eval_instances >= 2048",
+  "primary_eval_instances >= 2048",
+  "secondary_eval_instances >= 2048",
+  "recurrent_carry_hits >= 1",
+]
+
+guards = [
+  "comparator_primary_permille <= 980",
+]
+
+falsifiers = [
+  "reset_carry_leaks <= 0",
+  "ff_causal_leaks <= 0",
+  "nondeterminism <= 0",
+]
+
+integrity = [
+  "param_mismatch_arms <= 0",
+  "flop_mismatch_arms <= 0",
+  "length_leaks <= 0",
+  "inlength_control_errors <= 0",
+  "train_eval_overlap <= 0",
+  "val_eval_overlap <= 0",
+  "nonfinite_arms <= 0",
+  "checkpoint_mismatch_arms <= 0",
+  "convergence_mismatch_arms <= 0",
+  "label_mismatches <= 0",
+  "reset_above_chance <= 0",
+  "perm_label_leaks <= 0",
+  "corruption_rate_errors <= 0",
+]
+
+[paired]
+metric = "ex12"
+arm = "recurrent"
+against = ["feedforward", "reset_state"]
+margin_permille = 100
+t_support = "1.770933"
+t_refute = "2.160369"
+seeds_required = 14
+max_untrained_recurrent_seeds = 1
+max_untrained_comparator_seeds = 1
+max_unconverged_seeds = 1
+descriptive_metrics = ["id", "ex18", "ex24"]
+
+[paired.sensitivity_gross]
+arm = "recurrent"
+permuted = "recurrent_perm"
+margin_permille = 100
+
+[paired.sensitivity_graded]
+arm = "recurrent"
+corrupted = "recurrent_corrupt"
+min_lower_permille = 50
+
+[paired.extrapolation_removed]
+arm = "recurrent"
+stack = "feedforward"
+trained_on_length = "feedforward_inlength"
+metric = "ex12"
+share_permille = 500
+
+[paired.null_permuted]
+arm = "recurrent_perm"
+against = "feedforward_perm"
+metric = "ex12"
+margin_permille = 100
+
+[paired.null_window]
+arm = "recurrent_null"
+against = "feedforward_null"
+metric = "ex12"
+margin_permille = 100

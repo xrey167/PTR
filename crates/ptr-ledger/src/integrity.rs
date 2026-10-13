@@ -169,6 +169,10 @@ pub(crate) struct Prefix {
     pub verified: VerifiedLog,
     pub complete_bytes: usize,
     pub incomplete: bool,
+    /// Bytes from `complete_bytes` to the end of the file when every one of them is zero (a
+    /// file extended whose data never reached the disk), else 0. Only a recovery that an
+    /// anchor or a trusted tail directs may trim them; a strict decode still refuses.
+    pub zero_tail: usize,
     /// One entry per complete-record boundary, in order, starting with the base
     /// itself: the byte offset just past the record and the anchor it produced.
     /// Anchor-directed tail repair needs the byte position of a specific anchor,
@@ -215,11 +219,19 @@ pub(crate) fn scan_from(bytes: &[u8], base: LogAnchor) -> io::Result<Prefix> {
     let mut events = Vec::new();
     let mut anchor = base;
     let mut milestones = vec![(offset, anchor)];
+    let mut zero_tail = 0usize;
     while offset < bytes.len() {
         if events.len() >= MAX_RECORDS {
             return Err(invalid("PTR_LOG_RECORD_LIMIT"));
         }
         let remaining = &bytes[offset..];
+        // Everything from here to the end is zero: no frame starts here (the magic is not
+        // zero), no frame can be hidden in it, and no byte of it was ever a valid record.
+        // It is reported as an incomplete tail and trimmed only by a directed recovery.
+        if remaining.iter().all(|byte| *byte == 0) {
+            zero_tail = remaining.len();
+            break;
+        }
         let prefix_len = remaining.len().min(FRAME_MAGIC.len());
         if remaining[..prefix_len] != FRAME_MAGIC[..prefix_len] {
             return Err(invalid("PTR_LOG_FRAME_MAGIC"));
@@ -284,6 +296,7 @@ pub(crate) fn scan_from(bytes: &[u8], base: LogAnchor) -> io::Result<Prefix> {
         verified: VerifiedLog { events, anchor },
         complete_bytes: offset,
         incomplete: offset != bytes.len(),
+        zero_tail,
         milestones,
     })
 }

@@ -1,0 +1,12 @@
+version = 1
+id = "C002"
+status = "planned"
+hypothesis = "[GPU stage B on the Pod-MoE; needs OLMoE and a GPU. The CPU stage A on a toy mixture-of-experts classifier is the separate experiment C007 (consciousness/C007-metacognitive-self-model-cpu), built to freeze-ready on its own; this experiment is the GPU study] Indicators HOT-2/HOT-3 as a functional property: does a self-model Pod that sees the MoE's own routing traces and internal state (the self-observation of docs/architecture/37-pod-moe.md section 3) predict the MoE's own errors, uncertainty and expert choices better than an information-matched external probe that sees the same traces and state, and than a probe on input and output only? The self-model may only observe and propose; it has no write path to the verifier, the gates or any promotion (invariants 4, 5, 11). Calibration is scored against deterministic verifier outcomes."
+metrics = "error-prediction AUROC; Brier score and ECE of the predicted failure probability against verifier outcomes; selective-prediction risk-coverage area; routing-choice prediction accuracy; all on in-distribution and distribution-shifted tasks; paired differences over seeds"
+baseline = "INFORMATION-MATCHED external probe: an ordinary probe trained on exactly the same routing traces and internal state as the self-model, with the same capacity (the self-model Pod must beat this to say anything about a distinct self-model); external probe on input and output only (descriptive, shows that internal state carries information); the model's own softmax confidence; a constant predictor"
+falsification = "Falsified if the self-model does not beat the information-matched probe AND the model's own confidence on Brier score on the shifted split by a pinned margin with a one-sided 95% paired bound over at least 5 seeds, or if any run gives the self-model a write path to a verifier, gate or promotion (hard counter). The self-model's own verbal confidence statements are never trained or scored here (principle 2 of docs/architecture/38-consciousness-indicators.md)."
+hardware_profile = "hardware/rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

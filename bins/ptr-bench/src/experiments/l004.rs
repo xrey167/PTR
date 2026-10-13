@@ -915,6 +915,15 @@ fn expected_catalog(log: &[CommittedEvent]) -> Catalog {
             LedgerEvent::ProcedureRevoked { id, generation } => {
                 tombstones.insert((format!("procedure:{id}"), generation.0));
             }
+            // A compound revocation joins the revocation set; a supersession changes no row.
+            LedgerEvent::InputInvalidated {
+                input,
+                generation,
+                kind: ptr_ledger::InputInvalidationKind::Revoked,
+                ..
+            } => {
+                tombstones.insert((input.clone(), generation.0));
+            }
             _ => {}
         }
     }
@@ -1088,6 +1097,11 @@ fn expected_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::TierBackendLifecycle { .. } => "storage.tier_backend_lifecycle",
         LedgerEvent::TierObjectCommitted { .. } => "storage.tier_object_committed",
         LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
+        LedgerEvent::ExpertStructuralCommitted { .. } => "expert.structural_committed",
+        LedgerEvent::ExpertFenceCommitted { .. } => "expert.fence_committed",
+        LedgerEvent::KvTaintCommitted { .. } => "kv.taint_committed",
+        LedgerEvent::InputInvalidated { .. } => "expert.input_invalidated",
+        LedgerEvent::ExpertAuthorityChanged { .. } => "expert.authority_changed",
     }
 }
 
@@ -1163,6 +1177,19 @@ fn expected_subject(record: &CommittedEvent) -> String {
             backend_id,
             ..
         } => format!("tier-replica:{}:{backend_id}", hex_of(root_digest)),
+        LedgerEvent::ExpertStructuralCommitted { project, .. }
+        | LedgerEvent::ExpertFenceCommitted { project, .. } => format!("project:{project}"),
+        LedgerEvent::KvTaintCommitted { subjects, .. } => match subjects.first() {
+            Some((kind, digest)) => format!("kv-taint:{}:{}", kind.name(), hex_of(digest)),
+            None => "kv-taint:none".to_owned(),
+        },
+        LedgerEvent::InputInvalidated { input, .. } => format!("expert-input:{input}"),
+        LedgerEvent::ExpertAuthorityChanged { kind, .. } => {
+            format!(
+                "expert-authority:{}",
+                ptr_state::expert_authority_kind_name(*kind)
+            )
+        }
     }
 }
 

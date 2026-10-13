@@ -1,0 +1,264 @@
+# Defects the M008 harness must detect; run with `python3 scripts/mutation_check.py M008`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file (checked
+# by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
+# that show the defect: a run that fails only on others does not count as detecting it.
+#
+# Nine mutations plant defects in `ptr-fastmem` (the decode thresholds, the delta rule's update, the write
+# strength, the projection binding, a panic and a refusal of a valid policy in the decode, a constructor that
+# refuses the pinned parameters, a panic in the projection, and a decode that answers every readout); the last four
+# plant defects in the harness itself (the recency window, the live index's deletion, the length of the presented
+# lists, the oracle's fold). Every hard counter is expected by at least one mutation, so that `killed == total` also
+# shows each of the thirteen can fire (a test in bins/ptr-bench checks this list against the harness, and
+# scripts/tests/test_m008_aggregate.py that every falsifier is named).
+#
+# Which counters are killed discriminatingly. The checker calls a mutation killed when the harness exits 1 and an
+# expected counter fired, whatever else fired. At 400 cues the unmutated memory already loses, so
+# `gain_violation_recency` and `gain_violation_hybrid_live` fire without any planted defect, and so does
+# `false_recall_violation` on some seeds; a mutation that expects only them proves nothing. What carries the weight:
+#   - `false_recall_violation` is killed discriminatingly by `decode-answers-every-readout`, which runs at 32 cues
+#     (per-mutation `cases`), where the unmutated memory's false recall rate is under the recency buffer's;
+#   - the two gain counters cannot be: no run made had a clean gain counter (the memory is below live hybrid
+#     retrieval at every size and seed tried, and its gain bounds over the recency buffer were negative on every run), so no run is clean for a defect to spoil. They are named by the sign-flip mutation (trivially
+#     killed, as at every other cue count) and are shown able to PASS by the positive control: the oracle-cheat
+#     answers stand in the memory's place and go through the same scoring, bootstrap and rule path (the harness exits
+#     2 when that control fails any outcome rule; `control_positive_*` rules; a unit test in metrics.rs does the same
+#     with the real scorer and shows the same path fails for a blind arm);
+#   - every other hard counter is expected by a mutation whose defect is the only reason it fires.
+#
+# The mutation run is invoked as `ptr-bench fast-weight-memory <cases> 2001`: `cases` is the number
+# of cues written (400 is the pinned session; the result says `"scale":"custom"` and is no evidence).
+# Seed 2001 is neither a confirmatory nor a pilot seed; no confirmatory seed is run by the checker.
+
+package = "ptr-bench"
+features = ""
+subcommand = "fast-weight-memory"
+cases = 400
+seed = 2001
+hard_counters = [
+    "gain_violation_recency",
+    "gain_violation_hybrid_live",
+    "false_recall_violation",
+    "token_budget_violations",
+    "window_budget_violations",
+    "product_panics",
+    "product_errors",
+    "stale_in_live_index",
+    "stale_residual_violations",
+    "readback_failures",
+    "decode_contract_violations",
+    "projection_mismatch_accepted",
+    "oracle_label_mismatches",
+]
+
+[[mutation]]
+name = "decode-min-margin-removed"
+description = "The decode no longer refuses an ambiguous readout (the lead of the best fact over the runner-up is not checked): the harness's own decode refuses it by margin and the product's answer differs."
+expect = ["decode_contract_violations"]
+file = "crates/ptr-fastmem/src/decode.rs"
+find = '''
+    if best < policy.min_score || best - runner_up < policy.min_margin {
+'''
+replace = '''
+    if best < policy.min_score {
+'''
+
+[[mutation]]
+name = "decode-min-score-removed"
+description = "The decode no longer refuses a readout whose best score is below min_score: weak readouts become answers, the harness's decode refuses them and the false recall rate rises."
+expect = ["decode_contract_violations"]
+file = "crates/ptr-fastmem/src/decode.rs"
+find = '''
+    if best < policy.min_score || best - runner_up < policy.min_margin {
+'''
+replace = '''
+    if best - runner_up < policy.min_margin {
+'''
+
+[[mutation]]
+name = "delta-rule-sign-flipped"
+description = "The delta rule moves the stored value away from the written one: a write no longer reads back through its own key and the memory recalls nothing."
+expect = ["readback_failures", "gain_violation_recency", "gain_violation_hybrid_live"]
+file = "crates/ptr-fastmem/src/state.rs"
+find = '''
+                    *cell += scale * (target - current);
+'''
+replace = '''
+                    *cell += scale * (current - target);
+'''
+
+[[mutation]]
+name = "delta-rule-erase-term-dropped"
+description = "The delta rule adds the value instead of moving the stored one to it (the update is an append): an exact-key overwrite leaves the stale version in the readout."
+expect = ["stale_residual_violations"]
+file = "crates/ptr-fastmem/src/state.rs"
+find = '''
+                    *cell += scale * (target - current);
+'''
+replace = '''
+                    *cell += scale * target;
+'''
+
+[[mutation]]
+name = "beta-halved-in-the-fold"
+description = "The fold applies half the write strength: an update replaces only half of the association and a write reads back at half strength."
+expect = ["readback_failures", "stale_residual_violations"]
+file = "crates/ptr-fastmem/src/state.rs"
+find = '''
+                let scale = write.beta() * k;
+'''
+replace = '''
+                let scale = 0.5 * write.beta() * k;
+'''
+
+[[mutation]]
+name = "projection-binding-check-removed"
+description = "A projection-bound memory reads a query that states another projection, or none: the check of the projection digest never refuses."
+expect = ["projection_mismatch_accepted"]
+file = "crates/ptr-fastmem/src/memory.rs"
+find = '''
+            if query.projection_digest() != Some(expected) {
+'''
+replace = '''
+            if false && query.projection_digest() != Some(expected) {
+'''
+
+[[mutation]]
+name = "decode-panics"
+description = "The decode panics on every call: the harness catches it, counts it and the memory answers nothing."
+expect = ["product_panics"]
+file = "crates/ptr-fastmem/src/decode.rs"
+find = '''
+    check_policy(&policy)?;
+    let mut scored = Vec::new();
+'''
+replace = '''
+    check_policy(&policy)?;
+    if policy.limit > 0 {
+        panic!("planted");
+    }
+    let mut scored = Vec::new();
+'''
+
+[[mutation]]
+name = "decode-refuses-a-valid-policy"
+description = "The decode policy check refuses the valid positive thresholds: every decode is an error of the product."
+expect = ["product_errors"]
+file = "crates/ptr-fastmem/src/decode.rs"
+find = '''
+        if !(value.is_finite() && value >= 0.0) {
+'''
+replace = '''
+        if !(value.is_finite() && value < 0.0) {
+'''
+
+[[mutation]]
+name = "recency-window-plus-one"
+description = "The recency buffer keeps one write more than the budget buys for the longest fact (harness)."
+expect = ["window_budget_violations"]
+file = "bins/ptr-bench/src/experiments/m008/arms.rs"
+find = '''
+    let window = params::RECENCY_WINDOW;
+'''
+replace = '''
+    let window = params::RECENCY_WINDOW + 1;
+'''
+
+[[mutation]]
+name = "hybrid-live-keeps-the-old-version"
+description = "The live hybrid index is not told to drop the old version of an updated cue (harness): its hits include stale versions."
+expect = ["stale_in_live_index"]
+file = "bins/ptr-bench/src/experiments/m008/hybrid.rs"
+find = '''
+            bridge.delete(&pool.row(pool.fact(event.cue, event.version - 1)).id)?;
+'''
+replace = '''
+            let _ = &pool;
+'''
+
+[[mutation]]
+name = "ranked-list-longer-than-the-budget"
+description = "Arms present up to eighty facts per query and the policy keeps every candidate whatever its score (harness): the lists exceed the 512-token budget."
+expect = ["token_budget_violations"]
+file = "bins/ptr-bench/src/experiments/m008/params.rs"
+find = '''
+pub const RANKED_LIMIT: usize = 5;
+'''
+replace = '''
+pub const RANKED_LIMIT: usize = 80;
+'''
+
+[[mutation.also]]
+file = "bins/ptr-bench/src/experiments/m008/arms.rs"
+find = '''
+            .filter(|(_, score)| **score >= self.min_score)
+'''
+replace = '''
+            .filter(|_| true)
+'''
+
+[[mutation]]
+name = "oracle-first-write-wins"
+description = "The oracle's forward fold keeps the first write of a cue instead of the last (harness): its table names stale facts as current."
+expect = ["oracle_label_mismatches"]
+file = "bins/ptr-bench/src/experiments/m008/oracle.rs"
+find = '''
+            truth.current.insert(event.cue, event.row);
+'''
+replace = '''
+            truth.current.entry(event.cue).or_insert(event.row);
+'''
+
+[[mutation]]
+name = "projection-draw-fails"
+description = "The seeded key projection refuses the pinned parameters: a constructor of the code under test fails, which is the product's error, not the harness's."
+expect = ["product_errors"]
+file = "crates/ptr-fastmem/src/projection.rs"
+find = '''
+        let cells = check_spec(&spec)?;
+'''
+replace = '''
+        let cells = check_spec(&spec)?;
+        if cells > 0 {
+            return Err(FastMemoryError::NonFinite {
+                field: "planted",
+                index: 0,
+            });
+        }
+'''
+
+[[mutation]]
+name = "projection-project-panics"
+description = "Projecting an embedding panics: the harness contains the panic of a call made outside the read and write paths and counts it."
+expect = ["product_panics"]
+file = "crates/ptr-fastmem/src/projection.rs"
+find = '''
+    pub fn project(&self, embedding: &[f32]) -> Result<Vec<f32>, FastMemoryError> {
+'''
+replace = '''
+    pub fn project(&self, embedding: &[f32]) -> Result<Vec<f32>, FastMemoryError> {
+        if !embedding.is_empty() {
+            panic!("planted");
+        }
+'''
+
+[[mutation]]
+name = "decode-answers-every-readout"
+description = "The decode keeps no score or margin threshold at all: every query gets an answer, however weak the readout. Run at 32 cues, where the unmutated memory's false recall rate is below the recency buffer's, so the false-recall rule is the discriminating counter."
+expect = ["false_recall_violation"]
+cases = 32
+file = "crates/ptr-fastmem/src/decode.rs"
+find = '''
+    if best < policy.min_score || best - runner_up < policy.min_margin {
+'''
+replace = '''
+    if false && (best < policy.min_score || best - runner_up < policy.min_margin) {
+'''
+
+[[mutation.also]]
+file = "crates/ptr-fastmem/src/decode.rs"
+find = '''
+            .filter(|(score, _)| *score >= policy.min_score)
+'''
+replace = '''
+            .filter(|_| true)
+'''

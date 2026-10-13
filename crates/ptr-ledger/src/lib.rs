@@ -235,7 +235,441 @@ pub enum LedgerEvent {
         latency_millis: u64,
         verification: Attestation,
     },
+    /// A structural change to the expert set (birth, merge, split, freeze,
+    /// reactivate, prune or retire) committed by the runtime's expert
+    /// admission path. `record` is a versioned canonical expert commit record
+    /// owned by ptr-pods; the ledger stores it opaquely and checks only its
+    /// size. The ids and digests are the committing path's own claim about
+    /// that record, carried so a reader can index the event without decoding
+    /// the record; this crate cannot check that they agree with it. The
+    /// admission path that writes this event MUST derive `proposal_id`,
+    /// `operation_id` and `evidence_digest` from the decoded record, never
+    /// take them from a caller, and replay MUST re-derive them from the
+    /// record and compare, refusing a mismatch.
+    ExpertStructuralCommitted {
+        project: ProjectId,
+        op_kind: ExpertOpKind,
+        proposal_id: [u8; 32],
+        operation_id: [u8; 32],
+        evidence_digest: [u8; 32],
+        record: Vec<u8>,
+    },
+    /// An authority fence of one expert, or its readmission, committed by the runtime's expert
+    /// fence path. A fence withdraws the expert from serving without changing its generation
+    /// (`Serving` or `Frozen` to `Fenced`); a readmission returns a fenced expert to the state it
+    /// left (`resume`) at the same generation; an escalation keeps it fenced and tightens the
+    /// cause; a retirement takes a fenced expert of cause `InputRevoked` to
+    /// `Retired(InputRevoked)`, final. Each moves the expert's state version, which is its fence
+    /// epoch, to `epoch`, so a cache entry recorded under an earlier epoch is never revived.
+    /// `expected_state_version` is the compare-and-set operand and `epoch` must be exactly
+    /// `expected_state_version + 1`: the codec refuses any other pair. The record is written
+    /// only by the runtime's fence path under a typed grant; this crate cannot check that.
+    ExpertFenceCommitted {
+        project: ProjectId,
+        pod: PodId,
+        action: ExpertFenceAction,
+        cause: ExpertFenceCause,
+        /// The state the expert was in before the fence and returns to on readmission. A fence
+        /// names the state it leaves (`Serving` or `Frozen`); an escalation and a readmission
+        /// repeat the one recorded at the fence. Replay checks each against the registry.
+        resume: ExpertFenceResume,
+        generation: Generation,
+        expected_state_version: u64,
+        epoch: u64,
+        /// The committed revocation an `InputRevoked` fence, escalation or retirement rests on;
+        /// `None` for every other record. The codec requires `Some` for exactly those three.
+        revocation: Option<ExpertFenceRevocation>,
+        /// The gate evidence a readmission rests on; `None` for a fence, an escalation and a
+        /// retirement, none of which waits for a gate. The codec requires `Some` for exactly a
+        /// readmission.
+        evidence: Option<ExpertFenceEvidence>,
+    },
+    /// A change to the approximate-KV taint registry, committed by the runtime's taint path
+    /// before any result that rests on it is returned (taint first, so a crash leaves at most a
+    /// stray taint record, which only refuses more). `subjects` lists one to
+    /// [`MAX_KV_TAINT_SUBJECTS`] `(kind, digest)` pairs in strictly ascending canonical order
+    /// (kind code, then digest bytes), without duplicates; the codec refuses any other form.
+    /// The record is written only by the runtime's taint path; this crate cannot check that,
+    /// nor that a `Clear` names a live `Record` (replay does).
+    KvTaintCommitted {
+        subjects: Vec<(KvTaintSubjectKind, [u8; 32])>,
+        change: KvTaintChange,
+    },
+    /// The compound invalidation of one input (tag 30): `input` at `generation` is revoked or
+    /// superseded and, in the same record, every expert that rests on it is fenced. The event
+    /// names the invalidated input and commits to the set of experts it fences by count and
+    /// digest only (`fence_count`, `fence_digest`), never by an explicit list: the set is
+    /// derived from the runtime's dependency index at this commit index, so a large fan-out
+    /// costs one small record. `binding_digest` is the content digest of the invalidated input
+    /// at `generation` (the digest the first committed use of it fixed, when there was one).
+    ///
+    /// This crate checks only the shape: the identity is bounded, no digest is zero, a
+    /// `Superseded` kind names `old_generation == generation` and `new_generation >
+    /// old_generation`. It cannot check that the count and digest are the fence set; the
+    /// runtime re-derives the set on commit and on replay and refuses a mismatch. The record is
+    /// written only by the runtime's invalidation path; the public `commit` refuses it.
+    InputInvalidated {
+        input: String,
+        generation: Generation,
+        binding_digest: [u8; 32],
+        kind: InputInvalidationKind,
+        fence_count: u32,
+        fence_digest: [u8; 32],
+    },
+    /// A change of the authority expert admission evidence rests on (tag 31): the current
+    /// epoch and identity of the gate configuration or of the evaluator moves to `epoch` and
+    /// `id_digest`. `class` says what the change does to evidence issued under earlier epochs: a
+    /// `Revoke` or a `TighteningRotation` fences, in the same record, every expert whose
+    /// admission evidence was issued under an epoch below `epoch`; a `NonTightening` rotation
+    /// fences nothing. As for tag 30, the fenced set is committed to by count and digest only
+    /// (`fence_count`, `fence_digest`): the runtime derives it from its registry at this commit
+    /// index and re-derives it on replay.
+    ///
+    /// This crate checks only the shape: a non-zero epoch, no all-zero digest, and a
+    /// `NonTightening` change that fences nobody. It cannot check that the epoch advances or that
+    /// the count and digest are the fence set; the runtime does both on commit and on replay.
+    /// The record is written only by the runtime's authority path; the public `commit` refuses it.
+    ExpertAuthorityChanged {
+        kind: ExpertAuthorityKind,
+        id_digest: [u8; 32],
+        epoch: u64,
+        class: ExpertAuthorityClass,
+        fence_count: u32,
+        fence_digest: [u8; 32],
+    },
 }
+
+/// Which authority an [`LedgerEvent::ExpertAuthorityChanged`] moves. The codes are pinned data:
+/// GateConfig 0, Evaluator 1.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ExpertAuthorityKind {
+    /// The gate configuration admission evidence must have been produced under.
+    GateConfig,
+    /// The evaluator whose reports count as admission evidence.
+    Evaluator,
+}
+
+impl ExpertAuthorityKind {
+    /// The stored code: GateConfig 0, Evaluator 1.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::GateConfig => 0,
+            Self::Evaluator => 1,
+        }
+    }
+
+    /// The member for a stored code, or `None` for an unknown one.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::GateConfig),
+            1 => Some(Self::Evaluator),
+            _ => None,
+        }
+    }
+}
+
+/// What an [`LedgerEvent::ExpertAuthorityChanged`] does to evidence issued under earlier epochs.
+/// The codes are pinned data: Revoke 0, TighteningRotation 1, NonTightening 2.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertAuthorityClass {
+    /// The previous authority is withdrawn outright; its evidence no longer counts.
+    Revoke,
+    /// The authority rotates to a stricter one; evidence issued under an earlier epoch no longer
+    /// meets it.
+    TighteningRotation,
+    /// The authority rotates without becoming stricter; earlier evidence keeps counting.
+    NonTightening,
+}
+
+impl ExpertAuthorityClass {
+    /// The stored code: Revoke 0, TighteningRotation 1, NonTightening 2.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Revoke => 0,
+            Self::TighteningRotation => 1,
+            Self::NonTightening => 2,
+        }
+    }
+
+    /// The member for a stored code, or `None` for an unknown one.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Revoke),
+            1 => Some(Self::TighteningRotation),
+            2 => Some(Self::NonTightening),
+            _ => None,
+        }
+    }
+
+    /// Whether evidence issued under an earlier epoch stops counting.
+    pub fn fences_earlier_evidence(self) -> bool {
+        match self {
+            Self::Revoke | Self::TighteningRotation => true,
+            Self::NonTightening => false,
+        }
+    }
+}
+
+/// The longest identity an [`LedgerEvent::InputInvalidated`] names, in bytes.
+pub const MAX_INPUT_IDENTITY_BYTES: usize = 256;
+
+/// How an [`LedgerEvent::InputInvalidated`] ends the life of its input. The codes are pinned
+/// data: Revoked 0, Superseded 1.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputInvalidationKind {
+    /// The input generation is revoked: no record may rest on it again.
+    Revoked,
+    /// The input moves from `old_generation` (the event's `generation`) to `new_generation`,
+    /// whose content digest is `new_digest`. Every generation below `new_generation` is stale
+    /// from here on. `replacement_ref` is a digest of the replacement artifact, kept as
+    /// evidence only: the ledger and the runtime never dereference it.
+    Superseded {
+        old_generation: Generation,
+        new_generation: Generation,
+        new_digest: [u8; 32],
+        replacement_ref: [u8; 32],
+    },
+}
+
+impl InputInvalidationKind {
+    /// The stored code: Revoked 0, Superseded 1.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Revoked => 0,
+            Self::Superseded { .. } => 1,
+        }
+    }
+}
+
+/// What a [`LedgerEvent::KvTaintCommitted`] subject digest identifies. The codes are pinned data.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum KvTaintSubjectKind {
+    /// An action identity.
+    Action,
+    /// A derivation (a minted derived segment).
+    Derivation,
+    /// A content digest.
+    Content,
+    /// A Pod output.
+    PodOutput,
+    /// A request.
+    Request,
+}
+
+impl KvTaintSubjectKind {
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Action => 0,
+            Self::Derivation => 1,
+            Self::Content => 2,
+            Self::PodOutput => 3,
+            Self::Request => 4,
+        }
+    }
+
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Action),
+            1 => Some(Self::Derivation),
+            2 => Some(Self::Content),
+            3 => Some(Self::PodOutput),
+            4 => Some(Self::Request),
+            _ => None,
+        }
+    }
+
+    /// The stable lowercase name used in projection keys.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Action => "action",
+            Self::Derivation => "derivation",
+            Self::Content => "content",
+            Self::PodOutput => "pod-output",
+            Self::Request => "request",
+        }
+    }
+}
+
+/// The change a [`LedgerEvent::KvTaintCommitted`] makes to every one of its subjects. All
+/// digests are non-zero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KvTaintChange {
+    /// The subjects are tainted by an approximate run: the reuse report and the recipe it ran.
+    Record {
+        report_digest: [u8; 32],
+        recipe_digest: [u8; 32],
+    },
+    /// A cold exact recomputation of the same recipe cleared the subjects.
+    Clear {
+        recipe_digest: [u8; 32],
+        recompute_digest: [u8; 32],
+    },
+}
+
+/// A taint record names at most this many subjects.
+pub const MAX_KV_TAINT_SUBJECTS: usize = 16;
+
+/// The committed [`LedgerEvent::Revoked`] (or `ProcedureRevoked`) record an `InputRevoked` fence
+/// names: its subject and generation. The runtime checks it against the revocations committed
+/// at or before the fence, at commit and on replay; a fence that names none is refused.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertFenceRevocation {
+    pub subject: String,
+    pub generation: Generation,
+}
+
+/// The state a fenced expert returns to on readmission. The codes are pinned data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertFenceResume {
+    Serving,
+    Frozen,
+}
+
+impl ExpertFenceResume {
+    /// The stored code: Serving 0, Frozen 1.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Serving => 0,
+            Self::Frozen => 1,
+        }
+    }
+
+    /// The member for a stored code, or `None` for an unknown one.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Serving),
+            1 => Some(Self::Frozen),
+            _ => None,
+        }
+    }
+}
+
+/// The gate evidence embedded in a readmission: the canonical bytes of the bound gate report
+/// (owned by ptr-lineage, stored opaquely here and size-checked like an expert record), the
+/// gate epoch it was admitted under and the gate configuration digest the grant required for
+/// that epoch. Replay re-verifies the report against these and against the event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertFenceEvidence {
+    pub gate_epoch: u64,
+    pub required_gate_config_digest: [u8; 32],
+    pub report: Vec<u8>,
+}
+
+/// Whether an [`LedgerEvent::ExpertFenceCommitted`] fences an expert or readmits a fenced one.
+/// The codes are pinned data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertFenceAction {
+    Fence,
+    Readmit,
+    /// A `Fenced` expert whose cause is `AuthorityQuarantine` is re-fenced for `InputRevoked`:
+    /// the cause only ever tightens, and the epoch moves like for any fence.
+    Escalate,
+    /// A `Fenced` expert whose cause is `InputRevoked` is retired for good
+    /// (`Retired(InputRevoked)`, terminal): the runtime's revocation authority, never a gate,
+    /// writes it, it carries no gate evidence and it rests on a committed revocation like the
+    /// fence it follows. The epoch moves like for any fence action.
+    Retire,
+}
+
+impl ExpertFenceAction {
+    /// The stored code: Fence 0, Readmit 1, Escalate 2, Retire 3.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Fence => 0,
+            Self::Readmit => 1,
+            Self::Escalate => 2,
+            Self::Retire => 3,
+        }
+    }
+
+    /// The member for a stored code, or `None` for an unknown one.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Fence),
+            1 => Some(Self::Readmit),
+            2 => Some(Self::Escalate),
+            3 => Some(Self::Retire),
+            _ => None,
+        }
+    }
+}
+
+/// Why an expert is fenced. A readmission names the cause of the fence it clears. The codes are
+/// pinned data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertFenceCause {
+    /// An input the expert was trained on was revoked. Never readmittable.
+    InputRevoked,
+    /// An authority the expert's admission rested on was withdrawn or quarantined. Readmittable.
+    AuthorityQuarantine,
+}
+
+impl ExpertFenceCause {
+    /// The stored code: InputRevoked 0, AuthorityQuarantine 1.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::InputRevoked => 0,
+            Self::AuthorityQuarantine => 1,
+        }
+    }
+
+    /// The member for a stored code, or `None` for an unknown one.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::InputRevoked),
+            1 => Some(Self::AuthorityQuarantine),
+            _ => None,
+        }
+    }
+}
+
+/// Which structural operation an [`LedgerEvent::ExpertStructuralCommitted`]
+/// records. The codes are pinned data ([`ExpertOpKind::code`]); inserting a
+/// member must not renumber stored records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpertOpKind {
+    Birth,
+    Merge,
+    Split,
+    Freeze,
+    Reactivate,
+    Prune,
+    Retire,
+}
+
+impl ExpertOpKind {
+    /// The stored code: Birth 0, Merge 1, Split 2, Freeze 3, Reactivate 4,
+    /// Prune 5, Retire 6.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Birth => 0,
+            Self::Merge => 1,
+            Self::Split => 2,
+            Self::Freeze => 3,
+            Self::Reactivate => 4,
+            Self::Prune => 5,
+            Self::Retire => 6,
+        }
+    }
+
+    /// The member for a stored code, or `None` for an unknown one.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Birth),
+            1 => Some(Self::Merge),
+            2 => Some(Self::Split),
+            3 => Some(Self::Freeze),
+            4 => Some(Self::Reactivate),
+            5 => Some(Self::Prune),
+            6 => Some(Self::Retire),
+            _ => None,
+        }
+    }
+}
+
+/// An expert structural record is at most this many bytes, far below
+/// [`integrity::MAX_RECORD_BYTES`] so one record cannot crowd out its log.
+pub const MAX_EXPERT_RECORD_BYTES: usize = 1 << 20;
 
 /// Why a semantic write was allowed. ptr-runtime writes it in the same append
 /// as the delta and checks it with the same function on append and on every
@@ -595,6 +1029,131 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_u64(&mut out, revision.0);
             put_u64(&mut out, policy_revision.0);
             put_bytes(&mut out, manifest);
+        }
+        LedgerEvent::ExpertStructuralCommitted {
+            project,
+            op_kind,
+            proposal_id,
+            operation_id,
+            evidence_digest,
+            record,
+        } => {
+            out.push(27);
+            put_string(&mut out, &project.0);
+            out.push(op_kind.code());
+            out.extend_from_slice(proposal_id);
+            out.extend_from_slice(operation_id);
+            out.extend_from_slice(evidence_digest);
+            put_bytes(&mut out, record);
+        }
+        LedgerEvent::ExpertFenceCommitted {
+            project,
+            pod,
+            action,
+            cause,
+            resume,
+            generation,
+            expected_state_version,
+            epoch,
+            revocation,
+            evidence,
+        } => {
+            out.push(28);
+            put_string(&mut out, &project.0);
+            put_string(&mut out, &pod.0);
+            out.push(action.code());
+            out.push(cause.code());
+            out.push(resume.code());
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, *expected_state_version);
+            put_u64(&mut out, *epoch);
+            match revocation {
+                None => out.push(0),
+                Some(revocation) => {
+                    out.push(1);
+                    put_string(&mut out, &revocation.subject);
+                    put_u64(&mut out, revocation.generation.0);
+                }
+            }
+            match evidence {
+                None => out.push(0),
+                Some(evidence) => {
+                    out.push(1);
+                    put_u64(&mut out, evidence.gate_epoch);
+                    out.extend_from_slice(&evidence.required_gate_config_digest);
+                    put_bytes(&mut out, &evidence.report);
+                }
+            }
+        }
+        LedgerEvent::KvTaintCommitted { subjects, change } => {
+            out.push(29);
+            out.push(subjects.len().min(usize::from(u8::MAX)) as u8);
+            for (kind, digest) in subjects {
+                out.push(kind.code());
+                out.extend_from_slice(digest);
+            }
+            match change {
+                KvTaintChange::Record {
+                    report_digest,
+                    recipe_digest,
+                } => {
+                    out.push(0);
+                    out.extend_from_slice(report_digest);
+                    out.extend_from_slice(recipe_digest);
+                }
+                KvTaintChange::Clear {
+                    recipe_digest,
+                    recompute_digest,
+                } => {
+                    out.push(1);
+                    out.extend_from_slice(recipe_digest);
+                    out.extend_from_slice(recompute_digest);
+                }
+            }
+        }
+        LedgerEvent::InputInvalidated {
+            input,
+            generation,
+            binding_digest,
+            kind,
+            fence_count,
+            fence_digest,
+        } => {
+            out.push(30);
+            put_string(&mut out, input);
+            put_u64(&mut out, generation.0);
+            out.extend_from_slice(binding_digest);
+            out.push(kind.code());
+            if let InputInvalidationKind::Superseded {
+                old_generation,
+                new_generation,
+                new_digest,
+                replacement_ref,
+            } = kind
+            {
+                put_u64(&mut out, old_generation.0);
+                put_u64(&mut out, new_generation.0);
+                out.extend_from_slice(new_digest);
+                out.extend_from_slice(replacement_ref);
+            }
+            put_u32(&mut out, *fence_count);
+            out.extend_from_slice(fence_digest);
+        }
+        LedgerEvent::ExpertAuthorityChanged {
+            kind,
+            id_digest,
+            epoch,
+            class,
+            fence_count,
+            fence_digest,
+        } => {
+            out.push(31);
+            out.push(kind.code());
+            out.extend_from_slice(id_digest);
+            put_u64(&mut out, *epoch);
+            out.push(class.code());
+            put_u32(&mut out, *fence_count);
+            out.extend_from_slice(fence_digest);
         }
         LedgerEvent::ExecutionManifestRevoked {
             manifest_digest,
@@ -1008,6 +1567,198 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             revision: Revision(cursor.u64()?),
             event_digest: cursor.digest()?,
         },
+        27 => {
+            let project = ProjectId(cursor.string()?);
+            let code = cursor.u8()?;
+            let op_kind = ExpertOpKind::from_code(code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown expert operation code {code}"),
+                )
+            })?;
+            let proposal_id = cursor.digest()?;
+            let operation_id = cursor.digest()?;
+            let evidence_digest = cursor.digest()?;
+            let record = cursor.bytes()?.to_vec();
+            check_expert_record(&record)?;
+            LedgerEvent::ExpertStructuralCommitted {
+                project,
+                op_kind,
+                proposal_id,
+                operation_id,
+                evidence_digest,
+                record,
+            }
+        }
+        28 => {
+            let project = ProjectId(cursor.string()?);
+            let pod = PodId(cursor.string()?);
+            let action_code = cursor.u8()?;
+            let action = ExpertFenceAction::from_code(action_code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown expert fence action code {action_code}"),
+                )
+            })?;
+            let cause_code = cursor.u8()?;
+            let cause = ExpertFenceCause::from_code(cause_code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown expert fence cause code {cause_code}"),
+                )
+            })?;
+            let resume_code = cursor.u8()?;
+            let resume = ExpertFenceResume::from_code(resume_code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown expert fence resume code {resume_code}"),
+                )
+            })?;
+            let generation = Generation(cursor.u64()?);
+            let expected_state_version = cursor.u64()?;
+            let epoch = cursor.u64()?;
+            let revocation = match cursor.u8()? {
+                0 => None,
+                1 => Some(ExpertFenceRevocation {
+                    subject: cursor.string()?,
+                    generation: Generation(cursor.u64()?),
+                }),
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown expert fence revocation flag {other}"),
+                    ))
+                }
+            };
+            let evidence = match cursor.u8()? {
+                0 => None,
+                1 => Some(ExpertFenceEvidence {
+                    gate_epoch: cursor.u64()?,
+                    required_gate_config_digest: cursor.digest()?,
+                    report: cursor.bytes()?.to_vec(),
+                }),
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown expert fence evidence flag {other}"),
+                    ))
+                }
+            };
+            let event = LedgerEvent::ExpertFenceCommitted {
+                project,
+                pod,
+                action,
+                cause,
+                resume,
+                generation,
+                expected_state_version,
+                epoch,
+                revocation,
+                evidence,
+            };
+            check_expert_fence(&event)?;
+            event
+        }
+        29 => {
+            let count = usize::from(cursor.u8()?);
+            if count == 0 || count > MAX_KV_TAINT_SUBJECTS {
+                return Err(integrity::invalid("PTR_LEDGER_KV_TAINT_SUBJECT_LIMIT"));
+            }
+            let mut subjects = Vec::with_capacity(count);
+            for _ in 0..count {
+                let code = cursor.u8()?;
+                let kind = KvTaintSubjectKind::from_code(code).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown kv taint subject code {code}"),
+                    )
+                })?;
+                subjects.push((kind, cursor.digest()?));
+            }
+            let change_code = cursor.u8()?;
+            let change = match change_code {
+                0 => KvTaintChange::Record {
+                    report_digest: cursor.digest()?,
+                    recipe_digest: cursor.digest()?,
+                },
+                1 => KvTaintChange::Clear {
+                    recipe_digest: cursor.digest()?,
+                    recompute_digest: cursor.digest()?,
+                },
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown kv taint change code {other}"),
+                    ))
+                }
+            };
+            let event = LedgerEvent::KvTaintCommitted { subjects, change };
+            check_kv_taint(&event)?;
+            event
+        }
+        30 => {
+            let input = cursor.string()?;
+            let generation = Generation(cursor.u64()?);
+            let binding_digest = cursor.digest()?;
+            let kind_code = cursor.u8()?;
+            let kind = match kind_code {
+                0 => InputInvalidationKind::Revoked,
+                1 => InputInvalidationKind::Superseded {
+                    old_generation: Generation(cursor.u64()?),
+                    new_generation: Generation(cursor.u64()?),
+                    new_digest: cursor.digest()?,
+                    replacement_ref: cursor.digest()?,
+                },
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown input invalidation kind {other}"),
+                    ))
+                }
+            };
+            let fence_count = cursor.u32()?;
+            let fence_digest = cursor.digest()?;
+            let event = LedgerEvent::InputInvalidated {
+                input,
+                generation,
+                binding_digest,
+                kind,
+                fence_count,
+                fence_digest,
+            };
+            check_input_invalidated(&event)?;
+            event
+        }
+        31 => {
+            let kind_code = cursor.u8()?;
+            let kind = ExpertAuthorityKind::from_code(kind_code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown expert authority kind {kind_code}"),
+                )
+            })?;
+            let id_digest = cursor.digest()?;
+            let epoch = cursor.u64()?;
+            let class_code = cursor.u8()?;
+            let class = ExpertAuthorityClass::from_code(class_code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown expert authority class {class_code}"),
+                )
+            })?;
+            let fence_count = cursor.u32()?;
+            let fence_digest = cursor.digest()?;
+            let event = LedgerEvent::ExpertAuthorityChanged {
+                kind,
+                id_digest,
+                epoch,
+                class,
+                fence_count,
+                fence_digest,
+            };
+            check_expert_authority_changed(&event)?;
+            event
+        }
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1096,6 +1847,14 @@ pub fn check_encodable(event: &LedgerEvent) -> Result<(), io::Error> {
     Ok(())
 }
 
+/// The canonical payload encoding of `event`: the bytes a durable log record frames, whose
+/// length [`check_encodable`] bounds. A reader that needs a size or a digest of an event (a
+/// summary that must not carry its content) takes it from here instead of rendering the event.
+#[must_use]
+pub fn encoded_event(event: &LedgerEvent) -> Vec<u8> {
+    encode_event(event)
+}
+
 /// The rules the decoder applies to an attributed origin, checked before any
 /// encoding with the functions the decoder itself calls, in the order it
 /// reads the fields they cover, so an append path refuses what the decoder
@@ -1124,6 +1883,11 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
             check_hypothesis_dependency_count(dependencies.len())?;
             check_attestation(verification)?;
         }
+        LedgerEvent::ExpertStructuralCommitted { record, .. } => check_expert_record(record)?,
+        LedgerEvent::ExpertFenceCommitted { .. } => check_expert_fence(event)?,
+        LedgerEvent::KvTaintCommitted { .. } => check_kv_taint(event)?,
+        LedgerEvent::InputInvalidated { .. } => check_input_invalidated(event)?,
+        LedgerEvent::ExpertAuthorityChanged { .. } => check_expert_authority_changed(event)?,
         LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
             endpoint: Some(endpoint),
             ..
@@ -1131,6 +1895,176 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
         _ => {}
+    }
+    Ok(())
+}
+
+/// An authority change carries a non-zero epoch and no all-zero digest, and a `NonTightening`
+/// change fences nobody: the one canonical form. The decoder and the append paths both call
+/// this.
+fn check_expert_authority_changed(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::ExpertAuthorityChanged {
+        id_digest,
+        epoch,
+        class,
+        fence_count,
+        fence_digest,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    const ZERO: [u8; 32] = [0; 32];
+    if *epoch == 0 || *id_digest == ZERO || *fence_digest == ZERO {
+        return Err(integrity::invalid("PTR_LEDGER_EXPERT_AUTHORITY_CHANGED"));
+    }
+    if !class.fences_earlier_evidence() && *fence_count != 0 {
+        return Err(integrity::invalid(
+            "PTR_LEDGER_EXPERT_AUTHORITY_CHANGED_FENCES",
+        ));
+    }
+    Ok(())
+}
+
+/// An input invalidation names a non-empty identity of at most [`MAX_INPUT_IDENTITY_BYTES`]
+/// bytes without control characters, a non-zero generation, and carries no all-zero digest. A
+/// `Superseded` kind repeats the event's generation as its `old_generation` and moves strictly
+/// forward: the one canonical form. The decoder and the append paths both call this.
+fn check_input_invalidated(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::InputInvalidated {
+        input,
+        generation,
+        binding_digest,
+        kind,
+        fence_digest,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    const ZERO: [u8; 32] = [0; 32];
+    let identity_ok = !input.is_empty()
+        && input.len() <= MAX_INPUT_IDENTITY_BYTES
+        && !input.chars().any(char::is_control);
+    if !identity_ok || generation.0 == 0 {
+        return Err(integrity::invalid("PTR_LEDGER_INPUT_INVALIDATED"));
+    }
+    let kind_ok = match kind {
+        InputInvalidationKind::Revoked => true,
+        InputInvalidationKind::Superseded {
+            old_generation,
+            new_generation,
+            new_digest,
+            replacement_ref,
+        } => {
+            old_generation == generation
+                && new_generation > old_generation
+                && *new_digest != ZERO
+                && *replacement_ref != ZERO
+        }
+    };
+    if !kind_ok {
+        return Err(integrity::invalid("PTR_LEDGER_INPUT_INVALIDATED"));
+    }
+    if *binding_digest == ZERO || *fence_digest == ZERO {
+        return Err(integrity::invalid(
+            "PTR_LEDGER_INPUT_INVALIDATED_ZERO_DIGEST",
+        ));
+    }
+    Ok(())
+}
+
+/// A taint record names one to [`MAX_KV_TAINT_SUBJECTS`] subjects in strictly ascending
+/// canonical order (kind code, then digest), so without duplicates, and every digest it carries
+/// is non-zero: the one canonical form. The decoder and the append paths both call this.
+fn check_kv_taint(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::KvTaintCommitted { subjects, change } = event else {
+        return Ok(());
+    };
+    const ZERO: [u8; 32] = [0; 32];
+    if subjects.is_empty() || subjects.len() > MAX_KV_TAINT_SUBJECTS {
+        return Err(integrity::invalid("PTR_LEDGER_KV_TAINT_SUBJECT_LIMIT"));
+    }
+    let ordered = subjects
+        .windows(2)
+        .all(|pair| (pair[0].0.code(), pair[0].1) < (pair[1].0.code(), pair[1].1));
+    if !ordered {
+        return Err(integrity::invalid("PTR_LEDGER_KV_TAINT_ORDER"));
+    }
+    let digests_ok = subjects.iter().all(|(_, digest)| *digest != ZERO)
+        && match change {
+            KvTaintChange::Record {
+                report_digest,
+                recipe_digest,
+            } => *report_digest != ZERO && *recipe_digest != ZERO,
+            KvTaintChange::Clear {
+                recipe_digest,
+                recompute_digest,
+            } => *recipe_digest != ZERO && *recompute_digest != ZERO,
+        };
+    if !digests_ok {
+        return Err(integrity::invalid("PTR_LEDGER_KV_TAINT_ZERO_DIGEST"));
+    }
+    Ok(())
+}
+
+/// An expert structural record is non-empty and at most
+/// [`MAX_EXPERT_RECORD_BYTES`].
+fn check_expert_record(record: &[u8]) -> Result<(), io::Error> {
+    if record.is_empty() || record.len() > MAX_EXPERT_RECORD_BYTES {
+        return Err(integrity::invalid("PTR_LEDGER_EXPERT_RECORD_LIMIT"));
+    }
+    Ok(())
+}
+
+/// An expert fence record names a non-empty pod and a non-zero generation, its epoch is
+/// exactly one above the state version it compares against, and it carries evidence exactly
+/// when it is a readmission: the one canonical form.
+fn check_expert_fence(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::ExpertFenceCommitted {
+        pod,
+        generation,
+        expected_state_version,
+        epoch,
+        action,
+        cause,
+        revocation,
+        evidence,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    // An InputRevoked fence, escalation or retirement names its revocation; nothing else does,
+    // and an escalation or retirement is only ever for InputRevoked.
+    let revocation_ok = match (action, cause, revocation) {
+        (
+            ExpertFenceAction::Fence | ExpertFenceAction::Escalate | ExpertFenceAction::Retire,
+            ExpertFenceCause::InputRevoked,
+            Some(revocation),
+        ) => !revocation.subject.is_empty(),
+        (ExpertFenceAction::Fence, ExpertFenceCause::AuthorityQuarantine, None) => true,
+        (ExpertFenceAction::Readmit, _, None) => true,
+        _ => false,
+    };
+    // A readmission carries a non-empty, bounded report; a fence carries none.
+    let evidence_ok = match (action, evidence) {
+        (
+            ExpertFenceAction::Fence | ExpertFenceAction::Escalate | ExpertFenceAction::Retire,
+            None,
+        ) => true,
+        (ExpertFenceAction::Readmit, Some(evidence)) => {
+            !evidence.report.is_empty() && evidence.report.len() <= MAX_EXPERT_RECORD_BYTES
+        }
+        _ => false,
+    };
+    if !evidence_ok
+        || !revocation_ok
+        || pod.0.is_empty()
+        || generation.0 == 0
+        || expected_state_version.checked_add(1) != Some(*epoch)
+    {
+        return Err(integrity::invalid("PTR_LEDGER_EXPERT_FENCE"));
     }
     Ok(())
 }
@@ -1830,8 +2764,9 @@ pub mod raft_node;
 pub mod raft_storage;
 #[cfg(feature = "raft-rs-backend")]
 pub use raft_node::{
-    decode_message, encode_message, InstalledSnapshot, MembershipChange, RaftMessage, RaftNode,
-    RetainedSnapshotAnchor, SnapshotAnchorMismatch, MAX_MESSAGE_BYTES,
+    decode_message, encode_message, InstalledSnapshot, MembershipChange, NoSnapshotPending,
+    NodeFailed, RaftMessage, RaftNode, RetainedSnapshotAnchor, SnapshotAnchorMismatch,
+    SnapshotDelivery, MAX_MESSAGE_BYTES,
 };
 #[cfg(feature = "raft-rs-backend")]
 pub use raft_storage::{FileRaftStorage, MAX_ENTRY_BYTES, MAX_SNAPSHOT_BYTES};
@@ -1996,6 +2931,751 @@ mod effect_record_tests {
             // framing does not pin its own length.
             assert!(decode_event(&encoded[..encoded.len() - 1]).is_err());
         }
+    }
+
+    fn taint_event(subjects: Vec<(KvTaintSubjectKind, [u8; 32])>) -> LedgerEvent {
+        LedgerEvent::KvTaintCommitted {
+            subjects,
+            change: KvTaintChange::Record {
+                report_digest: [7; 32],
+                recipe_digest: [8; 32],
+            },
+        }
+    }
+
+    const ALL_TAINT_KINDS: [KvTaintSubjectKind; 5] = [
+        KvTaintSubjectKind::Action,
+        KvTaintSubjectKind::Derivation,
+        KvTaintSubjectKind::Content,
+        KvTaintSubjectKind::PodOutput,
+        KvTaintSubjectKind::Request,
+    ];
+
+    #[test]
+    fn kv_taint_round_trips_every_kind_and_change() {
+        let subjects: Vec<_> = ALL_TAINT_KINDS
+            .iter()
+            .map(|kind| (*kind, [kind.code() + 1; 32]))
+            .collect();
+        let changes = [
+            KvTaintChange::Record {
+                report_digest: [7; 32],
+                recipe_digest: [8; 32],
+            },
+            KvTaintChange::Clear {
+                recipe_digest: [8; 32],
+                recompute_digest: [9; 32],
+            },
+        ];
+        for change in changes {
+            let event = LedgerEvent::KvTaintCommitted {
+                subjects: subjects.clone(),
+                change,
+            };
+            check_encodable(&event).unwrap();
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 29);
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            assert!(decode_event(&encoded[..encoded.len() - 1]).is_err());
+            let mut trailing = encoded.clone();
+            trailing.push(0);
+            assert!(decode_event(&trailing).is_err());
+        }
+        for (kind, code) in ALL_TAINT_KINDS.iter().zip(0u8..) {
+            assert_eq!(kind.code(), code);
+            assert_eq!(KvTaintSubjectKind::from_code(code), Some(*kind));
+        }
+        assert_eq!(KvTaintSubjectKind::from_code(5), None);
+        let single = taint_event(vec![(KvTaintSubjectKind::Request, [1; 32])]);
+        assert_eq!(decode_event(&encode_event(&single)).unwrap(), single);
+        let full: Vec<_> = (1..=MAX_KV_TAINT_SUBJECTS as u8)
+            .map(|n| (KvTaintSubjectKind::Content, [n; 32]))
+            .collect();
+        let full = taint_event(full);
+        check_encodable(&full).unwrap();
+        assert_eq!(decode_event(&encode_event(&full)).unwrap(), full);
+    }
+
+    #[test]
+    fn kv_taint_refuses_malformed_records_on_encode_and_decode() {
+        let a = (KvTaintSubjectKind::Action, [1; 32]);
+        let b = (KvTaintSubjectKind::Action, [2; 32]);
+        let c = (KvTaintSubjectKind::Content, [1; 32]);
+        let over: Vec<_> = (1..=(MAX_KV_TAINT_SUBJECTS as u8 + 1))
+            .map(|n| (KvTaintSubjectKind::Content, [n; 32]))
+            .collect();
+        let bad = [
+            taint_event(Vec::new()),
+            taint_event(over),
+            taint_event(vec![b, a]),
+            taint_event(vec![c, a]),
+            taint_event(vec![a, a]),
+            taint_event(vec![(KvTaintSubjectKind::Action, [0; 32])]),
+            LedgerEvent::KvTaintCommitted {
+                subjects: vec![a],
+                change: KvTaintChange::Record {
+                    report_digest: [0; 32],
+                    recipe_digest: [8; 32],
+                },
+            },
+            LedgerEvent::KvTaintCommitted {
+                subjects: vec![a],
+                change: KvTaintChange::Record {
+                    report_digest: [7; 32],
+                    recipe_digest: [0; 32],
+                },
+            },
+            LedgerEvent::KvTaintCommitted {
+                subjects: vec![a],
+                change: KvTaintChange::Clear {
+                    recipe_digest: [0; 32],
+                    recompute_digest: [9; 32],
+                },
+            },
+            LedgerEvent::KvTaintCommitted {
+                subjects: vec![a],
+                change: KvTaintChange::Clear {
+                    recipe_digest: [8; 32],
+                    recompute_digest: [0; 32],
+                },
+            },
+        ];
+        for event in bad {
+            assert!(check_encodable(&event).is_err(), "{event:?}");
+            assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
+        }
+        // Unknown subject kind and unknown change code, on an otherwise valid record.
+        let good = encode_event(&taint_event(vec![a]));
+        let mut unknown_kind = good.clone();
+        unknown_kind[2] = 5;
+        assert!(decode_event(&unknown_kind).is_err());
+        let mut unknown_change = good.clone();
+        unknown_change[2 + 32 + 1] = 2;
+        assert!(decode_event(&unknown_change).is_err());
+    }
+
+    fn invalidated_event(kind: InputInvalidationKind) -> LedgerEvent {
+        LedgerEvent::InputInvalidated {
+            input: "capsule:data".to_owned(),
+            generation: Generation(3),
+            binding_digest: [1; 32],
+            kind,
+            fence_count: 2_000,
+            fence_digest: [2; 32],
+        }
+    }
+
+    fn superseded() -> InputInvalidationKind {
+        InputInvalidationKind::Superseded {
+            old_generation: Generation(3),
+            new_generation: Generation(4),
+            new_digest: [3; 32],
+            replacement_ref: [4; 32],
+        }
+    }
+
+    #[test]
+    fn input_invalidation_round_trips_under_tag_30_and_the_codes_are_pinned() {
+        assert_eq!(InputInvalidationKind::Revoked.code(), 0);
+        assert_eq!(superseded().code(), 1);
+        for kind in [InputInvalidationKind::Revoked, superseded()] {
+            let event = invalidated_event(kind);
+            check_encodable(&event).unwrap();
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 30);
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            // Every strict prefix is a truncation and is refused.
+            for len in 0..encoded.len() {
+                assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
+            }
+            // Trailing bytes are refused.
+            let mut padded = encoded.clone();
+            padded.push(0);
+            assert!(decode_event(&padded).is_err());
+        }
+        // The count is carried as a u32 and the largest fan-out round-trips.
+        let mut event = invalidated_event(InputInvalidationKind::Revoked);
+        if let LedgerEvent::InputInvalidated { fence_count, .. } = &mut event {
+            *fence_count = u32::MAX;
+        }
+        assert_eq!(decode_event(&encode_event(&event)).unwrap(), event);
+    }
+
+    #[test]
+    fn input_invalidation_refuses_every_non_canonical_form() {
+        let with = |edit: &dyn Fn(&mut LedgerEvent)| {
+            let mut event = invalidated_event(superseded());
+            edit(&mut event);
+            event
+        };
+        let long = "x".repeat(MAX_INPUT_IDENTITY_BYTES + 1);
+        let bad = [
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { input, .. } = e {
+                    input.clear();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { input, .. } = e {
+                    *input = long.clone();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { input, .. } = e {
+                    *input = "a\nb".to_owned();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { generation, .. } = e {
+                    *generation = Generation(0);
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { binding_digest, .. } = e {
+                    *binding_digest = [0; 32];
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { fence_digest, .. } = e {
+                    *fence_digest = [0; 32];
+                }
+            }),
+            // The event's generation and the old generation of a supersession must agree.
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { generation, .. } = e {
+                    *generation = Generation(2);
+                }
+            }),
+            // A supersession moves strictly forward.
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { kind, .. } = e {
+                    *kind = InputInvalidationKind::Superseded {
+                        old_generation: Generation(3),
+                        new_generation: Generation(3),
+                        new_digest: [3; 32],
+                        replacement_ref: [4; 32],
+                    };
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { kind, .. } = e {
+                    *kind = InputInvalidationKind::Superseded {
+                        old_generation: Generation(3),
+                        new_generation: Generation(2),
+                        new_digest: [3; 32],
+                        replacement_ref: [4; 32],
+                    };
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { kind, .. } = e {
+                    *kind = InputInvalidationKind::Superseded {
+                        old_generation: Generation(3),
+                        new_generation: Generation(4),
+                        new_digest: [0; 32],
+                        replacement_ref: [4; 32],
+                    };
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::InputInvalidated { kind, .. } = e {
+                    *kind = InputInvalidationKind::Superseded {
+                        old_generation: Generation(3),
+                        new_generation: Generation(4),
+                        new_digest: [3; 32],
+                        replacement_ref: [0; 32],
+                    };
+                }
+            }),
+        ];
+        for event in bad {
+            assert_eq!(
+                check_encodable(&event).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{event:?}"
+            );
+            // What the append path refuses, the decoder refuses too.
+            assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
+        }
+        // An identity at the bound is accepted.
+        let mut at_bound = invalidated_event(InputInvalidationKind::Revoked);
+        if let LedgerEvent::InputInvalidated { input, .. } = &mut at_bound {
+            *input = "x".repeat(MAX_INPUT_IDENTITY_BYTES);
+        }
+        check_encodable(&at_bound).unwrap();
+        assert_eq!(decode_event(&encode_event(&at_bound)).unwrap(), at_bound);
+    }
+
+    fn authority_event(class: ExpertAuthorityClass) -> LedgerEvent {
+        LedgerEvent::ExpertAuthorityChanged {
+            kind: ExpertAuthorityKind::Evaluator,
+            id_digest: [5; 32],
+            epoch: 7,
+            class,
+            fence_count: if class.fences_earlier_evidence() {
+                3
+            } else {
+                0
+            },
+            fence_digest: [6; 32],
+        }
+    }
+
+    #[test]
+    fn authority_change_round_trips_under_tag_31_and_the_codes_are_pinned() {
+        assert_eq!(ExpertAuthorityKind::GateConfig.code(), 0);
+        assert_eq!(ExpertAuthorityKind::Evaluator.code(), 1);
+        assert_eq!(ExpertAuthorityKind::from_code(2), None);
+        for (class, code) in [
+            (ExpertAuthorityClass::Revoke, 0),
+            (ExpertAuthorityClass::TighteningRotation, 1),
+            (ExpertAuthorityClass::NonTightening, 2),
+        ] {
+            assert_eq!(class.code(), code);
+            assert_eq!(ExpertAuthorityClass::from_code(code), Some(class));
+            let event = authority_event(class);
+            check_encodable(&event).unwrap();
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 31);
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            for len in 0..encoded.len() {
+                assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
+            }
+            let mut padded = encoded.clone();
+            padded.push(0);
+            assert!(decode_event(&padded).is_err());
+        }
+        assert_eq!(ExpertAuthorityClass::from_code(3), None);
+    }
+
+    #[test]
+    fn authority_change_refuses_every_non_canonical_form() {
+        let with = |edit: &dyn Fn(&mut LedgerEvent)| {
+            let mut event = authority_event(ExpertAuthorityClass::Revoke);
+            edit(&mut event);
+            event
+        };
+        let bad = [
+            with(&|e| {
+                if let LedgerEvent::ExpertAuthorityChanged { epoch, .. } = e {
+                    *epoch = 0;
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::ExpertAuthorityChanged { id_digest, .. } = e {
+                    *id_digest = [0; 32];
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::ExpertAuthorityChanged { fence_digest, .. } = e {
+                    *fence_digest = [0; 32];
+                }
+            }),
+            // A non-tightening rotation fences nobody.
+            with(&|e| {
+                if let LedgerEvent::ExpertAuthorityChanged {
+                    class, fence_count, ..
+                } = e
+                {
+                    *class = ExpertAuthorityClass::NonTightening;
+                    *fence_count = 1;
+                }
+            }),
+        ];
+        for event in bad {
+            assert_eq!(
+                check_encodable(&event).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{event:?}"
+            );
+            assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
+        }
+        // The largest fan-out round-trips.
+        let mut event = authority_event(ExpertAuthorityClass::TighteningRotation);
+        if let LedgerEvent::ExpertAuthorityChanged { fence_count, .. } = &mut event {
+            *fence_count = u32::MAX;
+        }
+        assert_eq!(decode_event(&encode_event(&event)).unwrap(), event);
+    }
+
+    #[test]
+    fn authority_change_refuses_an_unknown_kind_or_class() {
+        let encoded = encode_event(&authority_event(ExpertAuthorityClass::Revoke));
+        // tag, kind, id digest, epoch, class.
+        let kind_at = 1;
+        let class_at = 1 + 1 + 32 + 8;
+        assert_eq!(encoded[kind_at], 1);
+        assert_eq!(encoded[class_at], 0);
+        for code in [2u8, 3, 255] {
+            let mut unknown_kind = encoded.clone();
+            unknown_kind[kind_at] = code;
+            assert!(decode_event(&unknown_kind)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown expert authority kind"));
+            let mut unknown_class = encoded.clone();
+            unknown_class[class_at] = code.max(3);
+            assert!(decode_event(&unknown_class)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown expert authority class"));
+        }
+    }
+
+    #[test]
+    fn input_invalidation_refuses_an_unknown_kind() {
+        let encoded = encode_event(&invalidated_event(InputInvalidationKind::Revoked));
+        // tag, input (4-byte length + 12 bytes), generation, binding digest, then the kind.
+        let kind_at = 1 + 4 + "capsule:data".len() + 8 + 32;
+        assert_eq!(encoded[kind_at], 0);
+        for code in [2u8, 3, 255] {
+            let mut unknown = encoded.clone();
+            unknown[kind_at] = code;
+            let error = decode_event(&unknown).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(error
+                .to_string()
+                .contains("unknown input invalidation kind"));
+        }
+        // Changing a Revoked record's kind byte to Superseded leaves too few bytes.
+        let mut as_superseded = encoded.clone();
+        as_superseded[kind_at] = 1;
+        assert!(decode_event(&as_superseded).is_err());
+    }
+
+    fn expert_event() -> LedgerEvent {
+        LedgerEvent::ExpertStructuralCommitted {
+            project: ProjectId::from("p"),
+            op_kind: ExpertOpKind::Merge,
+            proposal_id: [1; 32],
+            operation_id: [2; 32],
+            evidence_digest: [3; 32],
+            record: b"PTREXR01-opaque".to_vec(),
+        }
+    }
+
+    #[test]
+    fn expert_op_kinds_have_pinned_codes() {
+        for (kind, code) in [
+            (ExpertOpKind::Birth, 0),
+            (ExpertOpKind::Merge, 1),
+            (ExpertOpKind::Split, 2),
+            (ExpertOpKind::Freeze, 3),
+            (ExpertOpKind::Reactivate, 4),
+            (ExpertOpKind::Prune, 5),
+            (ExpertOpKind::Retire, 6),
+        ] {
+            assert_eq!(kind.code(), code);
+            assert_eq!(ExpertOpKind::from_code(code), Some(kind));
+        }
+        assert_eq!(ExpertOpKind::from_code(7), None);
+        assert_eq!(ExpertOpKind::from_code(255), None);
+    }
+
+    #[test]
+    fn expert_structural_events_round_trip_with_a_stable_tag() {
+        for op_kind in (0..=6).map(|c| ExpertOpKind::from_code(c).unwrap()) {
+            let event = LedgerEvent::ExpertStructuralCommitted {
+                project: ProjectId::from("p"),
+                op_kind,
+                proposal_id: [1; 32],
+                operation_id: [2; 32],
+                evidence_digest: [3; 32],
+                record: b"PTREXR01-opaque".to_vec(),
+            };
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 27);
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            check_encodable(&event).unwrap();
+            assert!(decode_event(&encoded[..encoded.len() - 1]).is_err());
+        }
+    }
+
+    #[test]
+    fn expert_structural_events_refuse_trailing_bytes_and_unknown_op_codes() {
+        let mut encoded = encode_event(&expert_event());
+        // tag, project (4-byte length + "p"), then the op code.
+        let op_at = 1 + 4 + 1;
+        assert_eq!(encoded[op_at], ExpertOpKind::Merge.code());
+        let mut unknown = encoded.clone();
+        unknown[op_at] = 7;
+        let error = decode_event(&unknown).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error
+            .to_string()
+            .contains("unknown expert operation code 7"));
+        encoded.push(0);
+        assert!(decode_event(&encoded).is_err());
+    }
+
+    #[test]
+    fn expert_structural_records_are_bounded_and_non_empty() {
+        let with_record = |record: Vec<u8>| LedgerEvent::ExpertStructuralCommitted {
+            project: ProjectId::from("p"),
+            op_kind: ExpertOpKind::Freeze,
+            proposal_id: [1; 32],
+            operation_id: [2; 32],
+            evidence_digest: [3; 32],
+            record,
+        };
+        for record in [Vec::new(), vec![0; MAX_EXPERT_RECORD_BYTES + 1]] {
+            let event = with_record(record);
+            assert_eq!(
+                check_encodable(&event).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            // What the append path refuses, the decoder refuses too.
+            assert!(decode_event(&encode_event(&event)).is_err());
+        }
+        let largest = with_record(vec![9; MAX_EXPERT_RECORD_BYTES]);
+        check_encodable(&largest).unwrap();
+        assert_eq!(decode_event(&encode_event(&largest)).unwrap(), largest);
+    }
+
+    fn fence_event(action: ExpertFenceAction) -> LedgerEvent {
+        LedgerEvent::ExpertFenceCommitted {
+            project: ProjectId::from("p"),
+            pod: PodId::from("pod-a"),
+            action,
+            cause: ExpertFenceCause::AuthorityQuarantine,
+            resume: ExpertFenceResume::Frozen,
+            generation: Generation(3),
+            expected_state_version: 4,
+            epoch: 5,
+            revocation: None,
+            evidence: match action {
+                ExpertFenceAction::Fence
+                | ExpertFenceAction::Escalate
+                | ExpertFenceAction::Retire => None,
+                ExpertFenceAction::Readmit => Some(ExpertFenceEvidence {
+                    gate_epoch: 7,
+                    required_gate_config_digest: [6; 32],
+                    report: b"PTRGR-opaque".to_vec(),
+                }),
+            },
+        }
+    }
+
+    #[test]
+    fn expert_fence_codes_are_pinned_and_events_round_trip_under_tag_28() {
+        for (action, code) in [
+            (ExpertFenceAction::Fence, 0),
+            (ExpertFenceAction::Readmit, 1),
+            (ExpertFenceAction::Escalate, 2),
+            (ExpertFenceAction::Retire, 3),
+        ] {
+            assert_eq!(action.code(), code);
+            assert_eq!(ExpertFenceAction::from_code(code), Some(action));
+        }
+        for (cause, code) in [
+            (ExpertFenceCause::InputRevoked, 0),
+            (ExpertFenceCause::AuthorityQuarantine, 1),
+        ] {
+            assert_eq!(cause.code(), code);
+            assert_eq!(ExpertFenceCause::from_code(code), Some(cause));
+        }
+        assert_eq!(ExpertFenceAction::from_code(4), None);
+        assert_eq!(ExpertFenceResume::from_code(2), None);
+        assert_eq!(ExpertFenceResume::Frozen.code(), 1);
+        assert_eq!(ExpertFenceCause::from_code(2), None);
+        for action in [
+            ExpertFenceAction::Fence,
+            ExpertFenceAction::Readmit,
+            ExpertFenceAction::Retire,
+        ] {
+            let mut event = fence_event(action);
+            if action == ExpertFenceAction::Retire {
+                if let LedgerEvent::ExpertFenceCommitted {
+                    cause, revocation, ..
+                } = &mut event
+                {
+                    *cause = ExpertFenceCause::InputRevoked;
+                    *revocation = Some(ExpertFenceRevocation {
+                        subject: "k".to_owned(),
+                        generation: Generation(2),
+                    });
+                }
+            }
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 28);
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            check_encodable(&event).unwrap();
+            assert!(decode_event(&encoded[..encoded.len() - 1]).is_err());
+            let mut trailing = encoded.clone();
+            trailing.push(0);
+            assert!(decode_event(&trailing).is_err());
+        }
+    }
+
+    #[test]
+    fn an_expert_retirement_carries_a_revocation_and_never_gate_evidence() {
+        let retire =
+            |evidence: Option<ExpertFenceEvidence>, epoch: u64| LedgerEvent::ExpertFenceCommitted {
+                project: ProjectId::from("p"),
+                pod: PodId::from("pod-a"),
+                action: ExpertFenceAction::Retire,
+                cause: ExpertFenceCause::InputRevoked,
+                resume: ExpertFenceResume::Serving,
+                generation: Generation(3),
+                expected_state_version: 4,
+                epoch,
+                revocation: Some(ExpertFenceRevocation {
+                    subject: "k".to_owned(),
+                    generation: Generation(1),
+                }),
+                evidence,
+            };
+        let good = retire(None, 5);
+        check_encodable(&good).unwrap();
+        assert_eq!(decode_event(&encode_event(&good)).unwrap(), good);
+        // Gate evidence on a retirement: it never waits for a gate.
+        let with_evidence = retire(
+            Some(ExpertFenceEvidence {
+                gate_epoch: 7,
+                required_gate_config_digest: [6; 32],
+                report: b"PTRGR-opaque".to_vec(),
+            }),
+            5,
+        );
+        assert!(check_encodable(&with_evidence).is_err());
+        assert!(decode_event(&encode_event(&with_evidence)).is_err());
+        // The epoch is exactly one above the compared state version, as for every action.
+        for epoch in [4, 6] {
+            let bad = retire(None, epoch);
+            assert!(check_encodable(&bad).is_err());
+            assert!(decode_event(&encode_event(&bad)).is_err());
+        }
+    }
+
+    #[test]
+    fn expert_fence_events_refuse_unknown_codes_and_non_canonical_epochs() {
+        let encoded = encode_event(&fence_event(ExpertFenceAction::Fence));
+        // tag, project (4 + 1), pod (4 + 5), then action and cause.
+        let action_at = 1 + 5 + 9;
+        let mut unknown_action = encoded.clone();
+        unknown_action[action_at] = 4;
+        assert!(decode_event(&unknown_action)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown expert fence action code 4"));
+        let mut unknown_cause = encoded.clone();
+        unknown_cause[action_at + 1] = 9;
+        assert!(decode_event(&unknown_cause)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown expert fence cause code 9"));
+        let bad = |pod: &str, generation: u64, expected: u64, epoch: u64| {
+            LedgerEvent::ExpertFenceCommitted {
+                project: ProjectId::from("p"),
+                pod: PodId::from(pod),
+                action: ExpertFenceAction::Fence,
+                cause: ExpertFenceCause::InputRevoked,
+                resume: ExpertFenceResume::Serving,
+                generation: Generation(generation),
+                expected_state_version: expected,
+                epoch,
+                revocation: Some(ExpertFenceRevocation {
+                    subject: "s".to_owned(),
+                    generation: Generation(1),
+                }),
+                evidence: None,
+            }
+        };
+        for event in [
+            bad("pod-a", 3, 4, 4),
+            bad("pod-a", 3, 4, 6),
+            bad("pod-a", 3, u64::MAX, 0),
+            bad("pod-a", 0, 4, 5),
+            bad("", 3, 4, 5),
+        ] {
+            assert!(check_encodable(&event).is_err());
+            // What the append path refuses, the decoder refuses too.
+            assert!(decode_event(&encode_event(&event)).is_err());
+        }
+        check_encodable(&bad("pod-a", 3, 4, 5)).unwrap();
+        // Evidence exactly when readmitting, and never an empty or oversized report.
+        let mut fence_with_evidence = fence_event(ExpertFenceAction::Readmit);
+        let mut readmit_without = fence_event(ExpertFenceAction::Readmit);
+        let mut empty = fence_event(ExpertFenceAction::Readmit);
+        let mut oversized = fence_event(ExpertFenceAction::Readmit);
+        for (event, change) in [
+            (&mut fence_with_evidence, 0),
+            (&mut readmit_without, 1),
+            (&mut empty, 2),
+            (&mut oversized, 3),
+        ] {
+            if let LedgerEvent::ExpertFenceCommitted {
+                action, evidence, ..
+            } = event
+            {
+                match change {
+                    0 => *action = ExpertFenceAction::Fence,
+                    1 => *evidence = None,
+                    2 => evidence.as_mut().unwrap().report.clear(),
+                    _ => evidence.as_mut().unwrap().report = vec![0; MAX_EXPERT_RECORD_BYTES + 1],
+                }
+            }
+            assert!(check_encodable(event).is_err());
+            assert!(decode_event(&encode_event(event)).is_err());
+        }
+        let mut bad_flag = encode_event(&fence_event(ExpertFenceAction::Fence));
+        *bad_flag.last_mut().unwrap() = 2;
+        assert!(decode_event(&bad_flag).is_err());
+    }
+
+    #[test]
+    fn expert_fence_revocation_is_present_exactly_for_an_input_revoked_fence_or_escalation() {
+        let event = |action, cause, revocation: Option<&str>| {
+            let mut event = fence_event(action);
+            if let LedgerEvent::ExpertFenceCommitted {
+                cause: c,
+                revocation: r,
+                ..
+            } = &mut event
+            {
+                *c = cause;
+                *r = revocation.map(|subject| ExpertFenceRevocation {
+                    subject: subject.to_owned(),
+                    generation: Generation(2),
+                });
+            }
+            event
+        };
+        use ExpertFenceAction::{Escalate, Fence, Readmit, Retire};
+        use ExpertFenceCause::{AuthorityQuarantine, InputRevoked};
+        for good in [
+            event(Fence, InputRevoked, Some("k")),
+            event(Escalate, InputRevoked, Some("k")),
+            event(Retire, InputRevoked, Some("k")),
+            event(Fence, AuthorityQuarantine, None),
+            event(Readmit, AuthorityQuarantine, None),
+        ] {
+            check_encodable(&good).unwrap();
+            assert_eq!(decode_event(&encode_event(&good)).unwrap(), good);
+        }
+        for bad in [
+            event(Fence, InputRevoked, None),
+            event(Escalate, InputRevoked, None),
+            event(Escalate, AuthorityQuarantine, None),
+            // A retirement is for InputRevoked only and always names its revocation.
+            event(Retire, InputRevoked, None),
+            event(Retire, InputRevoked, Some("")),
+            event(Retire, AuthorityQuarantine, None),
+            event(Retire, AuthorityQuarantine, Some("k")),
+            event(Fence, InputRevoked, Some("")),
+            event(Fence, AuthorityQuarantine, Some("k")),
+            event(Readmit, AuthorityQuarantine, Some("k")),
+            event(Readmit, InputRevoked, Some("k")),
+        ] {
+            assert!(check_encodable(&bad).is_err(), "{bad:?}");
+            assert!(decode_event(&encode_event(&bad)).is_err(), "{bad:?}");
+        }
+        let mut unknown_resume = encode_event(&fence_event(ExpertFenceAction::Fence));
+        unknown_resume[1 + 5 + 9 + 2] = 5;
+        assert!(decode_event(&unknown_resume)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown expert fence resume code 5"));
     }
 
     #[test]
@@ -2844,6 +4524,22 @@ mod semantic_origin_tests {
         let encoded = encode_event(&event);
         assert_eq!(encoded[0], 14);
         assert!(!encoded.windows(7).any(|window| window == b"secret!"));
+        assert_eq!(decode_event(&encoded).unwrap(), event);
+    }
+
+    #[test]
+    fn encoded_event_is_the_payload_the_decoder_reads_back() {
+        let event = LedgerEvent::ProtectedStateCommitted {
+            domain: 3,
+            logical_id: "kv/session-1".into(),
+            generation: Generation(2),
+            revision: Revision(9),
+            plaintext_digest: [1; 32],
+            ciphertext_digest: [2; 32],
+            anchor_digest: [3; 32],
+        };
+        let encoded = encoded_event(&event);
+        assert_eq!(encoded, encode_event(&event));
         assert_eq!(decode_event(&encoded).unwrap(), event);
     }
 }

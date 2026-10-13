@@ -15,9 +15,18 @@ postgres-experiments = [
     "dep:ptr-pg",
     "ptr-pg/postgres-backend",
     "dep:ptr-state",
-    "dep:ptr-fastmem",
     "dep:tokio",
     "dep:tokio-postgres",
+]
+# The L001-v2 harness (revocation under crash, power-loss and leadership schedules). It needs the
+# test-only failpoints of ptr-ledger (the log's, the anchor's and the vendored raft-engine's), the
+# raft-engine and raft-rs backends, and the `fail` crate to drive them. Instrumentation only:
+# the default binary is unchanged.
+ledger-experiments = [
+    "dep:fail",
+    "ptr-ledger/failpoints",
+    "ptr-ledger/raft-engine-failpoints",
+    "ptr-ledger/raft-rs-backend",
 ]
 # Adds the Turso projection as a third L004 oracle. Turso needs the stable
 # toolchain, as its own CI job does.
@@ -25,21 +34,54 @@ turso-oracle = ["postgres-experiments", "ptr-state/turso-backend"]
 
 [dependencies]
 ptr-types = { workspace = true }
+ed25519-dalek = { workspace = true }
 ptr-config = { workspace = true }
 ptr-core = { workspace = true }
 ptr-semdb = { workspace = true }
+# Q002 resolves citations against a KnowledgeStore's raw events and promotes search hits.
+ptr-memory = { workspace = true }
+ptr-search = { workspace = true }
 ptr-exec = { workspace = true }
 ptr-ledger = { workspace = true }
+fail = { version = "0.5", optional = true }
+# R010 admits, retires, supersedes and fences MoE experts through the runtime's real path and
+# builds the gate reports that path requires.
+ptr-lineage = { workspace = true }
 ptr-runtime = { workspace = true }
-# The two verifiers of S003's grant judge a runtime's semantic changes.
+# F007 composes the verifier-closed loop: the finding router, its learning scorer and the
+# off-policy gate are the units under test.
+ptr-router = { workspace = true }
+# R005 builds segmented requests (PromptSegment) and drives the catalog, the paged KV
+# backend and the chain derivation directly for the cases the backend does not carry.
+ptr-model-api = { workspace = true }
+ptr-pods = { workspace = true }
+# E007 drives the split-pod chunk protocol: the activation-frame schemas of ptr-protocol, the
+# receiving assembler and the request frame codec of ptr-podwire (no network feature).
+ptr-podwire = { workspace = true }
+ptr-protocol = { workspace = true }
+# F002 drives the weak-supervision label model and the statistics kernel it scores with.
+ptr-labeling = { workspace = true }
+# The two verifiers of S003's grant judge a runtime's semantic changes; F001 drives the real
+# fabric and ActionContractVerifier through the generate-verify-repair loop.
 ptr-verifier = { workspace = true }
+# F001 runs the generate-verify-repair loop and the population selection of ptr-feedback.
+ptr-feedback = { workspace = true }
 ptr-pg = { workspace = true, optional = true }
+# F002 scores with the statistics kernel; F003 compares the arbiter's Clopper-Pearson bound with
+# the harness's own.
+ptr-analytics = { workspace = true }
 # S003 opens and merges branches, and L004 writes merge records whose plan
 # digest replay recomputes.
 ptr-branch = { workspace = true }
 ptr-state = { workspace = true, optional = true }
-ptr-fastmem = { workspace = true, optional = true }
+# L003 revokes fast-weight writes through the journal; M008 compares the memory against a recency
+# buffer and hybrid retrieval, so the memory is part of every build.
+ptr-fastmem = { workspace = true }
 tokio = { workspace = true, optional = true }
 # A raw session for the harnesses' crash injection (terminating the
 # substrate's backend) and cleanup; the same pin ptr-pg uses.
 tokio-postgres = { version = "=0.7.18", default-features = false, features = ["runtime"], optional = true }
+
+[dev-dependencies]
+# The R005 drift test parses the experiment's config.toml and manifest.
+toml = { workspace = true }

@@ -1,0 +1,3 @@
+results_git_sha = "c1b1628a325a9b6e3c1b9b5b1e724b752badf0bc"
+stale_since = "2567c8adddb8542258166c2a0c4d695872fbb235"
+reason = "No code under test changed after R006's seed records. 2567c8ad records the completed result in STATUS.md, research/novelty/CLAIMS.md and docs/architecture/36-kv-reuse.md, which the repository-wide provenance counts as a change; the merge into the integration line then brings the S003 records. R006 was preregistered at r006-prereg (a8176142). No rerun under the same preregistration follows (each seed runs once)."

@@ -1,0 +1,119 @@
+version = 1
+kind = "workspace-area"
+name = "C001-global-workspace"
+path = "experiments/consciousness/C001-global-workspace"
+tests_dir = "tests"
+
+[pinned_thresholds]
+seed_aggregation = "paired_one_sided_t_bound_three_outcomes"
+seeds = [4001, 4002, 4003, 4004, 4005, 4006, 4007, 4008, 4009, 4010, 4011, 4012, 4013, 4014, 4015, 4016, 4017, 4018, 4019, 4020]
+pilot_seeds = [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030]
+# Task: N_train sensory modules (shared weights), n_types types, n_values values, Gaussian noise.
+n_train_modules = 8
+ood_modules = [16, 24]
+n_types = 4
+n_values = 3
+noise = 0.3
+# Model: pilot-tuned values are marked in PREREGISTRATION.md section 6.
+rounds = 3
+d_model = 32
+ffn_workspace = 64
+out_hidden = 64
+slots = 3
+top_k = 3
+# Training: a finite set of train_size examples, cycled; every arm sees the same data; per-arm learning rate.
+train_size = 2048
+max_steps = 20000
+patience = 12
+min_delta_permille = 5
+loss_window_evals = 5
+auc_evals = 10
+batch_size = 64
+weight_decay = 0.0
+# The graded sensitivity control is the all-to-all net with Adam weight decay 0.001 (an over-regularised comparator); every other arm uses 0.
+arm_weight_decay = { weak_all_to_all = 0.001 }
+grad_clip = 1.0
+arm_lr = { workspace = 0.003, all_to_all = 0.006, bw_all_to_all = 0.006, sparse_all_to_all = 0.006, no_broadcast = 0.003, no_comm = 0.003, competition_off = 0.006, capacity_off = 0.003, weak_all_to_all = 0.006, crippled_all_to_all = 0.006 }
+arm_d = { workspace = 48, all_to_all = 48, bw_all_to_all = 48, sparse_all_to_all = 48, no_broadcast = 48, no_comm = 48, competition_off = 48, capacity_off = 48, weak_all_to_all = 48, crippled_all_to_all = 48 }
+eval_every = 150
+eval_size = 2048
+min_eval_instances = 2048
+curve_eval_size = 1024
+probe_size = 64
+drop_probe_size = 16
+probe_scale = 5.0
+param_tolerance_permille = 20
+chance_slack_permille = 50
+trained_margin_permille = 100
+min_arms_trained = 10
+train_stream_offset = 17
+eval_stream_offset = 500
+# Decision (criteria.toml): the margin is justified by its stated cost rationale (preregistration section 4) and was fixed before the freeze, after the pilots had been seen (disclosed), not fitted to the pilot means; guards,
+# sensitivity controls, t quantiles for 19 degrees of freedom. Parameter matching: every arm's update width is matched to the workspace arm
+# at d = 48 (target = the workspace's parameter count); the pinned arm_d restates that every arm runs at d = 48.
+paired_margin_permille = 30
+guard_floor_permille = 300
+guard_ceiling_permille = 900
+sensitivity_margin_permille = 50
+# Round 7 decision (pilot data only): up to 4 of 20 seeds on which the workspace did not train are tolerated. Such seeds stay IN the paired
+# differences with their contrasts of about -400, so they count against the workspace claim; the guard only detects a broken training harness.
+max_untrained_workspace_seeds = 4
+max_unconverged_seeds = 2
+paired_t_support = "1.729133"
+paired_t_refute = "2.294392"
+graded_min_lower_permille = 15
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml). The values restate
+# [pinned_thresholds] (a unit test compares them); digests are pinned by the head at the freeze, after the draft is renamed
+# to PREREGISTRATION.md.
+[preregistration]
+seeds = [4001, 4002, 4003, 4004, 4005, 4006, 4007, 4008, 4009, 4010, 4011, 4012, 4013, 4014, 4015, 4016, 4017, 4018, 4019, 4020]
+harness = "c001"
+ood_modules = [16, 24]
+noise_milli = 300
+n_train_modules = 8
+n_types = 4
+n_values = 3
+slots = 3
+top_k = 3
+rounds = 3
+d_model = 32
+ffn_workspace = 64
+train_size = 2048
+max_steps = 20000
+patience = 12
+min_delta_permille = 5
+eval_every = 150
+batch_size = 64
+param_tolerance_permille = 20
+paired_margin_permille = 30
+sensitivity_margin_permille = 50
+graded_min_lower_permille = 15
+guard_floor_permille = 300
+guard_ceiling_permille = 900
+max_untrained_workspace_seeds = 4
+max_unconverged_seeds = 2
+trained_margin_permille = 100
+min_arms_trained = 10
+chance_slack_permille = 50
+eval_size = 2048
+min_eval_instances = 2048
+curve_eval_size = 1024
+probe_size = 64
+drop_probe_size = 16
+loss_window_evals = 5
+auc_evals = 10
+train_stream_offset = 17
+eval_stream_offset = 500
+weight_decay_micro = 0
+grad_clip_milli = 1000
+probe_scale_milli = 5000
+arm_lr_micro = "workspace=3000,all_to_all=6000,bw_all_to_all=6000,sparse_all_to_all=6000,no_broadcast=3000,no_comm=3000,competition_off=6000,capacity_off=3000,weak_all_to_all=6000,crippled_all_to_all=6000"
+arm_weight_decay_micro = "weak_all_to_all=1000"
+arm_d_list = "workspace=48,all_to_all=48,bw_all_to_all=48,sparse_all_to_all=48,no_broadcast=48,no_comm=48,competition_off=48,capacity_off=48,weak_all_to_all=48,crippled_all_to_all=48"
+paired_t_support = "1.729133"
+paired_t_refute = "2.294392"
+preregistration_text = "experiments/consciousness/C001-global-workspace/PREREGISTRATION.md"
+preregistration_text_sha256 = "58765e6f5cc7df5f331bec55e61e5b2a02bc8db260a33dffea8dd1710b2af8c9"
+criteria = "experiments/consciousness/C001-global-workspace/criteria.toml"
+criteria_sha256 = "896e692fef7dadc6d192d71d58b87dc183f39d0af64bbc748b35cb711b3ff0fb"

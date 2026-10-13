@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "F004-verifier-closed-pod-moe"
+path = "experiments/feedback/F004-verifier-closed-pod-moe"
+tests_dir = "tests"

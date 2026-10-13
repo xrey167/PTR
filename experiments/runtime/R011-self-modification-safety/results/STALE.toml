@@ -1,0 +1,3 @@
+results_git_sha = "ea6515cfac3ba65f0f5c71ceae3d872694122d4a"
+stale_since = "10c3c78c937490bb35720f9de0649525b4fcf260"
+reason = "No code under test changed after R011's seed records. 10c3c78c records the completed result in STATUS.md, research/novelty/CLAIMS.md, docs/architecture/37-pod-moe.md and the ptr-runtime component metadata (experiments list) with its regenerated README, which the repository-wide provenance counts as a change. R011 was preregistered at r011-prereg (0905e372). No rerun under the same preregistration follows (each seed runs once)."

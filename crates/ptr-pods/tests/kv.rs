@@ -348,19 +348,24 @@ fn prefix_sharing_is_bound_to_principal_and_manifest() {
         )
         .unwrap();
     let prefix = backend.publish_prefix(&mut source).unwrap();
+    let authority = backend.take_fork_authority().unwrap();
 
     let mut same_principal = backend
         .allocate_bound(schema(), 8, page_binding("alice", page_size))
         .unwrap();
-    backend.fork_prefix(&mut same_principal, &prefix).unwrap();
+    let (witness, _) = authority.admit(&prefix);
+    backend
+        .fork_prefix_admitted(&mut same_principal, &prefix, witness)
+        .unwrap();
     assert_eq!(same_principal.sequence_length, 4);
     assert_eq!(backend.page_metrics(&same_principal).shared_pages, 2);
 
     let mut other_principal = backend
         .allocate_bound(schema(), 8, page_binding("bob", page_size))
         .unwrap();
+    let (witness, _) = authority.admit(&prefix);
     assert_eq!(
-        backend.fork_prefix(&mut other_principal, &prefix),
+        backend.fork_prefix_admitted(&mut other_principal, &prefix, witness),
         Err(ptr_pods::KvBackendError::PrefixMismatch)
     );
 }

@@ -2,8 +2,16 @@ pub mod admission;
 pub mod compacted;
 pub mod directory;
 pub mod execution;
+pub mod expert;
 pub mod identity;
 pub mod kv;
+mod kv_derivation;
+pub mod kv_infer;
+pub mod kv_infer_layered;
+pub mod kv_infer_session;
+pub mod kv_prefix;
+mod kv_secondary;
+pub mod kv_taint;
 pub mod manifest;
 pub mod memory;
 pub mod merge;
@@ -13,11 +21,16 @@ pub mod persistence;
 pub mod placement;
 pub mod policy;
 pub mod protected_state;
+pub mod routing;
 pub mod sandbox;
 pub mod scopes;
 pub mod semantic;
+pub mod split_stage;
+pub mod stepped;
 pub mod tensor_kv;
 pub mod tier;
+pub mod vcw;
+pub mod vcw_host;
 
 pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
 pub use directory::{InMemoryPodDirectory, PodDirectory};
@@ -28,6 +41,36 @@ pub use identity::{
     JwksRefresher, JwksStore, OidcAlgorithm, OidcError, OidcIdentityAdapter,
 };
 pub use kv::{KvUseError, KvUseRequest, KvUseTicket, RuntimeKvAuthority};
+pub use kv_derivation::{AdmittedSegments, DerivedRun, DerivedRunRequest};
+pub use kv_infer::{
+    IndexUpdate, PositionalControl, PositionalOptions, PositionalReport, ReferenceKvError,
+    ReferenceKvFaults, ReferenceKvLimits, ReferenceKvLiveness, ReferenceKvOutcome,
+    ReferenceKvProbe, ReferenceKvProbeMode, ReferenceKvReuseBackend, ReferenceKvScope,
+    ReferenceKvStackShape, REFERENCE_KV_WEIGHT_SEED,
+};
+pub use kv_infer_layered::{
+    BindingError, BindingRecord, BindingSuccessors, BoundExpert, ExpertSuccessor, LayerAssembly,
+    LayeredReuseReport, MoeBinding, StackBinding,
+};
+pub use kv_infer_session::{
+    KvCancelReason, KvCancellation, KvSession, KvSessionFinish, KvSessionPhase, KvSessionStats,
+    KvSessionStep,
+};
+pub use kv_prefix::{
+    chunk_keys, expert_operand_identities, CatalogLimits, KvCapacityResource, KvCatalogError,
+    KvCatalogHit, KvCatalogStats, KvCatalogWiringError, KvChainId, KvChunkKey, KvDependency,
+    KvDependencyKind, KvForkError, KvInsert, KvLayerEntry, KvLayerHit, KvLayerQuery,
+    KvLayeredInsert, KvLayeredLookup, KvLivenessOracle, KvLookup, KvPageCharge, KvPagedInsert,
+    KvPin, KvPrefixCatalog, KvPrefixRetirer, KvRequestPositions, KvRestoreReport, KvSalt,
+    KvSnapshotError, SemanticSegmentError, KV_CHUNK_TOKENS, KV_SNAPSHOT_MAX_BYTES,
+};
+pub use kv_secondary::{
+    SecondaryConfig, SecondaryError, SecondaryIndex, SecondaryInsert, SecondaryInsertOutcome,
+    SecondaryLimits, SecondaryLineage, SecondaryLookup, SecondaryLookupOutcome, SecondaryPin,
+    SecondaryPinState, SecondaryRefusal, SecondaryRefusalCounts, SecondaryRefusalReason,
+    SecondaryResource, SecondaryRows, SecondaryRunId, SecondarySectionError, SecondarySplice,
+    SecondaryStats, DEFAULT_WINDOW_TOKENS, SECONDARY_SECTION_MAX_BYTES,
+};
 pub use manifest::{
     validate_and_build, validate_authority, ExecutionManifestRegistry, ManifestAuthorityRegistry,
     ManifestBindingAuthority, RuntimeExecutionManifestResolver, RuntimeManifestError,
@@ -50,6 +93,7 @@ pub use policy::{
     SignedPolicyBundle,
 };
 pub use protected_state::ProtectedStateCoordinator;
+pub use routing::PodSampler;
 pub use sandbox::{
     ExternalSandboxExecutor, NativeSandboxExecutor, NetworkMode, SandboxBackend, SandboxError,
     SandboxExecutor, SandboxLease, SandboxProfile, SandboxRequest, SandboxResponse,
@@ -58,6 +102,11 @@ pub use scopes::{
     CleanupError, ExecutionScope, ScopeCleanupCoordinator, ScopeError, ScopeEvent, ScopeEventKind,
     ScopeRegistry, ScopeState,
 };
+pub use split_stage::{
+    admit_frame, prefix_key, revalidate_chain, AdmittedFrame, ChainFault, RuntimeStageLiveness,
+    SplitStageCache, StageLiveness, StoreError, UseFault, UseTicket, OPEN_USES_PER_ENTRY,
+};
+pub use stepped::{CancelPolicy, CancelledRun, RunStep, StepResources, SteppedRun};
 pub use tensor_kv::{
     ManagedKvHandle, ManagedKvMetadata, ManagedKvPageContext, ManagedKvRegistry,
     ManagedOnlineKvSnapshot, TensorKvError,
@@ -86,6 +135,12 @@ pub struct PodOutputAdmissionRequest {
     pub scope_id: ScopeId,
     pub placement_epoch: PlacementEpoch,
     pub fencing_token: FencingToken,
+    /// What the caller knows of the output's KV-reuse provenance. The runtime joins it with
+    /// its own registry (the request id, the output identity, its payload and its
+    /// dependencies), so an Exact here never un-taints what the runtime recorded.
+    /// `StateDelta`, `VerifiedResult` and `ActionProposal` outputs are refused when the join is
+    /// Approximate; the other kinds are stored as tainted candidates or hypotheses.
+    pub kv_taint: ptr_model_api::KvReuseTaint,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -134,6 +189,11 @@ fn delta_carries_payload(encoded_delta: &[u8], key: &str, payload: &TypedPayload
             SemanticValue::Text(_) => false,
         })
 }
+
+// The unit tests of vcw_host share the host-side set-up of tests/expert_support, which names the
+// crate by its public path.
+#[cfg(test)]
+extern crate self as ptr_runtime;
 
 #[cfg(test)]
 mod delta_payload_tests {
@@ -347,8 +407,7 @@ use ptr_ledger::{
     MAX_RETAINED_RESPONSE,
 };
 use ptr_model_api::{
-    InferenceBackend, ModelEvent, ModelObservation, ModelRequest, ModelResumeRequest,
-    ResumableInferenceBackend,
+    InferenceBackend, KvReuseTaint, ModelEvent, ModelRequest, ResumableInferenceBackend,
 };
 use ptr_pods::{EvidenceVerifier, PodEvidenceBundle, PodHypothesis, PodOutputKind, PodRegistry};
 use ptr_protocol::TypedPayload;
@@ -376,6 +435,7 @@ pub enum RuntimeError {
     Snapshot(persistence::SnapshotError),
     Compacted(compacted::CompactedError),
     Neural(neural::NeuralError),
+    Expert(expert::ExpertAdmissionError),
     Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),
@@ -388,6 +448,19 @@ pub enum RuntimeError {
     StaleRevision {
         action: Revision,
         current: Revision,
+    },
+    /// A stepped run was ended because the semantic revision moved for a reason other than the
+    /// run's own writes (`bound` is the revision the run was bound to, `current` the store's),
+    /// before it did any more work. Only [`CancelledRun::into_error`] produces it. It is a saving
+    /// of work, not a safety check: the effect boundary refuses a stale action
+    /// ([`RuntimeError::StaleRevision`]) whatever this check did.
+    RunCancelled {
+        bound: Revision,
+        current: Revision,
+    },
+    /// A step was requested for a stepped run that already finished, was cancelled or failed.
+    SteppedRunEnded {
+        request: String,
     },
     UnknownGeneration {
         target: String,
@@ -402,9 +475,26 @@ pub enum RuntimeError {
         actual: CommitIndex,
     },
     Model(String),
+    /// An action derived from a model run that used Approximate KV reuse reached the
+    /// hard effect boundary (doc 36, P2a). `report_digest` names the reuse report.
+    ApproximateStateAtEffectBoundary {
+        report_digest: ptr_types::Digest,
+    },
+    /// The bounded registry of live taint subjects is full; the run is refused before anything
+    /// is appended.
+    KvTaintRegistryFull {
+        limit: usize,
+    },
+    /// The taint registry refused a change, a replayed record or a restored state (fail closed).
+    KvTaint(kv_taint::KvTaintError),
     PodUnavailable {
         capability: String,
         input_type: String,
+    },
+    /// The routing boundary failed while candidates may exist. The reason is a fixed string that
+    /// never names a Pod.
+    RouteFailed {
+        reason: &'static str,
     },
     PodEffectRequiresActionBoundary {
         pod: String,
@@ -490,6 +580,16 @@ pub enum RuntimeError {
     /// `commit` was handed a semantic record: those are written only by the
     /// semantic write paths, which build and check them.
     SemanticRecordOutsideSemanticPath,
+    /// An expert structural record ([`LedgerEvent::ExpertStructuralCommitted`]) was handed to
+    /// the public `commit`. Such a record may only be written by
+    /// [`PtrRuntime::admit_expert_proposal`], which checks the proposer, the gate evidence and the
+    /// compare-and-set and derives the event's ids from the record. Replay does not use this
+    /// error: it re-checks the record and reports [`RuntimeError::Expert`]. An expert fence
+    /// record ([`LedgerEvent::ExpertFenceCommitted`]) is refused the same way: it may only be
+    /// written by [`PtrRuntime::fence_expert`] and [`PtrRuntime::readmit_expert`]; so is an
+    /// expert authority change record ([`LedgerEvent::ExpertAuthorityChanged`]), which only
+    /// [`PtrRuntime::change_expert_authority`] may write.
+    StructuralRecordOutsideAdmissionPath,
     /// A semantic record written before origins existed, replayed after a
     /// record with an attributed origin (rule R1).
     LegacySemanticRecord {
@@ -558,6 +658,34 @@ pub enum RuntimeError {
         index: Option<CommitIndex>,
         reason: &'static str,
     },
+    /// A segment presented as `Raw` is not the request's own ingress text, or cannot be
+    /// checked against it (fail closed). `segment` is its index in the request.
+    MisclassifiedRawSegment {
+        segment: usize,
+        reason: &'static str,
+    },
+    /// A `Derived` segment names no derivation this runtime minted (a forged, foreign or, after
+    /// a restart, clean-and-forgotten id), or carries other content than was minted under it.
+    UnknownDerivedSegment {
+        segment: usize,
+    },
+    /// A derived run cannot be turned into a derived segment, so nothing was recorded.
+    DerivedRunUnavailable {
+        reason: &'static str,
+    },
+    /// A Pod output of a promoting or acting kind (`StateDelta`, `VerifiedResult`,
+    /// `ActionProposal`) whose KV-reuse taint is Approximate was refused before the verifier ran
+    /// and before anything was appended.
+    ApproximatePodOutput {
+        kind: PodOutputKind,
+        report_digest: ptr_types::Digest,
+    },
+    /// A SemDB write (`boundary`) was refused because its request or content is tainted by
+    /// Approximate KV reuse; nothing was appended.
+    ApproximateSemanticContent {
+        boundary: kv_taint::SemanticTaintBoundary,
+        report_digest: ptr_types::Digest,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -565,6 +693,9 @@ pub struct ResumableRun {
     pub model_events: Vec<ModelEvent>,
     pub observations: Vec<TypedPayload>,
     pub action: Option<ActionIr>,
+    /// Join of the KV-reuse taint of the model output this run ingested; Exact unless the
+    /// run came through [`PtrRuntime::ingest_model_run`] with Approximate reuse.
+    pub kv_taint: KvReuseTaint,
 }
 
 enum RuntimeLedger {
@@ -612,10 +743,21 @@ pub struct PtrRuntime {
     execution_manifests: Arc<RwLock<ExecutionManifestRegistry>>,
     manifest_authority: Arc<RwLock<ManifestAuthorityRegistry>>,
     policy_trust: policy::PolicyTrustStore,
+    /// The attestor keys the host trusts; host configuration, not history.
+    attestors: expert::ExpertAttestorRegistry,
     policy_authority_ready: bool,
     revoked_sessions: BTreeSet<ptr_types::SessionId>,
     hypotheses: BTreeMap<String, PodHypothesis>,
     tier_journal: TierJournalProjection,
+    experts: expert::ExpertRegistryProjection,
+    /// Exact KV prefix catalog; none until the host calls `enable_kv_prefix_catalog`.
+    kv_catalog: Option<kv_prefix::KvPrefixCatalog>,
+    /// The revision at which each semantic key was last affected by a committed delta; the
+    /// use-time liveness check of a semantic KV dependency reads it.
+    semantic_edits: kv_prefix::SemanticEdits,
+    /// Live approximate-KV taint subjects, projected from the committed `KvTaintCommitted`
+    /// records; actions in it are refused by `authorize_action`.
+    taint: kv_taint::TaintRegistry,
 }
 
 impl PtrRuntime {
@@ -623,15 +765,49 @@ impl PtrRuntime {
         Self::with_ledger(config, RuntimeLedger::Memory(InMemoryLedger::default()))
     }
 
-    pub fn open_durable(config: PtrConfig, path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
-        let ledger =
-            FileLedger::open(path).map_err(|error| RuntimeError::Ledger(error.to_string()))?;
-        Self::from_durable_ledger(config, ledger)
+    /// [`PtrRuntime::new`] trusting the attestor keys `attestors`, which the host builds from its
+    /// own configuration. The trusted set is fixed here: there is no call that changes it later.
+    ///
+    /// # Errors
+    /// As [`PtrRuntime::new`].
+    pub fn new_with_attestors(
+        config: PtrConfig,
+        attestors: expert::ExpertAttestorRegistry,
+    ) -> Result<Self, RuntimeError> {
+        let mut runtime = Self::new(config)?;
+        runtime.attestors = attestors;
+        Ok(runtime)
     }
 
-    fn from_durable_ledger(config: PtrConfig, ledger: FileLedger) -> Result<Self, RuntimeError> {
+    pub fn open_durable(config: PtrConfig, path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
+        Self::open_durable_with_attestors(config, path, expert::ExpertAttestorRegistry::new())
+    }
+
+    /// [`PtrRuntime::open_durable`] replaying against the attestor keys the host trusts: an
+    /// attested expert record replays only when its signature verifies under the key `attestors`
+    /// holds for its attestor and epoch. With [`PtrRuntime::open_durable`] the registry is empty
+    /// and a ledger holding an attested record does not open.
+    ///
+    /// # Errors
+    /// As [`PtrRuntime::open_durable`], and the attestation refusals of a replayed record.
+    pub fn open_durable_with_attestors(
+        config: PtrConfig,
+        path: impl AsRef<Path>,
+        attestors: expert::ExpertAttestorRegistry,
+    ) -> Result<Self, RuntimeError> {
+        let ledger =
+            FileLedger::open(path).map_err(|error| RuntimeError::Ledger(error.to_string()))?;
+        Self::from_durable_ledger(config, ledger, attestors)
+    }
+
+    fn from_durable_ledger(
+        config: PtrConfig,
+        ledger: FileLedger,
+        attestors: expert::ExpertAttestorRegistry,
+    ) -> Result<Self, RuntimeError> {
         let persisted = ledger.events().to_vec();
         let mut runtime = Self::with_ledger(config, RuntimeLedger::File(ledger))?;
+        runtime.attestors = attestors;
         for committed in &persisted {
             runtime.validate_lifecycle_event(&committed.event)?;
             let semantic =
@@ -661,15 +837,34 @@ impl PtrRuntime {
             execution_manifests: Arc::new(RwLock::new(ExecutionManifestRegistry::default())),
             manifest_authority: Arc::new(RwLock::new(ManifestAuthorityRegistry::default())),
             policy_trust: policy::PolicyTrustStore::default(),
+            attestors: expert::ExpertAttestorRegistry::default(),
             policy_authority_ready: false,
             revoked_sessions: BTreeSet::new(),
             hypotheses: BTreeMap::new(),
             tier_journal: TierJournalProjection::default(),
+            experts: expert::ExpertRegistryProjection::default(),
+            kv_catalog: None,
+            semantic_edits: kv_prefix::SemanticEdits::default(),
+            taint: kv_taint::TaintRegistry::default(),
         })
     }
 
     pub fn replay(config: PtrConfig, events: &[CommittedEvent]) -> Result<Self, RuntimeError> {
+        Self::replay_with_attestors(config, events, expert::ExpertAttestorRegistry::new())
+    }
+
+    /// [`PtrRuntime::replay`] against the attestor keys the host trusts; see
+    /// [`PtrRuntime::open_durable_with_attestors`].
+    ///
+    /// # Errors
+    /// As [`PtrRuntime::replay`], and the attestation refusals of a replayed record.
+    pub fn replay_with_attestors(
+        config: PtrConfig,
+        events: &[CommittedEvent],
+        attestors: expert::ExpertAttestorRegistry,
+    ) -> Result<Self, RuntimeError> {
         let mut runtime = Self::new(config)?;
+        runtime.attestors = attestors;
         for expected in events {
             runtime.validate_lifecycle_event(&expected.event)?;
             let semantic = runtime.prepare_semantic_event(Some(expected.index), &expected.event)?;
@@ -1254,6 +1449,12 @@ impl PtrRuntime {
         self.live_generations.get(target).copied()
     }
 
+    /// The project a capsule was committed under, if the lifecycle authority knows the capsule.
+    #[must_use]
+    pub fn capsule_project(&self, capsule: &str) -> Option<&str> {
+        self.capsule_projects.get(capsule).map(String::as_str)
+    }
+
     /// Every lifecycle target and its current generation, ordered by target.
     /// Revocation tombstones are exposed separately by [`Self::revoked_generations`].
     pub fn live_generations(&self) -> impl Iterator<Item = (&str, Generation)> {
@@ -1293,6 +1494,77 @@ impl PtrRuntime {
         }
     }
 
+    /// Run one request whose model output comes as a [`ptr_model_api::ModelRun`] (a KV-reusing
+    /// backend), continuing the resumable flow through [`PtrRuntime::ingest_model_run`].
+    ///
+    /// The request text is ingested first, exactly as in the plain resumable flow, and
+    /// `infer` receives the resulting semantic context. The run is never turned into a
+    /// [`ResumableRun`] except by `ingest_model_run`, so an Approximate run leaves its
+    /// action recorded as tainted and `authorize_action` refuses it. This path does not
+    /// resume Pods: a run that asks for one is refused with [`RuntimeError::Model`], and a
+    /// run that neither finishes nor yields an action is [`RuntimeError::ModelNoProgress`].
+    ///
+    /// If the request text is byte-identical to a live tainted content subject (tainted model
+    /// output re-presented as request text), the run carries that Approximate taint although
+    /// its own reuse was Exact: its action is recorded and refused at `authorize_action`. Only
+    /// the exact digest of the whole text is matched; a paraphrase, substring or whitespace
+    /// edit is not detected, and honest identical text is tainted too (fail closed).
+    pub fn run_model_run_resumable<F>(
+        &mut self,
+        request_id: RequestId,
+        raw_text: impl Into<String>,
+        infer: F,
+    ) -> Result<ResumableRun, RuntimeError>
+    where
+        F: FnOnce(
+            ptr_types::SemanticContext,
+        ) -> Result<ptr_model_api::ModelRun, ptr_model_api::ModelError>,
+    {
+        let raw_text = raw_text.into();
+        // Raw text that is exactly a live tainted content subject (tainted output re-presented
+        // as request text) keeps its taint: the run's action is recorded as Approximate. So does
+        // a request id that is already a live Request subject (a reused id of an Approximate run).
+        let raw_taint = self.input_kv_taint(&request_id, &raw_text);
+        let _revision = self.ingest_text(request_id.clone(), raw_text)?;
+        let model_run = infer(self.snapshot().semantic_context())
+            .map_err(|error| RuntimeError::Model(error.0))?;
+        // The only place a ModelRun becomes a ResumableRun (KV taint is recorded here).
+        let run = self.ingest_model_run_with_input(&request_id, raw_taint, &model_run)?;
+        if model_run
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::PodRequested { .. }))
+        {
+            return Err(RuntimeError::Model(
+                "a segmented (KV-reusing) run cannot resume a Pod".into(),
+            ));
+        }
+        let finished = run
+            .model_events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::Finished));
+        if run.action.is_some() {
+            return Ok(run);
+        }
+        if !finished {
+            return Err(RuntimeError::ModelNoProgress);
+        }
+        self.emit(RuntimeEvent::RequestFinished(request_id));
+        Ok(run)
+    }
+
+    /// Run one request through a plain backend and return its events.
+    ///
+    /// Input taint (the raw text equals a live tainted content subject, or the request id is a
+    /// live Request subject) is computed before the backend runs, as in
+    /// [`PtrRuntime::run_model_run_resumable`]. If it is Approximate, the Request subject, the
+    /// generated text and every action of the events are recorded taint-first before they are
+    /// returned, so `authorize_action` refuses those actions. A backend cannot report KV reuse
+    /// here, so input taint is the only taint this path sees. Exact input appends nothing.
+    ///
+    /// # Errors
+    /// [`RuntimeError::KvTaintRegistryFull`] when recording would exceed the taint bound (the
+    /// events are not returned), or any ingress, backend or ledger error.
     pub fn run_model_once<B: InferenceBackend + ?Sized>(
         &mut self,
         request_id: RequestId,
@@ -1300,6 +1572,8 @@ impl PtrRuntime {
         backend: &B,
     ) -> Result<Vec<ModelEvent>, RuntimeError> {
         let raw_text = raw_text.into();
+        // Same input taint as `run_model_run_resumable`, computed before the backend runs.
+        let input_taint = self.input_kv_taint(&request_id, &raw_text);
         let _revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
         let events = backend
             .infer(&ModelRequest {
@@ -1308,6 +1582,10 @@ impl PtrRuntime {
                 raw_text,
             })
             .map_err(|error| RuntimeError::Model(error.0))?;
+        // Approximate input: the request, the generated text and every action are recorded
+        // taint-first before the events are returned (and so before any Pod output of the
+        // request can be promoted). Exact input appends nothing.
+        self.record_input_taint(&request_id, input_taint, &events)?;
         if events
             .iter()
             .any(|event| matches!(event, ModelEvent::Finished))
@@ -1317,6 +1595,10 @@ impl PtrRuntime {
         Ok(events)
     }
 
+    /// [`PtrRuntime::run_model_once`], then invoke and promote each requested Pod. Taint of the
+    /// input is recorded by `run_model_once` before any Pod output is promoted, so a request
+    /// with Approximate input has every Pod output refused with
+    /// [`RuntimeError::ApproximateSemanticContent`].
     pub fn run_model_with_pods<B, V>(
         &mut self,
         request_id: RequestId,
@@ -1380,6 +1662,9 @@ impl PtrRuntime {
         Ok(outputs)
     }
 
+    /// Convenience wrapper that selects Pods with the plain, unsampled [`PodRouter::select`].
+    /// It records no draw, propensity, nonce or key identity; the production path is
+    /// [`PtrRuntime::run_resumable_with_pods_using_router`] with a [`PodSampler`].
     pub fn run_resumable_with_pods<B, V>(
         &mut self,
         request_id: RequestId,
@@ -1394,11 +1679,16 @@ impl PtrRuntime {
         B: ResumableInferenceBackend + ?Sized,
         V: Verifier<TypedPayload> + ?Sized,
     {
-        self.run_resumable_with_pods_using_router(
-            request_id, project, raw_text, backend, pods, &PodRouter, verifier, max_rounds,
+        self.run_resumable_inner(
+            request_id, project, raw_text, backend, pods, None, verifier, max_rounds,
         )
     }
 
+    /// Like [`PtrRuntime::run_resumable_with_pods`], but every Pod is chosen through the
+    /// trusted checked routing path of `router`. Each selection emits
+    /// [`RuntimeEvent::PodRouted`] (Pod, propensity, nonce, draw and key identity) before
+    /// [`RuntimeEvent::PodInvoked`]; `Ok(None)` is the usual `PodUnavailable` and a routing
+    /// error is `RouteFailed` with a Pod-free reason.
     #[allow(clippy::too_many_arguments)]
     pub fn run_resumable_with_pods_using_router<B, V>(
         &mut self,
@@ -1407,7 +1697,7 @@ impl PtrRuntime {
         raw_text: impl Into<String>,
         backend: &B,
         pods: &PodRegistry,
-        router: &PodRouter,
+        router: &dyn PodSampler,
         verifier: &V,
         max_rounds: usize,
     ) -> Result<ResumableRun, RuntimeError>
@@ -1415,125 +1705,37 @@ impl PtrRuntime {
         B: ResumableInferenceBackend + ?Sized,
         V: Verifier<TypedPayload> + ?Sized,
     {
-        let raw_text = raw_text.into();
-        let _revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
-        let mut request = ModelRequest {
-            request_id: request_id.clone(),
-            semantic_context: self.snapshot().semantic_context(),
+        self.run_resumable_inner(
+            request_id,
+            project,
             raw_text,
-        };
-        let mut pending = backend
-            .infer(&request)
-            .map_err(|error| RuntimeError::Model(error.0))?;
+            backend,
+            pods,
+            Some(router),
+            verifier,
+            max_rounds,
+        )
+    }
 
-        let mut run = ResumableRun::default();
-
-        for round in 0..=max_rounds {
-            let finished = pending
-                .iter()
-                .any(|event| matches!(event, ModelEvent::Finished));
-            let pod_requests = pending
-                .iter()
-                .filter_map(|event| match event {
-                    ModelEvent::PodRequested {
-                        capability,
-                        input_type,
-                        payload,
-                    } => Some((capability.clone(), input_type.clone(), payload.clone())),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let actions = pending
-                .iter()
-                .filter_map(|event| match event {
-                    ModelEvent::ActionReady(action) => Some(action.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-
-            run.model_events.extend(pending);
-
-            let control_count = pod_requests.len() + actions.len();
-            if control_count > 1 {
-                if !pod_requests.is_empty() && !actions.is_empty() {
-                    return Err(RuntimeError::MixedControlEvents);
-                }
-                return Err(RuntimeError::MultipleControlEvents {
-                    count: control_count,
-                });
-            }
-
-            if finished && control_count == 0 {
-                self.emit(RuntimeEvent::RequestFinished(request_id));
-                return Ok(run);
-            }
-
-            if let Some(action) = actions.into_iter().next() {
-                run.action = Some(action);
-                return Ok(run);
-            }
-
-            let Some((capability, input_type, payload)) = pod_requests.into_iter().next() else {
-                return Err(RuntimeError::ModelNoProgress);
-            };
-
-            if round == max_rounds {
-                return Err(RuntimeError::ModelResumeLimit { max_rounds });
-            }
-
-            // A Pod in another project is unavailable in exactly the same
-            // words as a Pod that does not exist. Saying which it was would
-            // answer, across the boundary, whether that Pod exists.
-            let pod = router
-                .select(pods, project, &capability, &input_type)
-                .and_then(|route| pods.get(project, &route.pod_id))
-                .ok_or_else(|| RuntimeError::PodUnavailable {
-                    capability: capability.to_string(),
-                    input_type: input_type.to_string(),
-                })?;
-
-            if pod
-                .manifest()
-                .effects
-                .iter()
-                .any(|effect| !matches!(effect, ptr_types::Effect::Pure | ptr_types::Effect::Read))
-            {
-                return Err(RuntimeError::PodEffectRequiresActionBoundary {
-                    pod: pod.manifest().id.to_string(),
-                });
-            }
-
-            self.emit(RuntimeEvent::PodInvoked(pod.manifest().id.to_string()));
-            let output = pod
-                .invoke(TypedPayload {
-                    type_id: input_type,
-                    bytes: payload,
-                })
-                .map_err(RuntimeError::Pod)?;
-
-            let revision =
-                self.promote_verified_pod_output(&request_id, pod.manifest(), &output, verifier)?;
-
-            let observation = ModelObservation {
-                revision,
-                source: pod.manifest().id.to_string(),
-                type_id: output.type_id.clone(),
-                payload: output.bytes.clone(),
-            };
-            run.observations.push(output);
-
-            request.semantic_context = self.snapshot().semantic_context();
-            pending = backend
-                .resume(&ModelResumeRequest {
-                    request_id: request_id.clone(),
-                    semantic_context: request.semantic_context.clone(),
-                    round: round as u32 + 1,
-                    observation,
-                })
-                .map_err(|error| RuntimeError::Model(error.0))?;
-        }
-
-        Err(RuntimeError::ModelResumeLimit { max_rounds })
+    #[allow(clippy::too_many_arguments)]
+    fn run_resumable_inner<B, V>(
+        &mut self,
+        request_id: RequestId,
+        project: &ProjectId,
+        raw_text: impl Into<String>,
+        backend: &B,
+        pods: &PodRegistry,
+        router: Option<&dyn PodSampler>,
+        verifier: &V,
+        max_rounds: usize,
+    ) -> Result<ResumableRun, RuntimeError>
+    where
+        B: ResumableInferenceBackend + ?Sized,
+        V: Verifier<TypedPayload> + ?Sized,
+    {
+        self.run_resumable_blocking(
+            request_id, project, raw_text, backend, pods, router, verifier, max_rounds,
+        )
     }
 
     pub fn authorization_decision(&self, action: &ActionIr) -> AuthorizationDecision {
@@ -1556,6 +1758,7 @@ impl PtrRuntime {
     }
 
     pub fn authorize_action(&self, action: &ActionIr) -> Result<(), RuntimeError> {
+        self.check_kv_taint(action, KvReuseTaint::Exact)?;
         match self.authorization_decision(action) {
             AuthorizationDecision::Allow(_) => Ok(()),
             AuthorizationDecision::Deny(AuthorizationDenial::StaleRevision { action, current }) => {
@@ -1936,6 +2139,42 @@ impl PtrRuntime {
                 current: request.manifest.snapshot_revision,
             });
         }
+        // Approximate-KV taint is decided before the verifier runs: a tainted output of a
+        // promoting or acting kind must not even be judged, and nothing is appended.
+        let output_digest = request.output.digest();
+        let bindings: Vec<&ptr_pods::LineageBinding> = request
+            .manifest
+            .knowledge
+            .iter()
+            .chain(request.manifest.artifacts.iter())
+            .chain(request.manifest.reader.iter())
+            .chain(request.manifest.adapter.iter())
+            .collect();
+        let kv_taint = self.pod_output_kv_taint(
+            &request.request_id,
+            request.kv_taint,
+            &output_digest,
+            &request.output.dependencies,
+            &request.output.payload.bytes,
+            &bindings,
+        );
+        if let ptr_model_api::KvReuseTaint::Approximate { report_digest } = kv_taint {
+            match request.output.kind {
+                PodOutputKind::StateDelta
+                | PodOutputKind::VerifiedResult
+                | PodOutputKind::ActionProposal => {
+                    return Err(RuntimeError::ApproximatePodOutput {
+                        kind: request.output.kind,
+                        report_digest,
+                    });
+                }
+                PodOutputKind::Observation
+                | PodOutputKind::Candidate
+                | PodOutputKind::ToolResult
+                | PodOutputKind::EnvironmentObservation
+                | PodOutputKind::Hypothesis => {}
+            }
+        }
         let report = verifier.verify(&request.output.payload);
         let passed = report.status == VerificationStatus::Pass
             && !report.findings.iter().any(|finding| finding.hard);
@@ -1948,7 +2187,6 @@ impl PtrRuntime {
                 pod: request.pod_id.to_string(),
             });
         }
-        let output_digest = request.output.digest();
         let action = if request.output.kind == PodOutputKind::ActionProposal {
             let action = decode_action_payload(&request.output.payload.bytes)
                 .map_err(RuntimeError::PodOutputAdmission)?;
@@ -1965,6 +2203,18 @@ impl PtrRuntime {
             None
         };
 
+        // Taint first: the registry record precedes the admission, the candidate and the
+        // hypothesis record, so a crash in between leaves a stray taint record (which only
+        // refuses more), never an untainted candidate. It also precedes the retry lookup below,
+        // so a retry of an earlier admission is contained too. A full registry refuses here,
+        // before anything of this admission is appended.
+        if let ptr_model_api::KvReuseTaint::Approximate { report_digest } = kv_taint {
+            self.record_pod_output_taint(
+                &output_digest,
+                &request.output.payload.bytes,
+                report_digest,
+            )?;
+        }
         // A retry finds the admission record of an earlier attempt. The record
         // says the output was admitted, not that what follows it was applied:
         // promotion is a separate commit that can fail after it. So the earlier
@@ -2795,6 +3045,11 @@ impl PtrRuntime {
                     RuntimeError::InvalidConfig(format!("invalid tier journal event: {error:?}"))
                 })
             }
+            // Replay re-derives the ids from the record and repeats the compare-and-set against
+            // the registry as of this point of the history (see the `expert` module).
+            LedgerEvent::ExpertStructuralCommitted { .. } => self.validate_expert_event(event),
+            // Replay repeats the fence's compare-and-set against the registry as of this point.
+            LedgerEvent::ExpertFenceCommitted { .. } => self.validate_expert_fence_event(event),
             // Revocation tombstones are monotone and may precede activation.
             // Verifier/snapshot records do not confer permissions or load state.
             LedgerEvent::SemanticDeltaCommitted { .. }
@@ -2802,6 +3057,20 @@ impl PtrRuntime {
             | LedgerEvent::ProcedureRevoked { .. }
             | LedgerEvent::VerifierAttested { .. }
             | LedgerEvent::SnapshotCommitted { .. } => Ok(()),
+            // A Record must stay within the live bound, a Clear must name live subjects of the
+            // same recipe; otherwise the log is refused (fail closed). A forged Record applies
+            // (taint only refuses more). Only a directly committed record is refused earlier
+            // ([`validate_new_record`]).
+            LedgerEvent::KvTaintCommitted { .. } => self.validate_kv_taint_event(event),
+            // Replay re-derives the fence set at this point of the history and compares its count
+            // and digest with the event's (see the `expert` module).
+            LedgerEvent::InputInvalidated { .. } => self.validate_input_invalidated_event(event),
+            // Replay re-derives the fence set of an authority change at this point of the history
+            // and compares its count and digest with the event's, and holds the epoch to the
+            // current standing (see the `expert::authority` module).
+            LedgerEvent::ExpertAuthorityChanged { .. } => {
+                self.validate_authority_changed_event(event)
+            }
         }
     }
 
@@ -2810,13 +3079,21 @@ impl PtrRuntime {
         committed: &CommittedEvent,
         semantic: Option<PreparedDelta>,
     ) -> Result<(), RuntimeError> {
+        self.invalidate_kv_catalog(&committed.event, semantic.as_ref());
         match &committed.event {
             LedgerEvent::SemanticDeltaCommitted { .. } => {
+                let delta =
+                    semantic.ok_or(RuntimeError::Semantic(SemanticError::InvalidEncoding))?;
+                let affected = delta.affected().clone();
                 self.semdb
-                    .apply_prepared(
-                        semantic.ok_or(RuntimeError::Semantic(SemanticError::InvalidEncoding))?,
-                    )
+                    .apply_prepared(delta)
                     .map_err(RuntimeError::Semantic)?;
+                let snapshot = self.semdb.snapshot();
+                self.semantic_edits.record(
+                    &affected,
+                    |key| snapshot.value(key).is_some(),
+                    self.semdb.revision(),
+                );
             }
             LedgerEvent::CapsuleCommitted {
                 project,
@@ -2836,6 +3113,10 @@ impl PtrRuntime {
             } => {
                 self.revoked_generations
                     .insert((subject.clone(), *generation));
+                // A revocation of a semantic key is a floor over every citation of it.
+                let held = self.semdb.snapshot().value(subject).is_some();
+                self.semantic_edits
+                    .record_revocation(subject, held, self.semdb.revision());
             }
             LedgerEvent::HardConstraintCommitted { key, generation } => {
                 self.set_live_generation(format!("constraint:{key}"), *generation);
@@ -2906,6 +3187,19 @@ impl PtrRuntime {
             LedgerEvent::MeshTunnelLifecycle(_)
             | LedgerEvent::PodEvidenceCommitted { .. }
             | LedgerEvent::PodOutputAdmitted { .. } => {}
+            LedgerEvent::KvTaintCommitted { .. } => self.apply_kv_taint_event(&committed.event),
+            LedgerEvent::ExpertStructuralCommitted { .. } => {
+                self.apply_expert_event(&committed.event)?;
+            }
+            LedgerEvent::ExpertFenceCommitted { .. } => {
+                self.apply_expert_fence_event(&committed.event)?;
+            }
+            LedgerEvent::InputInvalidated { .. } => {
+                self.apply_input_invalidated_event(&committed.event)?;
+            }
+            LedgerEvent::ExpertAuthorityChanged { .. } => {
+                self.apply_authority_changed_event(&committed.event)?;
+            }
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }
             | LedgerEvent::TierReplicaLifecycle { .. } => {
@@ -3094,7 +3388,26 @@ impl PtrRuntime {
 /// A semantic record is refused outright
 /// ([`RuntimeError::SemanticRecordOutsideSemanticPath`]): only the semantic
 /// write paths build one, with the origin they checked.
+///
+/// An expert structural record is refused the same way
+/// ([`RuntimeError::StructuralRecordOutsideAdmissionPath`]): only the expert admission path may
+/// build one. So is an expert fence record: only `fence_expert` and `readmit_expert` may, and an
+/// input invalidation record ([`LedgerEvent::InputInvalidated`]): only
+/// `invalidate_input`, which derives its fence set, may, and so is an authority change record
+/// ([`LedgerEvent::ExpertAuthorityChanged`]): only `change_expert_authority` may. A taint
+/// record ([`LedgerEvent::KvTaintCommitted`]) is refused the same way: only the runtime's taint
+/// path may write one.
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
+    if matches!(
+        event,
+        LedgerEvent::ExpertStructuralCommitted { .. }
+            | LedgerEvent::ExpertFenceCommitted { .. }
+            | LedgerEvent::InputInvalidated { .. }
+            | LedgerEvent::ExpertAuthorityChanged { .. }
+            | LedgerEvent::KvTaintCommitted { .. }
+    ) {
+        return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
+    }
     if matches!(event, LedgerEvent::SemanticDeltaCommitted { .. }) {
         return Err(RuntimeError::SemanticRecordOutsideSemanticPath);
     }

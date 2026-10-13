@@ -1,0 +1,13 @@
+arm	lr	val_accuracy	flag
+no-typed-attention	0.0125	0.9075	edge of grid
+raw-blind	0.005	0.7475	
+blind-query-k0	0.0125	0.7395	edge of grid
+blind-query-k0-no-typed-attention	0.002	0.6625	edge of grid
+latent-0	0.005	0.7965	
+latent-1	0.0125	0.881	edge of grid
+latent-linear	0.005	0.8065	
+latent-4	0.005	0.8905	
+full	0.0125	0.9055	edge of grid
+no-semantic-slots	0.0125	0.5915	edge of grid
+no-semantic-slots-masked	0.0125	0.798	edge of grid
+frozen-router	0.0125	0.8655	edge of grid

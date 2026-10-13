@@ -1,0 +1,136 @@
+{
+  "schema_version": 2,
+  "experiment_id": "C001",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v114",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16874930176
+  },
+  "hardware_profile_record": {
+    "path": "hardware/a0-cpu-4core.toml",
+    "sha256": "929ce6339da92df03113c4176a59155336f123e7aed9c771db1614d0a99a0c1f",
+    "contents": {
+      "id": "a0-cpu-4core",
+      "os": "Ubuntu 24.04.4 LTS, Linux 6.18.44 x86_64",
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU (4 cores, 1 thread per core, 1 socket); AVX, AVX2, AVX-512F/BW/CD/DQ/VL/VNNI",
+      "ram_gib": 15.7,
+      "gpu": "none",
+      "gpu_memory_gib": 0,
+      "precision": [
+        "fp32"
+      ],
+      "notes": "Shared cloud container: timing is noisy and is recorded as a diagnostic only. Floating-point results are reproducible bit for bit only on this CPU feature set with the same binary, because the gemm kernel dispatches on AVX-512."
+    },
+    "unspecified_fields": []
+  },
+  "git_sha": "05df733e9154da198a2717a7ce20d4d30960aa1d",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "C001",
+    "status": "prepared",
+    "hypothesis": "[CPU] As an inductive bias (not an expressivity claim), does a learned-attention global workspace (3 slots, competitive top-3 write, gated slot update, broadcast read by every module; GWT-1..4 as a mechanism) generalise better than parameter-matched alternatives when training data is finite and the test has more modules than training? Eight sensory modules with shared weights see one noisy observation each; a cue module carries a query type; the answer is the sum of the values of the two modules of that type, so the cue's content must reach the others before the relevant modules can be selected. Training: a finite set of 2048 eight-module instances, every arm trained to a validation plateau with the same protocol and tuned on the same learning-rate x width grid. Primary evaluation: sixteen modules (more distractors); secondary: twenty-four and eight. Arms: workspace; the pairwise comparators all-to-all, bandwidth-matched all-to-all and sparse top-k all-to-all; the attribution ablations no-broadcast (only the reporter reads the workspace), capacity off (8 slots) and competition off (soft write); no communication (floor); a crippled (one round) and a weak (Adam weight decay 0.001) all-to-all as gross and graded sensitivity controls. Every arm runs at d = 48 with its update width matched to the workspace's parameter count. It tests a learned analogue, not the deterministic ptr-pods::workspace contract. Functional mechanism test only: it says nothing about consciousness.",
+    "metrics": "accuracy on 16 modules (primary); accuracy on 24 and on 8 modules; area under the learning curve (sample efficiency); module-dropout accuracy; ignition curve and sharpness (descriptive); communication-cost proxies per module count; paired per-seed differences with one-sided 95% t bounds (lower and upper) over twenty seeds; validity guards; gross and graded sensitivity controls; three-valued attribution contrasts (attributed / not attributed / unresolved by noise) vs no_broadcast, capacity_off and competition_off",
+    "baseline": "parameter-matched all-to-all pairwise attention; sparse top-k all-to-all; bandwidth-matched all-to-all (value width reduced to the workspace's slot content); parameter-matched no-broadcast workspace, competition_off and capacity_off as reported attribution contrasts (GWT-3, competition, GWT-2); the no-communication floor (descriptive); crippled and weak all-to-all as sensitivity controls",
+    "falsification": "Three outcomes plus invalid, decided in advance. SUPPORTED if the guards hold and every lower one-sided 95% t bound over the twenty paired seed differences of 16-module accuracy (workspace minus all_to_all, bw_all_to_all, sparse_all_to_all) is at least 30 per mille (a margin justified by cost, fixed before the freeze and after the pilots, disclosed: about three points of accuracy is the smallest gain worth a new architectural block); the no_broadcast, capacity_off and competition_off contrasts are reported as attributed / not attributed / unresolved by noise and never change the verdict. REFUTED (falsified for this setting) only if the guards hold, both sensitivity controls resolve, and the UPPER bound (Bonferroni, alpha 0.05/3) against some pairwise comparator is below 30 per mille, i.e. the advantage is below the margin (not 'no advantage'). NOT SHOWN if the bounds straddle the margin (nothing is concluded, no requirement is downgraded). INVALID (never falsified) if the strongest pairwise comparator is below 300 or above 900 per mille on any seed (floored or saturated), the workspace or a pairwise comparator hit the step cap on more than 2 seeds, the gross (crippled, 50 per mille) or graded (weak, above 15 per mille) sensitivity control fails to resolve, the workspace arm fails to train on more than 4 of 20 seeds (such seeds stay in the paired differences), a harness-integrity counter is above 0 on any seed (module counts in training, parameter mismatch, non-finite loss, overlap of training, validation and evaluation data, checkpoint or convergence bookkeeping), or the seeds or mutation evidence are missing. Structurally FALSIFIED (a defect of an arm, not a result about the hypothesis), on any seed, if a structural counter is above 0 (communication leak in an isolated arm, bottleneck violation, dropped-module leak, nondeterminism, no-communication above the majority class) or a coverage rule fails. In-distribution and 24-module accuracy, sample efficiency, dropout and ignition are reported and never judged.",
+    "hardware_profile": "hardware/a0-cpu-4core.toml",
+    "entrypoint": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/consciousness/gw/harness.py --benchmark c001 --seed <seed>",
+    "seeds": [
+      4001,
+      4002,
+      4003,
+      4004,
+      4005,
+      4006,
+      4007,
+      4008,
+      4009,
+      4010,
+      4011,
+      4012,
+      4013,
+      4014,
+      4015,
+      4016,
+      4017,
+      4018,
+      4019,
+      4020
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "design": "../../../docs/architecture/38-consciousness-indicators.md",
+    "preregistration_sha256": "665e0e0e57917ccbf0e112aed9d735354d4e1fd810a6122ad554005f0e34363b",
+    "preregistration_rules_sha256": "f888fc5f7036dda8cc51637cf04bfdf1137d83188294d9fc4a7eca0ce32dcf56"
+  },
+  "manifest_sha256": "899d4a0dbbf17b449db2b420639390ae3e9cc2d858c651188f864aa67eb86be1",
+  "cargo_lock_sha256": "13acc7ada0ee2ad26270fb5ca84dacb7eec7e816ddfd94a9b59622929b12683a",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/a0-cpu-4core.toml",
+  "rustc": null,
+  "status": "completed",
+  "started_at": "20261010T213253.271374Z",
+  "entrypoint": "entrypoint",
+  "seed": 4018,
+  "parameters": {},
+  "command": [
+    "env",
+    "UV_PROJECT_ENVIRONMENT=../../../c001-venv",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "uv",
+    "run",
+    "--locked",
+    "--offline",
+    "--no-python-downloads",
+    "--project",
+    "research/consciousness",
+    "python",
+    "-B",
+    "research/consciousness/gw/harness.py",
+    "--benchmark",
+    "c001",
+    "--seed",
+    "4018"
+  ],
+  "environment": {
+    "PATH": "/nix/var/nix/profiles/default/bin:/root/.local/bin:/root/.cargo/bin:/usr/local/go/bin:/opt/node22/bin:/opt/maven/bin:/opt/gradle/bin:/opt/rbenv/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "LC_CTYPE": "C.UTF-8",
+    "RUSTUP_HOME": "/root/.rustup",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONPYCACHEPREFIX": "/tmp/ptr-run-C001",
+    "CARGO_TARGET_DIR": "/tmp/ptr-run-C001/cargo-target",
+    "RUSTUP_TOOLCHAIN": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu"
+  },
+  "executable": {
+    "path": "/usr/bin/env",
+    "sha256": "0aefff8f912fb75716c5d4de3b6acde93edbe8fa280fc8ee895c1226d3e373ef"
+  },
+  "toolchain": {
+    "rustc": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc",
+      "sha256": "f3834d26669b03f6855fa54bd2381443123e860167bc0c7a8dd137e5cf6e5e4f"
+    },
+    "cargo": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/cargo",
+      "sha256": "e951141cc55a6cd7b9876d187bd30a3720e6086b99413af95e3b8de1cdd72f14"
+    }
+  },
+  "finished_at": "2026-10-10T21:50:30.725650+00:00",
+  "exit_code": 0,
+  "stdout": "{\"arms\": {\"all_to_all\": {\"auc_correct\": 6900, \"auc_total\": 10240, \"best_val_permille\": 823, \"comm_ops_n16\": 867, \"comm_ops_n24\": 1875, \"comm_ops_n8\": 243, \"converged\": 1, \"curve_permille\": [361, 405, 520, 715, 763, 756, 801, 803, 807, 801, 784, 823, 807, 818, 825, 806, 804, 800, 824, 800, 822, 809, 818, 818], \"d_model\": 48, \"drop_irrelevant_correct\": 1735, \"drop_irrelevant_total\": 2048, \"drop_relevant_correct\": 667, \"drop_relevant_total\": 2048, \"ffn\": 137, \"final_loss_micro\": 41434, \"id_correct\": 1685, \"id_total\": 2048, \"ignition_curve_permille\": [39, 42, 51, 69, 86, 288, 530, 589, 620, 625, 625], \"ignition_sharpness_permille\": 412, \"lr_micro\": 6000, \"ood16_correct\": 1528, \"ood16_total\": 2048, \"ood24_correct\": 1385, \"ood24_total\": 2048, \"params\": 53648, \"scheme\": \"all_to_all\", \"slots\": 3, \"steps\": 3600, \"train_loss_window_micro\": 149766, \"weight_decay_micro\": 0}, \"bw_all_to_all\": {\"auc_correct\": 6863, \"auc_total\": 10240, \"best_val_permille\": 833, \"comm_ops_n16\": 867, \"comm_ops_n24\": 1875, \"comm_ops_n8\": 243, \"converged\": 1, \"curve_permille\": [371, 361, 492, 715, 766, 798, 791, 803, 796, 803, 833, 788, 816, 830, 784, 811, 791, 784, 811, 829, 805, 812, 822], \"d_model\": 48, \"drop_irrelevant_correct\": 1708, \"drop_irrelevant_total\": 2048, \"drop_relevant_correct\": 656, \"drop_relevant_total\": 2048, \"ffn\": 147, \"final_loss_micro\": 36259, \"id_correct\": 1706, \"id_total\": 2048, \"lr_micro\": 6000, \"ood16_correct\": 1489, \"ood16_total\": 2048, \"ood24_correct\": 1303, \"ood24_total\": 2048, \"params\": 53648, \"scheme\": \"all_to_all\", \"slots\": 3, \"steps\": 3450, \"train_loss_window_micro\": 85831, \"weight_decay_micro\": 0}, \"capacity_off\": {\"auc_correct\": 5970, \"auc_total\": 10240, \"best_val_permille\": 805, \"comm_ops_n16\": 768, \"comm_ops_n24\": 1152, \"comm_ops_n8\": 384, \"converged\": 1, \"curve_permille\": [353, 338, 386, 448, 555, 707, 754, 746, 777, 761, 745, 805, 782, 768, 782, 784, 783, 773, 807, 768, 782, 759, 781, 774], \"d_model\": 48, \"drop_irrelevant_correct\": 1635, \"drop_irrelevant_total\": 2048, \"drop_relevant_correct\": 657, \"drop_relevant_total\": 2048, \"ffn\": 63, \"final_loss_micro\": 38510, \"id_correct\": 1616, \"id_total\": 2048, \"lr_micro\": 3000, \"ood16_correct\": 1444, \"ood16_total\": 2048, \"ood24_correct\": 1388, \"ood24_total\": 2048, \"params\": 53666, \"scheme\": \"workspace\", \"slots\": 8, \"steps\": 3600, \"train_loss_window_micro\": 100025, \"weight_decay_micro\": 0}, \"competition_off\": {\"auc_correct\": 6253, \"auc_total\": 10240, \"best_val_permille\": 852, \"comm_ops_n16\": 288, \"comm_ops_n24\": 432, \"comm_ops_n8\": 144, \"converged\": 1, \"curve_permille\": [374, 376, 374, 492, 525, 716, 804, 810, 809, 822, 852, 808, 836, 836, 832, 834, 844, 850, 828, 828, 826, 846, 841], \"d_model\": 48, \"drop_irrelevant_correct\": 1770, \"drop_irrelevant_total\": 2048, \"drop_relevant_correct\": 673, \"drop_relevant_total\": 2048, \"ffn\": 64, \"final_loss_micro\": 202754, \"id_correct\": 1767, \"id_total\": 2048, \"lr_micro\": 6000, \"ood16_correct\": 1580, \"ood16_total\": 2048, \"ood24_correct\": 1408, \"ood24_total\": 2048, \"params\": 53717, \"scheme\": \"workspace\", \"slots\": 3, \"steps\": 3450, \"train_loss_window_micro\": 151320, \"weight_decay_micro\": 0}, \"crippled_all_to_all\": {\"auc_correct\": 3781, \"auc_total\": 10240, \"best_val_permille\": 380, \"comm_ops_n16\": 289, \"comm_ops_n24\": 625, \"comm_ops_n8\": 81, \"converged\": 1, \"curve_permille\": [372, 375, 368, 366, 380, 369, 368, 355, 376, 360, 349, 330, 341, 338, 338, 349, 314], \"d_model\": 48, \"drop_irrelevant_correct\": 844, \"drop_irrelevant_total\": 2048, \"drop_relevant_correct\": 629, \"drop_relevant_total\": 2048, \"ffn\": 413, \"final_loss_micro\": 642894, \"id_correct\": 789, \"id_total\": 2048, \"lr_micro\": 6000, \"ood16_correct\": 734, \"ood16_total\": 2048, \"ood24_correct\": 668, \"ood24_total\": 2048, \"params\": 53746, \"scheme\": \"all_to_all\", \"slots\": 3, \"steps\": 2550, \"train_loss_window_micro\": 963740, \"weight_decay_micro\": 0}, \"no_broadcast\": {\"auc_correct\": 6166, \"auc_total\": 10240, \"best_val_permille\": 822, \"comm_ops_n16\": 153, \"comm_ops_n24\": 225, \"comm_ops_n8\": 81, \"converged\": 1, \"curve_permille\": [356, 370, 363, 477, 631, 730, 767, 777, 768, 778, 811, 782, 804, 790, 822, 800, 816, 800, 792, 791, 824, 806, 798, 800, 812, 790, 791], \"d_model\": 48, \"drop_irrelevant_correct\": 1691, \"drop_irrelevant_total\": 2048, \"drop_relevant_correct\": 679, \"drop_relevant_total\": 2048, \"ffn\": 64, \"final_loss_micro\": 19425, \"id_correct\": 1669, \"id_total\": 2048, \"lr_micro\": 3000, \"ood16_correct\": 1521, \"ood16_total\": 2048, \"ood24_correct\": 1456, \"ood24_total\": 2048, \"params\": 53717, \"scheme\": \"no_broadcast\", \"slots\": 3, \"steps\": 4050, \"train_loss_window_micro\": 84481, \"weight_decay_micro\": 0}, \"no_comm\": {\"auc_correct\": 3460, \"auc_total\": 10240, \"best_val_permille\": 337, \"comm_ops_n16\": 0, \"comm_ops_n24\": 0, \"comm_ops_n8\": 0, \"converged\": 1, \"curve_permille\": [337, 337, 337, 337, 337, 337, 337, 337, 337, 337, 337, 337, 337], \"d_model\": 48, \"drop_irrelevant_correct\": 683, \"drop_irrelevant_total\": 2048, \"drop_relevant_correct\": 683, \"drop_relevant_total\": 2048, \"ffn\": 170, \"final_loss_micro\": 1478354, \"id_correct\": 662, \"id_total\": 2048, \"lr_micro\": 3000, \"ood16_correct\": 678, \"ood16_total\": 2048, \"ood24_correct\": 670, \"ood24_total\": 2048, \"params\": 53843, \"scheme\": \"no_comm\", \"slots\": 3, \"steps\": 1950, \"train_loss_window_micro\": 1527240, \"weight_decay_micro\": 0}, \"sparse_all_to_all\": {\"auc_correct\": 6421, \"auc_total\": 10240, \"best_val_permille\": 804, \"comm_ops_n16\": 867, \"comm_ops_n24\": 1875, \"comm_ops_n8\": 243, \"converged\": 1, \"curve_permille\": [350, 353, 490, 665, 679, 701, 769, 784, 737, 739, 758, 768, 787, 743, 788, 773, 771, 804, 754, 778, 762, 782, 802, 772, 753, 764, 764, 760, 759, 764], \"d_model\": 48, \"drop_irrelevant_correct\": 1627, \"drop_irrelevant_total\": 2048, \"drop_relevant_correct\": 674, \"drop_relevant_total\": 2048, \"ffn\": 137, \"final_loss_micro\": 178282, \"id_correct\": 1604, \"id_total\": 2048, \"lr_micro\": 6000, \"ood16_correct\": 1486, \"ood16_total\": 2048, \"ood24_correct\": 1378, \"ood24_total\": 2048, \"params\": 53648, \"scheme\": \"all_to_all\", \"slots\": 3, \"steps\": 4500, \"train_loss_window_micro\": 150802, \"weight_decay_micro\": 0}, \"weak_all_to_all\": {\"auc_correct\": 5847, \"auc_total\": 10240, \"best_val_permille\": 837, \"comm_ops_n16\": 867, \"comm_ops_n24\": 1875, \"comm_ops_n8\": 243, \"converged\": 1, \"curve_permille\": [393, 353, 375, 375, 487, 656, 747, 778, 770, 771, 799, 801, 785, 805, 816, 809, 813, 782, 822, 806, 810, 824, 827, 829, 826, 810, 815, 825, 812, 812, 819, 837, 826, 827, 825, 825, 833, 812, 823, 821, 824, 808, 828, 824], \"d_model\": 48, \"drop_irrelevant_correct\": 1723, \"drop_irrelevant_total\": 2048, \"drop_relevant_correct\": 691, \"drop_relevant_total\": 2048, \"ffn\": 137, \"final_loss_micro\": 58281, \"id_correct\": 1707, \"id_total\": 2048, \"lr_micro\": 6000, \"ood16_correct\": 1267, \"ood16_total\": 2048, \"ood24_correct\": 906, \"ood24_total\": 2048, \"params\": 53648, \"scheme\": \"all_to_all\", \"slots\": 3, \"steps\": 6600, \"train_loss_window_micro\": 163168, \"weight_decay_micro\": 1000}, \"workspace\": {\"auc_correct\": 6150, \"auc_total\": 10240, \"best_val_permille\": 846, \"comm_ops_n16\": 288, \"comm_ops_n24\": 432, \"comm_ops_n8\": 144, \"converged\": 1, \"curve_permille\": [370, 353, 380, 518, 564, 654, 748, 787, 816, 812, 796, 806, 817, 799, 826, 823, 824, 819, 823, 825, 838, 822, 833, 825, 846, 824, 833, 837, 825, 830, 809, 823, 818, 833, 828, 834, 842], \"d_model\": 48, \"drop_irrelevant_correct\": 1749, \"drop_irrelevant_total\": 2048, \"drop_relevant_correct\": 688, \"drop_relevant_total\": 2048, \"ffn\": 64, \"final_loss_micro\": 1520, \"id_correct\": 1691, \"id_total\": 2048, \"ignition_curve_permille\": [107, 106, 101, 119, 150, 248, 376, 420, 439, 448, 453], \"ignition_sharpness_permille\": 369, \"lr_micro\": 3000, \"ood16_correct\": 1605, \"ood16_total\": 2048, \"ood24_correct\": 1517, \"ood24_total\": 2048, \"params\": 53717, \"scheme\": \"workspace\", \"slots\": 3, \"steps\": 5550, \"train_loss_window_micro\": 54994, \"weight_decay_micro\": 0}}, \"arms_trained\": 10, \"benchmark\": \"c001\", \"bottleneck_violations\": 0, \"checkpoint_mismatch_arms\": 0, \"comparator_primary_permille\": 746, \"controls\": {\"bottleneck\": {\"required_rule_tripped\": true}, \"dropout_probe\": {\"required_rule_tripped\": true}, \"isolation_probe\": {\"required_rule_tripped\": true}, \"n_leak\": {\"required_rule_tripped\": true}, \"overlap\": {\"required_rule_tripped\": true}, \"param_mismatch\": {\"required_rule_tripped\": true}}, \"convergence_mismatch_arms\": 0, \"coverage_failed\": [], \"dropped_module_leaks\": 0, \"environment\": {\"cpu_flags_sha256\": \"19139faa5b3c177a2d253ee9520b13713aee71074562456de06d1ba7833e7890\", \"cpu_model\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"machine\": \"x86_64\", \"pyproject_sha256\": \"2255bd227c27a4d79bd31d5dd21adfa3b1f260e4e9c491715a288ebc6ff51aec\", \"python\": \"3.11.15\", \"threads\": 1, \"torch\": \"2.7.1+cpu\", \"torch_config_sha256\": \"e46186cc4399ea998fbf3c7f5c1d5e7c28eeadf904ab1acdbdf2da0d158ea59e\", \"uv_lock_sha256\": \"3d20af3c90cf233c213b5de5d5e16bee6bccfe78b04adea730db45f196e17ca7\"}, \"experiment\": \"C001\", \"falsifiers_failed\": [], \"guards_failed\": [], \"hard_failures\": 0, \"harness_gaps\": [], \"id_eval_instances\": 2048, \"integrity_failed\": [], \"majority_permille\": 323, \"n_leaks\": 0, \"no_broadcast_leaks\": 0, \"no_broadcast_reporter_hits\": 8, \"no_comm_above_chance\": 0, \"no_comm_id_permille\": 323, \"no_comm_leaks\": 0, \"no_comm_sensory_hits\": 0, \"nondeterminism\": 0, \"nonfinite_arms\": 0, \"ood16_eval_instances\": 2048, \"ood24_eval_instances\": 2048, \"pairwise_influence_hits\": 56, \"param_mismatch_arms\": 0, \"procedure\": {\"n_train_modules\": 8, \"ood_modules\": [16, 24], \"seed_is_declared\": true, \"shape_is_pinned\": true, \"train_size\": 2048}, \"scale\": \"pinned\", \"seed\": 4018, \"summary\": {\"all_to_all\": {\"id\": 822, \"ood16\": 746, \"ood24\": 676}, \"bw_all_to_all\": {\"id\": 833, \"ood16\": 727, \"ood24\": 636}, \"capacity_off\": {\"id\": 789, \"ood16\": 705, \"ood24\": 677}, \"competition_off\": {\"id\": 862, \"ood16\": 771, \"ood24\": 687}, \"crippled_all_to_all\": {\"id\": 385, \"ood16\": 358, \"ood24\": 326}, \"no_broadcast\": {\"id\": 814, \"ood16\": 742, \"ood24\": 710}, \"no_comm\": {\"id\": 323, \"ood16\": 331, \"ood24\": 327}, \"sparse_all_to_all\": {\"id\": 783, \"ood16\": 725, \"ood24\": 672}, \"weak_all_to_all\": {\"id\": 833, \"ood16\": 618, \"ood24\": 442}, \"workspace\": {\"id\": 825, \"ood16\": 783, \"ood24\": 740}}, \"timing_s\": 1028, \"train_eval_overlap\": 0, \"unconverged_arms\": [], \"unconverged_judged_arms\": 0, \"val_eval_overlap\": 0, \"workspace_influence_hits\": 56, \"workspace_trained\": 1}\n",
+  "stderr": "/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/c001-venv/lib/python3.11/site-packages/torch/_subclasses/functional_tensor.py:276: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)\n  cpu = _conversion_method_template(device=torch.device(\"cpu\"))\n",
+  "launch_error": null,
+  "duration_ns": 1035160857016
+}

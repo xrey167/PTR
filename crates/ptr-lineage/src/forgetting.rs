@@ -1,6 +1,7 @@
 use crate::error::LineageError;
 use crate::lineage::AdapterId;
 use crate::scale::{self, Wide};
+use sha2::{Digest, Sha256};
 
 /// `values[i][j]`: score on task `j` after training stage `i`, for `T` stages
 /// and `T` tasks (task `j` is the one introduced at stage `j`).
@@ -166,7 +167,11 @@ pub enum GateViolation {
 ///
 /// ```compile_fail
 /// use ptr_lineage::{AdapterId, GateReport};
-/// let forged = GateReport { adapter: AdapterId::from("a1"), violations: Vec::new() };
+/// let forged = GateReport {
+///     adapter: AdapterId::from("a1"),
+///     violations: Vec::new(),
+///     gate_config_digest: [0; 32],
+/// };
 /// ```
 ///
 /// It binds the verdict to the adapter id passed to
@@ -178,6 +183,9 @@ pub enum GateViolation {
 pub struct GateReport {
     adapter: AdapterId,
     violations: Vec<GateViolation>,
+    /// Digest of the gate configuration that produced this verdict, stored by
+    /// [`ForgettingGate::evaluate`] so a report cannot be bound to another gate.
+    gate_config_digest: [u8; 32],
 }
 
 impl GateReport {
@@ -193,6 +201,373 @@ impl GateReport {
     pub fn violations(&self) -> &[GateViolation] {
         &self.violations
     }
+
+    /// Digest of the gate configuration that evaluated this report.
+    pub fn gate_config_digest(&self) -> [u8; 32] {
+        self.gate_config_digest
+    }
+}
+
+/// The exact artifact and context a gate verdict was measured on, supplied by
+/// the trusted evaluator that ran the measurement. All fields are digests
+/// the caller computed; the gate records them and does not check them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GateSubject {
+    pub proposal_id: [u8; 32],
+    pub operation_id: [u8; 32],
+    pub artifact_digest: [u8; 32],
+    pub base_model_digest: [u8; 32],
+    pub eval_manifest_digest: [u8; 32],
+}
+
+impl GateSubject {
+    pub fn new(
+        proposal_id: [u8; 32],
+        operation_id: [u8; 32],
+        artifact_digest: [u8; 32],
+        base_model_digest: [u8; 32],
+        eval_manifest_digest: [u8; 32],
+    ) -> Self {
+        Self {
+            proposal_id,
+            operation_id,
+            artifact_digest,
+            base_model_digest,
+            eval_manifest_digest,
+        }
+    }
+}
+
+const GATE_CONFIG_DOMAIN: &[u8] = b"ptr.lineage.gate-config.v1";
+const BOUND_REPORT_DOMAIN: &[u8] = b"ptr.lineage.bound-gate-report.v1";
+
+/// A [`GateReport`] bound to the proposal, operation, artifact, base model,
+/// evaluation manifest and gate configuration it was produced under. Only
+/// [`GateReport::bind`] produces one; the fields are private, so a bound
+/// report cannot be built or changed by hand.
+///
+/// ```compile_fail
+/// use ptr_lineage::{BoundGateReport, GateSubject};
+/// let z = [0u8; 32];
+/// let forged = BoundGateReport {
+///     subject: GateSubject::new(z, z, z, z, z),
+///     gate_config_digest: z,
+/// };
+/// ```
+///
+/// The binding is only as trustworthy as the party that supplied the
+/// [`GateSubject`]: it must be the trusted evaluator, never the proposer's
+/// sandbox. The digest names what was claimed, it does not prove the
+/// measurements were taken on that artifact.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoundGateReport {
+    report: GateReport,
+    subject: GateSubject,
+    gate_config_digest: [u8; 32],
+}
+
+impl BoundGateReport {
+    pub fn report(&self) -> &GateReport {
+        &self.report
+    }
+
+    pub fn subject(&self) -> &GateSubject {
+        &self.subject
+    }
+
+    pub fn gate_config_digest(&self) -> [u8; 32] {
+        self.gate_config_digest
+    }
+
+    pub fn passed(&self) -> bool {
+        self.report.passed()
+    }
+
+    /// SHA-256 over the domain tag, the subject, the gate configuration
+    /// digest, the adapter id and the violations, each length-prefixed or
+    /// fixed-width so no two reports share an encoding.
+    pub fn digest(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(BOUND_REPORT_DOMAIN);
+        for d in [
+            &self.subject.proposal_id,
+            &self.subject.operation_id,
+            &self.subject.artifact_digest,
+            &self.subject.base_model_digest,
+            &self.subject.eval_manifest_digest,
+            &self.gate_config_digest,
+        ] {
+            h.update(d);
+        }
+        let adapter = self.report.adapter.0.as_bytes();
+        h.update((adapter.len() as u64).to_le_bytes());
+        h.update(adapter);
+        h.update((self.report.violations.len() as u64).to_le_bytes());
+        for v in &self.report.violations {
+            match v {
+                GateViolation::AverageForgetting { observed, limit } => {
+                    h.update([0u8]);
+                    h.update(canonical_bits(*observed));
+                    h.update(canonical_bits(*limit));
+                }
+                GateViolation::TaskForgetting {
+                    task,
+                    observed,
+                    limit,
+                } => {
+                    h.update([1u8]);
+                    h.update((*task as u64).to_le_bytes());
+                    h.update(canonical_bits(*observed));
+                    h.update(canonical_bits(*limit));
+                }
+                GateViolation::BackwardTransfer { observed, limit } => {
+                    h.update([2u8]);
+                    h.update(canonical_bits(*observed));
+                    h.update(canonical_bits(*limit));
+                }
+                GateViolation::PublicRegression { observed, limit } => {
+                    h.update([3u8]);
+                    h.update(canonical_bits(*observed));
+                    h.update(canonical_bits(*limit));
+                }
+            }
+        }
+        h.finalize().into()
+    }
+}
+
+/// Leading magic and version of a [`BoundGateReport`] encoding.
+const BOUND_REPORT_MAGIC: &[u8; 8] = b"PTRBGR01";
+
+/// The largest encoding [`BoundGateReport::decode_canonical`] reads (1 MiB, the same bound as an
+/// expert commit record, which embeds one).
+pub const MAX_BOUND_GATE_REPORT_BYTES: usize = 1 << 20;
+
+fn malformed<T>(message: &'static str) -> Result<T, LineageError> {
+    Err(LineageError::InvalidParameter {
+        field: "bound gate report",
+        message,
+    })
+}
+
+struct ReportReader<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> ReportReader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], LineageError> {
+        if self.bytes.len() < n {
+            return malformed("truncated");
+        }
+        let (head, tail) = self.bytes.split_at(n);
+        self.bytes = tail;
+        Ok(head)
+    }
+
+    fn u8(&mut self) -> Result<u8, LineageError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, LineageError> {
+        let raw = self.take(4)?;
+        Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+    }
+
+    fn u64(&mut self) -> Result<u64, LineageError> {
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(self.take(8)?);
+        Ok(u64::from_le_bytes(raw))
+    }
+
+    fn f64(&mut self) -> Result<f64, LineageError> {
+        Ok(f64::from_bits(self.u64()?))
+    }
+
+    fn array32(&mut self) -> Result<[u8; 32], LineageError> {
+        let mut raw = [0u8; 32];
+        raw.copy_from_slice(self.take(32)?);
+        Ok(raw)
+    }
+}
+
+impl BoundGateReport {
+    /// The canonical bytes of this report.
+    ///
+    /// All integers are little-endian. `report = magic "PTRBGR01" | proposal_id[32] |
+    /// operation_id[32] | artifact_digest[32] | base_model_digest[32] | eval_manifest_digest[32]
+    /// | gate_config_digest[32] | adapter (u32 length, UTF-8) | violation count u32 |
+    /// violations | passed u8 | digest[32]`. A violation is a tag byte (0 AverageForgetting,
+    /// 1 TaskForgetting, 2 BackwardTransfer, 3 PublicRegression), for TaskForgetting the task as
+    /// `u64`, then `observed` and `limit` as the little-endian bits of an `f64`, `-0.0` as
+    /// `0.0` and every NaN as one pattern (the bits [`BoundGateReport::digest`] hashes). `passed`
+    /// is 1 exactly when there is no violation, and `digest` is [`BoundGateReport::digest`].
+    pub fn encode_canonical(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(BOUND_REPORT_MAGIC);
+        for d in [
+            &self.subject.proposal_id,
+            &self.subject.operation_id,
+            &self.subject.artifact_digest,
+            &self.subject.base_model_digest,
+            &self.subject.eval_manifest_digest,
+            &self.gate_config_digest,
+        ] {
+            out.extend_from_slice(d);
+        }
+        let adapter = self.report.adapter.0.as_bytes();
+        out.extend_from_slice(&(adapter.len() as u32).to_le_bytes());
+        out.extend_from_slice(adapter);
+        out.extend_from_slice(&(self.report.violations.len() as u32).to_le_bytes());
+        for v in &self.report.violations {
+            match v {
+                GateViolation::AverageForgetting { observed, limit } => {
+                    out.push(0);
+                    out.extend_from_slice(&canonical_bits(*observed));
+                    out.extend_from_slice(&canonical_bits(*limit));
+                }
+                GateViolation::TaskForgetting {
+                    task,
+                    observed,
+                    limit,
+                } => {
+                    out.push(1);
+                    out.extend_from_slice(&(*task as u64).to_le_bytes());
+                    out.extend_from_slice(&canonical_bits(*observed));
+                    out.extend_from_slice(&canonical_bits(*limit));
+                }
+                GateViolation::BackwardTransfer { observed, limit } => {
+                    out.push(2);
+                    out.extend_from_slice(&canonical_bits(*observed));
+                    out.extend_from_slice(&canonical_bits(*limit));
+                }
+                GateViolation::PublicRegression { observed, limit } => {
+                    out.push(3);
+                    out.extend_from_slice(&canonical_bits(*observed));
+                    out.extend_from_slice(&canonical_bits(*limit));
+                }
+            }
+        }
+        out.push(u8::from(self.passed()));
+        out.extend_from_slice(&self.digest());
+        out
+    }
+
+    /// Decode a report and re-derive its digest.
+    ///
+    /// The result is the report the bytes describe, not proof that a trusted evaluator produced
+    /// it: the digest is an unkeyed hash. What it gives a replaying reader is that the evidence a
+    /// committed record embeds is exactly the evidence whose digest the record (and ledger event)
+    /// carry.
+    ///
+    /// # Errors
+    /// [`LineageError::InvalidParameter`] for input over [`MAX_BOUND_GATE_REPORT_BYTES`], a wrong
+    /// magic, truncated or trailing bytes, an unknown violation tag, a `passed` byte that is not
+    /// 1 exactly when there is no violation, a stored digest that is not the digest of the
+    /// decoded fields, and any byte string that does not re-encode to itself (for instance a
+    /// `-0.0` or a non-canonical NaN).
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, LineageError> {
+        if bytes.len() > MAX_BOUND_GATE_REPORT_BYTES {
+            return malformed("exceeds the size limit");
+        }
+        let mut r = ReportReader { bytes };
+        if r.take(BOUND_REPORT_MAGIC.len())? != BOUND_REPORT_MAGIC {
+            return malformed("unknown magic");
+        }
+        let subject = GateSubject::new(
+            r.array32()?,
+            r.array32()?,
+            r.array32()?,
+            r.array32()?,
+            r.array32()?,
+        );
+        let gate_config_digest = r.array32()?;
+        let adapter_len = r.u32()? as usize;
+        let adapter = match std::str::from_utf8(r.take(adapter_len)?) {
+            Ok(adapter) => adapter.to_owned(),
+            Err(_) => return malformed("adapter is not UTF-8"),
+        };
+        let count = r.u32()? as usize;
+        // Every violation takes at least 17 bytes, so a count the input cannot hold is refused
+        // before anything is allocated for it.
+        if count > r.bytes.len() / 17 {
+            return malformed("violation count exceeds the input");
+        }
+        let mut violations = Vec::with_capacity(count);
+        for _ in 0..count {
+            violations.push(match r.u8()? {
+                0 => GateViolation::AverageForgetting {
+                    observed: r.f64()?,
+                    limit: r.f64()?,
+                },
+                1 => {
+                    let Ok(task) = usize::try_from(r.u64()?) else {
+                        return malformed("task index does not fit");
+                    };
+                    GateViolation::TaskForgetting {
+                        task,
+                        observed: r.f64()?,
+                        limit: r.f64()?,
+                    }
+                }
+                2 => GateViolation::BackwardTransfer {
+                    observed: r.f64()?,
+                    limit: r.f64()?,
+                },
+                3 => GateViolation::PublicRegression {
+                    observed: r.f64()?,
+                    limit: r.f64()?,
+                },
+                _ => return malformed("unknown violation tag"),
+            });
+        }
+        let passed = r.u8()?;
+        let stored_digest = r.array32()?;
+        if !r.bytes.is_empty() {
+            return malformed("trailing bytes");
+        }
+        let report = GateReport {
+            adapter: AdapterId(adapter),
+            violations,
+            gate_config_digest,
+        }
+        .bind(subject);
+        if passed != u8::from(report.passed()) {
+            return malformed("passed flag disagrees with the violations");
+        }
+        if report.digest() != stored_digest {
+            return malformed("stored digest is not the digest of the fields");
+        }
+        if report.encode_canonical() != bytes {
+            return malformed("non-canonical encoding");
+        }
+        Ok(report)
+    }
+}
+
+impl GateReport {
+    /// Bind this verdict to the subject it was measured on. The gate
+    /// configuration digest is the one [`ForgettingGate::evaluate`] stored in
+    /// the report; the caller cannot supply another.
+    pub fn bind(self, subject: GateSubject) -> BoundGateReport {
+        BoundGateReport {
+            gate_config_digest: self.gate_config_digest,
+            report: self,
+            subject,
+        }
+    }
+}
+
+/// The bits a threshold or measurement is hashed by: `-0.0` hashes as `0.0` and
+/// every NaN as one pattern, so equal values never digest differently.
+fn canonical_bits(value: f64) -> [u8; 8] {
+    let value = if value == 0.0 {
+        0.0
+    } else if value.is_nan() {
+        f64::NAN
+    } else {
+        value
+    };
+    value.to_bits().to_le_bytes()
 }
 
 /// Public-suite scores of the serving model and of the candidate.
@@ -203,6 +578,28 @@ pub struct PublicSuite {
 }
 
 impl ForgettingGate {
+    /// Canonical digest of the four thresholds: a domain tag and each
+    /// threshold as the little-endian bits of its `f64` in field order, with
+    /// `-0.0` hashed as `0.0`.
+    ///
+    /// # Errors
+    /// Returns `LineageError::InvalidParameter` for a nonfinite threshold,
+    /// the same refusal as [`ForgettingGate::evaluate`].
+    pub fn config_digest(&self) -> Result<[u8; 32], LineageError> {
+        self.check()?;
+        let mut h = Sha256::new();
+        h.update(GATE_CONFIG_DOMAIN);
+        for t in [
+            self.max_average_forgetting,
+            self.max_task_forgetting,
+            self.min_backward_transfer,
+            self.max_public_regression,
+        ] {
+            h.update(canonical_bits(t));
+        }
+        Ok(h.finalize().into())
+    }
+
     fn check(&self) -> Result<(), LineageError> {
         let thresholds = [
             ("max_average_forgetting", self.max_average_forgetting),
@@ -239,6 +636,7 @@ impl ForgettingGate {
         public: PublicSuite,
     ) -> Result<GateReport, LineageError> {
         self.check()?;
+        let gate_config_digest = self.config_digest()?;
         if !(public.serving.is_finite() && public.candidate.is_finite()) {
             return Err(LineageError::NonFinite {
                 field: "public suite score",
@@ -278,6 +676,7 @@ impl ForgettingGate {
         Ok(GateReport {
             adapter: adapter.clone(),
             violations,
+            gate_config_digest,
         })
     }
 }
@@ -426,5 +825,173 @@ mod tests {
     #[test]
     fn a_ragged_matrix_is_refused() {
         assert!(AccuracyMatrix::new(vec![vec![0.9, 0.1], vec![0.8]]).is_err());
+    }
+
+    fn gate() -> ForgettingGate {
+        ForgettingGate {
+            max_average_forgetting: 0.5,
+            max_task_forgetting: 0.5,
+            min_backward_transfer: -0.5,
+            max_public_regression: 0.02,
+        }
+    }
+
+    fn subject() -> GateSubject {
+        GateSubject::new([1; 32], [2; 32], [3; 32], [4; 32], [5; 32])
+    }
+
+    fn bound(gate: &ForgettingGate, subject: GateSubject, public: PublicSuite) -> BoundGateReport {
+        gate.evaluate(&AdapterId::from("a1"), &matrix(), public)
+            .unwrap()
+            .bind(subject)
+    }
+
+    fn passing() -> PublicSuite {
+        PublicSuite {
+            serving: 0.8,
+            candidate: 0.8,
+        }
+    }
+
+    fn hex(d: [u8; 32]) -> String {
+        d.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn bound_report_digest_is_deterministic_and_pinned() {
+        let a = bound(&gate(), subject(), passing());
+        let b = bound(&gate(), subject(), passing());
+        assert_eq!(a.digest(), b.digest());
+        assert_eq!(
+            hex(a.digest()),
+            "7fee8d89e60dd392982bb95e31b17603dc978138132a9e239139c5c8a913dbb7"
+        );
+        assert_eq!(
+            hex(gate().config_digest().unwrap()),
+            "838c0828f4ab702d4bd7b0a8d2067597e5b38c68786e8cb53ded2c43743d7dcd"
+        );
+        assert_eq!(a.subject(), &subject());
+        assert_eq!(a.gate_config_digest(), gate().config_digest().unwrap());
+        assert_eq!(a.passed(), a.report().passed());
+    }
+
+    #[test]
+    fn bound_report_digest_changes_with_every_subject_field() {
+        let base = bound(&gate(), subject(), passing()).digest();
+        let s = subject();
+        let variants = [
+            GateSubject {
+                proposal_id: [9; 32],
+                ..s
+            },
+            GateSubject {
+                operation_id: [9; 32],
+                ..s
+            },
+            GateSubject {
+                artifact_digest: [9; 32],
+                ..s
+            },
+            GateSubject {
+                base_model_digest: [9; 32],
+                ..s
+            },
+            GateSubject {
+                eval_manifest_digest: [9; 32],
+                ..s
+            },
+        ];
+        for v in variants {
+            assert_ne!(bound(&gate(), v, passing()).digest(), base);
+        }
+    }
+
+    #[test]
+    fn bound_report_digest_changes_with_every_threshold() {
+        let base = bound(&gate(), subject(), passing());
+        let g = gate();
+        let variants = [
+            ForgettingGate {
+                max_average_forgetting: 0.51,
+                ..g
+            },
+            ForgettingGate {
+                max_task_forgetting: 0.51,
+                ..g
+            },
+            ForgettingGate {
+                min_backward_transfer: -0.51,
+                ..g
+            },
+            ForgettingGate {
+                max_public_regression: 0.03,
+                ..g
+            },
+        ];
+        for v in variants {
+            assert_ne!(v.config_digest().unwrap(), g.config_digest().unwrap());
+            assert_ne!(bound(&v, subject(), passing()).digest(), base.digest());
+        }
+    }
+
+    #[test]
+    fn bound_report_digest_changes_with_the_verdict_and_adapter() {
+        let pass = bound(&gate(), subject(), passing());
+        let fail = bound(
+            &gate(),
+            subject(),
+            PublicSuite {
+                serving: 0.9,
+                candidate: 0.5,
+            },
+        );
+        assert!(pass.passed() && !fail.passed());
+        assert_ne!(pass.digest(), fail.digest());
+        let other = gate()
+            .evaluate(&AdapterId::from("a2"), &matrix(), passing())
+            .unwrap()
+            .bind(subject());
+        assert_ne!(pass.digest(), other.digest());
+    }
+
+    #[test]
+    fn a_report_carries_the_digest_of_the_gate_that_evaluated_it() {
+        let strict = gate();
+        let lax = ForgettingGate {
+            max_average_forgetting: 1e9,
+            max_task_forgetting: 1e9,
+            min_backward_transfer: -1e9,
+            max_public_regression: 1e9,
+        };
+        let report = lax
+            .evaluate(&AdapterId::from("a1"), &matrix(), passing())
+            .unwrap();
+        assert_eq!(report.gate_config_digest(), lax.config_digest().unwrap());
+        assert_ne!(report.gate_config_digest(), strict.config_digest().unwrap());
+        // `bind` takes no gate: the lax digest is what ends up bound.
+        let bound = report.bind(subject());
+        assert_eq!(bound.gate_config_digest(), lax.config_digest().unwrap());
+        assert_ne!(bound.gate_config_digest(), strict.config_digest().unwrap());
+    }
+
+    #[test]
+    fn nonfinite_thresholds_have_no_digest_and_negative_zero_equals_zero() {
+        let g = gate();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let broken = ForgettingGate {
+                max_task_forgetting: bad,
+                ..g
+            };
+            assert!(broken.config_digest().is_err());
+        }
+        let zero = ForgettingGate {
+            min_backward_transfer: 0.0,
+            ..g
+        };
+        let negative_zero = ForgettingGate {
+            min_backward_transfer: -0.0,
+            ..g
+        };
+        assert_eq!(zero.config_digest(), negative_zero.config_digest());
     }
 }

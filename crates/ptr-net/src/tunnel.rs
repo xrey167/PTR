@@ -647,3 +647,31 @@ fn ensure_same_profile(current: &TunnelLease, presented: &TunnelLease) -> Result
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "wireguard-uapi-backend", target_os = "linux"))]
+mod wireguard_name_tests {
+    use super::validate_interface_name;
+
+    #[test]
+    fn interface_names_accept_the_kernel_safe_subset() {
+        for name in ["wg0", "ptr-mesh_1", "a", "123456789012345"] {
+            assert!(validate_interface_name(name).is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn interface_names_refuse_empty_long_and_shell_or_path_characters() {
+        for name in [
+            "",
+            "1234567890123456",
+            "wg 0",
+            "wg/0",
+            "../wg",
+            "wg0;rm",
+            "wg.0",
+            "wg\u{e9}",
+        ] {
+            assert!(validate_interface_name(name).is_err(), "{name:?}");
+        }
+    }
+}

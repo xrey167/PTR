@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ptr_training.moe.config import LoraConfig, ModelConfig
+from ptr_training.moe.config import LoraConfig, ModelConfig, resolve_device
 
 PAD, EOS, BOS, UNK = "<pad>", "<eos>", "<bos>", "<unk>"
 # Every character the tasks can emit or read, plus a little slack so sampled garbage
@@ -103,6 +103,7 @@ def build_tiny_model(cfg: ModelConfig, tokenizer):
     model = OlmoeForCausalLM(config)
     if cfg.precision == "bf16":
         model = model.to(torch.bfloat16)
+    model = model.to(resolve_device(cfg.device))
     model.eval()
     return model
 
@@ -120,8 +121,7 @@ def build_pretrained(cfg: ModelConfig):
     model = AutoModelForCausalLM.from_pretrained(
         cfg.hf_id, revision=cfg.revision, dtype=dtype
     )
-    if torch.cuda.is_available():
-        model = model.to("cuda")
+    model = model.to(resolve_device(cfg.device))
     return model, tokenizer
 
 
@@ -157,6 +157,23 @@ def build(cfg: ModelConfig, lora: LoraConfig):
     if lora.enabled:
         model = apply_lora(model, lora, cfg.seed)
     return model, tokenizer
+
+
+def enable_gradient_checkpointing(model) -> None:
+    """Turn on activation checkpointing (trades compute for activation memory).
+
+    PEFT-wrapped models also need the embedding output to require grad, otherwise a reentrant
+    checkpoint sees no input requiring grad and the LoRA parameters get no gradient.
+    """
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    base.gradient_checkpointing_enable()
+    if hasattr(model, "peft_config"):
+        base.enable_input_require_grads()
+
+
+def disable_gradient_checkpointing(model) -> None:
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    base.gradient_checkpointing_disable()
 
 
 def param_dtypes(model) -> list[str]:

@@ -1,0 +1,259 @@
+# Defects the S001 harness must detect; run with `python scripts/mutation_check.py S001`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file (checked
+# by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
+# that show the defect: a run that fails only on others does not count as detecting it.
+#
+# The first thirteen mutations plant defects in `ptr-semdb` (`SemanticHost::prepare_delta`,
+# `apply_prepared` and the dependency graph); the last three plant defects in the harness itself,
+# to show that its oracle, its revision model and its arm A are not vacuous: each makes the
+# harness's own cross-check fire. Every hard counter is expected by at least one mutation, so that
+# `killed == total` also shows each of the ten can fire (a test in bins/ptr-bench checks this list
+# against the harness).
+#
+# Not listed, on purpose: skipping the closure over the OLD graph in `prepare_delta`
+# (`self.state.dependencies.affected_by(changed...)`) or, equally, over the NEW graph
+# (`next.dependencies.affected_by(changed)`). Both are equivalent mutants and each call is
+# redundant with the other: an edge the delta removes ends at a key whose dependency set changed,
+# that key is itself in `changed`, so the closure over the new graph from `changed` contains
+# everything the old graph reached; by the mirror argument (the last edge the delta adds) the
+# closure over the old graph contains the new one. Dropping the new-graph call was run on seed 17
+# at the pinned scale: identical affected and closure totals and zero hard counters. No stream can
+# tell the two apart; the phrase "over the old and the new edges" in the hypothesis is the
+# definition of the oracle's structural closure, not a distinction S001 tests.
+#
+# `value-change-invalidates-everything` leaves the graph loadable (the setup deltas declare their
+# dependencies), `affected-everything-breaks-the-graph-setup` does not: a host that refuses to
+# load a graph is a counted `unexpected_refusals`, never exit 2.
+#
+# The mutation run is invoked as `ptr-bench invalidation <cases> 17`: `cases` is the number of
+# operations per graph (the pinned graph sizes, so the run is no evidence, and its scale is
+# printed as "custom").
+
+package = "ptr-bench"
+features = ""
+subcommand = "invalidation"
+cases = 60
+seed = 17
+hard_counters = [
+    "missed_invalidations",
+    "closure_mismatches",
+    "dependency_mismatches",
+    "semantic_divergences",
+    "noop_revision_bumps",
+    "revision_mismatches",
+    "unexpected_refusals",
+    "cycle_unrefused",
+    "missing_dependency_unrefused",
+    "locality_violation",
+]
+
+[[mutation]]
+name = "affected-direct-children-only"
+description = "affected_by stops at the direct dependents: a change reaches its children, never its grandchildren."
+expect = ["missed_invalidations", "closure_mismatches", "semantic_divergences"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+                    stack.extend(children.iter().map(|key| (*key).to_owned()));
+'''
+replace = '''
+                    out.extend(children.iter().map(|key| (*key).to_owned()));
+'''
+
+[[mutation]]
+name = "affected-values-not-evicted"
+description = "prepare_delta marks the closure affected but keeps the affected derived values, so stale values survive the first phase."
+expect = ["missed_invalidations"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+                next.ground.remove(key);
+'''
+replace = '''
+                let _ = key;
+'''
+
+[[mutation]]
+name = "rewired-key-not-changed"
+description = "A replaced dependency set does not count as a change of the rewired key: it is neither marked affected nor evicted."
+expect = ["missed_invalidations", "closure_mismatches", "semantic_divergences"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+                    next.dependencies.inputs.insert(key.clone(), inputs.clone());
+                }
+                changed.insert(key.clone());
+'''
+replace = '''
+                    next.dependencies.inputs.insert(key.clone(), inputs.clone());
+                }
+'''
+
+[[mutation]]
+name = "cycles-accepted"
+description = "The acyclicity check accepts every graph."
+expect = ["cycle_unrefused"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+        visited == degree.len()
+'''
+replace = '''
+        visited == degree.len() || true
+'''
+
+[[mutation]]
+name = "revision-bumped-on-no-op"
+description = "prepare_delta advances the revision even when nothing changed."
+expect = ["noop_revision_bumps", "revision_mismatches"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+        if next != self.state {
+'''
+replace = '''
+        if true {
+'''
+
+[[mutation]]
+name = "value-change-invalidates-everything"
+description = "A delta that declares no dependencies (a value change) marks every derived key affected: over-invalidation. Declared structure changes keep the exact closure (the setup deltas declare it, so the graph still loads)."
+expect = ["locality_violation", "closure_mismatches"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+        let mut affected = self.state.dependencies.affected_by(changed.iter().cloned());
+'''
+replace = '''
+        let mut affected: BTreeSet<String> = if delta.dependencies.is_empty() {
+            self.state.dependencies.inputs.keys().cloned().collect()
+        } else {
+            self.state.dependencies.affected_by(changed.iter().cloned())
+        };
+'''
+
+[[mutation]]
+name = "missing-input-accepted"
+description = "An explicit upsert of a derived key is accepted although one of its inputs holds nothing."
+expect = ["missing_dependency_unrefused"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+                    if !next.ground.contains_key(input) {
+'''
+replace = '''
+                    if false && !next.ground.contains_key(input) {
+'''
+
+[[mutation]]
+name = "input-check-over-eager"
+description = "The input check covers every derived key, not only the upserted ones, so a delta that evicts a derived value with a dependent is refused."
+expect = ["unexpected_refusals"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+        for key in delta.upserts.keys() {
+'''
+replace = '''
+        for key in next.dependencies.inputs.keys() {
+'''
+
+[[mutation]]
+name = "equal-upsert-counts-as-change"
+description = "An upsert of the value a key already holds counts as a change: it invalidates the key's dependents and advances the revision."
+expect = ["noop_revision_bumps", "closure_mismatches"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+            if next.ground.get(key) != Some(value) {
+'''
+replace = '''
+            if true {
+'''
+
+[[mutation]]
+name = "affected-everything-breaks-the-graph-setup"
+description = "Every delta marks every derived key of the old state affected: the later chunks of a graph being loaded evict the derived values of the earlier chunks and are then refused as MissingDependency (the host refuses to load the graph)."
+expect = ["unexpected_refusals", "closure_mismatches"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+        let mut affected = self.state.dependencies.affected_by(changed.iter().cloned());
+'''
+replace = '''
+        let mut affected: BTreeSet<String> = self.state.dependencies.inputs.keys().cloned().collect();
+'''
+
+[[mutation]]
+name = "apply-returns-an-empty-affected-set"
+description = "apply_prepared (and so apply_delta) hands back an empty set although the preparation holds the affected keys."
+expect = ["closure_mismatches"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+        Ok((self.revision(), prepared.affected))
+'''
+replace = '''
+        Ok((self.revision(), BTreeSet::new()))
+'''
+
+[[mutation]]
+name = "removed-key-keeps-its-dependency-entry"
+description = "Removing a key leaves its dependency entry behind, so the stored dependency sets differ from the edges the oracle holds."
+expect = ["dependency_mismatches"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+            if next.dependencies.inputs.remove(key).is_some() {
+'''
+replace = '''
+            if next.dependencies.inputs.contains_key(key) {
+'''
+
+[[mutation]]
+name = "apply-refuses-its-own-preparation"
+description = "apply_prepared refuses some fresh preparations (every seventh revision) as StalePreparation although host and revision match."
+expect = ["unexpected_refusals"]
+file = "crates/ptr-semdb/src/lib.rs"
+find = '''
+            return Err(SemanticError::StalePreparation);
+        }
+        self.state = prepared.next;
+'''
+replace = '''
+            return Err(SemanticError::StalePreparation);
+        }
+        if prepared.next.revision.0 % 7 == 0 {
+            return Err(SemanticError::StalePreparation);
+        }
+        self.state = prepared.next;
+'''
+
+[[mutation]]
+name = "harness-oracle-closure-truncated"
+description = "Harness self-defect: the oracle's walk stops expanding after four keys, so its closure is too small."
+expect = ["closure_mismatches"]
+file = "bins/ptr-bench/src/experiments/s001/oracle.rs"
+find = '''
+            queue.extend(reverse[id].iter().copied());
+'''
+replace = '''
+            if seen.len() < 4 {
+                queue.extend(reverse[id].iter().copied());
+            }
+'''
+
+[[mutation]]
+name = "harness-oracle-forgets-multi-key-bumps"
+description = "Harness self-defect: the oracle expects a delta that changes two or more keys not to advance the revision (its revision model is wrong). The converse defect, an oracle that expects a bump on a no-op, is not listed: the harness catches it earlier as exit 2 (a generated NoOp the oracle says changes the state)."
+expect = ["revision_mismatches"]
+file = "bins/ptr-bench/src/experiments/s001/oracle.rs"
+find = '''
+            bumps_revision: verdict == Verdict::Valid && !changed.is_empty(),
+'''
+replace = '''
+            bumps_revision: verdict == Verdict::Valid && changed.len() == 1,
+'''
+
+[[mutation]]
+name = "harness-arm-skips-lossy-kinds"
+description = "Harness self-defect: arm A does not recompute the lossy (min and parity) derivations."
+expect = ["semantic_divergences"]
+file = "bins/ptr-bench/src/experiments/s001/runner.rs"
+find = '''
+            let value = derive::eval(kind, &values);
+'''
+replace = '''
+            if kind.is_lossy() {
+                continue;
+            }
+            let value = derive::eval(kind, &values);
+'''

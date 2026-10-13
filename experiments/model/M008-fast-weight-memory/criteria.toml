@@ -1,0 +1,102 @@
+# M008 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256);
+# no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
+# m008/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order, and
+# every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and so a
+# parse error: no decimal literal exists, fractions are integer permille).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON result
+# object, separated by '.' (no key holds a '.', no array is indexed): "updated_cue_queries" is a top-level key,
+# "unanswerable_answered_permille.fast" the member fast of the object unanswerable_answered_permille.
+# A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a failed rule).
+# A reference compared with an integer literal or another reference must be a JSON integer (not a
+# boolean, not a float). Exact comparisons.
+#
+# The manifest's "< N" prerequisites are written ">= N", its "> N" violations "<= N". One rule reads a second
+# counter instead of a literal: false_recall_fast_permille <= false_recall_recency_permille (the manifest's hard
+# failure: a false recall rate above the recency baseline's), over all queries of the seed.
+#
+# The two gain rules read the lower bound of a paired bootstrap of "recall@1 of fast memory minus recall@1 of the
+# baseline" over the answerable queries of the seed (2000 resamples, the 5th percentile, a pinned seed, integer
+# permille rounded down): "no gain" is the reject condition, so the bound must be at least 1 permille. Recall@1
+# counts a query as right only when the arm's top fact is the CURRENT version of the queried cue.
+#
+# Rules that hold by construction or duplicate another (named so a reader does not mistake them for evidence):
+# written_facts >= 500 and unanswerable_queries >= 50 count the generated session (they check the generator, not
+# the memory); updated_cue_queries >= 100 and old_stratum_queries >= 100 count queries of the generated session
+# of those kinds (the old stratum is the answerable queries whose current fact was written before the last
+# RECENCY_WINDOW writes); readback_checks, stale_residual_checks and projection_probes count checks the harness really made against the
+# product during the run; contract_probes and contract_probe_margin_refusals are BY CONSTRUCTION (80 decodes on small
+# memories whose readout is known: 40 clear, answered; 40 ambiguous, refused by margin; no organic query reaches the
+# margin at the pinned score threshold, fast_margin_abstentions is 0 or near it and is reported, not judged);
+# fast_score_abstentions counts the organic queries on which the harness's own reading refused by score; the three unanswerable_answered_permille rules say the
+# abstention thresholds set on the pilot seeds transferred (an arm that answers more than 150 permille of the
+# unanswerable queries is not at the matched operating point, so the comparison is vacuous, not decided); the three
+# control_* rules are the negative controls (oracle-cheat, random, stale-first), which use no code under test: the
+# harness also exits 2 when one is not separated; the three control_positive_* rules are the positive control (the oracle-cheat answers standing in the memory's place
+# go through the same gain, bootstrap and false-recall path and must pass the outcome rules: this is what shows the
+# gain and false-recall falsifiers can pass on real harness output; the harness exits 2 when it does not);
+# oracle_label_mismatches <= 0, stale_in_live_index <= 0 and window_budget_violations <= 0 are harness and baseline
+# integrity guards (the oracle's readings of the write list and the generator's labels disagree; the pinned live
+# index returned a stale version, a defect of the driver or the harness; the recency window times the longest fact of
+# the pool exceeds the token budget): the grammar can only express them as failed coverage rules, but aggregate.py
+# judges a seed that trips any of them INVALID, not falsified, since they say nothing about the memory;
+# token_budget_violations <= 0 counts queries on which an arm presented more tokens than the budget.
+# The gain rules and the false-recall rule are outcomes (the false-recall rule is weak: an arm that abstains almost
+# always passes it); they are shown able to pass by the positive control, not by a mutation that kills them
+# discriminatingly (see tests/mutations.toml); the other falsifiers are the memory's and the baseline's
+# contracts, each read from the observed events: decode_contract_violations (the product's decode differs from the
+# harness's own decode of the same readout), readback_failures (a write does not read back through its own key),
+# stale_residual_violations (after an update the stale version still scores above the residual bound in the readout of a paraphrase query),
+# projection_mismatch_accepted (a query of another projection, or of none, was read), product_panics and product_errors
+# (the code under test panicked or refused a valid request).
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies M008 on that seed.
+# Decision: every seed must hold every coverage rule and every falsifier rule, and the mutation evidence must be
+# complete; COMPLETED iff so, INVALID if a seed is missing, unresolvable, or its record does not describe the frozen
+# run (a pilot seed, another scale, a pool or vector digest that is not the pinned one), or reports an oracle label, stale-index or window integrity
+# mismatch, or the mutation evidence is missing or incomplete, FALSIFIED otherwise.
+version = 1
+experiment = "M008"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "updated_cue_queries >= 100",
+  "unanswerable_queries >= 50",
+  "old_stratum_queries >= 100",
+  "written_facts >= 500",
+  "readback_checks >= 500",
+  "stale_residual_checks >= 100",
+  "projection_probes >= 50",
+  "contract_probes >= 80",
+  "fast_score_abstentions >= 20",
+  "contract_probe_margin_refusals >= 20",
+  "unanswerable_answered_permille.fast <= 150",
+  "unanswerable_answered_permille.recency <= 150",
+  "unanswerable_answered_permille.hybrid_live <= 150",
+  "control_oracle_cheat_recall_permille >= 1000",
+  "control_random_recall_permille <= 100",
+  "control_stale_first_false_recall_permille >= 300",
+  "control_positive_gain_vs_recency_lo_permille >= 1",
+  "control_positive_gain_vs_hybrid_live_lo_permille >= 1",
+  "control_positive_false_recall_headroom_permille >= 0",
+  "oracle_label_mismatches <= 0",
+  "stale_in_live_index <= 0",
+  "window_budget_violations <= 0",
+]
+
+falsifiers = [
+  "false_recall_fast_permille <= false_recall_recency_permille",
+  "recall_gain_vs_recency_lo_permille >= 1",
+  "recall_gain_vs_hybrid_live_lo_permille >= 1",
+  "token_budget_violations <= 0",
+  "product_panics <= 0",
+  "product_errors <= 0",
+  "stale_residual_violations <= 0",
+  "readback_failures <= 0",
+  "decode_contract_violations <= 0",
+  "projection_mismatch_accepted <= 0",
+]

@@ -1,0 +1,70 @@
+{
+  "experiment_id": "R011",
+  "status": "prepared",
+  "scope": "self-modification safety of the expert registry on the CPU reference path: PtrRuntime's gate evidence binding, compare-and-set of every operand, commit-time identity and grant revalidation, fence and revocation-driven retirement, compound input invalidation with its dependency index and fence set, and evidence-authority epoch, over a durable FileLedger through the public API, and in-flight expert calls on the R010 KvSession over the tiny seeded MoE; a claim about the public PtrRuntime API, not about a raw ledger writer, a router or a trainer",
+  "git_sha": "ea6515cfac3ba65f0f5c71ceae3d872694122d4a",
+  "aggregated_at_git_sha": "28f8d1b21a9c04cdccd4a6a4470fd24face93962",
+  "recorded_at": "2026-10-08T11:15:37.227030+00:00",
+  "preregistration_sha256": "d267013bd048f61062fad18d2636abb94becba2f54bea8ac88a9e00f99309af7",
+  "preregistration_rules_sha256": "ce2d52859c16db0784d57a8c65e900b11532f153c68577af7854c4ffcfd5e3ee",
+  "criteria_sha256": "dc10a13c89f2eeec181992289dcf086db793bb59cd564652069b738b361e8edc",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- self-modification-safety <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261008T110810.368131Z-seed-17.json",
+      "git_sha": "ea6515cfac3ba65f0f5c71ceae3d872694122d4a",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261008T110937.937468Z-seed-29.json",
+      "git_sha": "635567b6788856a78299019f744ccc976318e6ce",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261008T111105.754891Z-seed-43.json",
+      "git_sha": "e464f0003e3ef5a7017a624f60f80146ab08b227",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261008T111231.367263Z-seed-71.json",
+      "git_sha": "977410f4572e7e96e01b20c2ee0c23e4ae868177",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261008T111402.245357Z-seed-101.json",
+      "git_sha": "eeb5a58a6cd9ceb6c8b29f39dd0907c44df24d67",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "fed2e0c6a4607b78d6810ae7e2d434128712ee8e4889b99cbbe78c2d6d24fb70",
+    "29": "58433847d738e016b2b9f384f8e19edd4c5ca9edb662ffee2bd5d27ac32dd15d",
+    "43": "5b102a1f17024435b28542b027516be3b5e44c6e6f5981f3e72e28bf873c3fb6",
+    "71": "0f344943356c46232f4afa0285290f12aaeded2f0539846d9d40e8f118c7ba84",
+    "101": "693e01e6b4c15896ec3721a800b76365e14a4b96afcc5228895d7b1406542172"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "limitations": [
+    "the verifier is the gate evaluation embedded in the commit record; there are no hard-deny verifiers and no verifier-set epochs",
+    "a direct append is the public PtrRuntime API: the grant is not recorded and the report digest is unkeyed, so a raw ledger writer is not defended against",
+    "a route is a probe of expert_route_admission; no production router consumes it and no end-to-end MoE routing is claimed",
+    "the digest an input block asserts is the proposer's word; the first committed use fixes it",
+    "the evaluator identity is a host assertion that replay does not re-check; an expert admitted before a kind had a standing counts as epoch 0",
+    "the grant generation and the host-time floor are in-memory host authority, not replayed; the evaluation-manifest binding is an admission-time claim",
+    "fences of the compound events are authoritative in the runtime's registry only; a plain projection still shows the members Serving",
+    "every race is a sequenced interleaving in a single-writer runtime and a crash inside one call is modelled as drop after the append and reopen; no concurrent-writer claim",
+    "one cause per fence; the authority epoch covers the gate configuration and the evaluator only and does not propagate to descendants",
+    "uncommitted_effective_changes, direct_serving_mutation_bypass_count, l3_fence_attempts_admitted, replacement_visible_without_fence (its first increment), the adapter cells and the L2 in-flight cells are weak metrics (type-level or modelled evidence; see the preregistration)",
+    "the attempted and admitted set digests of the impersonation kinds and of the gate-grant race kinds are equal by construction in any run the harness completes (bookkeeping, not evidence); the eleven direct-append event types are offered to the public commit only, not to a raw ledger writer",
+    "the code under test is the CPU reference path with a tiny seeded model; no GPU, no large model, no training",
+    "timings come from one shared cloud container; no capacity claim"
+  ],
+  "metrics_sha256": "773ecda075223365086a329abdb184c91746f3d8046e16f681d332b71e869503"
+}

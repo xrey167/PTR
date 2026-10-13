@@ -1,0 +1,53 @@
+# R007 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256);
+# no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
+# r007/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order, and every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and so a
+# parse error: no decimal literal exists, fractions are integer numerators and denominators).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON result
+# object, separated by '.' (no key holds a '.', no array is indexed): "bitwise_mismatch_count" is a top-level key,
+# "canary_identity.pinned" is the member "pinned" of the object "canary_identity".
+# A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a failed rule).
+# A reference compared with an integer literal or another reference must be a JSON integer (not a
+# boolean, not a float); two references under == may both be JSON strings (digests). Exact comparisons.
+# The manifest's "< N" prerequisites are written ">= N", its "> 0" violations "<= 0" and its "!= x"
+# violations "== x". "canary_probes >= 32" is the manifest's "canary set is not the 32 distinct pinned
+# canaries (canary_probes < 32)"; the digest rule compares the recorded identity-set digest with the pinned
+# one the harness echoes under canary_identity.pinned (the aggregator's tests hold that echo to config.toml).
+# canary_logit_shift is a JSON integer, the largest distance in representable f32 steps (ulps) between the
+# forget run's and the baseline's logit over all 256 entries and all 32 probes: 0 iff the maximum absolute
+# difference is exactly 0 (no noise threshold).
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies R007 on that seed.
+# Decision: every seed must hold every coverage rule and every falsifier rule; COMPLETED iff so,
+# INVALID if a seed is missing, unresolvable, or its record does not describe the frozen run, FALSIFIED
+# otherwise.
+version = 1
+experiment = "R007"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "span_insertions >= 1",
+  "span_evictions >= 1",
+  "downstream_recomputations >= 1",
+  "canary_probes >= 1",
+  "canary_span_tokens >= 1",
+  "downstream_rows_before_forget >= 1",
+  "prefix_reuse_tokens >= 1",
+  "post_forget_probes >= 1",
+  "selection_digest_mismatches <= 0",
+  "procedure_mismatches <= 0",
+  "canary_probes >= 32",
+  "model_pin_mismatches <= 0",
+  "canary_identity_set_digest == canary_identity.pinned",
+]
+
+falsifiers = [
+  "bitwise_mismatch_count <= 0",
+  "canary_logit_shift <= 0",
+  "stale_downstream_rows_reused <= 0",
+  "recompute_tokens == tokens_after_span",
+]

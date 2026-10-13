@@ -47,12 +47,12 @@
 
 - Add typed query keys and automatic dependency capture over SemanticValue
 - Implement dependency-recording query execution and cache invalidation
-- Run S001/S002 before selecting a third-party incremental engine
+- Select a third-party incremental engine only with S001/S002-style evidence (both completed for the in-repo engine)
 
 ### Linked experiments
 
-- [S001](../../experiments/semdb/S001-invalidation/README.md) — `planned`
-- [S002](../../experiments/semdb/S002-snapshot-cancellation/README.md) — `planned`
+- [S001](../../experiments/semdb/S001-invalidation/README.md) — `frozen`
+- [S002](../../experiments/semdb/S002-snapshot-cancellation/README.md) — `frozen`
 - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
 
 ### Technology evaluations

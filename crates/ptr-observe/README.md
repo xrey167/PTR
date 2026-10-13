@@ -40,7 +40,7 @@
 
 ### Linked experiments
 
-- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
+- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `frozen`
 - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
 
 ### Technology evaluations

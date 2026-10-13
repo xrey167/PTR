@@ -1,0 +1,3 @@
+results_git_sha = "f91be544331aaa7d11ec0528de21a463bcbc69ca"
+stale_since = "50a429fd4100a241ca5f8847e95c220b21a6e7fd"
+reason = "No code under test changed after M002-v11's seed records. The three A0 baseline v2 studies share their provenance files, so the first change is the M003-v3 seed 17 record (50a429fd) of a sibling study of the same freeze; later, 2defb720 publishes the decisions and the completed status (DEVIATIONS.md D2) and e0390da4 records the result in STATUS.md. No rerun under the same preregistration follows (each seed runs once)."

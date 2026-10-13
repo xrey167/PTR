@@ -56,6 +56,95 @@ fn main() {
                 "seed",
             )),
         ),
+        // The harness of R005 (Exact half), the manifest's entrypoint: one seed per run, no default
+        // seed, and a typo in it stops the run. It writes nothing; the runner records it.
+        "exact-prefix-reuse" => experiments::r005::run(strict_or_exit(
+            args.get(2)
+                .ok_or_else(|| "seed is required: exact-prefix-reuse <seed>".to_string())
+                .and_then(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("seed must be a non-negative integer, got {value:?}"))
+                }),
+        )),
+        // The harnesses of R009 and R010: one seed per run, no default seed.
+        "layer-shared-lora-kv" => {
+            experiments::r009::run(strict_or_exit(seed_arg(&args, "layer-shared-lora-kv")))
+        }
+        "moe-expert-kv-revocation" => {
+            experiments::r010::run(strict_or_exit(seed_arg(&args, "moe-expert-kv-revocation")))
+        }
+        // The harness of E007: `<seed>`, `<sequences> <seed>` (the mutation checker's form) or
+        // `--preflight`; no default seed, and a typo stops the run.
+        "split-pod-kv" => experiments::e007::run(&args[2..]),
+        // The harness of R012: one seed per run, no default seed.
+        "approximate-taint-containment" => experiments::r012::run(strict_or_exit(seed_arg(
+            &args,
+            "approximate-taint-containment",
+        ))),
+        // The harness of R006: one seed per run, no default seed. Not built yet: exits 2.
+        "positional-reuse-oracle" => {
+            experiments::r006::run(strict_or_exit(seed_arg(&args, "positional-reuse-oracle")))
+        }
+        // The harness of R001: one seed per run, no default seed.
+        "mailbox-backpressure" => {
+            experiments::r001::run(strict_or_exit(experiments::r001::seed_from_args(&args)))
+        }
+        // The harness of F002: one seed per run, no default seed.
+        "weak-supervision" => {
+            experiments::f002::run(strict_or_exit(experiments::f002::seed_from_args(&args)))
+        }
+        // The harness of F003: `<seed>` or the mutation checker's `<n> <seed>` with the same seed
+        // twice; no default seed, and a typo stops the run.
+        "calibrated-arbiter" => {
+            experiments::f003::run(strict_or_exit(experiments::f003::seed_from_args(&args)))
+        }
+        // The harness of R007: one seed per run, no default seed.
+        "span-forget" => experiments::r007::run(strict_or_exit(seed_arg(&args, "span-forget"))),
+        // The harness of S001: `<seed>` (the pinned scale) or `<operations> <seed>` (the mutation checker's
+        // form); no default seed, and a typo stops the run.
+        "invalidation" => experiments::s001::run(&args[2..]),
+        // The harness of F001: `<seed>` (the pinned scale) or `<tasks> <seed>` (the mutation checker's
+        // form); no default seed, and a typo stops the run.
+        "generate-verify-repair" => experiments::f001::run(&args[2..]),
+        // The harness of F007: `<seed>` (the pinned scale), `<requests> <seed>` (the mutation checker's
+        // form) or `--preflight`; no default seed, and a typo stops the run.
+        "vcw-loop" => experiments::f007::run(&args[2..]),
+        // The harness of S002: `<seed>` (the pinned scale) or `<cases> <seed>` (the mutation checker's form);
+        // no default seed, and a typo stops the run.
+        "snapshot-cancellation" => experiments::s002::run(&args[2..]),
+        // The harness of Q002: `<seed>` (the pinned scale) or `<capsules> <seed>` (the mutation checker's
+        // form); no default seed, and a typo stops the run.
+        "evidence-promotion" => experiments::q002::run(&args[2..]),
+        // The harness of M008: `<seed>` (the pinned scale), `<cases> <seed>` (the mutation checker's
+        // form) or `calibrate <pilot seed>...`; no default seed, and a typo stops the run.
+        "fast-weight-memory" => experiments::m008::run(&args[2..]),
+        // The harness of R011: one seed per run, no default seed.
+        "self-modification-safety" => {
+            experiments::r011::run(strict_or_exit(seed_arg(&args, "self-modification-safety")))
+        }
+        // The harness of R013: `<seed>` (the pinned scale), `<cases> <seed>` (the mutation
+        // checker's form) or `--preflight`; no default seed, and a typo stops the run.
+        "self-modification-authority" => experiments::r013::run(&args[2..]),
+        // Not an R005 result: an exactness smoke run of the CPU reference backend.
+        "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(
+            &args, 2, 8, "requests",
+        ))),
+        // The harness of Q003: `<seed>` (the pinned scale, the full strong arm) or `<queries> <seed>`
+        // (the mutation checker's form); no default seed, and a typo stops the run.
+        #[cfg(feature = "postgres-experiments")]
+        "postgres-hybrid" => experiments::q003::run(&args[2..]),
+        // The harness of L001-v2: `<seed>` (the pinned scale) or `<cases> <seed>` (the mutation
+        // checker's form); no default seed, and a typo stops the run. Its child processes run
+        // `revocation-crash-child`, which no one starts by hand.
+        #[cfg(feature = "ledger-experiments")]
+        "revocation-crash" => experiments::l001::run(&args[2..]),
+        #[cfg(feature = "ledger-experiments")]
+        "revocation-crash-child" => experiments::l001::child::run(&args[2..]),
+        // The harness of L002: `<seed>` (the pinned scale), `<cases> <seed>` (the mutation
+        // checker's form) or `--preflight`; no default seed, and a typo stops the run.
+        #[cfg(feature = "ledger-experiments")]
+        "raft-recovery" => experiments::l002::run(&args[2..]),
         #[cfg(feature = "postgres-experiments")]
         "fastmem-revocation" => {
             experiments::l003::run(parse_usize(&args, 2, 20), parse_u64(&args, 3, 17))
@@ -66,20 +155,27 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: ptr-bench [all|semdb|mailbox|ledger-recovery|ledger-process-crash{}] [iterations] [seed]",
-                EXPERIMENT_COMMANDS
+                "usage: ptr-bench [all|semdb|mailbox|ledger-recovery|ledger-process-crash{}{}] [iterations] [seed]",
+                EXPERIMENT_COMMANDS, LEDGER_EXPERIMENT_COMMANDS
             );
             std::process::exit(2);
         }
     }
 }
 
-/// The experiment subcommands: S003 always, and the PostgreSQL ones only when
-/// they are compiled in.
+/// The experiment subcommands: S003, R005 and the smoke run always, and the PostgreSQL ones
+/// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
-const EXPERIMENT_COMMANDS: &str = "|certified-branches|fastmem-revocation|projection-equivalence";
+const EXPERIMENT_COMMANDS: &str =
+    "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|self-modification-authority|kv-reuse-smoke|fastmem-revocation|projection-equivalence|postgres-hybrid";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "|certified-branches";
+const EXPERIMENT_COMMANDS: &str = "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|self-modification-authority|kv-reuse-smoke";
+
+/// The ledger experiment's subcommand, only when it is compiled in (usage text only).
+#[cfg(feature = "ledger-experiments")]
+const LEDGER_EXPERIMENT_COMMANDS: &str = "|revocation-crash|raft-recovery";
+#[cfg(not(feature = "ledger-experiments"))]
+const LEDGER_EXPERIMENT_COMMANDS: &str = "";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)
@@ -125,6 +221,17 @@ fn parse_strict_u64(
     name: &str,
 ) -> Result<u64, String> {
     parse_strict(args, index, default, name)
+}
+
+/// The mandatory seed of a harness subcommand.
+fn seed_arg(args: &[String], command: &str) -> Result<u64, String> {
+    args.get(2)
+        .ok_or_else(|| format!("seed is required: {command} <seed>"))
+        .and_then(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("seed must be a non-negative integer, got {value:?}"))
+        })
 }
 
 /// The value, or the error on stderr and exit status 2, as for a usage error.

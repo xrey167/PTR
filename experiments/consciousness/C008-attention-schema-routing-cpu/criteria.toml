@@ -1,0 +1,125 @@
+# C008 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256); no rule changes after a run.
+# Per-seed rules (coverage, falsifiers, integrity) are what the harness itself judges (research/cseries/c003a/rules.py); the guards and the
+# paired rules are judged by aggregate.py. A unit test pins the lists to the harness, in order.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .  A token is an integer literal iff it matches -?[0-9]+; any other token is a reference: a path of object
+# keys from the root of the harness's single JSON result object, separated by '.'. A reference that is missing, null, a boolean or a
+# float makes the seed INVALID. Exact comparisons.
+#
+# coverage: a rule that does not hold makes the seed vacuous (a defect: counts as FALSIFIED, kind structural): an arm not trained, an
+#   evaluation stream smaller than pinned, a probe that could not see the influence it exists to rule out.
+# falsifiers: the STRUCTURAL counters (the schema's authority and the describe-only isolation); each must be 0; the harness exits 1.
+#   describe_only_influence: the describe-only arm's routing moved when its schema's output was replaced (the schema reached the router
+#       although it must only describe).
+#   authority_leaks: routing with an adversarial schema output changed what the verifier reads (an expert's capacity, which classes an
+#       expert is competent for): the schema has no authority over expert promotion or revocation.
+#   nondeterminism: two identical short trainings of the control or the schema-free arm disagreed.
+# integrity: harness-integrity counters (a defect of the world or the harness, not of an arm); each must be 0; the harness exits 2 and
+#   the seed, hence the experiment, is INVALID (never FALSIFIED).
+#   param_mismatch_arms: the describe-only arm or the wide schema-free arm differs in parameters from the control by more than the
+#       tolerance. flop_mismatch_arms: the describe-only, schema-free or heuristic arm differs in FLOPs per batch from the control.
+#   stream_overlap: an evaluation, validation or probe batch equals a training batch.
+#   reward_audit_mismatches: the vectorised verifier differs from a plain-loop reference. oracle_violations: an arm verified more tokens
+#       in a batch than the maximum-flow oracle allows. schedule_errors: a batch does not carry the demand of its regime.
+#   nonfinite_arms / checkpoint_mismatch_arms / convergence_mismatch_arms: loss and plateau-protocol bookkeeping, audited independently.
+#   epsilon_rate_errors: the epsilon-routing control re-routed a fraction of tokens that differs from its pinned rate.
+#   shuffle_errors: the shuffled history equals the real one too often.
+# guards: per-seed validity guards. A seed that fails one is UNINFORMATIVE: the experiment is INVALID, never FALSIFIED.
+#   headroom_permille: oracle minus the best comparator must be at least headroom_floor_permille (the margin is reachable).
+#   comparator_above_random_permille: the best comparator must beat a uniform router by comparator_floor_permille (the comparators trained).
+#   Counts across seeds (aggregate.py, [paired]): schema_trained (the schema's prediction of the router's own next propensity is closer, in L1
+#   distance, than "no change" (persistence) by schema_floor_permille per mille: more than max_untrained_schema_seeds make the experiment INVALID; a schema that did not learn cannot
+#   control anything) and unconverged_judged_arms (a judged arm at the step cap).
+#
+# [paired]: over the declared seeds (n = seeds_required; the one-sided t quantiles for n - 1 degrees of freedom pinned as strings):
+#   COMPLETED iff the lower one-sided 95% bounds (t_support) of control minus each of the five comparators schema_free, schema_free_wide, heuristic,
+#   describe_only and history_router on `metric` (verified-token rate) are all at or above margin_permille AND the attribution is ATTRIBUTED (below);
+#   FALSIFIED (refuted) iff the guards hold, the controls resolve and, for one comparator, the upper bound at t_refute (one-sided 95% / 5,
+#   Bonferroni over the five) is below margin_permille: the advantage is BELOW THE MARGIN (this is not "no advantage"). A refutation
+#   against describe_only alone is the registered finding that the schema's control role is not shown;
+#   NOT_SHOWN otherwise (nothing is concluded, no requirement is downgraded).
+#   sensitivity_gross: schema_free minus a uniform router must reach margin_permille. sensitivity_graded: schema_free minus the same arm
+#   with a fraction of its tokens re-routed at random (a known deficit of about the margin's size) must exceed min_lower_permille.
+#   null_world: in the stationary world (no regime changes) the schema can have no advantage: neither control_null minus schema_free_null
+#   nor the reverse may reach margin_permille at its lower bound, else the pipeline invents effects and the experiment is INVALID.
+#   attribution (JUDGED: a supported contrast without ATTRIBUTED is NOT_SHOWN, never COMPLETED): control minus control_shuffled (the trained control arm read the history of random other
+#   batches instead of its own recent history) is read three-valued: ATTRIBUTED (lower bound at or above the margin) when the gain depends
+#   on the schema reading the router's own recent history, NOT ATTRIBUTED (upper bound below it), else UNRESOLVED.
+#   max_untrained_schema_seeds, max_unconverged_seeds: allowances across the seeds.
+#
+# Patterns (stated in advance):
+#   Supports: guards hold; the schema-controlled router beats the schema-free router (FLOP-matched and parameter-matched), the heuristic
+#     balancer, the describe-only schema and the history-fed router by the margin in verified-token rate, and the shuffled-history control attributes the gain to the router's own history.
+#   Refutes: guards and controls hold and the advantage over a comparator is below the margin with power.
+#   Uninformative (INVALID): no headroom, untrained comparators, an untrained schema, an arm at the step cap, an unresolved control, a null
+#     world that shows an effect, a harness-integrity counter.
+# Decision: COMPLETED / FALSIFIED / NOT_SHOWN / INVALID as above; exit status of aggregate.py 0 / 1 / 3 / 2.
+version = 1
+experiment = "C008"
+seed_aggregation = "paired_one_sided_t_bound_three_outcomes"
+
+coverage = [
+  "arms_trained >= 8",
+  "eval_instances >= 61440",
+  "null_eval_instances >= 61440",
+  "control_influence_hits >= 1",
+]
+
+guards = [
+  "headroom_permille >= 40",
+  "comparator_above_random_permille >= 100",
+]
+
+falsifiers = [
+  "describe_only_influence <= 0",
+  "authority_leaks <= 0",
+  "nondeterminism <= 0",
+]
+
+integrity = [
+  "param_mismatch_arms <= 0",
+  "flop_mismatch_arms <= 0",
+  "history_router_blind <= 0",
+  "stream_overlap <= 0",
+  "reward_audit_mismatches <= 0",
+  "oracle_violations <= 0",
+  "schedule_errors <= 0",
+  "nonfinite_arms <= 0",
+  "checkpoint_mismatch_arms <= 0",
+  "convergence_mismatch_arms <= 0",
+  "epsilon_rate_errors <= 0",
+  "shuffle_errors <= 0",
+]
+
+[paired]
+metric = "reward"
+arm = "control"
+against = ["schema_free", "schema_free_wide", "heuristic", "describe_only", "history_router"]
+margin_permille = 25
+t_support = "1.729133"
+t_refute = "2.539483"
+seeds_required = 20
+max_untrained_schema_seeds = 1
+max_unconverged_seeds = 1
+attribution_arm = "control_shuffled"
+blind_reference_arm = "even_split"
+descriptive_arms = ["schema_free_null", "control_null"]
+
+[paired.sensitivity_gross]
+arm = "schema_free"
+floor = "random_router"
+margin_permille = 25
+
+[paired.sensitivity_graded]
+arm = "schema_free"
+degraded = "schema_free_epsilon"
+min_lower_permille = 12
+
+[paired.null_world]
+arm = "control_null"
+against = "schema_free_null"
+metric = "reward"
+margin_permille = 25
+cost_band_permille = 50

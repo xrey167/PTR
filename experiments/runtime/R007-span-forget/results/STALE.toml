@@ -1,0 +1,3 @@
+results_git_sha = "86fad6aee1dd3d3c5325967956d13c41c5bf0121"
+stale_since = "3f1e4fd23fff4ca6ac4bd42c0b38a197c2dd8538"
+reason = "No code under test changed after R007's seed records. 3f1e4fd2 records the completed result in STATUS.md, research/novelty/CLAIMS.md and docs/architecture/36-kv-reuse.md, which the repository-wide provenance counts as a change. R007 was preregistered at r007-prereg (f86c9bc3). No rerun under the same preregistration follows (each seed runs once)."

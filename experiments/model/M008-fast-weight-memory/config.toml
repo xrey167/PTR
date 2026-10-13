@@ -4,17 +4,123 @@ name = "M008-fast-weight-memory"
 path = "experiments/model/M008-fast-weight-memory"
 tests_dir = "tests"
 
-# Frozen before M008 leaves `planned` (experiments/preregistration.toml,
-# scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be
-# chosen. Neither baseline has a configuration in research/baselines/, so
-# each is pinned here.
-[preregistration]
-# The confirmatory seeds, as experiment.toml declares them.
+# The preregistered choices of the harness (`ptr-bench fast-weight-memory`,
+# bins/ptr-bench/src/experiments/m008/params.rs, which fails its drift test if a compiled constant
+# differs from this table). M008 is planned, not frozen: no [preregistration] table exists yet; the
+# freeze adds it. The memory shape and the abstention thresholds were chosen on the PILOT seeds
+# only (`ptr-bench fast-weight-memory calibrate <pilot seeds>`, procedure in
+# m008/calibrate.rs and PREREGISTRATION.md); nothing here was tuned on a confirmatory seed.
+[pinned_thresholds]
 seeds = [17, 29, 43, 71, 101]
-# The equal token budget of every arm.
-token_budget = "must-be-pinned-before-prepared"
-# N, the facts the recency buffer keeps.
-recency_window = "must-be-pinned-before-prepared"
-recency_buffer_baseline = "must-be-pinned-before-prepared"
-# Hybrid retrieval over the same facts (the Q003 stack).
-hybrid_retrieval_baseline = "must-be-pinned-before-prepared"
+# Disjoint from `seeds`: used for the memory shape and the thresholds below, and for nothing else.
+pilot_seeds = [1001, 1002, 1003, 1004, 1005]
+seed_aggregation = "every_seed_must_pass"
+
+# The frozen text pool and vectors (research/embeddings): the harness embeds nothing.
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+embedding_revision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+pool_file = "research/embeddings/pool-m008.jsonl"
+vectors_file = "research/embeddings/vectors-m008.f16"
+pool_sha256 = "0192b66e2e329c877cbce12dbbabe8cd0c0c930871729477e84852a19afd6ef7"
+vectors_sha256 = "378d013fcd2840bd76e8debe67109200a28c86b96130dc9d4f1e1487146762ba"
+pool_rows = 14000
+embedding_dim = 384
+pool_cues = 1900
+pool_versions = 3
+pool_paraphrases = 4
+pool_offtopic = 700
+token_pattern = "[A-Za-z0-9]+|[^\\sA-Za-z0-9]"
+
+# The session: cues written, cues updated later, and the 400 queries by kind.
+cues_written = 400
+cues_updated = 200
+queries_updated = 160
+queries_stable = 160
+queries_unwritten = 40
+queries_offtopic = 40
+
+# The budget, derived from the pool: the longest fact is 13 tokens, so the window is
+# floor(512 / 13) = 39; both are asserted against the pool at start-up (a mismatch is exit 2).
+token_budget = 512
+max_fact_tokens = 13
+recency_window = 39
+ranked_limit = 5
+
+# The memory (the plan's shape unless the pilot showed it invalid; see PREREGISTRATION.md).
+heads = 8
+key_dim = 32
+value_dim = 64
+beta_permille = 1000
+decay_permille = 999
+checkpoint_interval = 64
+projection_seed = 84869362745345
+codebook_seed = 84869362745346
+other_projection_seed = 84869362745347
+
+# The matched operating points, set on the pilot seeds.
+fast_min_score_milli = 510
+fast_min_margin_milli = 25
+recency_min_cosine_milli = 580
+hybrid_live_min_cosine_milli = 670
+hybrid_append_min_cosine_milli = 670
+matched_false_recall_permille = 50
+
+# The paired bootstrap of the recall gain.
+bootstrap_resamples = 2000
+bootstrap_lower_quantile_permille = 50
+bootstrap_seed = 84869362790407
+
+# Product contract checks read from the readout.
+readback_min_milli = 990
+stale_residual_max_milli = 400
+
+# Coverage prerequisites (a run that misses one is vacuous).
+min_updated_cue_queries = 100
+min_unanswerable_queries = 50
+min_old_stratum_queries = 100
+min_written_facts = 500
+min_readback_checks = 500
+min_stale_residual_checks = 100
+min_projection_probes = 50
+min_fast_score_abstentions = 20
+min_contract_probe_margin_refusals = 20
+min_contract_probes = 80
+max_unanswerable_answered_permille = 150
+min_control_oracle_cheat_recall_permille = 1000
+max_control_random_recall_permille = 100
+min_control_stale_first_false_recall_permille = 300
+min_control_positive_gain_lo_permille = 1
+min_control_positive_false_recall_headroom_permille = 0
+max_oracle_label_mismatches = 0
+
+# Decision criteria.
+min_recall_gain_lo_permille = 1
+max_token_budget_violations = 0
+max_window_budget_violations = 0
+max_product_panics = 0
+max_product_errors = 0
+max_stale_in_live_index = 0
+max_stale_residual_violations = 0
+max_readback_failures = 0
+max_decode_contract_violations = 0
+max_projection_mismatch_accepted = 0
+timing_gated = false
+
+# Frozen at the freeze (scripts/check_research_gates.py, experiments/preregistration.toml). The head pins
+# the two text digests when the text and the criteria are final; every value below is decided.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "fast-weight-memory"
+token_budget = 512
+recency_window = 39
+recency_buffer_baseline = "last N writes (N = 39 = floor(512 / 13, the longest fact in tokens)), old versions included, newest first on ties; answered by the maximum cosine between the query and the buffered fact on the frozen vectors; abstains below recency_min_cosine_milli (580), set on pilot seeds 1001..1005 so that at most 5 percent of the unanswerable pilot queries are answered"
+hybrid_retrieval_baseline = "research/baselines/rag_reference BM25(k1=1.5,b=0.75) + cosine RRF(k=60) over live-generation facts (an update deletes the old version), frozen all-MiniLM-L6-v2 vectors, run by research/baselines/rag_reference/q003_driver.py through bins/ptr-bench rag_bridge; abstains below hybrid_live_min_cosine_milli (670), set on the pilot seeds"
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+embedding_revision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+embedding_vectors_sha256 = "378d013fcd2840bd76e8debe67109200a28c86b96130dc9d4f1e1487146762ba"
+pool_sha256 = "0192b66e2e329c877cbce12dbbabe8cd0c0c930871729477e84852a19afd6ef7"
+preregistration_text = "experiments/model/M008-fast-weight-memory/PREREGISTRATION.md"
+preregistration_text_sha256 = "0ec12a44e976cfa693d62005eff927100abbdbdf107242c50fb2610ee427b690"
+criteria = "experiments/model/M008-fast-weight-memory/criteria.toml"
+criteria_sha256 = "ec43ab54f962ec8be4480219700522debdbd0fe476a0e447a8148587a3cb8517"
+baseline_rag_reference_sha256 = "a296a5ce889e8b16994217681388c994f34c1c2631af2d25f6e49063a8cf86ef"

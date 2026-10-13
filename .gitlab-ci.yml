@@ -1,0 +1,396 @@
+# GitLab CI for PTR: a thin layer over the Makefile.
+#
+# Every job in .github/workflows/ci.yml has a GitLab job of the same name that runs
+# `make ci-<job>`. The steps themselves live in the Makefile (one source of truth for
+# GitHub, GitLab and a contributor's desk); scripts/tests/test_gitlab_ci.py fails when
+# a job or a make target here goes missing.
+#
+# Not reproduced: the Windows leg of the GitHub `rust-stable` matrix. GitLab.com's
+# shared Windows runners are limited, so only the Linux leg runs here. Add a Windows
+# runner with a `windows` tag and a second job if that coverage matters.
+
+stages:
+  - quality
+  - test
+  - invariants
+  - backends
+  - extra
+  - release
+
+# One pipeline per change: merge request pipelines for MRs, branch pipelines only for
+# branches without an open MR, plus schedules (weekly security scan).
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+default:
+  interruptible: true
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+
+variables:
+  GIT_DEPTH: "20"
+  FF_USE_FASTZIP: "true"
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo-home
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "5"
+  PIP_CACHE_DIR: $CI_PROJECT_DIR/.pip-cache
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+# ---------------------------------------------------------------------------
+# Rules
+# ---------------------------------------------------------------------------
+
+# Fast jobs: every branch push and every merge request, never on schedules.
+.rules-fast: &rules-fast
+  - if: $CI_PIPELINE_SOURCE == "schedule"
+    when: never
+  - when: on_success
+
+# Heavy jobs: automatic on the default branch, manual (and non-blocking) elsewhere.
+.rules-heavy: &rules-heavy
+  - if: $CI_PIPELINE_SOURCE == "schedule"
+    when: never
+  - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    when: on_success
+  - when: manual
+    allow_failure: true
+
+# Manual only (GPU, Python bindings).
+.rules-manual: &rules-manual
+  - if: $CI_PIPELINE_SOURCE == "schedule"
+    when: never
+  - when: manual
+    allow_failure: true
+
+# ---------------------------------------------------------------------------
+# Templates
+# ---------------------------------------------------------------------------
+
+# Rust: rustup comes with the image. The Makefile names its toolchain on every cargo
+# call (`cargo +stable`, `cargo +1.99.0`), so install `stable` here; targets that need
+# 1.99.0 or 1.95.0 install it themselves. cmake/clang cover native build scripts that
+# GitHub's ubuntu-latest image ships preinstalled.
+.rust: &rust
+  image: rust:1-bookworm
+  timeout: 1h
+  variables:
+    RUST_CACHE_TOOLCHAINS: stable-1.99.0
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends cmake clang libclang-dev pkg-config libssl-dev
+    - rustup toolchain install stable --profile minimal -c rustfmt -c clippy
+    - rustc +stable --version
+  cache:
+    key: "$CI_JOB_NAME-$RUST_CACHE_TOOLCHAINS-v1"
+    paths:
+      - .cargo-home/registry/
+      - .cargo-home/git/
+      - target/
+    when: always
+
+# Python: stdlib only except for `pip install -e training`, which has no dependencies.
+.python: &python
+  image: python:3.13-bookworm
+  timeout: 30m
+  cache:
+    key: "$CI_JOB_NAME-pip-v1"
+    paths:
+      - .pip-cache/
+
+# ---------------------------------------------------------------------------
+# quality
+# ---------------------------------------------------------------------------
+
+quality:
+  <<: *rust
+  stage: quality
+  script:
+    - make ci-quality
+  rules: *rules-fast
+
+# ---------------------------------------------------------------------------
+# test
+# ---------------------------------------------------------------------------
+
+rust-stable:
+  <<: *rust
+  stage: test
+  timeout: 90m
+  script:
+    - make ci-rust-stable
+  rules: *rules-fast
+
+rust-msrv:
+  <<: *rust
+  stage: test
+  timeout: 90m
+  script:
+    - make ci-rust-msrv
+  rules: *rules-fast
+
+python-training:
+  <<: *python
+  stage: test
+  image: python:${PYTHON_VERSION}-bookworm
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.11", "3.13"]
+  script:
+    - python -m pip install -e training
+    - make ci-python-training
+  rules: *rules-fast
+
+# ---------------------------------------------------------------------------
+# invariants
+# ---------------------------------------------------------------------------
+
+# check_component_metadata and check_research_gates read history, so the clone is full.
+# BASE: a merge request is judged against its diff base; a push to the default branch
+# against what it was before the push; any other branch against where it left the
+# default branch (the complete change range).
+repository-invariants:
+  <<: *python
+  stage: invariants
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - git fetch --quiet origin "$CI_DEFAULT_BRANCH"
+    - |
+      BASE="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}"
+      if [ -z "$BASE" ] && [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        BASE="${CI_COMMIT_BEFORE_SHA:-}"
+      fi
+      if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+        BASE="$(git merge-base HEAD "origin/$CI_DEFAULT_BRANCH")"
+      fi
+      echo "BASE=$BASE"
+      make ci-repository-invariants BASE="$BASE"
+  rules: *rules-fast
+
+# ---------------------------------------------------------------------------
+# backends: heavy, automatic on the default branch, manual elsewhere
+# ---------------------------------------------------------------------------
+
+lifecycle-failpoints:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-lifecycle-failpoints
+  rules: *rules-heavy
+
+ledger-raft-engine:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-ledger-raft-engine
+  rules: *rules-heavy
+
+ledger-raft-rs:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-ledger-raft-rs
+  rules: *rules-heavy
+
+state-turso:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-state-turso
+  rules: *rules-heavy
+
+# A disposable service container reachable only from this job; not a credential of any
+# real deployment.
+state-postgres:
+  <<: *rust
+  stage: backends
+  timeout: 90m
+  services:
+    - name: pgvector/pgvector:pg18
+      alias: postgres
+  variables:
+    RUST_CACHE_TOOLCHAINS: stable-1.99.0
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: postgres
+    PTR_PG_TEST_DSN: host=postgres port=5432 user=postgres password=postgres dbname=postgres
+    PTR_PG_EXPERIMENT_DSN: host=postgres port=5432 user=postgres password=postgres dbname=postgres
+  script:
+    - make ci-state-postgres
+  rules: *rules-heavy
+
+network-iroh:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-network-iroh
+  rules: *rules-heavy
+
+cluster-wire:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-cluster-wire
+  rules: *rules-heavy
+
+execution-wire:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-execution-wire
+  rules: *rules-heavy
+
+pod-wire:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-pod-wire
+  rules: *rules-heavy
+
+storage-tiers:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-storage-tiers
+  rules: *rules-heavy
+
+feature-gates:
+  <<: *rust
+  stage: backends
+  script:
+    - make ci-feature-gates
+  rules: *rules-heavy
+
+# ---------------------------------------------------------------------------
+# extra
+# ---------------------------------------------------------------------------
+
+# Mirrors .github/workflows/burn-a0.yml (stable and 1.95.0 legs). GitHub runs it only
+# when A0 or its dependencies change; here it is automatic on the default branch and
+# manual elsewhere.
+burn-a0:
+  <<: *rust
+  stage: extra
+  variables:
+    RUST_CACHE_TOOLCHAINS: stable-1.95.0
+  script:
+    - make a0
+  rules: *rules-heavy
+
+# Mirrors .github/workflows/security.yml (its `audit` and `deny` jobs): every Cargo
+# workspace through scripts/security_workspaces.py. Runs on the weekly schedule
+# (create it under Build > Pipeline schedules) and manually.
+security:
+  <<: *rust
+  stage: extra
+  variables:
+    RUST_CACHE_TOOLCHAINS: stable-security
+    SECURITY_OUT: $CI_PROJECT_DIR/security-out
+  script:
+    - cargo +stable install cargo-audit --version 0.22.2 --locked
+    - cargo +stable install cargo-deny --version 0.20.2 --locked
+    - export PATH="$CARGO_HOME/bin:$PATH"
+    - python3 scripts/security_workspaces.py audit --output "$SECURITY_OUT/audit"
+    - python3 scripts/security_workspaces.py deny --output "$SECURITY_OUT/deny"
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - security-out/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: on_success
+    - when: manual
+      allow_failure: true
+
+# Needs the self-hosted runner on the RTX 4090 desktop (docs/HOSTING.md): a shell
+# executor tagged `ptr-gpu` with the NVIDIA driver and the training venv from
+# scripts/setup_desktop.sh. No image: it runs on the host. Never runs automatically.
+gpu-smoke:
+  stage: extra
+  tags:
+    - ptr-gpu
+  timeout: 2h
+  interruptible: false
+  script:
+    - make gpu-doctor
+    - make smoke-gpu
+  # A shell executor on the owner's desktop: only protected refs may start it, and the
+  # runner itself must be registered as protected (docs/HOSTING.md).
+  rules:
+    - if: $CI_COMMIT_REF_PROTECTED == "true" && $CI_PIPELINE_SOURCE != "schedule"
+      when: manual
+      allow_failure: true
+    - when: never
+
+# bindings/ptr-py (PyO3 + maturin). Not a GitHub CI job; manual here too.
+py-bindings:
+  <<: *rust
+  stage: extra
+  variables:
+    RUST_CACHE_TOOLCHAINS: stable-1.99.0
+    PIP_CACHE_DIR: $CI_PROJECT_DIR/.pip-cache
+  script:
+    - apt-get install -y -qq --no-install-recommends python3-venv
+    - rustup toolchain install 1.99.0 --profile minimal -c rustfmt -c clippy
+    - make py-bindings
+  rules: *rules-manual
+
+# Mirrors .github/workflows/release.yml on GitLab: on a v* tag, build the release
+# package with `make release-package` and publish it as a GitLab release whose
+# assets link to the job artifacts. No attestations (GitHub-only); the SHA-256 files
+# and the CycloneDX SBOM ship instead.
+release-package:
+  <<: *rust
+  stage: release
+  variables:
+    RUST_CACHE_TOOLCHAINS: stable-release
+    GIT_DEPTH: "0"
+  script:
+    # Publish only a commit that is already on main.
+    - git fetch --quiet origin main
+    - git merge-base --is-ancestor "$CI_COMMIT_SHA" FETCH_HEAD
+    - make release-package PYTHON=python3
+  artifacts:
+    expire_in: never
+    paths:
+      - dist/
+  # Only protected v* tags (Settings, Repository, Protected tags) build or publish a release.
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/ && $CI_COMMIT_REF_PROTECTED == "true"
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: release-package
+      artifacts: true
+  script:
+    - echo "Releasing $CI_COMMIT_TAG"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: PTR $CI_COMMIT_TAG
+    description: "Release $CI_COMMIT_TAG: ptr-linux-x86_64.tar.gz (ptrd, ptrctl, ptr-worker, ptr-bench), CycloneDX SBOM, cargo metadata and SHA-256 files."
+    assets:
+      links:
+        - name: ptr-linux-x86_64.tar.gz
+          url: $CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/raw/dist/ptr-linux-x86_64.tar.gz?job=release-package
+        - name: ptr-linux-x86_64.tar.gz.sha256
+          url: $CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/raw/dist/ptr-linux-x86_64.tar.gz.sha256?job=release-package
+        - name: ptr-cyclonedx.json
+          url: $CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/raw/dist/ptr-cyclonedx.json?job=release-package
+        - name: cargo-metadata.json
+          url: $CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/raw/dist/cargo-metadata.json?job=release-package
+  # Only protected v* tags (Settings, Repository, Protected tags) build or publish a release.
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/ && $CI_COMMIT_REF_PROTECTED == "true"

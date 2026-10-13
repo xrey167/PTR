@@ -8,8 +8,10 @@
 //! # Proposals are inert data
 //!
 //! An [`ExpertProposal`] changes nothing. Whether it is accepted is decided elsewhere, by the
-//! forgetting and interference gates, the verifier and a ledger commit. That acceptance path is
-//! not implemented yet. Every observed fact in a proposal (a target's `state`, `state_version`,
+//! forgetting and interference gates, the verifier and a ledger commit; `ptr-runtime`
+//! `admit_expert_proposal` is that acceptance path, and it commits an [`ExpertCommitRecord`] that
+//! embeds the gate evidence so replay re-verifies it. This crate defines the shapes and the
+//! record codec and decides no admission. Every observed fact in a proposal (a target's `state`, `state_version`,
 //! `generation`, `manifest_digest`, and the `observed_at` ledger index) is a caller-observed
 //! claim; the commit re-checks all of them against authority (compare-and-swap) and rejects the
 //! proposal if any is stale.
@@ -162,6 +164,23 @@
 //! deterministic contradiction) in `docs/INVARIANTS.md`. [`ExpertProposal::parts`] exposes the
 //! complete field list as [`ProposalParts`], so a reviewer (and the test in `tests/expert.rs`)
 //! can see that adding a field is a visible, breaking change.
+//!
+//! # Recorded inputs (record version 3)
+//!
+//! A version 3 [`ExpertCommitRecord`] carries a typed dependency block, [`ExpertInputs`]: the
+//! training inputs and the evaluation inputs the produced expert(s) rest on, each an
+//! [`ExpertInputRef`] `(identity, generation, digest)`. The identity is the lifecycle identity
+//! of the input (the `subject` a `Revoked` record names, for example a capsule id or
+//! `procedure:{id}`), the generation the one the expert was built from, and the digest the
+//! content digest the producer saw. Each list is strictly ascending by `(identity, generation)`,
+//! holds at most [`MAX_EXPERT_INPUTS_PER_ROLE`] items and every identity is 1 to
+//! [`MAX_EXPERT_INPUT_IDENTITY_BYTES`] bytes without control characters; the digest is
+//! non-zero. The base model an expert is on is already in its spec, so it is a dependency
+//! without a new field ([`ExpertInputRef::from_base_model`] gives its input form), and the source
+//! experts of a `Merge`, `Split` or `Reactivate` are the operation's own sources. This crate only
+//! carries and validates the shape: whether an input is still live, and which digest is the
+//! first one committed for an `(identity, generation)`, is decided by `ptr-runtime`.
+//! Version 1 and 2 records decode exactly as before and name no inputs.
 //!
 //! # Two-stage identity
 //!
@@ -530,6 +549,94 @@ impl StructuralOp {
             Self::Reactivate { result, .. } => result.iter().collect(),
             Self::Freeze { .. } | Self::Prune { .. } | Self::Retire { .. } => Vec::new(),
         }
+    }
+}
+
+/// Whether an [`ExpertOutcome`] is an existing operand or a newly created result.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum OutcomeKind {
+    /// An existing expert the operation names, now in its post-operation state.
+    Operand,
+    /// A new expert generation the operation creates.
+    Result,
+}
+
+/// The authoritative state one expert is left in by an admitted [`StructuralOp`].
+///
+/// This is the single definition of the post-operation state mapping, shared by every consumer
+/// of an admitted record (the runtime registry and the state projection), so none re-implements
+/// it. It is pure data derived from the operation: it proves nothing about admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertOutcome {
+    pub kind: OutcomeKind,
+    pub pod: PodId,
+    pub generation: Generation,
+    pub level: ExpertLevel,
+    pub base_model: BaseModelRef,
+    pub manifest_digest: ManifestDigest,
+    pub state: ExpertState,
+    /// An operand's observed `state_version` plus one; `1` for a result.
+    pub state_version: u64,
+}
+
+impl StructuralOp {
+    /// The state every expert the operation touches is left in once it is admitted, operands
+    /// first (in operand order) and then results (in result order).
+    ///
+    /// | operation | operand after | result |
+    /// |---|---|---|
+    /// | `Birth` | | `Serving` |
+    /// | `Merge`, `Split` | `Superseded` | `Serving` |
+    /// | `Freeze` | `Frozen` | |
+    /// | `Reactivate` of `Frozen` | `Serving` (same generation) | |
+    /// | `Reactivate` of `Retired(GateFailed)` | (kept `Retired`; replaced by the result, same pod) | `Serving`, generation + 1 |
+    /// | `Prune` | `Retired(Pruned)` | |
+    /// | `Retire` | `Retired(reason)` | |
+    ///
+    /// A result is `Serving` with `state_version` 1 because admission requires a passing
+    /// artifact-bound gate verdict for it, which is the `Candidate` to `Gated` to `Serving`
+    /// path collapsed into the one committed event. A retired reactivation source yields no
+    /// operand outcome: its pod now names the new generation.
+    pub fn outcomes(&self) -> Vec<ExpertOutcome> {
+        let operand_state = match self {
+            Self::Birth { .. } => None,
+            Self::Merge { .. } | Self::Split { .. } => Some(ExpertState::Superseded),
+            Self::Freeze { .. } => Some(ExpertState::Frozen),
+            Self::Reactivate { target, .. } => match target.state() {
+                ExpertState::Retired(_) => None,
+                _ => Some(ExpertState::Serving),
+            },
+            Self::Prune { .. } => Some(ExpertState::Retired(RetiredReason::Pruned)),
+            Self::Retire { reason, .. } => Some(ExpertState::Retired(*reason)),
+        };
+        let mut out = Vec::new();
+        if let Some(state) = operand_state {
+            for source in self.sources() {
+                out.push(ExpertOutcome {
+                    kind: OutcomeKind::Operand,
+                    pod: source.pod().clone(),
+                    generation: source.generation(),
+                    level: source.level(),
+                    base_model: source.base_model().clone(),
+                    manifest_digest: *source.manifest_digest(),
+                    state,
+                    state_version: source.state_version().saturating_add(1),
+                });
+            }
+        }
+        for result in self.results() {
+            out.push(ExpertOutcome {
+                kind: OutcomeKind::Result,
+                pod: result.pod().clone(),
+                generation: result.generation(),
+                level: result.level(),
+                base_model: result.base_model().clone(),
+                manifest_digest: *result.manifest_digest(),
+                state: ExpertState::Serving,
+                state_version: 1,
+            });
+        }
+        out
     }
 }
 
@@ -1004,6 +1111,10 @@ pub enum ExpertProposalError {
     DuplicateResultSlot { layer: u16, index: u16 },
     /// Two different source experts occupy the same Token `(layer, index)` slot.
     DuplicateSourceSlot { layer: u16, index: u16 },
+    /// A decoded record held an identity field that is not valid.
+    Identity(ExpertIdentityError),
+    /// The bytes are not the canonical encoding of an [`ExpertCommitRecord`].
+    MalformedRecord(&'static str),
 }
 
 impl fmt::Display for ExpertProposalError {
@@ -1121,6 +1232,8 @@ impl fmt::Display for ExpertProposalError {
                     "two results claim token slot layer {layer} index {index}"
                 )
             }
+            Self::Identity(error) => write!(f, "record holds an invalid identity: {error}"),
+            Self::MalformedRecord(reason) => write!(f, "malformed expert commit record: {reason}"),
         }
     }
 }
@@ -1912,4 +2025,917 @@ fn check_result(
         }
     }
     Ok(())
+}
+
+/// The longest identity of a recorded input, in bytes.
+pub const MAX_EXPERT_INPUT_IDENTITY_BYTES: usize = 256;
+
+/// A record names at most this many training inputs and at most this many evaluation inputs.
+pub const MAX_EXPERT_INPUTS_PER_ROLE: usize = 256;
+
+/// Domain separator of [`ExpertInputs::canonical_digest`].
+const INPUTS_DIGEST_DOMAIN: &[u8] = b"ptr.pods.expert-inputs.v1";
+
+/// Prefix of the input identity of a base model, see [`ExpertInputRef::from_base_model`].
+const BASE_MODEL_INPUT_PREFIX: &str = "base-model:";
+
+/// Why an input reference or an input block was refused.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ExpertInputError {
+    /// The identity is empty.
+    BlankIdentity,
+    /// The identity is longer than [`MAX_EXPERT_INPUT_IDENTITY_BYTES`].
+    IdentityTooLong,
+    /// The identity holds a control character.
+    ControlCharacterInIdentity,
+    /// The input generation is zero, which is never a committed generation.
+    ZeroGeneration,
+    /// The input digest is all zero.
+    ZeroDigest,
+    /// A list holds more than [`MAX_EXPERT_INPUTS_PER_ROLE`] inputs.
+    TooManyInputs { found: usize },
+    /// One list names the same `(identity, generation)` twice.
+    DuplicateInput {
+        identity: String,
+        generation: Generation,
+    },
+    /// The block names one `(identity, generation)` with two different digests.
+    DigestConflict {
+        identity: String,
+        generation: Generation,
+    },
+}
+
+impl fmt::Display for ExpertInputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BlankIdentity => f.write_str("input identity is empty"),
+            Self::IdentityTooLong => write!(
+                f,
+                "input identity is longer than {MAX_EXPERT_INPUT_IDENTITY_BYTES} bytes"
+            ),
+            Self::ControlCharacterInIdentity => {
+                f.write_str("input identity holds a control character")
+            }
+            Self::ZeroGeneration => f.write_str("input generation is zero"),
+            Self::ZeroDigest => f.write_str("input digest is all zero"),
+            Self::TooManyInputs { found } => write!(
+                f,
+                "{found} inputs in one list, at most {MAX_EXPERT_INPUTS_PER_ROLE} are allowed"
+            ),
+            Self::DuplicateInput {
+                identity,
+                generation,
+            } => write!(
+                f,
+                "input {identity} at generation {} is named twice in one list",
+                generation.0
+            ),
+            Self::DigestConflict {
+                identity,
+                generation,
+            } => write!(
+                f,
+                "input {identity} at generation {} is named with two different digests",
+                generation.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExpertInputError {}
+
+/// One input an expert rests on: the lifecycle identity, the generation it was used at and the
+/// content digest the producer saw.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExpertInputRef {
+    identity: String,
+    generation: Generation,
+    digest: Digest,
+}
+
+impl ExpertInputRef {
+    /// Build an input reference.
+    ///
+    /// # Errors
+    /// Rejects an empty, over-long (more than [`MAX_EXPERT_INPUT_IDENTITY_BYTES`]) or
+    /// control-character identity, generation zero and an all-zero digest.
+    pub fn new(
+        identity: impl Into<String>,
+        generation: Generation,
+        digest: Digest,
+    ) -> Result<Self, ExpertInputError> {
+        let identity = identity.into();
+        if identity.is_empty() {
+            return Err(ExpertInputError::BlankIdentity);
+        }
+        if identity.len() > MAX_EXPERT_INPUT_IDENTITY_BYTES {
+            return Err(ExpertInputError::IdentityTooLong);
+        }
+        if identity.chars().any(char::is_control) {
+            return Err(ExpertInputError::ControlCharacterInIdentity);
+        }
+        if generation == Generation::default() {
+            return Err(ExpertInputError::ZeroGeneration);
+        }
+        if digest == ZERO_DIGEST {
+            return Err(ExpertInputError::ZeroDigest);
+        }
+        Ok(Self {
+            identity,
+            generation,
+            digest,
+        })
+    }
+
+    /// The input form of a base model: identity `base-model:{id}`, the base model's generation
+    /// and its digest. `ptr-runtime` derives this dependency from every version 3 record, so a
+    /// base model is invalidated the way any other input is.
+    pub fn from_base_model(base: &BaseModelRef) -> Self {
+        Self {
+            identity: format!("{BASE_MODEL_INPUT_PREFIX}{}", base.id()),
+            generation: Generation(base.generation()),
+            digest: *base.digest().as_bytes(),
+        }
+    }
+
+    pub fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+
+    pub fn digest(&self) -> &Digest {
+        &self.digest
+    }
+}
+
+/// The typed dependency block of a version 3 [`ExpertCommitRecord`]: training inputs and
+/// evaluation inputs, each list strictly ascending by `(identity, generation)`, bounded by
+/// [`MAX_EXPERT_INPUTS_PER_ROLE`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ExpertInputs {
+    training: Vec<ExpertInputRef>,
+    evaluation: Vec<ExpertInputRef>,
+}
+
+fn sort_inputs(mut inputs: Vec<ExpertInputRef>) -> Result<Vec<ExpertInputRef>, ExpertInputError> {
+    if inputs.len() > MAX_EXPERT_INPUTS_PER_ROLE {
+        return Err(ExpertInputError::TooManyInputs {
+            found: inputs.len(),
+        });
+    }
+    inputs.sort_by(|a, b| (&a.identity, a.generation).cmp(&(&b.identity, b.generation)));
+    for pair in inputs.windows(2) {
+        if pair[0].identity == pair[1].identity && pair[0].generation == pair[1].generation {
+            return Err(ExpertInputError::DuplicateInput {
+                identity: pair[0].identity.clone(),
+                generation: pair[0].generation,
+            });
+        }
+    }
+    Ok(inputs)
+}
+
+impl ExpertInputs {
+    /// Build a block; each list is put in canonical (ascending) order.
+    ///
+    /// # Errors
+    /// Rejects a list over [`MAX_EXPERT_INPUTS_PER_ROLE`], a duplicate `(identity, generation)`
+    /// within one list and one `(identity, generation)` named with two digests across the lists.
+    pub fn new(
+        training: Vec<ExpertInputRef>,
+        evaluation: Vec<ExpertInputRef>,
+    ) -> Result<Self, ExpertInputError> {
+        let training = sort_inputs(training)?;
+        let evaluation = sort_inputs(evaluation)?;
+        let mut seen: BTreeMap<(&str, Generation), &Digest> = BTreeMap::new();
+        for input in training.iter().chain(&evaluation) {
+            let known = seen
+                .entry((input.identity.as_str(), input.generation))
+                .or_insert(&input.digest);
+            if **known != input.digest {
+                return Err(ExpertInputError::DigestConflict {
+                    identity: input.identity.clone(),
+                    generation: input.generation,
+                });
+            }
+        }
+        Ok(Self {
+            training,
+            evaluation,
+        })
+    }
+
+    /// The training inputs, ascending.
+    pub fn training(&self) -> &[ExpertInputRef] {
+        &self.training
+    }
+
+    /// The evaluation inputs, ascending.
+    pub fn evaluation(&self) -> &[ExpertInputRef] {
+        &self.evaluation
+    }
+
+    /// Whether the block names no input at all.
+    pub fn is_empty(&self) -> bool {
+        self.training.is_empty() && self.evaluation.is_empty()
+    }
+
+    /// The number of inputs, counting an input named in both lists twice.
+    pub fn len(&self) -> usize {
+        self.training.len() + self.evaluation.len()
+    }
+
+    /// SHA-256 over the domain `ptr.pods.expert-inputs.v1` and the canonical encoding of the
+    /// block. Used as the block's commitment in projections.
+    pub fn canonical_digest(&self) -> [u8; 32] {
+        let mut w = Writer::default();
+        w.bytes.extend_from_slice(INPUTS_DIGEST_DOMAIN);
+        w.inputs(self);
+        Sha256::digest(&w.bytes).into()
+    }
+}
+
+/// Leading magic and version of a version 1 [`ExpertCommitRecord`] encoding, which carries only
+/// the evidence digest. A change to the layout below needs a new magic, so an old reader refuses
+/// new bytes instead of misreading them.
+const RECORD_MAGIC_V1: &[u8; 8] = b"PTREXR01";
+
+/// Leading magic of a version 2 record, which also embeds the evidence and the gate
+/// configuration digest the host required for its epoch.
+const RECORD_MAGIC_V2: &[u8; 8] = b"PTREXR02";
+
+/// Leading magic of a version 3 record: a version 2 record followed by the typed dependency
+/// block ([`ExpertInputs`]).
+const RECORD_MAGIC_V3: &[u8; 8] = b"PTREXR03";
+
+/// The largest encoded [`ExpertCommitRecord`] [`ExpertCommitRecord::decode_canonical`] reads.
+/// It equals the ledger's `MAX_EXPERT_RECORD_BYTES` (1 MiB), the most a structural event may
+/// carry, and longer input is refused before any parsing.
+pub const MAX_EXPERT_COMMIT_RECORD_BYTES: usize = 1 << 20;
+
+/// The evidence a version 2 [`ExpertCommitRecord`] embeds so a replaying reader can re-verify it
+/// instead of trusting the digest: the gate report's canonical bytes (opaque to this crate;
+/// `ptr-lineage` `BoundGateReport::decode_canonical` reads them) and the digest of the gate
+/// configuration the host required for the record's gate epoch when it admitted the proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertEvidence {
+    required_gate_config_digest: [u8; 32],
+    report: Vec<u8>,
+}
+
+impl ExpertEvidence {
+    pub fn required_gate_config_digest(&self) -> &[u8; 32] {
+        &self.required_gate_config_digest
+    }
+
+    /// The canonical bytes of the embedded gate report.
+    pub fn report(&self) -> &[u8] {
+        &self.report
+    }
+}
+
+/// An [`ExpertProposal`] as committed to the ledger, with the digest of the trusted evidence it
+/// was admitted on and the gate-policy epoch that evidence was issued under.
+///
+/// The record is the opaque payload of the ledger's structural-commit event. This type only
+/// defines and re-validates the bytes: it does not decide admission, and holding one proves
+/// nothing about the evidence. The fields are private, and [`ExpertCommitRecord::decode_canonical`]
+/// rebuilds the proposal through [`ExpertProposal::new`], so bytes that decode always describe a
+/// proposal that validates.
+///
+/// # Versions
+///
+/// A version 3 record ([`ExpertCommitRecord::new_with_inputs`]) is a version 2 record followed by
+/// the typed dependency block ([`ExpertInputs`], see "Recorded inputs" in the module
+/// documentation); only an admission that names inputs writes it. Versions 1 and 2 decode
+/// exactly as before and name no inputs.
+///
+/// A version 2 record ([`ExpertCommitRecord::new_with_evidence`], the usual kind admission
+/// writes) embeds the gate report and the required gate configuration digest, so replay can
+/// re-derive the report digest, check that it passed, is bound to this proposal and operation and
+/// was produced under the configuration the host required. A version 1 record
+/// ([`ExpertCommitRecord::new`]) carries only the evidence digest; it still decodes, because
+/// histories written before version 2 exist, but replay can verify nothing about its evidence
+/// and treats it as unverified legacy (see `ptr-runtime`'s `ExpertEvidenceStatus`). Nothing new
+/// writes version 1.
+///
+/// # Canonical encoding
+///
+/// All integers are little-endian. `record_v1 = magic "PTREXR01" | proposal | evidence_digest[32]
+/// | gate_epoch u64`; `record_v2 = magic "PTREXR02" | proposal | evidence_digest[32] |
+/// gate_epoch u64 | required_gate_config_digest[32] | report (u32 length, bytes)`;
+/// `record_v3 = magic "PTREXR03" | proposal | evidence_digest[32] | gate_epoch u64 |
+/// required_gate_config_digest[32] | report (u32 length, bytes) | training inputs | evaluation
+/// inputs`, each list a `u32` count and per input `identity (string) | generation u64 |
+/// digest[32]`. A string is a
+/// `u32` byte length and its UTF-8 bytes, a list a `u32` count and
+/// its items, an option a `0`/`1` byte. The proposal is its project, proposer (project, pod,
+/// generation), `observed_at`, rationale digest and a one-byte operation tag (0 Birth, 1 Merge,
+/// 2 Split, 3 Freeze, 4 Reactivate, 5 Prune, 6 Retire) with its operands, in field order. A level
+/// is a tag byte (0 Token with `layer u16`, `index u16`; 1 Segment); a state is a tag byte (0
+/// Candidate, 1 Gated, 2 Serving, 3 Frozen, 4 Fenced, 5 Superseded, 6 Retired followed by a
+/// reason byte); a reason byte is 0 Pruned, 1 Superseded, 2 GateFailed, 3 InputRevoked.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpertCommitRecord {
+    proposal: ExpertProposal,
+    evidence_digest: [u8; 32],
+    gate_epoch: u64,
+    evidence: Option<ExpertEvidence>,
+    inputs: Option<ExpertInputs>,
+}
+
+impl ExpertCommitRecord {
+    /// A legacy version 1 record: a proposal bound to the digest of the evidence it was admitted
+    /// on and the gate-policy epoch, with no evidence embedded. Rejects an all-zero evidence
+    /// digest. Admission does not use this; see [`ExpertCommitRecord::new_with_evidence`].
+    pub fn new(
+        proposal: ExpertProposal,
+        evidence_digest: [u8; 32],
+        gate_epoch: u64,
+    ) -> Result<Self, ExpertProposalError> {
+        if evidence_digest == ZERO_DIGEST {
+            return Err(ExpertProposalError::MalformedRecord(
+                "evidence digest is all zero",
+            ));
+        }
+        Ok(Self {
+            proposal,
+            evidence_digest,
+            gate_epoch,
+            evidence: None,
+            inputs: None,
+        })
+    }
+
+    /// A version 2 record embedding the gate report (`report`, its canonical bytes) and the gate
+    /// configuration digest the host required for `gate_epoch`. This type does not parse the
+    /// report: the reader that can (`ptr-lineage`) checks it against `evidence_digest`.
+    ///
+    /// # Errors
+    /// Rejects an all-zero evidence digest or configuration digest and an empty report.
+    pub fn new_with_evidence(
+        proposal: ExpertProposal,
+        evidence_digest: [u8; 32],
+        gate_epoch: u64,
+        required_gate_config_digest: [u8; 32],
+        report: Vec<u8>,
+    ) -> Result<Self, ExpertProposalError> {
+        if required_gate_config_digest == ZERO_DIGEST {
+            return Err(ExpertProposalError::MalformedRecord(
+                "required gate configuration digest is all zero",
+            ));
+        }
+        if report.is_empty() {
+            return Err(ExpertProposalError::MalformedRecord(
+                "embedded gate report is empty",
+            ));
+        }
+        let mut record = Self::new(proposal, evidence_digest, gate_epoch)?;
+        record.evidence = Some(ExpertEvidence {
+            required_gate_config_digest,
+            report,
+        });
+        Ok(record)
+    }
+
+    /// A version 3 record: a version 2 record plus the typed dependency block `inputs`.
+    ///
+    /// # Errors
+    /// Everything [`ExpertCommitRecord::new_with_evidence`] rejects, and a proposal whose
+    /// operation produces no result expert (`Freeze`, a `Reactivate` that unfreezes, `Prune`,
+    /// `Retire`): inputs are a property of the experts an operation creates.
+    pub fn new_with_inputs(
+        proposal: ExpertProposal,
+        evidence_digest: [u8; 32],
+        gate_epoch: u64,
+        required_gate_config_digest: [u8; 32],
+        report: Vec<u8>,
+        inputs: ExpertInputs,
+    ) -> Result<Self, ExpertProposalError> {
+        if proposal.op().results().is_empty() {
+            return Err(ExpertProposalError::MalformedRecord(
+                "inputs on an operation without a result",
+            ));
+        }
+        let mut record = Self::new_with_evidence(
+            proposal,
+            evidence_digest,
+            gate_epoch,
+            required_gate_config_digest,
+            report,
+        )?;
+        record.inputs = Some(inputs);
+        Ok(record)
+    }
+
+    pub fn proposal(&self) -> &ExpertProposal {
+        &self.proposal
+    }
+
+    pub fn evidence_digest(&self) -> &[u8; 32] {
+        &self.evidence_digest
+    }
+
+    pub fn gate_epoch(&self) -> u64 {
+        self.gate_epoch
+    }
+
+    /// The embedded evidence of a version 2 or 3 record; `None` for a legacy version 1 record.
+    pub fn evidence(&self) -> Option<&ExpertEvidence> {
+        self.evidence.as_ref()
+    }
+
+    /// The dependency block of a version 3 record; `None` for version 1 and 2.
+    pub fn inputs(&self) -> Option<&ExpertInputs> {
+        self.inputs.as_ref()
+    }
+
+    /// The canonical bytes; see the type documentation for the layout.
+    pub fn encode_canonical(&self) -> Vec<u8> {
+        let mut w = Writer::default();
+        w.bytes
+            .extend_from_slice(match (&self.evidence, &self.inputs) {
+                (None, _) => RECORD_MAGIC_V1,
+                (Some(_), None) => RECORD_MAGIC_V2,
+                (Some(_), Some(_)) => RECORD_MAGIC_V3,
+            });
+        w.proposal(&self.proposal);
+        w.bytes.extend_from_slice(&self.evidence_digest);
+        w.u64(self.gate_epoch);
+        if let Some(evidence) = &self.evidence {
+            w.bytes
+                .extend_from_slice(&evidence.required_gate_config_digest);
+            w.count(evidence.report.len());
+            w.bytes.extend_from_slice(&evidence.report);
+        }
+        if let Some(inputs) = &self.inputs {
+            w.inputs(inputs);
+        }
+        w.bytes
+    }
+
+    /// Decode and re-validate. The proposal is rebuilt through [`ExpertProposal::new`] and every
+    /// identity through its constructor.
+    ///
+    /// # Errors
+    /// Rejects a wrong magic, truncated or trailing bytes, an unknown tag, an invalid identity or
+    /// digest, a proposal that does not validate, and any byte string that is not exactly the
+    /// canonical encoding of the record it decodes to.
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, ExpertProposalError> {
+        if bytes.len() > MAX_EXPERT_COMMIT_RECORD_BYTES {
+            return Err(ExpertProposalError::MalformedRecord(
+                "record exceeds the size limit",
+            ));
+        }
+        let mut r = Reader { bytes };
+        let magic = r.take(RECORD_MAGIC_V1.len())?;
+        let (embeds_evidence, embeds_inputs) = if magic == RECORD_MAGIC_V1 {
+            (false, false)
+        } else if magic == RECORD_MAGIC_V2 {
+            (true, false)
+        } else if magic == RECORD_MAGIC_V3 {
+            (true, true)
+        } else {
+            return Err(ExpertProposalError::MalformedRecord("unknown magic"));
+        };
+        let proposal = r.proposal()?;
+        let evidence_digest = r.array32()?;
+        let gate_epoch = r.u64()?;
+        let record = if embeds_evidence {
+            let required = r.array32()?;
+            let len = r.count()?;
+            let report = r.take(len)?.to_vec();
+            if embeds_inputs {
+                let inputs = r.inputs()?;
+                Self::new_with_inputs(
+                    proposal,
+                    evidence_digest,
+                    gate_epoch,
+                    required,
+                    report,
+                    inputs,
+                )?
+            } else {
+                Self::new_with_evidence(proposal, evidence_digest, gate_epoch, required, report)?
+            }
+        } else {
+            Self::new(proposal, evidence_digest, gate_epoch)?
+        };
+        if !r.bytes.is_empty() {
+            return Err(ExpertProposalError::MalformedRecord("trailing bytes"));
+        }
+        if record.encode_canonical() != bytes {
+            return Err(ExpertProposalError::MalformedRecord(
+                "non-canonical encoding",
+            ));
+        }
+        Ok(record)
+    }
+}
+
+#[derive(Default)]
+struct Writer {
+    bytes: Vec<u8>,
+}
+
+impl Writer {
+    fn u8(&mut self, value: u8) {
+        self.bytes.push(value);
+    }
+
+    fn u16(&mut self, value: u16) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn u64(&mut self, value: u64) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn count(&mut self, value: usize) {
+        // Ids are at most 128 bytes and no operation holds anywhere near 2^32 operands; a value
+        // that did not fit would encode a truncated count and fail to decode, never alias.
+        self.bytes.extend_from_slice(&(value as u32).to_le_bytes());
+    }
+
+    fn str(&mut self, value: &str) {
+        self.count(value.len());
+        self.bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn digest(&mut self, value: &Digest) {
+        self.bytes.extend_from_slice(value);
+    }
+
+    fn level(&mut self, level: ExpertLevel) {
+        match level {
+            ExpertLevel::Token { layer, index } => {
+                self.u8(0);
+                self.u16(layer);
+                self.u16(index);
+            }
+            ExpertLevel::Segment => self.u8(1),
+        }
+    }
+
+    fn reason(&mut self, reason: RetiredReason) {
+        self.u8(match reason {
+            RetiredReason::Pruned => 0,
+            RetiredReason::Superseded => 1,
+            RetiredReason::GateFailed => 2,
+            RetiredReason::InputRevoked => 3,
+        });
+    }
+
+    fn state(&mut self, state: ExpertState) {
+        match state {
+            ExpertState::Candidate => self.u8(0),
+            ExpertState::Gated => self.u8(1),
+            ExpertState::Serving => self.u8(2),
+            ExpertState::Frozen => self.u8(3),
+            ExpertState::Fenced => self.u8(4),
+            ExpertState::Superseded => self.u8(5),
+            ExpertState::Retired(reason) => {
+                self.u8(6);
+                self.reason(reason);
+            }
+        }
+    }
+
+    fn input_list(&mut self, list: &[ExpertInputRef]) {
+        self.count(list.len());
+        for input in list {
+            self.str(&input.identity);
+            self.u64(input.generation.0);
+            self.digest(&input.digest);
+        }
+    }
+
+    fn inputs(&mut self, inputs: &ExpertInputs) {
+        self.input_list(&inputs.training);
+        self.input_list(&inputs.evaluation);
+    }
+
+    fn base_model(&mut self, base: &BaseModelRef) {
+        self.str(&base.id.0);
+        self.digest(base.digest.as_bytes());
+        self.u64(base.generation);
+    }
+
+    fn spec(&mut self, spec: &ExpertPodSpec) {
+        self.str(&spec.project.0);
+        self.str(&spec.pod.0);
+        self.digest(spec.manifest_digest.as_bytes());
+        self.level(spec.level);
+        self.base_model(&spec.base_model);
+        self.u64(spec.generation.0);
+    }
+
+    fn target(&mut self, target: &ExpertTarget) {
+        self.str(&target.project.0);
+        self.str(&target.pod.0);
+        self.u64(target.generation.0);
+        self.level(target.level);
+        self.base_model(&target.base_model);
+        self.digest(target.manifest_digest.as_bytes());
+        self.state(target.state);
+        self.u64(target.state_version);
+    }
+
+    fn targets(&mut self, targets: &[ExpertTarget]) {
+        self.count(targets.len());
+        for target in targets {
+            self.target(target);
+        }
+    }
+
+    fn proposal(&mut self, proposal: &ExpertProposal) {
+        let ProposalParts {
+            project,
+            proposer,
+            observed_at,
+            op,
+            rationale,
+        } = proposal.parts();
+        self.str(&project.0);
+        self.str(&proposer.project.0);
+        self.str(&proposer.pod.0);
+        self.u64(proposer.generation.0);
+        self.u64(observed_at.0);
+        self.digest(rationale.as_bytes());
+        match op {
+            StructuralOp::Birth { result } => {
+                self.u8(0);
+                self.spec(result);
+            }
+            StructuralOp::Merge { sources, result } => {
+                self.u8(1);
+                self.targets(sources);
+                self.spec(result);
+            }
+            StructuralOp::Split { source, results } => {
+                self.u8(2);
+                self.target(source);
+                self.count(results.len());
+                for result in results {
+                    self.spec(result);
+                }
+            }
+            StructuralOp::Freeze { target } => {
+                self.u8(3);
+                self.target(target);
+            }
+            StructuralOp::Reactivate { target, result } => {
+                self.u8(4);
+                self.target(target);
+                match result {
+                    Some(result) => {
+                        self.u8(1);
+                        self.spec(result);
+                    }
+                    None => self.u8(0),
+                }
+            }
+            StructuralOp::Prune { targets } => {
+                self.u8(5);
+                self.targets(targets);
+            }
+            StructuralOp::Retire { target, reason } => {
+                self.u8(6);
+                self.target(target);
+                self.reason(*reason);
+            }
+        }
+    }
+}
+
+struct Reader<'a> {
+    bytes: &'a [u8],
+}
+
+fn malformed<T>(reason: &'static str) -> Result<T, ExpertProposalError> {
+    Err(ExpertProposalError::MalformedRecord(reason))
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], ExpertProposalError> {
+        if self.bytes.len() < n {
+            return malformed("truncated");
+        }
+        let (head, tail) = self.bytes.split_at(n);
+        self.bytes = tail;
+        Ok(head)
+    }
+
+    fn u8(&mut self) -> Result<u8, ExpertProposalError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, ExpertProposalError> {
+        Ok(u16::from_le_bytes(
+            self.take(2)?.try_into().expect("2 bytes"),
+        ))
+    }
+
+    fn u32(&mut self) -> Result<u32, ExpertProposalError> {
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().expect("4 bytes"),
+        ))
+    }
+
+    fn u64(&mut self) -> Result<u64, ExpertProposalError> {
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
+    }
+
+    fn array32(&mut self) -> Result<[u8; 32], ExpertProposalError> {
+        Ok(self.take(32)?.try_into().expect("32 bytes"))
+    }
+
+    /// A list count. Every item takes at least one byte, so a count above the remaining length
+    /// is refused before anything is allocated.
+    fn count(&mut self) -> Result<usize, ExpertProposalError> {
+        let n = self.u32()? as usize;
+        if n > self.bytes.len() {
+            return malformed("count exceeds the remaining bytes");
+        }
+        Ok(n)
+    }
+
+    fn string(&mut self) -> Result<String, ExpertProposalError> {
+        let n = self.count()?;
+        match std::str::from_utf8(self.take(n)?) {
+            Ok(s) => Ok(s.to_owned()),
+            Err(_) => malformed("string is not UTF-8"),
+        }
+    }
+
+    fn level(&mut self) -> Result<ExpertLevel, ExpertProposalError> {
+        match self.u8()? {
+            0 => Ok(ExpertLevel::Token {
+                layer: self.u16()?,
+                index: self.u16()?,
+            }),
+            1 => Ok(ExpertLevel::Segment),
+            _ => malformed("unknown level tag"),
+        }
+    }
+
+    fn reason(&mut self) -> Result<RetiredReason, ExpertProposalError> {
+        match self.u8()? {
+            0 => Ok(RetiredReason::Pruned),
+            1 => Ok(RetiredReason::Superseded),
+            2 => Ok(RetiredReason::GateFailed),
+            3 => Ok(RetiredReason::InputRevoked),
+            _ => malformed("unknown retirement reason"),
+        }
+    }
+
+    fn state(&mut self) -> Result<ExpertState, ExpertProposalError> {
+        match self.u8()? {
+            0 => Ok(ExpertState::Candidate),
+            1 => Ok(ExpertState::Gated),
+            2 => Ok(ExpertState::Serving),
+            3 => Ok(ExpertState::Frozen),
+            4 => Ok(ExpertState::Fenced),
+            5 => Ok(ExpertState::Superseded),
+            6 => Ok(ExpertState::Retired(self.reason()?)),
+            _ => malformed("unknown state tag"),
+        }
+    }
+
+    fn input_list(&mut self) -> Result<Vec<ExpertInputRef>, ExpertProposalError> {
+        let n = self.count()?;
+        if n > MAX_EXPERT_INPUTS_PER_ROLE {
+            return malformed("too many inputs in one list");
+        }
+        let mut list = Vec::with_capacity(n);
+        for _ in 0..n {
+            let identity = self.string()?;
+            let generation = Generation(self.u64()?);
+            let digest = self.array32()?;
+            list.push(
+                ExpertInputRef::new(identity, generation, digest)
+                    .map_err(|_| ExpertProposalError::MalformedRecord("invalid input reference"))?,
+            );
+        }
+        Ok(list)
+    }
+
+    fn inputs(&mut self) -> Result<ExpertInputs, ExpertProposalError> {
+        let training = self.input_list()?;
+        let evaluation = self.input_list()?;
+        ExpertInputs::new(training, evaluation)
+            .map_err(|_| ExpertProposalError::MalformedRecord("invalid input block"))
+    }
+
+    fn manifest_digest(&mut self) -> Result<ManifestDigest, ExpertProposalError> {
+        match ManifestDigest::new(self.array32()?) {
+            Ok(d) => Ok(d),
+            Err(ZeroDigest) => malformed("manifest digest is all zero"),
+        }
+    }
+
+    fn base_model(&mut self) -> Result<BaseModelRef, ExpertProposalError> {
+        let id = BaseModelId::new(self.string()?).map_err(ExpertProposalError::Identity)?;
+        let digest = match BaseModelDigest::new(self.array32()?) {
+            Ok(d) => d,
+            Err(ZeroDigest) => return malformed("base model digest is all zero"),
+        };
+        BaseModelRef::new(id, digest, self.u64()?).map_err(ExpertProposalError::Identity)
+    }
+
+    fn spec(&mut self) -> Result<ExpertPodSpec, ExpertProposalError> {
+        let project = ProjectId(self.string()?);
+        let pod = PodId(self.string()?);
+        let manifest = self.manifest_digest()?;
+        let level = self.level()?;
+        let base = self.base_model()?;
+        let generation = Generation(self.u64()?);
+        ExpertPodSpec::new(project, pod, manifest, level, base, generation)
+            .map_err(ExpertProposalError::Identity)
+    }
+
+    fn target(&mut self) -> Result<ExpertTarget, ExpertProposalError> {
+        let project = ProjectId(self.string()?);
+        let pod = PodId(self.string()?);
+        let generation = Generation(self.u64()?);
+        let level = self.level()?;
+        let base_model = self.base_model()?;
+        let manifest_digest = self.manifest_digest()?;
+        let state = self.state()?;
+        let state_version = self.u64()?;
+        ExpertTarget::new(ExpertTargetInit {
+            project,
+            pod,
+            generation,
+            level,
+            base_model,
+            manifest_digest,
+            state,
+            state_version,
+        })
+        .map_err(ExpertProposalError::Identity)
+    }
+
+    fn targets(&mut self) -> Result<Vec<ExpertTarget>, ExpertProposalError> {
+        let n = self.count()?;
+        (0..n).map(|_| self.target()).collect()
+    }
+
+    fn proposal(&mut self) -> Result<ExpertProposal, ExpertProposalError> {
+        let project = ProjectId(self.string()?);
+        let proposer = ProposerRef::new(
+            ProjectId(self.string()?),
+            PodId(self.string()?),
+            Generation(self.u64()?),
+        )
+        .map_err(ExpertProposalError::Identity)?;
+        let observed_at = CommitIndex(self.u64()?);
+        let rationale = match RationaleDigest::new(self.array32()?) {
+            Ok(d) => d,
+            Err(ZeroDigest) => return malformed("rationale digest is all zero"),
+        };
+        let op = match self.u8()? {
+            0 => StructuralOp::Birth {
+                result: self.spec()?,
+            },
+            1 => StructuralOp::Merge {
+                sources: self.targets()?,
+                result: self.spec()?,
+            },
+            2 => {
+                let source = self.target()?;
+                let n = self.count()?;
+                let results = (0..n).map(|_| self.spec()).collect::<Result<Vec<_>, _>>()?;
+                StructuralOp::Split { source, results }
+            }
+            3 => StructuralOp::Freeze {
+                target: self.target()?,
+            },
+            4 => {
+                let target = self.target()?;
+                let result = match self.u8()? {
+                    0 => None,
+                    1 => Some(self.spec()?),
+                    _ => return malformed("unknown option tag"),
+                };
+                StructuralOp::Reactivate { target, result }
+            }
+            5 => StructuralOp::Prune {
+                targets: self.targets()?,
+            },
+            6 => StructuralOp::Retire {
+                target: self.target()?,
+                reason: self.reason()?,
+            },
+            _ => return malformed("unknown operation tag"),
+        };
+        ExpertProposal::new(project, proposer, observed_at, op, rationale)
+    }
 }

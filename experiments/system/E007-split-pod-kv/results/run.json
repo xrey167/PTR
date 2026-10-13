@@ -1,0 +1,70 @@
+{
+  "experiment_id": "E007",
+  "status": "prepared",
+  "scope": "the CPU part of a pipeline (layer) split across two pods, on one host and in process: the tiny seeded 4-layer dense decoder split at layer 2, activation frames of the F32 boundary crossing the real PodWire request frame codec as signed chunks into a receiving assembler (allowlist, reorder window, per-principal reservations and tombstones, deadlines, replay protection), bit-identity of logits and per-pod KV against the single-pod run, a 16 MiB transport-only frame in five chunks, smuggling probes that try to move a KV page across the wire, and a downstream KV cache that revalidates the upstream stage generation, manifest digest and placement epoch at every use under revocation, supersession and re-placement with the Revoke message normal, dropped, delayed and in flight",
+  "git_sha": "55fd7a792d48faeb5cc48e40139747cff83c84d1",
+  "aggregated_at_git_sha": "7ba9288faf6b3e27411601d7d3442ef5e13422ec",
+  "recorded_at": "2026-10-11T23:06:13.007885+00:00",
+  "preregistration_sha256": "35529f186438a26fc5bc7c782d7c153c1209655e6bcc01dc940e94652c3f8c40",
+  "preregistration_rules_sha256": "b88e90a35bd3486d28aab4d1f227406f83baa4176e5673a26e58e77be3f10aed",
+  "criteria_sha256": "cd10d3d3d5657eede37454655cff276b4cc5c510ddd151fc411fc0b22fc95ef3",
+  "entrypoint": "cargo run --release --locked -p ptr-bench -- split-pod-kv <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20261011T222730.381199Z-seed-17.json",
+      "git_sha": "55fd7a792d48faeb5cc48e40139747cff83c84d1",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20261011T223757.438680Z-seed-29.json",
+      "git_sha": "bc45f5b4ecad072fc0de0be5a8ea2e1a4e0c9067",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20261011T224705.169389Z-seed-43.json",
+      "git_sha": "55fbf333fef1287378613a7e1641de4b6093d984",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20261011T225326.975763Z-seed-71.json",
+      "git_sha": "cd445183d148b5e316fde7c6c1a9b1a06fff23fa",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20261011T225933.935364Z-seed-101.json",
+      "git_sha": "7f2fafc7e5b9d47ec0468de4886873e21c77b3e3",
+      "exit_code": 0
+    }
+  ],
+  "seed_records": {
+    "17": "91bd2b26f4a9fabb82b6b71ddc7277307e42fe0fbc469cf5e8e0f77d54a12e9f",
+    "29": "7ee9a3267f0f3dbb958ec29e2635d88b77f68e3a76a7219c96420f49bd18fcfd",
+    "43": "301c6cb108000b17a454d34096e784d3a81472906c9402151885f9be891f4929",
+    "71": "84a87eaef27869bcd09f5a4b73b2e176019ceb684ba20548e8dd20f9c0438a41",
+    "101": "15c809558cd4a8ba82e3b96e36c5baade99e22aad54a554f21ca442fcc32af1a"
+  },
+  "verdict": "COMPLETED",
+  "recommended_status": "completed",
+  "static_evidence": [],
+  "mutation_checks": {
+    "killed": 59,
+    "total": 59,
+    "git_sha": "3c1076b91ac37a0ef94a32ef06997739c369a0a1",
+    "sha256": "4d036bb3b067f6eed93a459939b29a9676022d1657845d3d089ee54f6b4ac335"
+  },
+  "limitations": [
+    "the code under test is the CPU reference path on a tiny seeded model: bit-identity checks the plumbing (the stage hand-over, framing, reassembly), not the math, because the layer code is shared by the split and the single-pod run; no real checkpoint, no GPU, no other dtype than F32",
+    "frames cross the real PodWire request frame codec in process: no socket, no iroh transport, no second host, no latency or throughput claim (E008)",
+    "the chunk envelope is authenticated with an Ed25519 signature of the upstream runtime registered per authenticated principal; key distribution, rotation and the binding of the principal to a connection are not modelled",
+    "the time is a virtual clock the harness advances; clock skew is a tolerance, not a simulated drift",
+    "a completed frame holds one of 64 table slots per principal until its signed deadline plus the skew bound, so one principal sustains at most 64 / (deadline budget + skew) frames per second; the cases stay inside that bound by signing deadlines 100 ms ahead",
+    "the extensions of the design (input lineage and raw ancestry, Approximate frames and taint, persistence rejection, the expert, adapter, base-model, semantic, memory and derived kinds of the invalidation matrix) are E008's; the restore path does not apply because no KV is restored on a Pod",
+    "synthetic seeded token sequences; one process, one machine profile"
+  ],
+  "metrics_sha256": "103131b7c306c933618103f9fd846b0cfdcc48a911c3ce197a9c6588b05cb951"
+}

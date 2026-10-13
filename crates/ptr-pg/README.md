@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-28  
-**Code footprint:** 17 Rust source files · 6466 nonblank source lines · 2 integration-test files · 156 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-08  
+**Code footprint:** 17 Rust source files · 6672 nonblank source lines · 2 integration-test files · 161 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -56,9 +56,14 @@
 - Capability probe that never creates an extension; refusal, because the build links no TLS connector, of every hostaddr that is not a loopback address and every host that is not a Unix socket, a loopback address or localhost, with localhost never looked up: without a hostaddr it is given 127.0.0.1 as one, which the driver connects to instead of resolving the name
 - One server per substrate: a connection string naming more than one host or more than one hostaddr is refused with MultipleHosts before any session opens, so the migration lock's session connects to the loopback address or Unix socket the substrate's session reached, not to another server the driver could try
 - Rebuild drops the instance's own projection and derived schemas and replays; working state survives. drop_all, for tests and decommissioning, drops all three without the migration lock, which its caller must serialize
+- ExpertStructuralCommitted maps to no lifecycle change, topic expert.structural_committed, subject project:<project> and an event payload that adds an expert object with the op code and the proposal, operation and evidence digests in hex; its record bytes are not stored
+- ExpertFenceCommitted maps to no lifecycle change, topic expert.fence_committed, subject project:<project> and the entry the shared ptr-state projection yields (expert:<project>/<pod> = <generation>:fenced|serving|frozen:<epoch>); the projection still holds no expert catalog
+- KvTaintCommitted maps to no lifecycle change, topic kv.taint_committed, subject kv-taint:<kind>:<hex> of its first subject and the kv-taint entries of the shared ptr-state projection; there is no taint table
+- InputInvalidated (ledger tag 30, R011 WP3) has the topic expert.input_invalidated and the subject expert-input:<identity>; a Revoked kind is a lifecycle Tombstone for (input, generation), like a Revoked record, and a Superseded kind changes no lifecycle row (the supersession floor and the fenced experts are the runtime's dependency index, which this projection does not hold); the payload entries are exactly ptr-state's projection of the event
 
 ### Missing for the target architecture
 
+- The expert: rows a ptr-pg projection holds are NOT authoritative after a tag-30 (InputInvalidated) or tag-31 (ExpertAuthorityChanged) fence (R011 WP3b): the event names the fenced experts by count and digest only and ptr-pg applies the shared ptr-state projection_entries, so a fenced expert still reads as serving there; only the ptr-runtime materialized state marks it. Do not wire a router, or any serving decision, to the PostgreSQL projection
 - TLS connector, role separation and row-level security
 - Connection strings naming several servers (failover or load balancing across hosts): a substrate connects to one host or hostaddr, and localhost without a hostaddr only at 127.0.0.1
 - Connection pooling and a logical-replication change feed
@@ -75,13 +80,15 @@
 ### Next milestones
 
 - Run L004 against PostgreSQL 16 and 17 and with readers concurrent with the projector
-- Run Q003 against the reference retrieval baselines
+- Run Q003-v3 (successor of the superseded Q003-v2, itself the successor of the superseded Q003) against the reference retrieval baselines
 - Add TLS and separate projector, reader and migrator roles
 
 ### Linked experiments
 
 - [L004](../../experiments/lifecycle/L004-projection-equivalence/README.md) — `completed`
-- [Q003](../../experiments/retrieval/Q003-postgres-hybrid/README.md) — `planned`
+- [Q003](../../experiments/retrieval/Q003-postgres-hybrid/README.md) — `superseded`
+- [Q003-v2](../../experiments/retrieval/Q003-v2-postgres-hybrid/README.md) — `superseded`
+- [Q003-v3](../../experiments/retrieval/Q003-v3-postgres-hybrid/README.md) — `frozen`
 
 ### Technology evaluations
 
@@ -117,6 +124,8 @@
 - tests/postgres.rs and adapter unit tests: connection targets (a_non_loopback_host_is_refused_without_a_tls_connector, a_hostaddr_that_is_not_loopback_is_refused_whatever_the_host, a_connection_string_naming_more_than_one_server_is_refused, a_target_naming_more_than_one_server_is_refused_before_any_session_opens, localhost_is_connected_at_the_loopback_address_without_being_looked_up, the_driver_connects_to_the_hostaddr_without_looking_up_the_host)
 - tests/postgres.rs: work migration 16 (a_tampered_or_injected_branch_is_refused_at_load_under_a_seal_key over a changed value, author and base revision, a copied tag, another key's tag, a removed tag and an untagged injected branch, each a whole-branch rewrite every trigger accepts, a row edited and legacy-looking rows written with the triggers off, and appended tags; a_seal_tag_is_never_rewritten_and_goes_only_with_its_branch; a_branch_stored_before_seal_tags_is_tagged_in_place_and_keeps_its_triage, with the refusals of seal_stored_branch and a key rotation; without_a_seal_key_branches_store_and_load_as_before, which pins the tag to the HMAC of the domain and the seal digest; a_loaded_branch_merges_exactly_as_the_sealed_one, through PtrRuntime::merge_branch, the projection and record_outcome; work_migration_16_gives_a_reason_for_the_foreign_key_it_adds), unit tests of the tag and the key's redacted Debug, and a merged outcome refused as MergeNotProjected while a rebuild has dropped the projection
 - workspace fmt/check/test/clippy
+- an_input_invalidation_has_a_topic_a_subject_and_only_a_revocation_tombstones
+- ExpertAuthorityChanged (ledger tag 31, R011 WP4) has the topic expert.authority_changed, the subject expert-authority:<kind name>, no lifecycle change and the expert-authority entry of the shared ptr-state projection (an_authority_change_has_a_topic_a_subject_an_entry_and_no_lifecycle_row); the experts it fences are the runtime's, as for tag 30
 
 <!-- PTR:STATUS:END -->
 

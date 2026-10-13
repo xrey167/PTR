@@ -156,7 +156,9 @@ def versions() -> dict:
     return out
 
 
-def hardware() -> dict:
+def hardware(device: str | None = None) -> dict:
+    """Host and device facts. `device` is the resolved device of the run ("cpu"/"cuda"); on
+    CUDA the peak allocation since `torch.cuda.reset_peak_memory_stats()` is recorded."""
     import torch
 
     ram_gib = None
@@ -165,11 +167,20 @@ def hardware() -> dict:
     except (ValueError, OSError, AttributeError):
         pass
     gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+    on_cuda = device == "cuda" and torch.cuda.is_available()
     return {
         "cpu_count": os.cpu_count(),
         "ram_gib": ram_gib,
         "gpu": gpu,
         "platform": platform.platform(),
+        "device": device,
+        "torch_cuda": torch.version.cuda,
+        "peak_cuda_memory_allocated_bytes": (
+            int(torch.cuda.max_memory_allocated()) if on_cuda else None
+        ),
+        "peak_cuda_memory_allocated_gib": (
+            round(torch.cuda.max_memory_allocated() / 2**30, 3) if on_cuda else None
+        ),
     }
 
 
@@ -306,6 +317,9 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     from ptr_training.moe.sft import check_examples, run_sft
 
     torch.set_num_threads(os.cpu_count() or 1)
+    device = moe_config.resolve_device(cfg.model.device)  # ConfigError for cuda without CUDA
+    if device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
     model_mod.seed_everything(cfg.seed)  # before any model / LoRA initialisation
     timings: dict = {}
     t_start = time.perf_counter()
@@ -450,6 +464,8 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         "run": {"name": cfg.name, "seed": seed, "config_path": cfg.source_path},
         "model": {
             "kind": cfg.model.kind,
+            "device_requested": cfg.model.device,
+            "device": next(model.parameters()).device.type,
             "seed": cfg.model.seed,  # init seed actually used (run.seed above is separate)
             "class": type(
                 model.get_base_model() if hasattr(model, "get_base_model") else model
@@ -483,7 +499,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         "gates_evaluated": gates_evaluated,
         "gates_not_evaluated_reason": gates_not_evaluated_reason,
         "versions": versions(),
-        "hardware": hardware(),
+        "hardware": hardware(device),
         "wall_time_s": timings,
         "sft": sft,
         "rl": rl_results,

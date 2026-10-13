@@ -94,8 +94,13 @@ pub struct TailRecovery {
     pub acknowledged_records: usize,
     /// Durable records above the previous anchor that were removed.
     pub discarded_records: usize,
-    /// Whether a partial trailing frame was truncated.
+    /// Whether an incomplete tail was truncated: a partial trailing frame, and also a pure
+    /// all-zero tail (no frame at all); `trimmed_zero_tail_bytes > 0` tells the two apart.
     pub incomplete_frame_removed: bool,
+    /// Bytes of an all-zero tail that were trimmed (0 when none): the file had been extended
+    /// and none of the new data reached the disk, so no frame, acknowledged or not, was in it.
+    /// Never silent: it is part of this report, which [`AcknowledgedLedger::recovery`] keeps.
+    pub trimmed_zero_tail_bytes: usize,
     /// The log's tail after repair.
     pub tail: LogAnchor,
     /// The origin derivable from the repaired log, when it still holds index 1.
@@ -181,6 +186,8 @@ pub struct AcknowledgedLedger {
     anchors: AnchorStore,
     paths: LogPaths,
     fenced: bool,
+    /// What the repair at open did, when this ledger came from `open`.
+    recovery: Option<TailRecovery>,
 }
 
 impl AcknowledgedLedger {
@@ -198,6 +205,7 @@ impl AcknowledgedLedger {
             anchors,
             paths: paths.clone(),
             fenced: false,
+            recovery: None,
         })
     }
 
@@ -258,6 +266,7 @@ impl AcknowledgedLedger {
                 anchors,
                 paths: paths.clone(),
                 fenced: false,
+                recovery: Some(recovery),
             },
             split,
         ))
@@ -285,6 +294,12 @@ impl AcknowledgedLedger {
             .acknowledge(tail, origin.unwrap_or(ChainOrigin::UNSET))?;
         self.fenced = false;
         Ok(index)
+    }
+
+    /// What the repair at open did (a trimmed partial frame or zero tail, kept or discarded
+    /// records); `None` for a ledger that was created, not opened.
+    pub fn recovery(&self) -> Option<TailRecovery> {
+        self.recovery
     }
 
     /// Committed events currently retained by the live log.
@@ -379,6 +394,11 @@ impl AcknowledgedLedger {
         if anchors.get(offset - 1) != Some(&plan.base) {
             return Err(CompactionFault::FloorNotOnBoundary.into());
         }
+        // Test-only instrumentation of the cutover (compiled out without `failpoints`): before
+        // anything is built, once the new log exists and the anchor still names the old one, and
+        // once the anchor names the new one and this handle still holds the old one.
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("compaction.before_build");
         let retained = self.log.events()[offset..].to_vec();
         let bytes = integrity::encode_log_from(&retained, plan.base)?;
         let live_log = self.paths.log_path(plan.base.index);
@@ -387,7 +407,11 @@ impl AcknowledgedLedger {
             return Err(CompactionFault::DestinationExists.into());
         }
         let compacted = FileLedger::create_from_log_above(&live_log, &bytes, plan.base, plan.tail)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("compaction.after_log_built_before_anchor");
         self.anchors.advance_compacted(plan.base, plan.tail)?;
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("compaction.after_anchor_before_install");
         // Past the commit point the anchor names the new file, so installing it
         // here cannot disagree with what a reopen would resolve.
         self.log = compacted;

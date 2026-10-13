@@ -5146,10 +5146,33 @@ class PreregistrationGateTests(unittest.TestCase):
         )
         self.assertEqual(gate(pinned),(0,[]))
 
-ENROLLED=("S003","F003","Q003","R004","M008","E005")
+ENROLLED=("R004","E005")
 # The list also holds the experiments that ran or were superseded; they are no
 # part of the six this fixture moves to `prepared`.
-RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9")
+RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9","Q003")
+
+# Listed and held at `planned` until its freeze (its placeholders are pinned then, by the head
+# after the harness and the criteria are final); it is no part of the fixtures that move the six to
+# `prepared`. Once frozen it is a regular listed experiment the repository's own gate checks.
+LISTED_UNFROZEN=("R005","R009","R010","R012","R011","R007","S003","R006","S001","R001","Q002","F001","F002","S002","C001","F003","M008",
+    "M001-v5","M002-v10","M003-v2","M001-v5-sweep","M002-v10-sweep","M003-v2-sweep",
+    # The successor of the interrupted M002-v10-sweep (DEVIATIONS.md of the study).
+    "M002-v10-sweep-r2",
+    "M001-v6","M002-v11","M003-v3","M001-v6-sweep","M002-v11-sweep","M003-v3-sweep",
+    # The successor study of the interrupted M003-v3 (A0-baseline-v3-m003); no sweep of its own.
+    "M003-v4",
+    "L001-v2", "L002", "R013",
+    "F007",
+    # Superseded by Q003-v3 (INVALID, incomplete: seed 29 never ended); listed, prepared, never completed.
+    "Q003-v2",
+    "Q003-v3",
+
+    # E007 (split-Pod KV, CPU part); E008 is planned and not listed in experiments/preregistration.toml.
+    "E007")
+
+# The CPU stage-A experiments of the consciousness track (C004, C007 = C002 stage A, C008 = C003 stage A): they preregister (experiments/preregistration.toml) and
+# are built to freeze-ready. Like C001 in LISTED_UNFROZEN, they stay listed after their freeze: the list names the experiments that preregister.
+LISTED_UNFROZEN_CSTAGE_A=("C004","C007","C008")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture
@@ -5198,7 +5221,11 @@ class EnrolledExperimentTests(unittest.TestCase):
 
     def test_the_list_enrolls_the_experiments_that_preregister(self):
         listed=mod.load(ROOT/"experiments/preregistration.toml")["experiment"]
-        self.assertEqual(sorted(listed),sorted((*ENROLLED,*RETIRED)))
+        # The A0 ablation study v2 lists one experiment per sweep, evaluation,
+        # rerun and contingency (scripts/a0_study.py); they are checked by
+        # scripts/tests/test_a0_study.py and by the gate itself.
+        a0_study_v2=[exp_id for exp_id in listed if re.fullmatch(r"M00[1-4]-a0v2-[a-z0-9-]+",exp_id)]
+        self.assertEqual(sorted(set(listed)-set(a0_study_v2)),sorted((*ENROLLED,*RETIRED,*LISTED_UNFROZEN,*LISTED_UNFROZEN_CSTAGE_A)))
         # S003 lists every key its design preregisters (doc 35 design, section
         # 3.10), with the type of the design's value, low_cells included, in
         # the design's order.
@@ -5239,36 +5266,10 @@ class EnrolledExperimentTests(unittest.TestCase):
         pinned="'must-be-pinned-before-prepared'"
         signed="'must-be-signed-by-owner'"
         expected=[
-            "S003: preregistration key low_cells is an empty list",
-            "S003: experiment.toml names no preregistration_sha256",
-            "S003: experiment.toml names no preregistration_rules_sha256",
-            f"F003: preregistration key uncalibrated_threshold_permille is a placeholder ({pinned})",
-            f"F003: preregistration key calibration_set_rule is a placeholder ({signed})",
-            f"F003: preregistration key adjudicators_see_intent is a placeholder ({signed})",
-            f"F003: preregistration key harm_breakdown_namespaces is a placeholder ({signed})",
-            f"F003: preregistration key adjudication_protocol is a placeholder ({signed})",
-            f"F003: preregistration key adjudication_protocol_sha256 is a placeholder ({pinned})",
-            "F003: experiment.toml names no preregistration_sha256",
-            "F003: experiment.toml names no preregistration_rules_sha256",
-            f"Q003: preregistration key recall_margin_permille is a placeholder ({pinned})",
-            f"Q003: preregistration key embedding_model is a placeholder ({pinned})",
-            f"Q003: preregistration key embedding_revision is a placeholder ({pinned})",
-            f"Q003: preregistration key baseline_rag_reference_sha256 is a placeholder ({pinned})",
-            f"Q003: preregistration key baseline_strong_rag_sha256 is a placeholder ({pinned})",
-            "Q003: experiment.toml names no preregistration_sha256",
-            "Q003: experiment.toml names no preregistration_rules_sha256",
-            "Q003: baseline research/baselines/rag_reference/config.toml: hybrid.embedding_model is a placeholder ('must-be-pinned-before-reported-run')",
-            *strong_errors("Q003"),
             f"R004: preregistration key public_regression_gate_permille is a placeholder ({pinned})",
             f"R004: preregistration key backward_transfer_min_permille is a placeholder ({pinned})",
             "R004: experiment.toml names no preregistration_sha256",
             "R004: experiment.toml names no preregistration_rules_sha256",
-            f"M008: preregistration key token_budget is a placeholder ({pinned})",
-            f"M008: preregistration key recency_window is a placeholder ({pinned})",
-            f"M008: preregistration key recency_buffer_baseline is a placeholder ({pinned})",
-            f"M008: preregistration key hybrid_retrieval_baseline is a placeholder ({pinned})",
-            "M008: experiment.toml names no preregistration_sha256",
-            "M008: experiment.toml names no preregistration_rules_sha256",
             f"E005: preregistration key token_budget is a placeholder ({pinned})",
             f"E005: preregistration key full_context_baseline is a placeholder ({pinned})",
             f"E005: preregistration key agent_memory_baselines has element 0 that is a placeholder ({pinned})",
@@ -5279,43 +5280,90 @@ class EnrolledExperimentTests(unittest.TestCase):
         ]
         self.assertEqual(sorted(lines),sorted(expected))
 
-    def test_f003_leaves_planned_once_its_owner_decisions_are_signed_and_its_digest_named(self):
-        signed={
-            "uncalibrated_threshold_permille":500,
-            "calibration_set_rule":"every adjudication recorded before the policy version; held-out = every one after",
-            "adjudicators_see_intent":False,
-            "harm_breakdown_namespaces":"first ':'-separated segment of each changed key, descriptive only",
-            "adjudication_protocol":"experiments/feedback/F003-calibrated-arbiter/PROTOCOL.md",
-        }
-
-        def sign(root: Path, paths: dict) -> None:
-            directory=root/"experiments"/paths["F003"]
-            protocol=root/signed["adjudication_protocol"]
-            protocol.write_text("# F003 adjudication protocol\n",encoding="utf-8")
-            config=mod.load(directory/"config.toml")
-            table={
-                **config.pop("preregistration"),**signed,
-                "adjudication_protocol_sha256":mod.experiment_records.preregistered_file_digest(protocol),
-            }
-            header="".join(f"{key} = {toml_value(value)}\n" for key,value in config.items())
-            (directory/"config.toml").write_text(header+"\n"+toml_table("preregistration",table),encoding="utf-8")
-            digest=mod.experiment_records.preregistration_digest(table)
-            rules=mod.experiment_records.canonical_digest(mod.load(root/"experiments/preregistration.toml")["experiment"]["F003"])
-            manifest=(directory/"experiment.toml").read_text(encoding="utf-8")
-            (directory/"experiment.toml").write_text(
-                manifest+f'preregistration_sha256 = "{digest}"\npreregistration_rules_sha256 = "{rules}"\n',encoding="utf-8")
-
-        _,lines=gate(self.prepared_tree(sign))
-        self.assertEqual([line for line in lines if line.startswith("F003")],[])
-        # Its decided values are the ones the design fixed.
+    def test_f003_signed_decisions_and_decided_values_are_the_ones_the_owner_took(self):
+        # The owner decisions are signed in the repository's own configuration; they are the
+        # ones the owner took on 2026-10-09.
         table=mod.load(ROOT/"experiments/feedback/F003-calibrated-arbiter/config.toml")["preregistration"]
+        self.assertEqual(
+            {key:table[key] for key in (
+                "uncalibrated_threshold_permille","calibration_set_rule","adjudicators_see_intent",
+                "harm_breakdown_namespaces","adjudication_protocol","preregistration_text","criteria",
+            )},
+            {
+                "uncalibrated_threshold_permille":500,
+                "calibration_set_rule":"every adjudication recorded before the policy version is calibration; every one after it is held out",
+                "adjudicators_see_intent":False,
+                "harm_breakdown_namespaces":"first ':'-separated segment of each changed key; descriptive only",
+                "adjudication_protocol":"experiments/feedback/F003-calibrated-arbiter/PROTOCOL.md",
+                "preregistration_text":"experiments/feedback/F003-calibrated-arbiter/PREREGISTRATION.md",
+                "criteria":"experiments/feedback/F003-calibrated-arbiter/criteria.toml",
+            },
+        )
+        # Its decided values are the ones the design fixed.
         self.assertEqual(
             {key:table[key] for key in ("alpha_permille","delta_permille","threshold_rule","threshold_grid_steps","min_adjudications_per_policy")},
             {"alpha_permille":50,"delta_permille":50,"threshold_rule":"learn_then_test","threshold_grid_steps":1000,"min_adjudications_per_policy":59},
         )
+        # The only placeholders are the three digests the freeze pins: all three before it, none after.
+        self.assertIn(
+            sorted(key for key,value in table.items() if isinstance(value,str) and value.startswith("must-be-pinned")),
+            ([],["adjudication_protocol_sha256","criteria_sha256","preregistration_text_sha256"]),
+        )
         # 59 is the fewest adjudications, all without harm, whose one-sided
         # Clopper-Pearson bound at confidence 1 - delta is at most alpha.
         self.assertTrue(0.95**59<=0.05<0.95**58)
+
+    def f003_tree(self, pinned: bool, protocol_digest: bool = True) -> Path:
+        """A self-contained fixture: the registry, the list holding only F003, and F003's own
+        manifest, configuration and frozen files at `prepared`. With `pinned` its digests are
+        the real ones (`protocol_digest` False leaves the protocol's a placeholder)."""
+        root=Path(self.enterContext(tempfile.TemporaryDirectory()))
+        path=mod.load(ROOT/"experiments/registry.toml")
+        path={item["id"]:item["path"] for item in path["experiment"]}["F003"]
+        directory=f"experiments/{path}"
+        write(root,"experiments/registry.toml",f'version = 1\n\n[[experiment]]\nid = "F003"\npath = "{path}"\nstatus = "prepared"\n')
+        write(root,"experiments/preregistration.toml",self.list_of(("F003",)))
+        write(root,"research/baselines/plain_model/config.toml",(ROOT/"research/baselines/plain_model/config.toml").read_text(encoding="utf-8"))
+        for name in ("PROTOCOL.md","PREREGISTRATION.md","criteria.toml"):
+            write(root,f"{directory}/{name}",(ROOT/directory/name).read_text(encoding="utf-8"))
+        # The repository's own manifest and table, back at their pre-freeze state (no digests named or
+        # pinned), so the fixture holds before and after the freeze.
+        manifest="".join(line for line in (ROOT/directory/"experiment.toml").read_text(encoding="utf-8").splitlines(keepends=True)
+                         if not line.startswith(("preregistration_sha256","preregistration_rules_sha256")))
+        manifest=re.sub(r'^status = "[a-z]+"$','status = "prepared"',manifest,count=1,flags=re.M)
+        manifest=re.sub(r'^entrypoint = ".*"$','entrypoint = "bench <seed>"',manifest,count=1,flags=re.M)
+        config=mod.load(ROOT/directory/"config.toml")
+        table=config.pop("preregistration")
+        for key in ("adjudication_protocol","preregistration_text","criteria"):
+            table[f"{key}_sha256"]="must-be-pinned-before-prepared"
+        if pinned:
+            for key in ("adjudication_protocol","preregistration_text","criteria"):
+                if key=="adjudication_protocol" and not protocol_digest:
+                    continue
+                table[f"{key}_sha256"]=mod.experiment_records.preregistered_file_digest(root/table[key])
+            manifest+=(f'preregistration_sha256 = "{mod.experiment_records.preregistration_digest(table)}"\n'
+                       f'preregistration_rules_sha256 = "{mod.experiment_records.canonical_digest(mod.load(root/"experiments/preregistration.toml")["experiment"]["F003"])}"\n')
+        header="".join(f"{key} = {toml_value(value)}\n" for key,value in config.items() if not isinstance(value,dict))
+        others="".join("\n"+toml_table(key,value) for key,value in config.items() if isinstance(value,dict))
+        write(root,f"{directory}/config.toml",header+others+"\n"+toml_table("preregistration",table))
+        write(root,f"{directory}/experiment.toml",manifest)
+        git(root,"init","-q")
+        return root
+
+    def test_f003_with_every_digest_pinned_is_accepted_by_the_gate(self):
+        code,lines=gate(self.f003_tree(pinned=True))
+        self.assertEqual([line for line in lines if line.startswith("F003")],[])
+        self.assertEqual((code,lines),(0,[]))
+
+    def test_f003_with_a_placeholder_digest_is_reported_by_the_gate(self):
+        pinned="'must-be-pinned-before-prepared'"
+        _,lines=gate(self.f003_tree(pinned=True,protocol_digest=False))
+        self.assertIn(f"F003: preregistration key adjudication_protocol_sha256 is a placeholder ({pinned})",lines)
+        # And unpinned entirely: all three digests and the manifest's two names are reported.
+        _,lines=gate(self.f003_tree(pinned=False))
+        for key in ("adjudication_protocol_sha256","preregistration_text_sha256","criteria_sha256"):
+            self.assertIn(f"F003: preregistration key {key} is a placeholder ({pinned})",lines)
+        self.assertIn("F003: experiment.toml names no preregistration_sha256",lines)
 
 if __name__=="__main__":
     unittest.main()

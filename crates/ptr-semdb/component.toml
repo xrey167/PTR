@@ -39,7 +39,7 @@ missing = [
 next = [
   "Add typed query keys and automatic dependency capture over SemanticValue",
   "Implement dependency-recording query execution and cache invalidation",
-  "Run S001/S002 before selecting a third-party incremental engine",
+  "Select a third-party incremental engine only with S001/S002-style evidence (both completed for the in-repo engine)",
 ]
 
 experiments = [

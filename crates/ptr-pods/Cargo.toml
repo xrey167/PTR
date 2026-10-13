@@ -8,6 +8,9 @@ publish = false
 [features]
 default = []
 candle-cuda = ["dep:candle-core", "candle-core/cuda"]
+# A self-contained CPU Qwen2 text generator (bf16 safetensors, greedy decoding, chat template).
+# Off by default so the default build stays free of the tokenizer and safetensors dependencies.
+qwen-cpu = ["dep:safetensors", "dep:tokenizers", "dep:serde_json"]
 
 [dependencies]
 ptr-types = { workspace = true }
@@ -18,6 +21,12 @@ tokio = { workspace = true }
 candle-core = { workspace = true, optional = true }
 sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
+safetensors = { version = "=0.8.0", optional = true }
+# The tokenizer.json of the checkpoint is read by the (locally patched) tokenizers crate; the
+# onig regex backend is what its byte-level pre-tokenizer patterns need.
+tokenizers = { version = "=0.22.2", default-features = false, features = ["onig"], optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 safetensors = "=0.8.0"
+ptr-feedback = { workspace = true }

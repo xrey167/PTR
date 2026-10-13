@@ -1,0 +1,131 @@
+{
+  "schema_version": 2,
+  "experiment_id": "C004",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v114",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16874930176
+  },
+  "hardware_profile_record": {
+    "path": "hardware/a0-cpu-4core.toml",
+    "sha256": "929ce6339da92df03113c4176a59155336f123e7aed9c771db1614d0a99a0c1f",
+    "contents": {
+      "id": "a0-cpu-4core",
+      "os": "Ubuntu 24.04.4 LTS, Linux 6.18.44 x86_64",
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU (4 cores, 1 thread per core, 1 socket); AVX, AVX2, AVX-512F/BW/CD/DQ/VL/VNNI",
+      "ram_gib": 15.7,
+      "gpu": "none",
+      "gpu_memory_gib": 0,
+      "precision": [
+        "fp32"
+      ],
+      "notes": "Shared cloud container: timing is noisy and is recorded as a diagnostic only. Floating-point results are reproducible bit for bit only on this CPU feature set with the same binary, because the gemm kernel dispatches on AVX-512."
+    },
+    "unspecified_fields": []
+  },
+  "git_sha": "4bd653ae1ccd0cc710db33c3a72ea11bd7b4a711",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "C004",
+    "status": "prepared",
+    "hypothesis": "[CPU] Indicator RPT-1 (algorithmic recurrence) as a functional property; RPT-2 is not targeted (doc 38): does algorithmic recurrence with a persistent latent state across steps (the latent recurrence of docs/architecture/01-ptr-core.md, model/burn-a0 latent_steps) integrate multi-step evidence better than a parameter- and FLOP-matched feed-forward stack with unshared layers, on a task whose answer depends on a state carried across steps? Toy task: a modular counter (the running sum modulo six of a sequence of symbols, supervised after every step); training sequences have 2 to 6 steps, the answer is asked at 6 steps (in distribution), at 12 steps (primary, twice the longest trained), 18 and 24. Arms: a gated recurrent net with a carried state; a causal feed-forward stack of unshared attention layers with relative-position bias (parameters matched within 2% and FLOPs within 10% at 6 steps, the depth, slope scale and learning rate tuned on pilot seeds with recorded rules); the recurrent net with the carried state reset at every step (ablation, a floor by construction). An extrapolation-removed control: the same stack trained with the 12-step length in its pool must recover more than half of the recurrent arm's advantage. Sensitivity controls: the recurrent net trained on permuted labels (gross), the trained recurrent net on corrupted inputs (graded, a known deficit of the margin's order); null worlds in which recurrence can have no advantage (permuted labels for both arms, and the sum of the last two steps only). Stage A of the CPU part of C004; the GPU stage B (recurrent state in OLMoE-class experts) is not registered here. Targets indicator RPT-1 only (not RPT-L1 or RPT-L2). Functional mechanism test only: it says nothing about consciousness or about language models.",
+    "metrics": "accuracy at 12 steps (primary); accuracy at 6 (in distribution), 18 and 24 steps; accuracy against the number of steps (6, 9, 12, 15, 18, 24; descriptive); parameter and FLOP counts per arm; state-carryover probe (does the read-out change when the first step is replaced: recurrent, feed-forward, reset-state; the true answer always changes); paired per-seed differences with one-sided 95% t bounds (lower and upper) over fourteen seeds; validity guards; sensitivity controls; null worlds",
+    "baseline": "parameter- and FLOP-matched causal feed-forward stack with unshared layers (judged); the recurrent net with the carried state reset every step (judged, a floor by construction); the same stack trained on the 12-step length (extrapolation-removed control); the label-permuted and corrupted-input recurrent nets as gross and graded sensitivity controls; null worlds with permuted labels and with a two-step window",
+    "falsification": "Four outcomes, decided in advance (PREREGISTRATION.md, criteria.toml). COMPLETED if the guards and controls hold and both lower one-sided 95% t bounds over the fourteen paired seed differences of 12-step accuracy (recurrent minus feed-forward, recurrent minus reset-state) are at least 100 per mille. FALSIFIED (refuted) only if the guards and controls hold and some Bonferroni upper bound is below 100 per mille; and structurally FALSIFIED if a structural counter is above 0 on a valid seed (the reset-state ablation carries information over an early step, the feed-forward stack is not causal, nondeterminism) or a coverage rule fails. NOT_SHOWN if the bounds straddle the margin. INVALID, never falsified, if parameter or FLOP counts differ beyond the pinned tolerance (2% and 10%) or any other integrity counter is above 0, the feed-forward comparator is saturated (at or above 980 per mille) or did not learn the training distribution (below 800) on more than one seed, the recurrent arm did not, a judged arm hit the step cap on more than one seed, a sensitivity control, the extrapolation-removed control or a null world is not resolved as required, or the seeds or mutation evidence are missing; INVALID precedes every FALSIFIED and COMPLETED branch.",
+    "hardware_profile": "hardware/a0-cpu-4core.toml",
+    "entrypoint": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/cseries/c004/harness.py --benchmark c004 --seed <seed>",
+    "preflight": "env UV_PROJECT_ENVIRONMENT=../../../c001-venv PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-python-downloads --project research/consciousness python -B research/cseries/c004/harness.py --benchmark c004 --preflight",
+    "seeds": [
+      5001,
+      5002,
+      5003,
+      5004,
+      5005,
+      5006,
+      5007,
+      5008,
+      5009,
+      5010,
+      5011,
+      5012,
+      5013,
+      5014
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json",
+      "mutations.json"
+    ],
+    "design": "../../../docs/architecture/38-consciousness-indicators.md",
+    "preregistration_sha256": "5e5e63b59d6945c37d52c3487ff729fa73ff495ccc6be243266ea5fafc3c2ab2",
+    "preregistration_rules_sha256": "867eb8ab0147774bdaa86a391cb0f234923fd1910c8de067ac8eeeff9e72fd91"
+  },
+  "manifest_sha256": "3e66badcb5e794675e9c5bf7ddbcbfd90241eb8fb5d4a27240ecc10a48a6c0d6",
+  "cargo_lock_sha256": "f5702686d1242e6a9e1222a06afabc4aedcef7b34aabcf385733868a7a79cbcd",
+  "uv_lock_sha256": "ad4a3cd3f89409ec960376a6e5f8006805df94590e62783b910d3fc0b48ff5dd",
+  "hardware_profile": "hardware/a0-cpu-4core.toml",
+  "rustc": null,
+  "status": "completed",
+  "started_at": "20261011T140718.599904Z",
+  "entrypoint": "entrypoint",
+  "seed": 5006,
+  "parameters": {},
+  "command": [
+    "env",
+    "UV_PROJECT_ENVIRONMENT=../../../c001-venv",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "uv",
+    "run",
+    "--locked",
+    "--offline",
+    "--no-python-downloads",
+    "--project",
+    "research/consciousness",
+    "python",
+    "-B",
+    "research/cseries/c004/harness.py",
+    "--benchmark",
+    "c004",
+    "--seed",
+    "5006"
+  ],
+  "environment": {
+    "PATH": "/nix/var/nix/profiles/default/bin:/root/.local/bin:/root/.cargo/bin:/usr/local/go/bin:/opt/node22/bin:/opt/maven/bin:/opt/gradle/bin:/opt/rbenv/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "LC_CTYPE": "C.UTF-8",
+    "RUSTUP_HOME": "/root/.rustup",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONPYCACHEPREFIX": "/tmp/ptr-run-C004",
+    "CARGO_TARGET_DIR": "/tmp/ptr-run-C004/cargo-target",
+    "RUSTUP_TOOLCHAIN": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu"
+  },
+  "executable": {
+    "path": "/usr/bin/env",
+    "sha256": "0aefff8f912fb75716c5d4de3b6acde93edbe8fa280fc8ee895c1226d3e373ef"
+  },
+  "toolchain": {
+    "rustc": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc",
+      "sha256": "f3834d26669b03f6855fa54bd2381443123e860167bc0c7a8dd137e5cf6e5e4f"
+    },
+    "cargo": {
+      "path": "/root/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/cargo",
+      "sha256": "e951141cc55a6cd7b9876d187bd30a3720e6086b99413af95e3b8de1cdd72f14"
+    }
+  },
+  "finished_at": "2026-10-11T14:21:48.613789+00:00",
+  "exit_code": 0,
+  "stdout": "{\"arms\": {\"feedforward\": {\"best_val_permille\": 926, \"converged\": 1, \"curve_permille\": [237, 495, 540, 674, 662, 713, 781, 777, 809, 843, 810, 800, 866, 785, 869, 858, 886, 827, 839, 843, 857, 899, 888, 861, 908, 850, 895, 858, 883, 892, 852, 886, 926, 850, 891, 907, 854, 902, 861, 898, 849, 906, 902, 909, 921], \"ex12_correct\": 390, \"ex12_total\": 2048, \"ex15_correct\": 183, \"ex15_total\": 1024, \"ex18_correct\": 320, \"ex18_total\": 2048, \"ex24_correct\": 328, \"ex24_total\": 2048, \"ex9_correct\": 489, \"ex9_total\": 1024, \"family\": \"feedforward\", \"final_loss_micro\": 101140, \"flops_ref\": 737280, \"id_correct\": 1889, \"id_total\": 2048, \"lr_micro\": 3000, \"params\": 62716, \"step_cap\": 20000, \"steps\": 11250, \"train_loss_window_micro\": 139636, \"world\": \"task\"}, \"feedforward_inlength\": {\"best_val_permille\": 920, \"converged\": 1, \"curve_permille\": [217, 451, 583, 673, 647, 659, 698, 756, 772, 769, 756, 738, 822, 828, 842, 779, 813, 821, 762, 776, 852, 781, 831, 753, 794, 862, 862, 824, 879, 865, 798, 880, 858, 899, 812, 865, 778, 808, 920, 880, 911, 884, 900, 838, 861, 816, 901, 645, 889, 897, 922], \"ex12_correct\": 1789, \"ex12_total\": 2048, \"ex15_correct\": 714, \"ex15_total\": 1024, \"ex18_correct\": 839, \"ex18_total\": 2048, \"ex24_correct\": 427, \"ex24_total\": 2048, \"ex9_correct\": 977, \"ex9_total\": 1024, \"family\": \"feedforward\", \"final_loss_micro\": 117524, \"flops_ref\": 737280, \"id_correct\": 1992, \"id_total\": 2048, \"lr_micro\": 3000, \"params\": 62716, \"step_cap\": 20000, \"steps\": 12750, \"train_loss_window_micro\": 135965, \"world\": \"task\"}, \"feedforward_null\": {\"best_val_permille\": 999, \"converged\": 1, \"curve_permille\": [946, 999, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 999, 999, 1000], \"ex12_correct\": 2036, \"ex12_total\": 2048, \"ex15_correct\": 1014, \"ex15_total\": 1024, \"ex18_correct\": 2031, \"ex18_total\": 2048, \"ex24_correct\": 2037, \"ex24_total\": 2048, \"ex9_correct\": 1021, \"ex9_total\": 1024, \"family\": \"feedforward\", \"final_loss_micro\": 218289, \"flops_ref\": 737280, \"id_correct\": 2042, \"id_total\": 2048, \"lr_micro\": 3000, \"params\": 62716, \"step_cap\": 8000, \"steps\": 3500, \"train_loss_window_micro\": 132271, \"world\": \"null\"}, \"feedforward_perm\": {\"best_val_permille\": 173, \"converged\": 0, \"curve_permille\": [173, 165, 157, 164, 166, 165, 170, 170, 148, 155, 170, 160], \"ex12_correct\": 344, \"ex12_total\": 2048, \"ex15_correct\": 161, \"ex15_total\": 1024, \"ex18_correct\": 330, \"ex18_total\": 2048, \"ex24_correct\": 355, \"ex24_total\": 2048, \"ex9_correct\": 180, \"ex9_total\": 1024, \"family\": \"feedforward\", \"final_loss_micro\": 1766999, \"flops_ref\": 737280, \"id_correct\": 334, \"id_total\": 2048, \"lr_micro\": 3000, \"params\": 62716, \"step_cap\": 3000, \"steps\": 3000, \"train_loss_window_micro\": 1783715, \"world\": \"perm\"}, \"recurrent\": {\"best_val_permille\": 1000, \"converged\": 1, \"curve_permille\": [1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000], \"ex12_correct\": 2015, \"ex12_total\": 2048, \"ex15_correct\": 1007, \"ex15_total\": 1024, \"ex18_correct\": 1965, \"ex18_total\": 2048, \"ex24_correct\": 1923, \"ex24_total\": 2048, \"ex9_correct\": 1019, \"ex9_total\": 1024, \"family\": \"recurrent\", \"final_loss_micro\": 10, \"flops_ref\": 738816, \"id_correct\": 2048, \"id_total\": 2048, \"lr_micro\": 10000, \"params\": 63174, \"step_cap\": 20000, \"steps\": 3250, \"train_loss_window_micro\": 11, \"world\": \"task\"}, \"recurrent_corrupt\": {\"corrupted_sequences\": 295, \"ex12_correct\": 1725, \"ex12_total\": 2048, \"family\": \"recurrent\", \"params\": 63174, \"world\": \"task\"}, \"recurrent_null\": {\"best_val_permille\": 1000, \"converged\": 1, \"curve_permille\": [1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000], \"ex12_correct\": 2048, \"ex12_total\": 2048, \"ex15_correct\": 1024, \"ex15_total\": 1024, \"ex18_correct\": 2048, \"ex18_total\": 2048, \"ex24_correct\": 2048, \"ex24_total\": 2048, \"ex9_correct\": 1024, \"ex9_total\": 1024, \"family\": \"recurrent\", \"final_loss_micro\": 7, \"flops_ref\": 738816, \"id_correct\": 2048, \"id_total\": 2048, \"lr_micro\": 10000, \"params\": 63174, \"step_cap\": 8000, \"steps\": 3250, \"train_loss_window_micro\": 9, \"world\": \"null\"}, \"recurrent_perm\": {\"best_val_permille\": 187, \"converged\": 0, \"curve_permille\": [171, 149, 161, 187, 171, 151, 158, 168, 152, 155, 156, 155], \"ex12_correct\": 362, \"ex12_total\": 2048, \"ex15_correct\": 173, \"ex15_total\": 1024, \"ex18_correct\": 346, \"ex18_total\": 2048, \"ex24_correct\": 359, \"ex24_total\": 2048, \"ex9_correct\": 156, \"ex9_total\": 1024, \"family\": \"recurrent\", \"final_loss_micro\": 1786205, \"flops_ref\": 738816, \"id_correct\": 331, \"id_total\": 2048, \"lr_micro\": 10000, \"params\": 63174, \"step_cap\": 3000, \"steps\": 3000, \"train_loss_window_micro\": 1789149, \"world\": \"perm\"}, \"reset_state\": {\"best_val_permille\": 163, \"converged\": 0, \"curve_permille\": [163, 163, 163, 163, 163, 163, 163, 163, 163, 163, 163, 163], \"ex12_correct\": 364, \"ex12_total\": 2048, \"ex15_correct\": 169, \"ex15_total\": 1024, \"ex18_correct\": 351, \"ex18_total\": 2048, \"ex24_correct\": 332, \"ex24_total\": 2048, \"ex9_correct\": 178, \"ex9_total\": 1024, \"family\": \"reset\", \"final_loss_micro\": 1703299, \"flops_ref\": 738816, \"id_correct\": 351, \"id_total\": 2048, \"lr_micro\": 10000, \"params\": 63174, \"step_cap\": 3000, \"steps\": 3000, \"train_loss_window_micro\": 1629317, \"world\": \"task\"}}, \"arms_trained\": 8, \"benchmark\": \"c004\", \"checkpoint_mismatch_arms\": 0, \"comparator_primary_permille\": 190, \"controls\": {\"causal_probe\": {\"required_rule_tripped\": true}, \"flop_mismatch\": {\"required_rule_tripped\": true}, \"inlength_probe\": {\"required_rule_tripped\": true}, \"isolation_probe\": {\"required_rule_tripped\": true}, \"label_check\": {\"required_rule_tripped\": true}, \"length_leak\": {\"required_rule_tripped\": true}, \"overlap\": {\"required_rule_tripped\": true}, \"param_mismatch\": {\"required_rule_tripped\": true}}, \"convergence_mismatch_arms\": 0, \"corruption_rate_errors\": 0, \"coverage_failed\": [], \"cpu_s\": 555, \"environment\": {\"cpu_flags_sha256\": \"19139faa5b3c177a2d253ee9520b13713aee71074562456de06d1ba7833e7890\", \"cpu_model\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"machine\": \"x86_64\", \"pyproject_sha256\": \"2255bd227c27a4d79bd31d5dd21adfa3b1f260e4e9c491715a288ebc6ff51aec\", \"python\": \"3.11.15\", \"threads\": 1, \"torch\": \"2.7.1+cpu\", \"torch_config_sha256\": \"e46186cc4399ea998fbf3c7f5c1d5e7c28eeadf904ab1acdbdf2da0d158ea59e\", \"uv_lock_sha256\": \"3d20af3c90cf233c213b5de5d5e16bee6bccfe78b04adea730db45f196e17ca7\"}, \"experiment\": \"C004\", \"falsifiers_failed\": [], \"feedforward_carry_flip_permille\": 683, \"feedforward_shape\": {\"ffn\": 70, \"heads\": 4, \"layers\": 5, \"positional\": \"alibi\", \"slope_scale\": 4.0, \"width\": 40}, \"feedforward_trained\": 1, \"ff_causal_leaks\": 0, \"flop_mismatch_arms\": 0, \"guards_failed\": [], \"hard_failures\": 0, \"harness_gaps\": [], \"id_eval_instances\": 2048, \"inlength_control_errors\": 0, \"integrity_failed\": [], \"label_flip_permille\": 1000, \"label_mismatches\": 0, \"length_leaks\": 0, \"nondeterminism\": 0, \"nonfinite_arms\": 0, \"param_mismatch_arms\": 0, \"perm_label_leaks\": 0, \"primary_eval_instances\": 2048, \"procedure\": {\"pool_per_length\": 1024, \"primary_length\": 12, \"seed_is_declared\": true, \"shape_is_pinned\": true, \"train_lengths\": [2, 3, 4, 5, 6]}, \"recurrent_carry_flip_permille\": 1000, \"recurrent_carry_hits\": 256, \"recurrent_trained\": 1, \"reset_above_chance\": 0, \"reset_carry_leaks\": 0, \"scale\": \"pinned\", \"secondary_eval_instances\": 2048, \"seed\": 5006, \"summary\": {\"feedforward\": {\"ex12\": 190, \"ex15\": 178, \"ex18\": 156, \"ex24\": 160, \"ex9\": 477, \"id\": 922}, \"feedforward_inlength\": {\"ex12\": 873, \"ex15\": 697, \"ex18\": 409, \"ex24\": 208, \"ex9\": 954, \"id\": 972}, \"feedforward_null\": {\"ex12\": 994, \"ex15\": 990, \"ex18\": 991, \"ex24\": 994, \"ex9\": 997, \"id\": 997}, \"feedforward_perm\": {\"ex12\": 167, \"ex15\": 157, \"ex18\": 161, \"ex24\": 173, \"ex9\": 175, \"id\": 163}, \"recurrent\": {\"ex12\": 983, \"ex15\": 983, \"ex18\": 959, \"ex24\": 938, \"ex9\": 995, \"id\": 1000}, \"recurrent_corrupt\": {\"ex12\": 842}, \"recurrent_null\": {\"ex12\": 1000, \"ex15\": 1000, \"ex18\": 1000, \"ex24\": 1000, \"ex9\": 1000, \"id\": 1000}, \"recurrent_perm\": {\"ex12\": 176, \"ex15\": 168, \"ex18\": 168, \"ex24\": 175, \"ex9\": 152, \"id\": 161}, \"reset_state\": {\"ex12\": 177, \"ex15\": 165, \"ex18\": 171, \"ex24\": 162, \"ex9\": 173, \"id\": 171}}, \"timing_s\": 841, \"train_eval_overlap\": 0, \"unconverged_arms\": [\"reset_state\", \"recurrent_perm\", \"feedforward_perm\"], \"unconverged_judged_arms\": 0, \"val_eval_overlap\": 0}\n",
+  "stderr": "/tmp/claude-0/-home-user-PTR/0cdd792f-914f-548b-b171-d14a7a81ba5b/scratchpad/c001-venv/lib/python3.11/site-packages/torch/_subclasses/functional_tensor.py:276: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)\n  cpu = _conversion_method_template(device=torch.device(\"cpu\"))\n",
+  "launch_error": null,
+  "duration_ns": 846632411493
+}

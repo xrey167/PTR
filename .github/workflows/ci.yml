@@ -32,6 +32,12 @@ jobs:
       - run: cargo +stable clippy --manifest-path templates/rust-crate/Cargo.toml --all-targets --locked -- -D warnings
       - run: cargo +stable test -p ptr-observe --features tracing-adapter --locked
       - run: cargo +stable clippy -p ptr-observe --features tracing-adapter --all-targets --locked -- -D warnings
+      # evaluations/bench/* are excluded workspaces (own Cargo.lock): the root commands
+      # above reach none of them. Add each new bench workspace here and to `make fmt`.
+      - run: cargo +stable fmt --manifest-path evaluations/bench/kit/Cargo.toml -- --check
+      - run: cargo +stable check --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked
+      - run: cargo +stable clippy --manifest-path evaluations/bench/kit/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo +stable test --manifest-path evaluations/bench/kit/Cargo.toml --locked
   rust-stable:
     strategy:
       fail-fast: false
@@ -43,6 +49,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable check --workspace --all-targets --locked
       - run: cargo +stable test --workspace --locked
+      # wintun is the Windows tunnel backend; it is compiled only on Windows.
+      - if: runner.os == 'Windows'
+        run: cargo +stable check -p ptr-net --features wintun-backend --locked
   rust-msrv:
     runs-on: ubuntu-latest
     steps:
@@ -105,10 +114,16 @@ jobs:
       - run: python scripts/check_rust_conventions.py
       - run: python scripts/run_experiment.py validate
       - run: python scripts/run_component_eval.py validate
+      - run: python scripts/check_component_protocols.py
       - run: python scripts/check_research_gates.py
       - run: python -m unittest discover -s scripts/tests
       - run: python -m unittest discover -s research/baselines/rag_reference/tests
       - run: python -m unittest discover -s research/baselines/strong_rag/tests
+      - run: python -m unittest discover -s research/baselines/strong_retrieval/tests
+      - run: python -m unittest discover -s research/embeddings/tests
+      - run: python research/embeddings/verify_manifest.py --regenerate
+      - run: python -m unittest discover -s research/consciousness/tests
+      - run: python -m unittest discover -s research/cseries/tests
       - run: python -m unittest discover -s docs-site/tests
       # Writes the operator-routing v1 splits and fails if they differ from the lock,
       # so the suite below runs on the frozen data rather than skipping.
@@ -125,6 +140,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features failpoints --test failpoints --locked
       - run: cargo +stable clippy -p ptr-ledger --features failpoints --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-ledger --features raft-engine-failpoints --test engine_failpoints --locked
+      - run: cargo +stable clippy -p ptr-ledger --features raft-engine-failpoints --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-ledger --features raft-rs-backend,failpoints --test raft_storage_crash --locked
+      - run: cargo +stable clippy -p ptr-ledger --features raft-rs-backend,failpoints --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-bench --features ledger-experiments --locked l001
+      - run: cargo +stable test -p ptr-bench --features ledger-experiments --locked l002
+      - run: cargo +stable clippy -p ptr-bench --features ledger-experiments --all-targets --locked -- -D warnings
   ledger-raft-engine:
     runs-on: ubuntu-latest
     steps:
@@ -140,6 +162,7 @@ jobs:
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_rs --locked
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_cluster --locked
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_fence --locked
+      - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_storage_crash --locked
       - run: cargo +stable clippy -p ptr-ledger --features raft-rs-backend --all-targets --locked -- -D warnings
   state-turso:
     runs-on: ubuntu-latest
@@ -233,3 +256,19 @@ jobs:
       - run: cargo +stable test -p ptr-storage --features tier-opendal-fs --test opendal_tier --locked
       - run: cargo +stable check -p ptr-storage --features tier-opendal-fs,tier-opendal-s3 --locked
       - run: cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3 --locked -- -D warnings
+
+  # Feature gates that no other job compiles. Not covered: `candle-cuda`
+  # (ptr-pods / ptr-runtime) needs the CUDA toolkit, which these runners do not
+  # have, so that path is never compiled in CI. `wintun-backend` is checked in
+  # the Windows leg of rust-stable.
+  feature-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo +stable clippy -p ptr-runtime --features oidc-http --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-runtime --features oidc-http --lib --locked
+      - run: cargo +stable clippy -p ptr-net --features wireguard-uapi-backend --all-targets --locked -- -D warnings
+      - run: cargo +stable test -p ptr-net --features wireguard-uapi-backend --lib --locked

@@ -1,0 +1,178 @@
+{
+  "experiment_id": "R007",
+  "scope": "forgetting a span on the CPU reference KV backend (seeded random tiny model, raised prompt limits): the span is a revocable Derived prompt segment, forget is revoking its lineage identity and running the prompt without it (parent-chained chunk keys, no mid-sequence eviction primitive); bitwise equality of the KV state and of the next-token logits with a fresh prefill without the span, and 32 canary probes; a regression guard for forget semantics",
+  "verdict": "COMPLETED",
+  "decision": {
+    "verdict": "COMPLETED",
+    "vacuous_seeds": [],
+    "falsified_seeds": [],
+    "invalid_seeds": [],
+    "static_evidence_failed": [],
+    "problems": [],
+    "recommended_status": "completed"
+  },
+  "seeds": [
+    {
+      "seed": 17,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "bitwise_mismatch_count": 0,
+        "canary_logit_shift": 0,
+        "recompute_tokens": 2880,
+        "span_insertions": 1,
+        "span_evictions": 1,
+        "downstream_recomputations": 180,
+        "canary_probes": 32,
+        "stale_downstream_rows_reused": 0,
+        "tokens_after_span": 2880,
+        "canary_span_tokens": 256,
+        "downstream_rows_before_forget": 180,
+        "prefix_reuse_tokens": 1088,
+        "post_forget_probes": 32,
+        "selection_digest_mismatches": 0,
+        "procedure_mismatches": 0,
+        "canary_identity_set_digest": "65f9b8cd60e57cb38a8588c23d5bb494c7817fc10511353980f8be1c690efe19",
+        "model_pin_mismatches": 0
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "coverage_unsupported": 0,
+        "falsifiers_tripped": 0,
+        "falsifiers_unsupported": 0
+      }
+    },
+    {
+      "seed": 29,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "bitwise_mismatch_count": 0,
+        "canary_logit_shift": 0,
+        "recompute_tokens": 2880,
+        "span_insertions": 1,
+        "span_evictions": 1,
+        "downstream_recomputations": 180,
+        "canary_probes": 32,
+        "stale_downstream_rows_reused": 0,
+        "tokens_after_span": 2880,
+        "canary_span_tokens": 256,
+        "downstream_rows_before_forget": 180,
+        "prefix_reuse_tokens": 1088,
+        "post_forget_probes": 32,
+        "selection_digest_mismatches": 0,
+        "procedure_mismatches": 0,
+        "canary_identity_set_digest": "65f9b8cd60e57cb38a8588c23d5bb494c7817fc10511353980f8be1c690efe19",
+        "model_pin_mismatches": 0
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "coverage_unsupported": 0,
+        "falsifiers_tripped": 0,
+        "falsifiers_unsupported": 0
+      }
+    },
+    {
+      "seed": 43,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "bitwise_mismatch_count": 0,
+        "canary_logit_shift": 0,
+        "recompute_tokens": 2880,
+        "span_insertions": 1,
+        "span_evictions": 1,
+        "downstream_recomputations": 180,
+        "canary_probes": 32,
+        "stale_downstream_rows_reused": 0,
+        "tokens_after_span": 2880,
+        "canary_span_tokens": 256,
+        "downstream_rows_before_forget": 180,
+        "prefix_reuse_tokens": 1088,
+        "post_forget_probes": 32,
+        "selection_digest_mismatches": 0,
+        "procedure_mismatches": 0,
+        "canary_identity_set_digest": "65f9b8cd60e57cb38a8588c23d5bb494c7817fc10511353980f8be1c690efe19",
+        "model_pin_mismatches": 0
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "coverage_unsupported": 0,
+        "falsifiers_tripped": 0,
+        "falsifiers_unsupported": 0
+      }
+    },
+    {
+      "seed": 71,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "bitwise_mismatch_count": 0,
+        "canary_logit_shift": 0,
+        "recompute_tokens": 2880,
+        "span_insertions": 1,
+        "span_evictions": 1,
+        "downstream_recomputations": 180,
+        "canary_probes": 32,
+        "stale_downstream_rows_reused": 0,
+        "tokens_after_span": 2880,
+        "canary_span_tokens": 256,
+        "downstream_rows_before_forget": 180,
+        "prefix_reuse_tokens": 1088,
+        "post_forget_probes": 32,
+        "selection_digest_mismatches": 0,
+        "procedure_mismatches": 0,
+        "canary_identity_set_digest": "65f9b8cd60e57cb38a8588c23d5bb494c7817fc10511353980f8be1c690efe19",
+        "model_pin_mismatches": 0
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "coverage_unsupported": 0,
+        "falsifiers_tripped": 0,
+        "falsifiers_unsupported": 0
+      }
+    },
+    {
+      "seed": 101,
+      "valid": true,
+      "invalid": [],
+      "coverage_failed": [],
+      "falsifiers_failed": [],
+      "metrics": {
+        "bitwise_mismatch_count": 0,
+        "canary_logit_shift": 0,
+        "recompute_tokens": 2880,
+        "span_insertions": 1,
+        "span_evictions": 1,
+        "downstream_recomputations": 180,
+        "canary_probes": 32,
+        "stale_downstream_rows_reused": 0,
+        "tokens_after_span": 2880,
+        "canary_span_tokens": 256,
+        "downstream_rows_before_forget": 180,
+        "prefix_reuse_tokens": 1088,
+        "post_forget_probes": 32,
+        "selection_digest_mismatches": 0,
+        "procedure_mismatches": 0,
+        "canary_identity_set_digest": "65f9b8cd60e57cb38a8588c23d5bb494c7817fc10511353980f8be1c690efe19",
+        "model_pin_mismatches": 0
+      },
+      "summary": {
+        "coverage_unmet": 0,
+        "coverage_unsupported": 0,
+        "falsifiers_tripped": 0,
+        "falsifiers_unsupported": 0
+      }
+    }
+  ],
+  "static_evidence": [],
+  "report": "# R007 span-forget: COMPLETED\n\nSeeds: 17, 29, 43, 71, 101. Every seed must hold every coverage and falsifier rule.\n\n- seed 17: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 29: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 43: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 71: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n- seed 101: valid; 0 coverage rules unmet, 0 falsifier rules tripped\n\n\nLimitations: the mechanism is lineage revocation plus parent-chained chunk keys, not a mid-sequence eviction primitive; the catalog has none; stale reuse is nearly structural to rule out (a chunk key hashes its parent chain): a pass is the expected outcome, and only the negative control (a StaleDonor probe under a suppressed index update) shows the criteria can fail; tiny seeded random model, CPU reference path, one machine profile: nothing about a trained model, a GPU kernel or a non-deterministic reduction order; the probe is the 256-entry next-token logits vector after a 16-byte suffix at one position, plus the KV-state digest of K and V rows for all prompt positions; a trace outside them (timing, memory, uncached activations) is not covered; canary_logit_shift is an integer count of f32 ulps (0 iff the maximum absolute difference is exactly 0); canaries 16 to 31 never appear in the span; model_pin_mismatches and procedure_mismatches are weak metrics (base checkpoint, topology and the canary generator seed are constants; the rest is read from the backend and the requests built); timings come from one shared cloud container; no capacity claim.\n"
+}

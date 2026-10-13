@@ -124,8 +124,27 @@ impl PtrRuntime {
         path: impl AsRef<Path>,
         trusted: LogAnchor,
     ) -> Result<Self, RuntimeError> {
+        Self::open_durable_at_with_attestors(
+            config,
+            path,
+            trusted,
+            crate::expert::ExpertAttestorRegistry::new(),
+        )
+    }
+
+    /// [`PtrRuntime::open_durable_at`] replaying against the attestor keys the host trusts; see
+    /// [`PtrRuntime::open_durable_with_attestors`].
+    ///
+    /// # Errors
+    /// As [`PtrRuntime::open_durable_at`], and the attestation refusals of a replayed record.
+    pub fn open_durable_at_with_attestors(
+        config: PtrConfig,
+        path: impl AsRef<Path>,
+        trusted: LogAnchor,
+        attestors: crate::expert::ExpertAttestorRegistry,
+    ) -> Result<Self, RuntimeError> {
         let log = FileLedger::open_at(path, trusted).map_err(io_error)?;
-        Self::from_durable_ledger(config, log)
+        Self::from_durable_ledger(config, log, attestors)
     }
 
     pub fn export_recovery_snapshot(&self) -> Result<RecoverySnapshot, RuntimeError> {

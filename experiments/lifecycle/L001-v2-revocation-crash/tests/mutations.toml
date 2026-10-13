@@ -1,0 +1,421 @@
+# Defects the L001-v2 harness must detect; run with `python scripts/mutation_check.py L001-v2`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file (checked
+# by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
+# that show the defect: a run that fails only on others does not count as detecting it.
+#
+# The first twenty-one mutations plant defects in `ptr-ledger` and `ptr-runtime` (the log and its
+# fsync, the directory fsync, the anchor and its fsync, order and epoch witness, the classification
+# of a log against its anchor, the recovery of a tail, the runtime's reading of a revoked
+# generation, the raft-engine backend, the Raft member's persistence and application of entries,
+# an append that fails, an append that hangs, a panic and a hang on the recovery path); the last
+# three plant defects in the harness itself, to show that its oracle and its bookkeeping are not
+# vacuous: each makes a cross-check of the harness fire a hard counter. Every hard counter is
+# expected by at least one mutation, so that `killed == total` also shows each of the fourteen can
+# fire (a test in bins/ptr-bench checks this list against the harness). That is 21 product
+# mutations and 3 harness mutations.
+#
+# A defect of the oracle that its hand-written table catches ends the run with status 2 before any
+# case is judged (the run starts by checking the oracle against the table), so it is not a mutation
+# of this plan: the checker counts status 2 as a crash and not as a kill. The two harness
+# mutations of the oracle below differ from the table only where the table says nothing.
+#
+# Not listed, on purpose, because the harness cannot see them (they are limits, stated in the
+# preregistration):
+# - removing only the `sync_all` call inside `sync_parent` and leaving the function: the
+#   durability probe cannot see a directory entry, so it is a function that is not entered
+#   (`sync-parent-is-a-noop` below) that the failpoint counts, not a syscall that is missing;
+# - sending the Raft `persisted_messages` before the persistence. The members return all their
+#   messages from one call, so no schedule of the router can tell the order inside it; there is
+#   no failpoint inside `RaftNode::drain`;
+# - the harness mutations that end in exit status 2 (a synthesizer that never drops bytes, a
+#   nondeterministic seed, an oracle that fails its table): the checker counts exit 2 as a crash and
+#   not as a kill, so they are tests of the harness (`a_control_that_does_not_trip_is_a_harness_
+#   failure`, `the_same_seed_gives_the_same_json_...`, `the_oracle_passes_its_own_table_every_run`)
+#   and not entries of this plan. The coverage rules have no mutation evidence beyond the tests
+#   that set each counter to a violating value.
+#
+# The mutation run is invoked as `ptr-bench revocation-crash <cases> 1001`: `cases` is the number
+# of workloads per arm (the pinned hits and images, the child processes included, so the run is no
+# evidence, and its scale is printed as "custom"). The seed is not one of the experiment's.
+
+package = "ptr-bench"
+features = "ledger-experiments"
+subcommand = "revocation-crash"
+cases = 2
+seed = 1001
+hard_counters = [
+    "stale_accepts",
+    "acked_revocation_missing",
+    "recovered_not_prefix",
+    "reorder_or_duplicate_index",
+    "unclassified_split",
+    "unjustified_refusals",
+    "raft_revocation_visible_before_commit",
+    "product_panics",
+    "product_hangs",
+    "unsynced_acks",
+    "authority_mismatches",
+    "reference_mismatches",
+    "anchored_lie_accepted",
+    "refusal_share_excess",
+]
+
+[[mutation]]
+name = "log-append-without-fsync"
+description = "FileLedger::append_durable returns without synchronizing the record: the log answers 'durable' while its pages are still dirty."
+expect = ["unsynced_acks"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+        self.file.flush()?;
+        self.file.sync_data()?;
+'''
+replace = '''
+        self.file.flush()?;
+'''
+
+[[mutation]]
+name = "anchor-scratch-without-fsync"
+description = "The anchor's scratch file is renamed over the anchor without being synchronized, so a power loss after the rename can leave the name and not the bytes."
+expect = ["unsynced_acks"]
+file = "crates/ptr-ledger/src/anchor.rs"
+find = '''
+    file.sync_all()?;
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("anchor.after_scratch_sync_before_rename");
+'''
+replace = '''
+    #[cfg(feature = "failpoints")]
+    fail::fail_point!("anchor.after_scratch_sync_before_rename");
+'''
+
+[[mutation]]
+name = "anchor-published-before-the-log-record"
+description = "append_acknowledged moves the anchor over the record before the record is appended: a crash between the two leaves an anchor that covers more than the log holds."
+expect = ["unjustified_refusals"]
+file = "crates/ptr-ledger/src/acknowledged.rs"
+find = '''
+        let index = self.log.append_durable(event)?;
+        let tail = self.log.anchor()?;
+        let origin = self.log.derived_origin();
+        self.fenced = true;
+        self.anchors
+            .acknowledge(tail, origin.unwrap_or(ChainOrigin::UNSET))?;
+        self.fenced = false;
+        Ok(index)
+'''
+replace = '''
+        let (_, prospective) = integrity::encode_record(&event, self.log.anchor()?)?;
+        let origin = self
+            .log
+            .derived_origin()
+            .or_else(|| Some(ChainOrigin::from_first_record(prospective.digest)));
+        self.fenced = true;
+        self.anchors
+            .acknowledge(prospective, origin.unwrap_or(ChainOrigin::UNSET))?;
+        let index = self.log.append_durable(event)?;
+        self.fenced = false;
+        Ok(index)
+'''
+
+[[mutation]]
+name = "lost-suffix-classified-as-aligned"
+description = "classify reports a log shorter than its anchor as Aligned instead of LostSuffix."
+expect = ["unclassified_split"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+            None if anchor.log.index.0 > self.tail().index.0 => Split::LostSuffix {
+                acknowledged: anchor.log.index,
+                present: self.tail().index,
+            },
+'''
+replace = '''
+            None if anchor.log.index.0 > self.tail().index.0 => Split::Aligned,
+'''
+
+[[mutation]]
+name = "partial-frame-classified-as-aligned"
+description = "classify ignores a partial trailing frame when the anchor covers every complete record."
+expect = ["unclassified_split"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+            Some(0) if !self.prefix.incomplete => Split::Aligned,
+'''
+replace = '''
+            Some(0) => Split::Aligned,
+'''
+
+[[mutation]]
+name = "tail-recovery-skips-the-anchor-check"
+description = "FileLedger::recover_unacknowledged_tail no longer requires the complete prefix to match the host's anchor, so a log that lost acknowledged records is accepted."
+expect = ["recovered_not_prefix", "acked_revocation_missing", "stale_accepts", "anchored_lie_accepted"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+        prefix.verified.require_anchor(trusted)?;
+'''
+replace = '''
+        let _ = trusted;
+'''
+
+[[mutation]]
+name = "validity-reads-a-revoked-generation-as-live"
+description = "PtrRuntime::generation_validity answers Live for a revoked generation."
+expect = ["authority_mismatches", "reference_mismatches"]
+file = "crates/ptr-runtime/src/lib.rs"
+find = '''
+            return Some(Validity::Revoked);
+'''
+replace = '''
+            return Some(Validity::Live);
+'''
+
+[[mutation]]
+name = "authorization-ignores-the-revocation"
+description = "The action boundary passes generation_revoked as false, so a revoked generation that is still the live one is authorized."
+expect = ["stale_accepts", "reference_mismatches"]
+file = "crates/ptr-runtime/src/lib.rs"
+find = '''
+            generation_revoked: self
+                .revoked_generations
+                .contains(&(action.target.clone(), action.generation)),
+'''
+replace = '''
+            generation_revoked: false,
+'''
+
+[[mutation]]
+name = "engine-write-without-sync"
+description = "RaftEngineLedger::append_durable asks raft-engine for an unsynchronized write."
+expect = ["unsynced_acks"]
+file = "crates/ptr-ledger/src/lib.rs"
+find = '''
+            self.engine.write(&mut batch, true).map_err(engine_error)?;
+'''
+replace = '''
+            self.engine.write(&mut batch, false).map_err(engine_error)?;
+'''
+
+[[mutation]]
+name = "engine-open-drops-the-last-record"
+description = "RaftEngineLedger::open forgets the last record it scanned."
+expect = ["recovered_not_prefix", "reference_mismatches"]
+file = "crates/ptr-ledger/src/lib.rs"
+find = '''
+            encoded.sort_by(|left, right| left.0.cmp(&right.0));
+'''
+replace = '''
+            encoded.sort_by(|left, right| left.0.cmp(&right.0));
+            encoded.pop();
+'''
+
+[[mutation]]
+name = "raft-hard-state-not-persisted"
+description = "RaftStorage::set_hard_state records the hard state in memory and does not write it: a restarted member forgets its term, its vote and what it had committed."
+expect = ["acked_revocation_missing", "recovered_not_prefix"]
+file = "crates/ptr-ledger/src/raft_storage.rs"
+find = '''
+    pub fn set_hard_state(&mut self, hard_state: &HardState) -> io::Result<()> {
+        let previous = std::mem::replace(&mut self.hard_state, hard_state.clone());
+        self.persist_state()
+            .inspect_err(|_| self.hard_state = previous)
+    }
+'''
+replace = '''
+    pub fn set_hard_state(&mut self, hard_state: &HardState) -> io::Result<()> {
+        self.hard_state = hard_state.clone();
+        Ok(())
+    }
+'''
+
+[[mutation]]
+name = "raft-applies-uncommitted-entries"
+description = "A Raft member applies the entries it has appended instead of the ones that are committed: an isolated leader's own proposal becomes visible."
+expect = ["raft_revocation_visible_before_commit"]
+file = "crates/ptr-ledger/src/raft_node.rs"
+find = '''
+            let committed = ready.take_committed_entries();
+'''
+replace = '''
+            let committed = ready.entries().to_vec();
+'''
+
+[[mutation]]
+name = "raft-commit-index-starts-at-zero"
+description = "A Raft member numbers the events it applies from 0 instead of 1."
+expect = ["reorder_or_duplicate_index"]
+file = "crates/ptr-ledger/src/raft_node.rs"
+find = '''
+            self.applied_events = self
+                .applied_events
+                .checked_add(1)
+                .ok_or_else(|| "the count of applied events is exhausted".to_string())?;
+            let index = CommitIndex(self.applied_events);
+'''
+replace = '''
+            let index = CommitIndex(self.applied_events);
+            self.applied_events += 1;
+'''
+
+[[mutation]]
+name = "tail-classification-panics"
+description = "classify panics when the log ends in a partial frame."
+expect = ["product_panics"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+        if anchor.base != self.base {
+            return Split::BaseMismatch;
+        }
+'''
+replace = '''
+        if self.prefix.incomplete {
+            panic!("injected product panic");
+        }
+        if anchor.base != self.base {
+            return Split::BaseMismatch;
+        }
+'''
+
+[[mutation]]
+name = "tail-repair-hangs"
+description = "RecoverableLog::repair never returns when it has a tail to cut."
+expect = ["product_hangs"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+        if keep_bytes != length {
+'''
+replace = '''
+        if keep_bytes != length {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3600));
+            }
+'''
+
+[[mutation]]
+name = "append-fails-for-a-revocation"
+description = "FileLedger::append_durable refuses every Revoked event with an I/O error, on a workload that is valid."
+expect = ["reference_mismatches"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+    pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
+'''
+replace = '''
+    pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
+        if matches!(event, LedgerEvent::Revoked { .. }) {
+            return Err(io::Error::other("injected append failure"));
+        }
+'''
+
+[[mutation]]
+name = "append-hangs-for-a-revocation"
+description = "FileLedger::append_durable never returns for a Revoked event."
+expect = ["product_hangs"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+    pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
+'''
+replace = '''
+    pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
+        if matches!(event, LedgerEvent::Revoked { .. }) {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3600));
+            }
+        }
+'''
+
+[[mutation]]
+name = "engine-refuses-to-reopen-its-own-log"
+description = "RaftEngineLedger::open fails on a directory that already holds records."
+expect = ["reference_mismatches", "unjustified_refusals"]
+file = "crates/ptr-ledger/src/lib.rs"
+find = '''
+            encoded.sort_by(|left, right| left.0.cmp(&right.0));
+'''
+replace = '''
+            encoded.sort_by(|left, right| left.0.cmp(&right.0));
+            if !encoded.is_empty() {
+                return Err(io::Error::other("injected reopen failure"));
+            }
+'''
+
+[[mutation]]
+name = "sync-parent-is-a-noop"
+description = "sync_parent returns before it synchronizes the directory: the log's creation and every anchor rename go unsynced."
+expect = ["unsynced_acks"]
+file = "crates/ptr-ledger/src/file.rs"
+find = '''
+pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
+'''
+replace = '''
+pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
+    if !path.as_os_str().is_empty() {
+        return Ok(());
+    }
+'''
+
+[[mutation]]
+name = "anchor-epoch-witness-ignored"
+description = "AnchorStore::open_expecting no longer compares the stored epoch with the witness the host retained, so an anchor file rolled back to an older authentic record is accepted."
+expect = ["anchored_lie_accepted"]
+file = "crates/ptr-ledger/src/anchor.rs"
+find = '''
+        if current.epoch < minimum_epoch {
+'''
+replace = '''
+        if false && current.epoch < minimum_epoch {
+'''
+
+[[mutation]]
+name = "harness-oracle-authorizes-late-superseded-generations"
+description = "Harness self-defect: the oracle says a superseded generation from the third on may be acted on. Its hand-written table has no such pair, so it passes the table and disagrees with the runtime only on histories that reach generation 3."
+expect = ["authority_mismatches", "reference_mismatches"]
+file = "bins/ptr-bench/src/experiments/l001/model.rs"
+find = '''
+        self.live.get(subject) == Some(&generation)
+            && !self.revoked.contains(&(subject.to_owned(), generation))
+'''
+replace = '''
+        (self.live.get(subject) == Some(&generation)
+            || (generation >= 3 && self.live.get(subject).is_some_and(|live| *live > generation)))
+            && !self.revoked.contains(&(subject.to_owned(), generation))
+'''
+
+[[mutation]]
+name = "refuse-every-damaged-image"
+description = "The scanner no longer recognizes a tail of zeros and rejects it at the frame magic, as before the fix found on pilot 1001: every power-loss image with zeroed sectors is refused, a tail of zeros included (unjustified_refusals) and the share of refusals exceeds its bound (refusal_share_excess)."
+expect = ["unjustified_refusals", "refusal_share_excess"]
+file = "crates/ptr-ledger/src/integrity.rs"
+find = '''
+        if remaining.iter().all(|byte| *byte == 0) {
+'''
+replace = '''
+        if false && remaining.iter().all(|byte| *byte == 0) {
+'''
+
+[[mutation]]
+name = "harness-oracle-forgets-late-revocations"
+description = "Harness self-defect: the oracle stops recording revocations once it holds three, so it holds every later revoked generation live. The hand-written table has exactly three."
+expect = ["authority_mismatches", "reference_mismatches"]
+file = "bins/ptr-bench/src/experiments/l001/model.rs"
+find = '''
+                self.revoked.insert((subject.clone(), *generation));
+'''
+replace = '''
+                if self.revoked.len() < 3 {
+                    self.revoked.insert((subject.clone(), *generation));
+                }
+'''
+
+[[mutation]]
+name = "harness-counts-the-record-in-flight-as-acknowledged"
+description = "Harness self-defect: the expectation of a crashed process counts the record being appended as acknowledged, so a correct recovery looks one record short."
+expect = ["recovered_not_prefix"]
+file = "bins/ptr-bench/src/experiments/l001/abort_arm.rs"
+find = '''
+    Expectation {
+        acked: idx,
+        attempted: idx + 1,
+'''
+replace = '''
+    Expectation {
+        acked: idx + 1,
+        attempted: idx + 1,
+'''

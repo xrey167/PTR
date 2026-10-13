@@ -1,0 +1,50 @@
+# R012 decision criteria. Frozen with the preregistration (config.toml names this file and its SHA-256);
+# no rule changes after a run. They are what the harness itself judges (bins/ptr-bench,
+# r012/metrics.rs coverage() and falsifiers()); a harness test pins this file to those lists, in order, and every counter named resolves in the harness's JSON.
+#
+# Rule grammar (one string per rule, exactly three tokens separated by single spaces):
+#     <left> <op> <right>
+# <op> is one of  >=  <=  == .
+# A token is an integer literal iff it matches -?[0-9]+ (a decimal point makes it a reference and so a
+# parse error: no decimal literal exists, fractions are integer numerators and denominators).
+# Any other token is a reference: a path of object keys from the root of the harness's single JSON result
+# object, separated by '.' (no key holds a '.', no array is indexed): "taint_lost" is a top-level key.
+# A reference that is missing, null, or of the wrong type makes the seed INVALID (it is not a failed rule).
+# A reference compared with an integer literal or another reference must be a JSON integer (not a
+# boolean, not a float); two references under == may both be JSON strings (digests). Exact comparisons.
+# The manifest's "< N" prerequisites are written ">= N" and its "> 0" violations "<= 0".
+# coverage: a rule that does not hold makes the seed vacuous (counts as falsified).
+# falsifiers: a rule that does not hold falsifies R012 on that seed.
+# Decision: every seed must hold every coverage rule and every falsifier rule; COMPLETED iff so,
+# INVALID if a seed is missing, unresolvable, or its record does not describe the frozen run, FALSIFIED
+# otherwise.
+version = 1
+experiment = "R012"
+seed_aggregation = "every_seed_must_pass"
+
+coverage = [
+  "approximate_action_admission_attempts >= 1",
+  "approximate_semdb_promotion_attempts >= 1",
+  "approximate_candidate_path_attempts >= 1",
+  "approximate_pod_result_promotion_attempts >= 1",
+  "tainted_candidate_reload_attempts >= 1",
+  "fresh_exact_recomputation_controls >= 1",
+  "candidate_taint_hops >= 2",
+  "misclassified_revocable_as_raw_attempts >= 1",
+  "approximate_output_reintroduced_as_raw_attempts >= 1",
+  "exact_echo_cases >= 1",
+  "selection_digest_mismatches <= 0",
+  "procedure_mismatches <= 0",
+  "model_pin_mismatches <= 0",
+]
+
+falsifiers = [
+  "approximate_run_actions_admitted <= 0",
+  "approximate_semdb_promotions <= 0",
+  "approximate_candidate_exact_admissions <= 0",
+  "approximate_pod_result_promotions_accepted <= 0",
+  "taint_lost <= 0",
+  "misclassified_raw_admissions <= 0",
+  "laundered_exact_admissions <= 0",
+  "taint_cleared_by_echo <= 0",
+]

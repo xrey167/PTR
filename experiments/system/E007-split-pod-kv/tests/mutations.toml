@@ -1,0 +1,875 @@
+# Defects the E007 harness must detect; run with `python scripts/mutation_check.py E007`
+# (`--check` verifies the anchors only). Each `find` must occur exactly once in its file (checked
+# by `--check`), so the list cannot drift from the code silently. `expect` names the hard counters
+# that show the defect: a run that fails only on others does not count as detecting it. The five
+# mutations of the harness's own validity (the model pin, the corpus selection, the receiver window,
+# the receiver total cap, the late replay window) say `expect_exit = 2`: the record stops describing
+# the frozen run, the harness prints it and exits 2 (validity first: even when the same cause also
+# fires a product counter), and the aggregator reads that as INVALID, so they are killed by that
+# exit and their counter rather than by status 1.
+#
+# The mutations plant defects in the product (the chunk assembler of `ptr-podwire`, the activation
+# schemas of `ptr-protocol`, the downstream stage cache of `ptr-runtime`, the stage execution of
+# `ptr-pods`) and, for the measurements the product cannot be made to violate, in the harness
+# itself (a stage that ships a KV page or a cache handle in a valid frame, a control row installed
+# as KV, a consistency check that never holds, a late replay outside its window, a changed corpus
+# rule, receiver limit and model pin): each makes a cross-check of the harness fire a hard counter,
+# so the harness is not vacuous where the product is correct. Every hard counter is expected by at
+# least one mutation (a test in bins/ptr-bench checks this list against the harness), and each of
+# the six cells of the invalidation matrix has its own hard counter that some mutation expects.
+#
+# Not listed, on purpose, because the harness cannot see them (stated limits, see PREREGISTRATION.md):
+# - removing only `invalidate_stage` (the Revoke message path): the revalidation at use makes it an
+#   optimisation, not a guarantee, which is the property under test, so no defect there is visible;
+# - the revalidation of the base model, of adapters and of experts in `revalidate_chain`: E007 has
+#   no such element in its chain (E008 does), only the stage is exercised here;
+# - the deadline-too-far bound and the byte bound of one frame, which no case of E007 probes.
+#
+# The mutation run is invoked as `ptr-bench split-pod-kv <sequences> 1001`: `sequences` is the number
+# of corpus sequences run three ways (the pinned scale is 24), every probe, attack, bound and
+# stale-upstream case still runs in full. The record says `"scale":"custom"` and is no evidence; the
+# seed is not one of the experiment's.
+
+package = "ptr-bench"
+features = ""
+subcommand = "split-pod-kv"
+cases = 2
+seed = 1001
+hard_counters = [
+
+    "bitwise_mismatch_count",
+    "large_frame_reassembled_bytes_mismatch_count",
+    "large_frame_digest_mismatches",
+    "wire_kv_handle_count",
+    "wire_kv_page_bytes",
+    "kv_pages_installed_from_wire",
+    "activation_control_kv_installs",
+    "chain_mismatch_stores",
+    "non_allowlisted_payloads_admitted",
+    "smuggling_probes_admitted",
+    "attempts_without_typed_rejection",
+    "verdict_mismatches",
+    "cross_frame_mixing_count",
+    "buffered_bytes_after_release",
+    "stale_upstream_kv_served",
+    "positions_length_mismatches_admitted",
+    "mislabelled_frame_digests_admitted",
+    "late_chunks_after_abandon_admitted",
+    "outputs_after_upstream_invalidation",
+    "tombstone_evictions_before_retention",
+    "tombstone_bound_violations",
+    "cross_operation_splices_admitted",
+    "replayed_frames_admitted",
+    "valid_frame_bitwise_mismatches",
+    "cross_session_replays_admitted",
+    "duplicate_activation_deliveries",
+    "expired_frames_admitted",
+    "abandoned_frame_replays_admitted",
+    "stale_placement_frames_admitted",
+    "relabeled_chunks_admitted",
+    "unbound_stage_frames_admitted",
+    "global_cap_breaches",
+    "non_exact_frames_admitted",
+    "non_finite_frames_admitted",
+    "chain_frame_mismatches_delivered",
+    "boundary_tick_replays_admitted",
+    "cache_slots_held_by_dead_entries",
+    "unsigned_chunks_admitted",
+    "selection_digest_mismatches",
+    "procedure_mismatches",
+    "model_pin_mismatches",
+    "late_window_delays_out_of_range",
+    "stale_hits_in_upstream_stage_generation_normal_revocation",
+    "stale_hits_in_upstream_stage_generation_normal_supersession",
+    "stale_hits_in_upstream_stage_generation_lag_revocation",
+    "stale_hits_in_upstream_stage_generation_lag_supersession",
+    "stale_hits_in_upstream_stage_generation_inflight_revocation",
+    "stale_hits_in_upstream_stage_generation_inflight_supersession",
+    "abandoned_chunks_unreleased",
+    "frames_without_consistent_digest",
+    "abandoned_id_set_mismatch",
+    "valid_id_set_mismatch",
+]
+
+[[mutation]]
+name = "chunk-digest-unchecked"
+description = "The receiver does not compare a chunk digest with the chunk bytes."
+expect = ["attempts_without_typed_rejection", "verdict_mismatches"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        if chunk_digest(header, view.bytes) != header.chunk_digest {'''
+replace = '''
+        if false && chunk_digest(header, view.bytes) != header.chunk_digest {'''
+
+[[mutation]]
+name = "signature-unchecked"
+description = "The receiver does not verify the signature of the envelope."
+expect = ["unsigned_chunks_admitted", "relabeled_chunks_admitted"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+            .verify_strict(&envelope_signing_bytes(header), &signature)
+            .is_err()
+'''
+replace = '''
+            .verify_strict(&envelope_signing_bytes(header), &signature)
+            .is_err()
+            && false
+'''
+
+[[mutation]]
+name = "tombstone-not-consulted"
+description = "A tombstoned tuple is not refused: completed and abandoned frames are taken again."
+expect = ["replayed_frames_admitted", "late_chunks_after_abandon_admitted", "abandoned_frame_replays_admitted", "cross_session_replays_admitted", "duplicate_activation_deliveries"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        match table.tombstones.get(&tuple) {
+            Some(Tombstone::Completed { .. }) => return Err(Rejection::FrameReplayed),
+            Some(Tombstone::Abandoned { .. }) => return Err(Rejection::FrameAbandoned),
+            None => {}
+        }'''
+replace = '''
+        match table.tombstones.get(&tuple) {
+            Some(Tombstone::Completed { .. }) if false => return Err(Rejection::FrameReplayed),
+            Some(Tombstone::Abandoned { .. }) if false => return Err(Rejection::FrameAbandoned),
+            _ => {}
+        }'''
+
+[[mutation]]
+name = "completion-leaves-no-tombstone"
+description = "A completed frame is forgotten: no completion tombstone is written."
+expect = ["replayed_frames_admitted", "cross_session_replays_admitted", "duplicate_activation_deliveries"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                table.tombstones.insert(
+                    tuple,
+                    Tombstone::Completed {
+                        retain_until_ms: finished
+                            .deadline_ms
+                            .saturating_add(policy.max_clock_skew_ms),
+                    },
+                );'''
+replace = '''
+                let _ = Tombstone::Completed {
+                    retain_until_ms: finished
+                        .deadline_ms
+                        .saturating_add(policy.max_clock_skew_ms),
+                };'''
+
+[[mutation]]
+name = "abandonment-tombstone-retention-zero"
+description = "An abandonment tombstone is retained for no time at all."
+expect = ["late_chunks_after_abandon_admitted", "abandoned_frame_replays_admitted"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+    table.tombstones.insert(
+        tuple,
+        Tombstone::Abandoned {
+            retain_until_ms: now_ms.saturating_add(policy.replay_window_ms),
+        },
+    );
+    released
+}'''
+replace = '''
+    table.tombstones.insert(
+        tuple,
+        Tombstone::Abandoned {
+            retain_until_ms: now_ms,
+        },
+    );
+    released
+}'''
+
+[[mutation]]
+name = "full-table-evicts-a-tombstone"
+description = "A full table evicts its oldest tombstone instead of refusing the new frame."
+expect = ["tombstone_evictions_before_retention", "attempts_without_typed_rejection"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                {
+                    return Err(Rejection::FrameTableFull);
+                }'''
+replace = '''
+                {
+                    if let Some(oldest) = table.tombstones.keys().next().copied() {
+                        table.tombstones.remove(&oldest);
+                    }
+                }'''
+
+[[mutation]]
+name = "incomplete-frames-not-counted-in-the-table"
+description = "Reservations are not counted against the principal's table: only tombstones are."
+expect = ["tombstone_bound_violations", "attempts_without_typed_rejection"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                if table.assemblies.len() + table.tombstones.len()
+                    >= policy.max_frame_tombstones_per_principal'''
+replace = '''
+                if table.tombstones.len()
+                    >= policy.max_frame_tombstones_per_principal'''
+
+[[mutation]]
+name = "reorder-window-off-by-one"
+description = "The reorder window admits one index too many."
+expect = ["attempts_without_typed_rejection", "verdict_mismatches"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                if header.chunk_index >= lowest_missing.saturating_add(policy.reorder_window) {'''
+replace = '''
+                if header.chunk_index > lowest_missing.saturating_add(policy.reorder_window) {'''
+
+[[mutation]]
+name = "duplicate-chunk-accepted"
+description = "A chunk index already held is accepted again."
+expect = ["attempts_without_typed_rejection", "verdict_mismatches"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                if assembly.chunks.contains_key(&header.chunk_index) {'''
+replace = '''
+                if false && assembly.chunks.contains_key(&header.chunk_index) {'''
+
+[[mutation]]
+name = "in-flight-bound-unchecked"
+description = "The bound on buffered chunks is not enforced."
+expect = ["attempts_without_typed_rejection", "verdict_mismatches"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                if in_flight(table) >= policy.max_chunks_in_flight {
+                    return Err(Rejection::QueueOverflow);
+                }
+                if assembly.bytes as u64'''
+replace = '''
+                if false && in_flight(table) >= policy.max_chunks_in_flight {
+                    return Err(Rejection::QueueOverflow);
+                }
+                if assembly.bytes as u64'''
+
+[[mutation]]
+name = "incomplete-frames-per-peer-unchecked"
+description = "The bound on incomplete frames per peer is not enforced."
+expect = ["attempts_without_typed_rejection", "verdict_mismatches"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                if table.assemblies.len() >= policy.max_incomplete_frames_per_peer {'''
+replace = '''
+                if false && table.assemblies.len() >= policy.max_incomplete_frames_per_peer {'''
+
+[[mutation]]
+name = "chain-mismatch-ignored"
+description = "A chunk whose upstream chain differs from the frame's is taken."
+expect = ["attempts_without_typed_rejection", "verdict_mismatches"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                if assembly.chain != header.upstream_chain {'''
+replace = '''
+                if false && assembly.chain != header.upstream_chain {'''
+
+[[mutation]]
+name = "chain-mismatch-keeps-the-frame"
+description = "A chain mismatch is refused but the frame is not abandoned."
+expect = ["attempts_without_typed_rejection"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                    let released = abandon_assembly(table, principal, tuple, now_ms, &policy);
+                    self.released.extend(released.chunks);
+                    return Err(Rejection::ChainMismatch);'''
+replace = '''
+                    return Err(Rejection::ChainMismatch);'''
+
+[[mutation]]
+name = "frame-header-skew-ignored"
+description = "A chunk whose total, frame digest or deadline differs from the first chunk's is taken."
+expect = ["attempts_without_typed_rejection", "verdict_mismatches"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                if let Some(field) = mismatch {'''
+replace = '''
+                if let (Some(field), true) = (mismatch, false) {'''
+
+[[mutation]]
+name = "whole-frame-digest-unchecked"
+description = "The digest of the complete reassembled payload is not compared with the one the chunks carry."
+expect = ["mislabelled_frame_digests_admitted"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        let failure = if digest != finished.frame_digest {'''
+replace = '''
+        let failure = if false && digest != finished.frame_digest {'''
+
+[[mutation]]
+name = "reassembly-in-reverse-order"
+description = "Chunks are concatenated in reverse index order."
+expect = ["valid_frame_bitwise_mismatches", "large_frame_reassembled_bytes_mismatch_count"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        for part in finished.chunks.values() {'''
+replace = '''
+        for part in finished.chunks.values().rev() {'''
+
+[[mutation]]
+name = "reassembly-drops-the-last-byte-of-each-chunk"
+description = "Each chunk loses its last byte on reassembly."
+expect = ["large_frame_reassembled_bytes_mismatch_count", "valid_frame_bitwise_mismatches"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+            bytes.extend_from_slice(part);'''
+replace = '''
+            bytes.extend_from_slice(&part[..part.len() - 1]);'''
+
+[[mutation]]
+name = "abandonment-releases-nothing"
+description = "An abandoned frame reports no chunk as released."
+expect = ["abandoned_chunks_unreleased", "abandoned_id_set_mismatch"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        released.chunks = assembly
+            .chunks
+            .keys()
+            .map('''
+replace = '''
+        released.chunks = assembly
+            .chunks
+            .keys()
+            .take(0)
+            .map('''
+
+[[mutation]]
+name = "abandonment-keeps-the-buffer"
+description = "An abandoned frame stays in the table with its bytes."
+expect = ["buffered_bytes_after_release"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+    if let Some(assembly) = table.assemblies.remove(&tuple) {
+        released.bytes = assembly.bytes;'''
+replace = '''
+    if let Some(mut assembly) = table.assemblies.remove(&tuple) {
+        released.bytes = assembly.bytes;'''
+
+[[mutation.also]]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+            .collect();
+    }
+    table.tombstones.insert(
+        tuple,
+        Tombstone::Abandoned {
+            retain_until_ms: now_ms.saturating_add(policy.replay_window_ms),'''
+replace = '''
+            .collect();
+        assembly.chunks.clear();
+        table.assemblies.insert(tuple, assembly);
+    }
+    table.tombstones.insert(
+        tuple,
+        Tombstone::Abandoned {
+            retain_until_ms: now_ms.saturating_add(policy.replay_window_ms),'''
+
+[[mutation]]
+name = "deadline-not-checked"
+description = "A frame whose signed deadline has passed is admitted."
+expect = ["expired_frames_admitted"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        if is_expired(header.signed_absolute_deadline_ms, &policy, now_ms) {'''
+replace = '''
+        if false && is_expired(header.signed_absolute_deadline_ms, &policy, now_ms) {'''
+
+[[mutation]]
+name = "reassembly-identity-ignores-the-operation"
+description = "The reassembly identity drops the parent operation: chunks of other operations join."
+expect = ["cross_operation_splices_admitted"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        let tuple = (header.parent_operation_id, header.frame_id);'''
+replace = '''
+        let tuple = (0, header.frame_id);'''
+
+[[mutation]]
+name = "reassembly-identity-ignores-the-frame-id"
+description = "The reassembly identity drops the frame id: frames of one operation share an assembly."
+expect = ["cross_frame_mixing_count"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        let tuple = (header.parent_operation_id, header.frame_id);'''
+replace = '''
+        let tuple = (header.parent_operation_id, 0);'''
+
+[[mutation]]
+name = "replayed-completion-reported-as-abandonment"
+description = "A replay of a completed frame is answered with the wrong refusal."
+expect = ["verdict_mismatches"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+            Some(Tombstone::Completed { .. }) => return Err(Rejection::FrameReplayed),'''
+replace = '''
+            Some(Tombstone::Completed { .. }) => return Err(Rejection::FrameAbandoned),'''
+
+[[mutation]]
+name = "envelope-signature-omits-the-frame-id"
+description = "The signature and chunk digest do not cover the frame id."
+expect = ["relabeled_chunks_admitted"]
+file = "crates/ptr-protocol/src/activation.rs"
+find = '''
+    out.extend_from_slice(&header.frame_id.to_le_bytes());
+    out.extend_from_slice(&header.parent_operation_id.to_le_bytes());
+    out.extend_from_slice(&header.chunk_index.to_le_bytes());'''
+replace = '''
+    out.extend_from_slice(&header.parent_operation_id.to_le_bytes());
+    out.extend_from_slice(&header.chunk_index.to_le_bytes());'''
+
+[[mutation.also]]
+file = "crates/ptr-protocol/src/activation.rs"
+find = '''
+    hasher.update(header.frame_id.to_le_bytes());
+'''
+replace = ''''''
+
+[[mutation]]
+name = "allowlist-is-a-denylist"
+description = "Admission refuses KV-looking type ids and decodes every other type as a chunk."
+expect = ["non_allowlisted_payloads_admitted", "smuggling_probes_admitted"]
+file = "crates/ptr-protocol/src/activation.rs"
+find = '''
+        other => Err(SchemaError::NotAllowlisted(other.to_owned())),'''
+replace = '''
+        other if other.starts_with("ptr.kv.") => Err(SchemaError::NotAllowlisted(other.to_owned())),
+        _ => decode_chunk_view(bytes).map(AllowlistedView::Chunk),'''
+
+[[mutation]]
+name = "tensor-shape-unchecked"
+description = "The tensor length is not compared with tokens x width x dtype."
+expect = ["attempts_without_typed_rejection", "smuggling_probes_admitted"]
+file = "crates/ptr-protocol/src/activation.rs"
+find = '''
+        if expected != tensor_len {'''
+replace = '''
+        if false && expected != tensor_len {'''
+
+[[mutation]]
+name = "positions-length-unchecked"
+description = "The number of positions is not compared with the number of rows."
+expect = ["positions_length_mismatches_admitted"]
+file = "crates/ptr-protocol/src/activation.rs"
+find = '''
+        if position_count != tokens {'''
+replace = '''
+        if false && position_count != tokens {'''
+
+[[mutation]]
+name = "trailing-bytes-accepted"
+description = "Bytes after a valid frame are ignored."
+expect = ["smuggling_probes_admitted", "attempts_without_typed_rejection"]
+file = "crates/ptr-protocol/src/activation.rs"
+find = '''
+        if !reader.is_empty() {
+            return Err(SchemaError::TrailingBytes);
+        }
+        let expected'''
+replace = '''
+        let expected'''
+
+[[mutation]]
+name = "frame-digest-hashes-only-a-prefix"
+description = "The frame digest covers the first MiB only."
+expect = ["large_frame_digest_mismatches"]
+file = "crates/ptr-protocol/src/activation.rs"
+find = '''
+    hasher.update(frame_bytes);
+    hasher.finalize().into()
+}
+
+/// The digest a chunk carries'''
+replace = '''
+    hasher.update(&frame_bytes[..frame_bytes.len().min(1 << 20)]);
+    hasher.finalize().into()
+}
+
+/// The digest a chunk carries'''
+
+[[mutation]]
+name = "placement-epoch-unchecked"
+description = "The placement epoch a frame was produced under is not compared with the stage's current one."
+expect = ["stale_placement_frames_admitted"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+    if current != Some(placement_epoch) {'''
+replace = '''
+    if false && current != Some(placement_epoch) {'''
+
+[[mutation]]
+name = "stage-manifest-digest-unchecked"
+description = "The digest a chain names is not compared with the committed one."
+expect = ["stale_upstream_kv_served"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+    if live.manifest_digest(&element.identity, generation) != Some(element.digest) {'''
+replace = '''
+    if false && live.manifest_digest(&element.identity, generation) != Some(element.digest) {'''
+
+[[mutation]]
+name = "entry-not-revalidated-at-use"
+description = "A downstream entry is served without revalidating its chain: the Revoke message is trusted."
+expect = ["stale_upstream_kv_served", "outputs_after_upstream_invalidation", "stale_hits_in_upstream_stage_generation_lag_revocation", "stale_hits_in_upstream_stage_generation_lag_supersession", "stale_hits_in_upstream_stage_generation_inflight_revocation", "stale_hits_in_upstream_stage_generation_inflight_supersession"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+        if let Some(fault) = entry_fault(entry, live) {'''
+replace = '''
+        if let Some(fault) = None::<ChainFault> {
+            let _ = live;'''
+
+[[mutation]]
+name = "entry-not-revalidated-and-revoke-ignored"
+description = "The Revoke message drops nothing and nothing is revalidated."
+expect = ["stale_hits_in_upstream_stage_generation_normal_revocation", "stale_hits_in_upstream_stage_generation_normal_supersession"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+        if let Some(fault) = entry_fault(entry, live) {'''
+replace = '''
+        if let Some(fault) = None::<ChainFault> {
+            let _ = live;'''
+
+[[mutation.also]]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+        for key in &doomed {
+            self.drop_entry(key);
+        }
+'''
+replace = ''''''
+
+[[mutation]]
+name = "use-release-skips-the-check"
+description = "The output of a use is released without revalidating at its end."
+expect = ["outputs_after_upstream_invalidation"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+        self.live_entry(&open.key, live).map(|_| ())
+    }'''
+replace = '''
+        let _ = live;
+        Ok(())
+    }'''
+
+[[mutation]]
+name = "invalidation-does-not-cancel-uses"
+description = "The Revoke message does not cancel the uses in flight."
+expect = ["verdict_mismatches"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+            if open.key == *key {
+                open.cancelled = true;
+            }'''
+replace = '''
+            if open.key == *key {
+                open.cancelled = false;
+            }'''
+
+[[mutation]]
+name = "revoked-generation-reads-as-live"
+description = "A revoked generation is taken for a live one."
+expect = ["stale_hits_in_upstream_stage_generation_lag_revocation", "stale_hits_in_upstream_stage_generation_inflight_revocation"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+        Some(Validity::Live) => {}
+        standing => {'''
+replace = '''
+        Some(Validity::Live | Validity::Revoked) => {}
+        standing => {'''
+
+[[mutation]]
+name = "superseded-generation-reads-as-live"
+description = "A superseded generation is taken for a live one."
+expect = ["stale_hits_in_upstream_stage_generation_lag_supersession", "stale_hits_in_upstream_stage_generation_inflight_supersession"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+        Some(Validity::Live) => {}
+        standing => {'''
+replace = '''
+        Some(Validity::Live | Validity::Superseded) => {}
+        standing => {'''
+
+[[mutation]]
+name = "store-accepts-frames-of-different-chains"
+description = "An entry may be stored from frames of different chains."
+expect = ["chain_mismatch_stores"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+        if frames.iter().any(|frame| {
+            frame.chain != first.chain || frame.placement_epoch != first.placement_epoch
+        }) {'''
+replace = '''
+        if frames.iter().any(|frame| {
+            false && (frame.chain != first.chain || frame.placement_epoch != first.placement_epoch)
+        }) {'''
+
+[[mutation]]
+name = "second-stage-perturbs-the-residual"
+description = "The second stage adds a rounding-sized error to its residual."
+expect = ["bitwise_mismatch_count"]
+file = "crates/ptr-pods/src/qwen_stack.rs"
+find = '''
+            residual = add(&after_attention, &mlp)?;
+'''
+replace = '''
+            residual = add(&after_attention, &mlp)?;
+            if span.start > 0 {
+                residual[0] += f32::EPSILON;
+            }
+'''
+
+[[mutation]]
+name = "stage-a-ships-a-kv-page"
+description = "Stage A's first key page rides in the activation tensor of a valid frame."
+expect = ["wire_kv_page_bytes"]
+# Three sequences: the third prompt (22 tokens) is the first to fill a whole KV page (16 rows x
+# 128 B = 2048 B) at the prefill, and the scan of the wire looks for whole pages only.
+cases = 3
+file = "bins/ptr-bench/src/experiments/e007/bitwise.rs"
+find = '''
+    let mid = stage_a.run(stack, &embedded, tokens.len(), false, &regime)?;
+    let (arrived'''
+replace = '''
+    let mut mid = stage_a.run(stack, &embedded, tokens.len(), false, &regime)?;
+    if tokens.len() >= 16 {
+        let kv = stage_a.kv_bytes()?;
+        let leak = super::rig::bytes_f32(&kv[1][..2048]);
+        mid.residual[..leak.len()].copy_from_slice(&leak);
+    }
+    let (arrived'''
+
+[[mutation]]
+name = "stage-a-ships-its-cache-handle"
+description = "Stage A's cache digest rides in the activation tensor of a valid frame."
+expect = ["wire_kv_handle_count"]
+file = "bins/ptr-bench/src/experiments/e007/bitwise.rs"
+find = '''
+    let mid = stage_a.run(stack, &embedded, tokens.len(), false, &regime)?;
+    let (arrived'''
+replace = '''
+    let mut mid = stage_a.run(stack, &embedded, tokens.len(), false, &regime)?;
+    {
+        let handle = super::rig::bytes_f32(&stage_a.snapshot()?.digest);
+        mid.residual[..handle.len()].copy_from_slice(&handle);
+    }
+    let (arrived'''
+
+[[mutation]]
+name = "control-rows-are-installed-as-kv"
+description = "The activation control is installed into the receiving cache as KV rows instead of being computed on."
+expect = ["kv_pages_installed_from_wire", "activation_control_kv_installs"]
+file = "bins/ptr-bench/src/experiments/e007/smuggle.rs"
+find = '''
+    pods.stage_b.run(
+        &rig.stack,
+        &bytes_f32(&f32_bytes(admitted.activations())),
+        rows,
+        false,
+        &regime,
+    )?;'''
+replace = '''
+    {
+        use ptr_pods::{KvTensorBackend, TensorRef};
+        let _ = &regime;
+        let activations = admitted.activations();
+        for row in 0..rows {
+            let k = activations[row * 64..row * 64 + 32].to_vec();
+            let v = activations[row * 64 + 32..row * 64 + 64].to_vec();
+            let keys: Vec<TensorRef> = (0..2)
+                .map(|layer| TensorRef { layer, shape: vec![1, 32], values: k.clone() })
+                .collect();
+            let values: Vec<TensorRef> = (0..2)
+                .map(|layer| TensorRef { layer, shape: vec![1, 32], values: v.clone() })
+                .collect();
+            pods.stage_b
+                .backend
+                .append(&mut pods.stage_b.cache, &keys, &values)
+                .map_err(fail("installing"))?;
+        }
+    }'''
+
+[[mutation]]
+name = "consistency-check-always-fails"
+description = "The harness's consistent-digest check never holds."
+expect = ["frames_without_consistent_digest", "valid_id_set_mismatch"]
+file = "bins/ptr-bench/src/experiments/e007/link.rs"
+find = '''
+            .all(|chunk| chunk.header.frame_digest == digest)
+            && delivered.frame_digest == digest;'''
+replace = '''
+            .all(|chunk| chunk.header.frame_digest == digest)
+            && delivered.frame_digest == digest
+            && false;'''
+
+[[mutation]]
+name = "late-window-replay-outside-the-window"
+description = "The late replay is delayed less than 0.9 of the window."
+expect = ["late_window_delays_out_of_range"]
+expect_exit = 2
+file = "bins/ptr-bench/src/experiments/e007/chunks.rs"
+find = '''
+    let delay = params::LATE_WINDOW_REPLAY_DELAY_RANGE_MS[0]
+        + rng.below('''
+replace = '''
+    let delay = 0
+        + rng.below('''
+
+[[mutation]]
+name = "corpus-generator-changes"
+description = "The prompt lengths come from another rule than the pinned one."
+expect = ["selection_digest_mismatches"]
+expect_exit = 2
+file = "bins/ptr-bench/src/experiments/e007/bitwise.rs"
+find = '''
+    let len = params::PROMPT_TOKENS_MIN + (index * 7) % span;'''
+replace = '''
+    let len = params::PROMPT_TOKENS_MIN + (index * 5) % span;'''
+
+[[mutation]]
+name = "receiver-window-differs-from-the-pin"
+description = "The harness builds the receiver with another reorder window than the preregistered one. A larger window also lets an out-of-window attack through, so a product counter fires too; validity first, the run is INVALID (exit 2) through procedure_mismatches."
+expect = ["procedure_mismatches"]
+expect_exit = 2
+file = "bins/ptr-bench/src/experiments/e007/link.rs"
+find = '''
+        reorder_window: params::REORDER_WINDOW as u32,'''
+replace = '''
+        reorder_window: params::REORDER_WINDOW as u32 + 1,'''
+
+[[mutation]]
+name = "receiver-total-cap-differs-from-the-pin"
+description = "The harness builds the receiver with another global byte cap than the preregistered one (a limit no attack probe depends on: a larger reorder window would also let an attack through, and the observed violation would then take the exit status)."
+expect = ["procedure_mismatches"]
+expect_exit = 2
+file = "bins/ptr-bench/src/experiments/e007/link.rs"
+find = '''
+        max_total_buffered_bytes: params::MAX_TOTAL_BUFFERED_BYTES,'''
+replace = '''
+        max_total_buffered_bytes: params::MAX_TOTAL_BUFFERED_BYTES + 1,'''
+
+[[mutation]]
+name = "model-pin-digest-differs"
+description = "The pinned digest of the tiny model config is not the one the shape gives."
+expect = ["model_pin_mismatches"]
+expect_exit = 2
+file = "bins/ptr-bench/src/experiments/e007/params.rs"
+find = '''
+    "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433a";'''
+replace = '''
+    "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433b";'''
+
+[[mutation]]
+name = "replay-boundary-tick-off-by-one"
+description = "A frame is taken for live at exactly deadline plus skew, the tick at which its tombstone is already gone."
+expect = ["boundary_tick_replays_admitted"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+    deadline_ms.saturating_add(policy.max_clock_skew_ms) <= now_ms'''
+replace = '''
+    deadline_ms.saturating_add(policy.max_clock_skew_ms) < now_ms'''
+
+[[mutation]]
+name = "policy-signature-unchecked"
+description = "A split policy is delivered without verifying its signature."
+expect = ["unsigned_chunks_admitted"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        .verify_strict(&policy_signing_bytes(&split_policy), &signature)
+        .is_err()
+    {'''
+replace = '''
+        .verify_strict(&policy_signing_bytes(&split_policy), &signature)
+        .is_err()
+        && false
+    {'''
+
+[[mutation]]
+name = "principal-not-bound-to-its-stage"
+description = "A registered principal may sign a chain that names any stage."
+expect = ["unbound_stage_frames_admitted"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        if header.upstream_chain.stage.identity != table.stage_identity {'''
+replace = '''
+        if false && header.upstream_chain.stage.identity != table.stage_identity {'''
+
+[[mutation]]
+name = "signed-chain-not-compared-with-the-frames"
+description = "The chain the envelope signs is never compared with the chain inside the reassembled frame."
+expect = ["chain_frame_mismatches_delivered"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                    if frame.upstream_chain != finished.chain {'''
+replace = '''
+                    if false && frame.upstream_chain != finished.chain {'''
+
+[[mutation]]
+name = "policy-not-bound-to-the-operation"
+description = "A reassembled frame is not compared with the signed policy of its operation."
+expect = ["chain_frame_mismatches_delivered"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+                        Some(bound) if bound.width != frame.width || bound.dtype != frame.dtype => {'''
+replace = '''
+                        Some(bound) if false && (bound.width != frame.width || bound.dtype != frame.dtype) => {'''
+
+[[mutation]]
+name = "global-byte-cap-unchecked"
+description = "Bytes buffered over all principals are not bounded."
+expect = ["global_cap_breaches"]
+file = "crates/ptr-podwire/src/chunk.rs"
+find = '''
+        if total_buffered.saturating_add(view.bytes.len() as u64) > policy.max_total_buffered_bytes
+        {'''
+replace = '''
+        if false && total_buffered.saturating_add(view.bytes.len() as u64) > policy.max_total_buffered_bytes
+        {'''
+
+[[mutation]]
+name = "approximate-upstream-admitted"
+description = "A frame whose upstream ran under an Approximate mode is admitted (version 1 is Exact-only)."
+expect = ["non_exact_frames_admitted"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+    if upstream_mode != KvReuseMode::Exact {'''
+replace = '''
+    if false && upstream_mode != KvReuseMode::Exact {'''
+
+[[mutation]]
+name = "non-finite-activations-admitted"
+description = "NaN and infinite activations enter the downstream stage."
+expect = ["non_finite_frames_admitted"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+    if let Some(index) = activations.iter().position(|value| !value.is_finite()) {'''
+replace = '''
+    if let Some(index) = activations.iter().position(|value| false && !value.is_finite()) {'''
+
+[[mutation]]
+name = "full-cache-never-drops-dead-entries"
+description = "A full cache keeps its dead entries and refuses a live one."
+expect = ["cache_slots_held_by_dead_entries"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+            self.evict_dead(live);'''
+replace = '''
+            let _ = live;'''
+
+[[mutation]]
+name = "refused-entry-stays-in-the-cache"
+description = "An entry the check at use refused is not evicted."
+expect = ["cache_slots_held_by_dead_entries"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+            self.drop_entry(key);
+            return Err(UseFault::Stale(fault));'''
+replace = '''
+            return Err(UseFault::Stale(fault));'''
+
+[[mutation]]
+name = "downstream-stage-not-revalidated"
+description = "The downstream stage's own generation is not part of the check at use."
+expect = ["stale_upstream_kv_served"]
+file = "crates/ptr-runtime/src/split_stage.rs"
+find = '''
+        .and_then(|()| revalidate_own(&entry.own, live))'''
+replace = '''
+        .and_then(|()| Ok::<(), ChainFault>(()))'''

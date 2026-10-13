@@ -1,0 +1,539 @@
+{
+  "experiment_id": "L002",
+  "git_sha": "e7c4bb8501ce78365b1f2cae8dfa2faf24503b07",
+  "recorded_at": "2026-10-12T00:35:32.641525+00:00",
+  "subcommand": "raft-recovery",
+  "killed": 32,
+  "total": 32,
+  "mutations": [
+    {
+      "name": "cutover-log-created-without-fsync",
+      "file": "crates/ptr-ledger/src/file.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "unsynced_acks"
+      ],
+      "counters": {
+        "unsynced_acks": 4
+      }
+    },
+    {
+      "name": "cutover-new-log-directory-not-synchronized",
+      "file": "crates/ptr-ledger/src/file.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "unsynced_acks"
+      ],
+      "counters": {
+        "unsynced_acks": 4
+      }
+    },
+    {
+      "name": "cutover-drops-a-retained-record",
+      "file": "crates/ptr-ledger/src/acknowledged.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 12,
+      "expected": [
+        "reference_mismatches"
+      ],
+      "counters": {
+        "unsynced_acks": 8,
+        "reference_mismatches": 4
+      }
+    },
+    {
+      "name": "cutover-anchor-keeps-the-old-floor",
+      "file": "crates/ptr-ledger/src/acknowledged.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 268,
+      "expected": [
+        "unclassified_cutover"
+      ],
+      "counters": {
+        "unclassified_cutover": 136,
+        "unjustified_refusals": 128,
+        "reference_mismatches": 4
+      }
+    },
+    {
+      "name": "open-reads-the-old-log-under-the-new-anchor",
+      "file": "crates/ptr-ledger/src/acknowledged.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 132,
+      "expected": [
+        "unjustified_refusals",
+        "unclassified_cutover"
+      ],
+      "counters": {
+        "unjustified_refusals": 128,
+        "reference_mismatches": 4
+      }
+    },
+    {
+      "name": "open-ignores-the-epoch-witness",
+      "file": "crates/ptr-ledger/src/acknowledged.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "anchored_lie_accepted"
+      ],
+      "counters": {
+        "anchored_lie_accepted": 3
+      }
+    },
+    {
+      "name": "reclaim-removes-the-live-log",
+      "file": "crates/ptr-ledger/src/acknowledged.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 184,
+      "expected": [
+        "orphan_hazard"
+      ],
+      "counters": {
+        "unjustified_refusals": 52,
+        "orphan_hazard": 128,
+        "reference_mismatches": 4
+      }
+    },
+    {
+      "name": "restore-forgets-the-revoked-generations",
+      "file": "crates/ptr-runtime/src/compacted.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 452,
+      "expected": [
+        "stale_accepts"
+      ],
+      "counters": {
+        "stale_accepts": 89,
+        "authority_mismatches": 359,
+        "reference_mismatches": 4
+      }
+    },
+    {
+      "name": "tail-classification-panics",
+      "file": "crates/ptr-ledger/src/file.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 10,
+      "expected": [
+        "product_panics"
+      ],
+      "counters": {
+        "product_panics": 10
+      }
+    },
+    {
+      "name": "append-hangs-for-a-revocation",
+      "file": "crates/ptr-ledger/src/file.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "product_hangs"
+      ],
+      "counters": {
+        "product_hangs": 1
+      }
+    },
+    {
+      "name": "authorization-ignores-the-revocation",
+      "file": "crates/ptr-runtime/src/lib.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 498,
+      "expected": [
+        "stale_accepts",
+        "reference_mismatches"
+      ],
+      "counters": {
+        "stale_accepts": 487,
+        "reference_mismatches": 11
+      }
+    },
+    {
+      "name": "validity-reads-a-revoked-generation-as-live",
+      "file": "crates/ptr-runtime/src/lib.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1612,
+      "expected": [
+        "authority_mismatches",
+        "reference_mismatches"
+      ],
+      "counters": {
+        "authority_mismatches": 1594,
+        "reference_mismatches": 18
+      }
+    },
+    {
+      "name": "member-swallows-a-failed-append",
+      "file": "crates/ptr-ledger/src/raft_node.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "promise_not_durable",
+        "reference_mismatches"
+      ],
+      "counters": {
+        "reference_mismatches": 1
+      }
+    },
+    {
+      "name": "member-does-not-persist-its-vote",
+      "file": "crates/ptr-ledger/src/raft_storage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 154,
+      "expected": [
+        "promise_not_durable",
+        "member_regressed"
+      ],
+      "counters": {
+        "promise_not_durable": 89,
+        "member_regressed": 51,
+        "reference_mismatches": 14
+      }
+    },
+    {
+      "name": "snapshot-record-forgets-the-covered-events",
+      "file": "crates/ptr-ledger/src/raft_storage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 98,
+      "expected": [
+        "member_regressed",
+        "reorder_or_duplicate_index"
+      ],
+      "counters": {
+        "recovered_not_prefix": 34,
+        "member_regressed": 28,
+        "reference_divergence": 28,
+        "convergence_bound_exceeded": 2,
+        "reference_mismatches": 6
+      }
+    },
+    {
+      "name": "install-is-not-marked-pending",
+      "file": "crates/ptr-ledger/src/raft_storage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 42,
+      "expected": [
+        "tampered_snapshot_accepted"
+      ],
+      "counters": {
+        "recovered_not_prefix": 16,
+        "member_regressed": 2,
+        "convergence_bound_exceeded": 16,
+        "tampered_snapshot_accepted": 1,
+        "reference_mismatches": 7
+      }
+    },
+    {
+      "name": "pending-snapshot-forgotten-by-open",
+      "file": "crates/ptr-ledger/src/raft_node.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 42,
+      "expected": [
+        "tampered_snapshot_accepted"
+      ],
+      "counters": {
+        "recovered_not_prefix": 16,
+        "member_regressed": 2,
+        "convergence_bound_exceeded": 16,
+        "tampered_snapshot_accepted": 1,
+        "reference_mismatches": 7
+      }
+    },
+    {
+      "name": "anchor-match-ignores-the-digest",
+      "file": "crates/ptr-ledger/src/raft_node.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "tampered_snapshot_accepted",
+        "stale_accepts"
+      ],
+      "counters": {
+        "recovered_not_prefix": 1,
+        "convergence_bound_exceeded": 1,
+        "tampered_snapshot_accepted": 1
+      }
+    },
+    {
+      "name": "torn-tail-refuses-to-open",
+      "file": "crates/ptr-ledger/src/raft_storage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 18,
+      "expected": [
+        "unjustified_refusals"
+      ],
+      "counters": {
+        "unjustified_refusals": 18
+      }
+    },
+    {
+      "name": "open-does-not-sync-the-log-it-read",
+      "file": "crates/ptr-ledger/src/raft_storage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "unsynced_acks"
+      ],
+      "counters": {
+        "unsynced_acks": 1
+      }
+    },
+    {
+      "name": "lost-snapshot-is-never-reported",
+      "file": "crates/ptr-ledger/src/raft_node.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 3,
+      "expected": [
+        "convergence_bound_exceeded"
+      ],
+      "counters": {
+        "convergence_bound_exceeded": 3
+      }
+    },
+    {
+      "name": "member-skips-the-committed-entries-of-a-light-ready",
+      "file": "crates/ptr-ledger/src/raft_node.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "reference_divergence",
+        "convergence_bound_exceeded"
+      ],
+      "counters": {
+        "recovered_not_prefix": 1,
+        "convergence_bound_exceeded": 1
+      }
+    },
+    {
+      "name": "member-drops-revocations-on-apply",
+      "file": "crates/ptr-ledger/src/raft_node.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 104,
+      "expected": [
+        "reference_divergence"
+      ],
+      "counters": {
+        "reference_divergence": 90,
+        "reference_mismatches": 14
+      }
+    },
+    {
+      "name": "member-numbers-events-from-zero",
+      "file": "crates/ptr-ledger/src/raft_node.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 8683,
+      "expected": [
+        "reorder_or_duplicate_index"
+      ],
+      "counters": {
+        "recovered_not_prefix": 29,
+        "reorder_or_duplicate_index": 8611,
+        "convergence_bound_exceeded": 29,
+        "reference_mismatches": 14
+      }
+    },
+    {
+      "name": "snapshot-payload-shares-one-file-name",
+      "file": "crates/ptr-ledger/src/raft_storage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2,
+      "expected": [
+        "unjustified_refusals"
+      ],
+      "counters": {
+        "unjustified_refusals": 2
+      }
+    },
+    {
+      "name": "install-resets-the-log-in-place",
+      "file": "crates/ptr-ledger/src/raft_storage.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "unjustified_refusals"
+      ],
+      "counters": {
+        "unjustified_refusals": 1
+      }
+    },
+    {
+      "name": "open-applies-what-lies-above-a-pending-snapshot",
+      "file": "crates/ptr-ledger/src/raft_node.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 32,
+      "expected": [
+        "recovered_not_prefix",
+        "convergence_bound_exceeded"
+      ],
+      "counters": {
+        "recovered_not_prefix": 10,
+        "convergence_bound_exceeded": 15,
+        "reference_mismatches": 7
+      }
+    },
+    {
+      "name": "harness-counts-the-record-in-flight-as-acknowledged",
+      "file": "bins/ptr-bench/src/experiments/l002/cutover.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 14,
+      "expected": [
+        "recovered_not_prefix",
+        "acked_revocation_missing"
+      ],
+      "counters": {
+        "stale_accepts": 4,
+        "acked_revocation_missing": 2,
+        "recovered_not_prefix": 8
+      }
+    },
+    {
+      "name": "harness-oracle-authorizes-late-superseded-generations",
+      "file": "bins/ptr-bench/src/experiments/l001/model.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 521,
+      "expected": [
+        "authority_mismatches",
+        "reference_mismatches"
+      ],
+      "counters": {
+        "authority_mismatches": 507,
+        "reference_mismatches": 14
+      }
+    },
+    {
+      "name": "harness-oracle-forgets-late-revocations",
+      "file": "bins/ptr-bench/src/experiments/l001/model.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 174,
+      "expected": [
+        "authority_mismatches",
+        "reference_mismatches"
+      ],
+      "counters": {
+        "authority_mismatches": 169,
+        "reference_mismatches": 5
+      }
+    },
+    {
+      "name": "open-accepts-a-log-shorter-than-the-anchor",
+      "file": "crates/ptr-ledger/src/file.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 6,
+      "expected": [
+        "anchored_lie_accepted"
+      ],
+      "counters": {
+        "anchored_lie_accepted": 6
+      }
+    },
+    {
+      "name": "harness-schedule-never-deposes-the-leader",
+      "file": "bins/ptr-bench/src/experiments/l002/group.rs",
+      "cases": 2,
+      "seed": 1001,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 1,
+      "expected": [
+        "reference_mismatches"
+      ],
+      "counters": {
+        "reference_mismatches": 1
+      }
+    }
+  ]
+}

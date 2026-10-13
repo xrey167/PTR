@@ -228,8 +228,7 @@ impl ReqwestPolicyBundleLoader {
         if !url.starts_with("https://") {
             return Err(PolicyError::InvalidUrl);
         }
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+        let client = crate::identity::hardened_client_builder()
             .build()
             .map_err(|error| PolicyError::FetchFailed(error.to_string()))?;
         Ok(Self { url, client })
@@ -711,5 +710,20 @@ mod tests {
             std::sync::Arc::new(|_| Ok(Vec::new()))
         )
         .is_err());
+    }
+}
+
+#[cfg(all(test, feature = "oidc-http"))]
+mod oidc_http_tests {
+    use super::*;
+
+    #[test]
+    fn reqwest_policy_loader_builds_without_a_network_or_a_panic() {
+        ReqwestPolicyBundleLoader::new("https://example.invalid/policy")
+            .expect("an HTTPS policy client must be constructible");
+        assert!(matches!(
+            ReqwestPolicyBundleLoader::new("http://example.invalid/policy"),
+            Err(PolicyError::InvalidUrl)
+        ));
     }
 }

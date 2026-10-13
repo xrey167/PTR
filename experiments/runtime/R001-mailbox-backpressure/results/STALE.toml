@@ -1,0 +1,3 @@
+results_git_sha = "edc7c02ff295f64453347f7b968c1df357c5d61f"
+stale_since = "497c2930a0a0e25af513341481b25ee848402b8e"
+reason = "No code under test changed after R001's seed records and mutation check. 497c2930 records the completed status and the result in STATUS.md and regenerates the component docs, which the repository-wide provenance counts as a change; the merge into the integration line then brings unrelated work (S001). R001 was preregistered at r001-prereg (b03360f3). No rerun under the same preregistration follows (each seed runs once)."

@@ -1,0 +1,212 @@
+version = 1
+kind = "workspace-area"
+name = "R005-exact-prefix-reuse"
+path = "experiments/runtime/R005-exact-prefix-reuse"
+tests_dir = "tests"
+
+[pinned_thresholds]
+# Preregistered choices for this experiment (no code default exists).
+min_revoked_fork_attempts = 1
+max_revoked_fork_count = 0
+# Preregistered choices for this experiment (no code default exists).
+max_trie_nodes = 4096
+max_kv_page_bytes = 134217728
+max_active_fork_page_evictions = 0
+min_evictions_with_active_fork_pinned = 1
+hit_rate_definition = "reused_prefix_tokens / total_prompt_tokens"
+# Preregistered choices for this experiment (no code default exists).
+min_invalidation_suppressed_arms = 1
+min_restore_arms = 1
+min_post_event_lookups = 1
+max_stale_hits = 0
+min_input_revocations_performed = 1
+min_post_revocation_lookups_matching_tokens = 1
+max_revoked_lineage_entry_hits = 0
+min_same_tokens_different_generation_cases = 1
+min_revoked_pinned_page_attempts = 1
+max_revoked_pinned_page_served_after_revocation = 0
+revoked_pinned_page_bytes_reclaimed_after_release = "all"
+min_cross_principal_attempts = 1
+max_cross_principal_hits = 0
+min_discarded_overlay_entry_attempts = 1
+max_discarded_overlay_entry_hits = 0
+max_metadata_bytes = 8388608
+n_requests = 64
+prompt_tokens = 256
+shared_prefix_tokens = 128
+cold_first_request_counts_in_hit_rate = true
+concurrency = 1
+# Preregistered choices for this experiment (no code default exists).
+seed_aggregation = "every_seed_must_pass"
+# Preregistered choices for this experiment (no code default exists).
+min_same_tokens_distinct_lineage_entries = 2
+max_cross_lineage_hits = 0
+min_active_fork_revocation_attempts = 1
+max_outputs_escaped_after_revocation = 0
+# Preregistered choices for this experiment (no code default exists).
+min_hit_rate_at_50pct_shared_prefix = 0.40
+metadata_bytes_per_node = 1024
+kv_page_bytes_per_node = 16384
+nodes_only_run_max_kv_page_bytes = 268435456
+bytes_only_run_max_trie_nodes = 16384
+test_model_layers = 4
+dtype = "f32"
+min_cross_project_attempts = 1
+max_cross_project_hits = 0
+min_forged_witness_fork_attempts = 1
+max_forged_witness_forks_accepted = 0
+min_cancelled_run_effect_attempts = 1
+max_cancelled_run_effects_admitted = 0
+min_evictions_nodes_only_run = 1
+min_evictions_bytes_only_run = 1
+min_stale_eligible_entries_before_event = 1
+# Preregistered choices for this experiment (no code default exists).
+over_capacity_workloads = "independent nodes-only and bytes-only workloads of unique prompts"
+# Preregistered choices for this experiment (no code default exists).
+weights = "seeded random (pinned seed and shape)"
+weight_seed = 20240607
+hidden_size = 64
+num_heads = 4
+num_kv_heads = 2
+head_dim = 16
+vocab_size = 256
+# Preregistered choices for this experiment (no code default exists).
+min_cancelled_forks = 1
+cancelled_forks_restarted_from_fresh_prefill_at_least_cancelled_forks = true
+# Preregistered choices for this experiment (no code default exists).
+min_restored_pre_revocation_entries = 1
+empty_restart_arm_role = "reported_separate_arm"
+# Preregistered choices for this experiment (no code default exists).
+min_raw_prefix_reuse_cases = 1
+min_raw_identical_prefix_hits = 1
+raw_segment_admission = "content-bound: (kind Raw, content digest); no identity, generation or liveness check"
+capacity_exhausted_behaviour = "typed CapacityExhausted; uncached full prefill; no insert"
+# Preregistered choices for this experiment (no code default exists).
+min_supersession_active_fork_race_cases = 1
+# Preregistered choices for this experiment (no code default exists).
+min_memory_supersession_active_fork_race_cases = 1
+min_memory_revocation_active_fork_race_cases = 1
+# Preregistered choices for this experiment (no code default exists).
+corpus = "synthetic token sequences from a seeded generator"
+corpus_generator_seed = 20240607
+corpus_selection_rule = "deterministic generator, sequence i derived from seed and index i, in index order"
+corpus_selection_digest_recorded_in_run_json = true
+max_selection_digest_mismatches = 0
+max_procedure_mismatches = 0
+procedure_parameters_recorded_per_cell = ["seeds", "n_requests", "prompt_tokens", "shared_prefix_tokens", "concurrency", "max_trie_nodes", "max_kv_page_bytes", "test_model_layers", "weight_seed", "hidden_size", "num_heads", "num_kv_heads", "head_dim", "vocab_size", "corpus_generator_seed", "kv_page_bytes_per_node", "metadata_bytes_per_node", "nodes_only_run_max_kv_page_bytes", "bytes_only_run_max_trie_nodes", "workload_limits", "invalidation_coverage_matrix", "superseded_lookup_cells", "saturation_definition", "chain_layer_covers", "tiny_model_config_digest", "tokenizer_pin", "moe_topology", "declared_dependency_kinds", "production_modes", "derived_state_carriers", "numerics_binding_environment_fields"]
+# Preregistered choices for this experiment (no code default exists).
+capacity_refused_requests_completed_equals_exhausted_refusals = true
+max_capacity_fallback_output_mismatches = 0
+max_capacity_refusal_cache_inserts = 0
+min_supersession_cancelled_forks = 1
+supersession_forks_restarted_from_fresh_prefill_equals_cancelled = true
+max_cache_inserts_after_supersession = 0
+# Preregistered choices for this experiment (no code default exists).
+invalidation_types = ["revocation", "supersession"]
+dependency_kinds = ["semantic_input", "memory_input"]
+coverage_reported_per_member = "dependency kind x invalidation type"
+max_outputs_after_supersession_semantic = 0
+max_outputs_after_supersession_memory = 0
+# Preregistered choices for this experiment (no code default exists).
+identity_set_checks = [["cancelled_fork_id_set_digest", "restarted_fork_id_set_digest"], ["capacity_refused_request_id_set_digest", "capacity_completed_request_id_set_digest"]]
+# Preregistered choices for this experiment (no code default exists).
+workload_limits = { main = { max_trie_nodes = 4096, max_kv_page_bytes = 134217728, max_metadata_bytes = 8388608 }, nodes_only = { max_trie_nodes = 4096, max_kv_page_bytes = 268435456, max_metadata_bytes = 67108864 }, bytes_only = { max_trie_nodes = 16384, max_kv_page_bytes = 67108864, max_metadata_bytes = 16777216 } }
+workload_peaks_reported = "per workload, evaluated against that workload's own limits"
+# Preregistered choices for this experiment (no code default exists).
+outputs_after_supersession_field_family = "outputs_after_supersession"
+# Preregistered choices for this experiment (no code default exists).
+min_base_model_inflight_race_cases_per_type = 1
+max_base_model_inflight_outputs_after_invalidation = 0
+max_base_model_inflight_cache_inserts = 0
+base_model_inflight_race_cases_reported = "per invalidation type"
+# Preregistered choices for this experiment (no code default exists).
+invalidation_coverage_matrix = { kinds = ["semantic_input", "memory_input", "derived_input", "base_model", "adapter_generation", "expert_generation"], types = ["revocation", "supersession"], paths = ["normal", "lag", "restore", "inflight"], extra_types = { expert_generation = ["fence"] }, cells = ["semantic_input_normal_revocation", "semantic_input_normal_supersession", "semantic_input_lag_revocation", "semantic_input_lag_supersession", "semantic_input_restore_revocation", "semantic_input_restore_supersession", "semantic_input_inflight_revocation", "semantic_input_inflight_supersession", "memory_input_normal_revocation", "memory_input_normal_supersession", "memory_input_lag_revocation", "memory_input_lag_supersession", "memory_input_restore_revocation", "memory_input_restore_supersession", "memory_input_inflight_revocation", "memory_input_inflight_supersession", "derived_input_normal_revocation", "derived_input_normal_supersession", "derived_input_lag_revocation", "derived_input_lag_supersession", "derived_input_restore_revocation", "derived_input_restore_supersession", "derived_input_inflight_revocation", "derived_input_inflight_supersession", "base_model_normal_revocation", "base_model_normal_supersession", "base_model_lag_revocation", "base_model_lag_supersession", "base_model_restore_revocation", "base_model_restore_supersession", "base_model_inflight_revocation", "base_model_inflight_supersession", "adapter_generation_normal_revocation", "adapter_generation_normal_supersession", "adapter_generation_lag_revocation", "adapter_generation_lag_supersession", "adapter_generation_restore_revocation", "adapter_generation_restore_supersession", "adapter_generation_inflight_revocation", "adapter_generation_inflight_supersession", "expert_generation_normal_revocation", "expert_generation_normal_supersession", "expert_generation_normal_fence", "expert_generation_lag_revocation", "expert_generation_lag_supersession", "expert_generation_lag_fence", "expert_generation_restore_revocation", "expert_generation_restore_supersession", "expert_generation_restore_fence", "expert_generation_inflight_revocation", "expert_generation_inflight_supersession", "expert_generation_inflight_fence"] }
+min_invalidation_matrix_cases_per_cell = 1
+max_invalidation_matrix_stale_hits_per_cell = 0
+invalidation_matrix_path_meaning = "normal = ordinary lookup after the invalidation; lag = lagging invalidation or index loss; restore = actual restore from snapshot or restart; inflight = in-flight race"
+# Preregistered choices for this experiment (no code default exists).
+superseded_lookup_cells = [["semantic","normal"],["semantic","lag"],["semantic","restore"],["memory","normal"],["memory","lag"],["memory","restore"]]
+min_superseded_lookup_cases_per_cell = 1
+max_superseded_stale_hits = 0
+# Preregistered choices for this experiment (no code default exists).
+min_saturation_demand_cases = 1
+min_capacity_exhausted_refusals = 1
+saturation_definition = "attempted demand of concurrent forks exceeds capacity; the accepted pinned set stays within bounds; the excess insertion is refused with CapacityExhausted"
+# Preregistered choices for this experiment (no code default exists).
+min_current_layer_kv_transform_change_cases = 1
+max_stale_exact_hits = 0
+min_stale_witness_replay_cases = 1
+min_witness_reuse_static_evidence_passing = 2
+witness_reuse_evidence = "owner decision 2026-10-06: reuse of a consumed KvForkWitness is a compile-time error. Evidence is (1) the compile_fail doctest on KvForkWitness in crates/ptr-pods/src/paged_kv.rs (a second fork_prefix_admitted with the same witness must not compile) and (2) the unit test witness_tests::second_consume_of_the_same_witness_state_is_refused in the same file; no runtime witness_reuse_attempts is required"
+max_stale_or_reused_witness_forks_admitted = 0
+chain_layer_covers = ["layers_below", "pre_attention_norm", "kv_projection_weights_and_biases", "qk_norm_weights_and_eps", "stored_post_rope_rotary_parameters", "kv_quantization_parameters"]
+# Preregistered choices for this experiment (no code default exists).
+tiny_model_config = { layers = 4, hidden_size = 64, num_heads = 4, num_kv_heads = 2, head_dim = 16, vocab_size = 256, weight_seed = 20240607 }
+tiny_model_config_digest = "sha256:91be3ab2b3493b3ab5dbc99a03c36a0a599b42c8d359a6443e629c2ce4ba433a"
+tiny_model_config_digest_rule = "sha256 of canonical JSON (sorted keys, no spaces) of tiny_model_config"
+tokenizer_pin = "ByteTokenizer, vocabulary 256 (no external revision)"
+moe_topology = "none: dense tiny decoder"
+model_pins_recorded_in_run_json = true
+max_model_pin_mismatches = 0
+# Preregistered choices for this experiment (no code default exists).
+rope_regime_fixed_at_admission_from = "prompt + max_new_tokens"
+# Preregistered choices for this experiment (no code default exists).
+rope_regime_inputs = ["prompt_tokens", "max_new_tokens"]
+# Preregistered choices for this experiment (no code default exists).
+declared_dependency_kinds = ["semantic", "memory", "derived", "base_model", "adapter", "expert"]
+# Preregistered choices for this experiment (no code default exists).
+cache_namespace_partitioned_by_production_mode = true
+cache_namespace_partition = "Exact catalog separate from the tainted candidate namespace"
+production_modes = ["Exact", "Approximate"]
+# Preregistered choices for this experiment (no code default exists).
+min_fixed_regime_decode_crossing_cases = 1
+max_fixed_regime_crossing_parity_failures = 0
+min_effective_regime_transition_cases = 1
+max_exact_outputs_across_effective_regime_transition_without_recompute = 0
+forced_transition_examples = ["admitted max_new_tokens exceeded", "runtime switches regimes"]
+# Preregistered choices for this experiment (no code default exists).
+min_mismatched_position_cases = 1
+max_exact_hits_with_mismatched_positions = 0
+canonical_positions = "position ids = trie depth offset from 0; no explicit position ids or offset; otherwise Exact lookup is bypassed (miss)"
+# Preregistered choices for this experiment (no code default exists).
+binding_limit_per_workload = { main = "max_trie_nodes", nodes_only = "max_trie_nodes", bytes_only = "max_kv_page_bytes" }
+# Preregistered choices for this experiment (no code default exists).
+numerics_binding_environment_fields = ["gpu_or_cpu_architecture", "driver_version", "cuda_runtime_version", "attention_gemm_kernel_library", "backend_build_identity"]
+producer_environment_recorded_in_run_json = true
+min_cross_environment_restore_cases = 1
+max_exact_hits_across_environment = 0
+cross_environment_simulation = "a changed build-identity field"
+
+# Split (2026-10-06, owner decision): the Approximate-family thresholds and cases live in
+# experiments/runtime/R012-approximate-taint-containment/config.toml. R005 keeps the Exact half.
+derived_state_carriers = { ptr_catalog_key = ["mode"] }
+approximate_family_successor = "R012-approximate-taint-containment"
+
+# Frozen at the freeze (scripts/check_research_gates.py): the digest of this table is the
+# manifest's preregistration_sha256. Choices and their reasons: PREREGISTRATION.md. The two
+# `_sha256` keys are written at the freeze, after the files they name are final.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+harness = "exact-prefix-reuse"
+max_new_tokens = 8
+intermediate_size = 128
+rope_theta = "10000.0"
+rms_norm_eps = "1e-6"
+qk_norm_main = "disabled"
+qk_norm_transform_arm = "enabled"
+ntk_factor = "4.0"
+ntk_original_max_positions = 30
+over_capacity_prompt_tokens = 128
+over_capacity_fill_prompts = 512
+over_capacity_extra_prompts = 64
+saturation_max_sessions = 520
+saturation_excess_requests = 8
+corpus_selection_digest_main = "sha256:d06fd633832bb4bdb7b50e21473dcde2882ff234855aa9e32da6a97f67a7968d"
+corpus_selection_digest_nodes_only = "sha256:38b1b1da0c23c6a6fea31aa53b52bb92bce2e82df3674f928d87387fc2251b63"
+corpus_selection_digest_bytes_only = "sha256:4f5a40e2b33245b3a99deda30331571c563a986438ea17d4ece9c592856465f9"
+semantic_liveness_model = "committed-edit-revision"
+preregistration_text = "experiments/runtime/R005-exact-prefix-reuse/PREREGISTRATION.md"
+preregistration_text_sha256 = "fb5531355f0b98c9cac894742f09b16dc2dad017c8657104818341943a0f55ac"
+criteria = "experiments/runtime/R005-exact-prefix-reuse/criteria.toml"
+criteria_sha256 = "10c871186da2932bd2d232a0d2c0b14a4787ee81b069f8e941bd7bfda2e682d8"
+static_evidence = ["cargo test -p ptr-pods --locked --doc KvForkWitness", "cargo test -p ptr-pods --locked witness_tests::second_consume_of_the_same_witness_state_is_refused"]
