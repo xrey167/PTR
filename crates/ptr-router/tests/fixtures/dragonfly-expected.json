@@ -97,7 +97,7 @@
     {
       "scores": {
         "supplier-kowalski": 0.9969235080626817,
-        "supplier-mueller": 0.8863177559742167,
+        "supplier-mueller": 0.8863177559742165,
         "supplier-schmidt": 0.1984141361145408
       },
       "text": "How long does Mueller GmbH need to deliver?",
@@ -181,7 +181,7 @@
     {
       "scores": {
         "supplier-kowalski": 0.9999620588172298,
-        "supplier-mueller": 0.04066957024208017,
+        "supplier-mueller": 0.0406695702420802,
         "supplier-schmidt": 0.3581292643875366
       },
       "text": "Lead time at Kowalski Sp for the X12 part",
@@ -224,7 +224,7 @@
       "scores": {
         "supplier-kowalski": 0.9996496045486423,
         "supplier-mueller": 0.9258475192863047,
-        "supplier-schmidt": 0.16723823481194575
+        "supplier-schmidt": 0.16723823481194589
       },
       "text": "Which delivery date did Muller Werke confirm?",
       "vector": [

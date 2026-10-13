@@ -14,6 +14,8 @@ import re
 import unicodedata
 from typing import Protocol, Sequence
 
+from .numeric import ordered_sum
+
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
 
@@ -36,7 +38,7 @@ def normalized(text: str) -> str:
 
 
 def l2_normalize(vector: Sequence[float]) -> list[float]:
-    norm = math.sqrt(sum(v * v for v in vector))
+    norm = math.sqrt(ordered_sum(v * v for v in vector))
     if norm == 0.0:
         raise ValueError("cannot normalise the zero vector")
     return [v / norm for v in vector]

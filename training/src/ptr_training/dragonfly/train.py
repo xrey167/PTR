@@ -34,6 +34,7 @@ from .gate import (
     sigmoid,
 )
 from .identity import PodIdentityDescriptor
+from .numeric import ordered_sum
 
 
 @dataclass(frozen=True)
@@ -114,7 +115,7 @@ def _balanced_loss(logits: Sequence[float], labels: Sequence[float]) -> float:
 
     positive = [bce(v, y) for v, y in zip(logits, labels) if y > 0.5]
     negative = [bce(v, y) for v, y in zip(logits, labels) if y <= 0.5]
-    return (sum(positive) / len(positive) + sum(negative) / len(negative)) / 2
+    return (ordered_sum(positive) / len(positive) + ordered_sum(negative) / len(negative)) / 2
 
 
 def _check_inputs(spec: PodTrainingSpec, positives: Sequence[str], negatives: Sequence[str]) -> None:
@@ -157,7 +158,7 @@ def train_pod_address(
     if spec.description is not None:
         z = l2_normalize(encoder.encode(spec.description))
     else:
-        z = l2_normalize([sum(v[d] for v, y in zip(vectors, labels) if y > 0.5) for d in range(dims)])
+        z = l2_normalize([ordered_sum(v[d] for v, y in zip(vectors, labels) if y > 0.5) for d in range(dims)])
     bias = 0.0
 
     def logits(current_z: Sequence[float], current_bias: float) -> list[float]:
@@ -177,7 +178,7 @@ def train_pod_address(
     second = [0.0] * (dims + 1)
     beta1, beta2, epsilon = 0.9, 0.999, 1e-8
     for step in range(1, config.steps + 1):
-        z_norm = math.sqrt(sum(v * v for v in z))
+        z_norm = math.sqrt(ordered_sum(v * v for v in z))
         z_hat = [v / z_norm for v in z]
         grad = [0.0] * (dims + 1)
         for q, label, weight in zip(vectors, labels, weights):

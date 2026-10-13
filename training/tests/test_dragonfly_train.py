@@ -176,6 +176,16 @@ class TrainingTests(unittest.TestCase):
             train_pod_address(spec(negative_aliases=("Muller Werke",)), ENCODER)
 
 
+class NumericTests(unittest.TestCase):
+    def test_ordered_sum_is_the_plain_left_to_right_loop_on_every_python(self):
+        from ptr_training.dragonfly.numeric import ordered_sum
+
+        # CPython >= 3.12 compensates the builtin sum() of floats and returns 2.0 here; the
+        # explicit loop gives 1.0 on every version, which is what keeps the fixture portable.
+        self.assertEqual(ordered_sum([1e16, 1.0, -1e16, 1.0]), 1.0)
+        self.assertEqual(ordered_sum([]), 0.0)
+
+
 class GateTests(unittest.TestCase):
     def test_gate_floors_permille_and_requires_both_halves(self):
         z = [1.0, 0.0, 0.0]

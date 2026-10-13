@@ -13,6 +13,8 @@ import struct
 from dataclasses import dataclass
 from typing import Sequence
 
+from .numeric import ordered_sum
+
 ALIAS_THRESHOLD_PERMILLE = 800
 NEGATIVE_REJECT_THRESHOLD_PERMILLE = 900
 COSINE_WEIGHT = 12.0
@@ -28,9 +30,9 @@ def round_f32(value: float) -> float:
 
 
 def cosine(query: Sequence[float], z: Sequence[float]) -> float:
-    dot = sum(q * v for q, v in zip(query, z))
-    q_norm = math.sqrt(sum(q * q for q in query))
-    z_norm = math.sqrt(sum(v * v for v in z))
+    dot = ordered_sum(q * v for q, v in zip(query, z))
+    q_norm = math.sqrt(ordered_sum(q * q for q in query))
+    z_norm = math.sqrt(ordered_sum(v * v for v in z))
     if q_norm == 0.0 or z_norm == 0.0:
         raise ValueError("cosine of a zero vector")
     return max(-1.0, min(1.0, dot / (q_norm * z_norm)))
