@@ -1,9 +1,14 @@
+import sys
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ptr_training import codebook as codebook_artifact
+from ptr_training import preflight
+from ptr_training import run as run_module
+from ptr_training.moe.pipeline import stack_available
 from ptr_training.run import (
     ROOT,
     build_manifest,
@@ -143,6 +148,125 @@ class TrainingRunManifestTests(unittest.TestCase):
             write_manifest(out, {"status": "prepared"})
             with self.assertRaises(FileExistsError):
                 write_manifest(out, {"status": "replacement"})
+
+
+STAGE = ROOT / "training" / "configs" / "stage-moe-smoke.toml"
+HAVE_STACK = stack_available(("torch", "trl", "transformers", "datasets", "peft"))
+
+
+def _preflight_record(manifest: dict, **overrides) -> dict:
+    fields = {
+        "protocol_sha256": manifest["config_sha256"],
+        "runner_sha256": preflight.runner_sha256(),
+        "device": "cpu",
+        "input_fingerprint_sha256": "i" * 64,
+        "probe": {},
+    }
+    fields.update(overrides)
+    return preflight.build_record(**fields)
+
+
+class PreflightGateTests(unittest.TestCase):
+    """A run without a matching preflight record is refused, fail closed."""
+
+    manifest = {"config_sha256": "c" * 64}
+
+    def gate(self, directory, **overrides):
+        arguments = {"device": "cpu", "evidence_class": "pipeline-smoke", "allow_missing": False}
+        arguments.update(overrides)
+        return run_module.require_preflight_for(self.manifest, directory=directory, **arguments)
+
+    def test_a_run_with_no_preflight_record_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(SystemExit) as caught:
+            self.gate(Path(tmp))
+        self.assertIn("refusing training execution", str(caught.exception))
+        self.assertIn("no preflight record matches", str(caught.exception))
+
+    def test_a_matching_record_lets_the_run_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = _preflight_record(self.manifest)
+            preflight.write_record(Path(tmp), record)
+            self.assertEqual(self.gate(Path(tmp)), record)
+
+    def test_a_record_for_another_config_is_a_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            preflight.write_record(Path(tmp), _preflight_record(self.manifest, protocol_sha256="d" * 64))
+            with self.assertRaises(SystemExit) as caught:
+                self.gate(Path(tmp))
+        self.assertIn("protocol_sha256", str(caught.exception))
+
+    def test_a_record_for_another_runner_version_is_a_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            preflight.write_record(Path(tmp), _preflight_record(self.manifest, runner_sha256="e" * 64))
+            with self.assertRaises(SystemExit) as caught:
+                self.gate(Path(tmp))
+        self.assertIn("runner_sha256", str(caught.exception))
+
+    def test_a_record_for_another_device_is_a_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            preflight.write_record(Path(tmp), _preflight_record(self.manifest))
+            with self.assertRaises(SystemExit) as caught:
+                self.gate(Path(tmp), device="cuda:NVIDIA RTX 3090")
+        self.assertIn("device", str(caught.exception))
+
+    def test_the_waiver_covers_pipeline_smoke_runs_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(self.gate(Path(tmp), allow_missing=True))
+            with self.assertRaises(SystemExit) as caught:
+                self.gate(Path(tmp), allow_missing=True, evidence_class="experiment")
+        self.assertIn("only valid for evidence_class", str(caught.exception))
+
+
+class PreflightCliTests(unittest.TestCase):
+    def main_with(self, *flags):
+        manifest = {
+            "git_dirty": False,
+            "config_sha256": "c" * 64,
+            "config": {"training": {"backend": "trl-moe", "allow_unselected_backend": True}},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["run", "--config", str(STAGE), "--out", str(Path(tmp) / "m.json"), "--execute", *flags]
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(
+                run_module, "build_manifest", return_value=manifest
+            ), mock.patch.object(run_module, "ROOT", Path(tmp)), mock.patch.object(
+                run_module, "_execute_trl_moe", return_value=0
+            ) as execute:
+                with self.assertRaises(SystemExit):
+                    run_module.main()
+        return execute
+
+    def test_the_waiver_flag_reaches_the_executor_only_when_given(self):
+        self.assertFalse(self.main_with().call_args.kwargs["allow_missing_preflight"])
+        self.assertTrue(
+            self.main_with("--allow-missing-preflight").call_args.kwargs["allow_missing_preflight"]
+        )
+
+
+@unittest.skipUnless(HAVE_STACK, "torch/trl/transformers/datasets/peft not installed (moe extra)")
+class PreflightExecutorTests(unittest.TestCase):
+    def test_the_executor_refuses_before_any_training_without_a_record(self):
+        from ptr_training.moe import pipeline
+
+        manifest = {"config_sha256": preflight.file_sha256(STAGE)}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            preflight, "PREFLIGHT_DIR", Path(tmp)
+        ), mock.patch.object(pipeline, "run", side_effect=AssertionError("ran")) as ran:
+            with self.assertRaises(SystemExit) as caught:
+                run_module._execute_trl_moe(manifest, STAGE)
+        ran.assert_not_called()
+        self.assertIn("no preflight record matches", str(caught.exception))
+
+    def test_a_waived_smoke_run_proceeds_and_says_so(self):
+        from ptr_training.moe import pipeline
+
+        manifest = {"config_sha256": preflight.file_sha256(STAGE)}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            preflight, "PREFLIGHT_DIR", Path(tmp)
+        ), mock.patch.object(pipeline, "run", return_value=Path(tmp) / "metrics.json"):
+            self.assertEqual(
+                run_module._execute_trl_moe(manifest, STAGE, allow_missing_preflight=True), 0
+            )
+        self.assertEqual(manifest["preflight"]["status"], "waived")
 
 
 if __name__ == "__main__":

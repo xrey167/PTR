@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ptr_training import checkpoint as checkpoint_seal
 from ptr_training import codebook as codebook_artifact
+from ptr_training import preflight as preflight_record
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -206,14 +207,53 @@ def write_manifest(path: Path, manifest: dict) -> None:
         handle.write("\n")
 
 
-def _execute_trl_moe(manifest: dict, config_path: Path) -> int | str:
+def require_preflight_for(
+    manifest: dict,
+    *,
+    device: str,
+    evidence_class: str,
+    allow_missing: bool,
+    directory: Path | None = None,
+) -> dict | None:
+    """The preflight record this run is bound to; refuses (SystemExit) when none matches."""
+    try:
+        return preflight_record.require_preflight(
+            protocol_sha256=manifest["config_sha256"],
+            runner_sha256=preflight_record.runner_sha256(),
+            device=device,
+            evidence_class=evidence_class,
+            allow_missing=allow_missing,
+            directory=directory or preflight_record.PREFLIGHT_DIR,
+        )
+    except preflight_record.PreflightError as error:
+        raise SystemExit(f"refusing training execution: {error}") from error
+
+
+def _execute_trl_moe(
+    manifest: dict, config_path: Path, *, allow_missing_preflight: bool = False
+) -> int | str:
     """Dispatch the `trl-moe` backend; heavy dependencies are imported lazily."""
+    from ptr_training.moe import config as moe_config
     from ptr_training.moe import pipeline
 
     try:
         pipeline.require_extra()
     except pipeline.MissingExtraError as error:
         return str(error)
+    device = preflight_record.current_device_identity(
+        moe_config.load(config_path).model.device
+    )
+    record = require_preflight_for(
+        manifest,
+        device=device,
+        evidence_class=pipeline.EVIDENCE_CLASS,
+        allow_missing=allow_missing_preflight,
+    )
+    manifest["preflight"] = (
+        {"status": "waived", "reason": "--allow-missing-preflight on a pipeline-smoke run"}
+        if record is None
+        else {"status": "matched", "record_sha256": record["record_sha256"], "device": device}
+    )
     metrics_path = pipeline.run(manifest, config_path)
     try:
         print(metrics_path.relative_to(ROOT))
@@ -231,6 +271,11 @@ def main() -> None:
     )
     parser.add_argument("--out", type=Path)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--allow-missing-preflight",
+        action="store_true",
+        help="run without a matching preflight record; only for evidence_class pipeline-smoke",
+    )
     args = parser.parse_args()
 
     config_path = args.config if args.config.is_absolute() else ROOT / args.config
@@ -275,7 +320,13 @@ def main() -> None:
                 )
             except moe_config.BackendNotSelected as error:
                 raise SystemExit(str(error)) from error
-            raise SystemExit(_execute_trl_moe(manifest, config_path))
+            raise SystemExit(
+                _execute_trl_moe(
+                    manifest,
+                    config_path,
+                    allow_missing_preflight=args.allow_missing_preflight,
+                )
+            )
         raise SystemExit(f"training backend {backend!r} is not implemented yet")
 
 
