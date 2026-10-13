@@ -296,3 +296,176 @@ fn no_lease_is_issued_on_a_failed_node_or_device() {
         Err(PlacementError::UnhealthyDevice(DeviceId::from("cuda:0")))
     );
 }
+
+fn placed(controller: &mut PodPlacementController) {
+    leased(controller);
+    assert!(controller.placement(&PodId::from("pod")).is_ok());
+}
+
+#[test]
+fn a_device_missing_from_a_heartbeat_revokes_its_placements_and_bumps_the_epoch() {
+    let mut controller = PodPlacementController::default();
+    placed(&mut controller);
+    let before = controller.epoch();
+    controller
+        .heartbeat(&NodeId::from("node-a"), Timestamp(2), vec![])
+        .unwrap();
+    assert_eq!(
+        controller.placement(&PodId::from("pod")).map(|p| p.epoch),
+        Err(PlacementError::NoPlacement)
+    );
+    assert_eq!(controller.epoch().0, before.0 + 1);
+}
+
+#[test]
+fn a_device_reported_failed_revokes_its_placements_and_bumps_the_epoch() {
+    let mut controller = PodPlacementController::default();
+    placed(&mut controller);
+    let before = controller.epoch();
+    controller
+        .heartbeat(
+            &NodeId::from("node-a"),
+            Timestamp(2),
+            vec![device(DeviceHealth::Failed)],
+        )
+        .unwrap();
+    assert_eq!(
+        controller.placement(&PodId::from("pod")).map(|p| p.epoch),
+        Err(PlacementError::NoPlacement)
+    );
+    assert_eq!(controller.epoch().0, before.0 + 1);
+}
+
+#[test]
+fn a_degraded_device_keeps_its_placements() {
+    let mut controller = PodPlacementController::default();
+    placed(&mut controller);
+    let before = controller.epoch();
+    controller
+        .heartbeat(
+            &NodeId::from("node-a"),
+            Timestamp(2),
+            vec![device(DeviceHealth::Degraded)],
+        )
+        .unwrap();
+    assert!(controller.placement(&PodId::from("pod")).is_ok());
+    assert_eq!(controller.epoch(), before);
+}
+
+#[test]
+fn an_unchanged_heartbeat_keeps_every_placement_and_bumps_nothing() {
+    let mut controller = PodPlacementController::default();
+    placed(&mut controller);
+    let before = controller.epoch();
+    let epoch = controller.placement(&PodId::from("pod")).unwrap().epoch;
+    controller
+        .heartbeat(&NodeId::from("node-a"), Timestamp(2), node().devices)
+        .unwrap();
+    assert_eq!(
+        controller.placement(&PodId::from("pod")).unwrap().epoch,
+        epoch
+    );
+    assert_eq!(controller.epoch(), before);
+}
+
+#[test]
+fn a_revoked_placement_is_not_resurrected_by_a_later_heartbeat() {
+    let mut controller = PodPlacementController::default();
+    placed(&mut controller);
+    controller
+        .heartbeat(&NodeId::from("node-a"), Timestamp(2), vec![])
+        .unwrap();
+    controller
+        .heartbeat(&NodeId::from("node-a"), Timestamp(3), node().devices)
+        .unwrap();
+    assert!(controller.placement(&PodId::from("pod")).is_err());
+    assert_eq!(
+        controller.issue_lease(StateId::from("state-2"), &PodId::from("pod")),
+        Err(PlacementError::NoPlacement)
+    );
+}
+
+#[test]
+fn marking_a_node_failed_revokes_every_placement_on_it_once() {
+    let mut controller = PodPlacementController::default();
+    placed(&mut controller);
+    controller
+        .assign(
+            PodId::from("pod-2"),
+            ArtifactId::from("artifact"),
+            Generation(1),
+            NodeId::from("node-a"),
+            DeviceId::from("cuda:0"),
+            1,
+        )
+        .unwrap();
+    let before = controller.epoch();
+    controller
+        .mark_node_failed(&NodeId::from("node-a"))
+        .unwrap();
+    assert!(controller.placement(&PodId::from("pod")).is_err());
+    assert!(controller.placement(&PodId::from("pod-2")).is_err());
+    assert_eq!(controller.epoch().0, before.0 + 1);
+}
+
+#[test]
+fn re_registering_a_node_without_the_device_revokes_its_placements() {
+    let mut controller = PodPlacementController::default();
+    placed(&mut controller);
+    let before = controller.epoch();
+    let mut replacement = node();
+    replacement.devices.clear();
+    controller.register_node(replacement).unwrap();
+    assert!(controller.placement(&PodId::from("pod")).is_err());
+    assert_eq!(controller.epoch().0, before.0 + 1);
+}
+
+#[test]
+fn re_registering_a_node_with_its_device_keeps_the_placement() {
+    let mut controller = PodPlacementController::default();
+    placed(&mut controller);
+    controller.register_node(node()).unwrap();
+    assert!(controller.placement(&PodId::from("pod")).is_ok());
+}
+
+#[test]
+fn a_placement_on_another_node_survives_a_failure() {
+    let mut controller = PodPlacementController::default();
+    placed(&mut controller);
+    let mut other = node();
+    other.node_id = NodeId::from("node-b");
+    controller.register_node(other).unwrap();
+    controller
+        .mark_node_failed(&NodeId::from("node-b"))
+        .unwrap();
+    assert!(controller.placement(&PodId::from("pod")).is_ok());
+}
+
+#[test]
+fn a_tombstone_is_dropped_once_the_failure_is_gone() {
+    let mut controller = PodPlacementController::default();
+    placed(&mut controller);
+    let node_id = NodeId::from("node-a");
+    let pod = PodId::from("pod");
+    controller
+        .heartbeat(&node_id, Timestamp(2), vec![device(DeviceHealth::Failed)])
+        .unwrap();
+    assert_eq!(
+        controller.issue_lease(StateId::from("s2"), &pod),
+        Err(PlacementError::UnhealthyDevice(DeviceId::from("cuda:0")))
+    );
+    controller
+        .heartbeat(&node_id, Timestamp(3), vec![device(DeviceHealth::Healthy)])
+        .unwrap();
+    assert_eq!(
+        controller.issue_lease(StateId::from("s2"), &pod),
+        Err(PlacementError::NoPlacement)
+    );
+    controller
+        .heartbeat(&node_id, Timestamp(4), vec![device(DeviceHealth::Failed)])
+        .unwrap();
+    assert_eq!(
+        controller.issue_lease(StateId::from("s2"), &pod),
+        Err(PlacementError::NoPlacement)
+    );
+}
