@@ -63,7 +63,8 @@ numbers because they change.
    `--branches main,claude/*`, `--tags`, `--yes`, `--set-url`, `--set-upstream-main`. See
    `python3 scripts/publish_remote.py --help` once the script is in your checkout.
 6. In GitLab (Settings, Repository): set the default branch to `main` and protect `main`
-   (merge only through MRs, force push not allowed).
+   (merge only through MRs, force push not allowed). Under Protected tags, protect `v*`
+   (Maintainers only): the release jobs run only for protected `v*` tags on a commit of `main`.
 
 ## 4. CI on GitLab
 
@@ -106,6 +107,9 @@ Register two runners (or one runner with two `[[runners]]` entries):
   purpose: `make smoke-gpu` uses the host's `training/.venv` with the CUDA torch wheel that
   `make desktop-setup` installed, and the host driver (docs/DESKTOP_SETUP.md). The
   `gitlab-runner` user needs read access to the Hugging Face cache for the OLMoE configs.
+  It runs the checked-out Makefile on the host, so register it with "Protected" set (it then
+  takes jobs only from protected refs) and as a project runner, not a shared one; `gpu-smoke`
+  itself starts only on protected refs.
 
 Check the flags against `gitlab-runner register --help` and the current runner docs; they
 change between versions. Before relying on it, test that a container sees the GPU:

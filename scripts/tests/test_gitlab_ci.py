@@ -140,16 +140,30 @@ class GitLabMirrorsGitHub(unittest.TestCase):
         self.assertIn("cargo-deny", jobs["security"])
 
     def test_gpu_smoke_is_manual_and_on_the_gpu_runner(self):
-        """The GPU job needs the self-hosted runner tag and never runs automatically."""
+        """The GPU job needs the self-hosted runner tag, never runs automatically and only
+        starts on protected refs (it runs the checked-out Makefile on the host)."""
         text = gitlab_jobs(GITLAB)["gpu-smoke"]
         code = "\n".join(code_lines(text))
         self.assertRegex(code, r"tags:\s*\n\s*-\s*ptr-gpu")
-        self.assertIn("*rules-manual", code)
-        manual = re.search(r"^\.rules-manual:.*?(?=^\S)", GITLAB.read_text(encoding="utf-8"),
-                           re.M | re.S)
-        self.assertIsNotNone(manual)
-        self.assertIn("when: manual", manual.group(0))
-        self.assertNotIn("when: on_success", manual.group(0))
+        self.assertRegex(
+            code,
+            r'- if: \$CI_COMMIT_REF_PROTECTED == "true"[^\n]*\n\s*when: manual',
+        )
+        self.assertRegex(code, r"- when: never\s*$")
+        self.assertNotIn("when: on_success", code)
+        self.assertNotIn("*rules-manual", code)
+
+    def test_release_jobs_need_a_protected_tag_on_main(self):
+        """Both release jobs run only for protected v* tags; the build checks main ancestry."""
+        jobs = gitlab_jobs(GITLAB)
+        for name in ("release-package", "release"):
+            code = "\n".join(code_lines(jobs[name]))
+            self.assertIn(
+                '- if: $CI_COMMIT_TAG =~ /^v/ && $CI_COMMIT_REF_PROTECTED == "true"', code
+            )
+        build = "\n".join(code_lines(jobs["release-package"]))
+        self.assertIn('git merge-base --is-ancestor "$CI_COMMIT_SHA" FETCH_HEAD', build)
+        self.assertLess(build.index("merge-base"), build.index("make release-package"))
 
     def test_postgres_service_and_dsns(self):
         """state-postgres has the pgvector service under the `postgres` alias and its DSNs."""
