@@ -15,3 +15,5 @@ pub const ERROR_CODE: &str = "error.code";
 pub const EXPECTED: &str = "expected.value";
 pub const ACTUAL: &str = "actual.value";
 pub const LATENCY_NS: &str = "ptr.latency_ns";
+/// Identifier of the planned step a span or event executes (see `PlanRecord`).
+pub const PLAN_STEP: &str = "ptr.plan_step";
