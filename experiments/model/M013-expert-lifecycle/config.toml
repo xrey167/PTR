@@ -138,7 +138,7 @@ abstentions_and_gate_rejections_counted_per_arm = true
 cumulative_net_quality_per_opportunity_margin = 0.0
 abstention_net_quality = 0
 # Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
-tuning_seed = 17
+tuning_seed = 1001
 tuning_steps_fraction = 0.25
 tuning_steps_budget_key = "max_recovery_steps"
 tuning_steps = 1250

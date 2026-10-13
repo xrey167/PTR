@@ -98,7 +98,7 @@ bias_init = 0
 # Preregistered choices for this experiment (no code default exists).
 update_rule_symbols = ["L_aux", "L_phi", "P_i", "b_i", "f_i", "load_i", "mean_load", "p_t", "sum_i"]
 # Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
-tuning_seed = 17
+tuning_seed = 1001
 tuning_steps_fraction = 0.25
 tuning_steps_budget_key = "training_steps_per_arm"
 tuning_steps = 500
