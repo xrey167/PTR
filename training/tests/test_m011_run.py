@@ -136,6 +136,7 @@ class TinyEndToEndTests(unittest.TestCase):
                 self.assertEqual(final["tuning_trials_used"], 2)
                 self.assertEqual(final["tuning_trial_set_digest"], tuning["trial_set_digest"])
                 self.assertEqual(final["tuning_selected"], tuning["selected"])
+                self.assertEqual(final["tuning_arm"], "mixlora")
 
     def test_tune_steps_override_and_other_seed_are_recorded_as_deviations(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,6 +176,17 @@ class TinyEndToEndTests(unittest.TestCase):
                 m011.main(["--arm", "mixlora", "--out", tmp, "--all-seeds", "--seed", "1"])
             with self.assertRaises(SystemExit):
                 m011.main(["--arm", "mixlora", "--out", tmp])  # no seed, no --tune
+
+    def test_a_tuning_file_of_another_arm_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tuning.json"
+            path.write_text(json.dumps({"arm": "mixlora", "selected": {"learning_rate": 1e-3, "batch_size": 4}}))
+            with self.assertRaises(SystemExit):
+                m011._load_tuning(path, "perft_r_emergent")
+            self.assertEqual(m011._load_tuning(path, "mixlora")["arm"], "mixlora")
+            with self.assertRaises(SystemExit):
+                m011.main(["--arm", "perft_r_emergent", "--out", tmp, "--seed", "17",
+                           "--hparams", str(path), "--model", "tiny"])
 
     def test_same_seed_is_reproducible(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:

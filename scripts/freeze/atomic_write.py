@@ -15,6 +15,9 @@ def atomic_write_all(updates):
             fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".freeze-")
             with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
                 handle.write(text)
+            # mkstemp creates 0600; keep the target's mode so a 0644 file stays 0644.
+            if path.exists():
+                os.chmod(tmp, path.stat().st_mode & 0o7777)
             staged.append((path, Path(tmp)))
         for path, tmp in staged:
             original = path.read_bytes()

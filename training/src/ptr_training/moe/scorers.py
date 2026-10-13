@@ -282,17 +282,29 @@ def parse_call(text: str) -> tuple[str, dict] | None:
     return name, kwargs
 
 
+class _Unmatchable:
+    """Stands in for a value that must not compare equal to anything (not even itself)."""
+
+    def __eq__(self, other):
+        return False
+
+    __hash__ = None
+
+
 def _norm(value):
-    if isinstance(value, bool):
+    # Numbers stay as they are: Python compares int with int and int with float exactly, so
+    # 1 == 1.0 still holds while 2**53 + 1 no longer equals 2**53 through a float round trip.
+    if isinstance(value, (bool, int, float)):
         return value
-    if isinstance(value, (int, float)):
-        return float(value)
     if isinstance(value, str):
         return value.strip().lower()
     if isinstance(value, (list, tuple)):
         return [_norm(v) for v in value]
     if isinstance(value, dict):
-        return {str(k): _norm(v) for k, v in sorted(value.items())}
+        # Keys of any type are compared as text, so no sort over incomparable keys is needed;
+        # two keys that collapse to the same text (1 and '1') make the value unmatchable.
+        normed = {str(k): _norm(v) for k, v in value.items()}
+        return normed if len(normed) == len(value) else _Unmatchable()
     return value
 
 

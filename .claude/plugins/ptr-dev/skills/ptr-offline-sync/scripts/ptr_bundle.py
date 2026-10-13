@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 import hashlib
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -82,16 +83,38 @@ def write_sums(out_dir: Path, files: list[Path]) -> Path:
     return sums
 
 
+# A checksum file lists at most a few thousand parts; anything larger is not one.
+MAX_SUMS_BYTES = 1024 * 1024
+
+
 def read_sums(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        raise BundleError(f"{path} is missing")
+    """Read the checksum manifest without following a symlink and without echoing its lines:
+    a planted manifest may point at a secret, and a malformed line is reported by number only."""
+    if path.is_symlink():
+        raise BundleError(f"{path} is a symlink; refusing to read it")
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        raise BundleError(f"{path} is missing") from None
+    except OSError as error:
+        raise BundleError(f"cannot open {path}: {error.strerror}") from None
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise BundleError(f"{path} is not a regular file")
+        data = handle.read(MAX_SUMS_BYTES + 1)
+    if len(data) > MAX_SUMS_BYTES:
+        raise BundleError(f"{path} is larger than {MAX_SUMS_BYTES} bytes")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise BundleError(f"{path} is not UTF-8 text") from None
     result: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
         digest, _, name = line.partition("  ")
         if not name:
-            raise BundleError(f"malformed line in {path}: {line!r}")
+            raise BundleError(f"malformed line {number} in {path}")
         result[name.strip()] = digest.strip()
     return result
 

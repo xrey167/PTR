@@ -5,13 +5,14 @@ use ptr_config::{VcwBackend, VcwTaskKind};
 use ptr_protocol::TypedPayload;
 use ptr_runtime::vcw::experts::{ARITHMETIC_ANSWER_TYPE, JSON_OBJECT_ANSWER_TYPE};
 use ptr_runtime::PtrRuntime;
-use ptr_types::{Probability, TypeId, VerificationLevel};
+use ptr_types::{Digest, Probability, TypeId, VerificationLevel};
 use ptr_verifier::{
     arithmetic, code_test, fact, json_schema, ArithmeticVerifier, CodeTask, CodeTest,
     CodeTestVerifier, FactClaim, FactVerifier, Finding, JsonSchemaVerifier, VerificationReport,
     VerificationStatus, Verifier,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use super::wire::{VcwApiError, VcwClaim, VcwTask};
 
@@ -61,8 +62,36 @@ pub(super) struct Job {
     pub kind: VcwTaskKind,
     /// The text committed as raw evidence and shown to a model.
     pub statement: String,
+    /// A canonical digest of what the verifier judges against (expression, schema, entry and
+    /// tests, claims). The request digest commits to it, so two requests with the same
+    /// statement but different criteria leave different evidence, while hidden tests stay out
+    /// of the statement a model sees.
+    pub criteria: Digest,
     pub sim: SimJob,
     spec: Spec,
+}
+
+/// Length-prefixed SHA-256 over `parts`, tagged with the task kind.
+fn criteria_digest(kind: VcwTaskKind, parts: &[&[u8]]) -> Digest {
+    let mut hasher = Sha256::new();
+    for part in std::iter::once(kind.as_str().as_bytes()).chain(parts.iter().copied()) {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.finalize().into()
+}
+
+/// The canonical bytes of one code test: id, argument count, arguments and expected value.
+fn code_test_bytes(id: &str, args: &[i64], expected: i64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(id.len() + 24 + args.len() * 8);
+    out.extend_from_slice(&(id.len() as u64).to_le_bytes());
+    out.extend_from_slice(id.as_bytes());
+    out.extend_from_slice(&(args.len() as u64).to_le_bytes());
+    for arg in args {
+        out.extend_from_slice(&arg.to_le_bytes());
+    }
+    out.extend_from_slice(&expected.to_le_bytes());
+    out
 }
 
 fn too_large(what: &str, limit: usize) -> VcwApiError {
@@ -113,6 +142,7 @@ impl Job {
                 Ok(Self {
                     kind: VcwTaskKind::Arithmetic,
                     statement: format!("What is {expression}?"),
+                    criteria: criteria_digest(VcwTaskKind::Arithmetic, &[expression.as_bytes()]),
                     sim: SimJob {
                         kind: Some(VcwTaskKind::Arithmetic),
                         reference,
@@ -154,6 +184,7 @@ impl Job {
                     statement: format!(
                         "{instruction}\nThe JSON object must satisfy this JSON Schema: {schema_text}"
                     ),
+                    criteria: criteria_digest(VcwTaskKind::JsonObject, &[schema_text.as_bytes()]),
                     sim: SimJob {
                         kind: Some(VcwTaskKind::JsonObject),
                         reference,
@@ -177,21 +208,27 @@ impl Job {
                     return Err(too_large("tests", code_test::MAX_TESTS));
                 }
                 let mut parsed = Vec::with_capacity(tests.len());
+                let mut encoded = Vec::with_capacity(tests.len());
                 for test in tests {
                     non_blank("test id", &test.id, code_test::MAX_TEST_ID_BYTES)?;
                     if test.args.len() > MAX_TEST_ARGS {
                         return Err(too_large("test arguments", MAX_TEST_ARGS));
                     }
                     parsed.push(CodeTest::new(&test.id, &test.args, test.expected));
+                    encoded.push(code_test_bytes(&test.id, &test.args, test.expected));
                 }
                 let reference =
                     reference_for(backend, reference.clone(), code_test::MAX_SOURCE_BYTES)?;
                 let arity = tests.first().map_or(0, |test| test.args.len());
+                let mut parts: Vec<&[u8]> = vec![entry.as_bytes()];
+                parts.extend(encoded.iter().map(Vec::as_slice));
+                let criteria = criteria_digest(VcwTaskKind::Code, &parts);
                 Ok(Self {
                     kind: VcwTaskKind::Code,
                     statement: format!(
                         "{instruction}\nWrite the function `{entry}` with {arity} integer argument(s)."
                     ),
+                    criteria,
                     sim: SimJob {
                         kind: Some(VcwTaskKind::Code),
                         reference,
@@ -222,6 +259,7 @@ impl Job {
                 Ok(Self {
                     kind: VcwTaskKind::Fact,
                     statement: question.clone(),
+                    criteria: criteria_digest(VcwTaskKind::Fact, &[reference.as_bytes()]),
                     sim: SimJob {
                         kind: Some(VcwTaskKind::Fact),
                         reference,
@@ -327,6 +365,27 @@ mod tests {
             type_id: answer_type(kind),
             bytes: text.as_bytes().to_vec(),
         }
+    }
+
+    fn code_job(expected: i64) -> Job {
+        let task: VcwTask = serde_json::from_value(serde_json::json!({
+            "kind": "code",
+            "instruction": "Add one.",
+            "entry": "inc",
+            "tests": [{"id": "t1", "args": [1], "expected": expected}],
+            "reference": "def inc(x):\n    return x + 1\n",
+        }))
+        .unwrap();
+        Job::from_request(&task, VcwBackend::Simulated).unwrap()
+    }
+
+    #[test]
+    fn the_criteria_digest_binds_the_code_tests_but_the_statement_hides_them() {
+        let (a, b) = (code_job(2), code_job(3));
+        assert_eq!(a.statement, b.statement);
+        assert!(!a.statement.contains("t1"));
+        assert_ne!(a.criteria, b.criteria);
+        assert_eq!(a.criteria, code_job(2).criteria);
     }
 
     #[test]

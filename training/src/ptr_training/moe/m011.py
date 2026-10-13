@@ -473,13 +473,24 @@ def _arm_report(spec) -> dict:
     }
 
 
+def _load_tuning(path, arm: str) -> dict:
+    """Read a tuning.json and refuse one that another arm's --tune run produced."""
+    tuned = json.loads(Path(path).read_text(encoding="utf-8"))
+    if tuned.get("arm") != arm:
+        raise SystemExit(
+            f"m011: {path} was tuned for arm {tuned.get('arm')!r}, not {arm!r}; "
+            "hyperparameters are selected per arm"
+        )
+    return tuned
+
+
 def _hparams(args, kind: str) -> tuple[dict, dict | None]:
     """(hyperparameters, tuning-source record); explicit flags beat --hparams beat defaults."""
     default = UNPINNED_CHOICES["default_untuned_hparams"][kind]
     source, tuned = "default-untuned", None
     lr, bs = default["lr"], default["batch"]
     if args.hparams:
-        tuned = json.loads(Path(args.hparams).read_text(encoding="utf-8"))
+        tuned = _load_tuning(args.hparams, args.arm)
         lr, bs = tuned["selected"]["learning_rate"], tuned["selected"]["batch_size"]
         source = "tuned"
     if args.lr is not None or args.batch_size is not None:
@@ -500,6 +511,9 @@ def run(args) -> int:
             "m011: no bubblewrap sandbox for HumanEval (apt install bubblewrap); set "
             f"{scorers.UNSANDBOXED_ENV}=1 only to accept running generated code as this user"
         )
+    # A tuning file of another arm is refused before any model is built.
+    if args.hparams:
+        _load_tuning(args.hparams, args.arm)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -588,6 +602,7 @@ def run(args) -> int:
         run_json["tuning_trials_used"] = tuned_in["tuning_trials_used"]
         run_json["tuning_trial_set_digest"] = tuned_in["trial_set_digest"]
         run_json["tuning_source"] = str(args.hparams)
+        run_json["tuning_arm"] = tuned_in["arm"]
         run_json.update(
             tuning_seed=tuned_in["tuning_seed"], tuning_steps=tuned_in["tuning_steps"],
             tuning_selected=tuned_in["selected"], tuning_deviations=tuned_in["deviations"],

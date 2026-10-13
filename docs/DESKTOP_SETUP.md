@@ -38,6 +38,7 @@ on the 4090 by the author of this document; the first real run is the first real
 - Use the stock kernel (6.8 or the HWE kernel Ubuntu offers) and install all updates first:
   `sudo apt update && sudo apt full-upgrade`, then reboot.
 - Base tools: `sudo apt install -y git curl build-essential pkg-config bubblewrap` (bubblewrap sandboxes the model-generated code M011 scores on HumanEval).
+- Free disk: `make desktop-setup` stops in step 1, before any download or build, when the repository's disk has less than 20 GB free (`PTR_SETUP_MIN_FREE_GB` changes the floor).
 
 ## 2. NVIDIA driver 580
 

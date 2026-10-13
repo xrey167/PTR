@@ -69,6 +69,16 @@ class SetupDesktopDryRun(unittest.TestCase):
         out = dry_run()[0].stdout
         self.assertIn(f"pinned channel: {channel}", out)
 
+    def test_disk_floor_is_checked_in_step_one_before_any_install(self):
+        out = dry_run("--yes")[0].stdout
+        floor = out.index("free disk at")
+        self.assertLess(floor, out.index("STEP 2/7"))
+        proc = subprocess.run(
+            ["bash", "-c", 'sed -n "/^MIN_FREE_GB=/,/^fi$/p" "$0"', str(SCRIPT)],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertIn("exit 1", proc.stdout)
+
     def test_changes_nothing_and_never_runs_sudo(self):
         proc, home_entries = dry_run("--yes")
         self.assertEqual(home_entries, [])
