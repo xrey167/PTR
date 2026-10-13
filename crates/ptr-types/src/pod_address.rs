@@ -202,6 +202,11 @@ pub struct RouteConstraints {
     pub zone: Option<ZoneId>,
     pub required_vram_bytes: Option<u64>,
     pub min_epoch: Option<u64>,
+    /// The caller's absolute deadline in milliseconds since the Unix epoch. A
+    /// resolved route carries it unchanged; `None` leaves the route with
+    /// `Timestamp(0)`, meaning no deadline was set and only the transport timeout
+    /// applies.
+    pub deadline: Option<super::Timestamp>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

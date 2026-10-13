@@ -3,7 +3,7 @@
 pub mod activation;
 pub mod generated;
 
-use ptr_types::{CapabilityId, Generation, Revision, TypeId};
+use ptr_types::{CapabilityId, Generation, Revision, Timestamp, TypeId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WireVersion {
@@ -40,6 +40,7 @@ pub struct TypedPayload {
 ///     generation: None,
 ///     revision: 0,
 ///     payload: None,
+///     deadline_ms: None,
 /// };
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +50,8 @@ pub struct CallFrame {
     pub generation: Option<Generation>,
     pub revision: Revision,
     pub payload: TypedPayload,
+    /// The caller's absolute deadline, when it set one. Never zero.
+    pub deadline: Option<Timestamp>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +60,9 @@ pub enum ProtocolError {
     MissingCapability,
     MissingPayload,
     MissingTypeId,
+    /// A deadline of zero: already expired at the epoch, and never a value a
+    /// caller meant. Absence is the way to say there is none.
+    ZeroDeadline,
 }
 
 impl TryFrom<generated::podwire::PodCall> for CallFrame {
@@ -73,6 +79,9 @@ impl TryFrom<generated::podwire::PodCall> for CallFrame {
         if payload.type_id.trim().is_empty() {
             return Err(ProtocolError::MissingTypeId);
         }
+        if value.deadline_ms == Some(0) {
+            return Err(ProtocolError::ZeroDeadline);
+        }
 
         Ok(Self {
             call_id: value.call_id,
@@ -83,6 +92,7 @@ impl TryFrom<generated::podwire::PodCall> for CallFrame {
                 type_id: TypeId(payload.type_id),
                 bytes: payload.payload,
             },
+            deadline: value.deadline_ms.map(Timestamp),
         })
     }
 }

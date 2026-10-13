@@ -16,6 +16,9 @@ message PodCall {
   optional uint64 generation = 4;
   uint64 revision = 5;
   TypedPayload payload = 6;
+  // Absolute deadline, milliseconds since the Unix epoch. Absent means the caller
+  // set none and only the transport timeout applies; zero is not a deadline.
+  optional uint64 deadline_ms = 7;
 }
 message PodReturn { string call_id = 1; TypedPayload payload = 2; }
 message PodError { string call_id = 1; string code = 2; string message = 3; }

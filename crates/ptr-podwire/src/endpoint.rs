@@ -8,8 +8,8 @@ use crate::access::{answer, answer_bound, PodAccessPolicy};
 use crate::frame::{
     decode_answer, decode_answer_v2, decode_request, decode_request_v2, encode_answer,
     encode_answer_v2, encode_request, encode_request_v2, request_digest, FrameError,
-    PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome, PodRequest, PodRequestV2, RefusalCode,
-    MAX_FRAME_BYTES,
+    PodAddressBinding, PodAdmissionBinding, PodAnswer, PodAnswerV2, PodOutcome, PodRequest,
+    PodRequestV2, RefusalCode, MAX_FRAME_BYTES,
 };
 use ptr_net::{EndpointAddr, IrohSession, IrohTransport, NodeIdentity, PeerAddress, ALPN_PODWIRE};
 use ptr_pods::ProtocolBinding;
@@ -18,13 +18,13 @@ use ptr_protocol::TypedPayload;
 use ptr_runtime::RuntimeExecutionManifestResolver;
 use ptr_types::{
     ArtifactId, Digest, Generation, MeshEndpointBinding, NodeId, PodId, ProjectId, Revision,
-    ScopeId, SessionId, StatefulRequestRecovery, UncertainRequest,
+    ScopeId, SessionId, StatefulRequestRecovery, Timestamp, UncertainRequest,
 };
 use ptr_verifier::Verifier;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long one exchange waits for an answer before giving up.
 ///
@@ -32,6 +32,54 @@ use std::time::Duration;
 /// what matters is that there is one. Without it a host that stopped answering
 /// holds a requester open for as long as the transport allows.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The wall clock in milliseconds since the Unix epoch, the unit a V4 deadline is
+/// written in. A deadline is absolute and crosses hosts, so it can only be as
+/// accurate as the hosts' clocks; a clock that reads before the epoch reads as
+/// zero, which expires every deadline rather than extending one.
+fn now_millis() -> Timestamp {
+    Timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            }),
+    )
+}
+
+/// How long one V2 exchange may wait: the configured timeout, shortened to the
+/// time left before the request's absolute deadline. A deadline already passed is
+/// refused before anything is sent, so nothing is left uncertain.
+fn request_budget(
+    configured: Duration,
+    address: Option<&PodAddressBinding>,
+) -> Result<(Duration, Option<Timestamp>), PodWireError> {
+    let Some(deadline) = address.and_then(|address| address.deadline) else {
+        return Ok((configured, None));
+    };
+    let now = now_millis();
+    if now >= deadline {
+        return Err(PodWireError::DeadlineExceeded { deadline, now });
+    }
+    let remaining = Duration::from_millis(deadline.0 - now.0);
+    if remaining < configured {
+        Ok((remaining, Some(deadline)))
+    } else {
+        Ok((configured, None))
+    }
+}
+
+/// The error for a timed-out exchange: the deadline's own when the deadline set
+/// the wait, the transport's otherwise.
+fn timeout_error(bound_by: Option<Timestamp>) -> PodWireError {
+    match bound_by {
+        Some(deadline) => PodWireError::DeadlineExceeded {
+            deadline,
+            now: now_millis(),
+        },
+        None => PodWireError::Transport("the host did not answer in time".to_owned()),
+    }
+}
 
 /// Resolves an execution-manifest digest from the authoritative runtime or
 /// catalog. The transport never treats a digest supplied by a caller as proof
@@ -152,11 +200,13 @@ impl PodWireV2Binding {
         Ok(self)
     }
 
-    fn accepts(&self, request: &PodRequestV2) -> bool {
+    fn accepts(&self, request: &PodRequestV2, now: Timestamp) -> bool {
         (match (&request.address, self.semantic_revision) {
             (None, None) => true,
             (Some(address), Some(expected_revision)) => {
                 address.validate().is_ok()
+                    && address.hop_limit > 0
+                    && address.deadline.is_none_or(|deadline| now < deadline)
                     && address.destination.semantic_revision == expected_revision
                     && address.destination.address.project == self.manifest().project
                     && address.destination.address.pod_id == self.manifest().id
@@ -252,6 +302,13 @@ pub enum PodWireError {
         request_id: u64,
     },
     V2BindingUnavailable,
+    /// The request's absolute deadline passed before it was sent, before it was
+    /// executed, or while it waited for an answer. When it passed while waiting
+    /// the request is marked uncertain: the host may still have run it.
+    DeadlineExceeded {
+        deadline: Timestamp,
+        now: Timestamp,
+    },
 }
 
 impl PodWireError {
@@ -273,6 +330,7 @@ impl PodWireError {
             Self::SessionClosed => "PTR_PODW_SESSION_CLOSED",
             Self::RequestUncertain { .. } => "PTR_PODW_REQUEST_UNCERTAIN",
             Self::V2BindingUnavailable => "PTR_PODW_V2_BINDING_UNAVAILABLE",
+            Self::DeadlineExceeded { .. } => "PTR_PODW_DEADLINE_EXCEEDED",
         }
     }
 }
@@ -659,7 +717,20 @@ impl PodHost {
                             expected: self.identity().public_key,
                         }),
                     )
-                } else if !binding.accepts(&request) {
+                } else if let Some(error) = expired_deadline(&request) {
+                    (
+                        request_id,
+                        request.generation,
+                        request.revision,
+                        request.identity_digest,
+                        request.session_id.clone(),
+                        request.policy_revision,
+                        PodOutcome::Refused {
+                            code: RefusalCode::Unavailable,
+                        },
+                        Some(error),
+                    )
+                } else if !binding.accepts(&request, now_millis()) {
                     (
                         request_id,
                         request.generation,
@@ -879,7 +950,20 @@ impl PodHost {
                             expected: self.identity().public_key,
                         }),
                     )
-                } else if !binding.accepts(&request) {
+                } else if let Some(error) = expired_deadline(&request) {
+                    (
+                        request_id,
+                        request.generation,
+                        request.revision,
+                        request.identity_digest,
+                        request.session_id.clone(),
+                        request.policy_revision,
+                        PodOutcome::Refused {
+                            code: RefusalCode::Unavailable,
+                        },
+                        Some(error),
+                    )
+                } else if !binding.accepts(&request, now_millis()) {
                     (
                         request_id,
                         request.generation,
@@ -1153,20 +1237,19 @@ impl PodSession {
                 request_id: request.request_id,
             });
         }
+        let (budget, bound_by) = request_budget(self.request_timeout, request.address.as_ref())?;
         let _reservation = self.reserve(&self.v2_inflight, request.request_id)?;
-        let response = tokio::time::timeout(
-            self.request_timeout,
-            self.transport.request(&frame, MAX_FRAME_BYTES),
-        )
-        .await
-        .map_err(|_| {
-            self.mark_uncertain_v2(request.request_id);
-            PodWireError::Transport("the host did not answer in time".to_owned())
-        })?
-        .map_err(|error| {
-            self.mark_uncertain_v2(request.request_id);
-            session_error(error)
-        })?;
+        let response =
+            tokio::time::timeout(budget, self.transport.request(&frame, MAX_FRAME_BYTES))
+                .await
+                .map_err(|_| {
+                    self.mark_uncertain_v2(request.request_id);
+                    timeout_error(bound_by)
+                })?
+                .map_err(|error| {
+                    self.mark_uncertain_v2(request.request_id);
+                    session_error(error)
+                })?;
         let answered = decode_answer_v2(&response).map_err(|error| {
             self.mark_uncertain_v2(request.request_id);
             PodWireError::Frame(error)
@@ -1305,6 +1388,15 @@ fn validate_answer(
         return Err(PodWireError::UnboundAnswer);
     }
     Ok(answered.clone())
+}
+
+/// The refusal for a request whose absolute deadline has already passed on this
+/// host. It crosses the wire as `Unavailable`: the peer learns nothing a clock
+/// would not tell it, and the host's operator sees the real reason.
+fn expired_deadline(request: &PodRequestV2) -> Option<PodWireError> {
+    let deadline = request.address.as_ref()?.deadline?;
+    let now = now_millis();
+    (now >= deadline).then_some(PodWireError::DeadlineExceeded { deadline, now })
 }
 
 fn validate_answer_v2(
@@ -1491,13 +1583,14 @@ impl PodClient {
         let authenticated = host.id.to_string();
         let frame = encode_request_v2(request)?;
         let digest = request_digest(&frame);
+        let (budget, bound_by) = request_budget(self.request_timeout, request.address.as_ref())?;
         let response = tokio::time::timeout(
-            self.request_timeout,
+            budget,
             self.transport
                 .request(host, ALPN_PODWIRE, &frame, MAX_FRAME_BYTES),
         )
         .await
-        .map_err(|_| PodWireError::Transport("the host did not answer in time".to_owned()))?
+        .map_err(|_| timeout_error(bound_by))?
         .map_err(PodWireError::Transport)?;
         let answered = decode_answer_v2(&response)?;
         if answered.responder != authenticated {

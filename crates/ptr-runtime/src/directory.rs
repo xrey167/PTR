@@ -141,7 +141,7 @@ impl PodDirectory for InMemoryPodDirectory {
             output_type,
             trace_id: "directory".into(),
             request_id: "directory-resolve".into(),
-            deadline: ptr_types::Timestamp(0),
+            deadline: constraints.deadline.unwrap_or(ptr_types::Timestamp(0)),
             hop_limit: 16,
             visited: Vec::new(),
             placement_epoch: endpoint.endpoint_epoch,

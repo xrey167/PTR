@@ -47,6 +47,7 @@ fn directory_resolves_logical_address_to_current_endpoint() {
                 zone: None,
                 required_vram_bytes: Some(1024),
                 min_epoch: Some(2),
+                deadline: None,
             },
         )
         .unwrap();
@@ -116,4 +117,27 @@ fn directory_rejects_stale_or_conflicting_rebinds() {
         )
         .unwrap();
     assert_eq!(route.fencing_token, 3);
+}
+
+#[test]
+fn resolved_route_carries_the_callers_deadline_instead_of_a_placeholder() {
+    let endpoint = endpoint(2);
+    let address = endpoint.pod.clone();
+    let mut directory = InMemoryPodDirectory::default();
+    directory.register(endpoint).unwrap();
+    let constraints = RouteConstraints {
+        capability: Some("infer".into()),
+        input_type: Some("tokens".into()),
+        deadline: Some(ptr_types::Timestamp(1_800_000_000_000)),
+        ..RouteConstraints::default()
+    };
+    let route = directory.resolve(&address, &constraints).unwrap();
+    assert_eq!(route.deadline, ptr_types::Timestamp(1_800_000_000_000));
+
+    let without = RouteConstraints {
+        deadline: None,
+        ..constraints
+    };
+    let route = directory.resolve(&address, &without).unwrap();
+    assert_eq!(route.deadline, ptr_types::Timestamp(0));
 }
