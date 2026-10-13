@@ -268,7 +268,7 @@ end, not a field of the frame.
 Each follows `docs/architecture/19-research-method.md` and AGENTS.md section 3: a baseline, an
 ablation, a sensitivity control and a refutation rule, registered with `scripts/new_experiment.py`. None is registered yet, and none has an id:
 the names below are working titles, and an id is assigned at registration (`L002`, `L003`
-are taken; `E009` to `E012` are reserved by [41](41-pod-data-plane.md) for its experiments).
+are taken; `E009` to `E013` are reserved by [41](41-pod-data-plane.md) for its experiments).
 
 | Id (proposed) | Claim | Baseline / ablation | Refuted if | CPU or GPU |
 |---|---|---|---|---|
@@ -278,8 +278,8 @@ are taken; `E009` to `E012` are reserved by [41](41-pod-data-plane.md) for its e
 | rack-kv-scope (mechanism) | Rack-scoped prefix sharing admits exactly the cross-request hits of the global scope for requests in one rack and none across racks, with the fencing and dependency rules of doc 36 unchanged | global sharing (ablation); sensitivity: a planted cross-rack request must be refused | a cross-rack hit, a lost in-rack hit, or any doc 36 safety counter above 0 (stale-entry admissions, cross-principal or cross-project hits, hits after a dependency invalidation); doc 36 coverage counters must instead be above 0 for the run to be valid | CPU |
 
 In every row the "Refuted if" column applies to the **unperturbed claim cells** only. Each
-ablation and planted sensitivity cell is expected to fail in the named way (`locality = None`
-admits the too-far placement, per-Pod placement leaves the survivor, the injected delay reorders
+ablation and planted sensitivity cell is expected to fail in the named way (the
+enforcement-disabled mutation admits the too-far placement, per-Pod placement leaves the survivor, the injected delay reorders
 the class, global sharing produces the cross-rack hit, the planted request or placement is
 refused) and is judged only on whether that expected outcome was observed; a control that does
 not show it makes the run invalid (the harness is blind), never falsified.
