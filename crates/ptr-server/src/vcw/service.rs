@@ -808,6 +808,7 @@ impl VcwService {
                 id.as_bytes(),
                 job.statement.as_bytes(),
                 kind.as_str().as_bytes(),
+                &job.criteria,
             ]),
             required: VerificationLevel::Deterministic,
             budget: self.budget,
