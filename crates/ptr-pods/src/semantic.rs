@@ -1,9 +1,10 @@
 use crate::ProtocolBinding;
 use ptr_types::{
-    ArtifactId, CapabilityId, Digest, Generation, NamespaceId, PodId, PodIdentity, PrincipalId,
-    ProjectId, TypeId,
+    ArtifactId, CapabilityId, ClusterKey, Digest, Generation, NamespaceId, PodId, PodIdentity,
+    PodIdentityDescriptor, PrincipalId, ProjectId, TypeId, POD_IDENTITY_SCHEMA_VERSION,
 };
 use sha2::{Digest as ShaDigest, Sha256};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum PodKind {
@@ -73,6 +74,10 @@ pub struct PodSemanticManifest {
     pub kind: PodKind,
     pub semantic_role: String,
     pub domain: String,
+    /// Hard predicate of the pod, part of its value-free identity.
+    pub predicate: Option<String>,
+    /// Alternative names the pod answers to, part of its value-free identity.
+    pub aliases: BTreeSet<String>,
     pub capabilities: Vec<CapabilityId>,
     pub accepts: Vec<TypeId>,
     pub produces: Vec<TypeId>,
@@ -116,7 +121,35 @@ impl PodSemanticManifest {
         {
             return Err(ManifestError::ModelVariantRequired);
         }
+        let descriptor = self.identity_descriptor();
+        descriptor
+            .validate()
+            .map_err(|_| ManifestError::InvalidIdentityDescriptor)?;
+        let derived = descriptor.identity();
+        if self.pod_identity != derived {
+            return Err(ManifestError::IdentityMismatch {
+                expected: derived,
+                actual: self.pod_identity.clone(),
+            });
+        }
         Ok(())
+    }
+
+    /// The hard semantics `pod_identity` is derived from. Contains no artifact, generation or
+    /// other value field, so retraining a pod does not change it.
+    pub fn identity_descriptor(&self) -> PodIdentityDescriptor {
+        PodIdentityDescriptor {
+            schema_version: POD_IDENTITY_SCHEMA_VERSION,
+            domain: self.domain.clone(),
+            kind: format!("{:?}", self.kind),
+            predicate: self.predicate.clone(),
+            semantic_role: self.semantic_role.clone(),
+            aliases: self.aliases.clone(),
+        }
+    }
+
+    pub fn cluster_key(&self) -> ClusterKey {
+        self.identity_descriptor().cluster_key()
     }
 
     pub fn digest(&self) -> Result<Digest, ManifestError> {
@@ -180,6 +213,10 @@ impl PodSemanticManifest {
         put!(format!("{:?}", self.kind));
         put!(self.semantic_role);
         put!(self.domain);
+        put!(format!("{:?}", self.predicate));
+        for item in &self.aliases {
+            put!(item);
+        }
         for item in &capabilities {
             put!(item);
         }
@@ -221,4 +258,9 @@ pub enum ManifestError {
     InvalidResources,
     ActiveWithoutProtocol,
     ModelVariantRequired,
+    InvalidIdentityDescriptor,
+    IdentityMismatch {
+        expected: PodIdentity,
+        actual: PodIdentity,
+    },
 }

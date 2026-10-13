@@ -1,7 +1,7 @@
 use ptr_pods::{
     merge_hypotheses, ArtifactLifecycle, ConnectionScope, DeliveryMode, DuplexSession,
-    EgressPolicy, ExecutionManifest, LifecycleGate, LineageBinding, MessagePattern, ModelVariant,
-    PodCache, PodCacheKey, PodHypothesis, PodKind, PodLink, PodOutput, PodOutputKind,
+    EgressPolicy, ExecutionManifest, LifecycleGate, LineageBinding, ManifestError, MessagePattern,
+    ModelVariant, PodCache, PodCacheKey, PodHypothesis, PodKind, PodLink, PodOutput, PodOutputKind,
     PodResourceProfile, PodSemanticManifest, PodTurnEvent, ProtocolBinding, SemanticPodLifecycle,
 };
 use ptr_protocol::TypedPayload;
@@ -27,9 +27,9 @@ fn revision_address(generation: Generation) -> PodRevisionAddress {
 }
 
 fn manifest() -> PodSemanticManifest {
-    PodSemanticManifest {
+    let mut manifest = PodSemanticManifest {
         pod_id: PodId::from("pod"),
-        pod_identity: PodIdentity::from("pod:stable"),
+        pod_identity: PodIdentity::from("derived-below"),
         project: ProjectId::from("project"),
         namespace: NamespaceId::from("ns"),
         generation: Generation(1),
@@ -37,6 +37,8 @@ fn manifest() -> PodSemanticManifest {
         kind: PodKind::LanguageModel,
         semantic_role: "reader".into(),
         domain: "reasoning".into(),
+        predicate: Some("answers".into()),
+        aliases: ["reader pod".to_owned(), "reasoner".to_owned()].into(),
         capabilities: vec![CapabilityId::from("infer")],
         accepts: vec![TypeId::from("prompt")],
         produces: vec![TypeId::from("answer")],
@@ -57,7 +59,9 @@ fn manifest() -> PodSemanticManifest {
         }],
         principals: vec![PrincipalId::from("local")],
         lifecycle: SemanticPodLifecycle::Active,
-    }
+    };
+    manifest.pod_identity = manifest.identity_descriptor().identity();
+    manifest
 }
 
 fn event(sequence: u64) -> PodTurnEvent {
@@ -88,6 +92,72 @@ fn semantic_manifest_is_immutable_and_digest_bound() {
     changed.capabilities.push(CapabilityId::from("other"));
     assert_ne!(changed.digest().unwrap(), digest);
     assert!(matches!(changed.validate(), Ok(())));
+}
+
+#[test]
+fn value_changes_alter_the_digest_but_not_identity_or_cluster_key() {
+    let base = manifest();
+    let mut retrained = base.clone();
+    retrained.artifact_id = ArtifactId::from("artifact-2");
+    retrained.generation = Generation(2);
+    assert_ne!(retrained.digest().unwrap(), base.digest().unwrap());
+    assert_eq!(
+        retrained.identity_descriptor().identity(),
+        base.pod_identity
+    );
+    assert_eq!(retrained.cluster_key(), base.cluster_key());
+    assert_eq!(retrained.validate(), Ok(()));
+}
+
+#[test]
+fn role_and_alias_changes_require_a_new_identity() {
+    let base = manifest();
+
+    let mut role = base.clone();
+    role.semantic_role = "writer".into();
+    assert!(matches!(
+        role.validate(),
+        Err(ManifestError::IdentityMismatch { .. })
+    ));
+    role.pod_identity = role.identity_descriptor().identity();
+    assert_eq!(role.validate(), Ok(()));
+    assert_ne!(role.pod_identity, base.pod_identity);
+    assert_ne!(role.cluster_key(), base.cluster_key());
+
+    let mut alias = base.clone();
+    alias.aliases.insert("thinker".into());
+    assert!(matches!(
+        alias.validate(),
+        Err(ManifestError::IdentityMismatch { .. })
+    ));
+    alias.pod_identity = alias.identity_descriptor().identity();
+    assert_eq!(alias.validate(), Ok(()));
+    assert_ne!(alias.pod_identity, base.pod_identity);
+    assert_eq!(alias.cluster_key(), base.cluster_key());
+}
+
+#[test]
+fn a_hand_written_pod_identity_is_rejected_with_expected_and_actual() {
+    let mut forged = manifest();
+    let expected = forged.pod_identity.clone();
+    forged.pod_identity = PodIdentity::from("pod:stable");
+    assert_eq!(
+        forged.validate(),
+        Err(ManifestError::IdentityMismatch {
+            expected,
+            actual: PodIdentity::from("pod:stable"),
+        })
+    );
+}
+
+#[test]
+fn an_empty_alias_is_an_invalid_identity_descriptor() {
+    let mut invalid = manifest();
+    invalid.aliases.insert(String::new());
+    assert_eq!(
+        invalid.validate(),
+        Err(ManifestError::InvalidIdentityDescriptor)
+    );
 }
 
 #[test]

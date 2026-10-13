@@ -5,6 +5,7 @@ mod codebook;
 mod confidence;
 mod mesh;
 mod pod_address;
+mod pod_identity;
 mod slot_encoding;
 mod validity_mask;
 pub use checkpoint::{CheckpointError, CheckpointHeader, TableSize, FORMAT_V2, FORMAT_V3};
@@ -17,6 +18,9 @@ pub use mesh::{MeshTunnelEventKind, MeshTunnelLifecycleEvent};
 pub use pod_address::{
     FrameKind, MeshEndpointBinding, MeshRouteKind, PodAddress, PodEndpoint, PodHeader,
     PodRevisionAddress, PodRoute, PodTransport, ResolveError, RouteConstraints,
+};
+pub use pod_identity::{
+    ClusterKey, PodIdentityDescriptor, PodIdentityError, POD_IDENTITY_SCHEMA_VERSION,
 };
 pub use slot_encoding::{
     EncodingError, EncodingVersion, SlotEncoding, SlotVector, MAX_PAYLOAD_BYTES, MAX_SLOT_WIDTH,
