@@ -88,8 +88,15 @@ TensorHandle {
 }
 ```
 
-The first implementation (codec v1) carries no `input_lineage`; it is added together with the
-E008 frame fields, and until then a handle carries exactly the lineage of an ActivationFrame v1.
+The codec v1 handle carries no `input_lineage`. Input lineage is instead **owned by the
+authority**: `parent_operation_id` names an operation the authority process started and recorded,
+including the generation of every semantic, memory and derived input that operation read, and
+admission and consumption both ask the authority whether every one of those inputs is still live
+at the current committed anchor. A handle whose operation is unknown, or whose operation read an
+input that has since been revoked or superseded, is refused, and the locator is never released.
+This keeps the stale-generation invariant without trusting a worker to report its own lineage.
+The E008 frame fields (`input_lineage`, `mode`, `taint`) may later be carried in the handle as
+well; the authority check stays either way.
 
 Rules, each the same as the one already enforced for frames and KV pages, restated for handles:
 
