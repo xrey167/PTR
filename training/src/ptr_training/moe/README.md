@@ -363,7 +363,9 @@ A full fine-tune records `adapter_sha256: null`.
 `python -m ptr_training.preflight --config <stage.toml>` (written to `training/runs/preflight/`)
 whose `protocol_sha256` (config file), `runner_sha256` (all `ptr_training` sources) and `device`
 (`cpu` or `cuda:<gpu name>`) equal the run's. `--allow-missing-preflight` waives it for
-`pipeline-smoke` runs only.
+`pipeline-smoke` runs only. The record file stays local (`training/runs/` is ignored); the run
+manifest and `metrics.json` carry `preflight = {status, record_sha256, device}` (or `waived`), and a
+refused run writes no manifest.
 
 ## M011 routed PEFT
 

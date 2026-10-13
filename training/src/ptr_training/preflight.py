@@ -14,6 +14,11 @@ the run it is about to make. A record from another config, another version of th
 or another GPU proves nothing about this run. The one exception is a run whose evidence
 class is `pipeline-smoke`, and only when `--allow-missing-preflight` is passed.
 
+Records live in `training/runs/preflight/`, which is ignored like every run artifact: the
+record stays local and only its `record_sha256` is versioned, in the run manifest and in
+`metrics.json`. `run.py` resolves the record before it writes the manifest, so a refused run
+leaves no manifest.
+
 The record logic here is plain Python and needs no torch; only `run_probe` does.
 """
 

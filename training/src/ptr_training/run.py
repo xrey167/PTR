@@ -229,31 +229,48 @@ def require_preflight_for(
         raise SystemExit(f"refusing training execution: {error}") from error
 
 
-def _execute_trl_moe(
-    manifest: dict, config_path: Path, *, allow_missing_preflight: bool = False
-) -> int | str:
-    """Dispatch the `trl-moe` backend; heavy dependencies are imported lazily."""
+def resolve_trl_moe_preflight(
+    manifest: dict, config_path: Path, *, allow_missing: bool
+) -> dict:
+    """The preflight binding recorded in the manifest for a `trl-moe` execution.
+
+    Refuses (SystemExit) when no record matches, before any manifest is written. When the
+    `moe` extra is missing the device cannot be identified; the binding says so and
+    `_execute_trl_moe` then reports the missing extra.
+    """
     from ptr_training.moe import config as moe_config
+    from ptr_training.moe import pipeline
+
+    try:
+        pipeline.require_extra()
+    except pipeline.MissingExtraError:
+        return {"status": "unavailable", "reason": "the moe extra is not installed"}
+    device = preflight_record.current_device_identity(moe_config.load(config_path).model.device)
+    record = require_preflight_for(
+        manifest,
+        device=device,
+        evidence_class=pipeline.EVIDENCE_CLASS,
+        allow_missing=allow_missing,
+    )
+    if record is None:
+        return {
+            "status": "waived",
+            "reason": "--allow-missing-preflight on a pipeline-smoke run",
+            "device": device,
+        }
+    return {"status": "matched", "record_sha256": record["record_sha256"], "device": device}
+
+
+def _execute_trl_moe(manifest: dict, config_path: Path) -> int | str:
+    """Dispatch the `trl-moe` backend; heavy dependencies are imported lazily."""
     from ptr_training.moe import pipeline
 
     try:
         pipeline.require_extra()
     except pipeline.MissingExtraError as error:
         return str(error)
-    device = preflight_record.current_device_identity(
-        moe_config.load(config_path).model.device
-    )
-    record = require_preflight_for(
-        manifest,
-        device=device,
-        evidence_class=pipeline.EVIDENCE_CLASS,
-        allow_missing=allow_missing_preflight,
-    )
-    manifest["preflight"] = (
-        {"status": "waived", "reason": "--allow-missing-preflight on a pipeline-smoke run"}
-        if record is None
-        else {"status": "matched", "record_sha256": record["record_sha256"], "device": device}
-    )
+    if (manifest.get("preflight") or {}).get("status") not in {"matched", "waived"}:
+        raise SystemExit("refusing training execution: the manifest carries no preflight binding")
     metrics_path = pipeline.run(manifest, config_path)
     try:
         print(metrics_path.relative_to(ROOT))
@@ -297,6 +314,19 @@ def main() -> None:
             "note": "unselected backend, pipeline evidence only",
         }
 
+    manifest["preflight"] = {"status": "not_executed", "reason": "not executed"}
+    if (
+        args.execute
+        and manifest["config"]["training"].get("backend") == "trl-moe"
+        and not manifest["git_dirty"]
+        and manifest["config"]["training"].get("allow_unselected_backend") is True
+    ):
+        # Resolved before the manifest is written, so the file carries the binding. With no
+        # matching record the run is refused and no manifest is written.
+        manifest["preflight"] = resolve_trl_moe_preflight(
+            manifest, config_path, allow_missing=args.allow_missing_preflight
+        )
+
     write_manifest(out, manifest)
     print(out.relative_to(ROOT))
 
@@ -320,13 +350,7 @@ def main() -> None:
                 )
             except moe_config.BackendNotSelected as error:
                 raise SystemExit(str(error)) from error
-            raise SystemExit(
-                _execute_trl_moe(
-                    manifest,
-                    config_path,
-                    allow_missing_preflight=args.allow_missing_preflight,
-                )
-            )
+            raise SystemExit(_execute_trl_moe(manifest, config_path))
         raise SystemExit(f"training backend {backend!r} is not implemented yet")
 
 

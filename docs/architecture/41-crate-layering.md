@@ -46,6 +46,20 @@ The table records what the graph is, not what an earlier sketch hoped for. `ptr-
 depends on `ptr-pods`, and `ptr-podwire` and `ptr-execwire` call `ptr-runtime`, so they sit
 above it. `ptr-lineage` has no `ptr-ledger` dependency by design, and the table keeps it that way.
 
+## Open items
+
+Places where the table records the graph as it is, and the target picture is still undecided:
+
+- `ptr-podwire` and `ptr-execwire` sit above `ptr-runtime` because they call it. Whether the
+  wire adapters should instead depend on a runtime-side port is open.
+- `ptr-state` sits above `ptr-pods`, which it depends on for pod types in projections.
+- `ptr-pg` shares the orchestration layer with `ptr-runtime` instead of sitting below it.
+- `ptr-bench -> tokio-postgres` is the one listed exception (see below).
+
+Later packages build on these choices. In particular `ptr-lineage` is a foundation crate with
+no `ptr-ledger` dependency, so adapter promotion proposals are committed by `ptr-runtime`, not
+by `ptr-lineage`.
+
 ## Exceptions are a ratchet
 
 A known violation is listed under `[[allowed_exception]]` with `from`, `to` and a reason.

@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import tomllib
@@ -217,56 +218,123 @@ class PreflightGateTests(unittest.TestCase):
         self.assertIn("only valid for evidence_class", str(caught.exception))
 
 
-class PreflightCliTests(unittest.TestCase):
-    def main_with(self, *flags):
-        manifest = {
-            "git_dirty": False,
-            "config_sha256": "c" * 64,
-            "config": {"training": {"backend": "trl-moe", "allow_unselected_backend": True}},
-        }
-        with tempfile.TemporaryDirectory() as tmp:
-            argv = ["run", "--config", str(STAGE), "--out", str(Path(tmp) / "m.json"), "--execute", *flags]
-            with mock.patch.object(sys, "argv", argv), mock.patch.object(
-                run_module, "build_manifest", return_value=manifest
-            ), mock.patch.object(run_module, "ROOT", Path(tmp)), mock.patch.object(
-                run_module, "_execute_trl_moe", return_value=0
-            ) as execute:
-                with self.assertRaises(SystemExit):
-                    run_module.main()
-        return execute
+class PreflightManifestTests(unittest.TestCase):
+    """The manifest file carries the preflight binding; a refused run writes none."""
 
-    def test_the_waiver_flag_reaches_the_executor_only_when_given(self):
-        self.assertFalse(self.main_with().call_args.kwargs["allow_missing_preflight"])
-        self.assertTrue(
-            self.main_with("--allow-missing-preflight").call_args.kwargs["allow_missing_preflight"]
-        )
+    def run_main(self, tmp, *flags, resolver=None, dirty=False, opt_in=True):
+        manifest = {
+            "git_dirty": dirty,
+            "config_sha256": "c" * 64,
+            "config": {"training": {"backend": "trl-moe", "allow_unselected_backend": opt_in}},
+        }
+        out = Path(tmp) / "m.json"
+        argv = ["run", "--config", str(STAGE), "--out", str(out), *flags]
+        patches = [
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(run_module, "build_manifest", return_value=manifest),
+            mock.patch.object(run_module, "ROOT", Path(tmp)),
+            mock.patch.object(run_module, "_execute_trl_moe", return_value=0),
+        ]
+        if resolver is not None:
+            patches.append(mock.patch.object(run_module, "resolve_trl_moe_preflight", resolver))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        try:
+            run_module.main()
+            code = None
+        except SystemExit as exit_:
+            code = exit_.code
+        return code, out
+
+    def test_without_execute_the_manifest_says_preflight_was_not_executed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out = self.run_main(tmp)
+            self.assertIsNone(code)
+            self.assertEqual(json.loads(out.read_text())["preflight"]["status"], "not_executed")
+
+    def test_the_manifest_file_carries_the_matched_binding(self):
+        binding = {"status": "matched", "record_sha256": "r" * 64, "device": "cpu"}
+        with tempfile.TemporaryDirectory() as tmp:
+            resolver = mock.Mock(return_value=binding)
+            code, out = self.run_main(tmp, "--execute", resolver=resolver)
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out.read_text())["preflight"], binding)
+            self.assertFalse(resolver.call_args.kwargs["allow_missing"])
+
+    def test_the_waiver_flag_reaches_the_resolver_and_the_waiver_is_recorded(self):
+        binding = {"status": "waived", "reason": "r", "device": "cpu"}
+        with tempfile.TemporaryDirectory() as tmp:
+            resolver = mock.Mock(return_value=binding)
+            _, out = self.run_main(tmp, "--execute", "--allow-missing-preflight", resolver=resolver)
+            self.assertTrue(resolver.call_args.kwargs["allow_missing"])
+            self.assertEqual(json.loads(out.read_text())["preflight"]["status"], "waived")
+
+    def test_a_refused_preflight_writes_no_manifest(self):
+        resolver = mock.Mock(side_effect=SystemExit("refusing training execution: no record"))
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out = self.run_main(tmp, "--execute", resolver=resolver)
+            self.assertIn("refusing training execution", str(code))
+            self.assertFalse(out.exists())
+
+    def test_a_dirty_tree_is_refused_without_resolving_preflight(self):
+        resolver = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out = self.run_main(tmp, "--execute", resolver=resolver, dirty=True)
+            self.assertIn("dirty", str(code))
+        resolver.assert_not_called()
+
+
+class ResolveBindingTests(unittest.TestCase):
+    def test_a_missing_extra_is_reported_not_guessed(self):
+        from ptr_training.moe import pipeline
+
+        with mock.patch.object(
+            pipeline, "require_extra", side_effect=pipeline.MissingExtraError("x")
+        ):
+            binding = run_module.resolve_trl_moe_preflight({}, STAGE, allow_missing=False)
+        self.assertEqual(binding["status"], "unavailable")
+
+    def test_the_executor_refuses_a_manifest_without_a_binding(self):
+        from ptr_training.moe import pipeline
+
+        with mock.patch.object(pipeline, "require_extra"), mock.patch.object(
+            pipeline, "run", side_effect=AssertionError("ran")
+        ):
+            for manifest in ({}, {"preflight": {"status": "not_executed"}}):
+                with self.assertRaises(SystemExit):
+                    run_module._execute_trl_moe(manifest, STAGE)
 
 
 @unittest.skipUnless(HAVE_STACK, "torch/trl/transformers/datasets/peft not installed (moe extra)")
-class PreflightExecutorTests(unittest.TestCase):
-    def test_the_executor_refuses_before_any_training_without_a_record(self):
-        from ptr_training.moe import pipeline
-
+class PreflightResolveTorchTests(unittest.TestCase):
+    def test_no_record_refuses_before_any_training(self):
         manifest = {"config_sha256": preflight.file_sha256(STAGE)}
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
             preflight, "PREFLIGHT_DIR", Path(tmp)
-        ), mock.patch.object(pipeline, "run", side_effect=AssertionError("ran")) as ran:
+        ):
             with self.assertRaises(SystemExit) as caught:
-                run_module._execute_trl_moe(manifest, STAGE)
-        ran.assert_not_called()
+                run_module.resolve_trl_moe_preflight(manifest, STAGE, allow_missing=False)
         self.assertIn("no preflight record matches", str(caught.exception))
 
-    def test_a_waived_smoke_run_proceeds_and_says_so(self):
-        from ptr_training.moe import pipeline
-
+    def test_a_waived_smoke_run_is_recorded_as_waived(self):
         manifest = {"config_sha256": preflight.file_sha256(STAGE)}
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
             preflight, "PREFLIGHT_DIR", Path(tmp)
-        ), mock.patch.object(pipeline, "run", return_value=Path(tmp) / "metrics.json"):
-            self.assertEqual(
-                run_module._execute_trl_moe(manifest, STAGE, allow_missing_preflight=True), 0
-            )
-        self.assertEqual(manifest["preflight"]["status"], "waived")
+        ):
+            binding = run_module.resolve_trl_moe_preflight(manifest, STAGE, allow_missing=True)
+        self.assertEqual(binding["status"], "waived")
+
+    def test_a_matching_record_is_recorded_by_hash_and_device(self):
+        manifest = {"config_sha256": preflight.file_sha256(STAGE)}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            preflight, "PREFLIGHT_DIR", Path(tmp)
+        ):
+            record = _preflight_record(manifest)
+            preflight.write_record(Path(tmp), record)
+            binding = run_module.resolve_trl_moe_preflight(manifest, STAGE, allow_missing=False)
+        self.assertEqual(binding["record_sha256"], record["record_sha256"])
+        self.assertEqual(binding["device"], "cpu")
 
 
 if __name__ == "__main__":
