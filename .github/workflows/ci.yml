@@ -142,6 +142,7 @@ jobs:
       - run: cargo +stable clippy -p ptr-ledger --features failpoints --all-targets --locked -- -D warnings
       - run: cargo +stable test -p ptr-ledger --features raft-engine-failpoints --test engine_failpoints --locked
       - run: cargo +stable clippy -p ptr-ledger --features raft-engine-failpoints --all-targets --locked -- -D warnings
+      - run: cargo +stable check -p ptr-ledger --features failpoints,raft-engine-backend --all-targets --locked
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend,failpoints --test raft_storage_crash --locked
       - run: cargo +stable clippy -p ptr-ledger --features raft-rs-backend,failpoints --all-targets --locked -- -D warnings
       - run: cargo +stable test -p ptr-bench --features ledger-experiments --locked l001

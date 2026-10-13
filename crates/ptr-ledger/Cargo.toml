@@ -7,7 +7,10 @@ publish = false
 
 [features]
 default = []
-failpoints = ["dep:fail", "fail/failpoints"]
+# Also switches on the vendored raft-engine's fail points when raft-engine-backend is on:
+# Cargo unifies the two features in a workspace build, and raft-engine's fail points need its
+# own `failpoints` feature for their imports.
+failpoints = ["dep:fail", "fail/failpoints", "raft-engine?/failpoints"]
 # Test-only: forwards to the vendored raft-engine's own `failpoints` feature so a
 # harness can hit `file_pipe_log::append`, `log_file::write::err` and
 # `log_fd::sync::err` while RaftEngineLedger appends. Instrumentation only.

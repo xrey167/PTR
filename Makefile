@@ -250,6 +250,7 @@ ci-lifecycle-failpoints:
 	cargo +stable clippy -p ptr-ledger --features failpoints --all-targets --locked -- -D warnings
 	cargo +stable test -p ptr-ledger --features raft-engine-failpoints --test engine_failpoints --locked
 	cargo +stable clippy -p ptr-ledger --features raft-engine-failpoints --all-targets --locked -- -D warnings
+	cargo +stable check -p ptr-ledger --features failpoints,raft-engine-backend --all-targets --locked
 	cargo +stable test -p ptr-ledger --features raft-rs-backend,failpoints --test raft_storage_crash --locked
 	cargo +stable clippy -p ptr-ledger --features raft-rs-backend,failpoints --all-targets --locked -- -D warnings
 	cargo +stable test -p ptr-bench --features ledger-experiments --locked l001
