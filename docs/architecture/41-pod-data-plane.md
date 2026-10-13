@@ -1,0 +1,298 @@
+# 41 — Pod data plane: a fenced zero-copy fabric in five stages
+
+Status: **plan, nothing implemented.** Companion of [40](40-pod-rack.md). Doc 40 asks where Pods
+may be placed; this document asks how tensors move between them once they are placed, and plans
+the software counterpart of what NVLink does in hardware: reaching another Pod's data without
+serialising it through the host, and treating GPU memory, host RAM, NVMe and remote hosts as one
+hierarchy with explicit, fenced transfers. What cannot be copied from NVLink is bandwidth and
+per-token latency, so the plan is bounded by doc 37 section 2: L1 token experts never cross a
+device; everything from a pipeline stage boundary upward may use this fabric.
+
+The plan is cut into the five stages the owner named, in the order they build on each other:
+
+| Stage | Topology | Carrier | Exists today |
+|---|---|---|---|
+| S1 | one host, several processes, zero or one GPU | shared memory and CUDA IPC handles | nothing; `TypedPayload` is `Vec<u8>` (`crates/ptr-protocol/src/lib.rs:17`) |
+| S2 | one host, several processes, several GPUs | device-to-device or via pinned host buffer | nothing; `CandleGpuTierBackend` is one device (`crates/ptr-pods/src/candle.rs:127`) |
+| S3 | host RAM as an offload tier | pinned host buffers with prefetch | `CpuTierBackend` (unpinned `BTreeMap`, `crates/ptr-storage/src/tier.rs:383`), `TierResidencyController`, `LookaheadPrefetchPolicy` (`crates/ptr-runtime/src/tier.rs:648`, `:1774`) |
+| S4 | NVMe as an offload tier | file-backed chunks, verify-on-read | `FileTierBackend` (`crates/ptr-storage/src/tier.rs:485`), the `PTRKVP3` page format, the RTX 4090 GPU→CPU→NVMe→GPU roundtrip (`docs/POD_MASTER_PLAN.md`, section "Multi-Tier-Speicherhierarchie") |
+| S5 | several hosts | signed chunking over Iroh QUIC | `chunk_frame`, `FrameAssembler` (`crates/ptr-podwire/src/chunk.rs:834`, `:301`), `ActivationFrame` (`crates/ptr-protocol/src/activation.rs:107`), downstream admission in `split_stage` (`crates/ptr-runtime/src/split_stage.rs`); E007 completed in process, E008 planned |
+
+The thing every stage shares, and the reason this is one plan rather than five, is section 1.
+Whether the plan is worth building, stage by stage, is section 7; the short answer is that S1,
+S3 and S4 pay for themselves on the owner's one-GPU machine, S2 is mostly S3 on that machine, and
+S5 is the already-planned E008.
+
+## 1. The one contract: a handle is a fenced payload
+
+Today a Pod call carries `TypedPayload { type_id, bytes }`. A zero-copy fabric replaces the
+bytes with a **handle** when sender and receiver share a carrier, and keeps the bytes as the
+fallback carrier. The handle is not a pointer; it is a claim that is admitted like a frame:
+
+```text
+TensorHandle {
+  carrier:      Carrier,                 // closed enum, section 2
+  locator:      CarrierLocator,          // shm name + offset, CUDA IPC handle + device, chunk digest, ...
+  shape, dtype, byte_len,
+  producer:     StageIdentity,           // pod, generation, manifest digest (as in ActivationFrame)
+  placement_epoch, fencing_token,        // captured at production, revalidated at every use
+  upstream_chain, input_lineage,         // as the v1 / E008 frame
+  deadline_ms,                           // after which the receiver must not touch it
+  handle_nonce,                          // single use
+}
+```
+
+Rules, each the same as the one already enforced for frames and KV pages, restated for handles:
+
+1. **Admission before access.** A receiver obtains memory only through
+   `split_stage`-style admission (`AdmittedFrame`, `UseTicket`, `crates/ptr-runtime/src/split_stage.rs:178`,
+   `:305`): principal registered for that stage identity, signature, `placement_epoch` equal to
+   the current placement, generation and manifest digest live, every dependency live at the
+   committed anchor. A handle that fails any check is refused; the memory is never mapped.
+   This keeps `docs/POD_MASTER_PLAN.md` row H ("kein Raw Pointer nach außen") true for every
+   carrier: the raw pointer exists only inside the admitted scope.
+2. **Single use with a deadline.** A handle is consumed once; the nonce is tombstoned like a
+   chunk id (`FrameAssembler`'s reservations and tombstones, `chunk.rs:301`). After the deadline
+   plus skew the sender may reclaim the buffer whether or not it was consumed.
+3. **Ownership stays with the producer until the consumer acknowledges.** The producer keeps the
+   buffer alive until `Consumed` or the deadline. A consumer that needs the data beyond that
+   copies it into its own tier object. No carrier has shared ownership.
+4. **A fence invalidates handles.** A placement epoch bump, a device revocation, a tray fence
+   (doc 40) or a dependency invalidation makes every handle of the old epoch unadmittable at
+   its next use, exactly as doc 36 section D cancels forks whose lineage includes an
+   invalidated generation. In-flight handles are not drained; they are refused.
+5. **The carrier is chosen by placement, never by the caller.** The runtime knows both
+   placements and picks the nearest carrier both ends support (section 2). A request cannot
+   name a carrier, as it cannot name an endpoint ([34](34-address-authority.md)).
+6. **Bytes are the universal fallback.** Every carrier can degrade to `Bytes` with the same
+   admission; a receiver that lacks a carrier is never stuck, only slower. P002 (section 6)
+   measures how much slower.
+
+Invariants kept: uncommitted state is never authoritative (a handle is derived, revision-bound
+data), queues are bounded (per-principal handle tables with the same caps as the assembler),
+effects pass the hard boundary (handles never cross `ptr-execwire`; they are Pod-to-Pod only),
+revoked generations cannot become usable after lag (rule 4).
+
+## 2. Carriers
+
+A closed enum, ordered from nearest to farthest, which is the `InterconnectClass` of doc 40 seen
+from the data side:
+
+| Carrier | When | Mechanism | Zero copies? |
+|---|---|---|---|
+| `InProcess` | same process | the tensor object itself (candle `Tensor` or a DLPack capsule across a language boundary) | yes |
+| `HostShm` | same host, other process, CPU tensor | `memfd` or a named shared mapping (`memmap2` is already in `Cargo.lock`), sealed read-only before the handle is sent | yes |
+| `CudaIpc` | same host, other process, same GPU | `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle` (`cudarc` is already in `Cargo.lock`); event handle for stream ordering | yes |
+| `DevicePeer` | same host, other GPU, peer access available | `cudaMemcpyPeer` on a stream, or direct peer mapping | one device-to-device copy |
+| `PinnedHost` | same host, other GPU, no peer access; and the RAM tier | GPU→pinned host→GPU with two stream-ordered copies; the pinned buffer is itself a `HostShm` region | two copies |
+| `NvmeFile` | the NVMe tier | file-backed chunk, verify-on-read, `O_DIRECT` where the platform allows | one read |
+| `Remote` | other host | `chunk_frame` over Iroh QUIC, `FrameAssembler` on the far side | one send, one reassembly |
+| `Bytes` | fallback | today's `TypedPayload` | copies |
+
+Two consequences of the owner's hardware. `DevicePeer` is **not available on an RTX 4090**:
+NVIDIA does not enable PCIe peer-to-peer on that card, so a second 4090 talks through
+`PinnedHost`. An RTX 3090 pair supports peer access over an NVLink bridge, which the owner's
+profile does not have (`hardware/dual-rtx3090.toml`, "PCIe only, no NVLink"); over plain PCIe,
+peer access on 3090s is driver-dependent and must be probed, not assumed. S2 therefore ships
+with `PinnedHost` as its working path and `DevicePeer` as a probed option.
+
+## 3. The stages
+
+### S1 — one host, several processes
+
+**Why first.** Everything after it needs a second process: a GPU worker that can crash without
+taking the authority process down, a Pod that is a different binary, a Python training process
+that reads the same tensors. Today every Pod of the reference path runs inside `ptrd`.
+
+**Build.**
+
+- A **Pod worker process** protocol on a Unix domain socket (Windows named pipe later): the
+  authority process spawns or admits a worker, the worker registers the stage identities it
+  serves with its signing key (the same registration the assembler already does per principal,
+  `chunk.rs:344`), and control messages are the existing PodWire request and response types.
+  Data goes by handle.
+- `HostShm` carrier: the producer allocates a sealed region, writes once, sends the handle over
+  the control socket; the consumer maps it read-only after admission, unmaps on `Consumed`.
+- `CudaIpc` carrier for a single GPU shared by two processes (the worker holds the model, the
+  authority process holds the verifier and admission; or two expert workers on one card).
+- The **authority rule of doc 40 section 2.3** becomes code: a worker holds no ledger handle and
+  no admission grant; every output it produces is admitted by the authority process.
+
+**Scope guard.** No scheduler, no multi-tenant isolation beyond process boundaries, no
+sandboxing (that is `ptr-exec` and row J of the master plan). One worker per Pod placement.
+
+### S2 — one host, several processes, several GPUs
+
+**Build.** `PodPlacementController` already models several devices per node
+(`NodeRecord.devices`, `crates/ptr-runtime/src/placement.rs:33`). S2 adds a per-host **carrier
+table**: for each ordered device pair, whether `DevicePeer` is available (probed once at node
+registration, recorded in the `DeviceRecord`, never assumed) and otherwise `PinnedHost`. The
+pipeline split of E007 gets its second half: stage k on device 0, stage k+1 on device 1, in two
+worker processes, frames carried by handle instead of bytes.
+
+**What it is not.** It is not tensor parallelism and not expert parallelism across devices at
+L1. A model that does not fit one device is split by **layers** between devices (pipeline), or
+its experts are **offloaded** (S3, S4), never dispatched per token across PCIe.
+
+### S3 — host RAM as an offload tier
+
+**Why it matters on one GPU.** A 24 GiB card holds OLMoE's experts (about 12 GiB bf16) but not
+a second base model, a large KV working set and several adapter sets at once. The master plan's
+Multi-Tier slice already moves **KV pages** GPU→CPU→NVMe→GPU with digests and a new fencing
+lease. S3 widens that to **expert and adapter weights** and makes the CPU tier real:
+
+- `PinnedHostTierBackend`: a `TierBackend` (`crates/ptr-storage/src/tier.rs:370`) over
+  page-locked memory with a fixed budget, so GPU↔RAM copies are asynchronous and
+  stream-ordered. `CpuTierBackend` (an unpinned map) stays as the test backend.
+- Expert weights as tier objects: `ModelWeightTierAdapter` (`crates/ptr-pods/src/tier_storage.rs:200`)
+  already binds weights to tier objects; S3 gives it a per-expert granularity so one expert can
+  be resident on the GPU while the others wait in RAM.
+- Prefetch by **routing lookahead**: the L1 router's top-k for the next layer is known before
+  the layer runs; `LookaheadPrefetchPolicy` (`crates/ptr-runtime/src/tier.rs:1774`) gets that
+  signal. At L2 the finding router's eligible set (doc 39) is the signal for which Pods'
+  adapters to warm.
+- Every object keeps the existing residency record, pins, dedupe, drain and replay; S3 adds no
+  new state kind.
+
+**Honest limit.** Offloaded experts cost a PCIe copy per use. Per-token expert offload is a
+bandwidth-bound regime where the known systems (DeepSpeed-Inference, FlexGen, llama.cpp
+offload) are ten to fifty times slower than resident weights. S3 is for **request-level** Pod
+weights, adapters and KV working sets. An experiment that offloads L1 experts per token is a
+different claim and is not in this plan.
+
+### S4 — NVMe as an offload tier
+
+**Build.** `FileTierBackend` exists and is replayed and verified. S4 makes it a real offload
+target rather than a durable copy: a **direct read path** (`O_DIRECT` and aligned buffers on
+Linux, unbuffered I/O on Windows, falling back to buffered reads), reads straight into a pinned
+host buffer so an NVMe→GPU move is one read and one copy, and a **residency plan** that keeps
+the chunks the lookahead names within one tier of the GPU. Object identity, chunk digests,
+AEAD on protected chunks and the `PTRKVP3` page format are unchanged.
+
+**What it is for.** Many Pods' weights and adapters, cold KV prefixes, and the pinned
+checkpoints of an experiment, on one machine. It is not a database and not a cache of
+authoritative state: the ledger stays where it is.
+
+### S5 — several hosts
+
+**Build.** This is E008 as registered (`experiments/registry.toml`, `E008`, planned): the
+signed chunking of `ptr-podwire::chunk` carried by `PodHost` and `PodClient` over Iroh QUIC
+between two `ptrd` instances, with the v1 frame's `placement_epoch` and the E008 fields
+(`input_lineage`, `mode`, `taint`). The data-plane contract of section 1 adds only that a
+`Remote` handle is the chunk digest plus the frame metadata, admitted by the same function as
+local handles. Cross-host **tier transfers** (a KV snapshot or an expert's weights moving from
+one host's RAM to another's) reuse `TierTransferAuthorization` (`crates/ptr-runtime/src/tier.rs:390`)
+and the chunk carrier; this is the Mooncake-like row of the master plan, section I, in its
+simplest form (QUIC, no RDMA).
+
+**Later, not here.** RDMA (RoCE or InfiniBand) as a second remote carrier; GPUDirect RDMA. Both
+need hardware the owner does not have and change nothing in the contract.
+
+## 4. Who owns what
+
+| Piece | Crate | Note |
+|---|---|---|
+| `Carrier`, `TensorHandle`, `CarrierLocator`, `HandleRejection` | `ptr-protocol` | next to `ActivationFrame`; schema-versioned like the frame |
+| handle admission, handle table, tombstones | `ptr-runtime::split_stage` | one function for every carrier; the frame path becomes the `Remote` carrier of it |
+| `HostShm`, `CudaIpc`, `DevicePeer`, `PinnedHost` carriers | new crate `ptr-fabric` | backend-specific code stays out of domain crates (`CLAUDE.md`: backend types must not leak); `cudarc` and `memmap2` live here behind features |
+| worker process protocol | `ptr-podwire` (control) and `ptr-fabric` (data) | reuses PodWire request and response types |
+| `PinnedHostTierBackend`, direct-read `FileTierBackend` | `ptr-storage` | behind features, CI jobs like `storage-tiers` |
+| carrier table per node, peer probe | `ptr-runtime::placement` | recorded in `DeviceRecord` |
+| per-expert weight tier objects, lookahead signal | `ptr-pods::tier_storage`, `ptr-runtime::tier` | |
+
+Every pull request: positive and negative tests (`docs/TESTING.md`), `component.toml` updated,
+`make docs`, and for `ptr-fabric` a CI job that runs without a GPU (shared memory and the
+`Bytes` fallback) plus a feature-gated GPU path that is admitted only on detected hardware
+(`docs/POD_MASTER_PLAN.md`, "Verifikation und Grenzen").
+
+## 5. Order and size
+
+1. **S1a** `ptr-protocol` handle types and the admission function with the `Bytes` and `HostShm`
+   carriers, two processes, no GPU. Small; CPU-only CI.
+2. **S1b** `CudaIpc` on one GPU, two processes. Needs the owner's machine for the record.
+3. **S3** `PinnedHostTierBackend` and per-expert weight objects with lookahead prefetch.
+   Medium; the GPU part needs the owner's machine.
+4. **S4** direct-read NVMe path and residency plan. Small on top of S3.
+5. **S2** carrier table, peer probe, two-device pipeline split in two workers. Needs two GPUs
+   for the record; the `PinnedHost` path is testable with one.
+6. **S5** E008 as registered, then cross-host tier transfer. Needs two hosts; the PTR-Research
+   LXD cluster is enough for the CPU part.
+
+S2 comes after S3 on purpose: on the owner's hardware S2's working carrier **is** S3's pinned
+buffer, so S3 builds the piece S2 needs.
+
+## 6. Experiments
+
+Mechanism checks first, each registered with `scripts/new_experiment.py`, each with a baseline,
+an ablation and a refutation rule (doc 19). Ids are proposals.
+
+| Id | Claim | Baseline / ablation | Refuted if | Needs |
+|---|---|---|---|---|
+| P002-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes 1 MiB to 1 GiB | `Bytes` at every size | the order is violated, or two adjacent carriers are within noise (then they merge in the type) | one GPU; two hosts for the last cell |
+| L003-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, no mapping outlives its deadline plus skew, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any mapping alive after reclaim, any byte leak across a crash, in any seed | CPU for `HostShm`; GPU for `CudaIpc` |
+| T002-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | LRU without lookahead; unpinned RAM | a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor | one GPU |
+| E008 (registered) | two-stage split across a socket and across two hosts, bit-identical to the in-process split | E007 in process | any output difference, any admission of a frame with a stale epoch | two hosts |
+
+None of these says the fabric makes a model better. The model-backed question (does
+request-level offload keep p95 latency of the doc 39 loop under a bound while holding N Pods on
+one card) is a later experiment on the F-series hardware plan and is not claimed here.
+
+## 7. Does it make sense, stage by stage
+
+- **S1: yes, now.** Process isolation of Pods is the missing half of "Pods leased via
+  typestate": today a Pod that panics takes the authority process with it. S1 is also the
+  precondition for a Python-side Pod and for every later stage, and it needs no GPU.
+- **S3 and S4: yes, on one GPU.** They are the only way to hold more than one base model,
+  several adapter sets and a large KV working set on a 24 GiB card, and three quarters of the
+  contracts exist. The risk is performance, and P002 and T002 measure it before anything
+  depends on it.
+- **S2: conditionally.** On one 4090 it has no effect. On two 4090s its working carrier is the
+  pinned buffer of S3. It becomes its own thing only with cards that have peer access.
+- **S5: yes, as E008**, already planned and registered; this document adds nothing to it but
+  the shared handle contract.
+- **What never makes sense here:** per-token expert dispatch across PCIe or a network, and a
+  claim that any of this is "NVLink". The fabric is a hundred times slower and carries typed,
+  fenced, lineage-bound payloads instead of bytes. The second property is the one PTR needs;
+  the first is the one it cannot have.
+
+## 8. Risks
+
+- **Platform code.** Shared memory, CUDA IPC, pinned allocation and direct I/O are four
+  platform surfaces, two of them with Windows variants the owner uses. `ptr-fabric` behind
+  features with a `Bytes` fallback is the mitigation; a carrier that cannot be built on a
+  platform is absent, never emulated.
+- **Lifetime bugs.** A mapping that outlives its handle is a use-after-free across processes.
+  Rule 3 (producer owns until acknowledged) and L003 are the mitigation; the admitted scope is
+  the only place a pointer exists.
+- **Consumer GPUs.** Peer access on 4090s is absent and driver patches that enable it are out
+  of scope; the plan never depends on it.
+- **Scope creep toward a serving engine.** vLLM, SGLang and Mooncake already move KV and weights
+  across tiers and hosts at scale. PTR's reason to build its own is the fenced, lineage-bound
+  admission at every hop, not throughput. If an experiment shows the admission can be kept with
+  an engine's data plane underneath (doc 36: "control plane in PTR, data plane in engines"), that
+  engine replaces S2 to S5 and this plan shrinks to S1 and the handle contract.
+
+## 9. Diagram
+
+```mermaid
+flowchart LR
+  subgraph H1["Host 1: one ptrd authority"]
+    A["ptrd: admission, verifier, fencing, ledger"]
+    W1["worker: stage 0..k on GPU 0"]
+    W2["worker: stage k..n on GPU 1"]
+    RAM[("pinned RAM tier")]
+    SSD[("NVMe tier")]
+    A -->|"control: PodWire on UDS"| W1
+    A -->|"control"| W2
+    W1 -->|"TensorHandle: CudaIpc / PinnedHost"| W2
+    W1 <-->|"offload, lookahead prefetch"| RAM
+    RAM <-->|"direct read, verify-on-read"| SSD
+  end
+  subgraph H2["Host 2"]
+    B["ptrd"]
+    W3["worker"]
+  end
+  W2 -->|"Remote: signed chunks over Iroh QUIC"| W3
+  A <-->|"raft"| B
+  A -.->|"every hop: admit handle (epoch, generation, digest, deps)"| W2
+```
