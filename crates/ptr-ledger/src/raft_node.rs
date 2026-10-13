@@ -10,8 +10,8 @@
 //! that delivers them by hand is not its business. That separation is what makes a
 //! partition testable without a timer: nothing here is driven by wall-clock time,
 //! so a test decides exactly which message arrives and which does not.
-use crate::raft_storage::{AppliedEvents, FileRaftStorage, StoragePoisoned};
-use crate::{decode_event, encode_event, integrity, CommittedEvent, LedgerEvent};
+use crate::raft_storage::{carries_ledger_event, AppliedEvents, FileRaftStorage, StoragePoisoned};
+use crate::{decode_event, encode_event, integrity, CommittedEvent, LedgerEvent, RetentionFloor};
 use ptr_types::CommitIndex;
 use raft::codec::Message as _;
 use raft::prelude::{
@@ -350,10 +350,38 @@ impl RaftNode {
     /// Recording a snapshot is what makes `Storage::snapshot` answerable, which is
     /// what lets a leader catch up a member it has compacted past — a leader with no
     /// recorded snapshot has nothing to send, and says so rather than inventing one.
+    ///
+    /// The floor is taken from this member's own log, so nothing here checks that a retained
+    /// snapshot backs the payload; a host that has one uses
+    /// [`RaftNode::record_snapshot_within`].
     pub fn record_snapshot(&mut self, index: u64, state: Vec<u8>) -> Result<(), String> {
         self.ensure_sound()?;
         let store = self.node.raft.raft_log.store.clone();
         let outcome = store.wl().record_snapshot(index, state);
+        outcome.map_err(|error| error.to_string())
+    }
+
+    /// [`RaftNode::record_snapshot`] bounded by the ledger's retention floor.
+    ///
+    /// `floor` is what the application's durable snapshot covers, in ledger events (for PTR,
+    /// `CompactedSnapshot::covers`). The log is discarded only through the raft index whose
+    /// prefix produced exactly that many events: a floor short of it is refused with
+    /// `PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR` (the entries between would be retained
+    /// nowhere), one past it with `PTR_RAFT_SNAPSHOT_FLOOR_MISMATCH` (a member installing the
+    /// payload would apply those events again), and a member holding an installed snapshot it
+    /// has not accounted for with `PTR_RAFT_SNAPSHOT_UNACCOUNTED`. The log makes the
+    /// conversion between the two numberings, since only it knows which raft indexes carried
+    /// no event. Every refusal leaves the files untouched. Whether `floor` is backed by a
+    /// retained artifact stays the host's claim.
+    pub fn record_snapshot_within(
+        &mut self,
+        index: u64,
+        state: Vec<u8>,
+        floor: RetentionFloor,
+    ) -> Result<(), String> {
+        self.ensure_sound()?;
+        let store = self.node.raft.raft_log.store.clone();
+        let outcome = store.wl().record_snapshot_within(index, state, floor);
         outcome.map_err(|error| error.to_string())
     }
 
@@ -657,7 +685,9 @@ impl RaftNode {
                     .map_err(|error| error.to_string())?;
                 continue;
             }
-            if entry.data.is_empty() || entry.get_entry_type() != EntryType::EntryNormal {
+            // The predicate snapshot recording counts by, so the ledger index assigned here and
+            // the retention floor checked there agree.
+            if !carries_ledger_event(&entry) {
                 continue;
             }
             if self.installed.is_some() {

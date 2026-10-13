@@ -1,5 +1,58 @@
-use ptr_net::{IrohTransport, ALPN_PODWIRE};
+use ptr_net::{IrohTransport, ALPN_EXEC, ALPN_PODWIRE, ALPN_RAFT};
 use tokio::sync::oneshot;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_endpoint_serving_every_declared_alpn_refuses_a_retired_one() {
+    // `ptr-blob/1` was declared and never spoken, and has been removed. An endpoint
+    // that serves every ALPN this crate still declares must not accept it: the
+    // handshake fails, and nothing reaches the application.
+    let server = std::sync::Arc::new(
+        IrohTransport::bind(&[ALPN_RAFT, ALPN_PODWIRE, ALPN_EXEC])
+            .await
+            .unwrap(),
+    );
+    let client = IrohTransport::bind(&[]).await.unwrap();
+    let address = server.direct_addr();
+
+    // The control first, against the same endpoint: a declared ALPN is served, so
+    // the refusal below is about the ALPN and not about this endpoint or client.
+    let serving = std::sync::Arc::clone(&server);
+    let served = tokio::spawn(async move {
+        let incoming = serving.accept_once(1024).await.unwrap();
+        assert_eq!(incoming.payload, b"ping");
+        incoming.respond(b"pong").await.unwrap();
+    });
+    let response = client
+        .request(address.clone(), ALPN_PODWIRE, b"ping", 1024)
+        .await
+        .expect("a declared ALPN is served");
+    assert_eq!(response, b"pong");
+    served.await.unwrap();
+
+    let listening = std::sync::Arc::clone(&server);
+    let delivered = tokio::spawn(async move {
+        // Whatever arrives, it must not arrive as a request.
+        matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                listening.accept_once(1024)
+            )
+            .await,
+            Ok(Ok(_))
+        )
+    });
+    client
+        .request(address, b"ptr-blob/1", b"ping", 1024)
+        .await
+        .expect_err("an ALPN with no contract is not negotiated");
+    assert!(
+        !delivered.await.unwrap(),
+        "a request on a retired ALPN must not reach the application"
+    );
+
+    client.close().await;
+    server.close().await;
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn direct_local_roundtrip_authenticates_peer_identity() {

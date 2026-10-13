@@ -416,9 +416,31 @@ no threshold or pass/fail verdict is invented here.
 per-arm RL logs (rewards, kl, clip ratio when logged, aux loss), greedy policy evaluation on
 held-out verifiable tasks per stage, routing metrics per layer per stage (entropy, load CV,
 dead experts, load), churn between stages (fraction of probe tokens whose top-k set changed),
-gate results or the skip reason, `nan_check`, `evidence_class`.
+gate results or the skip reason, `nan_check`, `evidence_class`, `integrity`, `adapter_sha256`.
 Both RL arms start from the same restored SFT state with the same seed, so their first
 generation batch is identical by construction.
+
+### Integrity, adapter and preflight
+
+`integrity` (`ptr_training.integrity`) records four properties, all fail-closed: `frozen_unchanged`
+(every `requires_grad=False` tensor bit-identical to the start of the run), `adapter_changed`
+(training moved the trainable tensors), `steps_exact` (`run_sft` and the GRPO trainer took exactly
+the configured number of optimizer steps) and `eval_identity_unchanged` (each policy evaluation
+leaves all weights bit-identical). A violation raises `IntegrityError`; `run_config` then writes
+`integrity-violation.json` instead of `metrics.json`. A full fine-tune has no frozen tensors, and
+`integrity.frozen_tensors` says so (0) instead of implying a check happened.
+
+LoRA runs save the adapter under `adapter/<stage>/` (`after_sft`, `after_rl_<algo>`);
+`adapters` lists each path with its SHA-256 and `adapter_sha256` is the final stage's digest.
+A full fine-tune records `adapter_sha256: null`.
+
+`python -m ptr_training.run --execute` needs a preflight record from
+`python -m ptr_training.preflight --config <stage.toml>` (written to `training/runs/preflight/`)
+whose `protocol_sha256` (config file), `runner_sha256` (all `ptr_training` sources) and `device`
+(`cpu` or `cuda:<gpu name>`) equal the run's. `--allow-missing-preflight` waives it for
+`pipeline-smoke` runs only. The record file stays local (`training/runs/` is ignored); the run
+manifest and `metrics.json` carry `preflight = {status, record_sha256, device}` (or `waived`), and a
+refused run writes no manifest.
 
 ## M011 routed PEFT
 
