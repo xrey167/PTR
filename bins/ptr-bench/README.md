@@ -45,7 +45,7 @@ the run vacuous) and `falsifiers` (a tripped one falsifies R005 on that seed). T
 is 1 when a prerequisite is unmet, a falsifier is tripped or a metric has neither a value nor a
 reason, and 2 when the harness cannot run a case. The constants of `r005/params.rs` mirror
 `config.toml` (a drift test fails on any difference); the values the file leaves open are listed
-in `r005/params.rs` under "chosen" and in the draft preregistration.
+in `r005/params.rs` under "chosen" and in the preregistration.
 
 ## S003 certified branches
 

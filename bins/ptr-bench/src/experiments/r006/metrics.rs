@@ -6,7 +6,7 @@
 //! prerequisite becomes `>= N`, every "> 0" violation becomes `<= 0`, every "!= x" violation
 //! becomes `== x`. A grouped metric has one rule per member, because the grammar has no
 //! quantifier: `reuse_attempts_per_shift.shift_64 >= 1`, `invalidation_matrix_stale_hits.<cell>
-//! <= 0`. The harness (not built yet) judges its own output with them, and a test pins
+//! <= 0`. The harness judges its own output with them, and a test pins
 //! `criteria.toml` to exactly these lists.
 //!
 //! Two rules compare two printed values instead of a literal, as the manifest does:

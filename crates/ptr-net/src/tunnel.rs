@@ -69,8 +69,9 @@ pub trait WireguardDevice: Send + Sync {
 }
 
 /// A userspace WireGuard executor.  The concrete device is injected so the
-/// same fenced lifecycle is used by boringtun/userspace, Linux kernel, Wintun,
-/// and macOS Network Extension adapters without putting platform APIs in PTR.
+/// same fenced lifecycle can serve boringtun/userspace, Linux kernel, Wintun
+/// and macOS Network Extension adapters without putting platform APIs in PTR;
+/// this crate ships two of them, `LinuxWireguardDevice` and `WintunDevice`.
 ///
 /// A lease keeps the profile it was admitted with for its whole life, so the
 /// fencing comparison stays stable across peer rotation. The peer that is

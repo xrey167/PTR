@@ -269,7 +269,7 @@ involved. Two suites, each proving the thing it can actually prove.
 ### Not a daemon
 
 There is no background loop, no timer and no retry policy in this crate. A caller
-drives `serve_once` and `dispatch`. That is a deliberate omission rather than an
+drives `serve_once`, `tick`, `campaign`, `propose` and `propose_membership`. That is a deliberate omission rather than an
 unfinished one: a loop in the wrong place makes scheduling implicit, and "when do we
 give up on a member that does not answer" is a policy decision, not a detail. It is
 also what keeps these tests free of sleeps.
