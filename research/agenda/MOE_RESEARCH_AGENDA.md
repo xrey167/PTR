@@ -168,6 +168,34 @@ killed. On the desktop, frozen GPU seeds run one at a time on card 0 unless the 
 `PTR_CUDA_DEVICE` (OD-3); card 1 is for pilots and tuning. "FLOPs" means the analytic forward
 (and, where trained, backward) FLOPs of the active parameters, counted by the harness, as in M011.
 
+**Decision structure (binding for every thesis below).** Each thesis has one *decision table*.
+It is closed: an outcome of the thesis can change only through a row of that table, and every
+quantity not in the table (secondary arms, ablations, other estimators, other ε, wall-clock) is
+**reported only** and can never support, narrow or drop a claim. The rules are applied in this
+order, and each event has exactly one outcome:
+
+1. **Validity gates** (accounting, integrity, hard counters, refusals). Any failure makes the run
+   **INVALID**: no row is judged and no claim changes. A hard counter above 0 is, in addition,
+   recorded as a product finding against the implementation (exit code 1), which is a report, not
+   a second outcome of the run.
+2. **Sensitivity controls** (positive and null). A failed control makes the run INVALID for every
+   row that names it; rows that do not name it are still judged.
+3. **Decisive rows**, each with a pre-declared margin and one-sided 95% bounds per confirmatory
+   seed (`docs/architecture/39-vcw-moe.md:575-579`): **supported** when the bound in the
+   favourable direction clears the margin in every seed; **refuted** only when the bound in the
+   unfavourable direction lies on the wrong side of the margin in every seed (the run could have
+   seen the effect and did not); **not shown** in every other case, including any interval that
+   overlaps the margin. Equivalence rows (a difference must lie *within* a band) are supported when
+   both bounds lie inside the band in every seed, refuted when one whole interval lies outside the
+   band in every seed, and not shown otherwise.
+4. **Thesis outcome**, a fixed function of the row outcomes given in each table.
+
+**Stage scoping.** A thesis about the OLMoE-class model is supported or refuted **only by its frozen
+GPU confirmatory stage**. A CPU stage is a harness check and a CPU-scoped result: its outcome is a
+go/no-go for spending GPU time and may be reported as a statement about the CPU toy only; a CPU
+"refuted" never falsifies the GPU thesis. A GPU pilot (seeds ≥ 1001) is only a go/no-go for the
+freeze and never yields a verdict.
+
 ### Thesis A — Failure-mode experts
 
 **Hypothesis.** For repair after a deterministic verifier rejects a candidate, experts
@@ -208,40 +236,45 @@ loop's budget and generation FLOPs are within 5%.
 (format + schema merged); vary the specialist rank at fixed total parameters (2 levels); repair
 budget 2 vs 4 verifier calls.
 
-**Metrics and pinned thresholds (proposed).**
+**Decision structure (proposed thresholds, frozen at preregistration).** Primary quantity:
+verified success within a budget of 4 verifier calls per task (accept predicate as in
+`Candidate::passes`: status Pass, no hard finding, weakest level at or above the required one),
+on 1,000 held-out tasks per seed; bounds are one-sided 95% bounds of a paired difference over
+tasks, per seed (the pilot checks power ≥ 0.8 at a true effect of +5 points).
 
-| Metric | Rule |
+*Validity gates (failure: run INVALID).*
+
+| Gate | Rule |
 |---|---|
-| Primary: verified success within a budget of 4 verifier calls per task (accept predicate as in `Candidate::passes`: status Pass, no hard finding, weakest level at or above the required one) | A3 − max(A0, A1, A2): one-sided 95% lower bound ≥ +3.0 points in every confirmatory seed (1,000 held-out tasks per seed; pilot checks power ≥ 0.8 at a true effect of +5) |
-| R2 control | A3 − A4 lower bound ≥ +3.0 points in every seed |
-| Accounting validity (INVALID if violated) | generation FLOPs of every arm within ±5% of A3; verifier calls per task exactly the budget; trainable parameters A1–A3 within ±1%; identical task ids and order across arms (digest recorded) |
-| Hard counters (implementation refuted if > 0) | false accepts, unverified returns, budget violations, collateral edits (JSON: every field not named by a finding pointer byte-identical; arithmetic: n/a; code: functions not named by a finding unchanged) |
-| Sensitivity | S+ shows A3 − A1 ≥ +3.0; S0 shows \|A3 − A1\| ≤ 1.5 |
-| Secondary (reported, not decisive) | A3 − A5, A3 − A6, wall-clock per accepted task, repairs per verifier call |
+| V-A1 accounting | generation FLOPs of every arm within ±5% of A3; verifier calls per task exactly the budget; trainable parameters A1, A2, A3 (and A6's router excluded) within ±1%; identical task ids and order across arms (digest recorded) |
+| V-A2 hard counters | false accepts, unverified returns, budget violations and collateral edits (JSON: every field not named by a finding pointer byte-identical; arithmetic: not applicable; code: functions not named by a finding unchanged) are all 0 |
+| V-A3 coverage | at least 2,000 training transitions for every failure role used by A3 |
 
-**Verdict rule (three-way, as in `docs/architecture/39-vcw-moe.md:575-579`).** Each decisive
-contrast D (A3 − A1, A3 − A0, A3 − A2, A3 − A4) is judged with its one-sided 95% bounds against
-the 3.0-point margin, per seed, after the validity and accounting checks have passed:
-**supported** when the lower bound is ≥ +3.0 in every seed; **refuted** only when the upper bound
-is below +3.0 in every seed with every guard and sensitivity control holding (the run had the power
-to see the margin and did not); **not shown** in every other case, in particular whenever an
-interval overlaps the margin in any seed. An invalid run (accounting, hard counter, or a failed
-sensitivity control) changes nothing. Thesis A is supported only if all four contrasts are
-supported; kill criteria fire only on **refuted**, never on not shown.
+*Sensitivity controls (failure: run INVALID for every row that names the control).*
 
-**Kill criteria (each on a refuted verdict).**
-- **K-A1**: A3 − A1 refuted → routing by failure class adds nothing over conditioning on the same
-  findings. Thesis A is dropped; claim 22 is refuted in this setting and claim 24(b) loses its only
-  non-published part.
-- **K-A2**: A3 − A0 refuted → R1 of doc 39 §6.2 triggers: verifier access, not the architecture,
-  carries the effect.
-- **K-A3**: A3 − A2 refuted → the failure-mode axis is not better than the domain axis; the "axis"
-  half of the thesis is dropped even if K-A1 does not fire.
-- **K-A4**: A3 − A4 refuted → finding routing carries no information (R2).
-- If A3 − A6 is refuted while A3 − A1 is supported: the *typed* code table is unnecessary; the
-  claim narrows to "routing by failure" and drops "typed".
-- A not-shown verdict on any contrast leaves the thesis open; a successor needs a new
-  preregistration with a power calculation from the observed variance (thresholds unchanged).
+| Control | Rule |
+|---|---|
+| S+ (positive) | in the F007 simulated heterogeneous-skill world run through the same harness: lower bound of A3 − A1 ≥ +3.0 in every seed |
+| S0 (null) | with codes relabelled so they carry no information: both bounds of A3 − A1 within [−1.5, +1.5] in every seed |
+
+*Decision table.*
+
+| Row | Contrast | Margin | Needs | If supported | If refuted | If not shown |
+|---|---|---|---|---|---|---|
+| D1 | A3 − A1 (routing vs conditioning) | +3.0 points | S+, S0 | counts toward SUPPORTED | **K-A1**: thesis REFUTED (routing by failure class adds nothing over conditioning) | thesis cannot be SUPPORTED |
+| D2 | A3 − A0 (vs best-of-N) | +3.0 points | S+ | counts toward SUPPORTED | **K-A2**: thesis REFUTED (doc 39 R1: verifier access carries the effect) | thesis cannot be SUPPORTED |
+| D3 | A3 − A2 (failure axis vs domain axis) | +3.0 points | S+ | keeps the "axis" sub-claim | **K-A3**: "axis" sub-claim dropped; the thesis can at most be SUPPORTED-NARROW | thesis can at most be SUPPORTED-NARROW |
+| D4 | A3 − A4 (true vs shuffled map) | +3.0 points | S+ | counts toward SUPPORTED | **K-A4**: thesis REFUTED (doc 39 R2) | thesis cannot be SUPPORTED |
+| D5 | A3 − A6 (typed code table vs learned router on raw report text) | +3.0 points | S+ | keeps the "typed" sub-claim | "typed" sub-claim dropped | "typed" is not asserted |
+
+*Thesis outcome.* **INVALID** if a gate fails. Otherwise **REFUTED** if D1, D2 or D4 is refuted
+(naming the row). Otherwise **SUPPORTED** if D1–D4 are all supported, and **SUPPORTED-NARROW**
+("failure-routed experts beat conditioning and resampling"; no axis claim) if D1, D2 and D4 are
+supported and D3 is not. Otherwise **NOT_SHOWN**; a successor then needs a new preregistration with
+a power calculation from the observed variance, thresholds unchanged. D5 never changes the thesis
+outcome; it only decides whether the word "typed" may appear in a supported claim, and if A6 is not
+in the preregistered arm set, D5 is not judged and "typed" is not asserted. A5 (scalar bandit), the
+ablations, wall-clock and repairs per verifier call are reported only.
 
 **Compute estimate (unmeasured; to be replaced by the step-2 memory measurement of
 docs/GPU_HANDOVER.md).** CPU stage: harness, S+ and S0 through the `ptr_py` loop simulation
@@ -260,18 +293,21 @@ plan (`experiments/feedback/F007-vcw-loop/`); F005's manifest as the record to s
 
 **Minimal decisive experiment.** JSON-schema and arithmetic tasks only (deterministic
 verifiers, collateral-edit check is exact), three failure roles (format, value, schema), arms A0,
-A1, A2, A3, A4, S0, 5 seeds. A2 here is the same parameter budget split into two domain experts
-(arithmetic, JSON), routed by task family. This is the smallest arm set on which the primary rule
-A3 − max(A0, A1, A2) and K-A1 to K-A4 can all be executed; A5, A6 and S+ are secondary and may
-follow in a successor.
+A1, A2, A3, A4 and both controls S+ and S0, 5 confirmatory GPU seeds. A2 here is the same parameter
+budget split into two domain experts (arithmetic, JSON), routed by task family. This is the smallest
+set on which every row D1–D4 and both controls they need can be judged. A6 is optional: without
+it, D5 is not judged and "typed" is not asserted. A5 may follow in a successor (reported only). The
+CPU stage of thesis A runs S+ and S0 through the same harness with simulated experts and is a
+go/no-go for the GPU stage only.
 
 ### Thesis B — Off-policy-auditable routing
 
 **Hypothesis.** A sparse MoE router can be made *off-policy evaluable* at negligible quality cost:
-if each MoE layer's top-k set is perturbed by a small, exactly logged exploration (one slot
-swapped with probability ε to a uniformly drawn non-selected expert, per token and layer), then a
-slate pseudoinverse or doubly robust estimator computed from ordinary traffic ranks candidate
-routers in the same order as running each candidate on-policy. If true, router changes (balancing
+if one routing decision per teacher-forced pass, at a declared MoE layer, is perturbed by a
+small, exactly logged exploration (one slot of its top-k set swapped with probability ε to a
+uniformly drawn non-selected expert), then a slate pseudoinverse estimator computed from such logs
+ranks candidate routers by their per-decision value in the same order as running each candidate
+on-policy (the estimand and the decision table below make this precise). If true, router changes (balancing
 schemes, post-training router updates, pruning-induced reroutes) can be evaluated and gated from
 logs, the way recommender systems evaluate rankers, instead of by retrain-and-benchmark; and
 "routing quality" becomes a measurable quantity rather than something inferred from load and
@@ -314,8 +350,7 @@ S, which lies in [0, 1] as `ope.rs` requires of rewards. For a candidate router 
   declared secondary.
 
 Sequence-level verified success (pass@1 on the pinned GSM8K slice with π routing every
-decision) is **secondary**: it is reported for every candidate and enters only the exploration-cost
-rule, never the primary τ_b or calibration rules.
+decision) is **reported only**: it enters no row of the decision table.
 
 **Logging plan.** Every target router's slate distribution must be computable on every logged
 context, so the candidate set is **frozen and shadow-scored during collection**: at each logged
@@ -335,29 +370,47 @@ preregistered size** (CPU 20,000 decisions; GPU 50,000 decisions per seed) colle
 snapshot, from contexts disjoint from the training cohort; a comparison whose evaluation cohort
 overlaps any candidate's training decisions is invalid. Each seed collects its own cohort once.
 
-**Ablations.** ε ∈ {0.02, 0.05, 0.10} (pre-declared); exploration in one layer vs all declared
+**Exploration rate.** One ε is declared per stage before the freeze (proposed: 0.05) and every
+row is judged at that ε only; there is no search over ε inside a confirmatory run.
+
+**Ablations (reported only).** ε ∈ {0.02, 0.10}; exploration in one layer vs all declared
 layers; estimator: IPS, SNIPS, PI, wPI, DM, DR; dense exploration (several explored decisions per
 pass, treating the others as context noise) as an explicitly approximate variant reported beside
 the exact one-decision-per-pass design.
 
-**Metrics and pinned thresholds (proposed).**
+**Decision structure (proposed thresholds, frozen at preregistration).** Every bound below is a
+one-sided 95% percentile bound from 2,000 bootstrap resamples per seed, resampling the logged
+exploration-cohort contexts (V̂ recomputed) and, independently, the on-policy evaluation contexts
+(V recomputed).
 
-| Metric | Rule |
+*Validity gates (failure: run INVALID).*
+
+| Gate | Rule |
 |---|---|
-| Primary: rank agreement between V̂ (wPI) and on-policy V over the candidate set | Kendall τ_b ≥ 0.80 in every confirmatory seed |
-| Calibration of the estimate | for every candidate, \|V̂ − V\| ≤ 0.25 × (max V − min V) over the candidate set |
-| Exploration cost (co-primary) | at the chosen ε: held-out loss increase ≤ 1% relative and verified pass@1 on the pinned GSM8K slice drop ≤ 0.5 points vs deterministic routing |
-| Superiority over the status quo | τ_b(OPE) − max(τ_b(routing statistics), τ_b(DM)) ≥ 0.15 |
-| Validity | candidates outside the logging support are refused and counted (the `ope.rs` positivity rule), never estimated; a refused candidate does not count as a rank error but more than 2 refusals out of 8 invalidates the run |
-| Sensitivity | synthetic world with an exactly additive reward: τ_b ≥ 0.95; placebo with shuffled propensities: τ_b ≤ 0.30 |
+| V-B1 support | at most 2 of the 8 candidates refused by the positivity rule of `ope.rs`; refused candidates are excluded from every row |
+| V-B2 cohorts | no evaluation-cohort decision overlaps any candidate's training cohort (`OpeError::OverlapsTraining` semantics); cohort size equals the preregistered size |
+| V-B3 logging | every logged decision has a shadow score for every non-refused candidate; μ(S_i \| c_i) recomputed from the stored router input equals the logged value |
 
-**Kill criteria.**
-- **K-B1**: τ_b < 0.80 in any seed at the largest ε that satisfies the cost bound → token-level OPE
-  of routers is not practical; thesis dropped.
-- **K-B2**: the smallest ε that reaches τ_b ≥ 0.80 violates the cost bound → it works only at a
-  price nobody would pay; thesis dropped as an engineering proposal, kept as a measurement result.
-- **K-B3**: routing statistics or the direct method alone come within 0.05 of OPE's τ_b → logging
-  propensities is unnecessary; thesis dropped.
+*Sensitivity controls (failure: run INVALID for every row that names the control).*
+
+| Control | Rule |
+|---|---|
+| SB+ (positive) | synthetic world with an exactly additive reward: lower bound of τ_b(wPI, V) ≥ 0.90 |
+| SB0 (placebo) | propensities shuffled across decisions: upper bound of τ_b ≤ 0.30 |
+
+*Decision table (all at the declared ε, wPI as the estimator).*
+
+| Row | Quantity | Margin | Needs | If supported | If refuted | If not shown |
+|---|---|---|---|---|---|---|
+| DB1 | τ_b between V̂ and V over the non-refused candidates | ≥ 0.80 (supported: lower bound ≥ 0.80; refuted: upper bound < 0.80) | SB+, SB0 | counts toward SUPPORTED | **K-B1**: thesis REFUTED (token-level OPE of routers does not rank correctly at this ε) | thesis cannot be SUPPORTED |
+| DB2 | calibration: max over candidates of \|V̂ − V\| / (max V − min V) | ≤ 0.25 (supported: upper bound ≤ 0.25; refuted: lower bound > 0.25) | SB+ | counts toward SUPPORTED | thesis REFUTED (estimates rank but are not usable as values) | thesis cannot be SUPPORTED |
+| DB3 | τ_b(wPI) − max(τ_b(routing statistics), τ_b(DM)) | ≥ 0.15 (supported: lower bound ≥ 0.15; refuted: upper bound < 0.15) | SB+, SB0 | counts toward SUPPORTED | **K-B3**: thesis REFUTED (logging propensities is unnecessary) | thesis cannot be SUPPORTED |
+| DB4 | exploration cost per logged decision: mean of (r(c, S_topk) − r(c, S_logged)) / r(c, S_topk) over the exploration-eligible decisions of the cohort (one per pass; the other decisions of the pass are not explored and do not enter the mean) | ≤ 1% (supported: upper bound ≤ 1%; refuted: lower bound > 1%) | none | counts toward SUPPORTED | **K-B2**: thesis REFUTED (the exploration costs more than the declared bound) | thesis cannot be SUPPORTED |
+
+*Thesis outcome.* **INVALID** if a gate fails. Otherwise **REFUTED** if any of DB1–DB4 is refuted
+(naming the row). Otherwise **SUPPORTED** if DB1–DB4 are all supported, else **NOT_SHOWN**. The
+cost conditional on an actual swap, DR/IPS/SNIPS/PI/DM estimates, sequence-level pass@1, dense
+exploration and the other ε values are reported only.
 
 **Compute estimate.** CPU stage: a tiny MoE (4 layers, 16 experts, top-2, built with
 `model.build_tiny_model` and trained on a synthetic verifiable task) – training about 1–2 CPU-h
@@ -379,11 +432,13 @@ point for exploration over routed LoRA experts; the base model's native router n
 hook, work package B1); M012's balancing arms as candidates; F003's matured-cohort and
 positivity rules as the logging contract.
 
-**Minimal decisive experiment.** CPU tiny MoE, exploration in the final MoE layer only, ε = 0.05,
-8 frozen, shadow-scored candidates, a training cohort then a fresh 20,000-decision exploration
-cohort per seed, wPI (primary) and DR against on-policy V, 5 seeds, with the additive-reward and
-shuffled-propensity controls. If it fails on CPU (where the model is small and the support is
-dense), the thesis is dead; if it passes, the GPU stage on OLMoE's final layer decides.
+**Minimal decisive experiment.** Stage 1 (CPU, go/no-go): tiny MoE, exploration in the final MoE
+layer only, ε = 0.05, 8 frozen, shadow-scored candidates, a training cohort then a fresh
+20,000-decision exploration cohort per seed, wPI against on-policy V, 5 seeds, with SB+ and SB0.
+Its outcome is a CPU-scoped result and decides only whether GPU time is spent; a CPU failure does
+not falsify the thesis about OLMoE. Stage 2 (GPU, decisive): the same design on the pinned OLMoE
+base's final MoE layer with 50,000-decision cohorts; only its frozen confirmatory seeds can support
+or refute the thesis.
 
 ### Thesis C — Lineage-closed revocation of experts
 
@@ -416,35 +471,63 @@ upcycled descendant, reactivated descendant}:
 - G_s: gold reference, the same schedule retrained without the revoked shard (two gold seeds, to
   measure the gold's own seed band);
 - P (positive leakage-sensitivity control, every seed): the frozen-shared-removal schedule with a
-  deliberately retained leak, i.e. the revoked shard's canaries are also inserted into a retained
-  shard's training data, so the "removed" model is known to have trained on them. It is scored
-  exactly like U_s against G.
+  deliberately retained leak for **both assays**: the revoked shard's canaries *and* its designated
+  MIA member examples (below) are also inserted into a retained shard's training data, so the
+  "removed" model is known to have trained on both. It is scored exactly like U_s against G.
 
-**Metrics and pinned thresholds (proposed).** Leakage is measured with planted canaries per shard
-(32 per shard, format with a randomness space of 10^6) using exposure (1802.08232, read) and a
-loss-threshold membership-inference AUC on held-out shard examples.
+**Assays.** (1) *Exposure* of 32 planted canaries per shard (format with a randomness space of
+10^6; 1802.08232, read). (2) *Loss-threshold membership inference*: AUC for separating a fixed,
+preregistered set of 500 designated **member** examples of the revoked shard (trained on by every
+non-gold arm) from 500 matched **non-member** examples of the same distribution that no arm ever
+trains on. Every comparison is gold-relative: Δexp(X) = exposure(X) − exposure(G), ΔAUC(X) =
+AUC(X) − AUC(G), Δutil(X) = utility(X) − utility(G) on retained shards. Bounds are one-sided 95%
+bounds per seed from a bootstrap over canaries (exposure) or over member and non-member examples
+(AUC) or over utility items.
 
-| Metric | Rule |
+**Decision structure (proposed thresholds, frozen at preregistration).**
+
+*Validity gates (failure: run INVALID).*
+
+| Gate | Rule |
 |---|---|
-| Problem existence (H-C1) | for at least two of the four mixing schedules, exposure(U_s) − exposure(G_s) ≥ 2.0 bits (one-sided 95% lower bound) and MIA AUC(U_s) ≥ 0.60, in every seed |
-| Negative control | frozen-shared removal: exposure(U) − exposure(G) ≤ 0.5 bits |
-| Positive sensitivity control | P: exposure(P) − exposure(G) ≥ 4.0 bits (one-sided 95% lower bound) and MIA AUC(P) ≥ 0.70, in every seed. If P misses this, the measurement cannot see a known leak: the run is INVALID for H-C1 and no null result on H-C1 may be reported or used for K-C1 |
-| Remedy (H-C2): "matches the gold retrain on the specified attacks and utility metrics" (no broader distributional claim) | exposure(L_s) − exposure(G_s) ≤ 0.5 bits and MIA AUC(L_s) ≤ 0.55 for every schedule, every seed; retained-shard utility of L_s within 1.0 point of G_s |
-| Cost | compute of L_s ≤ 50% of G_s (full retrain without the shard) |
-| Comparison with approximate unlearning | at equal compute, N_s has exposure ≥ L_s + 1.0 bits or utility ≤ L_s − 1.0 point |
-| Validity (checked first, before any falsifier or remedy rule) | the two gold retrains of every schedule and seed must agree within the 0.5-bit tolerance on canary exposure and within 0.02 on MIA AUC. If any pair differs by more, the **whole run is INVALID**: no H-C1, H-C2, K-C1, K-C2 or K-C3 judgement is made, and a successor must preregister a higher-precision gold (more gold seeds per schedule with the tolerance set from their band, or a larger canary set) before rerunning |
+| V-C1 gold precision (checked first) | the two gold retrains of every schedule and seed agree within 0.5 bits of exposure and 0.02 AUC; otherwise the whole run is INVALID and a successor must preregister a higher-precision gold (more gold seeds with the tolerance set from their band, or a larger canary and member set) |
+| V-C2 integrity | canary and member insertion manifests (counts, digests) match for every arm; members and non-members are disjoint and never trained on by G |
+| V-C3 negative control | frozen-shared removal U: upper bound of Δexp ≤ 0.5 bits and both bounds of ΔAUC within ±0.03 (removal is exact by construction there; a failure means the harness is biased) |
 
-**Kill criteria** (evaluated only on a valid run: gold agreement and the positive sensitivity
-control both pass).
-- **K-C1**: H-C1 fails on the frozen confirmatory seeds (no mixing schedule leaks measurably) and
-  the positive control P detected its leak in every seed → removing the expert is already a
-  sufficient deletion mechanism in practice; the lineage machinery has no measured privacy value
-  beyond FlexOlmo-style design; thesis dropped and reported as a negative result.
-- **K-C2**: closure cost ≥ full retrain (the closure cascades to everything, for example because the
-  router and shared layers depend on every shard) → lineage closure is correct but useless; thesis
-  dropped.
-- **K-C3**: N_s matches L_s on exposure and utility at equal or lower compute → approximate
-  unlearning suffices.
+*Sensitivity controls (failure: run INVALID for every row that names the control).*
+
+| Control | Rule |
+|---|---|
+| P-exp | lower bound of Δexp(P) ≥ 4.0 bits in every seed |
+| P-mia | lower bound of ΔAUC(P) ≥ 0.10 in every seed |
+
+*Decision table. s ranges over the four mixing schedules (shared-layer averaging, router
+fine-tune on mixed data, TIES-merged descendant, upcycled descendant); the reactivated
+descendant is reported only.*
+
+| Row | Quantity | Margin / band | Needs | Supported when | Refuted when |
+|---|---|---|---|---|---|
+| LEAK(s) | Δexp(U_s) and ΔAUC(U_s) | Δexp ≥ 2.0 bits **and** ΔAUC ≥ 0.05 | P-exp, P-mia | both lower bounds clear their margins in every seed | both upper bounds lie below their margins in every seed |
+| MATCH(L, s) | Δexp(L_s), ΔAUC(L_s), Δutil(L_s) | Δexp ≤ 0.5 bits; ΔAUC within ±0.03; Δutil within ±1.0 point | P-exp, P-mia | upper bound of Δexp ≤ 0.5 and both bounds of ΔAUC and of Δutil inside their bands, in every seed | in every seed, the lower bound of Δexp > 0.5, or the whole ΔAUC interval or the whole Δutil interval lies outside its band |
+| COST(L, s) | compute(L_s) / compute(G_s), measured by the harness (no interval) | ≤ 0.50 | none | ratio ≤ 0.50 in every seed | ratio > 0.50 in every seed (labelled **K-C2** when ≥ 1.0 in every seed: the closure cascades to a full retrain); mixed seeds are not shown |
+| MATCH(N, s) | the MATCH criteria applied to N_s at L_s's compute | as MATCH(L, s) | P-exp, P-mia | as MATCH(L, s), for N_s | as MATCH(L, s), for N_s |
+
+*Thesis outcome (one per part, then the claim).*
+- **Problem (H-C1).** SUPPORTED-BROAD if LEAK(s) is supported for at least two schedules;
+  SUPPORTED-NARROW if it is supported for exactly one schedule (a schedule-specific claim about
+  that schedule only); **REFUTED (K-C1)** only if LEAK(s) is refuted for **all four** schedules
+  (both positive controls held, so the measurement could see a leak); NOT_SHOWN otherwise.
+- **Remedy (H-C2)**, judged on the schedules S* for which LEAK(s) is supported: SUPPORTED if
+  MATCH(L, s) and COST(L, s) are supported for every s in S*; REFUTED if either is refuted for any
+  s in S*; NOT_SHOWN otherwise. Not judged if S* is empty.
+- **Superiority over approximate unlearning (H-C3)**, on S*: **REFUTED (K-C3)** if MATCH(N, s) is
+  supported for every s in S* (N matches the gold on exposure, AUC and utility at L's compute);
+  SUPPORTED if, for every s in S*, MATCH(N, s) is refuted while MATCH(L, s) is supported; NOT_SHOWN
+  otherwise.
+- **Claim 28** is SUPPORTED, scoped to S*, only if H-C1 is supported (broad or narrow) and H-C2 and
+  H-C3 are supported. If H-C1 is refuted the thesis is dropped and reported as a negative result; if
+  H-C1 is supported but H-C2 or H-C3 is refuted, the remedy part is dropped and the problem part
+  stands as a measurement result about S*.
 
 **Compute estimate.** CPU stage: tiny MoE, 4 shards, one revoked shard per seed, 6 schedules × (U,
 L, N, 2 G) ≈ 30 trainings per seed at about 0.3–0.5 CPU-h each ≈ 50–75 CPU-h for 5 seeds (days on
@@ -459,14 +542,13 @@ as `ptr_py.ties_merge`); `routed_peft.py` (PERFT-R / MixLoRA arms); `m011.py` tr
 `ptr-lineage`'s ForgettingGate for the utility side; M013's domain sequence and pinned corpora as
 shard sources.
 
-**Minimal decisive experiment.** CPU tiny MoE, schedules: frozen-shared removal (control),
-shared-layer averaging, router fine-tune on mixed data; arms U, G (two gold seeds) and the
-positive control P; 5 seeds. This decides H-C1 cheaply. Only if H-C1 holds is the remedy (L, N)
-built and run, first on CPU, then on GPU. A CPU *negative* on H-C1 is weak evidence (tiny models
-memorise differently) and never triggers K-C1 by itself. A GPU **pilot** (seeds ≥ 1001) after it is
-only a go/no-go for preparing the GPU confirmatory experiment; it never triggers K-C1. K-C1 can
-fire only on the frozen GPU confirmatory seeds, under the validity and positive-control rules
-above.
+**Minimal decisive experiment.** Stage 1 (CPU, go/no-go): tiny MoE, the negative control
+(frozen-shared removal), the four mixing schedules, arms U, G (two gold seeds) and P, 5 seeds. It
+yields a CPU-scoped H-C1 result and decides only whether remedy code (L, N) is built and GPU time is
+spent; a CPU null never triggers K-C1 (tiny models memorise differently). A GPU pilot (seeds ≥ 1001)
+is only a go/no-go for the freeze. Stage 2 (GPU, decisive): the same arms plus L and N on the pinned
+OLMoE base with LoRA experts per shard; only its frozen confirmatory seeds can support or refute
+H-C1, H-C2, H-C3 and claim 28.
 
 ### 3.4 How the three theses relate to the existing programme
 
@@ -531,7 +613,7 @@ files unless marked otherwise. A change under `crates/<crate>/src/**` also updat
 ### 4.4 Order
 
 1. **B1–B4 on CPU** (cheapest decisive test; can start now, no GPU, no Rust change).
-2. **C1, C2 (mixing schedules only), C4 (U and G only) on CPU** — decides H-C1 before any remedy
+2. **C1, C2 (mixing schedules only), C4 (U, G and P only) on CPU** — a CPU-scoped H-C1 go/no-go before any remedy
    code is written.
 3. **A1, A2** (dataset and parity; CPU; uses the `ptr_py` build that `scripts/setup_desktop.sh` already performs; X2 runs alongside and blocks nothing).
 4. **X0** on the owner's desktop, in parallel with 1–3.
@@ -564,13 +646,14 @@ counts as model evidence.
 
 ### Thesis B
 - **Linearity may be badly violated.** The reward is a non-linear function of the layer output;
-  the pseudoinverse estimator may be biased enough that DR's reward model does all the work, in
-  which case K-B3 triggers.
+  the pseudoinverse estimator may be biased enough that a direct reward model ranks as well, in
+  which case DB3 is refuted (K-B3).
 - **Positivity.** Single-slot exploration only supports routers within one swap per token under the
   set-level view; the slate estimator relies on per-expert marginal support plus additivity to
   reach further. Routers that differ in many slots per token may be refused or badly estimated.
-- **Cost.** Exploration in every layer may cost more than 1% loss; exploring only the final layer
-  limits what can be audited.
+- **Cost and scope.** The claim covers one explored decision per pass at a declared layer; whether
+  exploring every decision is affordable is not tested (reported only), and exploring only the
+  final layer limits what can be audited.
 - **Proxy competition.** If cheap routing statistics already rank routers well, logging
   propensities is unnecessary.
 - **Incremental reading.** Off-policy slate evaluation is a known method (1605.04812); the
@@ -642,15 +725,20 @@ counts as model evidence.
   best-of-N with the same verifier at matched verifier calls and FLOPs, than one parameter-matched
   repair expert that receives the same findings, and than the same budget split by task domain.
   Unproven."
-- **New claim 27 (thesis B)**, draft: "With single-slot exploration logged at every MoE routing
-  decision, slate off-policy estimators rank candidate routers in the same order as on-policy
-  evaluation (Kendall τ_b ≥ 0.80) at a quality cost of at most 1% held-out loss. Unproven."
-- **New claim 28 (thesis C)**, draft: "Removing an expert does not remove its training data's
-  influence once shared layers are averaged, the router is fine-tuned on mixed data, or the expert
-  is merged or upcycled; revocation over the transitive dependency closure brings the model back to
+- **New claim 27 (thesis B)**, draft: "When one routing decision per teacher-forced pass, at a
+  declared MoE layer, is logged with single-slot exploration at rate ε and exact propensities, a
+  slate off-policy estimator ranks candidate routers by their per-decision value (the teacher-forced
+  probability of the realized token, other decisions routed by the base router) in the same order
+  as on-policy evaluation (Kendall τ_b lower bound ≥ 0.80), at an exploration cost of at most 1%
+  relative drop in that probability per logged decision. Exploration at every routing decision is
+  not claimed. Unproven."
+- **New claim 28 (thesis C)**, draft, scoped to the schedules for which leakage is supported:
+  "Removing an expert does not remove its training data's influence once shared layers are
+  averaged, the router is fine-tuned on mixed data, or the expert is merged or upcycled; revocation over the transitive dependency closure brings the model back to
   a retrain without the data on the specified attacks (canary exposure and a loss-threshold
-  membership-inference test) and on retained-data utility, at less than half the cost of full
-  retraining. No broader indistinguishability is claimed. Unproven."
+  membership-inference test, both gold-relative) and on retained-data utility, at less than half the
+  cost of full retraining, where approximate unlearning at the same compute does not. No broader
+  indistinguishability is claimed. Unproven."
 
 ### 7.2 `research/novelty/PRIOR_ART_MATRIX.md`
 
