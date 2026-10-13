@@ -191,6 +191,17 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    descriptor, passed with `SCM_RIGHTS` through the supervisor, opened with
    `cuMemImportFromShareableHandle` and `cuMemMap`); `cuIpcGetMemHandle` cannot export a VMM
    allocation, so the two are distinct locator kinds.
+   A legacy IPC handle is a bearer capability: any process holding its 64 bytes can open it. So
+   every CUDA export is minted by the supervisor as an **export record** that names the export,
+   the producer session, the one consumer session and the operation it is for, and the
+   supervisor delivers the handle bytes or the VMM descriptor to that consumer itself. Admission
+   and consumption refuse a `CudaIpc` or `DevicePeer` handle unless its locator matches a live
+   export record for exactly that consumer session and operation; a worker that copies a
+   received locator into a newly signed handle for another worker is therefore refused, and the
+   only importers of an export are the recorded producer and consumer, which are the two domains
+   whose reap frees it. The VMM form is preferred where available, because its descriptor moves
+   only through `SCM_RIGHTS` via the supervisor and cannot be replayed from bytes; E009's GPU
+   cell adds a forwarded-locator arm that must be refused.
    Zero-copy use of a producer-owned device allocation is outside the authenticated-content
    guarantee and is not offered. `InProcess` has no kernel seal either, so it is zero-copy only
    when the producer **moves unique ownership** of an immutable buffer to the consumer for the
