@@ -139,10 +139,11 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    chunk id (`FrameAssembler`'s reservations and tombstones, `chunk.rs:301`). After the deadline
    plus skew the handle can no longer be admitted or consumed, but the sender reclaims the
    buffer only once its teardown is verified as rule 3b requires (never on the deadline alone).
-3. **Ownership stays with the producer until the consumer acknowledges.** The producer keeps the
-   buffer alive until `Consumed` (sent after the consumer has unmapped) or until the deadline
-   **plus the clock skew**, never at the bare deadline, so a consumer whose clock lags by the
-   allowed skew can never touch a freed buffer. A consumer that needs the data beyond that copies
+3. **Ownership stays with the producer until teardown.** The producer keeps the buffer alive at
+   least until `Consumed` (sent after the consumer has unmapped) or the deadline **plus the clock
+   skew**, never only the bare deadline, so a consumer whose clock lags by the allowed skew can
+   never touch a freed buffer; for a carrier shared with another process it is freed only once
+   that consumer's isolation domain is reaped (rule 3b). A consumer that needs the data beyond that copies
    it into its own tier object. No carrier has shared ownership.
 3a. **The bytes are committed and immutable.** The handle carries a `content_digest` of the tensor
    bytes, covered by the signature. After signing, the producer gives up write access until
@@ -186,27 +187,27 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    Reaching deadline plus skew does not by itself make shared memory disappear: a consumer that
    hangs or keeps its mapping keeps the pages alive (a `memfd` mapping survives the producer's
    close), and freeing an exported CUDA allocation before the importer has closed it is unsafe.
-   So the producer's own pool keeps a buffer charged until **teardown is verified by something
-   other than the consumer's word**: `Consumed` is a message from the consumer worker, which may
-   be compromised and acknowledge while keeping its mapping or import, so it only starts the
-   check and never frees or recredits on its own. Each worker runs in its own **isolation
-   domain**, a cgroup-v2 group created by the supervisor that the unprivileged worker cannot
-   leave, so every process it forks stays inside, and a descriptor it passes over a socket can
-   only reach processes of the same domain (the worker holds no other socket peer). For
-   `HostShm`, the host supervisor confirms from the kernel that **no process of that domain**
-   still holds the `memfd`: its inode appears in neither `/proc/<pid>/fd` nor
-   `/proc/<pid>/map_files` of any process listed in the domain's `cgroup.procs`; only then is the
-   charge released. A hit in any of them, a forked helper included, keeps the buffer charged and
-   leads to terminating and reaping the whole domain. For `CudaIpc` and `DevicePeer` an importer's close is not observable,
-   so staging buffers form a **per-consumer pool** with a fixed cap: a staging buffer exported to
-   one consumer is reused only for later handles addressed to that same consumer, after its
-   `Consumed`, and is freed only when that consumer worker is reaped. A lying acknowledgement can
-   then expose to a consumer only its own later inputs and can never grow memory beyond its
-   pool. A consumer that has not acknowledged by deadline plus skew, or whose acknowledgement
-   the kernel check contradicts, is terminated and reaped (which closes its descriptors,
-   mappings and CUDA imports); only then is the buffer freed. Every pool has a fixed cap, so a
-   consumer that withholds or falsifies acknowledgements can at most exhaust its own pool, which
-   then refuses new handles to it, never grow memory beyond it.
+   So shared bytes are released only on **verified teardown that does not depend on the
+   consumer**. `Consumed` is a message from the consumer worker, which may be compromised, so it
+   only marks the handle complete and never frees or recredits anything. Nor does a scan of the
+   worker's descriptors prove teardown: a descriptor queued in a Unix socket with `SCM_RIGHTS`
+   appears in no `/proc/<pid>/fd` or `map_files` list and can be received again later. The rule
+   is therefore the same for every shared carrier (`HostShm`, `CudaIpc`, `DevicePeer` and the
+   CPU side of `PinnedHost`): each worker runs in its own **isolation domain**, a cgroup-v2 group
+   created by the supervisor that the unprivileged worker cannot leave, and every byte exported
+   to a consumer worker counts against that worker's **per-consumer quota** (a fixed cap) until
+   the supervisor has terminated and reaped the whole domain, which closes every descriptor,
+   queued rights, mapping and CUDA import in it. Only then are the buffers freed and the producer
+   recredited. CUDA staging buffers of that quota are reused only for later handles addressed to
+   the same consumer, so a lying acknowledgement exposes to a consumer only its own later inputs.
+   When a consumer's quota is exhausted, new handles to it are refused, and the supervisor
+   recycles the worker: it lets the current operations finish or cancels them at their
+   deadline plus skew, then terminates, reaps and respawns the worker with a new session
+   (the operation record of section 1 then refuses every old handle), which releases the whole quota
+   at once. A consumer that has not acknowledged by deadline plus skew is recycled the same way.
+   Every quota and pool has a fixed cap, so a consumer that withholds, falsifies or delegates
+   acknowledgements or descriptors can at most exhaust its own quota and force its own recycle,
+   never grow memory beyond it.
    Deadlines are bounded too: a handle whose deadline lies beyond now plus the configured
    lifetime plus skew is refused, so tombstones cannot be pinned indefinitely.
 3c. **A handle is addressed and scoped.** The signed `consumer` names the stage it is for, and the
@@ -431,7 +432,7 @@ names its sensitivity control; the table names the baseline. Ids are proposals.
 | Id | Claim | Baseline / ablation | Refuted if | Needs |
 |---|---|---|---|---|
 | E011-carriers | The local carriers order the measured frame transfer time: `InProcess` < {`HostShm`, `CudaIpc`} < `PinnedHost` < `NvmeFile`, each step by a preregistered factor, with `HostShm` and `CudaIpc` within a preregistered equivalence band of each other (`Remote` over loopback and LAN is measured alongside, descriptively), at frame sizes within the existing bounds (1 MiB to 64 MiB, the activation `MAX_FRAME_BYTES`; the `Bytes` baseline is chunked under PodWire's 4 MiB `MAX_BODY_BYTES`, and every compared carrier carries the same chunking) | baseline: `Bytes` at every size; ablation, matched per carrier to the mechanism it actually has: `InProcess` and `HostShm` with their zero-copy step replaced by an explicit copy; `CudaIpc` with the IPC device-to-device copy replaced by a staged device-to-host-to-device copy; `DevicePeer` with peer access disabled (staged through host); `PinnedHost` with pageable instead of page-locked memory; `NvmeFile` with buffered instead of direct I/O; `Remote` is not part of the ordering claim (its cells are reported as descriptive calibration for carrier selection only, since it has no mechanism to ablate); sensitivity: a planted fixed delay on one carrier must reorder it in the measured order, else the harness is blind | the order is violated, `HostShm` and `CudaIpc` fall outside their equivalence band, or two adjacent carriers of a directional step are within noise (the equivalent pair is exempt from this separation test) (then the carrier preference is revised; carriers are never merged, since a carrier is an eligibility boundary, not a cost estimate) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
-| E009-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, a buffer stays charged until its teardown is verified independently of the consumer's word (the kernel check for `HostShm`, the per-consumer staging pool for `CudaIpc`, or the late or lying consumer terminated and reaped by the supervisor, which starts at deadline plus skew), including in a lying-acknowledgement arm where the worker sends `Consumed` but keeps its mapping and in a delegated-descriptor arm where a forked helper keeps the mapping after the worker closed its own, no mapping survives a verified reap, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any buffer freed or recredited before its teardown was verified (in particular on a lying `Consumed`), any pool exceeding its cap, any mapping alive after a verified reap, any byte leak across a crash, or (GPU cell) any producer byte outside the signed span readable by the consumer through an IPC import, in any seed | CPU for `HostShm`, including a CPU overread test (the consumer maps the whole descriptor and must find no byte beyond `byte_len`); GPU for `CudaIpc`, including the cross-process overread test of rule 3a |
+| E009-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, a buffer stays charged against its consumer's quota until the supervisor has reaped that consumer's isolation domain (on quota exhaustion, a missing acknowledgement at deadline plus skew, or a crash), never on `Consumed` alone, including in a lying-acknowledgement arm where the worker sends `Consumed` but keeps its mapping, a delegated-descriptor arm where a forked helper keeps the mapping, and a queued-rights arm where the worker parks the descriptor in a socket queue with `SCM_RIGHTS` and receives it again after `Consumed`, no mapping survives a verified reap, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any buffer freed or recredited before its teardown was verified (in particular on a lying `Consumed`), any pool exceeding its cap, any mapping alive after a verified reap, any byte leak across a crash, or (GPU cell) any producer byte outside the signed span readable by the consumer through an IPC import, in any seed | CPU for `HostShm`, including a CPU overread test (the consumer maps the whole descriptor and must find no byte beyond `byte_len`); GPU for `CudaIpc`, including the cross-process overread test of rule 3a |
 | E010-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | baseline: LRU without lookahead; ablation, one claimed mechanism removed at a time: digest verification off (the planted corruption must then pass undetected), lease renewal off (a stale-lease admission must then occur), lookahead off (the hit rate must then fall below the floor), each showing the mechanism carries the claim; sensitivity: planted cells (one flipped byte in a stored object, a lease fenced between write and read, a perturbed routing trace that must lower the hit rate) that the harness must detect as a digest mismatch, a refused admission and a measured drop, else the harness is blind | in an unperturbed claim cell: a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor; in a planted cell: the expected detection or refusal not observed (planted cells are judged only on that, never by the claim-cell falsifiers) | CPU part (RAM and NVMe tiers) here; the GPU leg on hardware, which adds a separate preregistered latency claim that page-locked host memory shortens the host-to-device restore against pageable memory (ablation: pageable buffers) |
 | E008 (registered) | two-stage split across a loopback socket (part B) with the extended frame (part A), bit-identical to the in-process split | E007 in process | any output difference, any admission of a frame with a stale epoch | CPU, one host |
 | E012 (E008 part C) | a real checkpoint split across two devices, F16/BF16 boundaries, activation versus KV bytes | baseline: the same checkpoint run on a single device, and an F32 boundary, as E008 part C registers them; ablation: both stages placed on one device with the boundary still crossing the handle path (isolates the cross-device transfer); sensitivity: a planted bit flip in one boundary tensor must be refused by the digest check, and the harness must record each stage's device from the runtime placement (a run whose stages report the same device is invalid, so ignoring the second device cannot pass) | as E008 part C; or the planted flip not refused; or any stage-device record contradicting the declared split | GPU in one host (no such hardware today) |
