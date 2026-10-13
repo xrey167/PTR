@@ -319,5 +319,26 @@ class ModelPinTests(unittest.TestCase):
         self.assertIn("offline", got["reason"])
 
 
+class PinnedCorpusKeyTests(unittest.TestCase):
+    """Codex P1: per-corpus validation outputs were keyed `gsm8k`, while the M011 config pins
+    `validation_digest_per_corpus` / `validation_overlap_counters_per_corpus` as
+    `gsm8k_train`, `humaneval`, `bfcl_simple`, so a checker looking up the pinned names would
+    find no GSM8K digest or counter."""
+
+    CONFIG = Path(__file__).resolve().parents[2] / "experiments" / "model" / "M011-routed-peft" / "config.toml"
+
+    def test_emitted_keys_equal_the_pinned_names(self):
+        import tomllib
+
+        pinned = tomllib.loads(self.CONFIG.read_text())["pinned_thresholds"]
+        reports = {k: corpora.corpus_report(k, p) for k, p in corpora.fixture_partitions().items()}
+        digests = m011.validation_digests_by_corpus(reports)
+        overlaps = m011.validation_overlaps_by_corpus(reports)
+        self.assertEqual(set(digests), set(pinned["validation_digest_per_corpus"]))
+        self.assertEqual(set(overlaps), set(pinned["validation_overlap_counters_per_corpus"]))
+        self.assertEqual(set(digests), set(pinned["validation_corpora"]))
+        self.assertEqual(digests["gsm8k_train"], reports["gsm8k"]["selection_digest"]["validation"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,8 +22,8 @@ hardware/rtx3090.toml, hardware/rtx4090.toml, or hardware/dual-rtx3090.toml for 
 Beyond the GPU it checks what the OLMoE and M011 runs need: the `moe` extra pins (transformers,
 peft, trl, datasets, accelerate against training/uv.lock), bubblewrap able to create a sandbox
 (M011 scores HumanEval by running generated code and refuses without it), a card of at least
-20 GiB (a failure with --require-gpu) and at least 20 GiB free on every visible card (the
-estimated peaks are 17 to 18 GiB: `python -m ptr_training.moe.memory`).
+20 GiB (a failure with --require-gpu) and at least 22 GiB free on every visible card (the
+estimated peaks are 17 to 21 GiB plus the CUDA context: `python -m ptr_training.moe.memory`).
 
 `ptrctl doctor` checks no GPU; this is the GPU-side counterpart.
 """
@@ -49,9 +49,9 @@ MIN_FREE_GB = 60.0
 # Minimum driver major version for the CUDA major version of the torch wheel.
 MIN_DRIVER_FOR_CUDA = {13: 580, 12: 525}
 MIN_VRAM_MIB = 20 * 1024
-# Estimated peaks of the OLMoE SFT smoke and the M011 arms are about 17-18 GiB plus the CUDA
+# Estimated peaks of the OLMoE SFT smoke and the M011 arms are about 17-21 GiB plus the CUDA
 # context (ptr_training.moe.memory); a card with less free memory is likely shared.
-MIN_FREE_VRAM_MIB = 20 * 1024
+MIN_FREE_VRAM_MIB = 22 * 1024
 # Packages of the `moe` extra compared with training/uv.lock (torch is reported separately).
 VERSIONED = ("transformers", "peft", "trl", "datasets", "accelerate")
 HF_URL = "https://huggingface.co"
@@ -469,7 +469,7 @@ def check_torch(opts: Options, probe: dict | None, why: str, gpus: list[dict]) -
                     WARN,
                     "; ".join(f"cuda:{d['index']} has {d['free_mib']} MiB free" for d in low),
                     "another process holds memory on that card (nvidia-smi lists it); the OLMoE runs "
-                    "are estimated at 17-18 GiB plus the CUDA context (python -m ptr_training.moe.memory)",
+                    "are estimated at 17-21 GiB plus the CUDA context (python -m ptr_training.moe.memory)",
                 )
             )
         else:

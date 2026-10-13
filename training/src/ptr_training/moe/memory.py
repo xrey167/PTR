@@ -286,16 +286,20 @@ def estimate(s: Scenario) -> dict:
     for p in s.generate:
         kv = kv_cache_bytes(a, p.sequences, p.prompt_tokens + p.new_tokens, b)
         prefill = layer_working_bytes(a, p.sequences * p.prompt_tokens, b) // 2  # no grad
+        # Routed adapters (PERFT-R, MixLoRA) run on every prefill token too: their per-layer
+        # workspace (fp32 copies, bottleneck/delta tensors) exists transiently, one layer at a time.
+        adapter = p.sequences * p.prompt_tokens * s.adapter_bytes_per_token_layer
         mat = peft_expert_materialization(
             a, s.lora_target_parameters, b, checkpointing=True, grad=False
         )
-        total = resident + kv + prefill + mat["transient"]
+        total = resident + kv + prefill + adapter + mat["transient"]
         phases[p.name] = {
             "kind": "generate",
             "sequences": p.sequences,
             "length": p.prompt_tokens + p.new_tokens,
             "kv_cache_gib": kv / GIB,
             "prefill_working_gib": prefill / GIB,
+            "adapter_workspace_gib": adapter / GIB,
             "peft_merged_experts_transient_gib": mat["transient"] / GIB,
             "peak_gib": total / GIB,
         }

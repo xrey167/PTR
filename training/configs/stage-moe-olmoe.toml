@@ -11,7 +11,7 @@ version = 1
 # refuses it until a step-3 config is derived deliberately from the SFT smoke's measured memory.
 # Memory estimate (`python -m ptr_training.moe.memory --config <this file>`, not measured): as
 # written, SFT runs WITHOUT gradient checkpointing, and PEFT keeps the merged expert tensors of
-# every layer for backward (768 MiB per layer, 12 GiB for 16 layers): about 28.8 GiB allocated,
+# every layer for backward (768 MiB per layer, 12 GiB for 16 layers): about 28.9 GiB allocated,
 # which does not fit a 24 GiB card. With `[moe.sft] gradient_checkpointing = true` the estimated
 # peak is about 17 GiB (the RL update; RL arms are checkpointed through
 # `[moe.rl] gradient_checkpointing`, default true). The derived step-3 config needs it.

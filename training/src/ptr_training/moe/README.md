@@ -89,11 +89,11 @@ activation coefficients are fitted to CPU saved-tensor measurements (tests re-me
 | config / arm | trainable | peak phase | estimated peak (allocated) | fits 24 GiB |
 |---|---|---|---|---|
 | `stage-moe-olmoe-sft-smoke(-rtx3090).toml` | 121,634,816 | SFT (checkpointed, 2 x 256 tokens) | 16.6 GiB | yes, 5.4 GiB headroom |
-| `stage-moe-olmoe.toml` as committed | 121,634,816 | SFT without checkpointing | 28.8 GiB | no |
+| `stage-moe-olmoe.toml` as committed | 121,634,816 | SFT without checkpointing | 28.9 GiB | no |
 | same with `[moe.sft] gradient_checkpointing = true` | 121,634,816 | RL update (checkpointed) | 17.0 GiB | yes |
-| M011 `perft_r_*` (micro-batch 4 x 1024, eval batch 16) | 4,456,448 | eval generation | 17.0 GiB | yes |
-| M011 `plain_lora` | 4,456,448 | eval generation | 17.0 GiB | yes |
-| M011 `mixlora` | 4,423,680 | SFT | 17.4 GiB | yes |
+| M011 `perft_r_*` (micro-batch 4 x 1024, eval batch 16) | 4,456,448 | eval generation | 17.7 GiB | yes, 4.4 GiB headroom |
+| M011 `plain_lora` | 4,456,448 | eval generation | 17.3 GiB | yes, 4.8 GiB headroom |
+| M011 `mixlora` | 4,423,680 | eval generation (adapter workspace on 16 x 1024 prefill tokens) | 20.8 GiB | yes, only 1.2 GiB headroom; `--eval-batch` 8 in the estimator gives more |
 | tiny GPU smoke | 238,528 | SFT | < 0.01 GiB | yes |
 
 Findings behind the numbers: the bf16 weights are 12.89 GiB (6,919,161,856 parameters). LoRA rank
@@ -539,9 +539,12 @@ tuning trials used and trial-set digest, versions, device, sandbox mode, git com
 `provenance` (see "GPU path"), the list of unpinned choices), `metrics.json` (per-domain accuracy
 also under the manifest name `task_accuracy_per_domain`, `mean_task_accuracy` = macro average,
 `latency_per_token` per domain (evaluation generation seconds / generated tokens; definition in
-`UNPINNED_CHOICES`), `training_flops`, the per-corpus validation digests and overlap counters,
+`UNPINNED_CHOICES`), `training_flops` (measured: the sum of `FlopCounterMode` over every
+optimizer step; `training.flops_per_step` lists them), the per-corpus validation digests and
+overlap counters keyed by the pinned names `gsm8k_train`, `humaneval`, `bfcl_simple` (also in
+`run.json` and `tuning.json`),
 `load_cv`, `routing_entropy` and their source, per-domain adapter-router stats, base-router
-stats, trainable params, training loss and first-step FLOPs, `not_produced`:
+stats, trainable params, training loss, `not_produced`:
 `expert_specialisation_index` has no pinned definition), `tuning.json` (`--tune`: see above).
 A multi-process launch (`WORLD_SIZE` > 1) is refused.
 
@@ -564,8 +567,11 @@ Known gaps and unpinned choices:
   inside a bubblewrap sandbox (allowlisted read-only root, no network); without bubblewrap it
   refuses unless `PTR_M011_ALLOW_UNSANDBOXED=1` (then `unshare --net` when usable, else only a
   Python-level socket block), recorded in `run.json` `sandbox`.
-- Training FLOPs are measured on the first optimizer step only (`FlopCounterMode`) and
-  extrapolated; the 5% compute-matching check across arms is not computed here.
+- Training FLOPs are counted with `FlopCounterMode` on every optimizer step (forward,
+  checkpoint recompute, backward) and summed; counting every step adds wall time, accepted
+  because the compute-matching criterion needs the measured total. The old first-step x steps
+  extrapolation is kept only as `training.extrapolated_total_flops_from_first_step` (not a
+  criterion value). The 5% compute-matching check across arms is not computed here.
 - Not pinned by the config and chosen here: optimizer (AdamW, constant lr, clip 1.0),
   domain-balanced batch sampling, PERFT activation (SiLU, `W_up` zero-init), gate weights
   (softmax over the selected logits), no balancing loss on the adapter routers, max length,

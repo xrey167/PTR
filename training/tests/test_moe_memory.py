@@ -99,6 +99,25 @@ class FitTests(unittest.TestCase):
             with self.subTest(arm=arm):
                 self.assertTrue(memory.fit(memory.estimate(memory.m011_scenario(arm)), 24.0)["fits"])
 
+    def test_generation_counts_the_routed_adapter_workspace(self):
+        """Codex P2: the generation/prefill estimate held only the base layer workspace; the
+        PERFT-R / MixLoRA adapters also run (no grad) on every prefill token."""
+        for arm in ("perft_r_emergent", "mixlora"):
+            with self.subTest(arm=arm):
+                routed = memory.m011_scenario(arm)
+                self.assertGreater(routed.adapter_bytes_per_token_layer, 0)
+                bare = dataclasses.replace(routed, adapter_bytes_per_token_layer=0)
+                gen_r = memory.estimate(routed)["phases"]["eval_generate"]
+                gen_b = memory.estimate(bare)["phases"]["eval_generate"]
+                tokens = 16 * 1024  # eval batch x assumed prompt tokens
+                self.assertAlmostEqual(
+                    (gen_r["peak_gib"] - gen_b["peak_gib"]) * memory.GIB,
+                    tokens * routed.adapter_bytes_per_token_layer, delta=1.0,
+                )
+                self.assertGreater(gen_r["adapter_workspace_gib"], 0)
+        plain = memory.estimate(memory.m011_scenario("plain_lora"))["phases"]["eval_generate"]
+        self.assertEqual(plain["adapter_workspace_gib"], 0)
+
     def test_dual_profile_is_two_24_gib_cards(self):
         self.assertEqual(memory.card_gib_for_profile("hardware/dual-rtx3090.toml", ROOT), 24.0)
         self.assertEqual(memory.card_gib_for_profile("hardware/rtx3090.toml", ROOT), 24.0)

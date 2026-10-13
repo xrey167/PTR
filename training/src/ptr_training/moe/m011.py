@@ -92,7 +92,10 @@ UNPINNED_CHOICES = {
     "tuning_trial_set": "same trial set for every arm (one selection_seed), prefix-stable in budget",
     "default_untuned_hparams": {"olmoe": {"lr": 1e-4, "batch": 16}, "tiny": {"lr": 1e-3, "batch": 4}},
     "micro_batch_size": "gradient accumulation; default 4 (olmoe) / whole batch (tiny)",
-    "flops": "torch FlopCounterMode on the first optimizer step; total = first step x steps",
+    "flops": "torch FlopCounterMode around every optimizer step (forward, checkpoint recompute "
+    "and backward); training_flops is the sum over all steps. Counting every step costs extra "
+    "wall time (op-level dispatch hook), accepted because the 5% compute-matching criterion "
+    "needs the measured total",
     "latency_per_token": "wall seconds of the batched greedy evaluation generation of a domain "
     "divided by the tokens it generated (up to and including EOS, padding excluded); eval batch "
     "16 (olmoe) / 4 (tiny)",
@@ -260,6 +263,22 @@ def commit_pin_report(observed: dict) -> dict:
         "mismatches": sum(1 for r in rows.values() if r["matches"] is not True),
         "unverified": sum(1 for r in rows.values() if r["matches"] is None),
     }
+
+
+# Corpus names the M011 config pins for the validation partitions
+# (`validation_corpora`, `validation_digest_per_corpus`, `validation_overlap_counters_per_corpus`):
+# GSM8K's validation partition is cut from its train split, hence `gsm8k_train`.
+VALIDATION_CORPUS_NAMES = {"gsm8k": "gsm8k_train", "humaneval": "humaneval", "bfcl_simple": "bfcl_simple"}
+
+
+def validation_digests_by_corpus(reports: dict) -> dict:
+    """Validation selection digest per corpus, keyed by the pinned validation corpus names."""
+    return {VALIDATION_CORPUS_NAMES[k]: r["selection_digest"]["validation"] for k, r in reports.items()}
+
+
+def validation_overlaps_by_corpus(reports: dict) -> dict:
+    """Validation overlap counter per corpus, keyed by the pinned validation corpus names."""
+    return {VALIDATION_CORPUS_NAMES[k]: r["validation_overlap_count"] for k, r in reports.items()}
 
 
 def outside_training_counts(drawn_item_ids, parts: dict) -> dict:
@@ -448,7 +467,9 @@ def train(
     opt = torch.optim.AdamW(params, lr=lr, weight_decay=0.0)
     rng = random.Random(seed)
     domains = [d for d in DOMAINS if train_by_domain.get(d)]
-    losses, truncated, first_flops = [], 0, None
+    from torch.utils.flop_counter import FlopCounterMode
+
+    losses, truncated, step_flops = [], 0, []
     drawn: list[str] = []
     inst.model.train()
     for step in range(steps):
@@ -458,15 +479,10 @@ def train(
             batch.append(rng.choice(train_by_domain[d]))
             drawn.append(batch[-1].item_id)
         opt.zero_grad(set_to_none=True)
-        counter = None
-        if step == 0:
-            try:
-                from torch.utils.flop_counter import FlopCounterMode
-
-                counter = FlopCounterMode(display=False)
-                counter.__enter__()
-            except Exception:  # pragma: no cover - flop counting is best effort
-                counter = None
+        # Every step is counted: padded batches differ in length (and MixLoRA in which experts
+        # are hit), so one step times the step count is not the measured total M011 requires.
+        counter = FlopCounterMode(display=False)
+        counter.__enter__()
         total = 0.0
         chunks = [batch[i : i + micro_batch] for i in range(0, len(batch), micro_batch)]
         for chunk in chunks:
@@ -479,9 +495,8 @@ def train(
             loss = out.loss * (len(chunk) / len(batch))
             loss.backward()
             total += float(loss.detach())
-        if counter is not None:
-            counter.__exit__(None, None, None)
-            first_flops = int(counter.get_total_flops())
+        counter.__exit__(None, None, None)
+        step_flops.append(int(counter.get_total_flops()))
         if not math.isfinite(total):
             raise FloatingPointError(f"non-finite loss at step {step}")
         torch.nn.utils.clip_grad_norm_(params, 1.0)
@@ -498,8 +513,11 @@ def train(
         "first_loss": losses[0] if losses else None,
         "mean_loss": sum(losses) / len(losses) if losses else None,
         "truncated_examples": truncated,
-        "first_step_flops": first_flops,
-        "estimated_total_flops": None if first_flops is None else first_flops * steps,
+        "flops_per_step": step_flops,
+        "measured_total_flops": sum(step_flops),
+        "first_step_flops": step_flops[0] if step_flops else None,
+        # Not a criterion value: what the old first-step extrapolation would have reported.
+        "extrapolated_total_flops_from_first_step": step_flops[0] * steps if step_flops else None,
         "examples_drawn": len(drawn),
         # Item ids of every drawn example; run() reduces them to the partition counters and
         # removes the list before writing JSON.
@@ -795,7 +813,9 @@ def run(args) -> int:
         "unpinned_choices": UNPINNED_CHOICES,
         "model": model_info,
         "corpora_source": source,
-        "corpora": corpus_reports,
+        "corpora": corpus_reports,  # keyed by source corpus (gsm8k covers train and test)
+        "validation_set_digest_by_corpus": validation_digests_by_corpus(corpus_reports),
+        "validation_overlap_count_by_corpus": validation_overlaps_by_corpus(corpus_reports),
         "expert_domain_assignment": {
             "mapping": rp.PRESCRIBED_ASSIGNMENT,
             "digest": rp.assignment_digest(rp.PRESCRIBED_ASSIGNMENT),
@@ -867,7 +887,7 @@ def run(args) -> int:
             "trials": results,
             "selected_trial": best["index"],
             "selected": {"learning_rate": best["learning_rate"], "batch_size": best["batch_size"]},
-            "validation_digests": {k: r["selection_digest"]["validation"] for k, r in corpus_reports.items()},
+            "validation_digests": validation_digests_by_corpus(corpus_reports),
         }
         _write_json(out_dir / "tuning.json", tuning)
         run_json["tuning_trials_used"] = len(results)
@@ -899,17 +919,13 @@ def run(args) -> int:
         "mean_task_accuracy": sum(per.values()) / len(per),
         "latency_per_token": {d: v["latency_per_token"] for d, v in latency.items()},
         "generation_timing": latency,
-        "training_flops": tr["estimated_total_flops"],
-        "training_flops_source": "first optimizer step x steps (FlopCounterMode)",
+        "training_flops": tr["measured_total_flops"],
+        "training_flops_source": "sum of FlopCounterMode totals over every optimizer step",
         "training_data_outside_training_partition_count": sum(
             r["training_outside_training_partition_count"] for r in corpus_reports.values()
         ),
-        "validation_set_digest_by_corpus": {
-            k: r["selection_digest"]["validation"] for k, r in corpus_reports.items()
-        },
-        "validation_overlap_count_by_corpus": {
-            k: r["validation_overlap_count"] for k, r in corpus_reports.items()
-        },
+        "validation_set_digest_by_corpus": validation_digests_by_corpus(corpus_reports),
+        "validation_overlap_count_by_corpus": validation_overlaps_by_corpus(corpus_reports),
         "model_pin_mismatches": model_info.get("model_pin_mismatches"),
         "not_produced": NOT_PRODUCED,
         "load_cv": primary["load_cv"],

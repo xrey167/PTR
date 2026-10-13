@@ -244,7 +244,46 @@ class TinyEndToEndTests(unittest.TestCase):
                 )
             self.assertIn("expert_specialisation_index", metrics["not_produced"])
             self.assertEqual(set(metrics["validation_overlap_count_by_corpus"]),
-                             {"gsm8k", "humaneval", "bfcl_simple"})
+                             {"gsm8k_train", "humaneval", "bfcl_simple"})
+
+    def test_training_flops_are_measured_over_every_step(self):
+        """Codex P1: training_flops was the first step's FLOPs x steps; padded batches of
+        different lengths make that an extrapolation, not the measured total the M011 config
+        requires. Every step is counted now; the extrapolation has its own key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            # one example per step, so steps differ in sequence length
+            out = self.run_cli("plain_lora", Path(tmp), "--max-steps", "6", "--batch-size", "1")
+            metrics = json.loads((out / "metrics.json").read_text())
+        tr = metrics["training"]
+        self.assertEqual(len(tr["flops_per_step"]), 6)
+        self.assertEqual(tr["measured_total_flops"], sum(tr["flops_per_step"]))
+        self.assertEqual(metrics["training_flops"], tr["measured_total_flops"])
+        self.assertNotEqual(len(set(tr["flops_per_step"])), 1, "fixture batches differ in length")
+        self.assertEqual(tr["extrapolated_total_flops_from_first_step"], tr["flops_per_step"][0] * 6)
+        self.assertNotEqual(metrics["training_flops"], tr["extrapolated_total_flops_from_first_step"])
+        self.assertNotIn("estimated_total_flops", tr)
+
+    def test_per_corpus_outputs_use_the_pinned_corpus_names(self):
+        import tomllib
+
+        cfg = Path(__file__).resolve().parents[2] / "experiments/model/M011-routed-peft/config.toml"
+        pinned = tomllib.loads(cfg.read_text())["pinned_thresholds"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.run_cli("plain_lora", Path(tmp))
+            metrics = json.loads((out / "metrics.json").read_text())
+            run = json.loads((out / "run.json").read_text())
+            rc = m011.main(["--arm", "plain_lora", "--out", str(Path(tmp) / "tune"), "--tune",
+                            "--tune-budget", "1", "--model", "tiny", "--device", "cpu",
+                            "--max-steps", "4", "--eval-limit", "1"])
+            self.assertEqual(rc, 0)
+            tuning = json.loads((Path(tmp) / "tune" / "tuning.json").read_text())
+        want_d = set(pinned["validation_digest_per_corpus"])
+        want_o = set(pinned["validation_overlap_counters_per_corpus"])
+        self.assertEqual(set(metrics["validation_set_digest_by_corpus"]), want_d)
+        self.assertEqual(set(metrics["validation_overlap_count_by_corpus"]), want_o)
+        self.assertEqual(set(run["validation_set_digest_by_corpus"]), want_d)
+        self.assertEqual(set(run["validation_overlap_count_by_corpus"]), want_o)
+        self.assertEqual(set(tuning["validation_digests"]), want_d)
 
     def test_a_multi_process_launch_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"WORLD_SIZE": "2"}):
