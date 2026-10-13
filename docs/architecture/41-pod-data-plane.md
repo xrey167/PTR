@@ -146,10 +146,19 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    (one device-to-device copy), verifies `content_digest` on that copy, and only then uses it.
    Before copying, the consumer queries the imported allocation's actual base and size
    (`cuMemGetAddressRange`) and refuses the handle unless `offset + byte_len` lies inside it,
-   overflow-checked, analogous to the file-extent check for `HostShm`. The producer exports each
-   tensor from a **dedicated, separately allocated staging buffer** (never a sub-allocation of a
-   pool), because CUDA IPC can expose the whole underlying allocation; an export therefore never
-   lets the consumer read adjacent tensors or weights.
+   overflow-checked, analogous to the file-extent check for `HostShm`. That check protects the
+   consumer, not the producer: CUDA IPC maps the whole underlying driver allocation, and the
+   driver may place even a separate small `cudaMalloc` inside a shared block, so the importer
+   could address adjacent tensors or weights. The producer therefore exports each tensor only
+   from an **isolated staging buffer**: either a virtual-memory-management allocation
+   (`cuMemCreate` with a POSIX file-descriptor shareable handle, size rounded up to the
+   allocation granularity, holding nothing else), or a legacy `cudaMalloc` whose size is rounded
+   up to a multiple of 2 MiB, as NVIDIA's IPC guide recommends. Before exporting, the producer
+   queries the buffer with `cuMemGetAddressRange` and refuses to export unless the returned base
+   equals the buffer's start and the returned size equals its rounded size, so a sub-allocated
+   buffer is never exported. The padding is zeroed on allocation. E009's GPU cell includes a
+   cross-process overread test: the consumer tries to read past the signed span and must find
+   only the staging buffer's own zeroed padding, never producer data.
    Zero-copy use of a producer-owned device allocation is outside the authenticated-content
    guarantee and is not offered.
 3b. **Bytes are bounded, not only handles.** Every handle has a maximum `byte_len`, and each
@@ -192,7 +201,7 @@ from the data side:
 |---|---|---|---|
 | `InProcess` | same process | the tensor object itself (candle `Tensor` or a DLPack capsule across a language boundary) | yes |
 | `HostShm` | same host, other process, CPU tensor | `memfd` or a named shared mapping (`memmap2` is already in `Cargo.lock`), sealed read-only before the handle is sent | yes |
-| `CudaIpc` | same host, other process, same GPU | `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle` through `cudarc` with dynamic loading (0.19.10 is already in `Cargo.lock` through candle); event handle for stream ordering; the consumer copies into its own allocation (rule 3a) | no: one device-to-device copy |
+| `CudaIpc` | same host, other process, same GPU | `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle` through `cudarc` with dynamic loading (0.19.10 is already in `Cargo.lock` through candle); event handle for stream ordering; exported only from an isolated staging buffer (VMM, or `cudaMalloc` rounded to 2 MiB, base and size checked before export); the consumer copies into its own allocation (rule 3a) | no: one device-to-device copy |
 | `DevicePeer` | same host, other GPU, peer access available | `cudaMemcpyPeer` on a stream into a receiver-owned allocation; no direct peer mapping (rule 3a) | one device-to-device copy |
 | `PinnedHost` | same host, other GPU, no peer access; and the RAM tier | GPU→pinned host→GPU with two stream-ordered copies; the pinned buffer is itself a `HostShm` region | two copies |
 | `NvmeFile` | the NVMe tier | file-backed chunk, verify-on-read, `O_DIRECT` where the platform allows | one read |
@@ -365,7 +374,7 @@ names its sensitivity control; the table names the baseline. Ids are proposals.
 | Id | Claim | Baseline / ablation | Refuted if | Needs |
 |---|---|---|---|---|
 | E011-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes within the existing bounds (1 MiB to 64 MiB, the activation `MAX_FRAME_BYTES`; the `Bytes` baseline is chunked under PodWire's 4 MiB `MAX_BODY_BYTES`, and every compared carrier carries the same chunking) | baseline: `Bytes` at every size; ablation: each carrier with its zero-copy step replaced by an explicit copy (isolates what the carrier saves); sensitivity: a planted fixed delay on one carrier must reorder it in the measured order, else the harness is blind | the order is violated, or two adjacent carriers are within noise (then the carrier preference is revised; carriers are never merged, since a carrier is an eligibility boundary, not a cost estimate) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
-| E009-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, no mapping outlives its deadline plus skew, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any mapping alive after reclaim, any byte leak across a crash, in any seed | CPU for `HostShm`; GPU for `CudaIpc` |
+| E009-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, no mapping outlives its deadline plus skew, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any mapping alive after reclaim, any byte leak across a crash, or (GPU cell) any producer byte outside the signed span readable by the consumer through an IPC import, in any seed | CPU for `HostShm`; GPU for `CudaIpc`, including the cross-process overread test of rule 3a |
 | E010-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | LRU without lookahead; unpinned RAM | a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor | CPU part (RAM and NVMe tiers, unpinned versus locked) here; the GPU leg on hardware |
 | E008 (registered) | two-stage split across a loopback socket (part B) with the extended frame (part A), bit-identical to the in-process split | E007 in process | any output difference, any admission of a frame with a stale epoch | CPU, one host |
 | E012 (E008 part C) | a real checkpoint split across two devices, F16/BF16 boundaries, activation versus KV bytes | the same checkpoint run on a single device, and an F32 boundary, as E008 part C registers them | as E008 part C | GPU in one host (no such hardware today) |
