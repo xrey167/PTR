@@ -219,17 +219,29 @@ budget 2 vs 4 verifier calls.
 | Sensitivity | S+ shows A3 − A1 ≥ +3.0; S0 shows \|A3 − A1\| ≤ 1.5 |
 | Secondary (reported, not decisive) | A3 − A5, A3 − A6, wall-clock per accepted task, repairs per verifier call |
 
-**Kill criteria.**
-- **K-A1**: A3 does not beat A1 by the margin → routing by failure class adds nothing over
-  conditioning on the same findings. Thesis A is dropped; claim 22 is refuted in this setting and
-  claim 24(b) loses its only non-published part.
-- **K-A2**: A0 is not beaten → R1 of doc 39 §6.2 triggers: verifier access, not the architecture,
+**Verdict rule (three-way, as in `docs/architecture/39-vcw-moe.md:575-579`).** Each decisive
+contrast D (A3 − A1, A3 − A0, A3 − A2, A3 − A4) is judged with its one-sided 95% bounds against
+the 3.0-point margin, per seed, after the validity and accounting checks have passed:
+**supported** when the lower bound is ≥ +3.0 in every seed; **refuted** only when the upper bound
+is below +3.0 in every seed with every guard and sensitivity control holding (the run had the power
+to see the margin and did not); **not shown** in every other case, in particular whenever an
+interval overlaps the margin in any seed. An invalid run (accounting, hard counter, or a failed
+sensitivity control) changes nothing. Thesis A is supported only if all four contrasts are
+supported; kill criteria fire only on **refuted**, never on not shown.
+
+**Kill criteria (each on a refuted verdict).**
+- **K-A1**: A3 − A1 refuted → routing by failure class adds nothing over conditioning on the same
+  findings. Thesis A is dropped; claim 22 is refuted in this setting and claim 24(b) loses its only
+  non-published part.
+- **K-A2**: A3 − A0 refuted → R1 of doc 39 §6.2 triggers: verifier access, not the architecture,
   carries the effect.
-- **K-A3**: A2 ≥ A3 − 1.0 → the failure-mode axis is not better than the domain axis; the "axis"
-  half of the thesis is dropped even if K-A1 passes.
-- **K-A4**: A4 is not worse → finding routing carries no information (R2).
-- If A6 ≥ A3 − 1.0 while K-A1 passes: the *typed* code table is unnecessary; the claim narrows to
-  "routing by failure" and drops "typed".
+- **K-A3**: A3 − A2 refuted → the failure-mode axis is not better than the domain axis; the "axis"
+  half of the thesis is dropped even if K-A1 does not fire.
+- **K-A4**: A3 − A4 refuted → finding routing carries no information (R2).
+- If A3 − A6 is refuted while A3 − A1 is supported: the *typed* code table is unnecessary; the
+  claim narrows to "routing by failure" and drops "typed".
+- A not-shown verdict on any contrast leaves the thesis open; a successor needs a new
+  preregistration with a power calculation from the observed variance (thresholds unchanged).
 
 **Compute estimate (unmeasured; to be replaced by the step-2 memory measurement of
 docs/GPU_HANDOVER.md).** CPU stage: harness, S+ and S0 through the `ptr_py` loop simulation
@@ -247,9 +259,11 @@ protocol, `tasks.py`, `reward.py`); F007's harness design, matched-call accounti
 plan (`experiments/feedback/F007-vcw-loop/`); F005's manifest as the record to supersede.
 
 **Minimal decisive experiment.** JSON-schema and arithmetic tasks only (deterministic
-verifiers, collateral-edit check is exact), three roles (format, value, schema), arms A0, A1, A3,
-A4, S0, 5 seeds. The two comparisons A3 vs A1 (matched parameters) and A3 vs A0 (matched calls
-and FLOPs) decide the thesis; everything else is secondary.
+verifiers, collateral-edit check is exact), three failure roles (format, value, schema), arms A0,
+A1, A2, A3, A4, S0, 5 seeds. A2 here is the same parameter budget split into two domain experts
+(arithmetic, JSON), routed by task family. This is the smallest arm set on which the primary rule
+A3 − max(A0, A1, A2) and K-A1 to K-A4 can all be executed; A5, A6 and S+ are secondary and may
+follow in a successor.
 
 ### Thesis B — Off-policy-auditable routing
 
@@ -265,7 +279,7 @@ entropy statistics.
 
 **Why it is plausible.** An MoE layer's output is a gated *sum* of expert outputs, which is the
 additive structure the slate pseudoinverse estimator needs (1605.04812, Assumption 1) at the
-level of the layer output; the reward (log-probability of the realized token) is non-linear in
+level of the layer output; the reward (the probability of the realized token) is non-linear in
 that output, so the assumption holds only approximately. How approximately is the empirical
 question. 2605.07260 shows that better equal-compute routes exist on hard tokens, so there is
 signal to rank.
@@ -282,15 +296,55 @@ counterfactual update of the final layer (the EPO procedure of 2605.07260); two 
 of known worse value (logit noise at two scales); a token-error-supervised router (2609.37751's
 headless variant, if it can be reproduced at this scale); and the uniform-within-top-2k router.
 
-**Ablations.** ε ∈ {0.02, 0.05, 0.10} (pre-declared); exploration in one layer vs all layers;
-estimator: IPS, SNIPS, PI, wPI, DM, DR; reward: local per-layer teacher-forced log-probability on
-verified-correct trajectories (as 2605.07260) vs sequence-level verified success.
+**Primary value estimand (one, fixed before the pilot).** The decision unit is a context
+c = (verified-correct trajectory y, position t, MoE layer ℓ) drawn from a fixed, held-out
+evaluation distribution D of trajectories with one uniformly drawn (t, ℓ) per teacher-forced pass
+(ℓ restricted to the declared exploration layers). The action is the expert set S chosen at (t, ℓ);
+every other routing decision of the pass uses the base router deterministically, and the
+aggregation weights on S are the base router's scores renormalised over S, so candidates are
+compared on *expert selection* only (a candidate that changes only gate weights is out of scope).
+The reward is r(c, S) = the teacher-forced probability of the realized token y_t when (t, ℓ) uses
+S, which lies in [0, 1] as `ope.rs` requires of rewards. For a candidate router π:
+- **V(π)** = E_{c∼D} E_{S∼π(·|c)} [ r(c, S) ], computed on-policy by running π at (t, ℓ) on a
+  held-out evaluation set of contexts (one forward per context and deterministic candidate);
+- **V̂(π)** = the estimator's value computed only from a logged exploration cohort
+  {(c_i, S_i, μ(S_i | c_i), r_i, π(·|c_i))}, where μ is the logging policy (base router with
+  single-slot exploration ε) and π(·|c_i) is the candidate's slate distribution recorded for that
+  same context (see the logging plan below); wPI is the declared primary estimator, DR the
+  declared secondary.
+
+Sequence-level verified success (pass@1 on the pinned GSM8K slice with π routing every
+decision) is **secondary**: it is reported for every candidate and enters only the exploration-cost
+rule, never the primary τ_b or calibration rules.
+
+**Logging plan.** Every target router's slate distribution must be computable on every logged
+context, so the candidate set is **frozen and shadow-scored during collection**: at each logged
+decision the harness evaluates every frozen candidate's router on the same router input (the
+layer-ℓ hidden state entering the MoE block, which no layer-ℓ routing decision can change) and
+records its selected set and per-expert inclusion probabilities next to μ(S_i | c_i). In addition,
+the layer-ℓ router inputs of a pinned subset of the cohort (fp16, digest recorded) are retained so
+that a candidate added after collection can be scored on that subset only; a candidate with
+neither a shadow score nor retained inputs for a context is refused for that cohort, never
+estimated from a logits digest or a reconstruction.
+
+**Cohort discipline (matches `OpeError::OverlapsTraining`, `crates/ptr-router/src/ope.rs:36-38`).**
+Learned candidates (the EPO-style final-layer update, the bias variants, the token-error router)
+are trained on a *training cohort*, then snapshotted (weights digest and snapshot cutoff
+recorded). Every reported OPE comparison then uses a **fresh exploration cohort of fixed,
+preregistered size** (CPU 20,000 decisions; GPU 50,000 decisions per seed) collected after the
+snapshot, from contexts disjoint from the training cohort; a comparison whose evaluation cohort
+overlaps any candidate's training decisions is invalid. Each seed collects its own cohort once.
+
+**Ablations.** ε ∈ {0.02, 0.05, 0.10} (pre-declared); exploration in one layer vs all declared
+layers; estimator: IPS, SNIPS, PI, wPI, DM, DR; dense exploration (several explored decisions per
+pass, treating the others as context noise) as an explicitly approximate variant reported beside
+the exact one-decision-per-pass design.
 
 **Metrics and pinned thresholds (proposed).**
 
 | Metric | Rule |
 |---|---|
-| Primary: rank agreement between estimated and on-policy value over the candidate set | Kendall τ_b ≥ 0.80 in every confirmatory seed |
+| Primary: rank agreement between V̂ (wPI) and on-policy V over the candidate set | Kendall τ_b ≥ 0.80 in every confirmatory seed |
 | Calibration of the estimate | for every candidate, \|V̂ − V\| ≤ 0.25 × (max V − min V) over the candidate set |
 | Exploration cost (co-primary) | at the chosen ε: held-out loss increase ≤ 1% relative and verified pass@1 on the pinned GSM8K slice drop ≤ 0.5 points vs deterministic routing |
 | Superiority over the status quo | τ_b(OPE) − max(τ_b(routing statistics), τ_b(DM)) ≥ 0.15 |
@@ -307,12 +361,14 @@ verified-correct trajectories (as 2605.07260) vs sequence-level verified success
 
 **Compute estimate.** CPU stage: a tiny MoE (4 layers, 16 experts, top-2, built with
 `model.build_tiny_model` and trained on a synthetic verifiable task) – training about 1–2 CPU-h
-per seed; the on-policy ground truth for 8 deterministic candidates is 8 forward passes over the
-evaluation set, so the whole CPU stage is about 10 CPU-h for 5 seeds. GPU stage on the pinned
-OLMoE base (64 experts, top-8): logging pass over about 2M tokens with exploration ≈ 1–2 GPU-h per
-seed; on-policy ground truth for 8 candidates ≈ 8 forward passes ≈ 1–2 GPU-h per seed;
-generation for the cost bound ≈ 2 GPU-h per seed. Total ≈ 20–30 GPU-h. This is the cheapest of the
-three theses.
+per seed; the training cohort, the 20,000-decision exploration cohort (one teacher-forced pass per
+decision, shadow-scoring 8 candidates) and the on-policy ground truth are each small on this
+model, so the whole CPU stage is about 10–15 CPU-h for 5 seeds. GPU stage on the pinned OLMoE base
+(64 experts, top-8): 50,000 one-decision passes of up to 512 tokens per seed (about 25M tokens,
+forward only, shadow scoring is a router matmul per candidate) ≈ 3–5 GPU-h per seed; on-policy
+ground truth for 8 candidates on the evaluation contexts ≈ 1–2 GPU-h per seed; generation for the
+secondary pass@1 and the cost bound ≈ 2 GPU-h per seed. Total ≈ 30–45 GPU-h, still the cheapest of
+the three theses.
 
 **Reuses.** `crates/ptr-router/src/ope.rs` (estimator discipline, positivity refusal,
 `PromotionGate`) as the reference to port the slate estimator into later;
@@ -324,7 +380,8 @@ hook, work package B1); M012's balancing arms as candidates; F003's matured-coho
 positivity rules as the logging contract.
 
 **Minimal decisive experiment.** CPU tiny MoE, exploration in the final MoE layer only, ε = 0.05,
-8 candidates, wPI and DR against on-policy truth, 5 seeds, with the additive-reward and
+8 frozen, shadow-scored candidates, a training cohort then a fresh 20,000-decision exploration
+cohort per seed, wPI (primary) and DR against on-policy V, 5 seeds, with the additive-reward and
 shuffled-propensity controls. If it fails on CPU (where the model is small and the support is
 dense), the thesis is dead; if it passes, the GPU stage on OLMoE's final layer decides.
 
@@ -337,8 +394,10 @@ step), fine-tuning the router on mixed data, merging experts, and upcycling a ne
 old one. After such operations, removing the expert leaves measurable influence of the revoked
 data in the surviving model. Revocation over the *transitive closure* of a typed dependency graph
 (the R011/R013 mechanism: fence and retrain every derived component, keep planned-succession
-edges distinct from live dependencies) restores indistinguishability from a model trained without
-the data, at a cost well below full retraining and with better forget quality than approximate
+edges distinct from live dependencies) brings the surviving model back to the gold retrain
+without the data *on the specified attacks and utility metrics* (canary exposure, the
+loss-threshold membership-inference AUC, retained-shard utility; section "Metrics" below), at a
+cost well below full retraining and with better forget quality than approximate
 unlearning. If true, modular-MoE practice has to treat routers, shared layers and merges as part of
 the data-provenance graph; "remove the expert" is not a deletion mechanism on its own.
 
@@ -355,7 +414,11 @@ upcycled descendant, reactivated descendant}:
   inputs, reusing planned-succession edges);
 - N_s: NPO+RT on the ungoverned model at the compute L_s used;
 - G_s: gold reference, the same schedule retrained without the revoked shard (two gold seeds, to
-  measure the gold's own seed band).
+  measure the gold's own seed band);
+- P (positive leakage-sensitivity control, every seed): the frozen-shared-removal schedule with a
+  deliberately retained leak, i.e. the revoked shard's canaries are also inserted into a retained
+  shard's training data, so the "removed" model is known to have trained on them. It is scored
+  exactly like U_s against G.
 
 **Metrics and pinned thresholds (proposed).** Leakage is measured with planted canaries per shard
 (32 per shard, format with a randomness space of 10^6) using exposure (1802.08232, read) and a
@@ -364,14 +427,17 @@ loss-threshold membership-inference AUC on held-out shard examples.
 | Metric | Rule |
 |---|---|
 | Problem existence (H-C1) | for at least two of the four mixing schedules, exposure(U_s) − exposure(G_s) ≥ 2.0 bits (one-sided 95% lower bound) and MIA AUC(U_s) ≥ 0.60, in every seed |
-| Control | frozen-shared removal: exposure(U) − exposure(G) ≤ 0.5 bits |
-| Remedy (H-C2) | exposure(L_s) − exposure(G_s) ≤ 0.5 bits and MIA AUC(L_s) ≤ 0.55 for every schedule, every seed; retained-shard utility of L_s within 1.0 point of G_s |
+| Negative control | frozen-shared removal: exposure(U) − exposure(G) ≤ 0.5 bits |
+| Positive sensitivity control | P: exposure(P) − exposure(G) ≥ 4.0 bits (one-sided 95% lower bound) and MIA AUC(P) ≥ 0.70, in every seed. If P misses this, the measurement cannot see a known leak: the run is INVALID for H-C1 and no null result on H-C1 may be reported or used for K-C1 |
+| Remedy (H-C2): "matches the gold retrain on the specified attacks and utility metrics" (no broader distributional claim) | exposure(L_s) − exposure(G_s) ≤ 0.5 bits and MIA AUC(L_s) ≤ 0.55 for every schedule, every seed; retained-shard utility of L_s within 1.0 point of G_s |
 | Cost | compute of L_s ≤ 50% of G_s (full retrain without the shard) |
 | Comparison with approximate unlearning | at equal compute, N_s has exposure ≥ L_s + 1.0 bits or utility ≤ L_s − 1.0 point |
-| Validity | gold seeds' exposure band reported; a schedule where the two gold seeds differ by more than the 0.5-bit tolerance makes the tolerance invalid for that schedule (reported, not judged) |
+| Validity (checked first, before any falsifier or remedy rule) | the two gold retrains of every schedule and seed must agree within the 0.5-bit tolerance on canary exposure and within 0.02 on MIA AUC. If any pair differs by more, the **whole run is INVALID**: no H-C1, H-C2, K-C1, K-C2 or K-C3 judgement is made, and a successor must preregister a higher-precision gold (more gold seeds per schedule with the tolerance set from their band, or a larger canary set) before rerunning |
 
-**Kill criteria.**
-- **K-C1**: H-C1 fails (no mixing schedule leaks measurably) → removing the expert is already a
+**Kill criteria** (evaluated only on a valid run: gold agreement and the positive sensitivity
+control both pass).
+- **K-C1**: H-C1 fails on the frozen confirmatory seeds (no mixing schedule leaks measurably) and
+  the positive control P detected its leak in every seed → removing the expert is already a
   sufficient deletion mechanism in practice; the lineage machinery has no measured privacy value
   beyond FlexOlmo-style design; thesis dropped and reported as a negative result.
 - **K-C2**: closure cost ≥ full retrain (the closure cascades to everything, for example because the
@@ -394,10 +460,13 @@ as `ptr_py.ties_merge`); `routed_peft.py` (PERFT-R / MixLoRA arms); `m011.py` tr
 shard sources.
 
 **Minimal decisive experiment.** CPU tiny MoE, schedules: frozen-shared removal (control),
-shared-layer averaging, router fine-tune on mixed data; arms U and G only; 5 seeds. This decides
-H-C1 cheaply. Only if H-C1 holds is the remedy (L, N) built and run, first on CPU, then on GPU. A
-CPU *negative* on H-C1 is weak evidence (tiny models memorise differently) and is followed by one
-GPU pilot before K-C1 is declared.
+shared-layer averaging, router fine-tune on mixed data; arms U, G (two gold seeds) and the
+positive control P; 5 seeds. This decides H-C1 cheaply. Only if H-C1 holds is the remedy (L, N)
+built and run, first on CPU, then on GPU. A CPU *negative* on H-C1 is weak evidence (tiny models
+memorise differently) and never triggers K-C1 by itself. A GPU **pilot** (seeds ≥ 1001) after it is
+only a go/no-go for preparing the GPU confirmatory experiment; it never triggers K-C1. K-C1 can
+fire only on the frozen GPU confirmatory seeds, under the validity and positive-control rules
+above.
 
 ### 3.4 How the three theses relate to the existing programme
 
@@ -424,14 +493,14 @@ files unless marked otherwise. A change under `crates/<crate>/src/**` also updat
 |---|---|---|---|---|
 | X0 | GPU bring-up: tiny GPU smoke, OLMoE LoRA SFT memory measurement on a 3090, derived config | existing targets `make smoke-gpu`, `make olmoe-sft-smoke`; docs/GPU_HANDOVER.md steps 1–3 | 0 LOC, 1–2 days on the desktop | owner hardware |
 | X1 | Re-run the literature searches of §2.3 immediately before each preregistration; record the diff | `research/agenda/` (successor note) | 0.5 day per thesis | — |
-| X2 | Build `ptr_py` in a reproducible environment the training venv can import (CI does not build it today) | existing `make py-bindings`; possibly a CI job (later, head's decision) | 1 day | — |
+| X2 | Narrow gap only: `ptr_py` already builds into `training/.venv` on the desktop (`scripts/setup_desktop.sh:148-160`, `maturin develop`) and has a manual GitLab job (`.gitlab-ci.yml:337-347`, `make py-bindings`); what is missing is a **GitHub** CI job that builds and tests it, so a break in the binding is invisible to the required checks | a job in `.github/workflows/` (head's decision); until then, run `make py-bindings` before each harness freeze | 0.5 day; not blocking | — |
 
 ### 4.1 Thesis A
 
 | WP | Content | Paths | Size | Depends on |
 |---|---|---|---|---|
-| A1 | Repair-transition builder: generate tasks, run the base generator, verify through `ptr_py.verify_*`, keep (task, candidate, report, codes, reference) | `training/src/ptr_training/moe/repair_data.py`, `training/tests/test_repair_data.py` | ~400 LOC, 2 days | X2 |
-| A2 | Code-table parity test: Python's view of codes and roles equals `CODE_TABLE` | `training/tests/test_repair_codes.py` | ~100 LOC, 0.5 day | X2 |
+| A1 | Repair-transition builder: generate tasks, run the base generator, verify through `ptr_py.verify_*`, keep (task, candidate, report, codes, reference) | `training/src/ptr_training/moe/repair_data.py`, `training/tests/test_repair_data.py` | ~400 LOC, 2 days | desktop `ptr_py` build |
+| A2 | Code-table parity test: Python's view of codes and roles equals `CODE_TABLE` | `training/tests/test_repair_codes.py` | ~100 LOC, 0.5 day | desktop `ptr_py` build |
 | A3 | Repair-expert trainer with parameter-matched arms (A1 generic, A2 domain, A3 failure-mode) | `training/src/ptr_training/moe/repair_experts.py` + tests | ~500 LOC, 3 days | A1, M011 path |
 | A4 | Loop evaluator: matched verifier-call and FLOP accounting, arms A0–A6, S0 relabelling, collateral-edit checker, routing through `ptr_py` `FindingRouter` with propensity logs | `training/src/ptr_training/moe/repair_eval.py` + tests | ~700 LOC, 4 days | A1–A3 |
 | A5 | CPU harness stage with `ptr_py` loop simulation for S+ and S0 | `training/src/ptr_training/moe/repair_sim.py` | ~250 LOC, 1.5 days | A4 |
@@ -441,8 +510,8 @@ files unless marked otherwise. A change under `crates/<crate>/src/**` also updat
 
 | WP | Content | Paths | Size | Depends on |
 |---|---|---|---|---|
-| B1 | Exploration hook: single-slot swap with probability ε per token and layer, exact propensities, per-token logging (layer, chosen set, top-k set, ε, router logits digest) | `training/src/ptr_training/moe/route_explore.py` + tests | ~300 LOC, 2 days | — |
-| B2 | Estimators: set-level IPS/SNIPS, slate PI/wPI, DM, DR; positivity refusal mirroring `ope.rs` | `training/src/ptr_training/moe/route_ope.py` + tests (unit tests against the additive synthetic world) | ~450 LOC, 3 days | B1 |
+| B1 | Exploration hook and logger: one explored decision per teacher-forced pass, single-slot swap with probability ε, exact μ(S \| c); shadow scoring of the frozen candidate set (selected set and per-expert inclusion probabilities per candidate); retention of layer-ℓ router inputs for a pinned subset; cohort ids, snapshot cutoffs and digests | `training/src/ptr_training/moe/route_explore.py` + tests | ~450 LOC, 3 days | — |
+| B2 | Estimators: set-level IPS/SNIPS, slate PI/wPI, DM, DR; positivity refusal and the training-overlap refusal mirroring `ope.rs` | `training/src/ptr_training/moe/route_ope.py` + tests (unit tests against the additive synthetic world) | ~450 LOC, 3 days | B1 |
 | B3 | On-policy ground truth and candidate-router family (bias variants, EPO-style final-layer update, noise-perturbed routers) | `training/src/ptr_training/moe/route_candidates.py`, `route_truth.py` | ~400 LOC, 2.5 days | B1 |
 | B4 | CPU tiny-MoE training script on a synthetic verifiable task (verified-correct trajectories for the local reward) | `training/src/ptr_training/moe/tiny_moe_task.py` | ~250 LOC, 1.5 days | — |
 | B5 | Experiment records, CPU then GPU | `experiments/model/<new id>/` | 2 days each | B1–B4 |
@@ -453,7 +522,7 @@ files unless marked otherwise. A change under `crates/<crate>/src/**` also updat
 | WP | Content | Paths | Size | Depends on |
 |---|---|---|---|---|
 | C1 | Canary injection per shard; exposure (rank estimate over the randomness space) and loss-MIA AUC | `training/src/ptr_training/moe/canaries.py` + tests | ~300 LOC, 2 days | — |
-| C2 | Lifecycle operations on LoRA experts in Python: per-shard expert, shared-layer averaging, router fine-tune on mixed data, TIES merge (via `ptr_py.ties_merge`), upcycle, reactivate | `training/src/ptr_training/moe/lifecycle_ops.py` + tests | ~500 LOC, 3–4 days | M011 path, X2 |
+| C2 | Lifecycle operations on LoRA experts in Python: per-shard expert, shared-layer averaging, router fine-tune on mixed data, TIES merge (via `ptr_py.ties_merge`), upcycle, reactivate | `training/src/ptr_training/moe/lifecycle_ops.py` + tests | ~500 LOC, 3–4 days | M011 path, desktop `ptr_py` build |
 | C3 | Dependency graph and closure in the harness, with a conformance test against R011/R013's semantics (typed edges, planned succession vs live dependency) | `training/src/ptr_training/moe/lineage_graph.py`; later `bindings/ptr-py/src/lineage.rs` exposing the runtime's closure so the harness calls the Rust rule directly | ~300 LOC Python, 2 days; Rust binding ~300 LOC, 2 days | C2 |
 | C4 | Gold retrain-without-shard runner and the closure retrain (remedy) | `training/src/ptr_training/moe/revocation_eval.py` | ~350 LOC, 2 days | C1–C3 |
 | C5 | NPO+RT baseline | `training/src/ptr_training/moe/npo.py` | ~200 LOC, 1.5 days | C4 |
@@ -464,7 +533,7 @@ files unless marked otherwise. A change under `crates/<crate>/src/**` also updat
 1. **B1–B4 on CPU** (cheapest decisive test; can start now, no GPU, no Rust change).
 2. **C1, C2 (mixing schedules only), C4 (U and G only) on CPU** — decides H-C1 before any remedy
    code is written.
-3. **A1, A2** (dataset and parity; CPU; needs X2).
+3. **A1, A2** (dataset and parity; CPU; uses the `ptr_py` build that `scripts/setup_desktop.sh` already performs; X2 runs alongside and blocks nothing).
 4. **X0** on the owner's desktop, in parallel with 1–3.
 5. **A3, A4** and the GPU stage of A; then GPU stages of B and C according to the CPU outcomes.
 
@@ -512,8 +581,9 @@ counts as model evidence.
 ### Thesis C
 - **No leakage to find (K-C1).** Shared-layer averaging over several experts may dilute one
   shard's influence below measurement; tiny CPU models may not memorise canaries at all.
-- **Gold noise.** Two gold retrains differ by seed; if that band exceeds the 0.5-bit tolerance,
-  exact indistinguishability is not measurable at this scale.
+- **Gold noise.** Two gold retrains differ by seed; if that band exceeds the 0.5-bit tolerance the
+  run is invalid by rule, and matching the gold on the specified attacks is not measurable at this
+  scale without a higher-precision gold.
 - **"Of course it leaks".** If leakage is found, some readers will call it obvious (averaging
   parameters that saw the data keeps the data). The value is in the measurement across schedules
   and in the cost of the remedy, not in surprise.
@@ -529,8 +599,10 @@ counts as model evidence.
   setup; the order in §4.4 is chosen so that two theses can die on CPU first.
 - **Evidence-class creep.** The nearest risk is presenting a CPU harness pass as a statement about
   OLMoE. Every report keeps the evidence class next to the number.
-- **Tooling gaps.** `ptr_py` is not built by CI; the GPU path of `trl-moe` has never run; the
-  M011 harness is unexercised on real weights. X0 and X2 are prerequisites, not formalities.
+- **Tooling gaps.** No GitHub CI job builds `ptr_py` (it is built by `scripts/setup_desktop.sh`
+  and by a manual GitLab job only); the GPU path of `trl-moe` has never run; the M011 harness is
+  unexercised on real weights. X0 is a prerequisite; X2 reduces the risk of an unnoticed binding
+  break.
 
 ---
 
@@ -575,9 +647,10 @@ counts as model evidence.
   evaluation (Kendall τ_b ≥ 0.80) at a quality cost of at most 1% held-out loss. Unproven."
 - **New claim 28 (thesis C)**, draft: "Removing an expert does not remove its training data's
   influence once shared layers are averaged, the router is fine-tuned on mixed data, or the expert
-  is merged or upcycled; revocation over the transitive dependency closure restores
-  indistinguishability from a model trained without the data at less than half the cost of full
-  retraining. Unproven."
+  is merged or upcycled; revocation over the transitive dependency closure brings the model back to
+  a retrain without the data on the specified attacks (canary exposure and a loss-threshold
+  membership-inference test) and on retained-data utility, at less than half the cost of full
+  retraining. No broader indistinguishability is claimed. Unproven."
 
 ### 7.2 `research/novelty/PRIOR_ART_MATRIX.md`
 
