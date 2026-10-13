@@ -1,0 +1,271 @@
+//! End-to-end tests of the generic control layer over the in-memory loopback transport,
+//! using only the public API.
+
+use ptr_protocol::control::{decode, encode, ControlFrame, IdempotencyKey};
+use ptr_protocol::debug_json::{render_control_frame, render_negotiated};
+use ptr_protocol::negotiation::{
+    negotiate, Feature, FeatureSet, NegotiationError, ProtocolVersion, VersionOffer,
+};
+use ptr_protocol::session::{
+    DriveError, FrameTransport, LoopbackTransport, ProtocolSession, SessionConfig, SessionError,
+    SessionEvent, SessionState,
+};
+use ptr_protocol::TypedPayload;
+use ptr_types::{CapabilityId, TypeId};
+
+fn offer() -> VersionOffer {
+    VersionOffer {
+        supported: vec![ProtocolVersion::new(1, 0, 0), ProtocolVersion::new(1, 1, 0)],
+        minimum: ProtocolVersion::new(1, 0, 0),
+        features: FeatureSet::all(),
+        required: FeatureSet::of(&[Feature::Idempotency]),
+    }
+}
+
+fn session(name: &str, capability: &str) -> ProtocolSession {
+    let mut config = SessionConfig::new(name, offer(), 42);
+    config.capabilities = vec![CapabilityId::from(capability)];
+    ProtocolSession::new(config).unwrap()
+}
+
+fn payload(bytes: &[u8]) -> TypedPayload {
+    TypedPayload {
+        type_id: TypeId::from("Text"),
+        bytes: bytes.to_vec(),
+    }
+}
+
+fn key(text: &str) -> IdempotencyKey {
+    IdempotencyKey::new(text).unwrap()
+}
+
+/// Handshakes two sessions over a loopback pair.
+fn handshake() -> (
+    (ProtocolSession, LoopbackTransport),
+    (ProtocolSession, LoopbackTransport),
+) {
+    let (mut ta, mut tb) = LoopbackTransport::pair(16);
+    let mut a = session("node-a", "predict");
+    let mut b = session("node-b", "embed");
+    ta.send(&a.start().unwrap()).unwrap();
+    assert_eq!(a.state(), SessionState::HelloSent);
+    // b answers Hello with its own Hello and Decl; a then sends its Decl; b receives it.
+    let events = b.pump(&mut tb).unwrap();
+    assert!(matches!(events[0], SessionEvent::Negotiated(_)));
+    a.pump(&mut ta).unwrap();
+    b.pump(&mut tb).unwrap();
+    assert_eq!(a.state(), SessionState::Negotiated);
+    assert_eq!(b.state(), SessionState::Negotiated);
+    ((a, ta), (b, tb))
+}
+
+#[test]
+fn handshake_negotiates_the_highest_common_version_and_exchanges_declarations() {
+    let ((a, _), (b, _)) = handshake();
+    assert_eq!(a.negotiated(), b.negotiated());
+    let negotiated = a.negotiated().unwrap();
+    assert_eq!(negotiated.version, ProtocolVersion::new(1, 1, 0));
+    assert!(negotiated.features.contains(Feature::Drain));
+    assert_eq!(a.peer_node_id(), Some("node-b"));
+    assert_eq!(b.peer_node_id(), Some("node-a"));
+    assert_eq!(a.peer_nonce(), Some(42));
+    assert_eq!(a.peer_capabilities(), [CapabilityId::from("embed")]);
+    assert_eq!(b.peer_capabilities(), [CapabilityId::from("predict")]);
+}
+
+#[test]
+fn calls_retries_cancel_and_close_end_to_end() {
+    let ((mut a, mut ta), (mut b, mut tb)) = handshake();
+    let mut executions: Vec<Vec<u8>> = Vec::new();
+    let mut handler = |p: &TypedPayload| {
+        executions.push(p.bytes.clone());
+        let mut bytes = b"echo:".to_vec();
+        bytes.extend_from_slice(&p.bytes);
+        TypedPayload {
+            type_id: p.type_id.clone(),
+            bytes,
+        }
+    };
+
+    // Three calls, the third cancelled before b serves anything.
+    for (k, text) in [("k1", "one"), ("k2", "two"), ("k3", "three")] {
+        let frame = a.call(key(k), payload(text.as_bytes())).unwrap();
+        ta.send(&frame).unwrap();
+    }
+    ta.send(&a.cancel(3, "not needed").unwrap()).unwrap();
+    let events = b.pump(&mut tb).unwrap();
+    assert_eq!(
+        events,
+        vec![
+            SessionEvent::CallQueued { seq: 1 },
+            SessionEvent::CallQueued { seq: 2 },
+            SessionEvent::CallQueued { seq: 3 },
+            SessionEvent::CallCancelled { seq: 3 },
+        ]
+    );
+    assert_eq!(b.serve_all(&mut tb, &mut handler).unwrap(), 2);
+
+    let events = a.pump(&mut ta).unwrap();
+    assert_eq!(
+        events,
+        vec![
+            SessionEvent::CancelAcknowledged { seq: 3 },
+            SessionEvent::Replied {
+                seq: 1,
+                payload: payload(b"echo:one")
+            },
+            SessionEvent::Replied {
+                seq: 2,
+                payload: payload(b"echo:two")
+            },
+        ]
+    );
+    assert_eq!(a.outstanding_calls(), 0);
+
+    // A fourth call whose reply is lost on the way back; the caller retries.
+    ta.send(&a.call(key("k4"), payload(b"four")).unwrap())
+        .unwrap();
+    b.pump(&mut tb).unwrap();
+    b.serve_all(&mut tb, &mut handler).unwrap();
+    let lost = ta.recv().unwrap().unwrap();
+    assert!(matches!(lost, ControlFrame::Reply { seq: 4, .. }));
+    assert_eq!(a.outstanding_calls(), 1);
+    ta.send(&a.retry(4).unwrap()).unwrap();
+    let events = b.pump(&mut tb).unwrap();
+    assert_eq!(events, vec![SessionEvent::DuplicateServed { seq: 4 }]);
+    assert_eq!(b.serve_all(&mut tb, &mut handler).unwrap(), 0);
+    let events = a.pump(&mut ta).unwrap();
+    assert_eq!(
+        events,
+        vec![SessionEvent::Replied {
+            seq: 4,
+            payload: payload(b"echo:four")
+        }]
+    );
+
+    // The handler ran once per distinct key: one, two and four; never three, never twice.
+    assert_eq!(
+        executions,
+        vec![b"one".to_vec(), b"two".to_vec(), b"four".to_vec()]
+    );
+
+    // Reusing a completed key for another payload is rejected and executes nothing. The
+    // frame is injected raw because a well-behaved caller session would not send it.
+    let clash = ControlFrame::Call {
+        seq: 5,
+        idempotency_key: key("k1"),
+        payload: payload(b"changed"),
+    };
+    ta.send(&clash).unwrap();
+    assert_eq!(
+        b.pump(&mut tb),
+        Err(DriveError::Session(SessionError::KeyReused {
+            key: key("k1")
+        }))
+    );
+    assert_eq!(executions.len(), 3);
+
+    // Close: a says Bye, b answers Bye, both end Closed with nothing in flight.
+    let mut a2 = a;
+    assert_eq!(a2.outstanding_calls(), 0);
+    ta.send(&a2.close("done").unwrap()).unwrap();
+    assert_eq!(a2.state(), SessionState::Closing);
+    b.pump(&mut tb).unwrap();
+    a2.pump(&mut ta).unwrap();
+    assert_eq!(a2.state(), SessionState::Closed);
+    assert_eq!(b.state(), SessionState::Closed);
+    assert!(matches!(
+        a2.call(key("after"), payload(b"x")),
+        Err(SessionError::IllegalTransition {
+            state: SessionState::Closed,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn incompatible_peers_fail_the_handshake_with_a_typed_reason_and_a_bye() {
+    let (mut ta, mut tb) = LoopbackTransport::pair(8);
+    let mut a = session("node-a", "predict");
+    let v2 = VersionOffer {
+        supported: vec![ProtocolVersion::new(2, 0, 0)],
+        minimum: ProtocolVersion::new(2, 0, 0),
+        features: FeatureSet::EMPTY,
+        required: FeatureSet::EMPTY,
+    };
+    let mut b = ProtocolSession::new(SessionConfig::new("node-b", v2, 1)).unwrap();
+    ta.send(&a.start().unwrap()).unwrap();
+    let error = b.pump(&mut tb).unwrap_err();
+    assert!(matches!(
+        error,
+        DriveError::Session(SessionError::Negotiation(
+            NegotiationError::MajorMismatch { .. }
+        ))
+    ));
+    assert_eq!(b.state(), SessionState::Closed);
+    // The rejected end told the other why, and the other end is not left negotiated.
+    assert!(matches!(ta.recv().unwrap(), Some(ControlFrame::Bye { .. })));
+}
+
+#[test]
+fn garbage_on_the_wire_is_a_typed_transport_error_not_a_panic() {
+    let (mut ta, mut tb) = LoopbackTransport::pair(4);
+    let mut b = session("node-b", "embed");
+    ta.send_raw(b"not a frame at all".to_vec()).unwrap();
+    assert!(matches!(b.pump(&mut tb), Err(DriveError::Transport(_))));
+}
+
+#[test]
+fn codec_round_trip_and_debug_rendering_agree_on_a_handshake_frame() {
+    let hello = ControlFrame::Hello {
+        node_id: "node-a".into(),
+        offer: offer(),
+        nonce: 1,
+    };
+    let decoded = decode(&encode(&hello).unwrap()).unwrap();
+    assert_eq!(render_control_frame(&decoded), render_control_frame(&hello));
+    let session = negotiate(&offer(), &offer()).unwrap();
+    assert_eq!(
+        render_negotiated(&session),
+        r#"{"version":"1.1.0","features":["idempotency","cancel","drain"]}"#
+    );
+}
+
+#[test]
+fn every_truncation_of_every_frame_kind_is_an_error() {
+    let frames = [
+        ControlFrame::Hello {
+            node_id: "n".into(),
+            offer: offer(),
+            nonce: 3,
+        },
+        ControlFrame::Decl {
+            capabilities: vec![CapabilityId::from("a")],
+        },
+        ControlFrame::Ack {
+            seq: 1,
+            idempotency_key: key("k"),
+        },
+        ControlFrame::Cancel {
+            seq: 1,
+            reason: "r".into(),
+        },
+        ControlFrame::Bye { reason: "r".into() },
+        ControlFrame::Call {
+            seq: 1,
+            idempotency_key: key("k"),
+            payload: payload(b"abc"),
+        },
+        ControlFrame::Reply {
+            seq: 1,
+            payload: payload(b"abc"),
+        },
+    ];
+    for frame in frames {
+        let bytes = encode(&frame).unwrap();
+        for cut in 0..bytes.len() {
+            assert!(decode(&bytes[..cut]).is_err());
+        }
+        assert_eq!(decode(&bytes), Ok(frame));
+    }
+}
