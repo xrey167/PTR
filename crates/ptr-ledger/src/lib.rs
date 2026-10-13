@@ -13,10 +13,11 @@ pub use file::{FileLedger, LegacyLog, RecoverableLog};
 pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};
 
 use ptr_types::{
-    CapabilityId, CapsuleId, CommitIndex, Effect, FencingToken, Generation, MeshEndpointBinding,
-    MeshRouteKind, MeshTunnelEventKind, MeshTunnelLifecycleEvent, PeerId, PodId, ProjectId,
-    RequestId, Revision, ScopeId, ScopeLeaseBinding, ScopeLifecycleEvent, ScopeLifecycleKind,
-    SessionId, Timestamp, TraceId, TypeId, VerificationLevel,
+    CapabilityId, CapsuleId, CommitIndex, Effect, EgressRefusalReason, FencingToken, Generation,
+    MeshEndpointBinding, MeshRouteKind, MeshTunnelEventKind, MeshTunnelLifecycleEvent, NamespaceId,
+    PeerId, PodAddress, PodId, PodRevisionAddress, ProjectId, RequestId, Revision, ScopeId,
+    ScopeLeaseBinding, ScopeLifecycleEvent, ScopeLifecycleKind, SessionId, Timestamp, TraceId,
+    TypeId, VerificationLevel,
 };
 use std::collections::BTreeSet;
 use std::io;
@@ -337,6 +338,20 @@ pub enum LedgerEvent {
         fence_count: u32,
         fence_digest: [u8; 32],
     },
+    /// A Pod's outbound connection or publication was refused by its egress policy or its
+    /// rate limit before anything left the host (tag 32). The record names the trace, the Pod
+    /// revision that tried, the redacted `target` (a `host:port` or a topic, never a payload)
+    /// and the reason, so the refusal is part of the replayable history rather than a log line.
+    ///
+    /// This crate checks only the shape: a non-empty trace, a valid source address and a
+    /// bounded target without control characters or whitespace. Whether the refusal was
+    /// warranted is the runtime's to say; the record is written by the runtime's egress path.
+    EgressRefused {
+        trace_id: TraceId,
+        source: PodRevisionAddress,
+        target: String,
+        reason: EgressRefusalReason,
+    },
 }
 
 /// Which authority an [`LedgerEvent::ExpertAuthorityChanged`] moves. The codes are pinned data:
@@ -412,6 +427,9 @@ impl ExpertAuthorityClass {
 
 /// The longest identity an [`LedgerEvent::InputInvalidated`] names, in bytes.
 pub const MAX_INPUT_IDENTITY_BYTES: usize = 256;
+
+/// The longest target an [`LedgerEvent::EgressRefused`] names, in bytes.
+pub const MAX_EGRESS_TARGET_BYTES: usize = 256;
 
 /// How an [`LedgerEvent::InputInvalidated`] ends the life of its input. The codes are pinned
 /// data: Revoked 0, Superseded 1.
@@ -1329,6 +1347,22 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_u64(&mut out, revision.0);
             out.extend_from_slice(event_digest);
         }
+        LedgerEvent::EgressRefused {
+            trace_id,
+            source,
+            target,
+            reason,
+        } => {
+            out.push(32);
+            put_string(&mut out, &trace_id.0);
+            put_string(&mut out, &source.address.project.0);
+            put_string(&mut out, &source.address.namespace.0);
+            put_string(&mut out, &source.address.pod_id.0);
+            out.extend_from_slice(&source.semantic_revision);
+            put_u64(&mut out, source.generation.0);
+            put_string(&mut out, target);
+            out.push(reason.code());
+        }
     }
     out
 }
@@ -1759,6 +1793,36 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             check_expert_authority_changed(&event)?;
             event
         }
+        32 => {
+            let trace_id = TraceId(cursor.string()?);
+            let address = PodAddress {
+                project: ProjectId(cursor.string()?),
+                namespace: NamespaceId(cursor.string()?),
+                pod_id: PodId(cursor.string()?),
+            };
+            let semantic_revision = cursor.digest()?;
+            let generation = Generation(cursor.u64()?);
+            let target = cursor.string()?;
+            let reason_code = cursor.u8()?;
+            let reason = EgressRefusalReason::from_code(reason_code).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown egress refusal reason code {reason_code}"),
+                )
+            })?;
+            let event = LedgerEvent::EgressRefused {
+                trace_id,
+                source: PodRevisionAddress {
+                    address,
+                    semantic_revision,
+                    generation,
+                },
+                target,
+                reason,
+            };
+            check_egress_refused(&event)?;
+            event
+        }
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1888,6 +1952,7 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
         LedgerEvent::KvTaintCommitted { .. } => check_kv_taint(event)?,
         LedgerEvent::InputInvalidated { .. } => check_input_invalidated(event)?,
         LedgerEvent::ExpertAuthorityChanged { .. } => check_expert_authority_changed(event)?,
+        LedgerEvent::EgressRefused { .. } => check_egress_refused(event)?,
         LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
             endpoint: Some(endpoint),
             ..
@@ -1895,6 +1960,31 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
         _ => {}
+    }
+    Ok(())
+}
+
+/// An egress refusal names a non-empty trace, a valid source revision address and a target of
+/// at most [`MAX_EGRESS_TARGET_BYTES`] bytes without control characters or whitespace: a
+/// `host:port` or a topic and nothing a payload could ride in. The decoder and the append
+/// paths both call this.
+fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
+    let LedgerEvent::EgressRefused {
+        trace_id,
+        source,
+        target,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    let target_ok = !target.is_empty()
+        && target.len() <= MAX_EGRESS_TARGET_BYTES
+        && !target
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace());
+    if trace_id.0.is_empty() || !target_ok || source.validate().is_err() {
+        return Err(integrity::invalid("PTR_LEDGER_EGRESS_REFUSED"));
     }
     Ok(())
 }
@@ -3099,6 +3189,114 @@ mod effect_record_tests {
             *fence_count = u32::MAX;
         }
         assert_eq!(decode_event(&encode_event(&event)).unwrap(), event);
+    }
+
+    fn egress_refused_event(reason: EgressRefusalReason) -> LedgerEvent {
+        LedgerEvent::EgressRefused {
+            trace_id: TraceId("trace-1".into()),
+            source: PodRevisionAddress {
+                address: PodAddress {
+                    project: ProjectId("p".into()),
+                    namespace: NamespaceId("ns".into()),
+                    pod_id: PodId("pod".into()),
+                },
+                semantic_revision: [7; 32],
+                generation: Generation(3),
+            },
+            target: "broker.example:1883".into(),
+            reason,
+        }
+    }
+
+    #[test]
+    fn egress_refusal_round_trips_under_tag_32_and_the_codes_are_pinned() {
+        let pinned = [
+            (EgressRefusalReason::HostNotAllowed, 0u8),
+            (EgressRefusalReason::PortNotAllowed, 1),
+            (EgressRefusalReason::TopicNotAllowed, 2),
+            (EgressRefusalReason::InvalidTopic, 3),
+            (EgressRefusalReason::RateLimited, 4),
+        ];
+        assert_eq!(pinned.len(), EgressRefusalReason::ALL.len());
+        for (reason, code) in pinned {
+            assert_eq!(reason.code(), code);
+            assert_eq!(EgressRefusalReason::from_code(code), Some(reason));
+            let event = egress_refused_event(reason);
+            check_encodable(&event).unwrap();
+            let encoded = encode_event(&event);
+            assert_eq!(encoded[0], 32);
+            assert_eq!(*encoded.last().unwrap(), code, "the reason code is last");
+            assert_eq!(decode_event(&encoded).unwrap(), event);
+            for len in 0..encoded.len() {
+                assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");
+            }
+            let mut padded = encoded.clone();
+            padded.push(0);
+            assert!(decode_event(&padded).is_err());
+        }
+        assert_eq!(EgressRefusalReason::from_code(5), None);
+        let mut unknown = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
+        *unknown.last_mut().unwrap() = 5;
+        assert!(decode_event(&unknown).is_err());
+    }
+
+    #[test]
+    fn egress_refusal_refuses_every_non_canonical_form() {
+        let with = |edit: &dyn Fn(&mut LedgerEvent)| {
+            let mut event = egress_refused_event(EgressRefusalReason::HostNotAllowed);
+            edit(&mut event);
+            event
+        };
+        let long = "x".repeat(MAX_EGRESS_TARGET_BYTES + 1);
+        let bad = [
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { target, .. } = e {
+                    target.clear();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { target, .. } = e {
+                    *target = long.clone();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { target, .. } = e {
+                    *target = "host: 80".to_owned();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { target, .. } = e {
+                    *target = "a\nb".to_owned();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { trace_id, .. } = e {
+                    trace_id.0.clear();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { source, .. } = e {
+                    source.semantic_revision = [0; 32];
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { source, .. } = e {
+                    source.address.pod_id = PodId("bad pod".into());
+                }
+            }),
+        ];
+        for event in bad {
+            assert!(check_encodable(&event).is_err(), "{event:?}");
+            // The decoder refuses the same forms, so a log that holds one cannot be read back.
+            assert!(decode_event(&encode_event(&event)).is_err(), "{event:?}");
+        }
+        let at_bound = with(&|e| {
+            if let LedgerEvent::EgressRefused { target, .. } = e {
+                *target = "x".repeat(MAX_EGRESS_TARGET_BYTES);
+            }
+        });
+        check_encodable(&at_bound).unwrap();
+        assert_eq!(decode_event(&encode_event(&at_bound)).unwrap(), at_bound);
     }
 
     #[test]

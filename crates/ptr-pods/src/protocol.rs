@@ -160,6 +160,10 @@ pub struct NativeProtocolRequest {
     pub input: TypedPayload,
     pub request_id: ptr_types::RequestId,
     pub endpoint: NetworkEndpoint,
+    /// The concrete topic this request publishes to, when its protocol has topics. It must
+    /// match a filter in the link's [`EgressPolicy::topics`]; `None` for a protocol without
+    /// topics, which the host and port checks alone govern.
+    pub topic: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -186,6 +190,13 @@ pub enum ProtocolError {
     Transport(String),
     InvalidEndpoint,
     FrameTooLarge,
+    /// The link's egress policy or the lease's rate limit refused the request before anything
+    /// was sent. `target` is the redacted `host:port` or topic and never a payload; the runtime
+    /// commits it as a ledger event so the refusal is part of the replayable history.
+    EgressRefused {
+        target: String,
+        reason: ptr_types::EgressRefusalReason,
+    },
 }
 
 pub trait NativeProtocolExecutor: Send + Sync {
@@ -211,6 +222,7 @@ impl EgressPolicy {
         {
             return Err(PodLinkError::InvalidEgressPolicy);
         }
+        self.validate_topic_filters()?;
         Ok(())
     }
 }

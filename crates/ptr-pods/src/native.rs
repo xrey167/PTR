@@ -1,4 +1,9 @@
-use crate::{NativeProtocolRequest, NativeProtocolResponse, ProtocolBinding, ProtocolError};
+use crate::egress::redact_target;
+use crate::{
+    FrameRateLimiter, NativeProtocolRequest, NativeProtocolResponse, ProtocolBinding, ProtocolError,
+};
+use ptr_types::EgressRefusalReason;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
@@ -9,22 +14,32 @@ pub const MAX_NATIVE_FRAME_BYTES: usize = 1 << 20;
 #[derive(Clone, Debug)]
 pub struct TcpProtocolExecutor {
     pub timeout: Duration,
+    rate_limit: Option<Arc<FrameRateLimiter>>,
 }
 
 impl Default for TcpProtocolExecutor {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(10),
+            rate_limit: None,
         }
     }
 }
 
 impl TcpProtocolExecutor {
+    /// Send on behalf of one Pod lease: every request takes a token from the lease's limiter
+    /// and is refused with [`EgressRefusalReason::RateLimited`] when none is left.
+    pub fn with_rate_limit(mut self, limiter: Arc<FrameRateLimiter>) -> Self {
+        self.rate_limit = Some(limiter);
+        self
+    }
+
     pub async fn execute(
         &self,
         request: NativeProtocolRequest,
     ) -> Result<NativeProtocolResponse, ProtocolError> {
         validate_request(&request, &ProtocolBinding::Tcp)?;
+        take_frame_token(self.rate_limit.as_deref(), &request)?;
         let mut stream = timeout(
             self.timeout,
             TcpStream::connect(request.endpoint.socket_addr()),
@@ -76,22 +91,31 @@ impl TcpProtocolExecutor {
 #[derive(Clone, Debug)]
 pub struct UdpProtocolExecutor {
     pub timeout: Duration,
+    rate_limit: Option<Arc<FrameRateLimiter>>,
 }
 
 impl Default for UdpProtocolExecutor {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(10),
+            rate_limit: None,
         }
     }
 }
 
 impl UdpProtocolExecutor {
+    /// Send on behalf of one Pod lease; see [`TcpProtocolExecutor::with_rate_limit`].
+    pub fn with_rate_limit(mut self, limiter: Arc<FrameRateLimiter>) -> Self {
+        self.rate_limit = Some(limiter);
+        self
+    }
+
     pub async fn execute(
         &self,
         request: NativeProtocolRequest,
     ) -> Result<NativeProtocolResponse, ProtocolError> {
         validate_request(&request, &ProtocolBinding::Udp)?;
+        take_frame_token(self.rate_limit.as_deref(), &request)?;
         let socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .map_err(|error| ProtocolError::Transport(error.to_string()))?;
@@ -118,6 +142,35 @@ impl crate::protocol::NetworkEndpoint {
     }
 }
 
+/// The redacted target a refusal of `request` names: its topic when it has one, its
+/// `host:port` otherwise. Never the payload.
+fn refusal_target(request: &NativeProtocolRequest) -> String {
+    match &request.topic {
+        Some(topic) => redact_target(topic),
+        None => redact_target(&request.endpoint.socket_addr()),
+    }
+}
+
+fn egress_refused(request: &NativeProtocolRequest, reason: EgressRefusalReason) -> ProtocolError {
+    ProtocolError::EgressRefused {
+        target: refusal_target(request),
+        reason,
+    }
+}
+
+/// Take one frame's token from the lease's limiter, when it has one.
+fn take_frame_token(
+    limiter: Option<&FrameRateLimiter>,
+    request: &NativeProtocolRequest,
+) -> Result<(), ProtocolError> {
+    match limiter {
+        Some(limiter) => limiter
+            .try_acquire()
+            .map_err(|reason| egress_refused(request, reason)),
+        None => Ok(()),
+    }
+}
+
 fn validate_request(
     request: &NativeProtocolRequest,
     expected: &ProtocolBinding,
@@ -125,18 +178,22 @@ fn validate_request(
     if request.link.protocol != *expected
         || request.endpoint.host.is_empty()
         || request.endpoint.port == 0
-        || !request
-            .link
-            .egress_policy
-            .hosts
-            .contains(&request.endpoint.host)
-        || !request
-            .link
-            .egress_policy
-            .ports
-            .contains(&request.endpoint.port)
     {
         return Err(ProtocolError::InvalidEndpoint);
+    }
+    // What the policy lists is a decision about this request, not a malformed one, so a
+    // refusal carries its reason and its redacted target for the ledger.
+    request
+        .link
+        .egress_policy
+        .check_endpoint(&request.endpoint.host, request.endpoint.port)
+        .map_err(|reason| egress_refused(request, reason))?;
+    if let Some(topic) = &request.topic {
+        request
+            .link
+            .egress_policy
+            .check_topic(topic)
+            .map_err(|reason| egress_refused(request, reason))?;
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

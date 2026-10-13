@@ -10,6 +10,7 @@ mod attention;
 mod cache;
 #[cfg(feature = "candle-cuda")]
 mod candle;
+mod egress;
 mod evidence;
 mod expert;
 mod hypothesis;
@@ -44,6 +45,10 @@ pub use cache::{PodCache, PodCacheKey};
 pub use candle::{
     CandleDenseExecutor, CandleExecutorError, CandleGpuTierBackend, CandleKvCache,
     CandleKvSnapshotLease, CandleKvTensorBackend, CandlePagedKvBackend, CandlePagedKvCache,
+};
+pub use egress::{
+    is_concrete_topic, is_valid_topic_filter, redact_target, topic_filter_matches, FrameRateLimit,
+    FrameRateLimiter, RateLimitError, MAX_RATE_WINDOW, MAX_TOPIC_BYTES,
 };
 pub use evidence::{
     Ed25519EvidenceSigner, Ed25519EvidenceVerifier, EvidenceError, EvidenceSigner,

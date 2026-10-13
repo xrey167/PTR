@@ -6,6 +6,68 @@ use std::fmt;
 
 const SCHEME: &str = "ptr://";
 
+/// Why a Pod's outbound connection or publication was refused before anything left the
+/// host. The codes are pinned data: they are written into the ledger.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum EgressRefusalReason {
+    /// The destination host is not in the link's egress policy.
+    HostNotAllowed,
+    /// The destination port is not in the link's egress policy.
+    PortNotAllowed,
+    /// The topic matches no filter in the link's egress policy.
+    TopicNotAllowed,
+    /// The topic is empty, over its bound, carries a wildcard, or has a control
+    /// character: a publication names a concrete topic, never a filter.
+    InvalidTopic,
+    /// The Pod lease used up its frame budget for the current window.
+    RateLimited,
+}
+
+impl EgressRefusalReason {
+    /// Every reason, so a test can hold the code table to account.
+    pub const ALL: [Self; 5] = [
+        Self::HostNotAllowed,
+        Self::PortNotAllowed,
+        Self::TopicNotAllowed,
+        Self::InvalidTopic,
+        Self::RateLimited,
+    ];
+
+    /// The pinned wire and ledger code.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::HostNotAllowed => 0,
+            Self::PortNotAllowed => 1,
+            Self::TopicNotAllowed => 2,
+            Self::InvalidTopic => 3,
+            Self::RateLimited => 4,
+        }
+    }
+
+    /// A stable lowercase name, for a materialized value or a log line.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::HostNotAllowed => "host-not-allowed",
+            Self::PortNotAllowed => "port-not-allowed",
+            Self::TopicNotAllowed => "topic-not-allowed",
+            Self::InvalidTopic => "invalid-topic",
+            Self::RateLimited => "rate-limited",
+        }
+    }
+
+    /// The reason a code names, or `None` for a code this build has no meaning for.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::HostNotAllowed),
+            1 => Some(Self::PortNotAllowed),
+            2 => Some(Self::TopicNotAllowed),
+            3 => Some(Self::InvalidTopic),
+            4 => Some(Self::RateLimited),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PodAddress {
     pub project: ProjectId,

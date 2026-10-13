@@ -15,8 +15,8 @@ pub use codebook::{
 pub use confidence::{ConfidenceEstimate, ConfidenceTarget, ConfidenceTargetMismatch};
 pub use mesh::{MeshTunnelEventKind, MeshTunnelLifecycleEvent};
 pub use pod_address::{
-    FrameKind, MeshEndpointBinding, MeshRouteKind, PodAddress, PodEndpoint, PodHeader,
-    PodRevisionAddress, PodRoute, PodTransport, ResolveError, RouteConstraints,
+    EgressRefusalReason, FrameKind, MeshEndpointBinding, MeshRouteKind, PodAddress, PodEndpoint,
+    PodHeader, PodRevisionAddress, PodRoute, PodTransport, ResolveError, RouteConstraints,
 };
 pub use slot_encoding::{
     EncodingError, EncodingVersion, SlotEncoding, SlotVector, MAX_PAYLOAD_BYTES, MAX_SLOT_WIDTH,

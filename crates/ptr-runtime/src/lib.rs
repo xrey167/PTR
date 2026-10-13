@@ -1,6 +1,7 @@
 pub mod admission;
 pub mod compacted;
 pub mod directory;
+pub mod egress;
 pub mod execution;
 pub mod expert;
 pub mod identity;
@@ -3071,6 +3072,9 @@ impl PtrRuntime {
             LedgerEvent::ExpertAuthorityChanged { .. } => {
                 self.validate_authority_changed_event(event)
             }
+            // A refusal confers nothing and loads nothing; its shape is the codec's to hold.
+            LedgerEvent::EgressRefused { .. } => ptr_ledger::check_encodable(event)
+                .map_err(|error| RuntimeError::Ledger(error.to_string())),
         }
     }
 
@@ -3200,6 +3204,9 @@ impl PtrRuntime {
             LedgerEvent::ExpertAuthorityChanged { .. } => {
                 self.apply_authority_changed_event(&committed.event)?;
             }
+            // Audit only: the refusal changes no runtime state. It stays in the ledger and in
+            // the `ptr-state` projection.
+            LedgerEvent::EgressRefused { .. } => {}
             LedgerEvent::TierBackendLifecycle { .. }
             | LedgerEvent::TierObjectCommitted { .. }
             | LedgerEvent::TierReplicaLifecycle { .. } => {
@@ -3405,6 +3412,7 @@ fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
             | LedgerEvent::InputInvalidated { .. }
             | LedgerEvent::ExpertAuthorityChanged { .. }
             | LedgerEvent::KvTaintCommitted { .. }
+            | LedgerEvent::EgressRefused { .. }
     ) {
         return Err(RuntimeError::StructuralRecordOutsideAdmissionPath);
     }

@@ -361,7 +361,41 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         | LedgerEvent::TierBackendLifecycle { .. }
         | LedgerEvent::TierObjectCommitted { .. }
         | LedgerEvent::TierReplicaLifecycle { .. } => Vec::new(),
+        // The latest refusal per Pod, so the projection stays bounded by the number of Pods
+        // however often one is refused; the full sequence is the ledger's.
+        LedgerEvent::EgressRefused {
+            source,
+            target,
+            reason,
+            ..
+        } => vec![(
+            egress_refusal_key(&source.address),
+            egress_refusal_entry(index, *reason, target),
+        )],
     }
+}
+
+/// The prefix of every egress refusal key ([`egress_refusal_key`]).
+pub const EGRESS_REFUSAL_PREFIX: &str = "egress-refused:";
+
+/// The materialized key of a Pod's latest egress refusal:
+/// `egress-refused:<project>/<namespace>/<pod>`. Address segments are restricted to
+/// `[A-Za-z0-9._:-]`, so no two Pods share a key.
+pub fn egress_refusal_key(address: &ptr_types::PodAddress) -> String {
+    format!(
+        "{EGRESS_REFUSAL_PREFIX}{}/{}/{}",
+        address.project, address.namespace, address.pod_id
+    )
+}
+
+/// The value of an egress refusal key: `<commit index>:<reason name>:<target>`. The target is a
+/// `host:port` or a topic and may itself contain `:`, so it comes last.
+pub fn egress_refusal_entry(
+    index: u64,
+    reason: ptr_types::EgressRefusalReason,
+    target: &str,
+) -> String {
+    format!("{index}:{}:{target}", reason.name())
 }
 
 /// The prefix of every approximate-KV taint key: `kv-taint:<kind>:<hex digest>`.
