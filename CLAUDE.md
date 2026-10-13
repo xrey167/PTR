@@ -52,7 +52,7 @@ Invariants in `docs/INVARIANTS.md` are binding: raw is never replaced by typed s
 
 ## Claude Code plugins
 
-The repo-local marketplace `.claude-plugin/marketplace.json` (name `ptr`) ships `ptr-dev` (skills such as `ptr-verify`, `ptr-results`, `ptr-new-experiment`, `ptr-offline-sync`, `experiment-run`; agents `ptr-invariant-reviewer`, `ptr-claims-auditor`, `ptr-experiment-designer`, `ptr-rereviewer`, `ptr-fact-checker`, `ptr-channel`; guard hooks that deny edits to `vendor/`, `training/runs/`, frozen experiments and a `.cargo/config.toml` `[env]` table) and `ptr-mods` (`/runs` pane, status line). Install with `claude plugin marketplace add ./` then `claude plugin install ptr-dev@ptr`; see `docs/CLAUDE_TOOLING.md`. GitHub is suspended, so GitLab is the primary remote: the skill `ptr-gitlab` and `docs/HOSTING.md` cover publishing, merge requests and the GitLab runner.
+The repo-local marketplace `.claude-plugin/marketplace.json` (name `ptr`) ships `ptr-dev` (skills such as `ptr-verify`, `ptr-results`, `ptr-new-experiment`, `ptr-offline-sync`, `experiment-run`; agents `ptr-invariant-reviewer`, `ptr-claims-auditor`, `ptr-experiment-designer`, `ptr-rereviewer`, `ptr-fact-checker`, `ptr-channel`; guard hooks that deny edits to `vendor/`, `training/runs/`, frozen experiments and a `.cargo/config.toml` `[env]` table) and `ptr-mods` (`/runs` pane, status line). Install with `claude plugin marketplace add ./` then `claude plugin install ptr-dev@ptr`; see `docs/CLAUDE_TOOLING.md`. GitHub (`origin`) is the primary remote again; GitLab, set up while GitHub was suspended, is the alternative: the skill `ptr-gitlab` and `docs/HOSTING.md` cover publishing, merge requests and the GitLab runner.
 
 ## Head and channel sessions
 

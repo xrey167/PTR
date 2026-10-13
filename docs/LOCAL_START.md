@@ -19,7 +19,7 @@ decision note or a prompt. This page names environment variables by name only.
 
 ## a. Get the repository
 
-The repository arrives as git bundles (wave 12, then wave 13) or from GitLab. GitHub is not used.
+The repository comes from GitHub, whose `main` carries waves 12 to 14 since PR #132 (`git clone https://github.com/xrey167/PTR.git ~/PTR`), or as git bundles (wave 12, then wave 13) or from GitLab.
 
 **Bundles.** Apply wave 12 first, then wave 13. Each wave comes with an apply script
 (`apply-ptr-wave12.sh` / `apply-ptr-wave13.sh` on Ubuntu, `.ps1` on Windows). Read the script
