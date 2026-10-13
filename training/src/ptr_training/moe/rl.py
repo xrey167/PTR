@@ -88,6 +88,9 @@ def build_grpo_config(
         disable_tqdm=True,
         seed=seed,
         bf16=bf16,
+        # Explicit: TRL 1.14.1 defaults gradient_checkpointing to True, so leaving it out meant
+        # every arm was checkpointed without the config or the metrics saying so.
+        gradient_checkpointing=cfg.gradient_checkpointing,
         # trl 1.14.1: GRPOConfig.disable_dropout (grpo_config.py ~452, default False) is applied
         # in GRPOTrainer.__init__ (grpo_trainer.py ~988: disable_dropout_in_model). Policy and
         # reference must be deterministic for the logprob ratio / KL to mean anything.
@@ -276,6 +279,7 @@ def run_rl(model, tokenizer, tasks: list[Task], algorithm: str, cfg: RlConfig, s
     out = {
         "algorithm": algorithm,
         "grpo_overrides": grpo_overrides(algorithm, cfg),
+        "gradient_checkpointing": bool(args.gradient_checkpointing),
         "log_history": history,
         "logged_metric_keys": keys,
         "nan": any(math.isnan(v) or math.isinf(v) for v in numeric),

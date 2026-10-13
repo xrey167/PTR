@@ -20,7 +20,7 @@ from importlib import metadata
 from pathlib import Path
 
 from ptr_training.moe import config as moe_config
-from ptr_training.moe import gates, routing_metrics
+from ptr_training.moe import gates, provenance, routing_metrics
 from ptr_training.moe.tasks import generate_heldout, generate_tasks
 
 EVIDENCE_CLASS = "pipeline-smoke"
@@ -304,6 +304,7 @@ def check_model_context(cfg, model, tokenizer, sft_tasks, rl_tasks, eval_tasks) 
 
 def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None) -> dict:
     moe_config.require_backend_opt_in(cfg.allow_unselected_backend)
+    provenance.refuse_distributed_launch()  # single-process: no process group, no sharding
     require_extra()
     import torch
 
@@ -461,7 +462,21 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         "schema": "ptr.moe-pipeline-metrics.v1",
         "evidence_class": EVIDENCE_CLASS,
         "note": EVIDENCE_NOTE,
-        "run": {"name": cfg.name, "seed": seed, "config_path": cfg.source_path},
+        "run": {
+            "name": cfg.name,
+            "seed": seed,
+            "config_path": cfg.source_path,
+            # Every RNG consumer and the seed it gets (build_task_splits, run_sft, run_rl).
+            "seeds": {
+                "run": seed,
+                "model_init": cfg.model.seed,
+                "tasks_sft": seed,
+                "tasks_rl": seed + 1,
+                "tasks_eval": seed + 2,
+                "sft_sampler": seed,
+                "rl_trainer": seed,
+            },
+        },
         "model": {
             "kind": cfg.model.kind,
             "device_requested": cfg.model.device,
@@ -500,6 +515,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         "gates_not_evaluated_reason": gates_not_evaluated_reason,
         "versions": versions(),
         "hardware": hardware(device),
+        "provenance": provenance.collect(device),
         "wall_time_s": timings,
         "sft": sft,
         "rl": rl_results,
