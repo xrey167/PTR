@@ -102,6 +102,25 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(cli(src, "join", str(out)), 1)
         self.assertFalse((out / "repo.bundle").exists())
 
+    def test_join_refuses_a_planted_symlink_output_and_symlinked_parts(self):
+        src = self.root / "src"
+        make_repo(src)
+        commit(src, "blob.bin", os.urandom(2 * 1024 * 1024))
+        out = self.root / "out"
+        self.assertEqual(cli(src, "create", "--out", str(out), "--split-mib", "1"), 0)
+        victim = self.root / "victim.txt"
+        victim.write_text("keep me\n")
+        (out / "repo.bundle").symlink_to(victim)
+        self.assertEqual(cli(src, "join", str(out)), 1)
+        self.assertEqual(victim.read_text(), "keep me\n")
+        (out / "repo.bundle").unlink()
+        part = out / "repo.bundle.part001"
+        moved = self.root / "part001.real"
+        part.rename(moved)
+        part.symlink_to(moved)
+        self.assertEqual(cli(src, "join", str(out)), 1)
+        self.assertFalse((out / "repo.bundle").exists())
+
     def test_parts_join_in_numeric_order(self):
         names = [ptr_bundle.part_name(i) for i in (1000, 101, 10, 2, 0)]
         ordered = sorted(names, key=lambda n: (n != ptr_bundle.BUNDLE_NAME, ptr_bundle.part_number(n)))

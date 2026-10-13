@@ -17,6 +17,7 @@ Subcommands (Python 3.11+, standard library and the `git` executable only):
 from __future__ import annotations
 
 import argparse
+import os
 import hashlib
 import subprocess
 import sys
@@ -154,6 +155,9 @@ def cmd_join(args: argparse.Namespace) -> int:
         raise BundleError(f"{SUMS_NAME} lists both {BUNDLE_NAME} and parts: {names}")
     for name in names:
         part = directory / name
+        # A symlink could make this read a file outside the directory; only regular files count.
+        if part.is_symlink():
+            raise BundleError(f"refusing symlinked file listed in {SUMS_NAME}: {name}")
         if not part.is_file():
             raise BundleError(f"missing file listed in {SUMS_NAME}: {name}")
         actual = sha256_file(part)
@@ -164,7 +168,12 @@ def cmd_join(args: argparse.Namespace) -> int:
     if names == [BUNDLE_NAME]:
         print(f"single-file bundle, nothing to join: {target}")
     else:
-        with target.open("wb") as dst:
+        # The output is created new, exclusively and without following a symlink: a planted
+        # `repo.bundle` link (to ~/.bashrc, say) must never receive the joined bytes.
+        if target.is_symlink() or target.exists():
+            raise BundleError(f"{target} already exists; remove it before joining")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(target, flags, 0o644), "wb") as dst:
             for name in names:
                 with (directory / name).open("rb") as src:
                     while block := src.read(CHUNK):
