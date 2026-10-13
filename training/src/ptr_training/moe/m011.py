@@ -7,8 +7,9 @@ Trains one arm with SFT on the three domain corpora and evaluates per-domain tas
 writing `run.json` and `metrics.json` (and `tuning.json` for `--tune`) into `--out`.
 
 Importing this module needs only the standard library; torch, transformers, peft and datasets
-are imported when a run starts. Pins below mirror the M011 config (`experiment.toml` /
-`config.toml` live in an experiment PR, not in this tree); anything the config does not pin is
+are imported when a run starts. Pins below mirror the M011 config
+(`experiments/model/M011-routed-peft/experiment.toml` and `config.toml`; the tests cross-check
+them when `PTR_M011_CONFIG` names that `config.toml`); anything the config does not pin is
 listed in `UNPINNED_CHOICES` and recorded in `run.json`.
 """
 

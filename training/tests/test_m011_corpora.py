@@ -287,8 +287,8 @@ class TuningTests(unittest.TestCase):
 class ConfigParityTests(unittest.TestCase):
     """Cross-check the embedded pins against the M011 config when it is available.
 
-    Set PTR_M011_CONFIG to `experiments/model/M011-routed-peft/config.toml` (it lives in the
-    experiment PR, not in this tree); the test is skipped otherwise.
+    Set PTR_M011_CONFIG to `experiments/model/M011-routed-peft/config.toml` (in this tree; the
+    test does not find it on its own); the test is skipped otherwise.
     """
 
     CONFIG = os.environ.get("PTR_M011_CONFIG")
