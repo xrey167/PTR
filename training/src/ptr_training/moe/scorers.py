@@ -297,9 +297,12 @@ class _Unmatchable:
 
 
 def _norm(value):
+    # A boolean is its own type: True must not match an allowed 1, nor False an allowed 0.
+    if isinstance(value, bool):
+        return ("bool", value)
     # Numbers stay as they are: Python compares int with int and int with float exactly, so
     # 1 == 1.0 still holds while 2**53 + 1 no longer equals 2**53 through a float round trip.
-    if isinstance(value, (bool, int, float)):
+    if isinstance(value, (int, float)):
         return value
     if isinstance(value, str):
         return value.strip().lower()

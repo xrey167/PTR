@@ -167,14 +167,22 @@ def partition_bfcl(rows: list[dict], answers: list[dict]) -> Partitions:
 # ----------------------------------------------------------------------------- digests
 
 
+def _reference_digest(reference: dict) -> str:
+    """sha256 of the scorer inputs as canonical JSON (sorted keys), so a changed HumanEval test
+    or BFCL allowed answer changes the selection digest even when prompt and answer do not."""
+    canon = json.dumps(reference, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=repr)
+    return hashlib.sha256(canon.encode()).hexdigest()
+
+
 def selection_digest(examples: list[Example]) -> str:
-    """sha256 over canonical JSON of `[source index, item id, sha256(prompt NUL answer)]` rows
-    in selection (index) order."""
+    """sha256 over canonical JSON of `[source index, item id, sha256(prompt NUL answer),
+    sha256(reference)]` rows in selection (index) order."""
     rows = [
         [
             ex.index,
             ex.item_id,
             hashlib.sha256(f"{ex.prompt}\0{ex.answer}".encode()).hexdigest(),
+            _reference_digest(ex.reference),
         ]
         for ex in examples
     ]
@@ -183,9 +191,19 @@ def selection_digest(examples: list[Example]) -> str:
 
 
 def corpus_report(key: str, parts: Partitions) -> dict:
-    """Per-corpus counts, digests and the validation-overlap counter for run.json."""
-    train_ids = {ex.item_id for ex in parts.train}
-    val_ids = {ex.item_id for ex in parts.validation}
+    """Per-corpus counts, digests and the validation-overlap counter for run.json. A validation
+    item overlaps when its id or its prompt text also occurs in training or in the held-out
+    evaluation split (either way tuning would see an item it must not)."""
+    def prompt_key(ex: Example) -> str:
+        return hashlib.sha256(ex.prompt.encode()).hexdigest()
+
+    others = parts.train + parts.evaluation
+    other_ids = {ex.item_id for ex in others}
+    other_prompts = {prompt_key(ex) for ex in others}
+    overlapping = [
+        ex for ex in parts.validation
+        if ex.item_id in other_ids or prompt_key(ex) in other_prompts
+    ]
     return {
         "domain": DOMAIN_OF[key],
         "counts": {
@@ -198,7 +216,7 @@ def corpus_report(key: str, parts: Partitions) -> dict:
             "validation": selection_digest(parts.validation),
             "evaluation": selection_digest(parts.evaluation),
         },
-        "validation_overlap_count": len(train_ids & val_ids),
+        "validation_overlap_count": len(overlapping),
         "training_outside_training_partition_count": 0,
     }
 

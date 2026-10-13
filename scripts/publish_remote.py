@@ -159,11 +159,18 @@ def check_push_urls(repo: str, name: str, url: str) -> None:
 
     `remote.<name>.pushurl` replaces the URL for pushing and several push URLs are all used, so
     checking and showing only `remote.<name>.url` could confirm one server while the push goes
-    to another or to several. Every effective push URL is credential-checked first."""
-    proc = git(repo, 'remote', 'get-url', '--push', '--all', name, check=False)
-    if proc.returncode != 0:
-        return  # the remote is not created yet (dry run): its push URL is `url` itself
-    push_urls = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    to another or to several. Every effective push URL is credential-checked first.
+
+    The push URLs are derived from the configuration as it will be once `ensure_remote` has
+    run, so a dry run of `--set-url` checks the URL the real run would push to: configured
+    `pushurl` entries if there are any (set-url leaves them alone), else every configured `url`
+    entry when there are several (git pushes to all of them), else `url` itself."""
+    def config_all(key: str) -> list[str]:
+        proc = git(repo, 'config', '--get-all', f'remote.{name}.{key}', check=False)
+        return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+    urls = config_all('url')
+    push_urls = config_all('pushurl') or (urls if len(urls) > 1 else [url])
     for push_url in push_urls:
         check_url(push_url)
     if push_urls != [url]:

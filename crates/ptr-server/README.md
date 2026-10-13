@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-10  
-**Code footprint:** 10 Rust source files · 3976 nonblank source lines · 8 integration-test files · 88 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 10 Rust source files · 4004 nonblank source lines · 8 integration-test files · 89 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -32,6 +32,7 @@
 - Verifier criteria in the request evidence: every vcw Job carries a criteria digest (length-prefixed SHA-256 tagged with the task kind over the arithmetic expression, the JSON Schema text, the code entry with each test id, arguments and expected value, or the fact claims), and the request digest that the trace encodes and the admission manifest commits to includes it, so two requests with the same statement but different tests leave different evidence while hidden tests stay out of the statement a model sees (test: job::tests::the_criteria_digest_binds_the_code_tests_but_the_statement_hides_them)
 - A vcw request reads back as running from the moment its raw text is committed: TraceStore::start registers it with a null trace before the loop runs (so GET /v1/vcw/traces/{id} answers running, not 404, while a slow loop holds the runtime), and the finished loop fills that entry (test: report::tests::a_started_request_reads_back_as_running_before_its_loop_has_a_trace)
 - Install and request validation (follow-ups of PR #132): a code task whose tests are empty, repeat an id or differ in arity is a 400 before the id is consumed; install checks every Pod of the roster (collision, generation) before committing any, so a refusal leaves no orphan live capsule; an active scope under the service name is adopted only if it has the service project, no lease and no children, otherwise the next incarnation is used (tests: job::tests::an_unpassable_code_suite_is_a_bad_request, tests/vcw.rs a_refusal_late_in_the_roster_commits_none_of_the_earlier_pods and an_active_scope_of_another_project_under_the_service_name_is_not_adopted)
+- Shadow learning report consistency: when a kind rotates its frozen candidate (the held-out log can no longer reach the next estimate point), the stored latest estimate is dropped with it, so learning_report() never pairs a fresh candidate digest with the previous candidate's estimate; that estimate stays in the VcwShadowEstimate runtime event (test: shadow::tests::rotating_the_candidate_drops_the_previous_candidates_estimate)
 
 ### Missing for the target architecture
 

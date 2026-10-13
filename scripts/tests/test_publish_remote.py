@@ -124,6 +124,18 @@ class PublishRemoteTest(unittest.TestCase):
         self.assertIn('credentials', proc.stderr)
         self.assertNotIn('tok', proc.stdout)
 
+    def test_dry_run_of_set_url_checks_the_new_url_and_changes_nothing(self):
+        self.assertEqual(self.run_script('--yes').returncode, 0)
+        git(self.src, 'remote', 'set-url', 'gitlab', str(self.origin))
+        proc = self.run_script('--yes', '--set-url', '--dry-run')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('would run: git remote set-url', proc.stdout)
+        self.assertEqual(git(self.src, 'config', '--get', 'remote.gitlab.url').strip(), str(self.origin))
+        # A second url entry is pushed to as well, so it is refused like a pushurl.
+        git(self.src, 'config', '--add', 'remote.gitlab.url', str(self.target))
+        proc = self.run_script('--yes', url=False)
+        self.assertEqual(proc.returncode, 1)
+
     def test_diverged_branch_rejected_and_not_forced(self):
         git(self.other, 'checkout', '-q', 'main')
         git(self.other, 'checkout', '-q', '--orphan', 'alt')

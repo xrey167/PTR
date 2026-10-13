@@ -174,6 +174,32 @@ class ScorerTests(unittest.TestCase):
         self.assertFalse(scorers.score_bfcl("f(n=9007199254740993)", gt))
         self.assertTrue(scorers.score_bfcl("f(n=5.0)", [{"f": {"n": [5]}}]))
 
+    def test_bfcl_keeps_booleans_apart_from_zero_and_one(self):
+        self.assertFalse(scorers.score_bfcl("f(x=True)", [{"f": {"x": [1]}}]))
+        self.assertFalse(scorers.score_bfcl("f(x=0)", [{"f": {"x": [False]}}]))
+        self.assertTrue(scorers.score_bfcl("f(x=True)", [{"f": {"x": [True]}}]))
+        self.assertTrue(scorers.score_bfcl("f(x=1)", [{"f": {"x": [1]}}]))
+
+    def test_selection_digest_binds_the_scorer_reference(self):
+        import dataclasses
+
+        p = corpora.fixture_partitions()["humaneval"]
+        changed = [dataclasses.replace(p.train[0], reference={**p.train[0].reference, "test": "x"})]
+        self.assertNotEqual(corpora.selection_digest(p.train[:1]), corpora.selection_digest(changed))
+
+    def test_validation_overlap_counts_evaluation_ids_and_identical_prompts(self):
+        import dataclasses
+
+        p = corpora.fixture_partitions()["gsm8k"]
+        leaked_id = corpora.Partitions(
+            p.train, [dataclasses.replace(p.validation[0], item_id=p.evaluation[0].item_id)], p.evaluation
+        )
+        self.assertEqual(corpora.corpus_report("gsm8k", leaked_id)["validation_overlap_count"], 1)
+        leaked_text = corpora.Partitions(
+            p.train, [dataclasses.replace(p.validation[0], prompt=p.evaluation[0].prompt)], p.evaluation
+        )
+        self.assertEqual(corpora.corpus_report("gsm8k", leaked_text)["validation_overlap_count"], 1)
+
     def test_humaneval_refuses_without_a_sandbox_or_an_opt_in(self):
         r = corpora.fixture_partitions()["humaneval"].train[0].reference
         with mock.patch.object(scorers, "_bwrap_usable", return_value=False), mock.patch.dict(
