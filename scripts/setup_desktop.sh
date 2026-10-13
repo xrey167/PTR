@@ -77,6 +77,21 @@ if [ "${#missing[@]}" -gt 0 ]; then
   note "  sudo apt update && sudo apt install -y git curl build-essential pkg-config bubblewrap"
   [ "$DRY_RUN" -eq 1 ] || exit 1
 fi
+# The venv sync downloads several GB of CUDA wheels and the ptr_py build needs the
+# repository's build floor (AGENTS.md: builds only with >= 6 GB free), so refuse before
+# the first install step rather than letting gpu_doctor warn afterwards.
+MIN_FREE_GB="${PTR_SETUP_MIN_FREE_GB:-20}"
+FREE_KB="$(df -Pk "$ROOT" | awk 'NR==2 {print $4}')"
+FREE_GB=$(( ${FREE_KB:-0} / 1024 / 1024 ))
+note "free disk at $ROOT: ${FREE_GB} GB (needs ${MIN_FREE_GB} GB)"
+if [ "$FREE_GB" -lt "$MIN_FREE_GB" ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note "WARNING: below ${MIN_FREE_GB} GB; a real run stops here"
+  else
+    echo "  only ${FREE_GB} GB free at $ROOT, setup needs ${MIN_FREE_GB} GB; free space first" >&2
+    exit 1
+  fi
+fi
 
 # --- 2. NVIDIA driver ------------------------------------------------------------
 step 2 "check the NVIDIA driver (nvidia-smi)"

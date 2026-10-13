@@ -168,8 +168,10 @@ class FreezeSignTests(unittest.TestCase):
             module.atomic_write_all({a: "A2", b: "B2", self.root / "missing/c.txt": "C"})
         self.assertEqual((a.read_text(), b.read_text()), ("A", "B"))
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["a.txt", "b.txt"])
+        a.chmod(0o644)
         module.atomic_write_all({a: "A2", b: "B2"})
         self.assertEqual((a.read_text(), b.read_text()), ("A2", "B2"))
+        self.assertEqual(a.stat().st_mode & 0o777, 0o644)
 
 
 class DigestParentsTests(unittest.TestCase):

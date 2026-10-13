@@ -159,6 +159,17 @@ class ScorerTests(unittest.TestCase):
         self.assertIsNone(scorers.parse_call("math.double(number=999, number=2)"))
         self.assertEqual(scorers.parse_call("f(a=1, b=2)"), ("f", {"a": 1, "b": 2}))
 
+    def test_bfcl_mixed_key_dicts_score_false_without_raising(self):
+        gt = [{"f": {"x": [{"1": "a", "b": 2}]}}]
+        self.assertFalse(scorers.score_bfcl("f(x={1: 'a', 'b': 2, '1': 'a'})", gt))
+        self.assertTrue(scorers.score_bfcl("f(x={1: 'a', 'b': 2})", gt))
+
+    def test_bfcl_compares_large_integers_exactly(self):
+        gt = [{"f": {"n": [9007199254740992]}}]
+        self.assertTrue(scorers.score_bfcl("f(n=9007199254740992)", gt))
+        self.assertFalse(scorers.score_bfcl("f(n=9007199254740993)", gt))
+        self.assertTrue(scorers.score_bfcl("f(n=5.0)", [{"f": {"n": [5]}}]))
+
     def test_humaneval_refuses_without_a_sandbox_or_an_opt_in(self):
         r = corpora.fixture_partitions()["humaneval"].train[0].reference
         with mock.patch.object(scorers, "_bwrap_usable", return_value=False), mock.patch.dict(
