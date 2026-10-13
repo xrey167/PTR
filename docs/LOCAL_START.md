@@ -85,7 +85,8 @@ already take or use a version). `make release-package RELEASE_TOOLCHAIN=1.99.0` 
 ## c. Machine setup, GPU, Hugging Face, PostgreSQL
 
 1. OS, Secure Boot and driver 580 (`nvidia-driver-580-open`): `DESKTOP_SETUP.md` sections 1 and 2.
-   Check: `nvidia-smi -L` lists **two** "NVIDIA GeForce RTX 3090" lines (indices 0 and 1) and
+   Check: `nvidia-smi -L` lists **one** line, index 0: "NVIDIA GeForce RTX 3090" on the 3090 PC,
+   "NVIDIA GeForce RTX 4090" on the 4090 PC, and
    `nvidia-smi` shows driver 580.x. Record the exact
    driver version; M016 and E006 pin `580.65.06` (GPU_HANDOVER OD-6).
 2. `make desktop-setup` (idempotent, never runs `sudo`; `scripts/setup_desktop.sh --dry-run`
@@ -198,14 +199,15 @@ hosting settings without a question to you (`GPU_HANDOVER.md` section 7, rules 5
 | `~/ptr-head/baseline.md` | step d timings and results |
 | `~/ptr-head/handback/` | channel and reviewer reports |
 
-**Resources for the two-3090 desktop.** Cargo uses all cores by default; with up to four channels
+**Resources on each GPU PC.** Cargo uses all cores by default; with up to four channels
 building at once cap each with `CARGO_BUILD_JOBS=<cores/4>` rather than serialising. Every
 worktree has its own `target/` (several tens of GB each, `DESKTOP_SETUP.md` step 1): remove a
 channel's worktree and `target/` when it is merged, and keep at least **6 GB** free at all times
 (the hard floor for one heavy build, `evaluations/BATCH_DECISIONS.md`) and preferably the 60 GB
 the doctor asks for. Heavy stacks (rocksdb, datafusion, torch) one at a time per disk. Never
-run a CPU build wave while a GPU run is in progress: it distorts timings. Two GPU runs may run
-at the same time, one per card (`CUDA_VISIBLE_DEVICES`), but not two frozen seed runs: see `DESKTOP_SETUP.md` section 10. Note that
+run a CPU build wave while a GPU run is in progress: it distorts timings. Each PC has one card, so it
+runs at most one GPU run at a time (`CUDA_VISIBLE_DEVICES=0`); two independent runs may go at the
+same time only on the two different PCs, and never two frozen seed runs at once. Note that
 `scripts/mutation_check.py` runs `<root>/target/release/<package>` and ignores `CARGO_TARGET_DIR`
 (`STATUS.md`), so a freeze run needs the default target directory.
 

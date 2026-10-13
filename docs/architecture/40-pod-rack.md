@@ -81,9 +81,13 @@ within itself.
 
 - **L1 token experts** (doc 37 level L1) require `InProcess` or `SameDevice`: they never leave
   a tray, let alone a rack.
-- **Pipeline-split stages** (doc 36, `ActivationFrame`) require at most `ScaleUpFabric`: a
-  stage boundary may cross hosts inside a rack and never crosses a rack. Today E007 covers an
-  in-process split only; this is the rule the socket version (E008) would be placed under.
+- **Pipeline-split stages** (doc 36, `ActivationFrame`) require at most `ScaleUpFabric` by
+  default: a stage boundary may cross hosts inside a rack and never crosses a rack. A split whose
+  admitted profile declares `ScaleOut` instead is **remote-capable**: its frames go chunked and
+  signed over PodWire ([41](41-pod-data-plane.md) S5), and only such a split may cross racks. The
+  bound comes from the admitted profile and a request can only narrow it. Today E007 covers an
+  in-process split only; E008 (loopback) runs under the default rule, and E013 (the owner's two
+  PCs, two racks) runs a split admitted as `ScaleOut`.
 - **KV page sharing** (`KvSharedPrefix`, `KvPrefixKey`, `crates/ptr-pods/src/paged_kv.rs`) is
   rack-scoped: a prefix page is shareable only with requests placed in the same rack. Cross-rack
   reuse is a **transfer** (the Mooncake-like row of the master plan, section I, still open), never
@@ -119,8 +123,11 @@ tray is homogeneous the way an NVL72 rack is.
 `PodPlacementController::assign_tray` places all members or none under **one** placement epoch
 and **one** tray `FencingToken`; the per-member `FencedStateLease` carries the tray token in
 addition to its own. Any event that would revoke one member revokes the tray **at that event**:
-the placement of every member is revoked (removed, as a device failure already removes a
-placement since the device-fence change) in the same controller step, so `split_stage`, which
+the placement of every member is revoked (removed) in the same controller step. Removing a
+placement on device disappearance, device failure, node failure and node replacement is a
+**prerequisite** that is not in `main` today (`mark_node_failed` calls `revoke_for_node`, which
+removes leases and leaves `self.placements` untouched); it is the device-fence package of wave 1
+of [41](41-pod-data-plane.md), and tray revocation builds on it. With the placements removed, `split_stage`, which
 reads only `Placement.epoch`, refuses a frame of any surviving member at once; a tray token in
 the leases alone would not reach activation frames. In the same step every member's state and
 KV leases are removed and its open uses cancelled, because `validate_lease` consults the lease
@@ -169,7 +176,10 @@ ordered from nearest to farthest, and a `LocalityRequirement { max_distance, anc
 whether the bound is measured from the **device of a named co-placement partner** (for an L1
 expert, the stage that invokes it: `SameDevice` needs this), the Pod's tray, its rack or nothing.
 For a co-placement anchor the placement records the partner, and assignment and resolution
-require the same device as the partner's current placement. The requirement is
+require the same device as the partner's current placement **and**, when the partner is a tray
+member, membership in that same `TraySpec` (sharing a device does not imply sharing a tray, so
+an L1 expert outside its stage's tray would survive the stage's tray fence; with this check it is
+a member and is fenced with it). The requirement is
 topology-independent and part of the manifest; the **concrete** tray or rack it is measured from
 is a property of the `Placement`, chosen at placement time, so moving a Pod to a replacement tray
 or rack never changes its manifest identity. Placement refuses an assignment whose distance to the anchor exceeds
@@ -261,6 +271,13 @@ are taken; `E009` to `E012` are reserved by [41](41-pod-data-plane.md) for its e
 | tray-fence (mechanism, extends L001-v2) | A tray is never partially fenced: after a member device fails between `assign_tray` and the first use, no member's lease, KV page or frame of the old epoch is admitted | per-Pod placement of the same members (ablation); sensitivity: a planted surviving member must be detected by the harness when tray revocation is disabled | a surviving member serves a request of the old epoch in any seed | CPU |
 | link-classes (calibration, descriptive; the data-plane counterpart is E011 in [41](41-pod-data-plane.md)) | The declared classes order the measured activation-frame round trip on the owner's hardware: in-process < same-device < same-host (loopback QUIC) < LAN, each by a preregistered factor | baseline: the `Bytes` carrier over the same link; ablation: the same frame without chunking where it fits; sensitivity: an injected fixed delay on one class must reorder it measurably | the order is violated, or two classes are within the measurement noise (then only the cost model is revised; classes are typed eligibility boundaries and are never merged or widened by a measurement, section 2.4) | CPU and one GPU |
 | rack-kv-scope (mechanism) | Rack-scoped prefix sharing admits exactly the cross-request hits of the global scope for requests in one rack and none across racks, with the fencing and dependency rules of doc 36 unchanged | global sharing (ablation); sensitivity: a planted cross-rack request must be refused | a cross-rack hit, a lost in-rack hit, or any doc 36 safety counter above 0 (stale-entry admissions, cross-principal or cross-project hits, hits after a dependency invalidation); doc 36 coverage counters must instead be above 0 for the run to be valid | CPU |
+
+In every row the "Refuted if" column applies to the **unperturbed claim cells** only. Each
+ablation and planted sensitivity cell is expected to fail in the named way (`locality = None`
+admits the too-far placement, per-Pod placement leaves the survivor, the injected delay reorders
+the class, global sharing produces the cross-rack hit, the planted request or placement is
+refused) and is judged only on whether that expected outcome was observed; a control that does
+not show it makes the run invalid (the harness is blind), never falsified.
 
 A **positive** result of any of these shows a mechanism, not a benefit. Whether tray-atomic
 placement or typed locality reduces anything a user can see (p95 latency of the doc 39 loop,

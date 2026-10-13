@@ -20,7 +20,7 @@ you write stays English, like the repository.
 
 Read first, completely: AGENTS.md, CLAUDE.md, docs/FREEZE_PROCEDURE.md, docs/GPU_HANDOVER.md,
 STATUS.md (summary and "Findings of the final CPU wave"), docs/LOCAL_START.md and
-docs/DESKTOP_SETUP.md (section 10: two RTX 3090). Then docs/INVARIANTS.md and
+docs/DESKTOP_SETUP.md (steps 1 to 9 per PC; section 10 is the superseded two-3090 setup). Then docs/INVARIANTS.md and
 evaluations/BATCH_DECISIONS.md (owner delegation section) as the goal needs them.
 
 Before any change: verify the baseline (docs/LOCAL_START.md section d: make check, make test,
@@ -59,8 +59,8 @@ decisions taken, open points, next stage.
 ## 2. Goal (for /goal)
 
 ```text
-GOAL: Run the local GPU phase of PTR on this machine (Ubuntu 24.04, two RTX 3090, 24 GiB each,
-PCIe only) from a verified green baseline to frozen, run and written-up experiments, following
+GOAL: Run the local GPU phase of PTR on the owner's two GPU PCs (Ubuntu 24.04, one card each: an
+RTX 3090 PC and an RTX 4090 PC, 24 GiB each, PCIe only) from a verified green baseline to frozen, run and written-up experiments, following
 docs/GPU_HANDOVER.md. Stop after any stage if a rule below would be broken.
 
 STAGE 0. Baseline green locally (report with timings): make check; make test; make fmt;
@@ -80,7 +80,9 @@ Step 2: make olmoe-sft-smoke in the background (experiment-run skill, logs in
 training/runs/logs/), record torch peak and nvidia-smi peak. Step 3: derive the OLMoE step-3
 config from the step-2 measurement (copy training/configs/stage-moe-olmoe.toml, change only what
 GPU_HANDOVER step 3 lists, keep hardware/rtx3090.toml, list each change in the commit message), run it,
-read the first RL-phase peak. Use GPU_PROFILE=rtx3090 (the default): the -rtx3090 configs name the right profile.
+read the first RL-phase peak. Run these steps on the 3090 PC with GPU_PROFILE=rtx3090 (the default):
+the -rtx3090 configs name the right profile. On the 4090 PC only configs that name
+hardware/rtx4090.toml apply.
 Their wall-time estimates are datasheet-based, not measured: replace them with the measurement.
 
 STAGE 2. GPU experiments in the handover order, each frozen and run per docs/FREEZE_PROCEDURE.md
@@ -92,17 +94,19 @@ M011, M012, M014, M010, M013, M015 (flag: the 30B teacher does not fit 24 GiB, O
 conservative reversible pin is possible), R008, M016 (only after R006 is completed; flag its
 rtx5090 profile), R004, E006, then the VCW-MoE GPU runs of GPU_HANDOVER section 10 (V1 to V8,
 docs/VCW_MOE_GPU_PLAN.md). For each experiment record the decision on the hardware profile
-question: section 5 is resolved for this machine (the M010 to M015 and E006 manifests name
-hardware/rtx3090.toml, which is right; E006's compute capability 8.6 is true), so record the
+question: section 5 is resolved for the 3090 PC (the M010 to M015 and E006 manifests name
+hardware/rtx3090.toml, which is right there; E006's compute capability 8.6 is true only there),
+so run them on the 3090 PC and record the
 actual nvidia-smi output, driver, GPU index and the profile named, and flag any manifest that names
 another profile (M016 rtx5090; use the -rtx3090 VCW and smoke configs) before its freeze.
 Missing code (entrypoints, aggregators, lifecycle ops, pruning, GRPO) is built by channels first.
-Two independent GPU runs at a time are allowed (one per card, CUDA_VISIBLE_DEVICES=0 / =1) only
-when they are different experiments or different seeds, each logged with its GPU index; nothing
+Each PC has one card (CUDA_VISIBLE_DEVICES=0), so a PC runs one GPU run at a time; two independent
+runs may go at once only on the two different PCs and only when they are different experiments or
+different seeds, never two frozen seed runs at once, each logged with its PC and GPU index; nothing
 in training/ trains on two cards, and a listed run_experiment.py run passes no
 CUDA_VISIBLE_DEVICES itself. OD-3 decides the pinning without a runner change: declare PTR_CUDA_DEVICE
 in the manifest's command_environment before the freeze, the entrypoint wrapper maps it to
-CUDA_VISIBLE_DEVICES and prints the index into its result JSON, the freeze spec sets gpu = 0 or 1.
+CUDA_VISIBLE_DEVICES and prints the index into its result JSON, the freeze spec sets gpu = 0.
 Without that declaration a frozen run uses card 0 and frozen runs go one at a time. Each confirmatory seed runs once; a spent seed is never rerun.
 
 STAGE 3. Component measurement study on the quiet desktop. Prerequisites from
@@ -148,13 +152,13 @@ docs/INVARIANTS.md is binding; English files; no secrets; no model names of the 
 no push, force-push, package or driver install, or hosting change without asking me.
 
 OPEN OWNER DECISIONS (GPU_HANDOVER section 8). Rule: decide conservatively and reversibly, log
-it, ask only for irreversible steps or rule breaks. OD-1 hardware profile: resolved, 3090. OD-2
+it, ask only for irreversible steps or rule breaks. OD-1 hardware profile: resolved, 3090 profiles run on the 3090 PC (inventory of 2026-10-13). OD-2
 listing in preregistration.toml: list each before its first prepared record. OD-3 interpreter and
 environment of frozen entrypoints: venv outside the checkout plus a thin wrapper, settle with M011
 and reuse. OD-4 M015 teacher: defer. OD-5 M011 unpinned choices: pin optimizer, schedule, scorer.
 OD-6 E006/M016 driver and CUDA pins: compare nvidia-smi, edit the pin before freezing if it differs.
 OD-7 M010 separate engine: define before the freeze or drop the two arms. OD-8 R004: name the
-backbone first, then pin both permille keys. OD-9 to OD-11 backbone, E005, R003 dual-3090: defer.
+backbone first, then pin both permille keys. OD-9 to OD-11 backbone, E005, R003 dual-3090 (no owner machine matches it now): defer.
 OD-12 M016 after R006.
 ```
 
