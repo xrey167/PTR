@@ -172,9 +172,13 @@ rules); the freeze tooling is described in `docs/FREEZE_PROCEDURE.md` and lives 
 `scripts/freeze/`. If either is missing, the checkout is older than the kickoff material:
 stop and re-check step a.
 
-**Permission mode.** Start in the default mode: `.claude/settings.json` already pre-approves the
-safe commands (checks, `git status/diff/log`, the validators, `make gpu-doctor`, `make smoke-gpu`,
-`make olmoe-sft-smoke`) and everything else asks. For a long head session you may allow edits
+**Permission mode.** Start in the default mode. `.claude/settings.json` pre-approves only commands
+that run no repository code (`git status/diff/log/show`, `nvidia-smi`, read-only `glab`). On your own
+machine, with a checkout you trust, copy `.claude/settings.local.example.json` to
+`.claude/settings.local.json` (git-ignored, personal) to also pre-approve the checks, the validators,
+`make gpu-doctor`, `make smoke-gpu` and `make olmoe-sft-smoke`; never do that for a checkout of
+someone else's branch, because those commands run the checkout's Makefile, scripts and build code.
+Everything else asks. For a long head session you may allow edits
 without prompts (`claude --permission-mode acceptEdits`); keep shell commands, pushes and
 package installs on ask. Do not run with permission checks disabled on a machine that holds
 tokens or credentials. The head never pushes, force-pushes, installs system packages or changes

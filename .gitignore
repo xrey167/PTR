@@ -61,3 +61,6 @@ __pycache__/
 # a committed artifact that was never committed — leaving this ignored made four CI
 # jobs fail on a file that only ever existed on one machine.
 !/datasets/generated/codebook.json
+
+# Personal Claude Code settings (copied from .claude/settings.local.example.json on a trusted machine)
+.claude/settings.local.json

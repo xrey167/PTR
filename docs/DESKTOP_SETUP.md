@@ -176,9 +176,11 @@ cd ~/PTR
 claude                                             # first start: /login with your Claude account
 ```
 
-The repo carries project config: `.claude/settings.json` pre-approves safe commands
-(`make gpu-doctor`, `make smoke-gpu`, `make olmoe-sft-smoke`, `nvidia-smi`, `cargo check`
-and test, `git status/diff/log`, the experiment validators) and everything else still asks.
+The repo carries project config: `.claude/settings.json` pre-approves only commands that run no
+repository code (`nvidia-smi`, `git status/diff/log/show`, read-only `glab`). On this desktop, with
+your own checkout, copy `.claude/settings.local.example.json` to `.claude/settings.local.json`
+(git-ignored) to also pre-approve `make gpu-doctor`, `make smoke-gpu`, `make olmoe-sft-smoke`,
+`cargo check` and test and the experiment validators; everything else still asks.
 The repo also ships Claude Code plugins (details in `docs/CLAUDE_TOOLING.md`). Install them
 once from the repository root:
 

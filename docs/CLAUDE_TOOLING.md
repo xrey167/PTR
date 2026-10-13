@@ -77,7 +77,7 @@ Malformed input or any internal error allows the edit and prints one line to std
 
 ### Allowlist note
 
-`.claude/settings.json` also pre-approves read-only GitLab commands (`glab mr view`, `glab mr list`, `glab ci status`, `glab ci view`, `glab ci list`) and `python3 scripts/publish_remote.py --dry-run`. Real publishing, MR creation and merging still ask.
+`.claude/settings.json` pre-approves only commands that run no repository code: read-only `git` (status, diff, log, show, merge-base, worktree list, tag -l), `nvidia-smi`, `claude plugin validate` and read-only GitLab commands (`glab mr view`, `glab mr list`, `glab ci status`, `glab ci view`, `glab ci list`). Commands that execute the checkout's Makefile, scripts, tests or build code (`make check/test/fmt/...`, `cargo check/test`, `python3 scripts/...`, `claude plugin test`, `python3 scripts/publish_remote.py --dry-run`) are in `.claude/settings.local.example.json`: copy it to `.claude/settings.local.json` (git-ignored) on a machine and checkout you trust, never for a contributor's branch you are reviewing. Real publishing, MR creation and merging always ask.
 
 ## ptr-mods
 
