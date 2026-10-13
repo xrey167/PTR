@@ -207,7 +207,8 @@ channel's worktree and `target/` when it is merged, and keep at least **6 GB** f
 the doctor asks for. Heavy stacks (rocksdb, datafusion, torch) one at a time per disk. Never
 run a CPU build wave while a GPU run is in progress: it distorts timings. Each PC has one card, so it
 runs at most one GPU run at a time (`CUDA_VISIBLE_DEVICES=0`); two independent runs may go at the
-same time only on the two different PCs, and never two frozen seed runs at once. Note that
+same time only on the two different PCs; frozen seed runs go one at a time **per PC**, so each PC
+may run one at the same time as the other. Note that
 `scripts/mutation_check.py` runs `<root>/target/release/<package>` and ignores `CARGO_TARGET_DIR`
 (`STATUS.md`), so a freeze run needs the default target directory.
 

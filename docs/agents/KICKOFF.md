@@ -103,7 +103,7 @@ another profile (M016 rtx5090; use the -rtx3090 VCW and smoke configs) before it
 Missing code (entrypoints, aggregators, lifecycle ops, pruning, GRPO) is built by channels first.
 Each PC has one card (CUDA_VISIBLE_DEVICES=0), so a PC runs one GPU run at a time; two independent
 runs may go at once only on the two different PCs and only when they are different experiments or
-different seeds, never two frozen seed runs at once, each logged with its PC and GPU index; nothing
+different seeds, at most one frozen seed run per PC at a time, each logged with its PC and GPU index; nothing
 in training/ trains on two cards, and a listed run_experiment.py run passes no
 CUDA_VISIBLE_DEVICES itself. OD-3 decides the pinning without a runner change: declare PTR_CUDA_DEVICE
 in the manifest's command_environment before the freeze, the entrypoint wrapper maps it to

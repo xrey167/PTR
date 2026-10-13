@@ -243,10 +243,12 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    recredited. CUDA staging buffers of that quota are reused only for later handles addressed to
    the same consumer, so a lying acknowledgement exposes to a consumer only its own later inputs.
    When a consumer's quota is exhausted, new handles to it are refused, and the supervisor
-   recycles the worker: it lets the current operations finish or cancels them at their
-   deadline plus skew, then terminates, reaps and respawns the worker with a new session
-   (the operation record of section 1 then refuses every old handle), which releases the whole quota
-   at once. A consumer that has not acknowledged by deadline plus skew is recycled the same way.
+   recycles the **pair**: it lets the current operations finish or cancels them at their
+   deadline plus skew, then terminates, reaps and respawns both the consumer and the producer
+   whose exports fill the quota, each with a new session (the operation record of section 1
+   then refuses every old handle), and drains their old control sockets, which releases the
+   pair's charges at once; recycling the consumer alone could not release them, because the
+   live producer may still hold a reference. A consumer that has not acknowledged by deadline plus skew is recycled the same way.
    Every quota and pool has a fixed cap, so a consumer that withholds, falsifies or delegates
    acknowledgements or descriptors can at most exhaust its own quota and force its own recycle,
    never grow memory beyond it.
@@ -297,7 +299,7 @@ from the data side:
 | `PinnedHost` | same host, other GPU, no peer access; and the RAM tier | GPU→pinned host→GPU with two stream-ordered copies; the pinned buffer is itself a `HostShm` region | two copies |
 | `NvmeFile` | the NVMe tier | file-backed chunk, verify-on-read, `O_DIRECT` where the platform allows | one read |
 | `Remote` | other host | `chunk_frame` over Iroh QUIC, `FrameAssembler` on the far side | one send, one reassembly |
-| `Bytes` | fallback | today's `TypedPayload`, inline up to the codec's 1 MiB bound; a larger tensor goes through the signed, bounded chunking of `ptr-podwire::chunk` (`FrameAssembler` with its reservations, tombstones and `MAX_CHUNKS_PER_FRAME`) over the local control socket, the same path `Remote` uses between hosts, so every admitted handle size up to `MAX_HANDLE_BYTES` has a fallback | copies |
+| `Bytes` | fallback | today's `TypedPayload`, inline up to the handle codec's own `MAX_INLINE_BYTES` (1 MiB, chosen below PodWire's 4 MiB `MAX_BODY_BYTES` so the signed handle with its inline tensor always fits one PodWire body); a larger tensor goes through the signed, bounded chunking of `ptr-podwire::chunk` (`FrameAssembler` with its reservations, tombstones and `MAX_CHUNKS_PER_FRAME`) over the local control socket, the same path `Remote` uses between hosts, so every admitted handle size up to `MAX_HANDLE_BYTES` has a fallback | copies |
 
 Two consequences for several cards in one host, which the owner does not have today (section
 0a). Peer access between two cards over plain PCIe depends on the driver and the board and must
@@ -492,6 +494,13 @@ Mechanism checks first, each registered with `scripts/new_experiment.py`, each w
 an ablation, a sensitivity control (a planted defect the harness must detect, so a pass cannot
 be vacuous) and a refutation rule (doc 19, AGENTS.md section 3). The preregistration of each
 names its sensitivity control; the table names the baseline. Ids are proposals.
+
+**Scoring rule for every row below.** The "Refuted if" column applies to the **unperturbed
+claim cells** only. Every baseline, ablation, mutation and planted sensitivity cell is expected
+to show a named outcome (a stale admission, an early recredit, a reordered carrier, a published
+fenced replica, and so on) and is judged **only** on whether that outcome appeared; it is never
+scored by the claim-cell falsifiers. A control that does not show its expected outcome makes the
+run invalid (the harness is blind for that mechanism), never falsified.
 
 | Id | Claim | Baseline / ablation | Refuted if | Needs |
 |---|---|---|---|---|
