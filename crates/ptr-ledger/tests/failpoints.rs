@@ -8,6 +8,16 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Failpoints are process-global and the tests of this file run in parallel. Each test holds
+/// its `FailScenario` (the global failpoint lock) until it ends and only clears the
+/// configured points here, so a reopen, recovery or append after the crash step can never
+/// hit a point another test configured.
+fn clear_failpoints() {
+    for (name, _) in fail::list() {
+        fail::remove(name);
+    }
+}
+
 fn temp_path() -> std::path::PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -19,7 +29,7 @@ fn temp_path() -> std::path::PathBuf {
 #[test]
 fn panic_after_length_prefix_recovers_without_phantom_event() {
     let path = temp_path();
-    let scenario = FailScenario::setup();
+    let _scenario = FailScenario::setup();
 
     let mut ledger = FileLedger::open(&path).unwrap();
     fail::cfg("ledger.after_length_before_payload", "panic").unwrap();
@@ -35,7 +45,7 @@ fn panic_after_length_prefix_recovers_without_phantom_event() {
     assert!(result.is_err());
 
     drop(ledger);
-    scenario.teardown();
+    clear_failpoints();
 
     assert!(FileLedger::open(&path).is_err());
     let recovered =
@@ -60,7 +70,7 @@ fn failed_append_poison_survives_unwind_until_reopen() {
         ("ledger.after_sync_before_memory", 1),
     ] {
         let path = temp_path();
-        let scenario = FailScenario::setup();
+        let _scenario = FailScenario::setup();
         let event = LedgerEvent::Revoked {
             subject: "capsule:poison".into(),
             generation: Generation(9),
@@ -81,7 +91,7 @@ fn failed_append_poison_survives_unwind_until_reopen() {
         );
         assert!(ledger.events().is_empty());
         drop(ledger);
-        scenario.teardown();
+        clear_failpoints();
         let mut recovered = if point == "ledger.after_length_before_payload" {
             assert!(FileLedger::open(&path).is_err());
             FileLedger::recover_unacknowledged_tail(
@@ -135,7 +145,7 @@ fn revocation(n: u64) -> LedgerEvent {
 fn one_anchor_publication_hits_each_of_its_four_points_once_in_order() {
     let dir = temp_dir("order");
     let paths = LogPaths::new(&dir, "journal");
-    let scenario = FailScenario::setup();
+    let _scenario = FailScenario::setup();
     let mut ledger = AcknowledgedLedger::create(&paths, key()).unwrap();
     let hits = Arc::new(Mutex::new(Vec::<&'static str>::new()));
     for point in ANCHOR_POINTS {
@@ -144,7 +154,7 @@ fn one_anchor_publication_hits_each_of_its_four_points_once_in_order() {
     }
     ledger.append_acknowledged(revocation(1)).unwrap();
     assert_eq!(*hits.lock().unwrap(), ANCHOR_POINTS);
-    scenario.teardown();
+    clear_failpoints();
     drop(ledger);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -157,7 +167,7 @@ fn a_panic_at_each_anchor_point_leaves_the_old_or_the_new_anchor_never_a_blend()
     for (point, anchor_has_new) in ANCHOR_POINTS.into_iter().zip([false, false, true, true]) {
         let dir = temp_dir("panic");
         let paths = LogPaths::new(&dir, "journal");
-        let scenario = FailScenario::setup();
+        let _scenario = FailScenario::setup();
         let mut ledger = AcknowledgedLedger::create(&paths, key()).unwrap();
         ledger.append_acknowledged(revocation(1)).unwrap();
         fail::cfg(point, "panic").unwrap();
@@ -167,7 +177,7 @@ fn a_panic_at_each_anchor_point_leaves_the_old_or_the_new_anchor_never_a_blend()
         assert!(result.is_err(), "{point} must interrupt the append");
         fail::remove(point);
         drop(ledger);
-        scenario.teardown();
+        clear_failpoints();
 
         let (split, anchor) = AcknowledgedLedger::inspect(&paths, key(), 0).unwrap();
         assert_eq!(
@@ -206,7 +216,7 @@ fn a_panic_at_each_anchor_point_leaves_the_old_or_the_new_anchor_never_a_blend()
 fn the_scratch_file_of_an_interrupted_publication_is_never_authoritative() {
     let dir = temp_dir("scratch");
     let paths = LogPaths::new(&dir, "journal");
-    let scenario = FailScenario::setup();
+    let _scenario = FailScenario::setup();
     let mut ledger = AcknowledgedLedger::create(&paths, key()).unwrap();
     fail::cfg(ANCHOR_POINTS[0], "panic").unwrap();
     assert!(catch_unwind(AssertUnwindSafe(|| {
@@ -215,7 +225,7 @@ fn the_scratch_file_of_an_interrupted_publication_is_never_authoritative() {
     .is_err());
     fail::remove(ANCHOR_POINTS[0]);
     drop(ledger);
-    scenario.teardown();
+    clear_failpoints();
 
     let leftovers = std::fs::read_dir(&dir)
         .unwrap()
@@ -241,7 +251,7 @@ fn the_directory_is_synchronized_at_creation_and_at_every_anchor_publication() {
     // acknowledged append publishes one anchor.
     let dir = temp_dir("syncparent");
     let paths = LogPaths::new(&dir, "journal");
-    let scenario = FailScenario::setup();
+    let _scenario = FailScenario::setup();
     let hits = Arc::new(Mutex::new(0usize));
     {
         // Only this thread's calls: the other tests of this binary run beside it.
@@ -259,7 +269,7 @@ fn the_directory_is_synchronized_at_creation_and_at_every_anchor_publication() {
     ledger.append_acknowledged(revocation(1)).unwrap();
     ledger.append_acknowledged(revocation(2)).unwrap();
     assert_eq!(*hits.lock().unwrap(), 4);
-    scenario.teardown();
+    clear_failpoints();
     drop(ledger);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -277,7 +287,7 @@ fn a_crash_during_the_trim_of_a_zero_tail_recovers_to_the_same_state() {
     ));
     std::fs::create_dir(&dir).unwrap();
     // Set up first: the failpoint registry is global and other tests configure it.
-    let scenario = FailScenario::setup();
+    let _scenario = FailScenario::setup();
     let paths = LogPaths::new(&dir, "journal");
     let key = || AnchorKey::from_bytes([3; 32]);
     let mut ledger = AcknowledgedLedger::create(&paths, key()).unwrap();
@@ -302,7 +312,7 @@ fn a_crash_during_the_trim_of_a_zero_tail_recovers_to_the_same_state() {
         let _ = AcknowledgedLedger::open(&paths, key(), epoch, TailPolicy::Acknowledge);
     }));
     assert!(crashed.is_err());
-    scenario.teardown();
+    clear_failpoints();
     // In-process the truncation stays visible in the page cache, so the file is the complete
     // log; the unwind must not have corrupted anything.
     assert_eq!(std::fs::read(&log).unwrap(), complete);
