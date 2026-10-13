@@ -1,0 +1,16 @@
+# ADR-0024 — Retrieval Eligibility Is Decided Before the Index Limits
+
+## Status
+Accepted for the prototype with research-integration work package 3 (`ptr-search`, `ptr-pg`, `ptr-types`, `ptr-memory`). It refines ADR-0008 (derived search is not authority) and does not change the Q003 preregistration.
+
+## Decision
+Who may see a document, when it holds and which metadata it carries are conditions of the scan itself. `ptr-search` defines the backend-neutral `SearchFilter` (principal, groups, instant, role, predicate, any-of tags) and the document-side `SearchAttributes`; `SearchFilter::admits` is the reference predicate. `ptr-pg` translates it into the `WHERE` of the lexical scan and into the inner, limited query of the HNSW scan, so the iterative scan keeps reading until `limit` rows pass, instead of returning a short list that a post-filter then thins. Migration `0002_search_filters` adds the columns (`principals`, `valid_from`, `valid_until`, `semantic_role`, `predicate`, `tags`); existing rows become project-wide and always valid.
+
+Access is fail closed: a document with a non-empty access list is visible only when the asker's audience (principal plus groups) shares a member, and a filter naming nobody sees project-wide documents only. Validity is half-open (`valid_from <= now < valid_until`, a missing bound open), so adjacent validities neither overlap nor leave a gap. A filter without an instant applies no time rule, which is an explicit audit view.
+
+Retrieval is not reliance. A hit observed through `observe_at` / `observe_resolved_at` is held to the validity the authority holds for it, kept with the hit, and `promote_verified_at` / `promote_verified_with_at` check it again at the instant of reliance; the untimed promotion refuses such a hit. A document that expires between retrieval and use is refused at commit time. The refusals are `ValidityRefusal` (`NotYetValid`, `Expired`, `Unknown`) wrapped in `TimedPromotionError`, kept apart from `EvidencePromotionError` so the stage rules keep their vocabulary.
+
+A query's name is resolved by a closed alias table (`AliasTable`): whole-word matches, the longest match winning, `Unknown` or `Ambiguous` otherwise. There is no fuzzy matching.
+
+## Consequences
+A principal never receives, and a cache row never takes the place of, a document it may not see, in either retrieval mode and in the fused list. The cost is that a query needs an identity and an instant to see restricted or time-bounded documents; callers that supply neither see less, not more. Re-indexing a generation with the same content replaces its access list, so a narrowing takes effect, and a stale indexing job could equally widen it: the writer of a document owns its attributes, as it owns its digest. The principal and group namespaces are shared strings. The filter limits what the cache returns; it is not authority, and a hit is still a search candidate until it is observed and verified.

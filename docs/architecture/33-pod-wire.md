@@ -258,3 +258,33 @@ and the peer the decision runs under.
 - **The other three ALPNs still carry nothing.** `ALPN_MODEL`, `ALPN_BLOB` and
   `ALPN_EVENTS` remain declared and unspoken. This document closes one of the four
   C3 named, and says so rather than letting "Pod access" stand in for all of them.
+
+## Format V4: absolute deadline
+
+`FORMAT_V4` extends the address binding of V3 with two words at its end: an absolute
+`deadline` and the `origin_ts` at which the originating caller composed the request, both
+milliseconds since the Unix epoch. V4 is written only when a binding carries a deadline;
+a binding without one is still written as V3, and a V3 or V2 frame still decodes (its
+deadline is `None`, so only the transport timeout applies, as before). `open_v2_compatible`
+now returns the layout it opened rather than a boolean, so each reader takes exactly the
+fields its layout has.
+
+- **Both words or neither.** A deadline without an origin, a zero word, or a deadline not
+  after its origin is refused when written and when read.
+- **A deadline only shrinks.** `PodAddressBinding::narrowed_deadline` returns the earlier of
+  the carried deadline and the one a hop asks for, and `ensure_deadline_within` refuses a
+  child binding that is later than its parent or that drops the deadline it was handed.
+- **Expiry is checked before execution.** The host refuses an expired request before the
+  Pod is invoked; to the peer this is `Unavailable` (a clock tells it nothing a refusal code
+  would hide), to the operator it is `PodWireError::DeadlineExceeded`. `accepts` also
+  requires a positive hop limit.
+- **The wait is bounded by the deadline.** A requester refuses an already-expired deadline
+  before sending anything (nothing is uncertain), and otherwise waits for the lesser of the
+  remaining time and its configured timeout. A wait that ends at the deadline marks the
+  request uncertain, because the host may have run it, and reports `DeadlineExceeded`.
+- **`PodCall.deadline_ms`** (proto field 7, optional) carries the same value in the protobuf
+  adapter; zero is refused, absence means none. `RouteConstraints.deadline` replaces the
+  `Timestamp(0)` placeholder in `PodRoute`.
+
+An absolute deadline is only as accurate as the hosts' clocks. A clock behind the epoch
+reads as zero and so expires every deadline rather than extending one.

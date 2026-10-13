@@ -1,9 +1,10 @@
 version = 1
 id = "ptr-protocol"
 maturity = "scaffold"
-last_reviewed = "2026-10-10"
+last_reviewed = "2026-10-13"
 
 implemented = [
+  "PodCall.deadline_ms (proto field 7, optional) converted to CallFrame.deadline, zero refused (ProtocolError::ZeroDeadline)",
   "PodWire v1 semantic version constant",
   "Prost-generated network schemas compiled with vendored protoc",
   "TypedPayload, CallFrame and CALL/RET/ERR/EVT/REVOKE domain frames",
@@ -46,6 +47,7 @@ decisions = [
 ]
 
 checks = [
+  "tests/prost.rs pins the deadline_ms wire bytes; tests/validation.rs: zero deadline refused, absent and explicit values converted",
   "prost roundtrip and malformed PodCall validation tests",
   "a compile-fail doctest that starts compiling, and therefore fails, if session_id is ever restored to PodCall",
   "workspace fmt/check/test/clippy",

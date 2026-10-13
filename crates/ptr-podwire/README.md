@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-10  
-**Code footprint:** 5 Rust source files · 5097 nonblank source lines · 4 integration-test files · 78 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-13  
+**Code footprint:** 5 Rust source files · 5266 nonblank source lines · 5 integration-test files · 91 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- FORMAT_V4: an absolute deadline and origin timestamp in the address binding; V3 and V2 stay readable; expiry refused before execution, the request wait bounded by the deadline (uncertain on timeout), a deadline only shrinks across hops (narrowed_deadline, ensure_deadline_within); PodWireError::DeadlineExceeded
 - PodHost and PodClient carry one Pod invocation and its answer over ALPN_PODWIRE, composing ptr-pods' registry with ptr-net's transport so neither has to know about the other
 - A request frame carries no project field: the project a request resolves in comes from the host's access policy keyed by the authenticated peer, because resolution inside a project is the only thing standing between a request and a Pod's data and a requester that named its project would be choosing which project's Pods it reaches
 - A V1 request frame has no field naming its sender and none naming a session (the V2 frame below carries an identity digest and session id as binding fields, but the sender is still the connection's authenticated peer), so who is asking is the authenticated connection's answer and a session stays a capability the host holds rather than a string a caller presents
@@ -86,6 +87,7 @@
 
 ### Current automated checks
 
+- tests/frame_v4.rs: round trips, V3 compatibility, prefixes, invalid deadlines, shrinking across hops; tests/wire.rs (podwire-backend): a future deadline is served in V4, an expired one is refused by the client and by the host before the Pod runs, a deadline bounds the wait and leaves the request uncertain
 - two peers send byte-identical frames over two real connections to one host and reach two different projects' Pods, each Pod running exactly once
 - an admitted peer reaches its project's Pod over a real ALPN_PODWIRE connection and the peer the host served is the connection's, not a value from the payload
 - a Pod in another project is refused with a refusal asserted equal to the one for a capability nobody serves, with the same Pod reachable from inside its own project as the control

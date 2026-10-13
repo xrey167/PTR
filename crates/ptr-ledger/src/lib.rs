@@ -339,7 +339,7 @@ pub enum LedgerEvent {
         fence_digest: [u8; 32],
     },
     /// A Pod's outbound connection or publication was refused by its egress policy or its
-    /// rate limit before anything left the host (tag 32). The record names the trace, the Pod
+    /// rate limit before anything left the host (tag 33). The record names the trace, the Pod
     /// revision that tried, the redacted `target` (a `host:port` or a topic, never a payload)
     /// and the reason, so the refusal is part of the replayable history rather than a log line.
     ///
@@ -1353,7 +1353,7 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             target,
             reason,
         } => {
-            out.push(32);
+            out.push(33);
             put_string(&mut out, &trace_id.0);
             put_string(&mut out, &source.address.project.0);
             put_string(&mut out, &source.address.namespace.0);
@@ -1793,7 +1793,7 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             check_expert_authority_changed(&event)?;
             event
         }
-        32 => {
+        33 => {
             let trace_id = TraceId(cursor.string()?);
             let address = PodAddress {
                 project: ProjectId(cursor.string()?),
@@ -3209,7 +3209,7 @@ mod effect_record_tests {
     }
 
     #[test]
-    fn egress_refusal_round_trips_under_tag_32_and_the_codes_are_pinned() {
+    fn egress_refusal_round_trips_under_tag_33_and_the_codes_are_pinned() {
         let pinned = [
             (EgressRefusalReason::HostNotAllowed, 0u8),
             (EgressRefusalReason::PortNotAllowed, 1),
@@ -3224,7 +3224,7 @@ mod effect_record_tests {
             let event = egress_refused_event(reason);
             check_encodable(&event).unwrap();
             let encoded = encode_event(&event);
-            assert_eq!(encoded[0], 32);
+            assert_eq!(encoded[0], 33);
             assert_eq!(*encoded.last().unwrap(), code, "the reason code is last");
             assert_eq!(decode_event(&encoded).unwrap(), event);
             for len in 0..encoded.len() {

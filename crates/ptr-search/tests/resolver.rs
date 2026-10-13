@@ -91,7 +91,7 @@ fn the_table_is_a_function_and_is_bounded() {
     );
     assert_eq!(table.add("  ", "supplier:x"), Err(AliasError::Empty));
     assert_eq!(table.add("x", "--"), Err(AliasError::Empty));
-    let long = vec!["w"; MAX_ALIAS_WORDS + 1].join(" ");
+    let long = ["w"; MAX_ALIAS_WORDS + 1].join(" ");
     assert_eq!(
         table.add(&long, "supplier:x"),
         Err(AliasError::TooLong {

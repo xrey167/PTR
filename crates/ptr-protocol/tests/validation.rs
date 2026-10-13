@@ -42,5 +42,8 @@ fn malformed_podwire_call_is_rejected() {
     let mut call = valid();
     call.deadline_ms = Some(1_700_000_000_000);
     let parsed = CallFrame::try_from(call).unwrap();
-    assert_eq!(parsed.deadline, Some(ptr_types::Timestamp(1_700_000_000_000)));
+    assert_eq!(
+        parsed.deadline,
+        Some(ptr_types::Timestamp(1_700_000_000_000))
+    );
 }

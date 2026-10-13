@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-08  
-**Code footprint:** 9 Rust source files · 8730 nonblank source lines · 16 integration-test files · 190 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-13  
+**Code footprint:** 9 Rust source files · 8923 nonblank source lines · 16 integration-test files · 192 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- LedgerEvent::EgressRefused (tag 33): trace, source Pod revision, redacted target (host:port or topic, bounded, no whitespace) and a pinned reason code; the codec and check_encodable refuse every non-canonical form
 - encoded_event(event) is public: the canonical payload encoding of one event (the bytes a log record frames), so a reader that needs only a size or a digest of an event (the ptr-server vcw trace summary) takes it from the encoding instead of rendering the event
 - check_encodable refuses a MeshTunnelLifecycle event whose endpoint binding the decoder would refuse (for example a relayed route without a relay id), so an append path cannot write a record the log cannot read back
 - EffectAttempted/EffectSettled/EffectReconciled records (tags 9-11, beside the unchanged 0-8 and the semantic tag 12) carry an execution audit: the attempt is addressed by its own commit index, and a settled response keeps its digest unconditionally and its bytes up to MAX_RETAINED_RESPONSE
@@ -122,6 +123,7 @@
 
 ### Current automated checks
 
+- effect_record_tests: egress_refusal_round_trips_under_tag_33_and_the_codes_are_pinned and egress_refusal_refuses_every_non_canonical_form
 - the mesh tunnel event round-trips with tag 15 (effect_record_tests::mesh_tunnel_events_round_trip_with_a_stable_tag) and the protected-state reference round-trips with tag 14 without a payload marker in its bytes (semantic_origin_tests::protected_state_reference_round_trips_without_payload_or_key_material)
 - tests/pod_evidence.rs, tests/pod_output.rs (admission and hypothesis with payload and lineage) and the extended all_event_variants_roundtrip_across_reopen (now including ScopeLifecycle) reopen each new record from a FileLedger unchanged; the unknown-origin-kind test now refuses kinds 0, 6 and 255
 - all ten effect and verification codes are pinned to exact bytes, unknown codes are refused at a position located by diffing two records, and invalid presence bytes, truncated digests and trailing bytes are each rejected

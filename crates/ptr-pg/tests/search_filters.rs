@@ -159,7 +159,7 @@ fn asking(principal: &str, groups: &[&str], now: u64) -> SearchFilter {
 async fn the_derived_catalog_ships_the_filter_migration_and_it_adds_its_columns() {
     assert_eq!(DERIVED_MIGRATIONS.len(), 2);
     assert_eq!(DERIVED_MIGRATIONS[1].name, "search_filters");
-    let mut substrate = substrate().await;
+    let substrate = substrate().await;
     let raw = raw_client().await;
     let derived = substrate.schemas().derived.to_string();
     let columns: BTreeSet<String> = raw
@@ -509,7 +509,7 @@ async fn the_sql_predicate_admits_exactly_the_documents_the_reference_predicate_
 async fn re_indexing_the_same_content_replaces_the_access_list_so_a_narrowing_takes_effect() {
     let mut substrate = substrate().await;
     let wide = document("shared", [1.0, 0.0, 0.0, 0.0], SearchAttributes::default());
-    index(&mut substrate, &[wide.clone()]).await;
+    index(&mut substrate, std::slice::from_ref(&wide)).await;
     let bob = asking("bob", &[], 5);
     assert_eq!(
         names(

@@ -160,7 +160,7 @@ impl AliasTable {
         }
         // (start, end, alias key) over word positions.
         let mut matches: Vec<(usize, usize, &Vec<String>)> = Vec::new();
-        for (alias, _) in &self.aliases {
+        for alias in self.aliases.keys() {
             let length = alias.len();
             if length > query_words.len() {
                 continue;
