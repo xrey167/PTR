@@ -121,6 +121,22 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(cli(src, "join", str(out)), 1)
         self.assertFalse((out / "repo.bundle").exists())
 
+    def test_join_refuses_a_symlinked_manifest_and_never_echoes_its_lines(self):
+        out = self.root / "out"
+        out.mkdir()
+        secret = self.root / "secret.txt"
+        secret.write_text("TOKEN=do-not-print\n")
+        (out / ptr_bundle.SUMS_NAME).symlink_to(secret)
+        with self.assertRaises(ptr_bundle.BundleError) as caught:
+            ptr_bundle.read_sums(out / ptr_bundle.SUMS_NAME)
+        self.assertNotIn("do-not-print", str(caught.exception))
+        (out / ptr_bundle.SUMS_NAME).unlink()
+        (out / ptr_bundle.SUMS_NAME).write_text("TOKEN=do-not-print\n")
+        with self.assertRaises(ptr_bundle.BundleError) as caught:
+            ptr_bundle.read_sums(out / ptr_bundle.SUMS_NAME)
+        self.assertNotIn("do-not-print", str(caught.exception))
+        self.assertIn("line 1", str(caught.exception))
+
     def test_parts_join_in_numeric_order(self):
         names = [ptr_bundle.part_name(i) for i in (1000, 101, 10, 2, 0)]
         ordered = sorted(names, key=lambda n: (n != ptr_bundle.BUNDLE_NAME, ptr_bundle.part_number(n)))
