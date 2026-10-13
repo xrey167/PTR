@@ -112,6 +112,7 @@ jobs:
       - run: python scripts/check_contract_citations.py
       - run: python scripts/check_architecture_catalog.py
       - run: python scripts/check_rust_conventions.py
+      - run: python scripts/check_crate_layering.py
       - run: python scripts/run_experiment.py validate
       - run: python scripts/run_component_eval.py validate
       - run: python scripts/check_component_protocols.py

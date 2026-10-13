@@ -1,0 +1,138 @@
+# Crate layering for the root workspace, enforced by `scripts/check_crate_layering.py`.
+#
+# Rules (see docs/architecture/37-crate-layering.md):
+#   1. A crate may depend (normal or build, optional included) only on crates of the
+#      same or a lower rank. `dev-dependencies` are exempt.
+#   2. A backend crate may be a direct dependency only of its owners.
+#   3. Every `crates/ptr-*` and `bins/*` workspace member is placed in exactly one layer.
+#
+# The table is derived from the real dependency graph, not from an aspiration. Where the
+# graph contradicts the intended picture (for example `ptr-podwire` and `ptr-execwire`
+# sit above `ptr-runtime` because they call it), the table says what is true.
+#
+# Known violations are listed under `[[allowed_exception]]` and nowhere else. The list
+# may only shrink: an entry that no longer matches a violation is itself an error, and
+# `scripts/tests/test_check_crate_layering.py` pins the entries that are allowed to exist.
+
+[[layer]]
+name = "kernel"
+rank = 0
+crates = ["ptr-types"]
+
+[[layer]]
+name = "foundation"
+rank = 1
+# Depend on the kernel only.
+crates = [
+  "ptr-analytics",
+  "ptr-config",
+  "ptr-core",
+  "ptr-events",
+  "ptr-exec",
+  "ptr-ingress",
+  "ptr-inspect",
+  "ptr-ledger",
+  "ptr-lineage",
+  "ptr-memory",
+  "ptr-model-api",
+  "ptr-observe",
+  "ptr-protocol",
+  "ptr-security",
+  "ptr-semdb",
+  "ptr-storage",
+]
+
+[[layer]]
+name = "domain"
+rank = 2
+# Build on exactly the foundation layer.
+crates = ["ptr-labeling", "ptr-net", "ptr-search", "ptr-verifier"]
+
+[[layer]]
+name = "composition"
+rank = 3
+crates = ["ptr-branch", "ptr-cluster", "ptr-fastmem", "ptr-feedback", "ptr-pods"]
+
+[[layer]]
+name = "projection"
+rank = 4
+crates = ["ptr-router", "ptr-state", "ptr-worker"]
+
+[[layer]]
+name = "orchestration"
+rank = 5
+crates = ["ptr-pg", "ptr-runtime"]
+
+[[layer]]
+name = "surface"
+rank = 6
+# Wire adapters over the runtime and the HTTP server.
+crates = ["ptr-execwire", "ptr-podwire", "ptr-server"]
+
+[[layer]]
+name = "binary"
+rank = 7
+crates = ["ptr-bench", "ptrctl", "ptrd"]
+
+# Backend crates are matched by exact name or by a trailing `*` prefix pattern.
+[[backend_owner]]
+crate = "iroh"
+owners = ["ptr-net"]
+
+[[backend_owner]]
+crate = "tokio-postgres"
+owners = ["ptr-pg"]
+
+[[backend_owner]]
+crate = "deadpool-postgres"
+owners = ["ptr-pg"]
+
+[[backend_owner]]
+crate = "raft"
+owners = ["ptr-ledger"]
+
+[[backend_owner]]
+crate = "raft-engine"
+owners = ["ptr-ledger"]
+
+[[backend_owner]]
+crate = "opendal"
+owners = ["ptr-storage"]
+
+[[backend_owner]]
+crate = "candle-*"
+owners = ["ptr-pods"]
+
+[[backend_owner]]
+crate = "burn"
+owners = []
+
+[[backend_owner]]
+crate = "burn-*"
+owners = []
+
+[[backend_owner]]
+crate = "turso"
+owners = ["ptr-state"]
+
+[[backend_owner]]
+crate = "libsql"
+owners = []
+
+[[backend_owner]]
+crate = "tracing"
+owners = ["ptr-observe"]
+
+[[backend_owner]]
+crate = "wintun"
+owners = ["ptr-net"]
+
+[[backend_owner]]
+crate = "wireguard-uapi"
+owners = ["ptr-net"]
+
+# Existing violations, each with the reason it is tolerated for now. This list only shrinks.
+[[allowed_exception]]
+from = "ptr-bench"
+to = "tokio-postgres"
+reason = "The S-series PostgreSQL experiment harness opens its own connections to compare against ptr-pg; it should move behind a ptr-pg test-support API."
