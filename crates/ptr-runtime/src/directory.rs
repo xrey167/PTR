@@ -1,4 +1,6 @@
-use ptr_types::{PodEndpoint, PodRevisionAddress, PodRoute, ResolveError, RouteConstraints};
+use ptr_types::{
+    PodEndpoint, PodIdentity, PodRevisionAddress, PodRoute, ResolveError, RouteConstraints,
+};
 use std::collections::BTreeMap;
 
 /// Resolves stable logical Pod addresses to currently admitted physical
@@ -10,6 +12,26 @@ pub trait PodDirectory {
         address: &PodRevisionAddress,
         constraints: &RouteConstraints,
     ) -> Result<PodRoute, ResolveError>;
+
+    /// Resolves a stable [`PodIdentity`] by way of its committed head: identity, then head, then
+    /// [`PodDirectory::resolve`]. An identity without an unrevoked head is
+    /// [`ResolveError::NotFound`]; the route is never built from an older revision.
+    fn resolve_head(
+        &self,
+        heads: &dyn PodHeadSource,
+        identity: &PodIdentity,
+        constraints: &RouteConstraints,
+    ) -> Result<PodRoute, ResolveError> {
+        let head = heads.pod_head(identity).ok_or(ResolveError::NotFound)?;
+        self.resolve(head, constraints)
+    }
+}
+
+/// Where the committed head of a pod identity is read from. The runtime implements it over its
+/// ledger projection; a directory stays unaware of the ledger.
+pub trait PodHeadSource {
+    /// The current head of `identity`, or `None` when it has none or its generation is revoked.
+    fn pod_head(&self, identity: &PodIdentity) -> Option<&PodRevisionAddress>;
 }
 
 #[derive(Default)]

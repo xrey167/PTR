@@ -106,6 +106,12 @@ pub fn pod_lifecycle_target(pod: &PodRevisionAddress) -> String {
     )
 }
 
+impl crate::directory::PodHeadSource for PtrRuntime {
+    fn pod_head(&self, identity: &PodIdentity) -> Option<&PodRevisionAddress> {
+        PtrRuntime::pod_head(self, identity)
+    }
+}
+
 impl PtrRuntime {
     /// The current head of `identity`, unless its generation is revoked.
     ///

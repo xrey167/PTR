@@ -34,7 +34,7 @@ pub mod vcw;
 pub mod vcw_host;
 
 pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
-pub use directory::{InMemoryPodDirectory, PodDirectory};
+pub use directory::{InMemoryPodDirectory, PodDirectory, PodHeadSource};
 #[cfg(feature = "oidc-http")]
 pub use identity::ReqwestJwksRefresher;
 pub use identity::{
