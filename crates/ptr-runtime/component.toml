@@ -197,9 +197,8 @@ missing = [
   "A UseTicket dropped without abandon_use or finish_use leaks its slot (no Drop guard), and ticket ids restart at 1 in every cache, so a ticket of one cache passed to another frees that cache's use with the same id (the owner's own finish then fails closed with UnknownTicket; liveness only). abandon_use is covered by unit tests, not by a planted E007 mutation.",
 ]
 next = [
-  "Decide whether peer identity should be constructible only from an authenticated connection, which would make this crate depend on ptr-net; until then ptr-execwire is the one host that passes an authenticated key and nothing else",
-  "Define the PodWire request framing, which is still undefined even though the execution wire is not",
-  "Retaining a NeuralAnchor outside the artifact remains a deployment obligation; nothing here stores one",
+  "Authenticated peer identity (D1, decided in ADR-0022 as spec S1: admit_peer takes ptr-net's AuthenticatedPeer) is deferred to the first multi-host deployment; until then ptr-execwire is the one host that passes an authenticated key and nothing else",
+    "Retaining a NeuralAnchor outside the artifact remains a deployment obligation; nothing here stores one",
   "Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode",
   "Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract",
   "Wire ptrd request handling beyond bootstrap ingestion",

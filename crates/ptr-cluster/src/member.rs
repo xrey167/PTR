@@ -219,6 +219,24 @@ impl ClusterMember {
             .map_err(ClusterError::Node)
     }
 
+    /// [`ClusterMember::record_snapshot`] bounded by the ledger's retention floor.
+    ///
+    /// `floor` is the ledger position the payload covers through
+    /// (`CompactedSnapshot::covers` for PTR). The log below `index` is discarded only when its
+    /// entries produced exactly that many events; [`ptr_ledger::RaftNode::record_snapshot_within`]
+    /// says why each direction is refused. The refusal comes back as [`ClusterError::Node`]
+    /// text that starts with its stable code.
+    pub fn record_snapshot_within(
+        &self,
+        index: u64,
+        state: Vec<u8>,
+        floor: ptr_ledger::RetentionFloor,
+    ) -> Result<(), ClusterError> {
+        self.locked()
+            .record_snapshot_within(index, state, floor)
+            .map_err(ClusterError::Node)
+    }
+
     /// Take the snapshot a leader installed on this member, if one arrived.
     ///
     /// What arrives is the elected leader's. Because the sender is the

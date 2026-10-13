@@ -223,8 +223,9 @@ and the peer the decision runs under.
 - **Nothing here authenticates a peer.** The key is the one `ptr-net` reports the
   QUIC connection authenticated, and this crate takes the host's word that it passed
   that rather than something else. The same boundary `29-peer-admission-and-pod-scope.md`
-  states, and the same open decision behind it (D1 in issue #23): a `ptr-runtime`
-  dependency on `ptr-net` would make the identity unforgeable at the type level.
+  states, and the same decision behind it (D1 in issue #23, decided in ADR-0022 as spec S1
+  and deferred to the first multi-host deployment): a `ptr-runtime` dependency on
+  `ptr-net` would make the identity unforgeable at the type level.
 - **An answer is not signed.** Inside one exchange the connection vouches for its
   author; once the bytes are stored or forwarded, nothing does. This crate offers no
   way to verify a stored answer rather than producing an artifact that looks like
@@ -255,6 +256,6 @@ and the peer the decision runs under.
   carry.
 - **Nothing about latency, throughput or behaviour under load.** The tests establish
   protocol and isolation properties on localhost.
-- **The other three ALPNs still carry nothing.** `ALPN_MODEL`, `ALPN_BLOB` and
-  `ALPN_EVENTS` remain declared and unspoken. This document closes one of the four
-  C3 named, and says so rather than letting "Pod access" stand in for all of them.
+- **No other ALPN carries model, blob or event traffic.** `ALPN_MODEL`, `ALPN_BLOB` and
+  `ALPN_EVENTS` named protocols nobody specified and were removed (ADR-0022); this
+  document closes the one of C3's four that has a protocol, Pod access.

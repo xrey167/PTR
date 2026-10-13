@@ -21,7 +21,9 @@
 //! What this is not: it is not consensus, and it is not a cluster. It is the
 //! durable state a real group needs underneath it, and a single node using it is
 //! still a single node.
+use crate::compaction::RetentionFloor;
 use crate::integrity::sha256;
+use ptr_types::CommitIndex;
 use raft::prelude::{ConfState, Entry, EntryType, HardState, Snapshot, SnapshotMetadata};
 use raft::util::limit_size;
 use raft::{Error as RaftError, GetEntriesContext, RaftState, Storage, StorageError};
@@ -126,6 +128,99 @@ impl std::fmt::Display for StoragePoisoned {
 }
 
 impl std::error::Error for StoragePoisoned {}
+
+/// Why [`Core::record_snapshot_within`] refused to compact the log or record a snapshot.
+///
+/// Carried inside the [`io::Error`] the storage returns (kind `InvalidData`), so a caller can
+/// recover the variant with `error.get_ref()` and `downcast_ref`; the text starts with the
+/// stable code. Every refusal is made before a byte is written.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotFloorRefusal {
+    /// The entries through `index` produced `events` ledger events and the retained snapshot
+    /// covers only `floor` of them, so discarding the log would leave the rest retained
+    /// nowhere.
+    AboveRetentionFloor {
+        index: u64,
+        events: CommitIndex,
+        floor: CommitIndex,
+    },
+    /// The payload claims to cover `floor` events but the entries through `index` produced only
+    /// `events`: a member restored from it would apply the difference a second time when raft
+    /// replays from `index + 1`.
+    FloorMismatch {
+        index: u64,
+        events: CommitIndex,
+        floor: CommitIndex,
+    },
+    /// A snapshot installed at `snapshot_index` has not been accounted for, so there is no base
+    /// to count ledger events from.
+    Unaccounted { snapshot_index: u64 },
+}
+
+impl SnapshotFloorRefusal {
+    /// Stable diagnostic code of this refusal, also the start of its text.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::AboveRetentionFloor { .. } => "PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR",
+            Self::FloorMismatch { .. } => "PTR_RAFT_SNAPSHOT_FLOOR_MISMATCH",
+            Self::Unaccounted { .. } => "PTR_RAFT_SNAPSHOT_UNACCOUNTED",
+        }
+    }
+}
+
+impl std::fmt::Display for SnapshotFloorRefusal {
+    /// Name the code and the two numbers that disagree.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let code = self.code();
+        match *self {
+            Self::AboveRetentionFloor {
+                index,
+                events,
+                floor,
+            } => write!(
+                f,
+                "{code}: compacting to raft index {index} discards ledger events through {}, \
+                 and the retained snapshot covers only through {}",
+                events.0, floor.0
+            ),
+            Self::FloorMismatch {
+                index,
+                events,
+                floor,
+            } => write!(
+                f,
+                "{code}: raft index {index} produced ledger events through {}, and the payload \
+                 claims to cover through {}",
+                events.0, floor.0
+            ),
+            Self::Unaccounted { snapshot_index } => write!(
+                f,
+                "{code}: the snapshot installed at {snapshot_index} has not been accounted for, \
+                 so no ledger position can be derived from a raft index"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SnapshotFloorRefusal {}
+
+impl From<SnapshotFloorRefusal> for io::Error {
+    /// Every floor refusal is invalid input, never a fault of the disk.
+    fn from(refusal: SnapshotFloorRefusal) -> Self {
+        io::Error::new(io::ErrorKind::InvalidData, refusal)
+    }
+}
+
+/// Whether applying `entry` produces a ledger event.
+///
+/// One predicate, used where entries are applied ([`RaftNode`](crate::RaftNode)) and where the
+/// log is counted for a snapshot, because a retention floor is counted in ledger events and
+/// compaction is made in raft indexes: if the two places disagreed about which entries are
+/// events, the conversion between them would be wrong by exactly the entries they disagree
+/// about. A leader's empty entry and a configuration change are not events.
+pub(crate) fn carries_ledger_event(entry: &Entry) -> bool {
+    entry.get_entry_type() == EntryType::EntryNormal && !entry.data.is_empty()
+}
 
 /// Entry-type wire codes.
 ///
@@ -669,15 +764,72 @@ impl Core {
         sha256(&self.snapshot_data) == self.snapshot_digest
     }
 
-    /// Record a snapshot this node produced itself, discarding the log it covers.
+    /// How many ledger events the entries at or below `index` produce, counted from the events
+    /// the snapshot position already covers upward and by the predicate the node applies
+    /// entries by.
+    ///
+    /// Refused while an installed snapshot is unaccounted for: the stored count then belongs to
+    /// the position before it.
+    fn events_through(&self, index: u64) -> io::Result<u64> {
+        let AppliedEvents::Counted(base) = self.applied else {
+            return Err(SnapshotFloorRefusal::Unaccounted {
+                snapshot_index: self.snapshot_metadata.index,
+            }
+            .into());
+        };
+        let above = self
+            .entries
+            .iter()
+            .filter(|entry| entry.index <= index)
+            .filter(|entry| carries_ledger_event(entry))
+            .count() as u64;
+        base.checked_add(above)
+            .ok_or_else(|| invalid("the count of applied events is exhausted"))
+    }
+
+    /// Record a snapshot this node produced itself, trusting that it covers exactly the events
+    /// the log through `index` produced.
+    ///
+    /// This is [`Core::record_snapshot_within`] with the floor taken from the log itself, so the
+    /// floor checks pass by construction: it exists for hosts that keep no retained snapshot of
+    /// their own to name, and it gives no protection against discarding an event nothing else
+    /// retains. A host that has a durable snapshot must call
+    /// [`Core::record_snapshot_within`] with that snapshot's floor.
+    pub fn record_snapshot(&mut self, index: u64, data: Vec<u8>) -> io::Result<()> {
+        let events = self.events_through(index)?;
+        self.record_snapshot_within(index, data, RetentionFloor::covering(CommitIndex(events)))
+    }
+
+    /// Record a snapshot this node produced itself, discarding the log it covers, bounded by
+    /// the ledger's retention floor.
     ///
     /// This is both halves of what `MemStorage` splits between `compact` and a
     /// fabricated snapshot: a durable store cannot invent a snapshot it does not
     /// hold, so the application hands one in.
     ///
+    /// `floor` is the ledger position the application's durable snapshot covers, and it must
+    /// be **exactly** the number of events the entries at or below `index` produce:
+    ///
+    /// - Short of it is refused with [`SnapshotFloorRefusal::AboveRetentionFloor`]: the log
+    ///   would lose events no retained snapshot describes.
+    /// - Past it is refused with [`SnapshotFloorRefusal::FloorMismatch`]: `data` is what a
+    ///   member that installs it holds *at* `index`, and raft replays from `index + 1`, so a
+    ///   payload covering events the prefix has not produced would apply them twice.
+    /// - While an installed snapshot is unaccounted for it is refused with
+    ///   [`SnapshotFloorRefusal::Unaccounted`].
+    ///
+    /// All three are refused before anything is written. The count is taken here, from the log,
+    /// because only the log knows which raft indexes carried no event; it is persisted with the
+    /// snapshot position.
+    ///
     /// Once the state naming the snapshot is durable, an error while the log is compacted
     /// poisons the storage (the state and the log no longer describe one history).
-    pub fn record_snapshot(&mut self, index: u64, data: Vec<u8>) -> io::Result<()> {
+    pub fn record_snapshot_within(
+        &mut self,
+        index: u64,
+        data: Vec<u8>,
+        floor: RetentionFloor,
+    ) -> io::Result<()> {
         self.refuse_if_poisoned()?;
         if index > self.hard_state.commit {
             return Err(invalid(format!(
@@ -692,6 +844,27 @@ impl Core {
             return Err(invalid("raft snapshot payload is over the bound"));
         }
         let term = self.term_of(index)?;
+        let events = self.events_through(index)?;
+        let retained = floor.index();
+        match events.cmp(&retained.0) {
+            std::cmp::Ordering::Greater => {
+                return Err(SnapshotFloorRefusal::AboveRetentionFloor {
+                    index,
+                    events: CommitIndex(events),
+                    floor: retained,
+                }
+                .into())
+            }
+            std::cmp::Ordering::Less => {
+                return Err(SnapshotFloorRefusal::FloorMismatch {
+                    index,
+                    events: CommitIndex(events),
+                    floor: retained,
+                }
+                .into())
+            }
+            std::cmp::Ordering::Equal => {}
+        }
         // Fenced before the payload lands and before the log is rewritten, for the
         // same reason `apply_snapshot` fences first: `compact_to` discards the
         // prefix, so a fenced writer reaching it has already destroyed shared
@@ -703,24 +876,15 @@ impl Core {
             conf_state: Some(self.conf_state.clone()),
         };
 
+        // `events_through` succeeded, so the count is known: those the previous snapshot
+        // covered and every event entry from there up to `index`.
         let AppliedEvents::Counted(already) = self.applied else {
-            return Err(invalid(
-                "a snapshot is waiting to be accounted for; record no snapshot over it",
-            ));
+            return Err(SnapshotFloorRefusal::Unaccounted {
+                snapshot_index: self.snapshot_metadata.index,
+            }
+            .into());
         };
-        // The events the snapshot covers: those the previous one covered and every event
-        // entry from there up to `index`, counted by the rule `RaftNode` applies entries by.
-        let in_log = self
-            .entries
-            .iter()
-            .filter(|entry| entry.index <= index)
-            .filter(|entry| {
-                entry.get_entry_type() == EntryType::EntryNormal && !entry.data.is_empty()
-            })
-            .count() as u64;
-        let covered = already
-            .checked_add(in_log)
-            .ok_or_else(|| invalid("the count of applied events is exhausted"))?;
+        let covered = events;
 
         let digest = sha256(&data);
         write_payload(&self.dir, &digest, &data)?;

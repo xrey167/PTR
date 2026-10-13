@@ -25,10 +25,14 @@ Spoken today:
 - `ptr-podwire/1` — Pod access (`33-pod-wire.md`)
 - `ptr-exec/1` — execution requests and receipts (`32-execution-wire.md`)
 
-Declared and not yet spoken:
-- `ptr-model/1`
-- `ptr-blob/1`
-- `ptr-events/1`
+An ALPN exists only when its protocol has a contract. `ptr-model/1`, `ptr-blob/1`
+and `ptr-events/1` were declared ahead of any protocol and have been removed rather
+than left declared (C3 in issue #23): a name nothing speaks invites a first speaker
+with no frame format, bound or refusal codes. An endpoint serving every declared
+ALPN refuses one of them
+(`an_endpoint_serving_every_declared_alpn_refuses_a_retired_one`). A protocol for
+model traffic, blobs or events gets an ALPN in the same change that gives it a
+contract.
 
 ## Validation
 
