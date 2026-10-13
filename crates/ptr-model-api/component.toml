@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-model-api"
-maturity = "scaffold"
-last_reviewed = "2026-10-13"
+maturity = "prototype"
+last_reviewed = "2026-10-14"
 
 implemented = [
   "Backend-neutral ModelRequest with request/revision/raw text",
@@ -16,22 +16,27 @@ implemented = [
   "ScenarioBackend: a deterministic demonstrator backend named scenario that echoes the raw text as a Token and emits one Mutation ActionIr (create demo-note, capability demo.local-note.create, type ptr.demo-note.v1) at the request's revision; resume yields Finished. Its own doc comment calls it plumbing evidence for the local HTTP/effect path, not a model-quality baseline",
   "KV-reuse P1 token contract (doc 36): TokenId, Tokenizer trait with TokenizerIdentity, ByteTokenizer (ptr.byte v1, one token per UTF-8 byte), SegmentSource (Raw, Semantic, Memory, Derived), PromptSegment with SHA-256 content_digest and lineage_contribution (Raw carries kind and content digest only), SegmentedModelRequest with tokens() and order-dependent lineage_digest() (covers semantic revision, tokenizer identity and segments), KvReuseMode, KvReusePolicy, KvReuseHint, KvReuseReport (hit_tokens bounded by total, Approximate rejected under ExactOnly), ModelRun and the KvReusingBackend trait; ModelRequest is unchanged. The one non-test implementation is ptr-runtime's CPU ReferenceKvReuseBackend; that Approximate reuse never reaches an effect path is enforced in ptr-runtime (authorize_action and the execution boundary), for runs the host routes through it",
   "PromptSegment::from_text/from_tokens Semantic, Memory and Derived segments are caller-asserted (documented on the constructors): the crate cannot check that the text is the committed value of its source at its generation; a production path builds Semantic segments with ptr-runtime PtrRuntime::semantic_prompt_segment, and lineages fragment per cited generation",
+  "Structured cancellation: CancellationToken (shared atomic flag; clones share it; a child token is cancelled with any ancestor but never the reverse), Clock with SystemClock and ManualClock, Deadline (budget on an injected clock, exceeded when elapsed > budget) and the typed GenerationError (Cancelled { at_token }, DeadlineExceeded, CapabilityUnsupported, InvalidLimits, StreamClosed, Tokenize, Backend(ModelError)) with From conversions into and out of ModelError",
+  "Synchronous streaming contract: StreamingBackend::open_stream returns a boxed EventStream pull iterator (next_event yields Token, Text, Model, Done { FinishReason::Completed | MaxTokens } or Error); BoundedStream checks cancellation and the deadline before every source step and every delivered event, enforces max_tokens, and keeps a look-ahead buffer of at most buffer_capacity items (limits validated: buffer at most 4096, max_tokens at most 2^20); collect_stream drains a stream",
+  "InferenceStreamAdapter wraps any existing InferenceBackend as a StreamingBackend (infer still returns its whole Vec at open time; the Token text is then delivered in Text chunks whose concatenation equals the non-streamed text) and ReferenceByteStreamingBackend streams one Token per byte through ByteTokenizer; both are deterministic plumbing, not models",
+  "Capability negotiation: BackendCapabilities (max context, streaming, resumable, KvReuseSupport, tokenizer identity, max batch, DType list), CapabilityRequirements (from_request estimates context as raw-text byte length; from_segmented uses the exact token count and tokenizer) and negotiate(), which returns every RejectionReason per rejected backend and picks among the survivors by dtype fidelity, then larger context, then larger batch, then smaller backend id, independent of offer order; empty offers and duplicate ids are typed errors",
+  "TaintedPage and TaintedCatalogEntry carry KvReuseTaint plus per-part lineage and payload digests for cached pages; TaintedPage::join (taint join plus part-set union, bounded at 1024 parts) is commutative, associative and idempotent, and require_exact refuses tainted content with PageTaintError::Tainted naming the pages. Metadata only: no K/V bytes, no ActivationFrame fields",
+  "CheckpointHandle: sealed, versioned (v1), SHA-256 digest-bound state with a byte encoding; verify checks version, then backend id, then digest, with typed CheckpointError variants (the digest is unkeyed integrity, not authentication). CheckpointableBackend (provided methods only) is implemented for ReferenceEchoBackend and ScenarioBackend by exporting the ModelResumeRequest continuation state; resume_from_checkpoint requires the supplied context revision to equal the recorded one",
 ]
 
 missing = [
   "A real Hugging Face tokenizer behind the Tokenizer trait: ByteTokenizer is the only implementation, and the tokenizers-backed tokenizer of ptr-pods' qwen-cpu feature does not implement it",
-  "KV-reuse taint is not carried with cached pages or catalog entries, on ActivationFrame, KV page transport or tier objects (ptr-runtime persists the taint registry as ledger events and contains tainted Pod outputs, see its component record); a Tainted<T> wrapper can be bypassed by cloning the value out of value(), so it is a discipline for derived values, not a sandbox",
+  "KV-reuse taint is not carried on ActivationFrame, KV page transport or tier objects (TaintedPage/TaintedCatalogEntry exist here as metadata wrappers but nothing outside this crate uses them yet; ptr-runtime persists its own taint registry as ledger events); a Tainted<T> wrapper can be bypassed by cloning the value out of value(), so it is a discipline for derived values, not a sandbox",
   "Any KvReusingBackend outside ptr-runtime's CPU reference: the P2 catalog, admission and Raw-segment checks live in ptr-runtime (PtrRuntime::admit_segments), not in this crate, which only offers the raw_from_* constructor split",
-  "Async streaming backend contract",
-  "Backend capability negotiation",
-  "SGLang, vLLM and Burn-native adapters",
-  "Backend checkpoint/state handles beyond observation-based continuation",
-  "Structured cancellation and timeout semantics",
+  "Async (tokio/futures) streaming adapter: the streaming contract is a synchronous pull iterator, and the runtime does not consume StreamingBackend yet",
+  "SGLang, vLLM and Burn-native adapters; no real backend implements StreamingBackend or reports BackendCapabilities, and the capability descriptors are not yet wired into ptr-router or ptr-runtime backend selection",
+  "Checkpoint handles carry only observation-based continuation state of the two plumbing backends; no backend exports model state (KV pages, activations), and the handle digest is unkeyed",
+  "Cancellation and deadlines are enforced only by the streaming wrappers here; the existing Vec-returning infer/resume calls and ptr-runtime do not take a CancellationToken or Deadline",
 ]
 
 next = [
-  "Convert infer/resume from Vec-returning sync calls to cancellable async streams",
-  "Add backend capability descriptor",
+  "Route ptr-runtime through StreamingBackend with a CancellationToken and Deadline, and feed BackendCapabilities into backend selection",
+  "Add an async (tokio/futures) adapter over the synchronous EventStream",
   "Implement first external model adapter after inference-serving evaluation",
 ]
 

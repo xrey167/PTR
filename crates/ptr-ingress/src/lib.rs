@@ -1,52 +1,38 @@
 //! Raw and typed ingress remain parallel. Typed interpretations never erase raw evidence.
+//!
+//! The crate offers a deterministic, std-only pipeline: bounded magic-byte sniffing
+//! ([`sniff()`]), text normalization with a raw-offset map ([`normalize()`]), a structural
+//! parser stack ([`parse()`]), a pluggable classifier contract with a rule-based reference
+//! implementation ([`SemanticClassifier`], [`RuleClassifier`]), span-level provenance
+//! ([`RawSpan`]) and a risk/disagreement verification policy ([`evaluate_policy`]).
+//! [`IngressPipeline`] ties them together and always keeps the untouched raw input.
 
-use ptr_types::{ArtifactId, Probability, SemanticIssue};
+mod classify;
+mod model;
+mod normalize;
+mod parse;
+mod pipeline;
+mod policy;
+mod provenance;
+mod sniff;
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum RawInput {
-    Text(String),
-    Bytes(Vec<u8>),
-    Artifact(ArtifactId),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ArtifactKind {
-    Text,
-    Image,
-    Audio,
-    Video,
-    Pdf,
-    Archive,
-    Database,
-    Unknown,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct LabelScore {
-    pub label: String,
-    pub probability: Probability,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SemanticProposal {
-    pub task_types: Vec<LabelScore>,
-    pub reasoning_types: Vec<LabelScore>,
-    pub effects: Vec<LabelScore>,
-    pub issues: Vec<SemanticIssue>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CrossCheckStatus {
-    Agree,
-    SampleVerified,
-    Disputed,
-    NeedsFullCheck,
-}
-
-pub fn cross_check(raw_present: bool, hard_issue_count: usize) -> CrossCheckStatus {
-    match (raw_present, hard_issue_count) {
-        (false, _) => CrossCheckStatus::NeedsFullCheck,
-        (_, 0) => CrossCheckStatus::SampleVerified,
-        _ => CrossCheckStatus::Disputed,
-    }
-}
+pub use classify::{
+    ClassifierInput, ClassifierOutput, ClassifyError, LabelAxis, LabelEvidence, RuleClassifier,
+    SemanticClassifier, StructureClassifier,
+};
+pub use model::{ArtifactKind, LabelScore, RawInput, SemanticProposal};
+pub use normalize::{
+    normalize, InvalidUtf8Policy, NormalizeError, NormalizeOptions, NormalizedText, NulPolicy,
+    TextEncoding,
+};
+pub use parse::{
+    parse, validate_json, CodeLanguage, DocumentFormat, JsonError, JsonErrorKind, ParseIssue,
+    ParseOptions, ParsedDocument, Segment, SegmentKind,
+};
+pub use pipeline::{IngestHints, IngressConfig, IngressError, IngressPipeline, IngressRecord};
+pub use policy::{
+    cross_check, evaluate_policy, CrossCheckStatus, DisagreementReason, PolicyConfig, PolicyInput,
+    VerificationDecision, HIGH_RISK_EFFECT_LABELS,
+};
+pub use provenance::{OffsetMap, RawSpan};
+pub use sniff::{kind_for_extension, sniff, SniffReport, SNIFF_WINDOW};

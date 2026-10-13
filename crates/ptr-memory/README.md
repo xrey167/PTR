@@ -8,9 +8,9 @@
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
-**Maturity:** `scaffold`  
-**Last reviewed:** 2026-10-03  
-**Code footprint:** 6 Rust source files · 1256 nonblank source lines · 2 integration-test files · 22 test markers (`#[test]`, `#[tokio::test]`)
+**Maturity:** `prototype`  
+**Last reviewed:** 2026-10-14  
+**Code footprint:** 14 Rust source files · 4194 nonblank source lines · 8 integration-test files · 80 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -28,20 +28,28 @@
 - Ingestion pipeline traits (SemanticTokenizer, EntityExtractor, NamespaceResolver, KnowledgeObjectBuilder) with deterministic reference implementations: whitespace tokenizer, SHA-256-derived entity ids, first-namespace resolver and a builder producing a generation-1 Hot KnowledgeObject with the event as source and provenance; these are placeholders without semantic extraction
 - InMemoryKvStateRuntime behind the KvStateRuntime trait: continue_state chains states from a CompiledContext digest, invalidate_dependencies marks matching states and all their descendants Invalidated, an invalidated state cannot be continued and must be recomputed
 - KV continuation is authorized only by an opaque KvStateHandle bound to its creating runtime (ForeignHandle for another runtime's handle); callers get read-only KvStateMetadata and cannot submit edited session/revision/model/adapter/dependency fields
+- MemoryJournal: append-only file of framed records (u32 length, in-crate IEEE CRC-32, opaque payload) with a kind-tagged header; open recovers a torn tail (incomplete or CRC-failing final frame is truncated), reports mid-file damage as a typed JournalError::Corrupt without touching the file, bounds record and file size, poisons itself after a failed write, and compacts by writing a temporary sibling file and renaming it over the journal
+- DurableKnowledgeStore wraps KnowledgeStore: each successful mutation is appended to the journal in a hand-written binary encoding and replayed on open, so state_digest() after reopen equals the digest before close (checked over deterministic pseudo-random operation sequences, including across compaction); rejected operations are not journaled; compaction rewrites the journal as a snapshot including lifecycle records and revision counters
+- DurableMemoryStore keeps typed MemoryRecord values for the semantic, episodic, procedural and epistemic classes in one journaled store: every mutation is one atomic frame (committed revision horizon, logical clock, full new value of each changed record) written before memory is changed, with per-class capacity and field-size bounds and optional automatic compaction
+- Record lifecycle is an explicit state machine (Provisional, Authoritative, NeedsRevalidation, Retired, Revoked): only allowed transitions succeed, others return InvalidTransition { id, from, to }, Revoked is terminal, and Authoritative additionally requires a committed observation (Invariant 4) so derived or search support alone can never grant authority (Invariant 5)
+- Revocation propagation: revoking a record flags every transitive derived_from dependent as NeedsRevalidation with the revoked ancestor recorded, using a breadth-first, cycle-safe traversal bounded by depth and visited count that changes nothing when a bound is hit; the result is persisted through the journal and a flagged record cannot be re-authorised while a revoked ancestor stands
+- ConsolidationPolicy is a deterministic rule set, not a learned model: an episodic record is promoted to semantic and authoritative after observations from N distinct sources at or below the committed revision, a typed Contradiction rejects promotion regardless of any learned score (Invariant 11), derived/search-only support is rejected (Invariant 5), uncommitted observations defer (Invariant 4); retention forgets stale unpinned episodic records by logical-clock TTL and demotes contradicted authoritative records
+- SemanticObject (Goal, Constraint, KnownFact, Hypothesis, Unknown, Relation) with lossless conversion to and from the six String buckets of SemanticCapsule (relations use the text form `subject -[predicate]-> object`); the existing capsule types are unchanged and malformed relation strings are a typed error
+- Deterministic Markdown mirrors (render_memory_mirror, render_knowledge_mirror): sorted, stable output with escaped free text; sensitive record bodies are written as [REDACTED] and raw events appear only as size and SHA-256 digest
 
 ### Missing for the target architecture
 
-- Persistent semantic/episodic/procedural/epistemic stores: KnowledgeStore and InMemoryKvStateRuntime are in-memory only
-- Lifecycle enforcement and revocation propagation beyond the in-memory KnowledgeStore and KV runtime: nothing is durable and nothing is wired to a ptr-state repository
-- Consolidation/promotion policies
+- Wiring into a ptr-state repository: the journals are standalone files, not projections of committed ledger events, and nothing proves a record's revision was committed beyond the horizon the caller declares
+- KnowledgeObject-level consolidation: promotion/demotion policy covers MemoryRecord only; KnowledgeStore objects and the SemanticCapsule/VerifiedProcedure types are not stored in DurableMemoryStore
+- Contradictions are caller-supplied inputs per decision and are not persisted or tracked as unresolved state in the store
+- Encryption at rest: sensitive record bodies are redacted in Debug and mirrors but are stored in clear text in the journal
 - A trained retention model and real semantic tokenization/entity extraction: the reference implementations are deterministic placeholders
-- Shared typed semantic objects instead of separate String buckets for goals/constraints/known/hypotheses/unknowns/relations
-- Multi-vector/late-interaction representations and human-readable mirror
+- Multi-vector/late-interaction representations
 
 ### Next milestones
 
 - Replace string payload buckets with shared ptr-types semantic-role/epistemic wrappers while keeping SemanticCapsule aggregate ownership in ptr-memory
-- Implement capsule lifecycle repository on ptr-state
+- Implement capsule lifecycle repository on ptr-state and drive the committed horizon of DurableMemoryStore from ledger commits
 - Evaluate editable-memory superiority against strong RAG in E002/E004
 
 ### Linked experiments
@@ -66,6 +74,11 @@
 - ptr-memory tests/retention.rs: retention_preserves_pinned_objects, retention_drops_result_before_dropping_call, retention_rejects_duplicate_scores
 - ptr-memory tests/retention.rs: context_compiler_rejects_missing_dependencies_and_budget_overflow, dropped_dependency_cannot_satisfy_an_active_object, context_digest_is_independent_of_equal_priority_input_order
 - ptr-memory tests/retention.rs: kv_runtime_continues_and_requires_recompute_on_dependency_invalidation, kv_handles_are_owned_by_their_runtime, deterministic_ingestion_builds_typed_knowledge_object
+- ptr-memory tests/journal.rs: every_torn_tail_length_recovers_the_intact_prefix, mid_file_corruption_is_a_typed_error_and_leaves_the_file_alone, corrupt_last_frame_is_a_torn_write, rewrite_compacts_and_survives_reopen
+- ptr-memory tests/durable_knowledge.rs: state_after_reopen_equals_state_before_close_over_a_deterministic_sequence, compaction_shrinks_the_journal_and_preserves_state, rejected_operations_are_not_journaled, durable_store_keeps_invalidation_cascades_across_restart
+- ptr-memory tests/memory_lifecycle.rs: only_allowed_transitions_succeed_with_typed_errors_otherwise, authority_requires_a_committed_observation_invariant_4, derived_or_search_support_never_grants_authority_invariant_5, revocation_propagates_to_transitive_dependents_and_is_persisted, revocation_is_cycle_safe, revocation_depth_and_breadth_are_bounded_and_atomic
+- ptr-memory tests/consolidation.rs: promotes_after_enough_independent_committed_sources, derived_or_search_only_support_is_rejected_invariant_5, verifier_contradiction_blocks_promotion_whatever_the_score_invariant_11, retention_forgets_stale_unpinned_episodes_and_demotes_contradicted_authority
+- ptr-memory tests/semantic_mirror.rs: capsule_buckets_convert_to_typed_objects_and_back_exactly, memory_mirror_is_deterministic_sorted_and_independent_of_insert_order, sensitive_bodies_are_never_written_to_the_mirror
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

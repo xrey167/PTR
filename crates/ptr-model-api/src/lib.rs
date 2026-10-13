@@ -1,8 +1,18 @@
 pub mod backend;
+mod cancel;
+mod capabilities;
+mod checkpoint;
 pub mod event;
+mod page_taint;
 pub mod request;
+mod streaming;
 mod tokens;
 pub use backend::*;
+pub use cancel::*;
+pub use capabilities::*;
+pub use checkpoint::*;
 pub use event::*;
+pub use page_taint::*;
 pub use request::*;
+pub use streaming::*;
 pub use tokens::*;
