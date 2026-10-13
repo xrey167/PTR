@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-08  
+**Last reviewed:** 2026-10-13  
 **Code footprint:** 17 Rust source files · 6672 nonblank source lines · 2 integration-test files · 161 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
@@ -80,7 +80,7 @@
 ### Next milestones
 
 - Run L004 against PostgreSQL 16 and 17 and with readers concurrent with the projector
-- Run Q003-v3 (successor of the superseded Q003-v2, itself the successor of the superseded Q003) against the reference retrieval baselines
+- Fix the lexical half (plainto_tsquery ANDs every term, so natural-language queries find nothing; Q003-v3, completed, found it) and test a working hybrid in a new preregistered experiment
 - Add TLS and separate projector, reader and migrator roles
 
 ### Linked experiments
@@ -142,7 +142,7 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-pg.mmd`](../../docs/diagrams/components/ptr-pg.mmd)
 
-**Upstream:** ptr-ledger, ptr-state, ptr-types, ptr-semdb, ptr-search, ptr-branch, ptr-fastmem, ptr-analytics  
+**Upstream:** ptr-ledger, ptr-state, ptr-types, ptr-semdb, ptr-search, ptr-branch, ptr-fastmem, ptr-analytics, ptr-lineage  
 **Downstream:** agent services reading projections, search candidates and working state
 
 ## Mission

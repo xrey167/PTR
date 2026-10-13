@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-branch"
 maturity = "prototype"
-last_reviewed = "2026-09-28"
+last_reviewed = "2026-10-13"
 
 implemented = [
   "RESERVED_PREFIXES is ptr_semdb::INGRESS_PREFIXES re-exported, so the branch checks (staging, SealedBranch::from_parts, certification) and the runtime share one list of keys reserved to ingress",
@@ -43,7 +43,7 @@ missing = [
 ]
 
 next = [
-  "Run S003 against serial execution and last-writer-wins baselines",
+  "Act on S003's descriptive findings (completed against serial, last-writer-wins and key-level OCC baselines): 41% of refusals were unnecessary (predicate digests) and 9% were increments written as values (typed merge operators)",
   "F003 completed on a simulated adjudicator (2 per mille error); a real-adjudication successor needs its own protocol",
 ]
 

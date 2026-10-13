@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-28  
+**Last reviewed:** 2026-10-13  
 **Code footprint:** 7 Rust source files · 3799 nonblank source lines · 3 integration-test files · 112 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
@@ -53,7 +53,7 @@
 
 ### Next milestones
 
-- Run S003 against serial execution and last-writer-wins baselines
+- Act on S003's descriptive findings (completed against serial, last-writer-wins and key-level OCC baselines): 41% of refusals were unnecessary (predicate digests) and 9% were increments written as values (typed merge operators)
 - F003 completed on a simulated adjudicator (2 per mille error); a real-adjudication successor needs its own protocol
 
 ### Linked experiments

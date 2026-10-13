@@ -89,8 +89,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-state.mmd`](../../docs/diagrams/components/ptr-state.mmd)
 
-**Upstream:** ptr-ledger  
-**Downstream:** ptr-memory, ptr-search, ptr-semdb
+**Upstream:** ptr-ledger, ptr-pods, ptr-types  
+**Downstream:** ptr-runtime, ptr-pg, ptr-bench
 
 ## Mission
 

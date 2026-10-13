@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-19  
+**Last reviewed:** 2026-10-13  
 **Code footprint:** 1 Rust source files · 126 nonblank source lines · 2 integration-test files · 8 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
@@ -23,10 +23,10 @@
 
 ### Missing for the target architecture
 
-- Principal/session/resource scopes
+- Principal/session/resource scopes in this crate (the scoped execution gateway of ptr-runtime, doc 21, holds host-issued sessions and exact capsule/project grants; ptr-security decides on one ActionAuthorization at a time)
 - Context trust/evidence model
 - Sandbox execution contract
-- Durable denial/receipt audit persistence and escalation requirements
+- Durable denial/receipt audit persistence and escalation requirements (ptr-runtime journals effect attempts and settlements, doc 28, but no AuthorizationReceipt or denial is persisted)
 
 ### Next milestones
 
@@ -67,8 +67,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-security.mmd`](../../docs/diagrams/components/ptr-security.mmd)
 
-**Upstream:** ptr-core, ptr-router, ptr-ingress  
-**Downstream:** ptr-exec, ptr-ledger
+**Upstream:** ptr-types  
+**Downstream:** ptr-runtime
 
 ## Mission
 

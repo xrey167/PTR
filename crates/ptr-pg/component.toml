@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-pg"
 maturity = "prototype"
-last_reviewed = "2026-10-08"
+last_reviewed = "2026-10-13"
 
 implemented = [
   "An instance is the three schemas SchemaSet::with_prefix makes of one prefix, never pg or a prefix beginning pg_, whose names PostgreSQL reserves for system schemas and would refuse to create; connect_with refuses any other set (InvalidSchemaSet) before it connects, so the names are distinct and no two instances share a schema, and a rebuild, a migration or the projector never touches another instance's",
@@ -70,7 +70,7 @@ missing = [
 
 next = [
   "Run L004 against PostgreSQL 16 and 17 and with readers concurrent with the projector",
-  "Run Q003-v3 (successor of the superseded Q003-v2, itself the successor of the superseded Q003) against the reference retrieval baselines",
+  "Fix the lexical half (plainto_tsquery ANDs every term, so natural-language queries find nothing; Q003-v3, completed, found it) and test a working hybrid in a new preregistered experiment",
   "Add TLS and separate projector, reader and migrator roles",
 ]
 

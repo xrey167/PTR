@@ -69,7 +69,7 @@ flowchart LR
 Dedicated diagram source: [`docs/diagrams/components/ptr-analytics.mmd`](../../docs/diagrams/components/ptr-analytics.mmd)
 
 **Upstream:** none (pure computation)  
-**Downstream:** ptr-branch, ptr-labeling, ptr-pg
+**Downstream:** ptr-branch, ptr-labeling, ptr-pg, ptr-router, ptr-bench
 
 ## Mission
 

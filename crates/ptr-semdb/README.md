@@ -93,8 +93,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-semdb.mmd`](../../docs/diagrams/components/ptr-semdb.mmd)
 
-**Upstream:** ptr-ingress, ptr-state, ptr-verifier  
-**Downstream:** ptr-core, ptr-router, ptr-memory
+**Upstream:** ptr-types  
+**Downstream:** ptr-runtime, ptr-branch, ptr-verifier, ptr-pg, ptr-bench
 
 ## Mission
 

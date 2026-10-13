@@ -71,8 +71,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-exec.mmd`](../../docs/diagrams/components/ptr-exec.mmd)
 
-**Upstream:** ptr-router, ptr-model-api  
-**Downstream:** ptr-pods, ptr-verifier, ptr-ledger
+**Upstream:** ptr-types  
+**Downstream:** ptr-runtime, ptr-bench
 
 ## Mission
 
