@@ -1,6 +1,10 @@
 """M011 corpora, scorers and tuning sampler (pure Python; offline, no torch)."""
 
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import tomllib
 import unittest
 from unittest import mock
@@ -181,16 +185,31 @@ class ScorerTests(unittest.TestCase):
 
     def test_sandbox_command_is_read_only_hides_homes_and_unshares(self):
         cmd = scorers.sandbox_command("/usr/bin/bwrap", "/tmp/work", ["python3", "-I", "c.py"])
-        self.assertEqual(cmd[:4], ["/usr/bin/bwrap", "--ro-bind", "/", "/"])
+        self.assertEqual(cmd[:4], ["/usr/bin/bwrap", "--ro-bind", "/usr", "/usr"])
+        # The host root is never bound wholesale, and nothing under /etc, /run or /var is (a
+        # home directory appears only as the interpreter's own prefix, if a venv lives there).
+        binds = [cmd[i + 1] for i, arg in enumerate(cmd) if arg in ("--ro-bind", "--bind")]
+        self.assertNotIn("/", binds)
+        for secret in ("/etc", "/run", "/var"):
+            self.assertFalse(any(b == secret or b.startswith(secret + "/") for b in binds), secret)
         self.assertIn("--unshare-all", cmd)
         self.assertIn("--clearenv", cmd)
         self.assertIn("--die-with-parent", cmd)
         self.assertEqual(cmd[cmd.index("--bind") + 1 : cmd.index("--bind") + 3], ["/tmp/work"] * 2)
         hidden = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--tmpfs"]
         self.assertIn("/tmp", hidden)
-        if os.path.isdir("/home"):
-            self.assertIn("/home", hidden)
         self.assertEqual(cmd[-4:], ["--", "python3", "-I", "c.py"])
+
+    @unittest.skipUnless(shutil.which("bwrap") and scorers._bwrap_usable(), "bubblewrap not usable")
+    def test_the_sandbox_sees_no_host_secrets_but_runs_python(self):
+        with tempfile.TemporaryDirectory() as work:
+            # A venv under a home directory makes its own prefix path appear, read-only; nothing
+            # else of the host may: no /etc, /run, /var or /root, and not this test file.
+            hidden = ("/etc", "/run", "/var", "/root", os.path.abspath(__file__))
+            probe = f"import os; print(sorted(p for p in {hidden!r} if os.path.exists(p)))"
+            cmd = scorers.sandbox_command(shutil.which("bwrap"), work, [sys.executable, "-I", "-c", probe])
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=True).stdout
+        self.assertEqual(out.strip(), "[]")
 
 
 class TuningTests(unittest.TestCase):
