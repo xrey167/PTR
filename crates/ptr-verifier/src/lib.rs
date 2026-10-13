@@ -5,18 +5,43 @@
 //! the verifier-closed workspace loop: [`ArithmeticVerifier`], [`JsonSchemaVerifier`],
 //! [`CodeTestVerifier`] and [`FactVerifier`]. Their finding codes, which of them are hard and the
 //! repair role each maps to are one table, in [`codes`].
+//!
+//! Further deterministic verifiers: [`RevisionVerifier`] (a claimed revision/generation against
+//! the current snapshot binding), [`PromotionVerifier`] (a request to promote a claim to
+//! verified/authoritative must cite committed, non-derived, independent evidence) and the
+//! prototype [`ProcessCommandVerifier`] (an allowlisted child process under a wall-clock
+//! timeout; no namespaces or seccomp). [`bound`] adds [`BoundVerificationReport`], which carries
+//! the snapshot a verdict was judged against next to the unchanged [`VerificationReport`].
 
 pub mod arithmetic;
+mod bigint;
+pub mod bound;
 pub mod code_test;
 pub mod codes;
 pub mod fact;
 pub mod json_schema;
+pub mod process;
+pub mod promotion;
+pub mod revision;
 
 pub use arithmetic::ArithmeticVerifier;
+pub use bound::{
+    AtSnapshot, BoundVerificationReport, BoundVerifier, BoundVerifierFabric, NamedBoundVerifier,
+    SnapshotBinding,
+};
 pub use code_test::{CodeTask, CodeTest, CodeTestVerifier, TestVisibility};
 pub use codes::{code_spec, codes_for_role, repair_role_for, CodeSpec, RepairRole, CODE_TABLE};
 pub use fact::{fact_key, BoundReport, FactClaim, FactVerifier};
 pub use json_schema::JsonSchemaVerifier;
+pub use process::{
+    CommandRequest, ProcessCommandVerifier, ProcessConfig, ProcessConfigError, ProcessExit,
+    ProcessLimits, ProcessRejection, ProcessRun,
+};
+pub use promotion::{
+    Evidence, EvidenceOrigin, PromotionClaim, PromotionPolicy, PromotionPolicyError,
+    PromotionTarget, PromotionVerifier,
+};
+pub use revision::{RevisionClaim, RevisionVerifier};
 
 use ptr_types::{ActionIr, CapabilityId, Effect, Probability, TypeId, VerificationLevel};
 
