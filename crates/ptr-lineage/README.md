@@ -80,7 +80,7 @@ flowchart LR
 Dedicated diagram source: [`docs/diagrams/components/ptr-lineage.mmd`](../../docs/diagrams/components/ptr-lineage.mmd)
 
 **Upstream:** ptr-types  
-**Downstream:** training orchestration, adapter serving (evaluated), ptr-pg (work schema tables)
+**Downstream:** ptr-runtime, ptr-pg (work schema tables and adapter), ptr-bench; training orchestration and adapter serving (evaluated, not wired)
 
 ## Mission
 

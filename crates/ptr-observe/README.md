@@ -76,8 +76,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-observe.mmd`](../../docs/diagrams/components/ptr-observe.mmd)
 
-**Upstream:** all runtime crates  
-**Downstream:** ptr-feedback, training, operators
+**Upstream:** ptr-types  
+**Downstream:** none yet (no crate consumes it)
 
 ## Mission
 

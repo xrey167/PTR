@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 4 Rust source files · 1398 nonblank source lines · 5 integration-test files · 49 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 4 Rust source files · 1399 nonblank source lines · 5 integration-test files · 49 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -34,13 +34,13 @@
 - MeshRegistry membership model: one-time invitations, accept creates an Active membership at revision 1, revoke marks it Revoked and bumps the revision, endpoint()/endpoint_binding() resolve only Active members and carry a Direct or Relay route; invitations reject cross-network or zero-digest peer identities, and a consumed invitation cannot be reused
 - MeshRegistry::apply_event replays ptr-types MeshTunnelLifecycleEvents (activation, revocation, route change) with generation/revision checks that reject stale or conflicting revisions and route changes for revoked peers; the membership revision is the single monotone counter, so a replayed older route change is stale, a revoked membership is not reactivated by a later activation event, and a later activation keeps the key digest of the first admission instead of replacing it (the event carries no key-digest field of its own), so it cannot swap the admitted key but is not rejected either; a revoked peer cannot be re-admitted at all, because invite refuses any existing membership; a revocation fails closed and wins a revision it shares with a route change, so the membership ends up revoked whichever of the two arrived first (only an older revocation is stale)
 - Mesh tunnel lifecycle: TunnelProfile/TunnelLease/TunnelState and the MeshTunnelExecutor trait with ReferenceMeshTunnelExecutor (in-memory, follows the same lifecycle rules as the WireGuard executor: the whole-profile fencing check on every call, idempotent establish, revoke and release, rotate_peer tracks the active peer separately so the caller's lease stays valid and rejects an empty peer id or zero key; unlike the WireGuard executor it does not refuse a second live lease on one interface name) and WireguardUserspaceExecutor<D>, which drives an injected WireguardDevice (create_interface, configure_peer, remove_peer, remove_interface) through the same admit/establish/rotate/revoke/release lifecycle and refuses a second live lease on the same interface name; revoke removes the interface at once (release then does not remove it again), establish removes the interface it created if peer configuration fails so a retry works (if that removal fails too the lease keeps ownership, and a retry or release removes the leaked interface), and rotate_peer rejects a zero key, configures the new peer before removing the previous one and leaves the lease profile unchanged so the original lease stays valid; if the previous peer cannot be removed it rolls the new one back, and if that rollback fails too the interface is torn down and the lease revoked (fail closed, with the lease keeping ownership of an interface that could not be removed, so both release and a later revoke retry the removal and revoke reports the failure instead of Ok)
-- Feature wireguard-uapi-backend (Linux only): LinuxWireguardDevice creates and removes interfaces via the host `ip` utility and configures peers through the WireGuard userspace UAPI; the WireGuard public key must be registered explicitly per network, peer id and identity digest and is never derived from the PTR identity digest, interface names are validated (max 15 chars, alphanumeric, _ or -). Not executed in this environment, described from the code only; the UAPI set request only adds or removes the peer public key (no endpoint, allowed-ips or private key); remove_peer sets the UAPI remove flag and reference-counts identities that share one WireGuard key so a rotation that keeps the key does not remove its replacement; both are tested against a mock UAPI socket only, never a real interface
-- Feature wintun-backend (Windows only): WintunDevice loads the Wintun DLL, creates an adapter and session and can probe the driver version; configure_peer only validates the peer and checks that a session exists, so it is a TUN interface without any WireGuard crypto dataplane. Not compiled or run here, described from the code only
+- Feature wireguard-uapi-backend (Linux only): LinuxWireguardDevice creates and removes interfaces via the host `ip` utility and configures peers through the WireGuard userspace UAPI; the WireGuard public key must be registered explicitly per network, peer id and identity digest and is never derived from the PTR identity digest, interface names are validated (max 15 chars, alphanumeric, _ or -). CI lints it and runs its library unit tests (job feature-gates), never against a real interface; the UAPI set request only adds or removes the peer public key (no endpoint, allowed-ips or private key); remove_peer sets the UAPI remove flag and reference-counts identities that share one WireGuard key so a rotation that keeps the key does not remove its replacement; both are tested against a mock UAPI socket only, never a real interface
+- Feature wintun-backend (Windows only): WintunDevice loads the Wintun DLL, creates an adapter and session and can probe the driver version; configure_peer only validates the peer and checks that a session exists, so it is a TUN interface without any WireGuard crypto dataplane. CI only checks that it compiles, on the Windows leg of rust-stable; it is never run
 
 ### Missing for the target architecture
 
-- Peer discovery/session lifecycle
-- Discovery: finding the address for an id nobody told you is a mechanism choice with its own trust question, and iroh's own address lookup is disabled in this build, so turning it on is a decision about trusting a third party rather than a code change
+- Session lifecycle beyond IrohSession: retry, reconnect and a session pool (see below)
+- Discovery: finding the address for an id nobody told you is a mechanism choice with its own trust question, and iroh's own address lookup is disabled in this build; ADR-0022 decides against discovery, so peers are configured through PeerBook
 - A journaled peer book, and any re-resolution of a stale address: the book is in memory and a deployment whose nodes move must record the new address
 - Retry/idempotency semantics and automatic reconnect: backpressure is only a fail-fast per-session in-flight cap
 - Mesh state is in memory and not journaled; MeshRegistry is not connected to Iroh peer admission
@@ -50,7 +50,7 @@
 
 - Carry Raft/PodWire channels over the reusable IrohSession instead of one connection per request
 - Add retry/idempotency and reconnect semantics around authenticated Iroh sessions
-- Exercise partition/reconnect behavior in L002
+- Exercise partition/reconnect over a real connection (L002, completed, ran its three members in process on a deterministic router, with no wire)
 
 ### Linked experiments
 
@@ -93,8 +93,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-net.mmd`](../../docs/diagrams/components/ptr-net.mmd)
 
-**Upstream:** ptr-protocol, ptr-storage  
-**Downstream:** ptr-pods, ptr-ledger, ptr-events
+**Upstream:** ptr-protocol, ptr-types  
+**Downstream:** ptr-cluster, ptr-execwire, ptr-podwire
 
 ## Mission
 
@@ -154,7 +154,7 @@ deliberately does not do. See
 ## Technical approach
 
 - Iroh/QUIC primary candidate
-- separate ALPNs for raft, podwire, blobs, model and events
+- one ALPN per protocol with a contract: raft (`ALPN_RAFT`), Pod access (`ALPN_PODWIRE`) and execution (`ALPN_EXEC`); the model, blob and events ALPNs were removed (ADR-0022)
 
 External projects are **candidates**, not architectural authority. The PTR-owned traits and domain types must remain usable with a replacement backend.
 
@@ -209,5 +209,8 @@ It uses the WireGuard userspace UAPI for peer configuration and the host
 `ip` utility for interface create/remove; those operations require the
 deployment's normal network privileges. The public key is registered
 explicitly from admission and is never derived from a PTR identity digest.
-Windows Wintun and macOS Network Extension remain separate platform adapters
-behind the same `WireguardDevice` contract.
+On Windows, `wintun-backend` compiles `WintunDevice`, a TUN interface without a
+WireGuard crypto dataplane; no macOS Network Extension adapter exists. CI lints
+and unit-tests `wireguard-uapi-backend` (job `feature-gates`) and checks that
+`wintun-backend` compiles on the Windows leg of `rust-stable`; neither runs
+against a real interface.

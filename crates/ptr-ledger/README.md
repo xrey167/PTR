@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 9 Rust source files · 8942 nonblank source lines · 16 integration-test files · 197 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 8947 nonblank source lines · 16 integration-test files · 197 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -81,13 +81,14 @@
 - KvTaintCommitted at tag 29 (subjects: 1 to MAX_KV_TAINT_SUBJECTS (16) pairs of KvTaintSubjectKind Action 0, Derivation 1, Content 2, PodOutput 3 or Request 4 and a 32-byte digest, in strictly ascending (kind code, digest) order; change: Record 0 with report and recipe digests, or Clear 1 with recipe and recompute digests): an empty or over-limit subject list, an unsorted or duplicated one, any zero digest, an unknown kind or change code and trailing bytes are refused by the decoder and by check_encodable; the ledger cannot check that a Clear names a live Record or who may write one, which the runtime does (the runtime registry that consumes the event is not built yet, so replay applies it as a no-op)
 - InputInvalidated at tag 30 (R011 WP3), the compound input invalidation: input identity (1 to MAX_INPUT_IDENTITY_BYTES = 256 bytes, no control character), generation (non-zero), binding digest, an InputInvalidationKind (code 0 Revoked, or code 1 Superseded { old_generation, new_generation, new_digest, replacement_ref }), a u32 fence count and a fence digest. The event names the experts it fences by count and digest only, never by a list; the ledger checks the shape (no zero digest, a Superseded kind repeats the event's generation as old_generation and moves strictly forward) with one function used by the decoder and check_encodable, and cannot check that the count and digest are the fence set, which the runtime re-derives on commit and replay. The public ptr-runtime commit refuses the event; only PtrRuntime::invalidate_input writes it
 - ExpertAuthorityChanged at tag 31 (R011 WP4), the change of an evidence authority: ExpertAuthorityKind (code 0 GateConfig, 1 Evaluator), a 32-byte identity digest, a non-zero epoch, ExpertAuthorityClass (code 0 Revoke, 1 TighteningRotation, 2 NonTightening), a u32 fence count and a fence digest. A Revoke or TighteningRotation fences the experts admitted under an earlier epoch of that kind in the same record, committed to by count and digest only like tag 30; the codec refuses a zero epoch, a zero identity or fence digest, and a NonTightening change with a non-zero count. The crate cannot check that the epoch advances or that the count and digest are the fence set; the runtime does both on commit and on replay, and the public commit refuses the event
+- Raft storage keeps the poisoned refusal first: record_snapshot refuses a poisoned storage before it counts the log, so an install that failed after persisting SnapshotPending (poisoned and unaccounted) answers PTR_RAFT_STORAGE_POISONED rather than PTR_RAFT_SNAPSHOT_UNACCOUNTED (test: tests/raft_storage_crash.rs an_error_installing_a_snapshot_past_the_state_write_poisons_and_a_restart_finishes, features raft-rs-backend and failpoints)
 
 ### Missing for the target architecture
 
 - Hardware power-loss evidence; anchor key custody, rotation and hardware-backed sealing. L001-v2 models power loss as fsync-honest crash images (the synced prefix of each file plus a seeded subset of what was written after it), not a real power cut, and its durability probe sees file data pages only, so a missing directory fsync is not detected
 - RaftEngineLedger has no hash chain and no protected anchor, so it cannot detect that it lost acknowledged records: its default recovery mode drops a torn tail and reports success (L001-v2 counts this as undetected_rollback, descriptive, and attempts no product work on it)
-- A composition of RaftNode over ptr-net transport on ALPN_RAFT: the group is driven by a test's queue, so there is no framing, no authenticated sender, no bound on what a peer may send and no evidence a real connection carries these messages; ptr-ledger must not depend on transport, so the composition needs its own home
-- Membership changes beyond one voter at a time, and any discovery of where a joining voter can be reached: propose_membership adds or removes a single voter, and a joiner must still be given an address out of band
+- Transport inside this crate: ptr-ledger must not depend on transport, so its own raft tests drive the group through a test's queue; the composition of RaftNode over ptr-net on ALPN_RAFT (framing, authenticated sender, bounded frames) lives in ptr-cluster
+- Membership changes beyond one voter at a time: propose_membership adds or removes a single voter, and a joiner must still be given an address out of band (discovery is decided against in ADR-0022; peers are configured through ptr-net's PeerBook)
 - Any check that a RetentionFloor is backed: raft never compacts past the floor it is handed through record_snapshot_within, but the floor is the host's claim about a snapshot it retains, and one that names no retained artifact, or an artifact later lost, loses the events as before; record_snapshot (floor taken from the log) is still public and unbounded; nothing ties raft's cutover to the runtime ledger's own CompactionBarrier cutover, and nothing makes raft discard what the ledger's floor has already passed
 - A multi-entry append whose later records reach the disk while an earlier one is torn (a lost page order) is never acknowledged, but a restart finds valid records after the damage and refuses the log (fail-closed, an operator decision), because cutting records that may have been acknowledged would forget a promise; a poisoned storage still answers reads from memory until it is restarted
 - Limits of the failure handling in RaftNode and FileRaftStorage: a poisoned or failed node still answers reads of committed state (is_leader, role, term, voters, committed_events, raft_committed) and a poisoned member can still say it leads, with raft's in-memory term and commit possibly ahead of the rolled-back storage memory; a log at the MAX_LOG_BYTES (1 GiB) bound is a permanent refusal because nothing triggers a compaction (open holds the file twice, bytes and parsed entries, so the peak is about 2-3 GiB at the bound); a failed or poisoned member is restarted by the host, nothing here restarts it
@@ -100,8 +101,8 @@
 ### Next milestones
 
 - Define storage/consensus interfaces around existing Ledger contract
-- Benchmark FileLedger against raft-engine, then connect raft-rs RawNode to raft-engine persistence and network transport
-- L002 (recovery of the compaction cutover and of a Raft member's snapshot transitions) is built to freeze-ready; the head freezes it and runs its five seeds
+- Benchmark FileLedger against raft-engine (raft-rs persists to FileRaftStorage; raft-engine is the separate RaftEngineLedger, and the network transport is ptr-cluster's)
+- L002 (recovery of the compaction cutover and of a Raft member's snapshot transitions) is completed (verdict COMPLETED, now marked stale: its evidence describes the code before the C7 retention floor, results/STALE.toml); evidence for the floor itself needs a successor experiment
 
 ### Linked experiments
 
@@ -183,8 +184,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-ledger.mmd`](../../docs/diagrams/components/ptr-ledger.mmd)
 
-**Upstream:** ptr-verifier, ptr-security  
-**Downstream:** ptr-state, ptr-events
+**Upstream:** ptr-types  
+**Downstream:** ptr-state, ptr-runtime, ptr-cluster, ptr-pg, ptr-server, ptrd, ptr-bench
 
 ## Mission
 
@@ -277,8 +278,12 @@ A new candidate should be added with a reproducible benchmark and failure-semant
 [Durable semantic-state contract](../../docs/architecture/22-durable-semantic-state.md)
 records the new code/codec, ownership and replay boundaries. Publication follows
 successful journal append. Typed Pod bytes and source identity participate in
-semantic revisions. Logical removals do not erase log history; neural checkpoints
-and authenticated framing remain separate gates. Execution evidence is in the PR.
+semantic revisions. Logical removals do not erase log history. Neural checkpoints
+and authenticated framing were separate gates when this was written; checked framing
+and anchors ([23](../../docs/architecture/23-persistence-integrity.md),
+[24](../../docs/architecture/24-protected-anchors.md)) and neural-state admission
+([27](../../docs/architecture/27-neural-state-admission.md)) have since landed at
+library level. Execution evidence is in the PR.
 
 ## Persistence contract update
 

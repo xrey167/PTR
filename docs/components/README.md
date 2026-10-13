@@ -1,6 +1,6 @@
 # PTR Component Documentation
 
-Every runtime/model crate has a local README and a dedicated Mermaid source diagram.
+Every workspace crate (33) has a local README and a dedicated Mermaid source diagram. Purposes below state what the crate does today; `component.toml` and the [status dashboard](STATUS.md) list what is missing.
 
 [**Implementation status dashboard →**](STATUS.md)
 
@@ -14,21 +14,21 @@ Every runtime/model crate has a local README and a dedicated Mermaid source diag
 | [ptr-semdb](../../crates/ptr-semdb/README.md) | Maintains revisioned ground state and dependency-aware derived semantics using an incremental-compiler model. | [diagram](../diagrams/components/ptr-semdb.mmd) |
 | [ptr-core](../../crates/ptr-core/README.md) | Research implementation of the model architecture: raw token states plus typed semantic slots, epistemic state, latent recurrence and operator routing. | [diagram](../diagrams/components/ptr-core.mmd) |
 | [ptr-model-api](../../crates/ptr-model-api/README.md) | Keeps the runtime independent of any single inference server or model implementation. | [diagram](../diagrams/components/ptr-model-api.mmd) |
-| [ptr-exec](../../crates/ptr-exec/README.md) | Runs PTR subsystems as supervised state machines with bounded typed mailboxes, explicit backpressure, cancellation and replay semantics. | [diagram](../diagrams/components/ptr-exec.mmd) |
+| [ptr-exec](../../crates/ptr-exec/README.md) | Bounded typed mailboxes with explicit backpressure (`Full`/`Closed`); the supervised isolate scheduler is not built. | [diagram](../diagrams/components/ptr-exec.mmd) |
 | [ptr-pods](../../crates/ptr-pods/README.md) | Defines specialist computational modules through semantic contracts rather than fragile tool names. | [diagram](../diagrams/components/ptr-pods.mmd) |
-| [ptr-router](../../crates/ptr-router/README.md) | Chooses how a task should be solved: neural reasoning, search, statistics, simulation, symbolic methods, Pods or combinations. | [diagram](../diagrams/components/ptr-router.mmd) |
+| [ptr-router](../../crates/ptr-router/README.md) | Chooses Pods: project-scoped selection with keyed sampling and logged propensities, routing by verifier findings, off-policy evaluation and a gated policy book; operator routing (search, symbolic, simulation) is not built. | [diagram](../diagrams/components/ptr-router.mmd) |
 | [ptr-verifier](../../crates/ptr-verifier/README.md) | Combines deterministic, executable, statistical and learned checks into explicit verification reports. | [diagram](../diagrams/components/ptr-verifier.mmd) |
-| [ptr-feedback](../../crates/ptr-feedback/README.md) | Implements candidate populations, critique, patch/rewrite, selection and trajectory capture for test-time and training-time improvement. | [diagram](../diagrams/components/ptr-feedback.mmd) |
-| [ptr-ledger](../../crates/ptr-ledger/README.md) | Records the authoritative ordered lifecycle of semantic changes and, in cluster mode, applies distributed consensus before state materialization. | [diagram](../diagrams/components/ptr-ledger.mmd) |
+| [ptr-feedback](../../crates/ptr-feedback/README.md) | Candidate acceptance rule, critique from verifier findings and the generate-verify-repair loop; population selection and trajectory capture are not built. | [diagram](../diagrams/components/ptr-feedback.mmd) |
+| [ptr-ledger](../../crates/ptr-ledger/README.md) | Records the authoritative ordered lifecycle of semantic changes (`FileLedger`); raft-engine and raft-rs backends are feature-gated and not used by the runtime. | [diagram](../diagrams/components/ptr-ledger.mmd) |
 | [ptr-state](../../crates/ptr-state/README.md) | Projects committed ledger events into queryable current-state views without replacing the ledger as causal authority. | [diagram](../diagrams/components/ptr-state.mmd) |
 | [ptr-memory](../../crates/ptr-memory/README.md) | Stores validated semantic, episodic, procedural and epistemic memory as lifecycle-managed domain objects. | [diagram](../diagrams/components/ptr-memory.mmd) |
-| [ptr-search](../../crates/ptr-search/README.md) | Routes queries across lexical, semantic, GPU, multimodal, distributed and structural search backends while keeping retrieval non-authoritative. | [diagram](../diagrams/components/ptr-search.mmd) |
+| [ptr-search](../../crates/ptr-search/README.md) | Keeps retrieval non-authoritative: search hits are promoted only through exact-source resolution and claim verification; no search-engine adapter is built. | [diagram](../diagrams/components/ptr-search.mmd) |
 | [ptr-storage](../../crates/ptr-storage/README.md) | Provides typed, content-addressed artifact references while abstracting physical storage locations. | [diagram](../diagrams/components/ptr-storage.mmd) |
 | [ptr-net](../../crates/ptr-net/README.md) | Connects PTR nodes and remote Pods with authenticated transport while leaving protocol semantics to ptr-protocol. | [diagram](../diagrams/components/ptr-net.mmd) |
 | [ptr-cluster](../../crates/ptr-cluster/README.md) | Carries raft messages between authenticated PTR endpoints on `ALPN_RAFT`, composing `ptr-ledger`'s consensus with `ptr-net`'s transport. | [diagram](../diagrams/components/ptr-cluster.mmd) |
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | Carries one execution request and its receipt between authenticated PTR endpoints on `ALPN_EXEC`, composing `ptr-runtime`'s execution authority with `ptr-net`'s transport. | [diagram](../diagrams/components/ptr-execwire.mmd) |
 | [ptr-podwire](../../crates/ptr-podwire/README.md) | Carries one Pod invocation and its answer between authenticated PTR endpoints on `ALPN_PODWIRE`, composing `ptr-pods`' registry with `ptr-net`'s transport. | [diagram](../diagrams/components/ptr-podwire.mmd) |
-| [ptr-events](../../crates/ptr-events/README.md) | Projects committed and runtime events into scalable streams for analytics, materializers, telemetry and training collectors. | [diagram](../diagrams/components/ptr-events.mmd) |
+| [ptr-events](../../crates/ptr-events/README.md) | Runtime event taxonomy and an at-least-once producer/consumer contract; no streaming backend is built. | [diagram](../diagrams/components/ptr-events.mmd) |
 | [ptr-observe](../../crates/ptr-observe/README.md) | Records structured runtime execution without requiring natural-language chain-of-thought logging. | [diagram](../diagrams/components/ptr-observe.mmd) |
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | Allows generic inspection and rendering of typed Rust values without collapsing the runtime into untyped JSON. | [diagram](../diagrams/components/ptr-inspect.mmd) |
 | [ptr-security](../../crates/ptr-security/README.md) | Enforces the hard shell around uncertain reasoning: capabilities, permissions, trust levels, effects, secrets and sandbox requirements. | [diagram](../diagrams/components/ptr-security.mmd) |

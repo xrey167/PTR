@@ -33,13 +33,13 @@ All line numbers were rechecked against the tree on 2026-10-13; later commits ca
   (`crates/ptr-model-api/src/backend.rs:20` and `:44`), and `bins/ptrd` accepts
   those two names plus `reference-kv`, a CPU reference with seeded random weights
   (`bins/ptrd/src/main.rs:59-63`, dispatch at `:93-95`), and refuses others.
-- No workspace crate tokenizes model input with a model vocabulary; only the
-  byte-level `ByteTokenizer` exists (`crates/ptr-model-api/src/tokens.rs:158`).
-  `ptr-memory` has a
+- The only `Tokenizer` of `ptr-model-api` is the byte-level `ByteTokenizer`
+  (`crates/ptr-model-api/src/tokens.rs:160`). The one model-vocabulary tokenizer in the
+  workspace is private to the feature-gated CPU Qwen generator of `ptr-pods`
+  (`qwen-cpu`, `crates/ptr-pods/src/qwen_cpu/tokenizer.rs`, on the locally patched
+  `tokenizers` crate) and is not behind the `Tokenizer` trait. `ptr-memory` has a
   `SemanticTokenizer` (`crates/ptr-memory/src/ingestion.rs:33`), but it turns a raw
-  event into a semantic event, not a model vocabulary id sequence. The `tokenizers`
-  crate appears only in `Cargo.lock` as a transitive dependency of `candle-core`
-  (patched via `Cargo.toml:87`).
+  event into a semantic event, not a model vocabulary id sequence.
 
 ### Unwired CPU KV reference in `ptr-pods`
 
@@ -70,9 +70,9 @@ Around it in the runtime and memory crates:
   **A KV handle must never cross the wire**; only activations and policy do
   (doc 33). Today this is a **design rule, not an enforced guarantee**: removing
   `session_id` does not stop KV material from crossing PodWire, because
-  `TypedPayload` is an arbitrary `type_id` plus bytes (`crates/ptr-protocol/src/lib.rs:16-19`)
+  `TypedPayload` is an arbitrary `type_id` plus bytes (`crates/ptr-protocol/src/lib.rs:19-22`)
   and the `PodCall` conversion checks only that the type id is non-empty
-  (`crates/ptr-protocol/src/lib.rs:62-88`, `MissingTypeId` at `:74`). Enforcement is
+  (`crates/ptr-protocol/src/lib.rs:65-91`, `MissingTypeId` at `:77`). Enforcement is
   phase P5a.
 
 ### Five defects that block reuse

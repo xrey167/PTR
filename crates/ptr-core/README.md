@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `research-scaffold`  
-**Last reviewed:** 2026-09-19  
+**Last reviewed:** 2026-10-13  
 **Code footprint:** 13 Rust source files · 200 nonblank source lines · 1 integration-test files · 1 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
@@ -27,15 +27,15 @@
 ### Missing for the target architecture
 
 - Production-integrated Burn/CubeCL PTR model beyond the isolated A0 research package
-- Role/epistemic/uncertainty/lifecycle-specific embeddings, masks and typed attention constraints beyond the current learned metadata bias
+- Role/epistemic/uncertainty-specific embeddings and typed attention constraints beyond A0's learned metadata bias and the lifecycle ValidityMask attention bias it takes from ptr-types
 - Task-trained recurrent latent reasoning beyond the current shared refinement layer
 - Task-trained operator router plus ActionIR/verifier neural heads
 - PTR-Diff denoising implementation and training objective
-- Checkpoint/load/save and numerical parity reference
+- Checkpoint/load/save and a numerical parity reference in this crate (model/burn-a0 saves checkpoints under the ptr-types CheckpointHeader; nothing here does)
 
 ### Next milestones
 
-- Integrate Burn A0 with dataset-backed training and matched no-slot baseline for M001
+- Matched comparisons beyond A0's own ablations: the A0 studies so far (M001-v6 full against no-semantic-slots-masked, M002-v11, M003-v4) are INCONCLUSIVE with no positive claim, and connecting A0 to the runtime waits on a study that passes its gates (ADR-0022, S8)
 - Build matched plain-transformer baseline at equal parameter/compute budget
 - Run M001–M005 ablations before scaling model size
 
@@ -82,8 +82,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-core.mmd`](../../docs/diagrams/components/ptr-core.mmd)
 
-**Upstream:** ptr-semdb, ptr-model-api  
-**Downstream:** ptr-router, ptr-exec, ptr-verifier
+**Upstream:** ptr-types  
+**Downstream:** ptr-runtime, ptr-execwire, ptr-bench
 
 ## Mission
 

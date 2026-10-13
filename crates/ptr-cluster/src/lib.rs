@@ -12,9 +12,10 @@
 //! connection actually authenticated.
 //!
 //! What this is not: it is not a daemon. There is no background loop, no timer and
-//! no retry policy here. A caller drives `serve_once` and `dispatch`, which keeps
-//! the tests free of sleeps and keeps the scheduling decisions — how often to tick,
-//! when to give up on a peer — where they can be made deliberately.
+//! no retry policy here. A caller drives `serve_once`, `tick`, `campaign`, `propose` and
+//! `propose_membership`, which keeps the tests free of sleeps and keeps the scheduling
+//! decisions — how often to tick, when to give up on a peer — where they can be made
+//! deliberately.
 mod frame;
 
 pub use frame::{decode_batch, encode_batch, FrameError, MAX_BATCH_MESSAGES, MAX_FRAME_BYTES};

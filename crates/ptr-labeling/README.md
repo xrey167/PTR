@@ -76,7 +76,7 @@ flowchart LR
 Dedicated diagram source: [`docs/diagrams/components/ptr-labeling.mmd`](../../docs/diagrams/components/ptr-labeling.mmd)
 
 **Upstream:** ptr-types, ptr-analytics  
-**Downstream:** training datasets, ptr-pg (work schema tables)
+**Downstream:** ptr-bench (F002 harness), ptr-pg (work schema tables, without a crate dependency); training datasets
 
 ## Mission
 

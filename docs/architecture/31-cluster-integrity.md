@@ -269,7 +269,7 @@ involved. Two suites, each proving the thing it can actually prove.
 ### Not a daemon
 
 There is no background loop, no timer and no retry policy in this crate. A caller
-drives `serve_once` and `dispatch`. That is a deliberate omission rather than an
+drives `serve_once`, `tick`, `campaign`, `propose` and `propose_membership`. That is a deliberate omission rather than an
 unfinished one: a loop in the wrong place makes scheduling implicit, and "when do we
 give up on a member that does not answer" is a policy decision, not a detail. It is
 also what keeps these tests free of sleeps.
@@ -415,7 +415,10 @@ Three consequences, stated rather than discovered:
   control for exactly that, because a storage that refused every second writer
   would pass every other test in the file.
 
-The state file format moves to `PTRRST02`. An older file is refused by its magic
+The state file format moved to `PTRRST02` for the fence term; it is `PTRRST03` today (the later
+raft storage rework added the snapshot payload's digest and made the applied-event count a
+typed state, and a new
+layout takes `PTRRST04`, ADR-0022). An older file is refused by its magic
 rather than read as one whose token happens to be zero — a state file read as
 unfenced is the failure this exists to prevent.
 
@@ -427,7 +430,9 @@ unfenced is the failure this exists to prevent.
   on localhost.
 - **Nothing runs the loop.** `ptr-cluster` provides the pieces and no deployment
   drives them: there is no accept/tick service, no policy for a member that stops
-  answering, and no backpressure toward one that answers slowly.
+  answering, and no backpressure toward one that answers slowly. ADR-0022 (D4) places
+  that loop in the embedding host (`ptrd`) under a `ServePolicy` from `ptr-net`
+  (spec S3, not built).
 - **Membership changes one voter at a time, and a joiner must be admitted
   first.** `propose_membership` adds or removes a single voter; a batch API is
   not offered, because raft's single-step change is safe only while consecutive

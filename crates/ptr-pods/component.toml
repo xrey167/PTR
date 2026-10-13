@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-pods"
 maturity = "prototype"
-last_reviewed = "2026-10-10"
+last_reviewed = "2026-10-13"
 
 implemented = [
   "Global workspace contract (src/workspace/, doc 37; a contract, not a model): Workspace holds a fixed bounded number of slots and a revision that advances by one per cycle. Pods submit Proposals (author pod and generation, content digest, PayloadRef, computed_against revision, requested Bid); neither Proposal nor WorkspaceConfig can carry or change a gate, level, threshold, report or verifier, and slot content is Authority::Provisional (invariant 4). Workspace::run_cycle takes a host CycleHost (verifier, VerifierIdentity recorded in the snapshot, AuthorRegistry) and is two-phase: the whole plan is computed without touching the workspace (a verifier panic is caught and judged Unknown with the hard finding verifier-panic, counted), then committed with no fallible step. Order: drop subscriptions of revoked Pod generations; retire incumbents (AuthorRevoked, Aged, Explicit, or Contradicted when Revalidation re-runs the verifier on the incumbent's original proposal and check_verification_gate no longer passes; SlotDecay::NeverUnsafe needs an acknowledgement and a revalidation); judge pending proposals (stale unless within max_staleness and no slot changed since, revoked author, then check_verification_gate = Candidate::passes of ptr-feedback, pinned against it in tests, score never read); admit gate-passers by effective bid (requested bid clamped by max_bid and the registry's per-author ceiling), seeded SHA-256 tie-break, proposal id, with duplicate content keeping its first author, a per-author slot cap and a per-author pending quota; opt-in Displacement::Policy (default off) lets a challenger that passed the gate at a level not below the incumbent's, beat its bid by a margin, after the incumbent's min residency, take an unpinned incumbent's slot under per-cycle and per-author caps, recorded as RetireReason::Displaced. Every loser has a counted Refusal with its reason and findings. Finding messages are host-side by default (invariant 13): snapshots carry bounded finding codes and hard flags, messages go to CycleReport::host_findings unless FindingVisibility::Public; findings per snapshot are bounded. One immutable Arc<WorkspaceSnapshot> with a SHA-256 digest is offered to every subscriber's bounded mailbox; a full mailbox refuses the new snapshot (counted) and never blocks",
@@ -59,7 +59,7 @@ implemented = [
 ]
 
 missing = [
-  "Workspace: no Pod invokes it yet (the finding router of package B and the end-to-end experiment are separate work), slot content is not committed to the ledger, and no experiment has measured whether a workspace or displacement helps; determinism assumes a pure host verifier and registry, and submit-time bounds (PendingFull) depend on arrival order; the host must bound verifier wall-clock time and a panicking AuthorRegistry is not caught",
+  "Workspace: only ptr-runtime's VcwLoop drives it (one workspace per request, simulated or test experts), slot content is not committed to the ledger, and no experiment shows that a workspace or displacement helps a model (F007 measured the workspace only as an implementation check in a world that declares a broadcast reader); determinism assumes a pure host verifier and registry, and submit-time bounds (PendingFull) depend on arrival order; the host must bound verifier wall-clock time and a panicking AuthorRegistry is not caught",
   "Adapters and MoE are not yet wired into ptr-runtime's KvSession/backend: nothing there binds an adapter or expert dependency to a session, re-resolves the binding at restart or tags batch-variant routing Approximate; the catalog and fork paths still have no layer scope or cross-adapter prefix sharing; the MoE has no capacity-free load balancing loss and no trained weights, and the MLP-only adapter is a block-output correction, not a gate/up/down LoRA",
   "Async invocation and PodContext",
   "Process-isolated, remote-Iroh and GPU/DLPack adapters",
@@ -75,7 +75,7 @@ missing = [
 
 next = [
   "Extend registry with lifecycle/backpressure and remote/process adapters",
-  "Implement registry and one native reference Pod",
+  "Wire a real model (the qwen-cpu generator or another) into this crate's paged-KV executors, leases and taint; the registry and native Pods exist (PodRegistry, NeuralPodAdapter, and the VCW expert Pods in ptr-runtime)",
   "Run unseen-Pod semantic generalization experiment R002",
 ]
 

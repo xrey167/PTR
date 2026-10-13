@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-server"
 maturity = "prototype"
-last_reviewed = "2026-10-10"
+last_reviewed = "2026-10-13"
 
 implemented = [
   "KV path hardening: KvBackend::with_max_prompt_tokens refuses a text that tokenizes beyond the limit with 413 (ApiError::PromptTooLong) before any runtime call, so nothing reaches the ledger; KvTaintRegistryFull is 507 Insufficient Storage without Retry-After (the registry never drains); the KV path answers with an x-ptr-kv-hit-tokens header (KV_HIT_TOKENS_HEADER); serve_with_backend serves either backend and ptrd wires the reference-kv name (CPU reference, seeded random weights, byte text) through it; tests/reference_kv.rs starts ptrd and sees a second request with a shared prefix report x-ptr-kv-hit-tokens > 0",
@@ -27,7 +27,7 @@ implemented = [
 ]
 
 missing = [
-  "Pod resumption on the KV path; the taint registry is in memory and not rebuilt after a restart (see ptr-runtime)",
+  "Pod resumption on the KV path (the taint registry itself survives a restart: ptr-runtime rebuilds it from KvTaintCommitted events, tests/kv_taint_resumable.rs the_refusal_survives_a_restart_of_the_server)",
   "Streaming ModelEvent/WebSocket or SSE API",
   "Authentication/session/policy integration",
   "Readiness/admin endpoints beyond basic health",

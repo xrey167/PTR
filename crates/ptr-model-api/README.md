@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-19  
-**Code footprint:** 5 Rust source files · 799 nonblank source lines · 4 integration-test files · 26 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-13  
+**Code footprint:** 5 Rust source files · 801 nonblank source lines · 4 integration-test files · 26 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -24,14 +24,14 @@
 - ModelEvent::ActionReady carries a full ptr_types::ActionIr (operation, target, capability, effect, input type, generation, revision, payload) instead of an operation string
 - ReferenceEchoBackend also implements ResumableInferenceBackend (resume yields Finished)
 - ScenarioBackend: a deterministic demonstrator backend named scenario that echoes the raw text as a Token and emits one Mutation ActionIr (create demo-note, capability demo.local-note.create, type ptr.demo-note.v1) at the request's revision; resume yields Finished. Its own doc comment calls it plumbing evidence for the local HTTP/effect path, not a model-quality baseline
-- KV-reuse P1 token contract (doc 36, contract only, no backend implements it): TokenId, Tokenizer trait with TokenizerIdentity, ByteTokenizer (ptr.byte v1, one token per UTF-8 byte), SegmentSource (Raw, Semantic, Memory, Derived), PromptSegment with SHA-256 content_digest and lineage_contribution (Raw carries kind and content digest only), SegmentedModelRequest with tokens() and order-dependent lineage_digest() (covers semantic revision, tokenizer identity and segments), KvReuseMode, KvReusePolicy, KvReuseHint, KvReuseReport (hit_tokens bounded by total, Approximate rejected under ExactOnly), ModelRun and the KvReusingBackend trait; ModelRequest is unchanged. Approximate reuse must never reach an effect path is documented on the types and not enforced yet
+- KV-reuse P1 token contract (doc 36): TokenId, Tokenizer trait with TokenizerIdentity, ByteTokenizer (ptr.byte v1, one token per UTF-8 byte), SegmentSource (Raw, Semantic, Memory, Derived), PromptSegment with SHA-256 content_digest and lineage_contribution (Raw carries kind and content digest only), SegmentedModelRequest with tokens() and order-dependent lineage_digest() (covers semantic revision, tokenizer identity and segments), KvReuseMode, KvReusePolicy, KvReuseHint, KvReuseReport (hit_tokens bounded by total, Approximate rejected under ExactOnly), ModelRun and the KvReusingBackend trait; ModelRequest is unchanged. The one non-test implementation is ptr-runtime's CPU ReferenceKvReuseBackend; that Approximate reuse never reaches an effect path is enforced in ptr-runtime (authorize_action and the execution boundary), for runs the host routes through it
 - PromptSegment::from_text/from_tokens Semantic, Memory and Derived segments are caller-asserted (documented on the constructors): the crate cannot check that the text is the committed value of its source at its generation; a production path builds Semantic segments with ptr-runtime PtrRuntime::semantic_prompt_segment, and lineages fragment per cited generation
 
 ### Missing for the target architecture
 
-- Real HF tokenizer (planned new crate ptr-tokenizers)
-- KV-reuse taint is not persisted with cached pages or catalog entries, is not carried on ActivationFrame, KV page transport or tier objects, and is not attached to Pod results (rest of P2a); a Tainted<T> wrapper can be bypassed by cloning the value out of value(), so it is a discipline for derived values, not a sandbox
-- KV-reuse P2 catalog and admission, including enforcement that runtime-produced content is never labelled Raw (only the raw_from_* constructor split exists now); enforcement that Approximate reuse never reaches an effect path; no backend implements KvReusingBackend
+- A real Hugging Face tokenizer behind the Tokenizer trait: ByteTokenizer is the only implementation, and the tokenizers-backed tokenizer of ptr-pods' qwen-cpu feature does not implement it
+- KV-reuse taint is not carried with cached pages or catalog entries, on ActivationFrame, KV page transport or tier objects (ptr-runtime persists the taint registry as ledger events and contains tainted Pod outputs, see its component record); a Tainted<T> wrapper can be bypassed by cloning the value out of value(), so it is a discipline for derived values, not a sandbox
+- Any KvReusingBackend outside ptr-runtime's CPU reference: the P2 catalog, admission and Raw-segment checks live in ptr-runtime (PtrRuntime::admit_segments), not in this crate, which only offers the raw_from_* constructor split
 - Async streaming backend contract
 - Backend capability negotiation
 - SGLang, vLLM and Burn-native adapters
@@ -83,8 +83,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-model-api.mmd`](../../docs/diagrams/components/ptr-model-api.mmd)
 
-**Upstream:** ptr-core or external inference service  
-**Downstream:** ptr-exec, ptr-router
+**Upstream:** ptr-types; implemented by in-process backends, no external inference service yet  
+**Downstream:** ptr-runtime, ptr-server, ptrd, ptr-bench
 
 ## Mission
 
