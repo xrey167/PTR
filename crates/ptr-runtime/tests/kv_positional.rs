@@ -509,19 +509,20 @@ fn default_backend_fingerprint() -> [String; 5] {
 fn the_default_backend_fingerprint_is_pinned_to_the_pre_r006_literals() {
     let [chain, config, kv_state, probe_logits, infer_logits] = default_backend_fingerprint();
     assert_eq!(
-        chain,
-        "9a14f47059404a447f1c12044908d91dec08a158ed6e1fdfe6f6bc872b7861ee"
-    );
-    assert_eq!(
         config,
         "064a7c65166ca7fafd2986f906dfc63d0d5d2e044fb23403eb4f25575d0fcb05"
     );
     assert_eq!(infer_logits, probe_logits);
-    // The KV state and the logits pass through `powf`, `exp`, `sin` and `cos`, which come from the
-    // platform math library and may differ in the last bit between targets (Windows MSVC
-    // differs from Linux glibc). These literals were computed on x86_64 Linux, so they are
-    // checked there; the chain and config digests above are checked everywhere.
+    // These literals were computed on x86_64 Linux and are checked only there. The chain binds
+    // the build identity, which names the OS and architecture by design (`build_identity` in
+    // `kv_infer.rs`), and the KV state and logits pass through `powf`, `exp`, `sin` and `cos`
+    // from the platform math library, which may differ in the last bit between targets
+    // (Windows MSVC differs from Linux glibc). The config digest above is checked everywhere.
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        assert_eq!(
+            chain,
+            "9a14f47059404a447f1c12044908d91dec08a158ed6e1fdfe6f6bc872b7861ee"
+        );
         assert_eq!(
             kv_state,
             "97e1598049890c3aff69568318364ebde5479ef034937551a1157c4f58dec180"
