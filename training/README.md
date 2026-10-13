@@ -85,8 +85,8 @@ RTX 3090 variants (the local host has two 24 GiB RTX 3090, PCIe, no NVLink; ever
 Run order, each step only after the previous one worked:
 
 1. `make smoke-gpu` runs `configs/stage-moe-smoke-gpu.toml`: the tiny random OLMoE on CUDA (device plumbing check).
-2. `make olmoe-sft-smoke` runs `configs/stage-moe-olmoe-sft-smoke.toml`: real `allenai/OLMoE-1B-7B-0125` (pinned revision), bf16, LoRA, SFT only, gradient checkpointing, batch 2 x 4 accumulation steps, max_length 256, 50 steps. Estimated (not measured) to fit in 24 GB: about 12.9 GB of bf16 weights plus LoRA/optimizer state and checkpointed activations.
-3. `configs/stage-moe-olmoe.toml` (SFT + GSPO + SAPO, 3090 profile, not opted in) stays unrun until step 2 shows the measured peak memory.
+2. `make olmoe-sft-smoke` runs `configs/stage-moe-olmoe-sft-smoke.toml`: real `allenai/OLMoE-1B-7B-0125` (pinned revision), bf16, LoRA, SFT only, gradient checkpointing, batch 2 x 4 accumulation steps, max_length 256, 50 steps. Estimated (not measured) to fit in 24 GB: about 16.6 GiB allocated at peak (12.89 GiB of bf16 weights, 1.81 GiB of LoRA state for 121.6M trainable parameters, PEFT's merged expert tensors for one recomputed layer, logits and checkpointed activations); `python -m ptr_training.moe.memory --config <config>` or `ptr-train-run --config <config> --memory-report` prints the estimate, and `src/ptr_training/moe/README.md` ("Memory", "Two GPUs") has the table for every OLMoE config and M011 arm and the exact per-card commands.
+3. `configs/stage-moe-olmoe.toml` (SFT + GSPO + SAPO, 3090 profile, not opted in) stays unrun until step 2 shows the measured peak memory. As written its SFT has no gradient checkpointing and is estimated at about 28.8 GiB (does not fit 24 GiB); the derived config needs `[moe.sft] gradient_checkpointing = true` (estimated about 17 GiB).
 
 Both Makefile targets are added by a separate change; until then run
 `PYTHONPATH=training/src python -m ptr_training.run --config training/configs/<config>.toml --execute` from a clean tree.

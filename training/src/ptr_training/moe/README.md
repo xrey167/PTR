@@ -54,11 +54,16 @@ Written and tested on CPU only; nothing here has run on a GPU.
 - `metrics.json`: `hardware.device`, `hardware.gpu`, `hardware.torch_cuda`,
   `hardware.peak_cuda_memory_allocated_bytes` / `_gib` (`null` on CPU; the peak counter is reset at
   the start of `execute`), plus `model.device_requested` and `model.device` (the device the
-  parameters ended up on).
+  parameters ended up on), and `provenance` (`provenance.py`: git commit and tracked-tree dirty
+  flag, package versions, host, every visible GPU with name, capability and memory, the driver,
+  the CUDA/cuDNN builds, `CUDA_VISIBLE_DEVICES` / `PTR_CUDA_DEVICE`, determinism flags).
 - `[moe.sft] gradient_checkpointing` (bool, default false): at SFT start calls
   `gradient_checkpointing_enable()` on the base model (and `enable_input_require_grads()` when LoRA
-  is on, so the adapters receive gradients) and switches it off again when SFT ends, so RL is not
-  affected. RL itself does not use checkpointing.
+  is on, so the adapters receive gradients) and switches it off again when SFT ends.
+- `[moe.rl] gradient_checkpointing` (bool, default true): passed to `GRPOConfig` explicitly and
+  recorded per arm (`rl.<algo>.gradient_checkpointing`). TRL 1.14.1 defaults it to true, so every
+  RL arm before this key existed already ran checkpointed (earlier text here said RL does not
+  use checkpointing; that was wrong).
 - `[moe.sft] gradient_accumulation_steps` (int >= 1, default 1; ceiling 1024 unless
   `allow_large`): one optimizer step = that many micro-batches of `batch`; each loss is scaled by
   1/steps. `sft.steps` counts optimizer steps, the logged loss is one value per optimizer step
@@ -66,12 +71,82 @@ Written and tested on CPU only; nothing here has run on a GPU.
   sampler draws `batch * steps` tasks per optimizer step.
 - Configs: `stage-moe-smoke-gpu.toml` (tiny, fp32, `device = "cuda"`, `hardware/rtx4090.toml`) and
   `stage-moe-olmoe-sft-smoke.toml` (OLMoE-1B-7B, bf16, LoRA, SFT only via `algorithms = []`,
-  checkpointing, batch 2 x 4, max_length 256, 50 steps, `allow_unselected_backend = true`).
-  Memory estimate for the latter, not measured: ~12.9 GB bf16 weights + LoRA/optimizer state
-  (tens of MB) + checkpointed activations. Expect it to fit in 24 GB; the real peak lands in
-  `metrics.json`. Both are launched with `make smoke-gpu` and `make olmoe-sft-smoke` (targets
-  added separately).
+  checkpointing, batch 2 x 4, max_length 256, 50 steps, `allow_unselected_backend = true`), each
+  with a `-rtx3090` variant naming `hardware/rtx3090.toml` (`make smoke-gpu`, `make olmoe-sft-smoke`).
 - Tests: `training/tests/test_moe_device.py`.
+
+### Memory (estimate, `memory.py`)
+
+`python -m ptr_training.moe.memory --config <stage toml>` (or `ptr-train-run --config <toml>
+--memory-report`) and `python -m ptr_training.moe.memory --m011-arm <arm>` print a per-phase
+estimate as JSON. Parameter counts are exact (tested against the instantiated model and PEFT);
+activation coefficients are fitted to CPU saved-tensor measurements (tests re-measure them, within
+15%); the rest is arithmetic stated in the module docstring. Not measured on a GPU. Per 24 GiB card
+(budget 95% = 22.8 GiB, CUDA context assumed 0.75 GiB):
+
+| config / arm | trainable | peak phase | estimated peak (allocated) | fits 24 GiB |
+|---|---|---|---|---|
+| `stage-moe-olmoe-sft-smoke(-rtx3090).toml` | 121,634,816 | SFT (checkpointed, 2 x 256 tokens) | 16.6 GiB | yes, 5.4 GiB headroom |
+| `stage-moe-olmoe.toml` as committed | 121,634,816 | SFT without checkpointing | 28.8 GiB | no |
+| same with `[moe.sft] gradient_checkpointing = true` | 121,634,816 | RL update (checkpointed) | 17.0 GiB | yes |
+| M011 `perft_r_*` (micro-batch 4 x 1024, eval batch 16) | 4,456,448 | eval generation | 17.0 GiB | yes |
+| M011 `plain_lora` | 4,456,448 | eval generation | 17.0 GiB | yes |
+| M011 `mixlora` | 4,423,680 | SFT | 17.4 GiB | yes |
+| tiny GPU smoke | 238,528 | SFT | < 0.01 GiB | yes |
+
+Findings behind the numbers: the bf16 weights are 12.89 GiB (6,919,161,856 parameters). LoRA rank
+16 on q/k/v/o plus the fused expert tensors trains 121.6M parameters (PEFT gives each 3-D expert
+tensor `A [r*E, d0]`, `B [d1, r*E]`), about 1.8 GiB of fp32 weight, gradient and AdamW state, not
+the "tens of MB" an earlier estimate said. PEFT applies expert LoRA by building the merged expert
+tensor of a layer on every forward; without checkpointing autograd keeps it for backward, 768 MiB
+per layer (measured on CPU), 12 GiB for 16 layers, which is why `stage-moe-olmoe.toml` as
+committed does not fit. The M011 eval assumes prompts up to 1024 tokens (`--eval-prompt-tokens`).
+The real peak lands in `metrics.json` (`hardware.peak_cuda_memory_allocated_bytes`); correct the
+module from it. The pinned checkpoint is stored in float32 on the hub (`torch_dtype` in its
+`config.json`): about 27.7 GB download, and the bf16 model is built in host RAM before `.to(cuda)`.
+
+### Two GPUs (2x RTX 3090, PCIe, no NVLink)
+
+Nothing in `training/` trains on two GPUs: no process group, no data sharding, no `device_map`
+split, no FSDP/ZeRO. Under `torchrun` or `accelerate launch` with more than one process every
+rank would run the same full job on `cuda:0`; `pipeline.execute` and `m011` therefore refuse
+`WORLD_SIZE > 1` (`provenance.refuse_distributed_launch`). The second card runs a second,
+independent job, pinned with `CUDA_VISIBLE_DEVICES` (inside the job the card is `cuda:0`;
+`provenance.device.env` records the variable). `m011` also honours `PTR_CUDA_DEVICE` (OD-3): when
+it is set and `CUDA_VISIBLE_DEVICES` is not, it sets `CUDA_VISIBLE_DEVICES` to it before torch is
+imported and refuses a conflicting pair.
+
+```bash
+# exploratory / smoke runs, one per card, from the repo root (not frozen experiment runs)
+mkdir -p training/runs/logs
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.moe.m011 \
+  --arm mixlora --seed 1001 --out training/runs/m011-probe/mixlora --model olmoe --corpora hf \
+  --max-steps 20 > training/runs/logs/m011-probe-mixlora.log 2>&1 &
+CUDA_VISIBLE_DEVICES=1 PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.moe.m011 \
+  --arm plain_lora --seed 1001 --out training/runs/m011-probe/plain_lora --model olmoe --corpora hf \
+  --max-steps 20 > training/runs/logs/m011-probe-plain_lora.log 2>&1 &
+nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv -l 30
+# trl-moe stage configs: the same pattern
+CUDA_VISIBLE_DEVICES=1 PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.run \
+  --config training/configs/stage-moe-olmoe-sft-smoke-rtx3090.toml --execute
+```
+
+Frozen confirmatory seeds go through `scripts/run_experiment.py`, which passes only declared
+`PTR_*` variables: declare `PTR_CUDA_DEVICE` in the manifest's `command_environment` before the
+freeze (OD-3), else the run lands on card 0; run them one at a time per card. Not done and not
+claimed: data-parallel training over both cards (it would need a process group, per-rank domain
+sampling and an adapter-gradient all-reduce, and it changes the pinned batch semantics), and
+splitting one model over both cards with `device_map` (sequential over PCIe; only useful if a
+config does not fit one card, which none of the estimates above requires). No speedup is claimed
+for either.
+
+### Reproducibility
+
+CPU runs with the same seed reproduce bit for bit (`test_m011_run.test_same_seed_is_reproducible`
+compares every metric except wall-clock timings for two arms; the pipeline tests compare model
+inits). CUDA runs are not expected to: OLMoE's expert loop accumulates with `index_add_` and the
+backward of token gathers, which use CUDA atomics in non-deterministic order with torch's default
+settings; `provenance.device.bit_reproducible` is false on CUDA. Not measured here (no GPU).
 
 ## Verified versions (installed and read from source)
 
@@ -385,7 +460,7 @@ PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.moe.m011 \
 # tests (about 35 s on CPU)
 PYTHONPATH=training/src training/.venv/bin/python -m unittest discover -s training/tests -p 'test_m011*'
 
-# real run on the RTX 4090 (downloads OLMoE and the three corpora at the pinned revisions),
+# real run on one RTX 3090 (downloads OLMoE and the three corpora at the pinned revisions),
 # two commands per arm (TB1 protocol):
 # 1. tune ONCE on the pilot seed 1001 (never a confirmatory seed): 8 trials of floor(0.25 * 2000) = 500 steps,
 #    seeded random search, selection on validation only -> frozen tuning.json
@@ -402,7 +477,9 @@ python -m ptr_training.moe.m011 --arm mixlora --seed 29 --out runs/m011/mixlora/
 
 Tuning protocol (TB1): `--tune` runs on the tuning seed only (default: the pilot seed 1001,
 which is not one of the confirmatory seeds 17 29 43 71 101) with `tuning_steps = max(1, floor(0.25 * steps))` per trial (500 for 2000). `--tune-steps`,
-`--tune-budget` and another `--seed` stay available as overrides; every departure from the
+`--tune-budget` and another pilot `--seed` (>= 1001) stay available as overrides; a confirmatory
+seed or a seed below 1001 is refused for `--tune` (exit 1), and `--hparams` refuses a
+`tuning.json` whose `tuning_seed` is one. Every departure from the
 pinned seed, steps or 8 trials is written to `deviations` in `tuning.json` and
 `tuning_deviations` in `run.json`. `tuning.json` also holds `tuning_seed`, `tuning_steps`,
 `tuning_trials_used`, `trial_set_digest`, the trials and the `selected` values
@@ -425,13 +502,27 @@ caps items per domain, `--device auto|cpu|cuda`, `--micro-batch-size` sets gradi
 (default 4 on OLMoE), `--gradient-checkpointing/--no-gradient-checkpointing` (default on for
 OLMoE). `--tune --tune-budget 2` exercises tuning cheaply; `--all-seeds` takes no `--seed`.
 
-Outputs: `run.json` (arm, seed, pins, corpus selection digests per split, validation-overlap
-counters, expert-domain assignment digest vs the pinned one, trainable parameters,
-hyperparameters and their source, tuning trials used and trial-set digest, versions, device,
-sandbox mode, git commit, the list of unpinned choices), `metrics.json` (per-domain accuracy,
-`mean_task_accuracy` = macro average, `load_cv`, `routing_entropy` and their source, per-domain
-adapter-router stats, base-router stats, trainable params, training loss and first-step FLOPs),
-`tuning.json` (`--tune`: see above).
+Outputs: `run.json` (arm, seed and `seeds` per RNG consumer, pins, corpus selection digests per
+split, validation-overlap counters, the measured `training_outside_training_partition_count` per
+corpus, expert-domain assignment digest vs the pinned one, trainable parameters and their closed
+form (a mismatch, or on OLMoE a difference from the pinned count, stops the run), the loaded
+model's `topology_observed` with `model_pin_mismatches` (OLMoE: against the pinned topology and
+checkpoint commit; tiny: a config digest), hyperparameters and their source, `training_config`,
+tuning trials used and trial-set digest, versions, device, sandbox mode, git commit,
+`provenance` (see "GPU path"), the list of unpinned choices), `metrics.json` (per-domain accuracy
+also under the manifest name `task_accuracy_per_domain`, `mean_task_accuracy` = macro average,
+`latency_per_token` per domain (evaluation generation seconds / generated tokens; definition in
+`UNPINNED_CHOICES`), `training_flops`, the per-corpus validation digests and overlap counters,
+`load_cv`, `routing_entropy` and their source, per-domain adapter-router stats, base-router
+stats, trainable params, training loss and first-step FLOPs, `not_produced`:
+`expert_specialisation_index` has no pinned definition), `tuning.json` (`--tune`: see above).
+A multi-process launch (`WORLD_SIZE` > 1) is refused.
+
+Audit fixes (2026-10-13, tests in `training/tests/test_moe_audit*.py`): GSM8K item ids carry the
+source split (`gsm8k:train:9` vs `gsm8k:test:9`; before, 131 validation ids collided with test ids
+on the real corpus and the overlap counter would have invalidated every run); GSM8K scores the
+first `####` answer; a HumanEval pass needs a per-run token written after `check()` (an early
+`sys.exit(0)` passed before); tuning on a confirmatory seed is refused.
 
 Implemented and tested on CPU: all four arm topologies and their counts, domain-masked routing
 (training and evaluation), corpus partitions and digests, GSM8K / HumanEval / BFCL-simple
@@ -441,8 +532,10 @@ Known gaps and unpinned choices:
 
 - BFCL scoring is a simplified single-call AST check for the `simple` category, not the official
   BFCL evaluator (the exec check does not apply to `simple`).
-- HumanEval runs candidate code in a subprocess (10 s timeout, scrubbed environment, rlimits,
-  network blocked by `unshare --net` when usable, else only a Python-level socket block).
+- HumanEval runs candidate code in a subprocess (10 s timeout, scrubbed environment, rlimits)
+  inside a bubblewrap sandbox (allowlisted read-only root, no network); without bubblewrap it
+  refuses unless `PTR_M011_ALLOW_UNSANDBOXED=1` (then `unshare --net` when usable, else only a
+  Python-level socket block), recorded in `run.json` `sandbox`.
 - Training FLOPs are measured on the first optimizer step only (`FlopCounterMode`) and
   extrapolated; the 5% compute-matching check across arms is not computed here.
 - Not pinned by the config and chosen here: optimizer (AdamW, constant lr, clip 1.0),

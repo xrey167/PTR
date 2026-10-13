@@ -14,3 +14,8 @@ The run is invalid (vacuous) and counts as falsified if any coverage prerequisit
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.
+
+## Implementation facts (not part of the hypothesis or the criteria)
+- GSPO and SAPO exist in the `trl-moe` pipeline (`training/src/ptr_training/moe/rl.py`, TRL 1.14.1); GRPO as an arm, routing replay and REINFORCE++ do not, and the pipeline lists `policy_ratio_variance_per_token`, `crash_step`, `train_inference_kl` and rollout-vs-training expert churn under `not_produced`.
+- Every RL arm runs with activation checkpointing: TRL defaults it to on, and since 2026-10-13 it is the explicit, recorded key `[moe.rl] gradient_checkpointing` (default true).
+- `metrics.json` records git commit, package versions, GPU and driver facts and the seeds (`provenance`, `run.seeds`). CUDA runs are not expected to be bit-reproducible (atomic accumulation in OLMoE's expert loop); CPU runs with the same seed are.
