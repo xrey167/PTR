@@ -138,16 +138,16 @@ against a compiling control.
   — and each brings its own trust question: whose answer do you believe, and what
   happens when two disagree. `iroh` ships address lookup and this build disables it
   (`RelayMode::Disabled`, `clear_ip_transports()`), so turning it on is a decision
-  about trusting a third party, not a code change. Recorded as the owner's rather
-  than invented, alongside D4 in issue #23. What the layers above give meanwhile: a
+  about trusting a third party, not a code change. ADR-0022 has decided against
+  discovery: peers are configured through `PeerBook`. What the layers above give meanwhile: a
   wrong answer from any future discovery mechanism costs a failed request, because
   it cannot produce a working connection for an id whose key it does not hold.
 - **A stale address.** The book cannot tell a stale address from a current one; the
   dial fails and nothing here re-resolves. A deployment whose nodes move must update
   the book, which is what `record` replacing rather than refusing is for.
 - **The book is in memory.** It is not journaled and does not survive a restart —
-  the same sentence `33-pod-wire.md` records for the access policy, and the same
-  open question (D5).
+  the same sentence `33-pod-wire.md` records for the access policy. ADR-0022 re-specifies
+  the journaled admission and access policies (S4, S7); the book is not part of either.
 - **Nothing here authenticates the *operator*.** Whoever can call `record` decides
   where a peer is dialled. That is the host's own trust boundary and this layer is
   inside it.

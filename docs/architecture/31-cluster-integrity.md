@@ -430,7 +430,9 @@ unfenced is the failure this exists to prevent.
   on localhost.
 - **Nothing runs the loop.** `ptr-cluster` provides the pieces and no deployment
   drives them: there is no accept/tick service, no policy for a member that stops
-  answering, and no backpressure toward one that answers slowly.
+  answering, and no backpressure toward one that answers slowly. ADR-0022 (D4) places
+  that loop in the embedding host (`ptrd`) under a `ServePolicy` from `ptr-net`
+  (spec S3, not built).
 - **Membership changes one voter at a time, and a joiner must be admitted
   first.** `propose_membership` adds or removes a single voter; a batch API is
   not offered, because raft's single-step change is safe only while consecutive
