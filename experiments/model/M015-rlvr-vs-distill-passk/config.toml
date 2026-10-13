@@ -116,7 +116,7 @@ tuning_validation_set = { rule = "position mod 10 == 9", size = 747 }
 # Preregistered choice: the RLVR arm trains for this many optimizer steps; the distilled arm trains until training FLOPs match within compute_relative_tolerance.
 training_steps_per_arm = 1000
 # Preregistered choices (TB1): hyperparameters are selected once, on the first listed seed only, with shortened trials, then frozen for every seed's full-budget run.
-tuning_seed = 17
+tuning_seed = 1001
 tuning_steps_fraction = 0.25
 tuning_steps_budget_key = "training_steps_per_arm"
 tuning_steps = 250

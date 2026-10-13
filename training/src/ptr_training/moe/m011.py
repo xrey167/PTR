@@ -673,7 +673,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--seed", type=int, default=None,
-        help="run seed; for --tune defaults to the first pinned seed (17)",
+        help="run seed; for --tune defaults to the pilot tuning seed (1001)",
     )
     p.add_argument(
         "--all-seeds", action="store_true",
