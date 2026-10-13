@@ -16,6 +16,24 @@ use ptr_types::{CapabilityId, Digest, ProjectId, RequestId, TypeId};
 use sha2::{Digest as _, Sha256};
 use std::sync::Arc;
 
+/// What a [`PodSampler`] may derive request features from: the scope of one Pod request and its
+/// payload. It carries no key, nonce or registry.
+#[derive(Clone, Copy, Debug)]
+pub struct RouteQuery<'a> {
+    pub project: &'a ProjectId,
+    pub capability: &'a CapabilityId,
+    pub input_type: &'a TypeId,
+    pub request_id: &'a RequestId,
+    pub payload: &'a [u8],
+}
+
+/// Turns a Pod request into the query vector a learned router scores candidates with. The encoder
+/// behind it is frozen and pinned; this crate defines no encoder of its own.
+pub trait QueryEmbedder: Send + Sync {
+    /// The embedding of `query`, or the reason there is none.
+    fn embed(&self, query: &RouteQuery<'_>) -> Result<Vec<f32>, RouteError>;
+}
+
 const REQUEST_DIGEST_TAG: &[u8] = b"ptr-runtime/pod-route-request/v1";
 
 /// Samples a Pod for a routing request through the trusted checked path.
@@ -26,6 +44,41 @@ pub trait PodSampler: Send + Sync {
 
     /// The non-secret identifier of the sampling key, recorded next to every decision.
     fn key_id(&self) -> [u8; 8];
+
+    /// The request features handed to the router for this Pod request. The default carries none,
+    /// which is what routers that ignore features (such as [`PodRouter`]) expect; a sampler over
+    /// a learned router supplies the query vector here (see [`EmbeddingSampler`]).
+    fn features(&self, _query: &RouteQuery<'_>) -> Result<RouteFeatures, RouteError> {
+        Ok(RouteFeatures::default())
+    }
+}
+
+/// A [`CheckedRouter`] whose requests are embedded by `embedder` before routing, so a learned
+/// router receives its query vector. The embedder runs inside the trusted side, before the
+/// distribution is requested, and cannot reach the sampling key.
+pub struct EmbeddingSampler<R> {
+    router: CheckedRouter<R>,
+    embedder: Arc<dyn QueryEmbedder>,
+}
+
+impl<R> EmbeddingSampler<R> {
+    pub fn new(router: CheckedRouter<R>, embedder: Arc<dyn QueryEmbedder>) -> Self {
+        Self { router, embedder }
+    }
+}
+
+impl<R: Router + Send + Sync> PodSampler for EmbeddingSampler<R> {
+    fn route(&self, request: &RouteRequest<'_>) -> Result<Option<RoutedChoice>, RoutedError> {
+        self.router.route(request)
+    }
+
+    fn key_id(&self) -> [u8; 8] {
+        self.router.key_id()
+    }
+
+    fn features(&self, query: &RouteQuery<'_>) -> Result<RouteFeatures, RouteError> {
+        RouteFeatures::new().with_vector(self.embedder.embed(query)?)
+    }
 }
 
 impl<R: Router + Send + Sync> PodSampler for CheckedRouter<R> {
@@ -65,7 +118,11 @@ pub(crate) fn pod_request_digest(
 /// A stable reason for a routing failure. It never names a Pod: Pod identities are not
 /// disclosed across projects, and `IneligibleChoice` carries one.
 pub(crate) fn route_failure_reason(error: &RoutedError) -> &'static str {
-    match error.error() {
+    route_error_reason(error.error())
+}
+
+fn route_error_reason(error: &RouteError) -> &'static str {
+    match error {
         RouteError::Policy { .. } => "routing policy failed",
         RouteError::InvalidPropensity(_) => "routing propensity invalid",
         RouteError::InvalidDistribution(_) => "routing distribution invalid",
@@ -114,7 +171,17 @@ impl PtrRuntime {
                 .and_then(|route| pods.get(project, &route.pod_id))
                 .ok_or_else(unavailable),
             PodSelection::Sampled(sampler) => {
-                let features = RouteFeatures::default();
+                let features = sampler
+                    .features(&RouteQuery {
+                        project,
+                        capability,
+                        input_type,
+                        request_id,
+                        payload,
+                    })
+                    .map_err(|error| RuntimeError::RouteFailed {
+                        reason: route_error_reason(&error),
+                    })?;
                 let request = RouteRequest {
                     registry: pods,
                     project,

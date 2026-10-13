@@ -20,6 +20,7 @@ pub mod neural;
 pub mod persistence;
 pub mod placement;
 pub mod pod_head;
+pub mod pod_representation;
 pub mod policy;
 pub mod protected_state;
 pub mod routing;
@@ -87,6 +88,10 @@ pub use placement::{
     PlacementEpoch, PlacementError, PodPlacementController,
 };
 pub use pod_head::{pod_lifecycle_target, AdvancePodHead, PodHeadError};
+pub use pod_representation::{
+    AdmittedRepresentations, BindPodRepresentation, PodRepresentationError, RepresentationDenial,
+    RepresentationRefusal,
+};
 #[cfg(feature = "oidc-http")]
 pub use policy::ReqwestPolicyBundleLoader;
 pub use policy::{
@@ -95,7 +100,7 @@ pub use policy::{
     SignedPolicyBundle,
 };
 pub use protected_state::ProtectedStateCoordinator;
-pub use routing::PodSampler;
+pub use routing::{EmbeddingSampler, PodSampler, QueryEmbedder, RouteQuery};
 pub use sandbox::{
     ExternalSandboxExecutor, NativeSandboxExecutor, NetworkMode, SandboxBackend, SandboxError,
     SandboxExecutor, SandboxLease, SandboxProfile, SandboxRequest, SandboxResponse,
@@ -491,6 +496,8 @@ pub enum RuntimeError {
     KvTaint(kv_taint::KvTaintError),
     /// A pod head move or a stored head was refused (see [`pod_head::PodHeadError`]).
     PodHead(pod_head::PodHeadError),
+    /// A learned pod representation could not be bound to its pod.
+    PodRepresentation(pod_representation::PodRepresentationError),
     PodUnavailable {
         capability: String,
         input_type: String,

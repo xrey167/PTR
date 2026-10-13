@@ -321,6 +321,68 @@ impl PodRepresentation {
         weights_bytes(&self.parts.z, self.parts.bias)
     }
 
+    /// The manifest and weights file [`PodRepresentation::from_artifact`] reads back to an equal
+    /// representation (the exporter writes the same layout).
+    pub fn to_artifact(&self) -> (String, Vec<u8>) {
+        let weights = self.weights_bytes();
+        let gate = self.parts.gate;
+        let manifest = serde_json::json!({
+            "schema": REPRESENTATION_SCHEMA,
+            "kind": ARTIFACT_KIND,
+            "encoder": {"id": self.parts.encoder.id, "revision": self.parts.encoder.revision},
+            "dims": self.dims(),
+            "generation": self.parts.generation.0,
+            "pod_id": self.parts.pod.0,
+            "pod_identity": self.parts.identity.0,
+            "cluster_key": self.parts.cluster_key.to_hex(),
+            "scoring": {
+                "cosine_weight": f64::from(self.parts.weights.cosine),
+                "metadata_weight": f64::from(self.parts.weights.metadata),
+            },
+            "gate": {
+                "status": if self.parts.activated { STATUS_ACTIVATED } else { STATUS_NOT_ACTIVATED },
+                "alias_threshold_permille": gate.alias_threshold_permille,
+                "alias_min_permille": gate.alias_min_permille,
+                "negative_threshold_permille": gate.negative_threshold_permille,
+                "negative_reject_permille": gate.negative_reject_permille,
+                "alias_count": gate.alias_count,
+                "negative_count": gate.negative_count,
+            },
+            "weights_file": "",
+            "weights_sha256": hex(&Sha256::digest(&weights).into()),
+            "digest": hex(&self.digest),
+        });
+        (manifest.to_string(), weights)
+    }
+
+    /// One self-describing byte string (manifest length, manifest, weights) for places that keep
+    /// opaque state, such as a neural state binding. [`PodRepresentation::from_payload`] checks
+    /// every digest again.
+    pub fn to_payload(&self) -> Vec<u8> {
+        let (manifest, weights) = self.to_artifact();
+        let mut bytes = Vec::with_capacity(4 + manifest.len() + weights.len());
+        bytes.extend_from_slice(&(manifest.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(manifest.as_bytes());
+        bytes.extend_from_slice(&weights);
+        bytes
+    }
+
+    /// Reads [`PodRepresentation::to_payload`] back, verifying schema, weights digest and digest.
+    pub fn from_payload(payload: &[u8]) -> Result<Self, RepresentationError> {
+        let length = payload
+            .get(..4)
+            .map(|prefix| u32::from_le_bytes([prefix[0], prefix[1], prefix[2], prefix[3]]))
+            .ok_or_else(|| malformed("payload"))? as usize;
+        let end = 4usize
+            .checked_add(length)
+            .ok_or_else(|| malformed("payload"))?;
+        let manifest = payload
+            .get(4..end)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .ok_or_else(|| malformed("payload"))?;
+        Self::from_artifact(manifest, &payload[end..])
+    }
+
     /// SHA-256 over a domain tag and every field (length-prefixed text, little endian numbers,
     /// `f32` as raw bits) followed by the weights file. Any changed field changes the digest.
     pub fn digest(&self) -> &[u8; 32] {
@@ -445,6 +507,10 @@ fn exact_f32(
         return Err(malformed(field));
     }
     Ok(narrow)
+}
+
+fn hex(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn hex_digest(value: &str) -> Option<[u8; 32]> {
