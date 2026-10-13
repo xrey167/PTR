@@ -2651,6 +2651,12 @@ impl PtrRuntime {
         event: LedgerEvent,
         semantic: Option<PreparedDelta>,
     ) -> Result<CommitIndex, RuntimeError> {
+        // A record the log format cannot hold is refused before the commit is marked uncertain:
+        // the durable ledger would refuse it without writing a byte, and the uncertainty mark
+        // would then fence this runtime for good; the in-memory ledger would keep a record
+        // that no export or durable log can hold.
+        ptr_ledger::check_encodable(&event)
+            .map_err(|error| RuntimeError::Ledger(error.to_string()))?;
         self.execution.begin_commit();
         let index = self.ledger.append(event)?;
         let committed = self
