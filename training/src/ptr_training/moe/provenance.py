@@ -161,6 +161,35 @@ def collect(device: str | None, root: Path = ROOT) -> dict:
     }
 
 
+class DeviceSelectionError(RuntimeError):
+    """PTR_CUDA_DEVICE is malformed or contradicts CUDA_VISIBLE_DEVICES."""
+
+
+def apply_ptr_cuda_device(env: dict | None = None) -> str | None:
+    """OD-3 GPU pinning: when `PTR_CUDA_DEVICE` (one card index) is set, make it the only
+    visible card by setting `CUDA_VISIBLE_DEVICES` to it. Must run before torch initialises
+    CUDA. Returns the index (None when unset); refuses a malformed value or a different,
+    already set `CUDA_VISIBLE_DEVICES` instead of guessing which one was meant."""
+    env = os.environ if env is None else env
+    value = env.get("PTR_CUDA_DEVICE")
+    if value is None or value == "":
+        return None
+    value = value.strip()
+    if not value.isdigit():
+        raise DeviceSelectionError(f"PTR_CUDA_DEVICE must be one card index, got {value!r}")
+    visible = env.get("CUDA_VISIBLE_DEVICES")
+    if visible not in (None, "", value):
+        raise DeviceSelectionError(
+            f"PTR_CUDA_DEVICE={value} contradicts CUDA_VISIBLE_DEVICES={visible}; set one of them"
+        )
+    if "torch" in sys.modules:
+        torch = sys.modules["torch"]
+        if getattr(torch.cuda, "is_initialized", lambda: False)():
+            raise DeviceSelectionError("CUDA is already initialised; PTR_CUDA_DEVICE came too late")
+    env["CUDA_VISIBLE_DEVICES"] = value
+    return value
+
+
 class DistributedLaunchRefused(RuntimeError):
     """The code path has no distributed support; a multi-process launch would duplicate it."""
 
@@ -187,7 +216,9 @@ def refuse_distributed_launch(env: dict | None = None) -> None:
 
 
 __all__ = [
+    "DeviceSelectionError",
     "DistributedLaunchRefused",
+    "apply_ptr_cuda_device",
     "GPU_NONDETERMINISM_NOTE",
     "collect",
     "device_info",

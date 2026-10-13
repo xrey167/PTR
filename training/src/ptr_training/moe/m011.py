@@ -938,6 +938,10 @@ def run_all_seeds(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:  # OD-3: before torch is imported anywhere in this process
+        provenance.apply_ptr_cuda_device()
+    except provenance.DeviceSelectionError as error:
+        raise SystemExit(f"m011: {error}") from error
     if args.all_seeds:
         if args.seed is not None:
             parser.error("--all-seeds runs the pinned seeds; do not pass --seed")

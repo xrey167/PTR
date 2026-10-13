@@ -321,6 +321,8 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     device = moe_config.resolve_device(cfg.model.device)  # ConfigError for cuda without CUDA
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
+    # Captured before any work, so the git state is the one the run started from.
+    run_provenance = provenance.collect(device)
     model_mod.seed_everything(cfg.seed)  # before any model / LoRA initialisation
     timings: dict = {}
     t_start = time.perf_counter()
@@ -515,7 +517,7 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         "gates_not_evaluated_reason": gates_not_evaluated_reason,
         "versions": versions(),
         "hardware": hardware(device),
-        "provenance": provenance.collect(device),
+        "provenance": run_provenance,
         "wall_time_s": timings,
         "sft": sft,
         "rl": rl_results,

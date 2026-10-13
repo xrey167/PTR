@@ -139,5 +139,31 @@ class TrainingPartitionCounterTests(unittest.TestCase):
         self.assertEqual(counts, {"gsm8k": 1, "humaneval": 0, "bfcl_simple": 1})
 
 
+class PtrCudaDeviceTests(unittest.TestCase):
+    """OD-3: a frozen GPU run is pinned through the declared PTR_CUDA_DEVICE; the M011
+    entrypoint read neither it nor anything else, so such a run landed on card 0."""
+
+    def test_sets_cuda_visible_devices_from_ptr_cuda_device(self):
+        from ptr_training.moe import provenance
+
+        env = {"PTR_CUDA_DEVICE": "1"}
+        self.assertEqual(provenance.apply_ptr_cuda_device(env), "1")
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "1")
+        same = {"PTR_CUDA_DEVICE": "1", "CUDA_VISIBLE_DEVICES": "1"}
+        self.assertEqual(provenance.apply_ptr_cuda_device(same), "1")
+        self.assertIsNone(provenance.apply_ptr_cuda_device({}))
+        for bad in ({"PTR_CUDA_DEVICE": "x"}, {"PTR_CUDA_DEVICE": "0,1"},
+                    {"PTR_CUDA_DEVICE": "1", "CUDA_VISIBLE_DEVICES": "0"}):
+            with self.subTest(env=bad), self.assertRaises(provenance.DeviceSelectionError):
+                provenance.apply_ptr_cuda_device(dict(bad))
+
+    def test_m011_refuses_a_conflicting_pair_before_any_work(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"PTR_CUDA_DEVICE": "1", "CUDA_VISIBLE_DEVICES": "0"}
+        ):
+            with self.assertRaises(SystemExit):
+                m011.main(["--arm", "mixlora", "--seed", "3", "--out", tmp])
+
+
 if __name__ == "__main__":
     unittest.main()
