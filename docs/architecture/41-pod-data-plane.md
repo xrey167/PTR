@@ -23,6 +23,29 @@ Whether the plan is worth building, stage by stage, is section 7; the short answ
 S3 and S4 pay for themselves on the owner's one-GPU machine, S2 is mostly S3 on that machine, and
 S5 is the already-planned E008.
 
+## 0. Facts checked before implementation
+
+Read from the tree at the merge of #136, before any code was written for this plan:
+
+- **No Pod runs outside the authority process today.** `ptrd` holds every Pod in process
+  (`bins/ptrd/src/main.rs`, `PodRegistry::default()`); `ProtocolBinding::LocalWorker`
+  (`crates/ptr-pods/src/protocol.rs:7`) and `PodTransport::LocalWorker`
+  (`crates/ptr-types/src/pod_address.rs:132`) name a local worker that nothing implements. S1 is
+  therefore the largest stage, not a small one.
+- **A device failure does not move a placement epoch.** `heartbeat` and `mark_node_failed`
+  revoke state leases but leave every `Placement.epoch` unchanged
+  (`crates/ptr-runtime/src/placement.rs:137-169`), and `RuntimeStageLiveness::placement_epoch`
+  reads only that epoch (`crates/ptr-runtime/src/split_stage.rs:63-68`). Rule 4 of section 1
+  would not hold for a device failure until placement bumps the epoch of every placement on a
+  device that disappeared or failed. That change comes first.
+- **`candle-cuda` cannot be built without `nvcc`** (`crates/ptr-pods/CANDLE_CUDA.md`, `ci.yml`
+  comment on the feature). The CUDA carriers therefore depend on `cudarc` directly with dynamic
+  loading, so that CI compiles them without a toolkit; their behaviour on a card is checked only on
+  hardware (section 6).
+- **Experiment ids.** `L002` and `L003` are taken and no `P` or `T` series exists. The
+  experiments of section 6 are `E009` (handle fence), `E010` (offload roundtrip), `E011` (carrier
+  calibration) and `E012` (the GPU part C split out of E008).
+
 ## 1. The one contract: a handle is a fenced payload
 
 Today a Pod call carries `TypedPayload { type_id, bytes }`. A zero-copy fabric replaces the
@@ -65,7 +88,7 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    placements and picks the nearest carrier both ends support (section 2). A request cannot
    name a carrier, as it cannot name an endpoint ([34](34-address-authority.md)).
 6. **Bytes are the universal fallback.** Every carrier can degrade to `Bytes` with the same
-   admission; a receiver that lacks a carrier is never stuck, only slower. P002 (section 6)
+   admission; a receiver that lacks a carrier is never stuck, only slower. E011 (section 6)
    measures how much slower.
 
 Invariants kept: uncommitted state is never authoritative (a handle is derived, revision-bound
@@ -82,7 +105,7 @@ from the data side:
 |---|---|---|---|
 | `InProcess` | same process | the tensor object itself (candle `Tensor` or a DLPack capsule across a language boundary) | yes |
 | `HostShm` | same host, other process, CPU tensor | `memfd` or a named shared mapping (`memmap2` is already in `Cargo.lock`), sealed read-only before the handle is sent | yes |
-| `CudaIpc` | same host, other process, same GPU | `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle` (`cudarc` is already in `Cargo.lock`); event handle for stream ordering | yes |
+| `CudaIpc` | same host, other process, same GPU | `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle` through `cudarc` with dynamic loading (0.19.10 is already in `Cargo.lock` through candle); event handle for stream ordering | yes |
 | `DevicePeer` | same host, other GPU, peer access available | `cudaMemcpyPeer` on a stream, or direct peer mapping | one device-to-device copy |
 | `PinnedHost` | same host, other GPU, no peer access; and the RAM tier | GPU→pinned host→GPU with two stream-ordered copies; the pinned buffer is itself a `HostShm` region | two copies |
 | `NvmeFile` | the NVMe tier | file-backed chunk, verify-on-read, `O_DIRECT` where the platform allows | one read |
@@ -228,10 +251,11 @@ an ablation and a refutation rule (doc 19). Ids are proposals.
 
 | Id | Claim | Baseline / ablation | Refuted if | Needs |
 |---|---|---|---|---|
-| P002-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes 1 MiB to 1 GiB | `Bytes` at every size | the order is violated, or two adjacent carriers are within noise (then they merge in the type) | one GPU; two hosts for the last cell |
-| L003-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, no mapping outlives its deadline plus skew, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any mapping alive after reclaim, any byte leak across a crash, in any seed | CPU for `HostShm`; GPU for `CudaIpc` |
-| T002-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | LRU without lookahead; unpinned RAM | a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor | one GPU |
+| E011-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes 1 MiB to 1 GiB | `Bytes` at every size | the order is violated, or two adjacent carriers are within noise (then they merge in the type) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
+| E009-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, no mapping outlives its deadline plus skew, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any mapping alive after reclaim, any byte leak across a crash, in any seed | CPU for `HostShm`; GPU for `CudaIpc` |
+| E010-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | LRU without lookahead; unpinned RAM | a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor | CPU part (RAM and NVMe tiers, unpinned versus locked) here; the GPU leg on hardware |
 | E008 (registered) | two-stage split across a socket and across two hosts, bit-identical to the in-process split | E007 in process | any output difference, any admission of a frame with a stale epoch | two hosts |
+| E012 (E008 part C) | a real checkpoint split across two devices, F16/BF16 boundaries, activation versus KV bytes | E008 parts A and B | as E008 part C | GPU |
 
 None of these says the fabric makes a model better. The model-backed question (does
 request-level offload keep p95 latency of the doc 39 loop under a bound while holding N Pods on
@@ -244,7 +268,7 @@ one card) is a later experiment on the F-series hardware plan and is not claimed
   precondition for a Python-side Pod and for every later stage, and it needs no GPU.
 - **S3 and S4: yes, on one GPU.** They are the only way to hold more than one base model,
   several adapter sets and a large KV working set on a 24 GiB card, and three quarters of the
-  contracts exist. The risk is performance, and P002 and T002 measure it before anything
+  contracts exist. The risk is performance, and E011 and E010 measure it before anything
   depends on it.
 - **S2: conditionally.** On one 4090 it has no effect. On two 4090s its working carrier is the
   pinned buffer of S3. It becomes its own thing only with cards that have peer access.
@@ -262,7 +286,7 @@ one card) is a later experiment on the F-series hardware plan and is not claimed
   features with a `Bytes` fallback is the mitigation; a carrier that cannot be built on a
   platform is absent, never emulated.
 - **Lifetime bugs.** A mapping that outlives its handle is a use-after-free across processes.
-  Rule 3 (producer owns until acknowledged) and L003 are the mitigation; the admitted scope is
+  Rule 3 (producer owns until acknowledged) and E009 are the mitigation; the admitted scope is
   the only place a pointer exists.
 - **Consumer GPUs.** Peer access on 4090s is absent and driver patches that enable it are out
   of scope; the plan never depends on it.

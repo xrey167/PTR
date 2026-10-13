@@ -224,14 +224,16 @@ end, not a field of the frame.
 ## 5. Experiments that would justify each piece
 
 Each follows `docs/architecture/19-research-method.md`: a baseline, an ablation, a refutation
-rule, registered with `scripts/new_experiment.py`. None is registered yet.
+rule, registered with `scripts/new_experiment.py`. None is registered yet, and none has an id:
+the names below are working titles, and an id is assigned at registration (`L002`, `L003`
+and `E009` to `E012` are already taken).
 
 | Id (proposed) | Claim | Baseline / ablation | Refuted if | CPU or GPU |
 |---|---|---|---|---|
-| E009-locality (mechanism) | An L1 expert or a pipeline stage with a locality requirement can never be placed, routed or fed a frame across a link farther than its requirement, including after a rack re-declaration, a node failure and a replay | the same controller with `locality = None` | any placement, route or frame admission across the bound succeeds in any seed; or the refusal depends on a measured value | CPU |
-| L002-tray-fence (mechanism, extends L001-v2) | A tray is never partially fenced: after a member device fails between `assign_tray` and the first use, no member's lease, KV page or frame of the old epoch is admitted | per-Pod placement of the same members | a surviving member serves a request of the old epoch in any seed | CPU |
-| P002-link-classes (calibration, descriptive) | The declared classes order the measured activation-frame round trip on the owner's hardware: in-process < same-device < same-host (loopback QUIC) < LAN, each by a preregistered factor | none; descriptive | the order is violated, or two classes are within the measurement noise (then the two classes are merged in the type, not the threshold tuned) | CPU and one GPU |
-| E010-rack-kv-scope (mechanism) | Rack-scoped prefix sharing admits exactly the cross-request hits of the global scope for requests in one rack and none across racks, with the fencing and dependency rules of doc 36 unchanged | global sharing | a cross-rack hit, or a lost in-rack hit, or any doc 36 counter above 0 | CPU |
+| locality-refusal (mechanism) | An L1 expert or a pipeline stage with a locality requirement can never be placed, routed or fed a frame across a link farther than its requirement, including after a rack re-declaration, a node failure and a replay | the same controller with `locality = None` | any placement, route or frame admission across the bound succeeds in any seed; or the refusal depends on a measured value | CPU |
+| tray-fence (mechanism, extends L001-v2) | A tray is never partially fenced: after a member device fails between `assign_tray` and the first use, no member's lease, KV page or frame of the old epoch is admitted | per-Pod placement of the same members | a surviving member serves a request of the old epoch in any seed | CPU |
+| link-classes (calibration, descriptive; the data-plane counterpart is E011 in [41](41-pod-data-plane.md)) | The declared classes order the measured activation-frame round trip on the owner's hardware: in-process < same-device < same-host (loopback QUIC) < LAN, each by a preregistered factor | none; descriptive | the order is violated, or two classes are within the measurement noise (then the two classes are merged in the type, not the threshold tuned) | CPU and one GPU |
+| rack-kv-scope (mechanism) | Rack-scoped prefix sharing admits exactly the cross-request hits of the global scope for requests in one rack and none across racks, with the fencing and dependency rules of doc 36 unchanged | global sharing | a cross-rack hit, or a lost in-rack hit, or any doc 36 counter above 0 | CPU |
 
 A **positive** result of any of these shows a mechanism, not a benefit. Whether tray-atomic
 placement or typed locality reduces anything a user can see (p95 latency of the doc 39 loop,
@@ -242,16 +244,16 @@ on that machine is that the rule exists and is tested before a second device app
 
 ## 6. Risks
 
-- **Over-typing.** Five interconnect classes may be two too many; P002 is designed to merge
+- **Over-typing.** Five interconnect classes may be two too many; the link-class calibration is designed to merge
   classes that do not separate rather than keep them. A class that no requirement ever names
   should be removed.
 - **Declared facts.** Rack membership and link classes are host declarations. A wrong
   declaration is not detected at run time; it is the same trust boundary as `AdmissionPolicy`
-  and is stated as such. P002 is the only check.
+  and is stated as such. The link-class calibration is the only check.
 - **Tray atomicity costs availability.** Revoking a whole tray for one failed device is the
   deliberate choice (correctness over availability, as everywhere in PTR); on a workstation with
   two GPUs it halves capacity on one failure. The alternative, partial trays, is the failure
-  mode this document exists to remove, so the cost is accepted and should be measured in L002.
+  mode this document exists to remove, so the cost is accepted and should be measured in the tray-fence experiment.
 - **Pattern worship.** The rack is a product; PTR is a research runtime. Everything above was
   checked against an existing PTR rule or a named gap, and section 3 lists what was left out
   because it has no PTR counterpart.
