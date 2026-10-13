@@ -4,8 +4,8 @@
 > Refresh with `python3 scripts/update_component_docs.py --write`.
 
 **Component count:** 33  
-**Maturity distribution:** `foundation`: 1, `prototype`: 28, `scaffold`: 4  
-**Rust footprint:** 316 source files · 153189 nonblank source lines · 262 integration-test files · 3564 test markers (`#[test]`, `#[tokio::test]`)
+**Maturity distribution:** `foundation`: 1, `prototype`: 30, `scaffold`: 2  
+**Rust footprint:** 329 source files · 159337 nonblank source lines · 270 integration-test files · 3687 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -18,7 +18,7 @@
 | [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 3 | 458 | 2 | 18 | 7 | 7 | R001:frozen, E001:planned, E003:planned | execution-runtime:open |
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | `prototype` | 5 | 1597 | 3 | 36 | 18 | 9 | — | — |
 | [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 3189 | 4 | 85 | 13 | 3 | M008:frozen, L003:completed | fast-weight-memory:open |
-| [ptr-feedback](../../crates/ptr-feedback/README.md) | `scaffold` | 3 | 775 | 3 | 21 | 5 | 4 | F001:frozen, E001:planned | — |
+| [ptr-feedback](../../crates/ptr-feedback/README.md) | `prototype` | 11 | 4096 | 7 | 85 | 9 | 4 | F001:frozen, E001:planned | — |
 | [ptr-ingress](../../crates/ptr-ingress/README.md) | `prototype` | 9 | 3584 | 5 | 90 | 11 | 8 | E001:planned, E004:planned | ingress-classifier:open |
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | `prototype` | 8 | 2126 | 2 | 46 | 11 | 5 | E001:planned | introspection:open |
 | [ptr-labeling](../../crates/ptr-labeling/README.md) | `prototype` | 6 | 1888 | 1 | 36 | 12 | 5 | F002:frozen | label-model:open |
@@ -41,7 +41,7 @@
 | [ptr-state](../../crates/ptr-state/README.md) | `prototype` | 1 | 1150 | 3 | 17 | 18 | 4 | L001:superseded, L002:frozen, E004:planned | materialized-state:open |
 | [ptr-storage](../../crates/ptr-storage/README.md) | `prototype` | 4 | 1565 | 5 | 19 | 12 | 4 | E004:planned | object-storage:open |
 | [ptr-types](../../crates/ptr-types/README.md) | `foundation` | 8 | 3031 | 6 | 77 | 34 | 10 | M005:planned, L001:superseded | — |
-| [ptr-verifier](../../crates/ptr-verifier/README.md) | `scaffold` | 6 | 4184 | 2 | 65 | 9 | 8 | F001:frozen, Q002:frozen, E001:planned | code-quality-verifier:open |
+| [ptr-verifier](../../crates/ptr-verifier/README.md) | `prototype` | 11 | 7011 | 6 | 124 | 14 | 7 | F001:frozen, Q002:frozen, E001:planned | code-quality-verifier:open |
 
 ## Meaning of maturity labels
 
