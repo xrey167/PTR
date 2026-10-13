@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'publish_remote.py'
+sys.path.insert(0, str(SCRIPT.parent))
+import publish_remote  # noqa: E402
 
 ENV = {
     **os.environ,
@@ -123,6 +125,35 @@ class PublishRemoteTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn('credentials', proc.stderr)
         self.assertNotIn('tok', proc.stdout)
+
+    def test_dry_run_of_set_url_checks_the_new_url_and_changes_nothing(self):
+        self.assertEqual(self.run_script('--yes').returncode, 0)
+        git(self.src, 'remote', 'set-url', 'gitlab', str(self.origin))
+        proc = self.run_script('--yes', '--set-url', '--dry-run')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('would run: git remote set-url', proc.stdout)
+        self.assertEqual(git(self.src, 'config', '--get', 'remote.gitlab.url').strip(), str(self.origin))
+        # A second url entry is pushed to as well, so it is refused like a pushurl.
+        git(self.src, 'config', '--add', 'remote.gitlab.url', str(self.target))
+        proc = self.run_script('--yes', url=False)
+        self.assertEqual(proc.returncode, 1)
+
+    def test_an_insteadof_rewrite_to_another_destination_is_refused(self):
+        self.assertEqual(self.run_script('--yes').returncode, 0)
+        git(self.src, 'config', f'url.{self.origin}.pushInsteadOf', str(self.target))
+        before = git(self.target, 'for-each-ref')
+        proc = self.run_script('--yes')
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn(str(self.origin), proc.stderr)
+        self.assertEqual(git(self.target, 'for-each-ref'), before)
+        # The dry run of a not yet existing remote resolves the rewrite as well, the same way
+        # git does for a configured remote.
+        proc = self.run_script('--yes', '--dry-run', '--name', 'fresh')
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertEqual(
+            publish_remote.rewrite_push_url(str(self.src), str(self.target)),
+            git(self.src, 'remote', 'get-url', '--push', 'gitlab').strip(),
+        )
 
     def test_diverged_branch_rejected_and_not_forced(self):
         git(self.other, 'checkout', '-q', 'main')

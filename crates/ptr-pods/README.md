@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-10  
-**Code footprint:** 39 Rust source files · 18462 nonblank source lines · 26 integration-test files · 322 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 39 Rust source files · 18480 nonblank source lines · 26 integration-test files · 323 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -65,6 +65,7 @@
 - Qwen2PagedStack stage execution for a pipeline (layer) split: stage_kv_schema gives the cache schema of a layer span (layer k of the cache is stack layer span.start + k), embed_tokens the first stage's input rows, run_stage_in_regime runs a span over residual rows one row at a time through the same per-layer path as the whole stack (forward_token is now the embedding, forward_layers over the whole span, and the head) and appends that span's K/V, and logits_from_residual is the tail of the last stage; two stages run in turn are the whole stack bit for bit in logits and in each stage's KV bytes (tests/qwen_stage.rs), and a bad span, a mis-shaped input, a decode of several rows and a cache of another layer count are typed errors (Qwen2StackError::InvalidLayerSpan, StageInputShape)
 - run_stage_in_regime takes a StageRun (span, residual, rows, StageRows::Prefill or DecodeStep, optional frame positions) instead of positional parameters; the frame's positions must be the next positions of the cache (Qwen2StackError::StagePositions), and a row that fails truncates the cache back to where the run started, so a failed run leaves the cache unchanged (the rollback helper is unit-tested with a position-offset cache and a revoked cache; a fault in the middle of a row is not injected).
 - A stage run that fails part-way is rolled back to the cache's sequence length before the run (not to its next position, which differs for a cache restored at a position offset), and a rollback that itself fails is reported together with the failed run's own error as Qwen2StackError::RollbackFailed (the cache then holds the rows of the failed run and must be discarded); a unit test with a position-offset cache and one with a revoked cache (the injected rollback fault) cover both; the position arithmetic of the admission is checked (an offset that overflows is a typed refusal, not a wrap or a panic).
+- QwenCpuStats counts decode_steps (single-token forward passes after prefill) directly, and decode_tokens_per_second divides them by decode time instead of generated_tokens minus requests, which an immediate end-of-turn request understated (unit test in src/qwen_cpu/generator.rs, feature qwen-cpu)
 
 ### Missing for the target architecture
 

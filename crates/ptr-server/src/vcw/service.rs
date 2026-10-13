@@ -553,6 +553,8 @@ impl VcwService {
     /// [`VcwBuildError`]: a collision, a generation mismatch, a scope that cannot be recovered,
     /// or a commit the runtime refuses.
     pub fn install(&self, runtime: &mut PtrRuntime) -> Result<(), VcwBuildError> {
+        // Every Pod is checked before any is committed: a refusal later in the roster must not
+        // leave earlier Pods live in the durable lifecycle authority.
         for (pod, generation) in &self.base_pods {
             if let Some(existing) = runtime.capsule_project(&pod.0) {
                 if existing != self.project.0 {
@@ -572,6 +574,8 @@ impl VcwService {
                     });
                 }
             }
+        }
+        for (pod, generation) in &self.base_pods {
             let known = runtime.generation_validity(&pod.0, *generation).is_some()
                 || runtime.live_generation(&pod.0).is_some();
             if !known {
@@ -643,7 +647,22 @@ impl VcwService {
                         .map_err(|error| install(&error))?;
                 }
                 Ok(scope) if scope.state.is_terminal() => {}
-                Ok(_) => return Ok(id),
+                // An active scope is adopted only if this service could have made it: same
+                // project and session, no lease, no children. Anything else (another component's scope
+                // under this name) is left alone and the next incarnation is tried, so answers
+                // are never admitted under a scope that refuses them.
+                Ok(scope) => {
+                    let ours = scope.project == self.project
+                        && scope.session == self.session_id
+                        && runtime
+                            .scopes()
+                            .lease(&id)
+                            .is_ok_and(|lease| *lease == ScopeLeaseBinding::default())
+                        && runtime.scopes().children(&id).is_empty();
+                    if ours {
+                        return Ok(id);
+                    }
+                }
             }
         }
         Err(VcwBuildError::Install(
@@ -754,7 +773,11 @@ impl VcwService {
         runtime
             .ingest_text(request_id.clone(), job.statement.clone())
             .map_err(VcwApiError::Runtime)?;
-        // From here the id is consumed, and the request ends in exactly one VcwFinished.
+        // From here the id is consumed, and the request ends in exactly one VcwFinished. It reads
+        // back as running from now on, also while the loop holds the runtime.
+        if let Ok(mut traces) = self.traces.lock() {
+            traces.start(&id, backend_tag(self.backend));
+        }
         let (result, outcome, digest) = self.run_ingested(
             runtime,
             slot,
@@ -858,6 +881,10 @@ impl VcwService {
             Ok(run) => run,
             Err(error) => {
                 let digest = vcw.failed_trace().map_or([0; 32], |trace| *trace.digest());
+                // The trace of the failed loop is what its digest names: keep it readable too.
+                if let (Some(trace), Ok(mut traces)) = (vcw.failed_trace(), self.traces.lock()) {
+                    traces.insert(id, backend_tag(self.backend), trace);
+                }
                 return (
                     Err(VcwApiError::Internal(format!("vcw loop failed: {error}"))),
                     "failed",

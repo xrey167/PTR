@@ -160,18 +160,21 @@ pub struct QwenCpuStats {
     pub prompt_tokens_fed: u64,
     pub prompt_tokens_reused: u64,
     pub generated_tokens: u64,
+    /// Single-token forward passes after prefill, counted as they run (a request that stops at
+    /// once on end-of-turn adds none; the pass that yields a stop token is counted).
+    pub decode_steps: u64,
     pub prefill_time: Duration,
     pub decode_time: Duration,
 }
 
 impl QwenCpuStats {
-    /// Generated tokens per second of decode time (the first token comes from prefill).
+    /// Decode steps per second of decode time (the first token comes from prefill, so only the
+    /// counted single-token passes are decode work).
     #[must_use]
     pub fn decode_tokens_per_second(&self) -> f64 {
-        let decoded = self.generated_tokens.saturating_sub(self.requests);
         let seconds = self.decode_time.as_secs_f64();
         if seconds > 0.0 {
-            decoded as f64 / seconds
+            self.decode_steps as f64 / seconds
         } else {
             0.0
         }
@@ -455,6 +458,7 @@ impl QwenCpu {
                 .model
                 .forward(&[next], true)?
                 .ok_or(QwenCpuError::NonFinite)?;
+            self.stats.decode_steps += 1;
             self.cached.push(next);
         };
         self.stats.decode_time += decode_started.elapsed();
@@ -551,5 +555,20 @@ mod tests {
         assert_eq!(argmax(&[0.5, 2.0, 2.0, 1.0]).unwrap(), 1);
         assert_eq!(argmax(&[f32::NAN, 1.0]), Err(QwenCpuError::NonFinite));
         assert_eq!(argmax(&[1.0, f32::INFINITY]), Err(QwenCpuError::NonFinite));
+    }
+
+    #[test]
+    fn decode_rate_counts_steps_not_tokens_minus_requests() {
+        // An immediate end-of-turn request (no tokens, no step) and a two-token request (one
+        // step): the old formula 2 - 2 = 0 understated the one decode step that ran.
+        let stats = QwenCpuStats {
+            requests: 2,
+            generated_tokens: 2,
+            decode_steps: 1,
+            decode_time: Duration::from_secs(1),
+            ..QwenCpuStats::default()
+        };
+        assert!((stats.decode_tokens_per_second() - 1.0).abs() < f64::EPSILON);
+        assert!(QwenCpuStats::default().decode_tokens_per_second().abs() < f64::EPSILON);
     }
 }

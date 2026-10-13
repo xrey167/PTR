@@ -2,10 +2,12 @@
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -136,6 +138,19 @@ class BundleTests(unittest.TestCase):
             ptr_bundle.read_sums(out / ptr_bundle.SUMS_NAME)
         self.assertNotIn("do-not-print", str(caught.exception))
         self.assertIn("line 1", str(caught.exception))
+
+    def test_join_refuses_parts_larger_than_the_free_space_and_leaves_no_output(self):
+        src = self.root / "src"
+        make_repo(src)
+        commit(src, "blob.bin", os.urandom(2 * 1024 * 1024))
+        out = self.root / "out"
+        self.assertEqual(cli(src, "create", "--out", str(out), "--split-mib", "1"), 0)
+        free = shutil.disk_usage(out).free
+        with mock.patch.object(ptr_bundle.shutil, "disk_usage", return_value=shutil._ntuple_diskusage(free, 0, 1024)):
+            with self.assertRaises(ptr_bundle.BundleError) as caught:
+                ptr_bundle.cmd_join(argparse.Namespace(dir=str(out)))
+        self.assertIn("free", str(caught.exception))
+        self.assertFalse((out / "repo.bundle").exists())
 
     def test_parts_join_in_numeric_order(self):
         names = [ptr_bundle.part_name(i) for i in (1000, 101, 10, 2, 0)]
