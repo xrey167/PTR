@@ -147,7 +147,7 @@ impl IdentityContext {
     }
 }
 
-/// When a piece of knowledge holds, as a half-open interval in the same unit as [`Timestamp`]:
+/// When a piece of knowledge holds, as a half-open interval in milliseconds since the Unix epoch:
 /// `valid_from <= now < valid_until`. A missing bound is unbounded on that side, so the
 /// default value holds always. Half-open on purpose: two consecutive validities that meet at a
 /// boundary (`[a, b)` then `[b, c)`) never hold at the same instant and never leave a gap.
@@ -291,6 +291,10 @@ pub struct ScopeLifecycleEvent {
     pub reason: Option<String>,
 }
 
+/// An instant as a `u64`. The unit is fixed by the field that holds it: deadlines and validity
+/// intervals on the Pod, PodWire and retrieval path are milliseconds since the Unix epoch, while
+/// `IdentityContext::issued_at` / `expires_at` are seconds. Never compare two `Timestamp`s from
+/// fields with different units.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Timestamp(pub u64);
 

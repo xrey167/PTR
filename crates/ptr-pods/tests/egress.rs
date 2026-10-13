@@ -3,8 +3,8 @@
 //! Every refusal here is a policy decision, so each must carry its reason and a redacted
 //! target and must leave nothing sent. The payload never appears in a refusal.
 use ptr_pods::{
-    EgressPolicy, FrameRateLimit, FrameRateLimiter, NativeProtocolRequest, NetworkEndpoint,
-    PodLink, PodLinkError, ProtocolBinding, ProtocolError, TcpProtocolExecutor,
+    redact_topic, EgressPolicy, FrameRateLimit, FrameRateLimiter, NativeProtocolRequest,
+    NetworkEndpoint, PodLink, PodLinkError, ProtocolBinding, ProtocolError, TcpProtocolExecutor,
     UdpProtocolExecutor,
 };
 use ptr_protocol::TypedPayload;
@@ -217,10 +217,10 @@ async fn an_unlisted_port_and_an_unlisted_topic_each_name_their_own_reason() {
     assert_eq!(
         refusal(topic_error),
         (
-            "secrets/vault".to_owned(),
+            redact_topic("secrets/vault"),
             EgressRefusalReason::TopicNotAllowed
         ),
-        "a topic refusal names the topic, not the broker"
+        "a topic refusal names a digest of the topic, not the topic and not the broker"
     );
 
     let wildcard_error = UdpProtocolExecutor::default()
@@ -309,4 +309,87 @@ fn a_flood_is_bounded_by_the_bucket_and_never_queued() {
         .filter(|_| limiter.try_acquire_at(start).is_ok())
         .count();
     assert_eq!(admitted, 8);
+}
+
+#[tokio::test]
+async fn a_policy_that_lists_topics_refuses_a_request_that_names_none() {
+    let allowed = policy(&["sensors/#"], &["127.0.0.1"], &[1883]);
+    let error = UdpProtocolExecutor::default()
+        .execute(request(
+            ProtocolBinding::Udp,
+            allowed.clone(),
+            "127.0.0.1",
+            1883,
+            None,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refusal(error),
+        (
+            "127.0.0.1:1883".to_owned(),
+            EgressRefusalReason::TopicRequired
+        ),
+        "omitting the topic must not be a way around the topic policy"
+    );
+    assert_eq!(
+        allowed.check_publication(None),
+        Err(EgressRefusalReason::TopicRequired)
+    );
+    assert_eq!(policy(&[], &[], &[]).check_publication(None), Ok(()));
+}
+
+#[test]
+fn a_refused_topic_is_recorded_as_a_digest_prefix_and_a_length() {
+    let target = redact_topic("tokens/s3cr3t-credential");
+    assert!(target.starts_with("topic:"), "{target}");
+    assert!(!target.contains("s3cr3t"), "{target}");
+    assert!(target.ends_with(":24"), "{target}");
+    assert_eq!(target, redact_topic("tokens/s3cr3t-credential"));
+    assert_ne!(target, redact_topic("tokens/other-credential!!"));
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+#[tokio::test]
+async fn a_deadline_is_milliseconds_since_the_epoch_and_an_expired_one_is_refused() {
+    let allowed = policy(&[], &["127.0.0.1"], &[9]);
+    for expired in [1, now_millis() - 1] {
+        let mut asked = request(ProtocolBinding::Tcp, allowed.clone(), "127.0.0.1", 9, None);
+        asked.link.deadline = Timestamp(expired);
+        assert_eq!(
+            TcpProtocolExecutor::default()
+                .execute(asked)
+                .await
+                .unwrap_err(),
+            ProtocolError::Deadline,
+            "{expired}"
+        );
+    }
+    // A deadline written in seconds is, read as milliseconds, long past.
+    let mut in_seconds = request(ProtocolBinding::Tcp, allowed, "127.0.0.1", 9, None);
+    in_seconds.link.deadline = Timestamp(now_millis() / 1000 + 3600);
+    assert_eq!(
+        TcpProtocolExecutor::default()
+            .execute(in_seconds)
+            .await
+            .unwrap_err(),
+        ProtocolError::Deadline
+    );
+}
+
+#[tokio::test]
+async fn a_future_millisecond_deadline_reaches_the_peer() {
+    let (port, server) = answering_listener().await;
+    let allowed = policy(&[], &["127.0.0.1"], &[port]);
+    let mut asked = request(ProtocolBinding::Tcp, allowed, "127.0.0.1", port, None);
+    asked.link.deadline = Timestamp(now_millis() + 60_000);
+    let response = TcpProtocolExecutor::default().execute(asked).await.unwrap();
+    assert_eq!(response.output.bytes, b"ok");
+    server.await.unwrap();
 }

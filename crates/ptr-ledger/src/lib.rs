@@ -350,6 +350,9 @@ pub enum LedgerEvent {
         trace_id: TraceId,
         source: PodRevisionAddress,
         target: String,
+        /// How many refusals of this source, target and reason the record stands for: the
+        /// runtime coalesces a window's identical refusals into one event. At least one.
+        count: u32,
         reason: EgressRefusalReason,
     },
 }
@@ -1351,6 +1354,7 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             trace_id,
             source,
             target,
+            count,
             reason,
         } => {
             out.push(33);
@@ -1361,6 +1365,7 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             out.extend_from_slice(&source.semantic_revision);
             put_u64(&mut out, source.generation.0);
             put_string(&mut out, target);
+            put_u32(&mut out, *count);
             out.push(reason.code());
         }
     }
@@ -1803,6 +1808,7 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             let semantic_revision = cursor.digest()?;
             let generation = Generation(cursor.u64()?);
             let target = cursor.string()?;
+            let count = cursor.u32()?;
             let reason_code = cursor.u8()?;
             let reason = EgressRefusalReason::from_code(reason_code).ok_or_else(|| {
                 io::Error::new(
@@ -1818,6 +1824,7 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
                     generation,
                 },
                 target,
+                count,
                 reason,
             };
             check_egress_refused(&event)?;
@@ -1964,7 +1971,7 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
     Ok(())
 }
 
-/// An egress refusal names a non-empty trace, a valid source revision address and a target of
+/// An egress refusal names a non-empty, bounded trace, a positive count, a valid source revision address and a target of
 /// at most [`MAX_EGRESS_TARGET_BYTES`] bytes without control characters or whitespace: a
 /// `host:port` or a topic and nothing a payload could ride in. The decoder and the append
 /// paths both call this.
@@ -1973,6 +1980,7 @@ fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
         trace_id,
         source,
         target,
+        count,
         ..
     } = event
     else {
@@ -1983,7 +1991,12 @@ fn check_egress_refused(event: &LedgerEvent) -> Result<(), io::Error> {
         && !target
             .chars()
             .any(|character| character.is_control() || character.is_whitespace());
-    if trace_id.0.is_empty() || !target_ok || source.validate().is_err() {
+    if trace_id.0.is_empty()
+        || trace_id.0.len() > MAX_EGRESS_TARGET_BYTES
+        || *count == 0
+        || !target_ok
+        || source.validate().is_err()
+    {
         return Err(integrity::invalid("PTR_LEDGER_EGRESS_REFUSED"));
     }
     Ok(())
@@ -3204,6 +3217,7 @@ mod effect_record_tests {
                 generation: Generation(3),
             },
             target: "broker.example:1883".into(),
+            count: 3,
             reason,
         }
     }
@@ -3216,6 +3230,7 @@ mod effect_record_tests {
             (EgressRefusalReason::TopicNotAllowed, 2),
             (EgressRefusalReason::InvalidTopic, 3),
             (EgressRefusalReason::RateLimited, 4),
+            (EgressRefusalReason::TopicRequired, 5),
         ];
         assert_eq!(pinned.len(), EgressRefusalReason::ALL.len());
         for (reason, code) in pinned {
@@ -3234,9 +3249,9 @@ mod effect_record_tests {
             padded.push(0);
             assert!(decode_event(&padded).is_err());
         }
-        assert_eq!(EgressRefusalReason::from_code(5), None);
+        assert_eq!(EgressRefusalReason::from_code(6), None);
         let mut unknown = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
-        *unknown.last_mut().unwrap() = 5;
+        *unknown.last_mut().unwrap() = 6;
         assert!(decode_event(&unknown).is_err());
     }
 
@@ -3272,6 +3287,16 @@ mod effect_record_tests {
             with(&|e| {
                 if let LedgerEvent::EgressRefused { trace_id, .. } = e {
                     trace_id.0.clear();
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { trace_id, .. } = e {
+                    trace_id.0 = "t".repeat(MAX_EGRESS_TARGET_BYTES + 1);
+                }
+            }),
+            with(&|e| {
+                if let LedgerEvent::EgressRefused { count, .. } = e {
+                    *count = 0;
                 }
             }),
             with(&|e| {

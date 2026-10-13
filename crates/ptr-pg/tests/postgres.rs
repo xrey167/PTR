@@ -1270,7 +1270,7 @@ async fn hybrid_search_returns_live_candidates_fused_by_capsule_and_generation()
         lexical_weight: 1.0,
         vector_weight: 1.0,
         rank_constant: 60.0,
-        filter: Default::default(),
+        filter: ptr_search::SearchFilter::audit_without_time(),
     };
     let results = substrate.search(&query).await.unwrap();
     assert_eq!(results.watermark, 3);
@@ -1365,7 +1365,7 @@ async fn a_document_of_a_revoked_generation_is_never_returned_although_it_is_sti
             lexical_weight: 1.0,
             vector_weight: 1.0,
             rank_constant: 60.0,
-            filter: Default::default(),
+            filter: ptr_search::SearchFilter::audit_without_time(),
         })
         .await
         .unwrap();
@@ -1712,7 +1712,7 @@ async fn invalid_search_parameters_are_refused_before_sql() {
         rank_constant: 0.0,
         lexical_weight: 0.0,
         vector_weight: 0.0,
-        filter: Default::default(),
+        filter: ptr_search::SearchFilter::audit_without_time(),
     };
     let mut invalid = query.clone();
     invalid.limit = 0;
@@ -2467,7 +2467,7 @@ async fn rebuild_drops_projection_and_derived_caches_but_keeps_working_state() {
         lexical_weight: 1.0,
         vector_weight: 1.0,
         rank_constant: 60.0,
-        filter: Default::default(),
+        filter: ptr_search::SearchFilter::audit_without_time(),
     };
     assert!(substrate.search(&query).await.unwrap().lexical.is_empty());
     substrate.drop_all().await.unwrap();
@@ -3836,7 +3836,7 @@ async fn vector_search_is_not_truncated_at_the_default_candidate_list() {
             lexical_weight: 1.0,
             vector_weight: 1.0,
             rank_constant: 60.0,
-            filter: Default::default(),
+            filter: ptr_search::SearchFilter::audit_without_time(),
         };
         let results = substrate.search(&query).await.unwrap();
         assert_eq!(results.vector.len(), 100, "{:?}", query.project);
@@ -6796,7 +6796,7 @@ async fn a_generation_is_indexed_from_one_content_and_re_embedded_only_with_it()
         lexical_weight: 1.0,
         vector_weight: 1.0,
         rank_constant: 60.0,
-        filter: Default::default(),
+        filter: ptr_search::SearchFilter::audit_without_time(),
     };
     let hit = &substrate.search(&query).await.unwrap().vector[0];
     assert!(hit.score > 0.99, "{}", hit.score);
@@ -6875,7 +6875,7 @@ async fn a_stale_cache_row_never_takes_a_live_document_s_place_within_the_vector
             lexical_weight: 1.0,
             vector_weight: 1.0,
             rank_constant: 60.0,
-            filter: Default::default(),
+            filter: ptr_search::SearchFilter::audit_without_time(),
         };
         let hits: Vec<(String, u64)> = substrate
             .search(&query)
@@ -6943,7 +6943,7 @@ async fn the_filtered_vector_query_reads_its_space_s_hnsw_index() {
             lexical_weight: 1.0,
             vector_weight: 1.0,
             rank_constant: 60.0,
-            filter: Default::default(),
+            filter: ptr_search::SearchFilter::audit_without_time(),
         };
         assert_eq!(substrate.search(&query).await.unwrap().vector.len(), 10);
     }

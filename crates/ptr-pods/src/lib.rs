@@ -47,8 +47,8 @@ pub use candle::{
     CandleKvSnapshotLease, CandleKvTensorBackend, CandlePagedKvBackend, CandlePagedKvCache,
 };
 pub use egress::{
-    is_concrete_topic, is_valid_topic_filter, redact_target, topic_filter_matches, FrameRateLimit,
-    FrameRateLimiter, RateLimitError, MAX_RATE_WINDOW, MAX_TOPIC_BYTES,
+    is_concrete_topic, is_valid_topic_filter, redact_target, redact_topic, topic_filter_matches,
+    FrameRateLimit, FrameRateLimiter, RateLimitError, MAX_RATE_WINDOW, MAX_TOPIC_BYTES,
 };
 pub use evidence::{
     Ed25519EvidenceSigner, Ed25519EvidenceVerifier, EvidenceError, EvidenceSigner,

@@ -33,6 +33,19 @@ use ptr_types::{
 use sha2::{Digest, Sha256};
 use std::fmt;
 
+/// The wall clock as a [`Timestamp`] in milliseconds since the Unix epoch, the unit of every
+/// deadline on the PodWire path. A clock before the epoch reads as zero, which expires every
+/// deadline rather than extending one.
+pub fn unix_millis_now() -> Timestamp {
+    Timestamp(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            }),
+    )
+}
+
 /// Marks a request. Foreign bytes are refused before anything is interpreted.
 const REQUEST_MAGIC: &[u8; 8] = b"PTRPWREQ";
 
@@ -171,8 +184,9 @@ pub struct PodAddressBinding {
     pub visited: Vec<PodAddress>,
     pub protocol: Option<ProtocolBinding>,
     pub mesh: Option<MeshEndpointBinding>,
-    /// Absolute deadline in milliseconds since the Unix epoch (V4). `None` is the
-    /// V3 shape: no deadline travels and only the local transport timeout applies.
+    /// Absolute deadline in **milliseconds since the Unix epoch** (V4), the unit of
+    /// `PodLink::deadline`, `PodRoute::deadline` and `PodCall.deadline_ms` too. `None` is
+    /// the V3 shape: no deadline travels and only the local transport timeout applies.
     /// Set together with [`Self::origin_ts`] or not at all.
     pub deadline: Option<Timestamp>,
     /// When the originating caller composed the request (V4), in the same unit as
@@ -225,6 +239,96 @@ impl PodAddressBinding {
             }
             (Some(_), Some(_)) => Ok(()),
         }
+    }
+
+    /// The binding a request resolved through `route` travels under: the route's addresses, hop
+    /// budget and trace, the deadline it carries (milliseconds since the epoch) and `origin_ts`,
+    /// the instant the request is composed. A route with no deadline yields a V3-shaped binding.
+    ///
+    /// # Errors
+    /// [`FrameError::InvalidField`] when the route's deadline is not after `origin_ts`: a
+    /// request that is expired before it is sent is not composed.
+    pub fn for_route(
+        route: &ptr_types::PodRoute,
+        protocol: Option<ProtocolBinding>,
+        origin_ts: Timestamp,
+    ) -> Result<Self, FrameError> {
+        let binding = Self {
+            source: route.source.clone(),
+            destination: route.destination.clone(),
+            trace_id: route.trace_id.clone(),
+            hop_limit: route.hop_limit,
+            visited: route.visited.clone(),
+            protocol,
+            mesh: route.endpoint.mesh.clone(),
+            deadline: route.deadline,
+            origin_ts: route.deadline.map(|_| origin_ts),
+        };
+        binding.validate()?;
+        Ok(binding)
+    }
+
+    /// The binding a request made under `link` travels under. The link always carries a
+    /// deadline, in the same unit as the frame's, so the number that crosses the wire is the
+    /// number the link was given.
+    ///
+    /// # Errors
+    /// As [`Self::for_route`].
+    pub fn for_link(link: &ptr_pods::PodLink, origin_ts: Timestamp) -> Result<Self, FrameError> {
+        let binding = Self {
+            source: Some(link.source.clone()),
+            destination: link.target.clone(),
+            trace_id: TraceId(link.trace_id.clone()),
+            hop_limit: link.hop_limit,
+            visited: link.visited.clone(),
+            protocol: Some(link.protocol.clone()),
+            mesh: None,
+            deadline: Some(link.deadline),
+            origin_ts: Some(origin_ts),
+        };
+        binding.validate()?;
+        Ok(binding)
+    }
+
+    /// The binding for a hop onward to `destination`: this hop's destination becomes the
+    /// source and joins the visited list, the hop budget shrinks by one, and the deadline is
+    /// the earlier of this binding's and `requested` ([`Self::narrowed_deadline`]). Whatever
+    /// the result, it is checked against this binding ([`Self::ensure_deadline_within`]), so a
+    /// relay can neither extend the time it was given nor drop the deadline.
+    ///
+    /// # Errors
+    /// [`FrameError::InvalidField`] when no hop is left (`hop_limit` would reach zero), when the
+    /// destination was already visited, or when the result is not a valid binding.
+    pub fn forward_to(
+        &self,
+        destination: PodRevisionAddress,
+        requested: Option<Timestamp>,
+    ) -> Result<Self, FrameError> {
+        let hop_limit = self
+            .hop_limit
+            .checked_sub(1)
+            .filter(|left| *left > 0)
+            .ok_or(FrameError::InvalidField { field: "hop_limit" })?;
+        let mut visited = self.visited.clone();
+        visited.push(self.destination.address.clone());
+        let deadline = match (self.deadline, requested) {
+            (Some(_), Some(requested)) => Some(self.narrowed_deadline(requested)),
+            (current, _) => current,
+        };
+        let next = Self {
+            source: Some(self.destination.address.clone()),
+            destination,
+            trace_id: self.trace_id.clone(),
+            hop_limit,
+            visited,
+            protocol: self.protocol.clone(),
+            mesh: self.mesh.clone(),
+            deadline,
+            origin_ts: self.origin_ts,
+        };
+        next.validate()?;
+        next.ensure_deadline_within(self)?;
+        Ok(next)
     }
 
     pub fn validate(&self) -> Result<(), FrameError> {

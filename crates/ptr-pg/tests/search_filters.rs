@@ -229,7 +229,7 @@ async fn another_principal_sees_nothing_of_a_restricted_document_in_either_mode(
     );
 
     let nobody = substrate
-        .search(&query(10, SearchFilter::default()))
+        .search(&query(10, SearchFilter::audit_without_time()))
         .await
         .unwrap();
     assert_eq!(
@@ -316,7 +316,7 @@ async fn an_expired_or_not_yet_valid_row_drops_out_before_the_limit() {
     // A filter without a now applies no time rule: the audit view.
     let audit = SearchFilter {
         principal: Some(PrincipalId::from("auditor")),
-        ..SearchFilter::default()
+        ..SearchFilter::audit_without_time()
     };
     let everything = substrate.search(&query(10, audit)).await.unwrap();
     assert_eq!(everything.vector.len(), 4);
@@ -475,7 +475,7 @@ async fn the_sql_predicate_admits_exactly_the_documents_the_reference_predicate_
     }
     index(&mut substrate, &documents).await;
     let filters = [
-        SearchFilter::default(),
+        SearchFilter::audit_without_time(),
         asking("alice", &[], 9),
         asking("alice", &[], 10),
         asking("alice", &[], 15),
@@ -489,7 +489,7 @@ async fn the_sql_predicate_admits_exactly_the_documents_the_reference_predicate_
         },
         SearchFilter {
             principal: Some(PrincipalId::from("alice")),
-            ..SearchFilter::default()
+            ..SearchFilter::audit_without_time()
         },
     ];
     for filter in filters {
@@ -539,7 +539,7 @@ async fn a_malformed_filter_or_attribute_set_is_refused_before_any_sql_runs() {
     let mut substrate = substrate().await;
     let bad_filter = SearchFilter {
         principal: Some(PrincipalId::from("")),
-        ..SearchFilter::default()
+        ..SearchFilter::audit_without_time()
     };
     assert_eq!(
         substrate.search(&query(10, bad_filter)).await.unwrap_err(),
@@ -550,7 +550,7 @@ async fn a_malformed_filter_or_attribute_set_is_refused_before_any_sql_runs() {
     );
     let too_late = SearchFilter {
         now: Some(Timestamp(u64::MAX)),
-        ..SearchFilter::default()
+        ..SearchFilter::audit_without_time()
     };
     assert_eq!(
         substrate.search(&query(10, too_late)).await.unwrap_err(),

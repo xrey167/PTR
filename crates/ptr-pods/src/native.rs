@@ -1,4 +1,4 @@
-use crate::egress::redact_target;
+use crate::egress::{redact_target, redact_topic};
 use crate::{
     FrameRateLimiter, NativeProtocolRequest, NativeProtocolResponse, ProtocolBinding, ProtocolError,
 };
@@ -142,18 +142,21 @@ impl crate::protocol::NetworkEndpoint {
     }
 }
 
-/// The redacted target a refusal of `request` names: its topic when it has one, its
-/// `host:port` otherwise. Never the payload.
-fn refusal_target(request: &NativeProtocolRequest) -> String {
-    match &request.topic {
-        Some(topic) => redact_target(topic),
-        None => redact_target(&request.endpoint.socket_addr()),
+/// The redacted target a refusal names, chosen by the reason: a refused topic is named by its
+/// digest prefix and length ([`redact_topic`]), everything else (a host, a port, a missing
+/// topic, a spent budget) by `host:port`. Never the payload.
+fn refusal_target(request: &NativeProtocolRequest, reason: EgressRefusalReason) -> String {
+    match (&request.topic, reason) {
+        (Some(topic), EgressRefusalReason::TopicNotAllowed | EgressRefusalReason::InvalidTopic) => {
+            redact_topic(topic)
+        }
+        _ => redact_target(&request.endpoint.socket_addr()),
     }
 }
 
 fn egress_refused(request: &NativeProtocolRequest, reason: EgressRefusalReason) -> ProtocolError {
     ProtocolError::EgressRefused {
-        target: refusal_target(request),
+        target: refusal_target(request, reason),
         reason,
     }
 }
@@ -188,17 +191,15 @@ fn validate_request(
         .egress_policy
         .check_endpoint(&request.endpoint.host, request.endpoint.port)
         .map_err(|reason| egress_refused(request, reason))?;
-    if let Some(topic) = &request.topic {
-        request
-            .link
-            .egress_policy
-            .check_topic(topic)
-            .map_err(|reason| egress_refused(request, reason))?;
-    }
+    request
+        .link
+        .egress_policy
+        .check_publication(request.topic.as_deref())
+        .map_err(|reason| egress_refused(request, reason))?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ProtocolError::Deadline)?
-        .as_secs();
+        .as_millis() as u64;
     if request.link.deadline.0 <= now || request.link.hop_limit == 0 {
         return Err(ProtocolError::Deadline);
     }

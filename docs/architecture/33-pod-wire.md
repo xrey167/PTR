@@ -286,5 +286,16 @@ fields its layout has.
   adapter; zero is refused, absence means none. `RouteConstraints.deadline` replaces the
   `Timestamp(0)` placeholder in `PodRoute`.
 
+**One unit.** Every deadline on this path is **milliseconds since the Unix epoch**:
+`PodLink::deadline`, `PodRoute::deadline`, `RouteConstraints::deadline`,
+`PodHeader::deadline`, `PodAddressBinding::deadline` / `origin_ts` and `PodCall.deadline_ms`.
+`ptr_types::Timestamp` itself carries no unit (identity validity is in seconds); the field
+that holds it fixes it. `PodAddressBinding::for_link` and `for_route` build a binding from a
+link or a resolved route without converting, and a test carries one link deadline through the
+frame to the native executor and asserts the same number at the end. A route with no deadline
+(`None`) travels as a V3 binding; a link always has one. `PodAddressBinding::forward_to` is the
+relay step: one hop less, the previous destination joins the visited list, and the deadline is
+the earlier of the carried one and the one requested, checked against the parent.
+
 An absolute deadline is only as accurate as the hosts' clocks. A clock behind the epoch
 reads as zero and so expires every deadline rather than extending one.

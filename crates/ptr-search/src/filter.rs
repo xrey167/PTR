@@ -169,15 +169,20 @@ impl SearchAttributes {
     }
 }
 
-/// What a query asks of the documents it may return. The default sees project-wide documents
-/// only and applies no time rule or metadata restriction.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// What a query asks of the documents it may return.
+///
+/// There is no `Default`: a filter is built for an instant ([`SearchFilter::at`],
+/// [`SearchFilter::for_principal`]) so the time rule cannot be forgotten, or deliberately
+/// without one ([`SearchFilter::audit_without_time`]). Either way a filter that names nobody
+/// sees project-wide documents only.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchFilter {
     /// Who is asking, as the runtime admitted them.
     pub principal: Option<PrincipalId>,
     /// The groups the asker belongs to.
     pub groups: BTreeSet<String>,
-    /// The instant validity is judged at. `None` applies no time rule.
+    /// The instant validity is judged at, in milliseconds since the Unix epoch. `None` applies
+    /// no time rule and is only for an audit view ([`SearchFilter::audit_without_time`]).
     pub now: Option<Timestamp>,
     /// Only documents of this role.
     pub semantic_role: Option<String>,
@@ -188,6 +193,29 @@ pub struct SearchFilter {
 }
 
 impl SearchFilter {
+    /// A filter that names nobody and judges validity at `now`: it sees the project-wide
+    /// documents that hold at `now`.
+    pub fn at(now: Timestamp) -> Self {
+        Self {
+            principal: None,
+            groups: BTreeSet::new(),
+            now: Some(now),
+            semantic_role: None,
+            predicate: None,
+            tags_any: BTreeSet::new(),
+        }
+    }
+
+    /// A filter with no time rule: expired and not-yet-valid documents are visible. For an
+    /// audit or an administrative view that must see everything the cache holds for its
+    /// audience; never the filter of a retrieval that feeds an answer.
+    pub fn audit_without_time() -> Self {
+        Self {
+            now: None,
+            ..Self::at(Timestamp(0))
+        }
+    }
+
     /// A filter for an admitted principal and its groups, judging validity at `now`.
     pub fn for_principal(
         principal: PrincipalId,
@@ -197,8 +225,7 @@ impl SearchFilter {
         Self {
             principal: Some(principal),
             groups: groups.into_iter().collect(),
-            now: Some(now),
-            ..Self::default()
+            ..Self::at(now)
         }
     }
 

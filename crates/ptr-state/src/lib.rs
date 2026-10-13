@@ -366,11 +366,12 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         LedgerEvent::EgressRefused {
             source,
             target,
+            count,
             reason,
             ..
         } => vec![(
             egress_refusal_key(&source.address),
-            egress_refusal_entry(index, *reason, target),
+            egress_refusal_entry(index, *reason, *count, target),
         )],
     }
 }
@@ -388,14 +389,15 @@ pub fn egress_refusal_key(address: &ptr_types::PodAddress) -> String {
     )
 }
 
-/// The value of an egress refusal key: `<commit index>:<reason name>:<target>`. The target is a
-/// `host:port` or a topic and may itself contain `:`, so it comes last.
+/// The value of an egress refusal key: `<commit index>:<reason name>:<count>:<target>`. The
+/// target is a redacted `host:port` or topic digest and may itself contain `:`, so it comes last.
 pub fn egress_refusal_entry(
     index: u64,
     reason: ptr_types::EgressRefusalReason,
+    count: u32,
     target: &str,
 ) -> String {
-    format!("{index}:{}:{target}", reason.name())
+    format!("{index}:{}:{count}:{target}", reason.name())
 }
 
 /// The prefix of every approximate-KV taint key: `kv-taint:<kind>:<hex digest>`.

@@ -21,16 +21,19 @@ pub enum EgressRefusalReason {
     InvalidTopic,
     /// The Pod lease used up its frame budget for the current window.
     RateLimited,
+    /// The link's policy lists topics, so a publication must name one, and this one did not.
+    TopicRequired,
 }
 
 impl EgressRefusalReason {
     /// Every reason, so a test can hold the code table to account.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::HostNotAllowed,
         Self::PortNotAllowed,
         Self::TopicNotAllowed,
         Self::InvalidTopic,
         Self::RateLimited,
+        Self::TopicRequired,
     ];
 
     /// The pinned wire and ledger code.
@@ -41,6 +44,7 @@ impl EgressRefusalReason {
             Self::TopicNotAllowed => 2,
             Self::InvalidTopic => 3,
             Self::RateLimited => 4,
+            Self::TopicRequired => 5,
         }
     }
 
@@ -52,6 +56,7 @@ impl EgressRefusalReason {
             Self::TopicNotAllowed => "topic-not-allowed",
             Self::InvalidTopic => "invalid-topic",
             Self::RateLimited => "rate-limited",
+            Self::TopicRequired => "topic-required",
         }
     }
 
@@ -63,6 +68,7 @@ impl EgressRefusalReason {
             2 => Some(Self::TopicNotAllowed),
             3 => Some(Self::InvalidTopic),
             4 => Some(Self::RateLimited),
+            5 => Some(Self::TopicRequired),
             _ => None,
         }
     }
@@ -264,10 +270,9 @@ pub struct RouteConstraints {
     pub zone: Option<ZoneId>,
     pub required_vram_bytes: Option<u64>,
     pub min_epoch: Option<u64>,
-    /// The caller's absolute deadline in milliseconds since the Unix epoch. A
-    /// resolved route carries it unchanged; `None` leaves the route with
-    /// `Timestamp(0)`, meaning no deadline was set and only the transport timeout
-    /// applies.
+    /// The caller's absolute deadline in milliseconds since the Unix epoch. A resolved route
+    /// carries it unchanged; `None` means the caller set none, the route has none, and only
+    /// the transport timeout applies. Zero is not a deadline.
     pub deadline: Option<super::Timestamp>,
 }
 
@@ -282,7 +287,8 @@ pub struct PodRoute {
     pub output_type: TypeId,
     pub trace_id: TraceId,
     pub request_id: RequestId,
-    pub deadline: super::Timestamp,
+    /// Absolute deadline, milliseconds since the Unix epoch; `None` when the caller set none.
+    pub deadline: Option<super::Timestamp>,
     pub hop_limit: u16,
     pub visited: Vec<PodAddress>,
     pub placement_epoch: u64,
@@ -348,6 +354,7 @@ pub struct PodHeader {
     pub placement_epoch: u64,
     pub fencing_token: u128,
     pub trace_id: TraceId,
+    /// Absolute deadline, milliseconds since the Unix epoch.
     pub deadline: super::Timestamp,
     pub hop_limit: u16,
 }
@@ -570,7 +577,7 @@ mod tests {
             output_type: "output".into(),
             trace_id: "trace".into(),
             request_id: "request".into(),
-            deadline: super::super::Timestamp(10),
+            deadline: Some(super::super::Timestamp(10)),
             hop_limit: 0,
             visited: Vec::new(),
             placement_epoch: 1,

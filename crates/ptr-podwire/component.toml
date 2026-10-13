@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-10-13"
 
 implemented = [
+  "PodAddressBinding::for_link / for_route build a binding from a link or a resolved route without converting the deadline (milliseconds since the epoch throughout the path), PodAddressBinding::forward_to is the relay step (hop budget, visited trail, deadline only shrinks, checked against the parent), unix_millis_now is the one clock",
   "FORMAT_V4: an absolute deadline and origin timestamp in the address binding; V3 and V2 stay readable; expiry refused before execution, the request wait bounded by the deadline (uncertain on timeout), a deadline only shrinks across hops (narrowed_deadline, ensure_deadline_within); PodWireError::DeadlineExceeded",
   "PodHost and PodClient carry one Pod invocation and its answer over ALPN_PODWIRE, composing ptr-pods' registry with ptr-net's transport so neither has to know about the other",
   "A request frame carries no project field: the project a request resolves in comes from the host's access policy keyed by the authenticated peer, because resolution inside a project is the only thing standing between a request and a Pod's data and a requester that named its project would be choosing which project's Pods it reaches",
@@ -71,6 +72,7 @@ decisions = [
 ]
 
 checks = [
+  "tests/frame_v4.rs: trailing bytes after a V4 frame, forward_to, and one link deadline carried through the frame to the native executor with the same number at the end; an expired millisecond deadline refused by the builder and the executor",
   "tests/frame_v4.rs: round trips, V3 compatibility, prefixes, invalid deadlines, shrinking across hops; tests/wire.rs (podwire-backend): a future deadline is served in V4, an expired one is refused by the client and by the host before the Pod runs, a deadline bounds the wait and leaves the request uncertain",
   "two peers send byte-identical frames over two real connections to one host and reach two different projects' Pods, each Pod running exactly once",
   "an admitted peer reaches its project's Pod over a real ALPN_PODWIRE connection and the peer the host served is the connection's, not a value from the payload",

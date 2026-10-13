@@ -379,6 +379,14 @@ impl SearchHit {
         if self.stage != EvidenceStage::PossibleEvidence {
             return Err(EvidencePromotionError::WrongStage);
         }
+        self.lifecycle_answer(validity)
+    }
+
+    /// Ask the lifecycle authority about this hit's own capsule generation, whatever the stage.
+    fn lifecycle_answer<F>(&self, validity: F) -> Result<(), EvidencePromotionError>
+    where
+        F: FnOnce(&CapsuleId, Generation) -> Option<Validity>,
+    {
         match validity(&self.capsule, self.generation) {
             Some(Validity::Live) => Ok(()),
             Some(Validity::Superseded) => Err(EvidencePromotionError::StaleGeneration),
@@ -471,16 +479,33 @@ impl SearchHit {
         Ok(())
     }
 
-    /// The commit-time check of a hit observed through a time-checked path: the validity the
-    /// authority had at observation must still hold at `now`, the instant of reliance.
-    fn recheck_time(&self, now: Timestamp) -> Result<(), ValidityRefusal> {
-        let held = self.observed_validity.ok_or(ValidityRefusal::Unknown)?;
-        Self::check_held(held, now)
+    /// The commit-time check of a hit observed through a time-checked path: the authority is
+    /// asked again, for the lifecycle of the hit's generation and for its validity, and both
+    /// must hold at `now`, the instant of reliance. What the authority answered at observation
+    /// is not reused: a revocation or a shortened validity committed since is seen here.
+    fn recheck_authority<F, T>(
+        &self,
+        validity: F,
+        time_validity: T,
+        now: Timestamp,
+    ) -> Result<(), TimedPromotionError>
+    where
+        F: FnOnce(&CapsuleId, Generation) -> Option<Validity>,
+        T: FnOnce(&CapsuleId, Generation) -> Option<KnowledgeValidity>,
+    {
+        if self.observed_validity.is_none() {
+            return Err(ValidityRefusal::Unknown.into());
+        }
+        self.lifecycle_answer(validity)?;
+        self.check_time(time_validity, now)?;
+        Ok(())
     }
 
     /// Move an observed hit to `VerifiedKnown` once its verification passed.
     ///
-    /// This is the trusted-caller path: `verification_passed` is the caller's word. For a
+    /// This is the trusted-caller path: `verification_passed` is the caller's word, and no time
+    /// is checked: use [`SearchHit::observe_at`] and [`SearchHit::promote_verified_at`] for a hit
+    /// that may expire. For a
     /// hit observed through [`SearchHit::observe_resolved`], use
     /// [`SearchHit::promote_verified_with`].
     ///
@@ -513,26 +538,33 @@ impl SearchHit {
     }
 
     /// [`SearchHit::promote_verified`] for a hit observed through
-    /// [`SearchHit::observe_at`]: the validity the authority had at observation is held
-    /// against `now`, the instant of reliance, before the hit becomes known. A document that
-    /// expired between retrieval and use is refused here, not promoted on the strength of the
-    /// moment it was found.
+    /// [`SearchHit::observe_at`]: the authority is asked again, for the lifecycle of the hit's
+    /// generation (`validity`) and for its validity (`time_validity`), and both must hold at
+    /// `now`, the instant of reliance, before the hit becomes known. A document that expired,
+    /// or a generation revoked, between retrieval and use is refused here, not promoted on the
+    /// strength of the moment it was found.
     ///
     /// # Errors
     /// `WrongStage` unless the hit is `Observed`; [`ValidityRefusal::Unknown`] when it was
-    /// observed without a validity; [`ValidityRefusal::NotYetValid`] or
-    /// [`ValidityRefusal::Expired`] when the validity does not hold at `now`;
-    /// `VerificationFailed` when verification did not pass. A refused step leaves the hit at
-    /// its stage.
-    pub fn promote_verified_at(
+    /// observed without a validity or the authority holds none now; the lifecycle refusals of
+    /// [`SearchHit::observe`]; [`ValidityRefusal::NotYetValid`] or [`ValidityRefusal::Expired`]
+    /// when the validity does not hold at `now`; `VerificationFailed` when verification did not
+    /// pass. A refused step leaves the hit at its stage.
+    pub fn promote_verified_at<F, T>(
         &mut self,
         verification_passed: bool,
+        validity: F,
+        time_validity: T,
         now: Timestamp,
-    ) -> Result<(), TimedPromotionError> {
+    ) -> Result<(), TimedPromotionError>
+    where
+        F: FnOnce(&CapsuleId, Generation) -> Option<Validity>,
+        T: FnOnce(&CapsuleId, Generation) -> Option<KnowledgeValidity>,
+    {
         if self.stage != EvidenceStage::Observed {
             return Err(EvidencePromotionError::WrongStage.into());
         }
-        self.recheck_time(now)?;
+        self.recheck_authority(validity, time_validity, now)?;
         if !verification_passed {
             return Err(EvidencePromotionError::VerificationFailed.into());
         }
@@ -570,22 +602,28 @@ impl SearchHit {
     }
 
     /// [`SearchHit::promote_verified_with`] for a hit observed through
-    /// [`SearchHit::observe_resolved_at`]: the validity the authority had at observation is
-    /// held against `now` before the claim proof is accepted.
+    /// [`SearchHit::observe_resolved_at`]: the authority is asked again, as for
+    /// [`SearchHit::promote_verified_at`], before the claim proof is accepted.
     ///
     /// # Errors
-    /// `WrongStage` unless the hit is `Observed`; a [`ValidityRefusal`] as for
+    /// `WrongStage` unless the hit is `Observed`; the lifecycle and [`ValidityRefusal`]s of
     /// [`SearchHit::promote_verified_at`], checked first; then `SourceNotResolved` and
     /// `ClaimProofMismatch` as for [`SearchHit::promote_verified_with`].
-    pub fn promote_verified_with_at(
+    pub fn promote_verified_with_at<F, T>(
         &mut self,
         proof: ClaimProof,
+        validity: F,
+        time_validity: T,
         now: Timestamp,
-    ) -> Result<(), TimedPromotionError> {
+    ) -> Result<(), TimedPromotionError>
+    where
+        F: FnOnce(&CapsuleId, Generation) -> Option<Validity>,
+        T: FnOnce(&CapsuleId, Generation) -> Option<KnowledgeValidity>,
+    {
         if self.stage != EvidenceStage::Observed {
             return Err(EvidencePromotionError::WrongStage.into());
         }
-        self.recheck_time(now)?;
+        self.recheck_authority(validity, time_validity, now)?;
         Ok(self.promote_with_proof(proof)?)
     }
 
@@ -606,7 +644,7 @@ impl SearchHit {
 ///
 /// The filter is part of the query, not a post-processing step: an index applies it before it
 /// limits, so a filtered query returns `limit` hits whenever that many visible documents match.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchQuery {
     pub text: String,
     pub limit: usize,

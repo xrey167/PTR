@@ -215,7 +215,7 @@ impl PgArm {
             lexical_weight: params::LEXICAL_WEIGHT_PERMILLE as f32 / 1000.0,
             vector_weight: params::VECTOR_WEIGHT_PERMILLE as f32 / 1000.0,
             rank_constant: params::RANK_CONSTANT as f32,
-            filter: Default::default(),
+            filter: ptr_search::SearchFilter::audit_without_time(),
         };
         let outcome = guarded(
             &self.runtime,

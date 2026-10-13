@@ -239,6 +239,9 @@ pub struct PodLink {
     pub protocol: ProtocolBinding,
     pub capability: CapabilityId,
     pub acl: Vec<PrincipalId>,
+    /// Absolute deadline in milliseconds since the Unix epoch. A link always carries one:
+    /// [`PodLink::validate`] refuses a link whose deadline is not after `now`, and `now` is in
+    /// the same unit.
     pub deadline: Timestamp,
     pub hop_limit: u16,
     pub visited: Vec<PodAddress>,

@@ -19,6 +19,7 @@
 //! never anything a payload could ride in.
 use crate::{EgressPolicy, PodLinkError};
 use ptr_types::EgressRefusalReason;
+use sha2::{Digest, Sha256};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -56,6 +57,18 @@ impl EgressPolicy {
             Ok(())
         } else {
             Err(EgressRefusalReason::TopicNotAllowed)
+        }
+    }
+
+    /// Check one publication against the policy. A policy that lists topics governs every
+    /// publication on its link, so a request that names no topic is refused rather than let
+    /// through unchecked ([`EgressRefusalReason::TopicRequired`]); a policy with no topics
+    /// leaves a request without a topic to the host and port checks alone.
+    pub fn check_publication(&self, topic: Option<&str>) -> Result<(), EgressRefusalReason> {
+        match topic {
+            Some(topic) => self.check_topic(topic),
+            None if self.topics.is_empty() => Ok(()),
+            None => Err(EgressRefusalReason::TopicRequired),
         }
     }
 
@@ -133,6 +146,19 @@ pub fn topic_filter_matches(filter: &str, topic: &str) -> bool {
         }
     }
     topic_levels.next().is_none()
+}
+
+/// A topic as an audit trail may hold it: a digest prefix and the length, never the topic. A
+/// topic can carry an identifier or a credential a path should not (`tokens/<secret>`), and
+/// the record needs only to tell two refused topics apart and to be matched to a log line by
+/// whoever knows the topic.
+pub fn redact_topic(topic: &str) -> String {
+    let digest = Sha256::digest(topic.as_bytes());
+    let prefix: String = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("topic:{prefix}:{}", topic.len())
 }
 
 /// A target fit to be recorded: control characters and whitespace replaced, cut to the bound a

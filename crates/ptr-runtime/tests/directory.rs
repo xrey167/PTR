@@ -132,12 +132,18 @@ fn resolved_route_carries_the_callers_deadline_instead_of_a_placeholder() {
         ..RouteConstraints::default()
     };
     let route = directory.resolve(&address, &constraints).unwrap();
-    assert_eq!(route.deadline, ptr_types::Timestamp(1_800_000_000_000));
+    assert_eq!(
+        route.deadline,
+        Some(ptr_types::Timestamp(1_800_000_000_000))
+    );
 
     let without = RouteConstraints {
         deadline: None,
         ..constraints
     };
     let route = directory.resolve(&address, &without).unwrap();
-    assert_eq!(route.deadline, ptr_types::Timestamp(0));
+    assert_eq!(
+        route.deadline, None,
+        "no deadline stays none, not a zero sentinel"
+    );
 }

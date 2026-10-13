@@ -24,7 +24,7 @@ use ptr_verifier::Verifier;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// How long one exchange waits for an answer before giving up.
 ///
@@ -38,13 +38,7 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// accurate as the hosts' clocks; a clock that reads before the epoch reads as
 /// zero, which expires every deadline rather than extending one.
 fn now_millis() -> Timestamp {
-    Timestamp(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| {
-                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-            }),
-    )
+    crate::frame::unix_millis_now()
 }
 
 /// How long one V2 exchange may wait: the configured timeout, shortened to the

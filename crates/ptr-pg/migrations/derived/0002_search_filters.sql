@@ -7,7 +7,7 @@
 --   the whole project. A query's audience (its principal plus its groups) must
 --   share a member with a non-empty list.
 -- valid_from / valid_until: half-open, valid_from <= now < valid_until; NULL is
---   unbounded on that side. Whole milliseconds like every Timestamp.
+--   unbounded on that side. Milliseconds since the Unix epoch.
 -- semantic_role / predicate / tags: the metadata a query can ask for.
 --
 -- Existing rows become project-wide, always valid and unlabelled: what they

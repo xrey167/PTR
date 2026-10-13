@@ -36,7 +36,7 @@ fn asking(principal: &str, groups: &[&str], now: u64) -> SearchFilter {
 
 #[test]
 fn a_filter_that_names_nobody_sees_only_project_wide_documents() {
-    let anonymous = SearchFilter::default();
+    let anonymous = SearchFilter::audit_without_time();
     assert!(anonymous.admits(&SearchAttributes::default()));
     assert!(!anonymous.admits(&restricted_to(&["alice"])));
     assert!(
@@ -118,7 +118,7 @@ fn a_filter_without_a_now_applies_no_time_rule() {
     let audit_view = SearchFilter {
         principal: Some(PrincipalId::from("auditor")),
         now: None,
-        ..SearchFilter::default()
+        ..SearchFilter::audit_without_time()
     };
     assert!(audit_view.admits(&expired));
     assert!(!asking("auditor", &[], 5).admits(&expired));
@@ -156,11 +156,11 @@ fn role_predicate_and_tags_narrow_what_is_returned() {
 #[test]
 fn a_filter_and_attributes_are_validated_before_a_backend_translates_them() {
     assert_eq!(asking("alice", &["staff"], 5).validate(), Ok(()));
-    assert_eq!(SearchFilter::default().validate(), Ok(()));
+    assert_eq!(SearchFilter::audit_without_time().validate(), Ok(()));
 
     let empty_principal = SearchFilter {
         principal: Some(PrincipalId::from("")),
-        ..SearchFilter::default()
+        ..SearchFilter::audit_without_time()
     };
     assert_eq!(
         empty_principal.validate(),
@@ -170,7 +170,7 @@ fn a_filter_and_attributes_are_validated_before_a_backend_translates_them() {
     let long = "g".repeat(MAX_FILTER_TEXT_BYTES + 1);
     let long_group = SearchFilter {
         groups: set(&[long.as_str()]),
-        ..SearchFilter::default()
+        ..SearchFilter::audit_without_time()
     };
     assert_eq!(
         long_group.validate(),
@@ -183,7 +183,7 @@ fn a_filter_and_attributes_are_validated_before_a_backend_translates_them() {
 
     let control = SearchFilter {
         tags_any: set(&["a\u{0}b"]),
-        ..SearchFilter::default()
+        ..SearchFilter::audit_without_time()
     };
     assert_eq!(
         control.validate(),
@@ -195,7 +195,7 @@ fn a_filter_and_attributes_are_validated_before_a_backend_translates_them() {
         .collect();
     let crowded = SearchFilter {
         groups: many.clone(),
-        ..SearchFilter::default()
+        ..SearchFilter::audit_without_time()
     };
     assert!(matches!(
         crowded.validate(),
@@ -211,7 +211,7 @@ fn a_filter_and_attributes_are_validated_before_a_backend_translates_them() {
     let overfull = SearchFilter {
         principal: Some(PrincipalId::from("alice")),
         groups: full,
-        ..SearchFilter::default()
+        ..SearchFilter::audit_without_time()
     };
     assert!(matches!(
         overfull.validate(),
@@ -348,7 +348,7 @@ fn a_document_that_expires_between_retrieval_and_use_is_refused_at_commit_time()
         .unwrap();
     // The inference ran long: by the time the hit is relied on, its validity has ended.
     assert_eq!(
-        hit.promote_verified_at(true, Timestamp(20)),
+        hit.promote_verified_at(true, live, |_, _| Some(between(10, 20)), Timestamp(20)),
         Err(TimedPromotionError::Validity(ValidityRefusal::Expired))
     );
     assert_eq!(
@@ -356,8 +356,64 @@ fn a_document_that_expires_between_retrieval_and_use_is_refused_at_commit_time()
         EvidenceStage::Observed,
         "a refusal keeps the stage"
     );
-    assert_eq!(hit.promote_verified_at(true, Timestamp(19)), Ok(()));
+    assert_eq!(
+        hit.promote_verified_at(true, live, |_, _| Some(between(10, 20)), Timestamp(19)),
+        Ok(())
+    );
     assert_eq!(hit.stage(), EvidenceStage::VerifiedKnown);
+}
+
+#[test]
+fn the_authority_is_asked_again_at_commit_time_not_only_at_observation() {
+    let observed = || {
+        let mut hit = possible();
+        hit.observe_at(live, |_, _| Some(between(10, 30)), Timestamp(15), true)
+            .unwrap();
+        hit
+    };
+    // Revoked after the hit was observed.
+    let mut hit = observed();
+    assert_eq!(
+        hit.promote_verified_at(
+            true,
+            |_, _| Some(Validity::Revoked),
+            |_, _| Some(between(10, 30)),
+            Timestamp(16)
+        ),
+        Err(TimedPromotionError::Promotion(
+            EvidencePromotionError::RevokedGeneration
+        ))
+    );
+    // The authority shortened the validity after the hit was observed.
+    let mut hit = observed();
+    assert_eq!(
+        hit.promote_verified_at(true, live, |_, _| Some(between(10, 16)), Timestamp(16)),
+        Err(TimedPromotionError::Validity(ValidityRefusal::Expired))
+    );
+    // The authority no longer holds a validity at all.
+    let mut hit = observed();
+    assert_eq!(
+        hit.promote_verified_at(true, live, |_, _| None, Timestamp(16)),
+        Err(TimedPromotionError::Validity(ValidityRefusal::Unknown))
+    );
+    assert_eq!(hit.stage(), EvidenceStage::Observed);
+    // Unchanged authority: promoted.
+    let mut hit = observed();
+    assert_eq!(
+        hit.promote_verified_at(true, live, |_, _| Some(between(10, 30)), Timestamp(16)),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_filter_built_for_an_instant_applies_the_time_rule() {
+    let expired = SearchAttributes {
+        validity: between(1, 2),
+        ..SearchAttributes::default()
+    };
+    assert!(!SearchFilter::at(Timestamp(5)).admits(&expired));
+    assert!(SearchFilter::audit_without_time().admits(&expired));
+    assert!(SearchFilter::at(Timestamp(5)).admits(&SearchAttributes::default()));
 }
 
 #[test]
@@ -371,7 +427,12 @@ fn a_failed_verification_is_still_refused_after_the_time_check() {
     )
     .unwrap();
     assert_eq!(
-        hit.promote_verified_at(false, Timestamp(2)),
+        hit.promote_verified_at(
+            false,
+            live,
+            |_, _| Some(KnowledgeValidity::ALWAYS),
+            Timestamp(2)
+        ),
         Err(TimedPromotionError::Promotion(
             EvidencePromotionError::VerificationFailed
         ))
@@ -395,7 +456,12 @@ fn a_hit_observed_without_a_validity_cannot_claim_a_time_check() {
     let mut hit = possible();
     hit.observe(live, true).unwrap();
     assert_eq!(
-        hit.promote_verified_at(true, Timestamp(1)),
+        hit.promote_verified_at(
+            true,
+            live,
+            |_, _| Some(KnowledgeValidity::ALWAYS),
+            Timestamp(1)
+        ),
         Err(TimedPromotionError::Validity(ValidityRefusal::Unknown))
     );
     // The trusted-caller path is unchanged for a hit that never had a validity.
