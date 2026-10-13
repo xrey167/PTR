@@ -1,10 +1,14 @@
 # Local start: from "the machine is on" to "the head session is running"
 
 One page, in order. Every step ends with a check; do not continue past a failed one. The target
-is the owner's desktop: Ubuntu 24.04 with **two RTX 3090** (24 GiB each, 48 GiB in total,
-PCIe only, no NVLink bridge assumed): profiles [`hardware/dual-rtx3090.toml`](../hardware/dual-rtx3090.toml)
-(the machine) and [`hardware/rtx3090.toml`](../hardware/rtx3090.toml) (one card, 24 GiB, fp32, fp16,
-bf16, int8; no fp8). `DESKTOP_SETUP.md` was written for one RTX 4090; its section 10 lists what differs.
+is either of the owner's two GPU PCs (owner inventory of 2026-10-13), each Ubuntu 24.04 with
+**one card**, PCIe only: one with an RTX 3090
+([`hardware/rtx3090.toml`](../hardware/rtx3090.toml): 24 GiB, fp32, fp16, bf16, int8; no fp8) and
+one with an RTX 4090 ([`hardware/rtx4090.toml`](../hardware/rtx4090.toml): 24 GiB, also fp8). Run
+the steps on each PC. The earlier inventory, one desktop with two RTX 3090
+([`hardware/dual-rtx3090.toml`](../hardware/dual-rtx3090.toml)), is superseded; that profile stays
+for experiments that declare it (R003), which no owner machine matches today.
+`DESKTOP_SETUP.md` was written for one RTX 4090; its section 10 describes the two-3090 setup.
 This page only sequences the other runbooks and does not repeat them:
 [`DESKTOP_SETUP.md`](DESKTOP_SETUP.md) (OS, driver, `make desktop-setup`, Hugging Face),
 [`GPU_HANDOVER.md`](GPU_HANDOVER.md) (the GPU run plan and owner decisions),
@@ -88,11 +92,11 @@ already take or use a version). `make release-package RELEASE_TOOLCHAIN=1.99.0` 
    previews). It builds `training/.venv` with the locked CUDA torch wheel and installs `ptr_py`
    into it. Open a new shell afterwards.
 3. `make gpu-doctor`, stricter: `python3 scripts/gpu_doctor.py --require-gpu`. Must exit 0
-   (it warns below 60 GB free). On this machine expect a `gpu 0` and a `gpu 1` line (name, MiB,
-   `sm_86`), a summary line `gpu` reading "2x NVIDIA GeForce RTX 3090, N MiB each", a torch probe
-   (allocation and matmul, bf16) on every device, and a `hardware profile` line that is OK and
-   names `hardware/dual-rtx3090.toml` (single-card runs: `hardware/rtx3090.toml`). A card the doctor
-   does not know (not a 3090 or 4090) is reported as an untested profile with a WARN.
+   (it warns below 60 GB free). On each PC expect one `gpu 0` line (name, MiB, `sm_86` on the
+   3090 PC, `sm_89` on the 4090 PC), a torch probe (allocation and matmul, bf16) on the device, and
+   a `hardware profile` line that is OK and names `hardware/rtx3090.toml` or
+   `hardware/rtx4090.toml`. A card the doctor does not know (not a 3090 or 4090) is reported as an
+   untested profile with a WARN.
 4. Hugging Face: `training/.venv/bin/hf auth login` (read token typed at the prompt) and the
    pinned downloads of `GPU_HANDOVER.md` section 1.3 (about 14 GB for OLMoE). For frozen runs keep
    the default cache location; if the disk is small, make `~/.cache/huggingface` a symlink to the

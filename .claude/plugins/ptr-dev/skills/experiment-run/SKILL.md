@@ -1,6 +1,6 @@
 ---
 name: experiment-run
-description: Run and monitor a PTR GPU experiment or smoke run on the local Ubuntu desktop with two RTX 3090 (hardware/dual-rtx3090.toml) (make smoke-gpu, make olmoe-sft-smoke, M011 and later), then report the results with honest evidence labels. Use when asked to start, watch, compare or write up a training or experiment run.
+description: Run and monitor a PTR GPU experiment or smoke run on the owner's local GPU PCs, one RTX 3090 and one RTX 4090 (hardware/rtx3090.toml, hardware/rtx4090.toml) (make smoke-gpu, make olmoe-sft-smoke, M011 and later), then report the results with honest evidence labels. Use when asked to start, watch, compare or write up a training or experiment run.
 ---
 
 # Run and monitor an experiment

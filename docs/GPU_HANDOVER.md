@@ -549,6 +549,11 @@ Not in the plan: M006 (needs a trained diffusion-style model, no GPU profile nam
 
 ## 5. Hardware profile question (RESOLVED: two RTX 3090, keep `rtx3090.toml`): M010 to M015 name the RTX 3090, the original text assumed a 4090
 
+> **Inventory update (owner, 2026-10-13, later than the note below).** The owner has two PCs with
+> one card each: an RTX 3090 (`hardware/rtx3090.toml`) and an RTX 4090 (`hardware/rtx4090.toml`).
+> Single-card runs use the profile of the PC they run on; R003, which declares
+> `hardware/dual-rtx3090.toml`, has no matching owner machine and needs its own decision.
+>
 > **Resolved (owner fact, later than this text).** The owner's desktop has two RTX 3090 (24 GiB
 > each), not a 4090. OD-1 therefore resolves in favour of option A: the `hardware/rtx3090.toml`
 > profile the M010 to M015 and E006 manifests already name is the right one, and

@@ -5,8 +5,9 @@ Copy-paste blocks for the owner and the head. Prepare the machine with
 channel and reviewer, and the rules) is `AGENTS.md` at the repository root; where a block below
 and `AGENTS.md` differ, `AGENTS.md` wins and the head says so in its first report. The freeze
 procedure is `docs/FREEZE_PROCEDURE.md` with the tools in `scripts/freeze/` (owned by the head
-tooling; do not edit them from a channel). The machine is Ubuntu 24.04 with two RTX 3090
-(`hardware/dual-rtx3090.toml`, `hardware/rtx3090.toml`). Each block is self-contained. Values in
+tooling; do not edit them from a channel). The machines are two Ubuntu 24.04 PCs with
+one card each (`hardware/rtx3090.toml`, `hardware/rtx4090.toml`; owner inventory of 2026-10-13,
+superseding the two-3090 desktop of `hardware/dual-rtx3090.toml`). Each block is self-contained. Values in
 angle brackets are filled in. No block contains a token, password or connection string; connection
 strings live only in the shell environment (`PTR_PG_TEST_DSN`, `PTR_PG_EXPERIMENT_DSN`).
 
@@ -68,9 +69,9 @@ python3 scripts/run_experiment.py validate; python3 scripts/check_research_gates
 PYTHONPATH=training/src make python-test; make py-bindings; make vcw-demo; make ci-local
 (feature jobs; needs rustup stable >= 1.99, else run each ci-* recipe with +1.99.0, and
 PostgreSQL via PTR_PG_TEST_DSN and PTR_PG_EXPERIMENT_DSN); make a0; make freeze-tools-test.
-Also: nvidia-smi -L shows two cards; python3 scripts/gpu_doctor.py --require-gpu reports both
-cards OK and names hardware/dual-rtx3090.toml. Fill os/cpu/ram_gib in hardware/dual-rtx3090.toml
-with measured values (one commit).
+Also, on each PC: nvidia-smi -L shows one card; python3 scripts/gpu_doctor.py --require-gpu
+reports it OK and names hardware/rtx3090.toml or hardware/rtx4090.toml. Record the measured
+os/cpu/ram of each PC in the run manifests (one commit).
 
 STAGE 1. GPU smoke, no research claim. Step 1: make smoke-gpu; check metrics.json
 (hardware.device cuda, gpu name, peak memory): compare the metric ranges with the WP8 table in

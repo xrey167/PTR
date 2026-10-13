@@ -16,9 +16,9 @@ GPU, LPDDR5X on every CPU, NVLink 6 as the scale-up fabric inside the rack and C
 scale-out between racks (NVIDIA product page and the Cisco/Supermicro data sheet; NVIDIA labels
 the figures preliminary). The figures themselves (transistor counts, bandwidth, price) play no
 role here; only the **structure** does. PTR's hardware is PCIe only: the owner has two PCs with
-one card each, an RTX 3090 and an RTX 4090 (stated by the owner on 2026-10-13; the repository's
-`docs/LOCAL_START.md:5` and `hardware/dual-rtx3090.toml` still describe one desktop with two
-RTX 3090, see [41](41-pod-data-plane.md) section 0a).
+one card each, an RTX 3090 and an RTX 4090 (`hardware/rtx3090.toml`, `hardware/rtx4090.toml`;
+the owner inventory of 2026-10-13, which supersedes the earlier two-3090 desktop, see
+[41](41-pod-data-plane.md) section 0a).
 So every "rack" in this document is a **logical** construct whose first instance is one
 workstation.
 

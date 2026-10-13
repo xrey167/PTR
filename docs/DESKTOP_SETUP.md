@@ -241,7 +241,12 @@ desktop as a GitLab runner tagged `ptr-gpu`, see `docs/HOSTING.md`.
 
 ## 10. Two RTX 3090 instead of one RTX 4090
 
-The owner's desktop has two RTX 3090 (Ampere, sm_86, 24 GiB each). Profiles:
+> **Superseded inventory (2026-10-13).** The owner now has two PCs with one card each, an RTX
+> 3090 (`hardware/rtx3090.toml`) and an RTX 4090 (`hardware/rtx4090.toml`). Steps 1 to 9 apply
+> to each PC as written, with that PC's profile. This section stays for a two-3090 machine and
+> for R003, which declares `hardware/dual-rtx3090.toml`; no owner machine matches it today.
+
+The two-3090 desktop had two RTX 3090 (Ampere, sm_86, 24 GiB each). Profiles:
 `hardware/dual-rtx3090.toml` ("2x NVIDIA GeForce RTX 3090, 24 GiB each, 48 GiB combined, PCIe-only
 (no NVLink bridge)") for the machine and `hardware/rtx3090.toml` (one card, 24 GiB; fp32, fp16,
 bf16, int8, no fp8) for single-card runs. NVLink is not assumed. Steps 1 to 9 apply unchanged
