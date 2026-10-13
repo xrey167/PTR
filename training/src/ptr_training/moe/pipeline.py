@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 
+from ptr_training import integrity
 from ptr_training.moe import config as moe_config
 from ptr_training.moe import gates, routing_metrics
 from ptr_training.moe.tasks import generate_heldout, generate_tasks
@@ -381,9 +382,34 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
             return None
         return routing_metrics.snapshot_churn(snapshots[a], snapshots[b], k)
 
+    def evaluate(stage: str) -> dict:
+        """Policy evaluation, bracketed by whole-model digests (it must not touch weights)."""
+        return log.checked_eval(
+            stage,
+            model,
+            lambda: evaluate_policy(
+                model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level
+            ),
+        )
+
+    adapters: dict = {}
+
+    def keep_adapter(stage: str) -> None:
+        """Persist the adapter (LoRA runs only) under `adapter/<stage>` with its digest."""
+        if not hasattr(model, "peft_config"):
+            return
+        target = out_dir / "adapter" / stage
+        model.save_pretrained(str(target))
+        adapters[stage] = {
+            "path": target.relative_to(out_dir).as_posix(),
+            "sha256": integrity.directory_sha256(target),
+        }
+
+    log = integrity.IntegrityLog()
+    log.start(model)  # the frozen reference is fixed before any weight can move
     with _Timer(timings, "snapshot_init"):
         snap("init")
-        evals["init"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
+        evals["init"] = evaluate("init")
 
     track_gates = cfg.model.kind == "tiny-random" and not cfg.lora.enabled
     gate_cap = None if cfg.allow_large else gates.MAX_TOTAL_GATE_ELEMENTS
@@ -394,12 +420,16 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     w_init = gates.flatten_experts(model, max_total=gate_cap) if run_gate_calls else None
 
     torch.manual_seed(seed)
+    trainable_start = log.trainable_digest(model)
     with _Timer(timings, "sft"):
         sft = run_sft(model, tokenizer, sft_tasks, cfg.sft, seed)
+    log.record_steps("sft", cfg.sft.steps, sft["optimizer_steps"])
+    trainable_after_sft = log.record_stage("after_sft", model, trainable_start)
     param_checks["after_sft"] = model_mod.nonfinite_parameters(model)
     with _Timer(timings, "snapshot_after_sft"):
         snap("after_sft")
-        evals["after_sft"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
+        evals["after_sft"] = evaluate("after_sft")
+    keep_adapter("after_sft")
     w_sft = gates.flatten_experts(model, max_total=gate_cap) if run_gate_calls else None
     # The SFT state is restored only before arms 2..n (arm 1 starts from it already), so it is
     # snapshotted only when there is more than one arm.
@@ -414,11 +444,14 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         torch.manual_seed(seed)
         with _Timer(timings, f"rl_{algo}"):
             rl_results[algo] = run_rl(model, tokenizer, rl_tasks, algo, cfg.rl, seed)
+        log.record_steps(f"rl_{algo}", cfg.rl.steps, rl_results[algo]["global_step"])
+        log.record_stage(f"after_rl_{algo}", model, trainable_after_sft)
         # before the next arm restores the SFT state over these weights
         param_checks[f"after_rl_{algo}"] = model_mod.nonfinite_parameters(model)
         with _Timer(timings, f"snapshot_after_rl_{algo}"):
             snap(f"after_rl_{algo}")
-            evals[f"after_rl_{algo}"] = evaluate_policy(model, tokenizer, eval_tasks, eval_new, cfg.rl.min_verification_level)
+            evals[f"after_rl_{algo}"] = evaluate(f"after_rl_{algo}")
+        keep_adapter(f"after_rl_{algo}")
         churn[f"after_sft_to_after_rl_{algo}"] = churn_between("after_sft", f"after_rl_{algo}")
         if track_gates:
             with _Timer(timings, f"gates_{algo}"):
@@ -456,6 +489,8 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
     else:
         gates_not_evaluated_reason = "no gate report completed"
     timings["total"] = round(time.perf_counter() - t_start, 3)
+    integrity_report = log.report()  # raises if a required check never ran
+    final_adapter = adapters[list(adapters)[-1]] if adapters else None
 
     result = {
         "schema": "ptr.moe-pipeline-metrics.v1",
@@ -504,6 +539,14 @@ def execute(cfg: moe_config.MoeConfig, out_dir: Path, extra: dict | None = None)
         "sft": sft,
         "rl": rl_results,
         "policy_eval": evals,
+        "integrity": integrity_report,
+        "adapter_sha256": final_adapter["sha256"] if final_adapter else None,
+        "adapters": adapters,
+        "adapter_note": (
+            None
+            if adapters
+            else "no adapter saved: a full fine-tune has no adapter to persist"
+        ),
         "routing": routing,
         "routing_churn": churn,
         "router_errors": router_errors,
@@ -569,7 +612,26 @@ def run_config(config_path: str | Path, out: str | Path | None = None, extra: di
     moe_config.require_backend_opt_in(cfg.allow_unselected_backend)  # before any directory
     base = _resolve(out if out is not None else cfg.output_dir)
     out_dir = unique_run_dir(base, cfg.name, config_hash(config_path))
-    result = execute(cfg, out_dir, extra)
+    try:
+        result = execute(cfg, out_dir, extra)
+    except integrity.IntegrityError as error:
+        # Fail closed: no metrics.json, but the reason stays next to the run for diagnosis.
+        (out_dir / "integrity-violation.json").write_text(
+            json.dumps(
+                {
+                    "schema": integrity.SCHEMA,
+                    "check": error.check,
+                    "message": str(error),
+                    "expected": error.expected,
+                    "actual": error.actual,
+                },
+                indent=2,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raise
     result["run"]["output_dir"] = str(out_dir)
     return write_metrics(result, out_dir)
 
@@ -583,6 +645,7 @@ def run(manifest: dict, config_path: str | Path) -> Path:
             "input_fingerprint_sha256": manifest.get("input_fingerprint_sha256"),
             "config_sha256": manifest.get("config_sha256"),
             "uv_lock_sha256": manifest.get("uv_lock_sha256"),
+            "preflight": manifest.get("preflight"),
         }
     }
     return run_config(config_path, None, extra)
