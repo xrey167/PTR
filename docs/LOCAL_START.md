@@ -8,7 +8,7 @@ bf16, int8; no fp8). `DESKTOP_SETUP.md` was written for one RTX 4090; its sectio
 This page only sequences the other runbooks and does not repeat them:
 [`DESKTOP_SETUP.md`](DESKTOP_SETUP.md) (OS, driver, `make desktop-setup`, Hugging Face),
 [`GPU_HANDOVER.md`](GPU_HANDOVER.md) (the GPU run plan and owner decisions),
-[`HOSTING.md`](HOSTING.md) (GitLab), [`CLAUDE_TOOLING.md`](CLAUDE_TOOLING.md) (plugins),
+[`HOSTING.md`](HOSTING.md) (GitHub primary, GitLab alternative), [`CLAUDE_TOOLING.md`](CLAUDE_TOOLING.md) (plugins),
 [`agents/KICKOFF.md`](agents/KICKOFF.md) (the prompts for step f). Nothing here has run on this
 GPU hardware; the first real run is the first real test. Commands marked "(Windows)" are for the
 case that the repository first arrives on a Windows machine (step g).

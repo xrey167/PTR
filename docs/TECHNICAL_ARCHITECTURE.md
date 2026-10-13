@@ -92,6 +92,11 @@ A snapshot may be `revision=812` while containing `Project@g17`, `Constraint@g4`
 
 Wire compatibility is weaker than semantic compatibility; both are versioned.
 
+The table states preferences, not what is built. Today the three network protocols (raft,
+execution and Pod access) use hand-written, bounded binary frames with a magic and a format
+version rather than Protobuf ([doc 07](architecture/07-network-protocol.md)), and no rkyv or
+DLPack path exists.
+
 ## 6. Model event protocol
 
 The long-term model interface is a stream rather than a single string:

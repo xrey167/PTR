@@ -1,6 +1,6 @@
 ---
 name: ptr-gitlab
-description: Work with the PTR GitLab remote while GitHub is suspended - check remotes, publish with scripts/publish_remote.py (dry run first), open and follow draft merge requests with glab, read pipeline status and job logs, and troubleshoot auth or rejected pushes. Use when asked to "push to GitLab", "publish the repo", "open an MR", "check the pipeline", "why did CI fail on GitLab", or "set up the remote".
+description: Work with the PTR GitLab remote, the alternative to the primary GitHub remote - check remotes, publish with scripts/publish_remote.py (dry run first), open and follow draft merge requests with glab, read pipeline status and job logs, and troubleshoot auth or rejected pushes. Use when asked to "push to GitLab", "publish the repo", "open an MR", "check the pipeline", "why did CI fail on GitLab", or "set up the remote".
 ---
 
 # GitLab remote
