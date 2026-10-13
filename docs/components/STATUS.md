@@ -4,8 +4,8 @@
 > Refresh with `python3 scripts/update_component_docs.py --write`.
 
 **Component count:** 33  
-**Maturity distribution:** `foundation`: 1, `prototype`: 24, `research-scaffold`: 1, `scaffold`: 7  
-**Rust footprint:** 288 source files · 141559 nonblank source lines · 245 integration-test files · 3292 test markers (`#[test]`, `#[tokio::test]`)
+**Maturity distribution:** `foundation`: 1, `prototype`: 25, `research-scaffold`: 1, `scaffold`: 6  
+**Rust footprint:** 296 source files · 145098 nonblank source lines · 249 integration-test files · 3381 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -19,7 +19,7 @@
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | `prototype` | 5 | 1597 | 3 | 36 | 18 | 9 | — | — |
 | [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 3189 | 4 | 85 | 13 | 3 | M008:frozen, L003:completed | fast-weight-memory:open |
 | [ptr-feedback](../../crates/ptr-feedback/README.md) | `scaffold` | 3 | 775 | 3 | 21 | 5 | 4 | F001:frozen, E001:planned | — |
-| [ptr-ingress](../../crates/ptr-ingress/README.md) | `scaffold` | 1 | 45 | 1 | 1 | 4 | 4 | E001:planned, E004:planned | ingress-classifier:open |
+| [ptr-ingress](../../crates/ptr-ingress/README.md) | `prototype` | 9 | 3584 | 5 | 90 | 11 | 8 | E001:planned, E004:planned | ingress-classifier:open |
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | `prototype` | 8 | 2126 | 2 | 46 | 11 | 5 | E001:planned | introspection:open |
 | [ptr-labeling](../../crates/ptr-labeling/README.md) | `prototype` | 6 | 1888 | 1 | 36 | 12 | 5 | F002:frozen | label-model:open |
 | [ptr-ledger](../../crates/ptr-ledger/README.md) | `prototype` | 9 | 8947 | 16 | 197 | 68 | 12 | L001:superseded, L001-v2:frozen, L002:frozen, E004:planned | consensus:open, ledger:open |
