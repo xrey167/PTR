@@ -1,0 +1,110 @@
+name: branch-cleanup
+# Deletes branches whose work is in main, so merged branches do not pile up.
+# - pull_request closed: the head branch of a same-repository PR merged into main is deleted.
+# - workflow_dispatch: every branch whose tip is an ancestor of main is listed and, with
+#   dry_run=false, deleted. main and the head branches of open PRs are never touched.
+# Safety: a branch is deleted only when the commit that was checked is contained in main, and
+# the deletion is a compare-and-delete (git push --force-with-lease=<ref>:<checked sha>), so a
+# branch that moves in between is kept. Branch names never go into an API URL and reach the
+# scripts only through env. Any lookup error fails the job instead of passing as "gone".
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List the branches only (true) or delete them (false)"
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: branch-cleanup
+  cancel-in-progress: false
+jobs:
+  merged-pr-head:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      github.event.pull_request.head.ref != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Delete the merged head branch if main contains it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          ref="refs/heads/$HEAD_REF"
+          # ls-remote fails on any transport or auth error; only an empty answer means gone.
+          live=$(git ls-remote --heads origin "$ref" | cut -f1)
+          if [ -z "$live" ]; then echo "already gone: $HEAD_REF"; exit 0; fi
+          if [ "$live" != "$HEAD_SHA" ]; then
+            echo "kept: $HEAD_REF moved after the merge ($live != $HEAD_SHA)"; exit 0
+          fi
+          open=$(gh pr list --repo "$REPO" --state open --head "$HEAD_REF" --json number --jq length)
+          if [ "$open" != "0" ]; then echo "kept: $HEAD_REF heads an open PR"; exit 0; fi
+          git fetch --quiet origin "$DEFAULT"
+          if ! git merge-base --is-ancestor "$HEAD_SHA" "origin/$DEFAULT"; then
+            echo "kept: $HEAD_REF is not contained in $DEFAULT"; exit 0
+          fi
+          git push --force-with-lease="$ref:$HEAD_SHA" origin ":$ref"
+          echo "deleted: $HEAD_REF"
+  merged-into-main:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: List or delete branches contained in main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          open_heads=$(gh pr list --repo "$REPO" --state open --limit 1000 --json headRefName --jq '.[].headRefName')
+          contained=0; kept=0; failed=0
+          while IFS=' ' read -r sha ref; do
+            name=${ref#refs/remotes/origin/}
+            [ "$name" = "$DEFAULT" ] && continue
+            [ "$name" = "HEAD" ] && continue
+            if printf '%s\n' "$open_heads" | grep -Fxq -- "$name"; then
+              echo "kept (open PR): $name"; kept=$((kept + 1)); continue
+            fi
+            if ! git merge-base --is-ancestor "$sha" "origin/$DEFAULT"; then
+              echo "kept (not in $DEFAULT): $name"; kept=$((kept + 1)); continue
+            fi
+            contained=$((contained + 1))
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "would delete: $name"
+            elif git push --force-with-lease="refs/heads/$name:$sha" origin ":refs/heads/$name"; then
+              echo "deleted: $name"
+            else
+              echo "not deleted (moved since the check, or push failed): $name"
+              failed=$((failed + 1))
+            fi
+          done < <(git for-each-ref --format='%(objectname) %(refname)' refs/remotes/origin)
+          echo "contained in $DEFAULT: $contained (dry_run=$DRY_RUN); kept: $kept; failed: $failed"
+          [ "$failed" -eq 0 ]
