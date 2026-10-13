@@ -1,0 +1,95 @@
+name: branch-cleanup
+# Deletes branches whose work is in main, so merged branches do not pile up.
+# - pull_request closed: the head branch of a merged same-repository PR is deleted.
+# - workflow_dispatch: every branch whose tip is an ancestor of main is listed and, with
+#   dry_run=false, deleted. main and the head branches of open PRs are never touched.
+# A branch is only ever deleted when its tip commit is already contained in main, so no
+# commit is lost. Branch names reach the scripts through env, never through ${{ }} in run.
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List the branches only (true) or delete them (false)"
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: branch-cleanup
+  cancel-in-progress: false
+jobs:
+  merged-pr-head:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Delete the merged head branch if main contains it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          # The head branch may have moved since the merge; only its merged commit is safe.
+          current=$(gh api "repos/$REPO/git/ref/heads/$HEAD_REF" --jq .object.sha 2>/dev/null || true)
+          if [ -z "$current" ]; then echo "already gone: $HEAD_REF"; exit 0; fi
+          if [ "$current" != "$HEAD_SHA" ]; then
+            echo "kept: $HEAD_REF moved after the merge ($current != $HEAD_SHA)"; exit 0
+          fi
+          open=$(gh pr list --repo "$REPO" --state open --head "$HEAD_REF" --json number --jq length)
+          if [ "$open" != "0" ]; then echo "kept: $HEAD_REF heads an open PR"; exit 0; fi
+          status=$(gh api "repos/$REPO/compare/$BASE_REF...$HEAD_SHA" --jq .status)
+          if [ "$status" != "behind" ] && [ "$status" != "identical" ]; then
+            echo "kept: $HEAD_REF is not contained in $BASE_REF (status $status)"; exit 0
+          fi
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$HEAD_REF"
+          echo "deleted: $HEAD_REF"
+  merged-into-main:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: List or delete branches contained in main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          open_heads=$(gh pr list --repo "$REPO" --state open --limit 500 --json headRefName --jq '.[].headRefName')
+          deleted=0; kept=0
+          while IFS= read -r ref; do
+            name=${ref#origin/}
+            [ "$name" = "$DEFAULT" ] && continue
+            [ "$name" = "HEAD" ] && continue
+            if printf '%s\n' "$open_heads" | grep -Fxq -- "$name"; then
+              echo "kept (open PR): $name"; kept=$((kept + 1)); continue
+            fi
+            if ! git merge-base --is-ancestor "$ref" "origin/$DEFAULT"; then
+              echo "kept (not in $DEFAULT): $name"; kept=$((kept + 1)); continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "would delete: $name"
+            else
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$name" >/dev/null
+              echo "deleted: $name"
+            fi
+            deleted=$((deleted + 1))
+          done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin)
+          echo "contained in $DEFAULT: $deleted (dry_run=$DRY_RUN); kept: $kept"
