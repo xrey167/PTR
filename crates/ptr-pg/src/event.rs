@@ -319,6 +319,36 @@ mod tests {
     }
 
     #[test]
+    fn pod_head_events_have_a_topic_subject_and_project_the_head_entry() {
+        use ptr_types::{Generation, NamespaceId, PodAddress, PodId, PodIdentity};
+        let new = ptr_types::PodRevisionAddress {
+            address: PodAddress::new(
+                ProjectId::from("p"),
+                NamespaceId::from("ns"),
+                PodId::from("reader"),
+            )
+            .unwrap(),
+            semantic_revision: [5; 32],
+            generation: Generation(1),
+        };
+        let event = committed(
+            4,
+            LedgerEvent::PodHeadAdvanced {
+                identity: PodIdentity::from("pod:stable"),
+                old: None,
+                new: new.clone(),
+            },
+        );
+        assert_eq!(event_topic(&event.event), "pod.head_advanced");
+        assert_eq!(event_subject(&event), "pod-head:pod:stable");
+        assert_eq!(lifecycle_change(&event), LifecycleChange::None);
+        assert_eq!(
+            event_payload(&event)["entries"],
+            serde_json::json!({ "pod-head:pod:stable": new.canonical_uri().unwrap() })
+        );
+    }
+
+    #[test]
     fn kv_taint_events_have_a_topic_subject_and_project_taint_entries() {
         let event = committed(
             6,
