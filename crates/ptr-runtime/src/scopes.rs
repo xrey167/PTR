@@ -283,7 +283,10 @@ impl ScopeRegistry {
         self.record(event.scope_id.clone(), event_kind(next));
         self.committed.push(event);
         self.last_revision = self.committed.last().map(|event| event.revision);
-        if next.is_terminal() {
+        // Only a release ends a pending recovery: a scope that ended any other way still holds
+        // its leases and session (see `mark_recovery_required`), and `recover_scope` must still
+        // find it.
+        if next == ScopeState::Released {
             self.recovery_required
                 .remove(&self.committed.last().unwrap().scope_id);
         }

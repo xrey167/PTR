@@ -163,3 +163,27 @@ fn runtime_exposes_typed_authorization_decision() {
         })
     );
 }
+
+#[test]
+fn the_runtime_event_log_is_bounded_and_keeps_the_newest_events() {
+    // Every request emits runtime events; a long-running daemon must not grow without bound.
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let bound = ptr_runtime::MAX_RETAINED_EVENTS;
+    let total = bound + bound / 2 + 7;
+    for _ in 0..total {
+        runtime.record_vcw_finished(&RequestId::from("r"), "verified", [0; 32]);
+    }
+    let events = runtime.events();
+    assert!(events.len() <= bound, "{} events retained", events.len());
+    assert!(!events.is_empty());
+    assert_eq!(
+        runtime.dropped_events() + events.len() as u64,
+        total as u64,
+        "every event is retained or counted as dropped"
+    );
+    // The newest events are the ones kept, in order, without a gap.
+    assert_eq!(events.last().unwrap().sequence, total as u64);
+    assert!(events
+        .windows(2)
+        .all(|pair| pair[1].sequence == pair[0].sequence + 1));
+}

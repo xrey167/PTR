@@ -1795,6 +1795,9 @@ impl PtrRuntime {
                 .clone();
             runtime.apply_committed(&committed, semantic)?;
         }
+        // As after a replay: a scope the earlier incarnation left unreleased refuses work until
+        // it is recovered, whatever the snapshot's floor.
+        runtime.scopes.mark_recovery_required();
         Ok(runtime)
     }
 }

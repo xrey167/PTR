@@ -464,3 +464,35 @@ fn observation_keys_cannot_alias_through_embedded_delimiters() {
         request_raw_key(&"a:pod:b".into())
     );
 }
+
+#[test]
+fn a_record_the_log_cannot_hold_is_refused_without_fencing_the_runtime() {
+    // The subject alone is larger than one log record may be.
+    let oversized = || LedgerEvent::VerifierAttested {
+        subject: "x".repeat(ptr_ledger::integrity::MAX_RECORD_BYTES),
+        passed: true,
+    };
+    let small = || LedgerEvent::VerifierAttested {
+        subject: "after".into(),
+        passed: true,
+    };
+    let tmp = Temp::new();
+    let mut durable = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+    assert!(matches!(
+        durable.commit(oversized()),
+        Err(RuntimeError::Ledger(_))
+    ));
+    assert!(durable.committed_events().is_empty());
+    // Nothing was written, so the runtime knows its last append and keeps working.
+    durable.commit(small()).unwrap();
+    assert_eq!(durable.committed_events().len(), 1);
+
+    // The in-memory ledger refuses the same record instead of holding one no log can hold.
+    let mut memory = PtrRuntime::new(PtrConfig::default()).unwrap();
+    assert!(matches!(
+        memory.commit(oversized()),
+        Err(RuntimeError::Ledger(_))
+    ));
+    assert!(memory.committed_events().is_empty());
+    memory.commit(small()).unwrap();
+}
