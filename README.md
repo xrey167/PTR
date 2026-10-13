@@ -139,7 +139,7 @@ The Rust workspace is a compiling contract/scaffold baseline. Documentation inte
 - Rust is pinned by `rust-toolchain.toml` and `Cargo.lock`; CI tests the workspace at its Rust 1.99 MSRV on Linux and at current stable on Linux and Windows. `model/burn-a0` is a separate workspace that requires Rust 1.95 and has its own workflow.
 - Python training utilities are locked through `training/uv.lock`.
 - `make py-bindings` builds and tests `bindings/ptr-py` with maturin in a venv; CI does not run it.
-- GPU desktop setup and experiment runbook (Ubuntu 24.04, RTX 4090): [`docs/DESKTOP_SETUP.md`](docs/DESKTOP_SETUP.md).
+- GPU desktop setup and experiment runbook (Ubuntu 24.04, two RTX 3090, `hardware/dual-rtx3090.toml`): [`docs/DESKTOP_SETUP.md`](docs/DESKTOP_SETUP.md).
 - Component and experiment registries are validated in CI.
-- L001 has a scoped five-seed reference crash-tail run under `experiments/lifecycle/L001-revocation-crash/results/` against the earlier v1 journal format; it is `superseded` by the planned L001-v2 (`experiments/lifecycle/L001-v2-revocation-crash`), which is not yet frozen or run for the record.
+- L001 has a scoped five-seed reference crash-tail run under `experiments/lifecycle/L001-revocation-crash/results/` against the earlier v1 journal format; it is `superseded` by L001-v2 (`experiments/lifecycle/L001-v2-revocation-crash`, registry `completed`, verdict COMPLETED). [`STATUS.md`](STATUS.md) lists every executed experiment with its verdict, scope and limits.
 - Release builds generate CycloneDX SBOMs and GitHub/Sigstore attestations.
