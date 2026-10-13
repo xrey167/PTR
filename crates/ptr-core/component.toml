@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-core"
-maturity = "research-scaffold"
-last_reviewed = "2026-10-13"
+maturity = "prototype"
+last_reviewed = "2026-10-14"
 
 implemented = [
   "PTR-Core family/config structures for AR and diffusion research paths",
@@ -12,16 +12,24 @@ implemented = [
   "Branch frontier pruning and probability normalization helpers",
   "ActionIr with explicit target/generation/revision plus CoreVerification output contracts",
   "Internal: ptr_core::action_head no longer defines its own ActionIr; it re-exports ptr_types::ActionIr (same fields: operation, target, capability, effect, input type, generation, revision, payload), so core, model-api and the runtime share one definition",
+  "Deterministic pure-Rust f32 CPU reference of the PTR-Core forward pass (std + ptr-types only, no unsafe): row-major Matrix with shape-checked matmul/add/transpose, max-subtracted row softmax, layer norm, GELU/tanh, typed ShapeError and a seeded SplitMix64 Xavier-uniform initializer; randomly initialised or checkpoint-loaded, not a trained model",
+  "CoreConfig validation (d_model > 0, heads divide d_model, bounded width, feed-forward width, slot count, recurrence depth and diffusion vocabulary per Invariant 8) and CoreModel with separate learnable embedding tables per SemanticRole, EpistemicState and UncertaintyKind (indexed by the ptr-types Codebook V1) summed with the latent content vector",
+  "Multi-head scaled dot-product attention over slots with an additive per-key bias from the ptr-types ValidityMask (-inf for non-live slots, tested to give exactly zero weight in every row and head, rows sum to 1) and an optional learned per-(role, role) bias matrix; an all-excluded mask is refused",
+  "Shared refinement block (attention, MLP, residual, post layer norm) applied up to min(ReasoningBudget::steps, max_latent_steps) times with ACT-style halting (stop when the cumulative halting probability reaches 1 - epsilon; no remainder-weighted averaging), per-step traces, and step accounting into EpistemicWorkspace.step",
+  "Operator router head (pooled admitted-slot mean to softmax over the ptr-types ReasoningOperator codes, returned as RouterDecision), verifier-head pass probability, and an ActionIR head that only ranks a caller-supplied ActionIr list (never constructs target/revision/generation) and never selects a candidate rejected by a supplied deterministic check",
+  "Toy training of one head only: exact analytic softmax cross-entropy gradient for the linear router head with a frozen random backbone, full-batch gradient descent on a seeded synthetic task whose label is the plurality slot role; tested for loss decrease and against f64 finite differences (relative error < 1e-3). Not task training",
+  "PTR-Diff reference step: discrete masked denoising on a small vocabulary with a deterministic ceil(masked/steps_remaining) unmasking schedule, top-k most-confident unmasking, tested for monotone unmasking, no rewrite of known tokens and termination; there is no training objective",
+  "Checkpoint save/load: ptr-types CheckpointHeader (format 3, codebook, slot encoding, architecture binding) plus a little-endian parameter manifest (name, shape, in-crate CRC-32 per tensor and for the payload); load rejects wrong magic, model name, codebook, architecture, manifest, shape, checksum and non-finite values with typed errors; forward after save then load is bit-identical, and a tiny-config golden test pins outputs (CRC-32 detects corruption, it is not authentication)",
   "External model/burn-a0 research package implements trainable raw↔typed cross-attention, epistemic/validity/provenance metadata, typed attention bias, latent refinement and router gradients",
 ]
 
 missing = [
-  "Production-integrated Burn/CubeCL PTR model beyond the isolated A0 research package",
-  "Role/epistemic/uncertainty-specific embeddings and typed attention constraints beyond A0's learned metadata bias and the lifecycle ValidityMask attention bias it takes from ptr-types",
-  "Task-trained recurrent latent reasoning beyond the current shared refinement layer",
-  "Task-trained operator router plus ActionIR/verifier neural heads",
-  "PTR-Diff denoising implementation and training objective",
-  "Checkpoint/load/save and a numerical parity reference in this crate (model/burn-a0 saves checkpoints under the ptr-types CheckpointHeader; nothing here does)",
+  "Production-integrated Burn/CubeCL PTR model and GPU execution beyond the isolated A0 research package (this crate is a CPU f32 reference)",
+  "Task-trained recurrent latent reasoning (the shared refinement block runs with random weights; ACT halting is untrained and has no remainder-weighted state averaging)",
+  "Task-trained operator router plus ActionIR/verifier neural heads (only the router head has a toy fit on a synthetic role-plurality task; the ActionIR head scores hashed candidate features and the verifier head is untrained)",
+  "PTR-Diff training objective and any learned denoiser (only the inference-time masked-denoising mechanics exist, with random weights)",
+  "Numerical parity between this CPU reference and model/burn-a0 (no shared weights, no cross-implementation comparison; the golden values pin this implementation against itself only)",
+  "Evidence that typed embeddings or typed attention help: the reference is untrained, so no M001-M005 claim follows from it",
 ]
 
 next = [
