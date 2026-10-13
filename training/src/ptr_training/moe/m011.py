@@ -217,6 +217,50 @@ def topology_mismatches(observed: dict, pinned: dict = PINS["moe_topology"]) -> 
     ]
 
 
+def observed_commit(repo: str, revision: str, filename: str) -> dict:
+    """The hub commit `revision` resolves to for `repo`: asked of the hub when reachable, else
+    read from the local HF cache snapshot that holds `filename` (`.../snapshots/<sha>/...`).
+    `commit` is None, with the reason, when neither works; callers count that as a mismatch."""
+    reasons = []
+    try:
+        import huggingface_hub as hub
+    except ImportError:
+        return {"commit": None, "source": None, "reason": "huggingface_hub not installed"}
+    try:
+        return {"commit": hub.HfApi().model_info(repo, revision=revision).sha, "source": "hub"}
+    except Exception as error:  # offline / rate limited: fall back to the cache
+        reasons.append(f"hub: {type(error).__name__}: {str(error)[:120]}")
+    try:
+        path = hub.try_to_load_from_cache(repo, filename, revision=revision)
+    except Exception as error:
+        path = None
+        reasons.append(f"cache: {type(error).__name__}: {str(error)[:120]}")
+    if isinstance(path, str):
+        parts = Path(path).parts
+        if "snapshots" in parts and parts.index("snapshots") + 1 < len(parts):
+            return {"commit": parts[parts.index("snapshots") + 1], "source": "cache"}
+        reasons.append(f"cache: no snapshot directory in {path}")
+    else:
+        reasons.append(f"cache: {filename} not cached for that revision")
+    return {"commit": None, "source": None, "reason": "; ".join(reasons)}
+
+
+def commit_pin_report(observed: dict) -> dict:
+    """Model and tokenizer commits against their pins. An unknown commit (None) cannot be shown
+    to equal the pin, so it counts as a mismatch as well as `unverified`."""
+    pins = {"model": PINS["model_checkpoint_revision"], "tokenizer": PINS["tokenizer_revision"]}
+    rows = {
+        k: {"pinned": pins[k], "observed": observed.get(k),
+            "matches": observed.get(k) == pins[k] if observed.get(k) is not None else None}
+        for k in pins
+    }
+    return {
+        "commits": rows,
+        "mismatches": sum(1 for r in rows.values() if r["matches"] is not True),
+        "unverified": sum(1 for r in rows.values() if r["matches"] is None),
+    }
+
+
 def outside_training_counts(drawn_item_ids, parts: dict) -> dict:
     """Per corpus: how many drawn training examples are not in that corpus's training
     partition (M011 `training_data_outside_training_partition_count`, measured, not assumed)."""
@@ -333,16 +377,20 @@ def build_model(kind: str, device: str, seed: int):
             "dtype": str(dtype).removeprefix("torch."),
             "topology_observed": topology,
             "topology_mismatches": topology_mismatches(topology),
-            # transformers stores the hub commit the files were resolved from.
-            "checkpoint_commit_observed": getattr(model.config, "_commit_hash", None),
         }
-        commit = info["checkpoint_commit_observed"]
-        info["checkpoint_commit_matches_pin"] = (
-            None if commit is None else commit == PINS["model_checkpoint_revision"]
+        # transformers 5 no longer keeps the resolved commit on the config or tokenizer, so the
+        # commits are resolved here (hub, else the local cache snapshot the files came from).
+        model_commit = observed_commit(
+            PINS["model_checkpoint_repo"], PINS["model_checkpoint_revision"], "config.json"
         )
-        info["model_pin_mismatches"] = len(info["topology_mismatches"]) + (
-            info["checkpoint_commit_matches_pin"] is False
+        tok_commit = observed_commit(
+            PINS["tokenizer_repo"], PINS["tokenizer_revision"], "tokenizer_config.json"
         )
+        pins = commit_pin_report({"model": model_commit["commit"], "tokenizer": tok_commit["commit"]})
+        info["commit_observation"] = {"model": model_commit, "tokenizer": tok_commit}
+        info["commit_pins"] = pins
+        info["model_pin_unverified"] = pins["unverified"]
+        info["model_pin_mismatches"] = len(info["topology_mismatches"]) + pins["mismatches"]
     return model.to(device), tok, info
 
 

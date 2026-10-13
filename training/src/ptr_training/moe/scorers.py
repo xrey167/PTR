@@ -6,8 +6,9 @@
   file system read-only, the home directories hidden, a private /tmp and no network (see
   `sandbox_info`). Without bubblewrap the code is refused unless the caller opts into the
   unsandboxed fallback with `PTR_M011_ALLOW_UNSANDBOXED=1`, which `sandbox_info` records.
-  A pass needs exit code 0 AND a per-run token written after `check()` returned, so an early
-  `sys.exit(0)` / `os._exit(0)` in the candidate is a failure.
+  The completion runs in a separate worker that holds no secret and never sees the tests; a
+  trusted harness runs `check()` against a proxy and alone reports pass/fail (threat model at
+  `_CODEC`), so an early exit, a forged marker or protocol output cannot produce a pass.
 * BFCL `simple`: AST check of one function call against the possible-answer file. This is a
   simplified re-implementation of the BFCL AST checker for the single-call `simple` category
   (name equality, required parameters present, every value among the allowed ones, no extra
@@ -17,6 +18,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import secrets
@@ -101,6 +103,170 @@ def _blocked(*a, **k):
 _s.socket = _blocked
 _s.create_connection = _blocked
 _s.getaddrinfo = _blocked
+"""
+
+
+# Threat model of HumanEval scoring. The completion is untrusted code. It runs only in the
+# WORKER process (`_WORKER`, inside bubblewrap when available: its own PID, network and mount
+# namespaces, only its own directory writable). The worker holds no secret, never sees the
+# tests or the expected values, and only answers calls: it receives argument values and returns
+# a value or an exception name, encoded with the data-only codec below. The trusted HARNESS
+# process (`_HARNESS`, outside the sandbox, running only dataset code: the prompt's helpers and
+# the test) executes `check()` against a proxy that forwards each call to the worker, decodes
+# the reply without evaluating code, and alone prints `PTR-HUMANEVAL <token> pass|fail`; the
+# token comes from the scorer on the harness's stdin. So nothing the completion does (exiting
+# early with code 0, writing files, printing, walking globals, frames or gc, speaking the wire
+# protocol) can produce a pass: the most it can do is return chosen values for the arguments it
+# is called with, which is what a solution does. Under `PTR_M011_ALLOW_UNSANDBOXED=1` the worker
+# is a plain child process of the same user: it is not a security boundary there (it could, for
+# example, write to the harness's stdout through /proc where ptrace rules allow it), which is
+# why that mode is opt-in and recorded.
+_CODEC = r"""
+import json as _json
+
+
+def _enc(o, _depth=0):
+    if _depth > 100:
+        raise ValueError("value nested too deeply")
+    if o is None or isinstance(o, (bool, str)):
+        return o
+    if isinstance(o, int):
+        return {"int": str(o)}
+    if isinstance(o, float):
+        return {"float": repr(o)}
+    if isinstance(o, list):
+        return {"list": [_enc(x, _depth + 1) for x in o]}
+    if isinstance(o, tuple):
+        return {"tuple": [_enc(x, _depth + 1) for x in o]}
+    if isinstance(o, (set, frozenset)):
+        return {"set": [_enc(x, _depth + 1) for x in o], "frozen": isinstance(o, frozenset)}
+    if isinstance(o, dict):
+        return {"dict": [[_enc(k, _depth + 1), _enc(v, _depth + 1)] for k, v in o.items()]}
+    raise TypeError("unsupported value type " + type(o).__name__)
+
+
+def _dec(o):
+    if o is None or isinstance(o, (bool, str)):
+        return o
+    if not isinstance(o, dict) or len(o) not in (1, 2):
+        raise ValueError("malformed value")
+    if "int" in o:
+        text = o["int"]
+        if not isinstance(text, str) or len(text) > 5000:
+            raise ValueError("malformed int")
+        return int(text)
+    if "float" in o:
+        return float(o["float"])
+    if "list" in o:
+        return [_dec(x) for x in o["list"]]
+    if "tuple" in o:
+        return tuple(_dec(x) for x in o["tuple"])
+    if "set" in o:
+        items = {_dec(x) for x in o["set"]}
+        return frozenset(items) if o.get("frozen") else items
+    if "dict" in o:
+        return {_dec(k): _dec(v) for k, v in o["dict"]}
+    raise ValueError("malformed value")
+"""
+
+# Untrusted side: loads prompt + completion, then answers calls on a private copy of its
+# original stdin/stdout; fds 0 and 1 are pointed at /dev/null first so that a completion's
+# prints cannot corrupt the protocol. Nothing it writes can make the harness report a pass.
+_WORKER = """\
+import os, sys
+_proto_in = os.fdopen(os.dup(0), "r", encoding="utf-8")
+_proto_out = os.fdopen(os.dup(1), "w", encoding="utf-8")
+_null = os.open(os.devnull, os.O_RDWR)
+os.dup2(_null, 0)
+os.dup2(_null, 1)
+sys.stdin = open(os.devnull, encoding="utf-8")
+sys.stdout = open(os.devnull, "w", encoding="utf-8")
+{codec}
+{preamble}
+def _send(msg):
+    _proto_out.write(_json.dumps(msg) + "\\n")
+    _proto_out.flush()
+_entry = _proto_in.readline().strip()
+_ns = {{"__name__": "__candidate__"}}
+try:
+    with open("candidate.py", encoding="utf-8") as _fh:
+        exec(compile(_fh.read(), "candidate.py", "exec"), _ns)
+    _fn = _ns[_entry]
+except BaseException as _e:
+    _send({{"load_error": type(_e).__name__}})
+    raise SystemExit(1)
+_send({{"ready": True}})
+for _line in _proto_in:
+    try:
+        _req = _json.loads(_line)
+        _res = _fn(*_dec(_req["args"]), **_dec(_req["kwargs"]))
+        _msg = {{"ok": _enc(_res)}}
+    except BaseException as _e:
+        _msg = {{"raise": type(_e).__name__}}
+    _send(_msg)
+"""
+
+# Trusted side: never executes completion code. Runs the prompt (for its helper functions and
+# imports) and the test, with the entry point replaced by a proxy to the worker.
+_HARNESS = """\
+import json, subprocess, sys
+{codec}
+token = sys.stdin.readline().strip()
+with open("spec.json", encoding="utf-8") as fh:
+    spec = json.load(fh)
+LIMIT = 16 * 1024 * 1024
+
+
+class CandidateFailed(Exception):
+    pass
+
+
+worker = subprocess.Popen(
+    spec["worker_cmd"], cwd=spec["worker_dir"], env={{"PATH": spec["path"]}},
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+)
+
+
+def _call(msg):
+    worker.stdin.write((json.dumps(msg) + "\\n").encode())
+    worker.stdin.flush()
+    line = worker.stdout.readline(LIMIT)
+    if not line.endswith(b"\\n"):
+        raise CandidateFailed("worker ended or reply too long")
+    return json.loads(line)
+
+
+def candidate(*args, **kwargs):
+    reply = _call({{"args": _enc(list(args)), "kwargs": _enc(dict(kwargs))}})
+    if not isinstance(reply, dict) or set(reply) != {{"ok"}}:
+        raise CandidateFailed("candidate raised or returned no value")
+    return _dec(reply["ok"])
+
+
+result = "fail"
+try:
+    worker.stdin.write((spec["entry_point"] + "\\n").encode())
+    worker.stdin.flush()
+    line = worker.stdout.readline(LIMIT)
+    if line.endswith(b"\\n") and json.loads(line) == {{"ready": True}}:
+        ns = {{"__name__": "__ptr_check__"}}
+        try:
+            exec(compile(spec["prompt"], "prompt.py", "exec"), ns)
+        except SyntaxError:
+            exec(compile(spec["prompt"] + "\\n    pass\\n", "prompt.py", "exec"), ns)
+        ns[spec["entry_point"]] = candidate
+        exec(compile(spec["test"], "test.py", "exec"), ns)
+        ns["check"](candidate)
+        result = "pass"
+except BaseException:
+    result = "fail"
+finally:
+    try:
+        worker.kill()
+    except OSError:
+        pass
+sys.stdout.write("PTR-HUMANEVAL " + token + " " + result + "\\n")
+sys.stdout.flush()
 """
 
 
@@ -215,44 +381,53 @@ def run_humaneval(
             "HumanEval scoring runs model-generated code; install bubblewrap (apt install "
             f"bubblewrap) or set {UNSANDBOXED_ENV}=1 to accept running it as this user"
         )
-    # Exit code 0 alone is not a pass: a candidate that calls `sys.exit(0)` / `os._exit(0)`
-    # ends the process with 0 before `check()` can fail. Only a run that reaches the line
-    # after `check(...)` writes the per-run random token into the marker file.
-    token = secrets.token_hex(16)
     with tempfile.TemporaryDirectory(prefix="m011-he-") as tmp:
-        marker = os.path.join(tmp, "passed")
-        program = (
-            _PREAMBLE.format(mem=memory_bytes, cpu=max(1, int(timeout)))
-            + f"_ptr_marker = ({marker!r}, {token!r}, open)\n"
-            + "\n"
-            + prompt
-            + truncate_completion(completion)
-            + "\n\n"
-            + test
-            + f"\n\ncheck({entry_point})\n"
-            + "with _ptr_marker[2](_ptr_marker[0], 'w') as _ptr_fh:\n"
-            + "    _ptr_fh.write(_ptr_marker[1])\n"
-        )
-        path = os.path.join(tmp, "candidate.py")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(program)
-        cmd = [sys.executable, "-I", path]
+        harness_dir = os.path.join(tmp, "harness")
+        worker_dir = os.path.join(tmp, "candidate")
+        os.mkdir(harness_dir)
+        os.mkdir(worker_dir)
+        with open(os.path.join(worker_dir, "candidate.py"), "w", encoding="utf-8") as fh:
+            fh.write(prompt + truncate_completion(completion) + "\n")
+        worker = os.path.join(worker_dir, "worker.py")
+        with open(worker, "w", encoding="utf-8") as fh:
+            fh.write(
+                _WORKER.format(
+                    preamble=_PREAMBLE.format(mem=memory_bytes, cpu=max(1, int(timeout))),
+                    codec=_CODEC,
+                )
+            )
+        worker_cmd = [sys.executable, "-I", worker]
         if mode == "bwrap-readonly":
-            cmd = sandbox_command(shutil.which("bwrap"), tmp, cmd)
+            worker_cmd = sandbox_command(shutil.which("bwrap"), worker_dir, worker_cmd)
         elif _unshare_usable():
-            cmd = [shutil.which("unshare"), "--net", "--map-root-user", *cmd]
+            worker_cmd = [shutil.which("unshare"), "--net", "--map-root-user", *worker_cmd]
+        spec = {
+            "prompt": prompt,
+            "test": test,
+            "entry_point": entry_point,
+            "worker_cmd": worker_cmd,
+            "worker_dir": worker_dir,
+            "path": os.environ.get("PATH", "/usr/bin:/bin"),
+        }
+        with open(os.path.join(harness_dir, "spec.json"), "w", encoding="utf-8") as fh:
+            json.dump(spec, fh)
+        harness = os.path.join(harness_dir, "harness.py")
+        with open(harness, "w", encoding="utf-8") as fh:
+            fh.write(_HARNESS.format(codec=_CODEC))
+        # The token reaches the trusted harness on its stdin only (not argv or environment, which
+        # other processes of this user can read under /proc); the worker never receives it.
+        token = secrets.token_hex(16)
         proc = subprocess.Popen(
-            cmd,
-            cwd=tmp,
+            [sys.executable, "-I", harness],
+            cwd=harness_dir,
             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
         try:
-            if proc.wait(timeout=timeout) != 0:
-                return False
+            out, _ = proc.communicate(input=(token + "\n").encode(), timeout=timeout)
         except subprocess.TimeoutExpired:
             return False
         finally:
@@ -261,12 +436,9 @@ def run_humaneval(
                     os.killpg(proc.pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     proc.kill()
-                proc.wait()
-        try:
-            with open(marker, encoding="utf-8") as fh:
-                return fh.read() == token
-        except OSError:
-            return False
+                proc.communicate()
+        lines = out.decode("utf-8", "replace").splitlines()
+        return proc.returncode == 0 and bool(lines) and lines[-1] == f"PTR-HUMANEVAL {token} pass"
 
 
 # ---------------------------------------------------------------------------- BFCL (simple)

@@ -337,16 +337,38 @@ def check_venv(opts: Options) -> Check:
 
 
 def lock_versions(root: Path) -> dict[str, list[str]]:
-    """Versions of the packages we compare, as locked in training/uv.lock (several per name)."""
+    """Versions of the packages we compare, as training/uv.lock resolves them for the `moe`
+    extra of the root package `ptr-training`.
+
+    The lock holds several versions of some packages (the `cpt` and `moe` extras fork the
+    resolution, e.g. datasets 4.8.4 and 5.0.1), so collecting every occurrence would accept a
+    version the moe extra does not allow. The root package's `optional-dependencies.moe`
+    entries name the version when the name is ambiguous; an entry without one means the lock
+    has a single version of that package. A lock without that table (older format) falls
+    back to every occurrence."""
     path = root / "training" / "uv.lock"
     found: dict[str, list[str]] = {}
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
         return found
+    wanted = ("torch", *VERSIONED)
+    every: dict[str, list[str]] = {}
     for pkg in data.get("package", []):
-        if pkg.get("name") in ("torch", *VERSIONED):
-            found.setdefault(pkg["name"], []).append(pkg.get("version", ""))
+        if pkg.get("name") in wanted:
+            every.setdefault(pkg["name"], []).append(pkg.get("version", ""))
+    root_pkg = next((p for p in data.get("package", []) if p.get("name") == "ptr-training"), None)
+    moe = (root_pkg or {}).get("optional-dependencies", {}).get("moe")
+    if not moe:
+        return every
+    for dep in moe:
+        name = dep.get("name")
+        if name not in wanted:
+            continue
+        if dep.get("version"):
+            found[name] = [dep["version"]]
+        elif len(set(every.get(name, []))) == 1:
+            found[name] = [every[name][0]]
     return found
 
 

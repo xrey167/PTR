@@ -219,6 +219,58 @@ class RunNeeds(unittest.TestCase):
         self.assertEqual(got["free vram"].status, gd.OK)
 
 
+TWO_VERSION_LOCK = LOCK + """
+[[package]]
+name = "datasets"
+version = "4.8.4"
+[[package]]
+name = "accelerate"
+version = "1.13.0"
+[[package]]
+name = "ptr-training"
+version = "0.1.0"
+source = { editable = "." }
+
+[package.optional-dependencies]
+moe = [
+    { name = "accelerate", version = "1.15.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "datasets", version = "5.0.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "peft" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "transformers", version = "5.18.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "trl", version = "1.14.1", source = { registry = "https://pypi.org/simple" } },
+]
+"""
+
+
+class MoeExtraLockResolution(unittest.TestCase):
+    """Codex P2: uv.lock holds several versions of a package (the cpt and moe extras fork the
+    resolution); the doctor accepted any of them, e.g. datasets 4.8.4 and accelerate 1.13.0,
+    although the moe extra resolves to 5.0.1 and 1.15.0. Only the moe extra's resolution of
+    the root package counts now."""
+
+    def fixture(self):
+        fx = Fixture()
+        (fx.root / "training" / "uv.lock").write_text(TWO_VERSION_LOCK)
+        return fx
+
+    def test_other_extras_versions_are_not_accepted(self):
+        fx = self.fixture()
+        got = collect(fx, fx.options(), probe=dict(GOOD_PROBE, datasets="4.8.4", accelerate="1.13.0"))
+        self.assertEqual(got["datasets"].status, gd.WARN)
+        self.assertEqual(got["accelerate"].status, gd.WARN)
+        self.assertTrue(got["datasets"].detail.endswith("lock has 5.0.1"), got["datasets"].detail)
+        self.assertTrue(got["accelerate"].detail.endswith("lock has 1.15.0"), got["accelerate"].detail)
+
+    def test_moe_versions_pass_and_unversioned_entries_use_the_single_lock_version(self):
+        fx = self.fixture()
+        got = collect(fx, fx.options(), probe=GOOD_PROBE)
+        for name in ("transformers", "peft", "trl", "datasets", "accelerate"):
+            self.assertEqual(got[name].status, gd.OK, (name, got[name].detail))
+        self.assertEqual(gd.lock_versions(fx.root)["datasets"], ["5.0.1"])
+        self.assertEqual(gd.lock_versions(fx.root)["peft"], ["0.21.2"])
+
+
 class HardwareProfiles(unittest.TestCase):
     def test_parse_with_and_without_compute_cap(self):
         got = gd.parse_nvidia_smi(SMI_DUAL_3090)

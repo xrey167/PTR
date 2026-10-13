@@ -529,7 +529,9 @@ split, validation-overlap counters, the measured `training_outside_training_part
 corpus, expert-domain assignment digest vs the pinned one, trainable parameters and their closed
 form (a mismatch, or on OLMoE a difference from the pinned count, stops the run), the loaded
 model's `topology_observed` with `model_pin_mismatches` (OLMoE: against the pinned topology and
-checkpoint commit; tiny: a config digest), hyperparameters and their source, `training_config`,
+the model and tokenizer commits, resolved on the hub or from the HF cache snapshot; an
+unverifiable commit counts as a mismatch and in `model_pin_unverified`; tiny: a config digest),
+hyperparameters and their source, `training_config`,
 tuning trials used and trial-set digest, versions, device, sandbox mode, git commit,
 `provenance` (see "GPU path"), the list of unpinned choices), `metrics.json` (per-domain accuracy
 also under the manifest name `task_accuracy_per_domain`, `mean_task_accuracy` = macro average,
@@ -543,8 +545,9 @@ A multi-process launch (`WORLD_SIZE` > 1) is refused.
 Audit fixes (2026-10-13, tests in `training/tests/test_moe_audit*.py`): GSM8K item ids carry the
 source split (`gsm8k:train:9` vs `gsm8k:test:9`; before, 131 validation ids collided with test ids
 on the real corpus and the overlap counter would have invalidated every run); GSM8K scores the
-first `####` answer; a HumanEval pass needs a per-run token written after `check()` (an early
-`sys.exit(0)` passed before); tuning on a confirmatory seed is refused.
+first `####` answer; HumanEval runs the completion in a sandboxed worker that holds no secret
+and never sees the tests, while a trusted harness runs `check()` against a proxy to it and
+alone reports the result (an early `sys.exit(0)`, and later a forged pass marker, passed before); tuning on a confirmatory seed is refused.
 
 Implemented and tested on CPU: all four arm topologies and their counts, domain-masked routing
 (training and evaluation), corpus partitions and digests, GSM8K / HumanEval / BFCL-simple

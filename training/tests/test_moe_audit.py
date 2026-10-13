@@ -165,5 +165,159 @@ class PtrCudaDeviceTests(unittest.TestCase):
                 m011.main(["--arm", "mixlora", "--seed", "3", "--out", tmp])
 
 
+class HumanEvalForgedPassTests(unittest.TestCase):
+    """Codex P1: the pass marker path and token lived in the namespace the completion ran in,
+    so a completion could write the marker itself and `os._exit(0)`. The completion now runs
+    in a separate sandboxed process that holds no secret and never sees the tests; the trusted
+    harness runs `check()` against a proxy and alone reports the outcome."""
+
+    ATTACKS = {
+        "writes the old marker": (
+            "    import os\n"
+            "    m = globals().get('_ptr_marker')\n"
+            "    if m:\n"
+            "        with m[2](m[0], 'w') as fh:\n"
+            "            fh.write(m[1])\n"
+            "    os._exit(0)\n"
+        ),
+        "dumps globals then os._exit": (
+            "    import os, sys\n"
+            "    for k, v in list(globals().items()):\n"
+            "        print(k, repr(v), flush=True)\n"
+            "        if isinstance(v, (tuple, list)):\n"
+            "            for item in v:\n"
+            "                if isinstance(item, str) and os.path.isabs(item):\n"
+            "                    try:\n"
+            "                        open(item, 'w').write(repr(v))\n"
+            "                    except OSError:\n"
+            "                        pass\n"
+            "    sys.stdout.write('PASS\\n'); sys.stdout.flush()\n"
+            "    os._exit(0)\n"
+        ),
+        "walks gc and frames then os._exit": (
+            "    import gc, inspect, os, sys, re\n"
+            "    found = set()\n"
+            "    for obj in gc.get_objects():\n"
+            "        if isinstance(obj, dict):\n"
+            "            found.update(v for v in obj.values() if isinstance(v, str))\n"
+            "    f = inspect.currentframe()\n"
+            "    while f is not None:\n"
+            "        found.update(v for v in f.f_locals.values() if isinstance(v, str))\n"
+            "        found.update(v for v in f.f_globals.values() if isinstance(v, str))\n"
+            "        f = f.f_back\n"
+            "    for tok in found:\n"
+            "        if re.fullmatch(r'[0-9a-f]{32}', tok):\n"
+            "            for out in (sys.stdout, sys.__stdout__):\n"
+            "                out.write(tok + '\\n'); out.flush()\n"
+            "            for name in os.listdir('.'):\n"
+            "                try:\n"
+            "                    open(name, 'w').write(tok)\n"
+            "                except OSError:\n"
+            "                    pass\n"
+            "            os.write(1, tok.encode())\n"
+            "    os._exit(0)\n"
+        ),
+        "answers the harness protocol itself": (
+            "    import os, sys, json\n"
+            "    for fd in (1, 2, 3, 4, 5):\n"
+            "        try:\n"
+            "            os.write(fd, b'{\"ok\": true}\\nPASS\\n')\n"
+            "        except OSError:\n"
+            "            pass\n"
+            "    os._exit(0)\n"
+        ),
+    }
+
+    def setUp(self):
+        if not scorers._bwrap_usable():
+            patcher = mock.patch.dict(os.environ, {scorers.UNSANDBOXED_ENV: "1"})
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.ex = corpora.fixture_partitions()["humaneval"].train[1]
+
+    def run_candidate(self, body: str) -> bool:
+        r = self.ex.reference
+        return scorers.run_humaneval(r["prompt"], body, r["test"], r["entry_point"])
+
+    def test_forged_passes_are_failures(self):
+        for name, body in self.ATTACKS.items():
+            with self.subTest(attack=name):
+                self.assertFalse(self.run_candidate(body))
+
+    def test_correct_and_printing_candidates_pass_wrong_ones_fail(self):
+        self.assertTrue(self.run_candidate(self.ex.answer))
+        noisy = "    print('debug', x)\n" + self.ex.answer
+        self.assertTrue(self.run_candidate(noisy))
+        self.assertFalse(self.run_candidate("    return 0\n"))
+        self.assertFalse(self.run_candidate("    raise ValueError('no')\n"))
+
+    def test_prompt_helpers_and_rich_return_values(self):
+        prompt = (
+            "from typing import List, Tuple\n\n"
+            "def helper(s: str) -> str:\n    return s[::-1]\n\n\n"
+            "def solve(xs: List[int]) -> Tuple[List[float], dict, set, bool, None]:\n"
+            '    """Return several value kinds."""\n'
+        )
+        test = (
+            "def check(candidate):\n"
+            "    assert candidate([1, 2]) == ([0.5, float('inf')], {'a': (1, 2)}, {3}, True, None)\n"
+            "    assert candidate([3]) is not None\n"
+            "    assert helper('ab') == 'ba'\n"
+        )
+        good = (
+            "    return ([0.5, float('inf')], {'a': (1, 2)}, {3}, True, None) if len(xs) == 2 "
+            "else ([], {}, set(), False, 1)\n"
+        )
+        self.assertTrue(scorers.run_humaneval(prompt, good, test, "solve"))
+        self.assertFalse(scorers.run_humaneval(prompt, "    return None\n", test, "solve"))
+
+
+class ModelPinTests(unittest.TestCase):
+    """Codex P1: an unverifiable checkpoint commit (None) counted as no mismatch and the
+    tokenizer commit was never checked. Unknown now counts as a mismatch, and both the model and
+    the tokenizer commit are compared with their pins."""
+
+    PIN = m011.PINS["model_checkpoint_revision"]
+
+    def test_unknown_and_wrong_commits_count(self):
+        ok = {"model": self.PIN, "tokenizer": self.PIN}
+        self.assertEqual(m011.commit_pin_report(ok)["mismatches"], 0)
+        unknown = m011.commit_pin_report({"model": None, "tokenizer": self.PIN})
+        self.assertEqual((unknown["mismatches"], unknown["unverified"]), (1, 1))
+        wrong_tok = m011.commit_pin_report({"model": self.PIN, "tokenizer": "0" * 40})
+        self.assertEqual((wrong_tok["mismatches"], wrong_tok["unverified"]), (1, 0))
+
+    def test_observed_commit_from_hub_or_cache(self):
+        import types
+
+        fake = types.SimpleNamespace(
+            HfApi=lambda: types.SimpleNamespace(
+                model_info=lambda repo, revision: types.SimpleNamespace(sha=self.PIN)
+            ),
+            try_to_load_from_cache=lambda *a, **k: None,
+        )
+        with mock.patch.dict("sys.modules", {"huggingface_hub": fake}):
+            got = m011.observed_commit("org/repo", self.PIN, "config.json")
+        self.assertEqual(got, {"commit": self.PIN, "source": "hub"})
+
+        def offline():
+            raise OSError("offline")
+
+        snap = f"/cache/models--org--repo/snapshots/{self.PIN}/config.json"
+        fake = types.SimpleNamespace(
+            HfApi=lambda: types.SimpleNamespace(model_info=lambda *a, **k: offline()),
+            try_to_load_from_cache=lambda *a, **k: snap,
+        )
+        with mock.patch.dict("sys.modules", {"huggingface_hub": fake}):
+            got = m011.observed_commit("org/repo", self.PIN, "config.json")
+        self.assertEqual(got["commit"], self.PIN)
+        self.assertEqual(got["source"], "cache")
+        fake.try_to_load_from_cache = lambda *a, **k: None
+        with mock.patch.dict("sys.modules", {"huggingface_hub": fake}):
+            got = m011.observed_commit("org/repo", self.PIN, "config.json")
+        self.assertIsNone(got["commit"])
+        self.assertIn("offline", got["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()
