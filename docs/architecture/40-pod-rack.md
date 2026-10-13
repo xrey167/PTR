@@ -105,13 +105,18 @@ and today each of them revokes **per Pod**: `heartbeat` and `register_node` call
 survives is routable with a stale partner.
 
 **Proposal.** A `TraySpec` names its members (`PodId`, `ArtifactId`, `Generation`,
-`ResourceRequirements` each), the **one** `BaseModelRef` and numeric regime they share (every
-member of a tray must have the same KV chain root, `crates/ptr-pods/src/kv_chain.rs`, so a tray
-is homogeneous the way an NVL72 rack is), and the host that acts as its authority process.
+`ResourceRequirements` each), the **complete KV chain root digest** they share, and the host that
+acts as its authority process. The root is derived per member by `crates/ptr-pods/src/kv_chain.rs`
+and covers more than a `BaseModelRef` and a numeric regime (backend build, tokenizer, embedding
+weights, key encoding, model configuration); `assign_tray` requires exact equality of every
+member's root, so a tray is homogeneous the way an NVL72 rack is.
 `PodPlacementController::assign_tray` places all members or none under **one** placement epoch
 and **one** tray `FencingToken`; the per-member `FencedStateLease` carries the tray token in
-addition to its own. Any event that would revoke one member revokes the tray: a tray is never
-partially fenced. Replacement is `assign_tray` under a new epoch; every in-flight activation
+addition to its own. Any event that would revoke one member revokes the tray **at that event**:
+the placement of every member is revoked (removed, as a device failure already removes a
+placement since the device-fence change) in the same controller step, so `split_stage`, which
+reads only `Placement.epoch`, refuses a frame of any surviving member at once; a tray token in
+the leases alone would not reach activation frames. A tray is never partially fenced. Replacement is `assign_tray` under a new epoch; every in-flight activation
 frame, KV lease and state lease of the old epoch is refused at its next admission, which the
 existing `placement_epoch` revalidation in `split_stage`, `kv` and `tensor_kv` already does
 per Pod.
@@ -230,17 +235,17 @@ end, not a field of the frame.
 
 ## 5. Experiments that would justify each piece
 
-Each follows `docs/architecture/19-research-method.md`: a baseline, an ablation, a refutation
-rule, registered with `scripts/new_experiment.py`. None is registered yet, and none has an id:
+Each follows `docs/architecture/19-research-method.md` and AGENTS.md section 3: a baseline, an
+ablation, a sensitivity control and a refutation rule, registered with `scripts/new_experiment.py`. None is registered yet, and none has an id:
 the names below are working titles, and an id is assigned at registration (`L002`, `L003`
 are taken; `E009` to `E012` are reserved by [41](41-pod-data-plane.md) for its experiments).
 
 | Id (proposed) | Claim | Baseline / ablation | Refuted if | CPU or GPU |
 |---|---|---|---|---|
-| locality-refusal (mechanism) | An L1 expert or a pipeline stage with a locality requirement can never be placed, routed or fed a frame across a link farther than its requirement, including after a rack re-declaration, a node failure and a replay | the same controller with `locality = None` | any placement, route or frame admission across the bound succeeds in any seed; or the refusal depends on a measured value | CPU |
-| tray-fence (mechanism, extends L001-v2) | A tray is never partially fenced: after a member device fails between `assign_tray` and the first use, no member's lease, KV page or frame of the old epoch is admitted | per-Pod placement of the same members | a surviving member serves a request of the old epoch in any seed | CPU |
-| link-classes (calibration, descriptive; the data-plane counterpart is E011 in [41](41-pod-data-plane.md)) | The declared classes order the measured activation-frame round trip on the owner's hardware: in-process < same-device < same-host (loopback QUIC) < LAN, each by a preregistered factor | none; descriptive | the order is violated, or two classes are within the measurement noise (then the two classes are merged in the type, not the threshold tuned) | CPU and one GPU |
-| rack-kv-scope (mechanism) | Rack-scoped prefix sharing admits exactly the cross-request hits of the global scope for requests in one rack and none across racks, with the fencing and dependency rules of doc 36 unchanged | global sharing | a cross-rack hit, or a lost in-rack hit, or any doc 36 counter above 0 | CPU |
+| locality-refusal (mechanism) | An L1 expert or a pipeline stage with a locality requirement can never be placed, routed or fed a frame across a link farther than its requirement, including after a rack re-declaration, a node failure and a replay | the same controller with `locality = None` (ablation); sensitivity: a planted placement one class too far must be refused | any placement, route or frame admission across the bound succeeds in any seed; or the refusal depends on a measured value | CPU |
+| tray-fence (mechanism, extends L001-v2) | A tray is never partially fenced: after a member device fails between `assign_tray` and the first use, no member's lease, KV page or frame of the old epoch is admitted | per-Pod placement of the same members (ablation); sensitivity: a planted surviving member must be detected by the harness when tray revocation is disabled | a surviving member serves a request of the old epoch in any seed | CPU |
+| link-classes (calibration, descriptive; the data-plane counterpart is E011 in [41](41-pod-data-plane.md)) | The declared classes order the measured activation-frame round trip on the owner's hardware: in-process < same-device < same-host (loopback QUIC) < LAN, each by a preregistered factor | baseline: the `Bytes` carrier over the same link; ablation: the same frame without chunking where it fits; sensitivity: an injected fixed delay on one class must reorder it measurably | the order is violated, or two classes are within the measurement noise (then the two classes are merged in the type, not the threshold tuned) | CPU and one GPU |
+| rack-kv-scope (mechanism) | Rack-scoped prefix sharing admits exactly the cross-request hits of the global scope for requests in one rack and none across racks, with the fencing and dependency rules of doc 36 unchanged | global sharing (ablation); sensitivity: a planted cross-rack request must be refused | a cross-rack hit, or a lost in-rack hit, or any doc 36 counter above 0 | CPU |
 
 A **positive** result of any of these shows a mechanism, not a benefit. Whether tray-atomic
 placement or typed locality reduces anything a user can see (p95 latency of the doc 39 loop,
