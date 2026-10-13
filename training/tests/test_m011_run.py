@@ -6,6 +6,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ptr_training.moe import scorers
 from ptr_training.moe.pipeline import stack_available
@@ -140,7 +141,9 @@ class TinyEndToEndTests(unittest.TestCase):
 
     def test_tune_steps_override_and_other_seed_are_recorded_as_deviations(self):
         with tempfile.TemporaryDirectory() as tmp:
-            rc = m011.main(["--arm", "plain_lora", "--seed", "29", "--out", tmp, "--tune",
+            # another pilot seed (>= 1001) is a recorded deviation; a confirmatory seed is refused
+            # (test_moe_audit.TuningSeedTests)
+            rc = m011.main(["--arm", "plain_lora", "--seed", "1002", "--out", tmp, "--tune",
                             "--tune-budget", "1", "--tune-steps", "2", "--model", "tiny",
                             "--device", "cpu", "--max-steps", "4", "--eval-limit", "1"])
             self.assertEqual(rc, 0)
@@ -180,7 +183,8 @@ class TinyEndToEndTests(unittest.TestCase):
     def test_a_tuning_file_of_another_arm_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "tuning.json"
-            path.write_text(json.dumps({"arm": "mixlora", "selected": {"learning_rate": 1e-3, "batch_size": 4}}))
+            path.write_text(json.dumps({"arm": "mixlora", "tuning_seed": 1001,
+                                        "selected": {"learning_rate": 1e-3, "batch_size": 4}}))
             with self.assertRaises(SystemExit):
                 m011._load_tuning(path, "perft_r_emergent")
             self.assertEqual(m011._load_tuning(path, "mixlora")["arm"], "mixlora")
@@ -189,11 +193,64 @@ class TinyEndToEndTests(unittest.TestCase):
                            "--hparams", str(path), "--model", "tiny"])
 
     def test_same_seed_is_reproducible(self):
-        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
-            ma = json.loads((self.run_cli("perft_r_emergent", Path(a)) / "metrics.json").read_text())
-            mb = json.loads((self.run_cli("perft_r_emergent", Path(b)) / "metrics.json").read_text())
-            self.assertEqual(ma["training"]["final_loss"], mb["training"]["final_loss"])
-            self.assertEqual(ma["load_cv"], mb["load_cv"])
+        """Same seed on CPU: every training, accuracy and routing number is identical (timings,
+        which are wall-clock, excluded); a different seed changes the training."""
+        def strip(m):
+            m = json.loads(json.dumps(m))
+            m.pop("generation_timing")
+            m.pop("latency_per_token")
+            return m
+
+        for arm in ("perft_r_emergent", "mixlora"):
+            with self.subTest(arm=arm), tempfile.TemporaryDirectory() as a, \
+                    tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as c:
+                ma = json.loads((self.run_cli(arm, Path(a)) / "metrics.json").read_text())
+                mb = json.loads((self.run_cli(arm, Path(b)) / "metrics.json").read_text())
+                mc = json.loads((self.run_cli(arm, Path(c), seed=4) / "metrics.json").read_text())
+                self.assertEqual(strip(ma), strip(mb))
+                self.assertNotEqual(ma["training"]["first_loss"], mc["training"]["first_loss"])
+
+    def test_run_json_records_provenance_and_measured_counters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.run_cli("perft_r_prescribed", Path(tmp))
+            run = json.loads((out / "run.json").read_text())
+            metrics = json.loads((out / "metrics.json").read_text())
+            prov = run["provenance"]
+            self.assertEqual(prov["git"]["commit"], run["git_commit"])
+            self.assertIn(prov["git"]["dirty"], (True, False))
+            for key in ("torch", "transformers", "peft", "trl", "accelerate", "datasets"):
+                self.assertIn(key, prov["versions"])
+            self.assertEqual(prov["device"]["device"], "cpu")
+            self.assertIn("CUDA_VISIBLE_DEVICES", prov["device"]["env"])
+            self.assertTrue(prov["device"]["bit_reproducible"])
+            self.assertEqual(run["seeds"]["run"], 3)
+            self.assertEqual(run["seeds"]["tuning_selection_seed"], 20240607)
+            self.assertIn(run["sandbox"]["filesystem"], ("bwrap-readonly", "unsandboxed-opt-in"))
+            # tiny model: compared by config digest, not against the OLMoE topology pin
+            self.assertTrue(run["model"]["tiny_config_digest"].startswith("sha256:"))
+            self.assertEqual(run["model"]["topology_observed"]["top_k"], 2)
+            self.assertEqual(run["trainable_params"], run["trainable_params_closed_form"])
+            for report in run["corpora"].values():
+                self.assertEqual(report["training_outside_training_partition_count"], 0)
+            self.assertEqual(metrics["training"]["examples_drawn"], 2 * 4)
+            self.assertNotIn("drawn_item_ids", metrics["training"])
+            self.assertEqual(metrics["training_data_outside_training_partition_count"], 0)
+            self.assertEqual(metrics["task_accuracy_per_domain"], metrics["per_domain_accuracy"])
+            for domain in ("code", "math", "tool"):
+                timing = metrics["generation_timing"][domain]
+                self.assertGreater(timing["generated_tokens"], 0)
+                self.assertAlmostEqual(
+                    metrics["latency_per_token"][domain], timing["seconds"] / timing["generated_tokens"]
+                )
+            self.assertIn("expert_specialisation_index", metrics["not_produced"])
+            self.assertEqual(set(metrics["validation_overlap_count_by_corpus"]),
+                             {"gsm8k", "humaneval", "bfcl_simple"})
+
+    def test_a_multi_process_launch_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"WORLD_SIZE": "2"}):
+            with self.assertRaises(SystemExit):
+                m011.main(["--arm", "mixlora", "--seed", "3", "--out", tmp, *SMOKE])
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
 
 if __name__ == "__main__":

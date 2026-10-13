@@ -1,11 +1,13 @@
 """Task scorers for M011 (pure Python, no torch).
 
-* GSM8K: exact-match on the final numeric answer.
+* GSM8K: exact-match on the final numeric answer (the first `####` answer).
 * HumanEval: pass@1 (greedy, one sample) by executing completion + tests in a subprocess with a
   timeout, a scrubbed environment and resource limits, inside a bubblewrap sandbox: the host
   file system read-only, the home directories hidden, a private /tmp and no network (see
   `sandbox_info`). Without bubblewrap the code is refused unless the caller opts into the
   unsandboxed fallback with `PTR_M011_ALLOW_UNSANDBOXED=1`, which `sandbox_info` records.
+  A pass needs exit code 0 AND a per-run token written after `check()` returned, so an early
+  `sys.exit(0)` / `os._exit(0)` in the candidate is a failure.
 * BFCL `simple`: AST check of one function call against the possible-answer file. This is a
   simplified re-implementation of the BFCL AST checker for the single-call `simple` category
   (name equality, required parameters present, every value among the allowed ones, no extra
@@ -17,6 +19,7 @@ from __future__ import annotations
 import ast
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -55,9 +58,11 @@ def gsm8k_reference(answer: str) -> str:
 
 
 def gsm8k_extract(text: str) -> Fraction | None:
-    """Final numeric answer of a generation: the number after `####` if present, else the last
-    number in the text."""
-    region = text.rsplit("####", 1)[1] if "####" in text else text
+    """Final numeric answer of a generation: the first number after the FIRST `####` if
+    present (the committed answer; text after it, such as an invented follow-up question with
+    its own `####`, is ignored, as in the lm-eval strict-match rule), else the last number in
+    the text."""
+    region = text.split("####", 1)[1] if "####" in text else text
     found = _TOKEN.findall(region)
     if not found:
         return None
@@ -210,16 +215,24 @@ def run_humaneval(
             "HumanEval scoring runs model-generated code; install bubblewrap (apt install "
             f"bubblewrap) or set {UNSANDBOXED_ENV}=1 to accept running it as this user"
         )
-    program = (
-        _PREAMBLE.format(mem=memory_bytes, cpu=max(1, int(timeout)))
-        + "\n"
-        + prompt
-        + truncate_completion(completion)
-        + "\n\n"
-        + test
-        + f"\n\ncheck({entry_point})\n"
-    )
+    # Exit code 0 alone is not a pass: a candidate that calls `sys.exit(0)` / `os._exit(0)`
+    # ends the process with 0 before `check()` can fail. Only a run that reaches the line
+    # after `check(...)` writes the per-run random token into the marker file.
+    token = secrets.token_hex(16)
     with tempfile.TemporaryDirectory(prefix="m011-he-") as tmp:
+        marker = os.path.join(tmp, "passed")
+        program = (
+            _PREAMBLE.format(mem=memory_bytes, cpu=max(1, int(timeout)))
+            + f"_ptr_marker = ({marker!r}, {token!r}, open)\n"
+            + "\n"
+            + prompt
+            + truncate_completion(completion)
+            + "\n\n"
+            + test
+            + f"\n\ncheck({entry_point})\n"
+            + "with _ptr_marker[2](_ptr_marker[0], 'w') as _ptr_fh:\n"
+            + "    _ptr_fh.write(_ptr_marker[1])\n"
+        )
         path = os.path.join(tmp, "candidate.py")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(program)
@@ -238,7 +251,8 @@ def run_humaneval(
             start_new_session=True,
         )
         try:
-            return proc.wait(timeout=timeout) == 0
+            if proc.wait(timeout=timeout) != 0:
+                return False
         except subprocess.TimeoutExpired:
             return False
         finally:
@@ -248,6 +262,11 @@ def run_humaneval(
                 except (ProcessLookupError, PermissionError):
                     proc.kill()
                 proc.wait()
+        try:
+            with open(marker, encoding="utf-8") as fh:
+                return fh.read() == token
+        except OSError:
+            return False
 
 
 # ---------------------------------------------------------------------------- BFCL (simple)

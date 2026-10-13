@@ -284,16 +284,19 @@ class TuningTests(unittest.TestCase):
         self.assertEqual(m011.select_best(rs)["index"], 1)
 
 
+M011_CONFIG = Path(
+    os.environ.get("PTR_M011_CONFIG")
+    or Path(__file__).resolve().parents[2] / "experiments" / "model" / "M011-routed-peft" / "config.toml"
+)
+
+
 class ConfigParityTests(unittest.TestCase):
-    """Cross-check the embedded pins against the M011 config when it is available.
+    """Cross-check the embedded pins against the M011 config (in this tree; PTR_M011_CONFIG
+    overrides the path). Skipped only when the file is absent."""
 
-    Set PTR_M011_CONFIG to `experiments/model/M011-routed-peft/config.toml` (it lives in the
-    experiment PR, not in this tree); the test is skipped otherwise.
-    """
+    CONFIG = str(M011_CONFIG)
 
-    CONFIG = os.environ.get("PTR_M011_CONFIG")
-
-    @unittest.skipUnless(CONFIG and Path(CONFIG).is_file(), "PTR_M011_CONFIG not set")
+    @unittest.skipUnless(M011_CONFIG.is_file(), "M011 config.toml not found")
     def test_pins_equal_config(self):
         cfg = tomllib.loads(Path(self.CONFIG).read_text())["pinned_thresholds"]
         self.assertEqual(m011.PINS["training_steps_per_arm"], cfg["training_steps_per_arm"])
@@ -306,6 +309,23 @@ class ConfigParityTests(unittest.TestCase):
             self.assertEqual(pin.revision, cfg[f"corpus_{short}_revision"])
             self.assertEqual(pin.repo, cfg[f"corpus_{short}"])
         self.assertEqual(corpora.PINNED_CORPORA["bfcl_simple"].file, cfg["corpus_tool_file"])
+        # the rest of the pinned procedure the entrypoint embeds
+        self.assertEqual(m011.PINS["moe_topology"], cfg["moe_topology"])
+        self.assertEqual(m011.PINS["model_checkpoint_repo"], cfg["model_checkpoint_repo"])
+        self.assertEqual(m011.PINS["tokenizer_repo"], cfg["tokenizer_repo"])
+        self.assertEqual(m011.PINS["domains"], cfg["domains"])
+        self.assertEqual(m011.PINS["tuning_seed"], cfg["tuning_seed"])
+        self.assertEqual(m011.tuning_steps_for(cfg["training_steps_per_arm"]), cfg["tuning_steps"])
+        self.assertEqual(m011.PINS["tuning_protocol"]["steps_fraction"], cfg["tuning_steps_fraction"])
+        self.assertEqual(m011.PINS["min_seeds"], cfg["min_seeds"])
+        self.assertEqual(corpora.VALIDATION_MODULUS_GSM8K, cfg["validation_position_modulus"])
+        self.assertEqual(corpora.VALIDATION_RESIDUE_GSM8K, cfg["validation_position_residue"])
+        self.assertNotIn(m011.PINS["tuning_seed"], m011.PINS["seeds"])
+
+    @unittest.skipUnless(M011_CONFIG.is_file(), "M011 config.toml not found")
+    def test_seeds_equal_the_manifest(self):
+        manifest = tomllib.loads((M011_CONFIG.parent / "experiment.toml").read_text())
+        self.assertEqual(m011.PINS["seeds"], manifest["seeds"])
 
 
 if __name__ == "__main__":

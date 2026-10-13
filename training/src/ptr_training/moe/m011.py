@@ -7,9 +7,9 @@ Trains one arm with SFT on the three domain corpora and evaluates per-domain tas
 writing `run.json` and `metrics.json` (and `tuning.json` for `--tune`) into `--out`.
 
 Importing this module needs only the standard library; torch, transformers, peft and datasets
-are imported when a run starts. Pins below mirror the M011 config (`experiment.toml` /
-`config.toml` live in an experiment PR, not in this tree); anything the config does not pin is
-listed in `UNPINNED_CHOICES` and recorded in `run.json`.
+are imported when a run starts. Pins below mirror the M011 config
+(`experiments/model/M011-routed-peft/config.toml`; `tests/test_m011_*` compare them); anything
+the config does not pin is listed in `UNPINNED_CHOICES` and recorded in `run.json`.
 """
 
 from __future__ import annotations
@@ -20,13 +20,13 @@ import json
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 import time
-from importlib import metadata
 from pathlib import Path
 
-from ptr_training.moe import corpora
+from ptr_training.moe import corpora, provenance
 
 SCHEMA_VERSION = 1
 DOMAINS = ("code", "math", "tool")
@@ -92,6 +92,22 @@ UNPINNED_CHOICES = {
     "default_untuned_hparams": {"olmoe": {"lr": 1e-4, "batch": 16}, "tiny": {"lr": 1e-3, "batch": 4}},
     "micro_batch_size": "gradient accumulation; default 4 (olmoe) / whole batch (tiny)",
     "flops": "torch FlopCounterMode on the first optimizer step; total = first step x steps",
+    "latency_per_token": "wall seconds of the batched greedy evaluation generation of a domain "
+    "divided by the tokens it generated (up to and including EOS, padding excluded); eval batch "
+    "16 (olmoe) / 4 (tiny)",
+}
+
+# Manifest metrics this entrypoint does not compute, with the reason (never a silent gap).
+NOT_PRODUCED = {
+    "expert_specialisation_index": "no definition is pinned in the M011 manifest or config; "
+    "per-domain adapter-router statistics are recorded under routing.per_domain_adapter_router",
+}
+
+# Tiny-random model (`--model tiny`): its config is part of the record (digest in run.json).
+TINY_MODEL_CONFIG = {
+    "hidden_size": 32, "intermediate_size": 16, "num_hidden_layers": 2, "num_attention_heads": 4,
+    "num_key_value_heads": 4, "num_experts": 8, "num_experts_per_tok": 2,
+    "max_position_embeddings": 512, "tie_word_embeddings": False,
 }
 
 MAX_NEW_TOKENS = {"math": 256, "code": 384, "tool": 128}
@@ -156,6 +172,67 @@ def tuning_deviations(*, seed: int, steps: int, trials: int) -> list[dict]:
     ]
 
 
+def check_tuning_seed(seed: int) -> None:
+    """TB1 / AGENTS.md: tune only on a pilot seed (>= the pinned tuning seed 1001), never on a
+    confirmatory seed. Anything else is refused, not recorded as a deviation."""
+    if seed in PINS["seeds"] or seed < PINS["tuning_seed"]:
+        raise SystemExit(
+            f"m011: tuning seed {seed} refused: tuning runs only on a pilot seed >= "
+            f"{PINS['tuning_seed']} (pinned {PINS['tuning_seed']}), never on a confirmatory "
+            f"seed {PINS['seeds']}"
+        )
+
+
+_TOPOLOGY_FIELDS = ("layers", "num_experts", "top_k", "norm_topk_prob", "router_aux_loss_coef")
+
+
+def pinned_topology(pinned: dict = PINS["moe_topology"]) -> dict:
+    """The comparable fields of the pinned `moe_topology` (norm_topk_prob is read from the
+    pinned router layout text)."""
+    out = {k: pinned[k] for k in ("layers", "num_experts", "top_k", "router_aux_loss_coef")}
+    m = re.search(r"norm_topk_prob = (true|false)", pinned.get("router_layout", ""))
+    if m:
+        out["norm_topk_prob"] = m.group(1) == "true"
+    return out
+
+
+def observed_topology(config) -> dict:
+    """The same fields read from a loaded model's config."""
+    return {
+        "layers": getattr(config, "num_hidden_layers", None),
+        "num_experts": getattr(config, "num_experts", None),
+        "top_k": getattr(config, "num_experts_per_tok", None),
+        "norm_topk_prob": getattr(config, "norm_topk_prob", None),
+        "router_aux_loss_coef": getattr(config, "router_aux_loss_coef", None),
+    }
+
+
+def topology_mismatches(observed: dict, pinned: dict = PINS["moe_topology"]) -> list[dict]:
+    """Fields where the loaded model's topology differs from the pin (empty when it matches)."""
+    want = pinned_topology(pinned)
+    return [
+        {"field": f, "pinned": want[f], "observed": observed.get(f)}
+        for f in _TOPOLOGY_FIELDS
+        if f in want and observed.get(f) != want[f]
+    ]
+
+
+def outside_training_counts(drawn_item_ids, parts: dict) -> dict:
+    """Per corpus: how many drawn training examples are not in that corpus's training
+    partition (M011 `training_data_outside_training_partition_count`, measured, not assumed)."""
+    owner, train_ids = {}, {}
+    for key, p in parts.items():
+        train_ids[key] = {ex.item_id for ex in p.train}
+        for ex in (*p.train, *p.validation, *p.evaluation):
+            owner[ex.item_id] = key
+    counts = {key: 0 for key in parts}
+    for item in drawn_item_ids:
+        key = owner.get(item, "unknown")
+        if key == "unknown" or item not in train_ids[key]:
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 # ------------------------------------------------------------------------------------ helpers
 
 
@@ -167,13 +244,7 @@ def _write_json(path: Path, obj: dict) -> None:
 
 
 def _versions() -> dict:
-    out = {"python": sys.version.split()[0]}
-    for dist in ("torch", "transformers", "peft", "datasets", "huggingface_hub", "tokenizers"):
-        try:
-            out[dist] = metadata.version(dist)
-        except metadata.PackageNotFoundError:
-            out[dist] = None
-    return out
+    return provenance.package_versions()
 
 
 def _git_commit() -> str | None:
@@ -214,25 +285,29 @@ def build_model(kind: str, device: str, seed: int):
         from transformers import OlmoeConfig, OlmoeForCausalLM
 
         tok = build_tokenizer()
+        tiny = {
+            **TINY_MODEL_CONFIG,
+            "vocab_size": len(tok),
+            "router_aux_loss_coef": PINS["moe_topology"]["router_aux_loss_coef"],
+        }
         cfg = OlmoeConfig(
-            vocab_size=len(tok),
-            hidden_size=32,
-            intermediate_size=16,
-            num_hidden_layers=2,
-            num_attention_heads=4,
-            num_key_value_heads=4,
-            num_experts=8,
-            num_experts_per_tok=2,
-            max_position_embeddings=512,
-            router_aux_loss_coef=PINS["moe_topology"]["router_aux_loss_coef"],
+            **tiny,
             output_router_logits=False,
             pad_token_id=tok.pad_token_id,
             eos_token_id=tok.eos_token_id,
             bos_token_id=tok.bos_token_id,
-            tie_word_embeddings=False,
         )
         model = OlmoeForCausalLM(cfg)
-        info = {"kind": "tiny-random", "hidden": 32, "layers": 2, "experts": 8, "top_k": 2}
+        digest = hashlib.sha256(
+            json.dumps(tiny, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        info = {
+            "kind": "tiny-random", "hidden": 32, "layers": 2, "experts": 8, "top_k": 2,
+            "tiny_config": tiny, "tiny_config_digest": "sha256:" + digest,
+            "topology_observed": observed_topology(model.config),
+            # The pinned topology is OLMoE's; the tiny model is compared by its config digest.
+            "model_pin_mismatches": None,
+        }
     else:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -245,6 +320,9 @@ def build_model(kind: str, device: str, seed: int):
         model = AutoModelForCausalLM.from_pretrained(
             PINS["model_checkpoint_repo"], revision=PINS["model_checkpoint_revision"], dtype=dtype
         )
+        # Observed before the aux-loss coefficient is set, so a checkpoint that differs from the
+        # pin is reported, not overwritten silently.
+        topology = observed_topology(model.config)
         model.config.router_aux_loss_coef = PINS["moe_topology"]["router_aux_loss_coef"]
         info = {
             "kind": "olmoe",
@@ -253,7 +331,18 @@ def build_model(kind: str, device: str, seed: int):
             "tokenizer_repo": PINS["tokenizer_repo"],
             "tokenizer_revision": PINS["tokenizer_revision"],
             "dtype": str(dtype).removeprefix("torch."),
+            "topology_observed": topology,
+            "topology_mismatches": topology_mismatches(topology),
+            # transformers stores the hub commit the files were resolved from.
+            "checkpoint_commit_observed": getattr(model.config, "_commit_hash", None),
         }
+        commit = info["checkpoint_commit_observed"]
+        info["checkpoint_commit_matches_pin"] = (
+            None if commit is None else commit == PINS["model_checkpoint_revision"]
+        )
+        info["model_pin_mismatches"] = len(info["topology_mismatches"]) + (
+            info["checkpoint_commit_matches_pin"] is False
+        )
     return model.to(device), tok, info
 
 
@@ -311,12 +400,14 @@ def train(
     rng = random.Random(seed)
     domains = [d for d in DOMAINS if train_by_domain.get(d)]
     losses, truncated, first_flops = [], 0, None
+    drawn: list[str] = []
     inst.model.train()
     for step in range(steps):
         batch = []
         for _ in range(batch_size):
             d = rng.choice(domains)
             batch.append(rng.choice(train_by_domain[d]))
+            drawn.append(batch[-1].item_id)
         opt.zero_grad(set_to_none=True)
         counter = None
         if step == 0:
@@ -360,13 +451,21 @@ def train(
         "truncated_examples": truncated,
         "first_step_flops": first_flops,
         "estimated_total_flops": None if first_flops is None else first_flops * steps,
+        "examples_drawn": len(drawn),
+        # Item ids of every drawn example; run() reduces them to the partition counters and
+        # removes the list before writing JSON.
+        "drawn_item_ids": drawn,
     }
 
 
 # ------------------------------------------------------------------------------------ evaluation
 
 
-def generate(inst, tok, prompts: list[str], domain: str, max_new: int, device: str) -> list[str]:
+def generate(
+    inst, tok, prompts: list[str], domain: str, max_new: int, device: str, timing: dict | None = None
+) -> list[str]:
+    """Greedy batched generation. `timing`, when given, accumulates `seconds` and
+    `generated_tokens` (up to and including EOS, padding excluded)."""
     import torch
 
     tok.padding_side = "left"
@@ -374,29 +473,61 @@ def generate(inst, tok, prompts: list[str], domain: str, max_new: int, device: s
     enc = {k: v.to(device) for k, v in enc.items()}
     if inst.ctx is not None:
         inst.ctx.set_domains([domain] * len(prompts))
+    if device == "cuda":
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
     with torch.no_grad():
         out = inst.model.generate(
             **enc, max_new_tokens=max_new, do_sample=False, pad_token_id=tok.pad_token_id
         )
+    if device == "cuda":
+        torch.cuda.synchronize()
+    elapsed = time.perf_counter() - t0
     if inst.ctx is not None:
         inst.ctx.set_domains(None)
-    return tok.batch_decode(out[:, enc["input_ids"].shape[1] :], skip_special_tokens=True)
+    new = out[:, enc["input_ids"].shape[1] :]
+    if timing is not None:
+        timing["seconds"] = timing.get("seconds", 0.0) + elapsed
+        timing["generated_tokens"] = timing.get("generated_tokens", 0) + generated_token_count(
+            new.tolist(), tok.eos_token_id
+        )
+    return tok.batch_decode(new, skip_special_tokens=True)
+
+
+def generated_token_count(rows: list[list[int]], eos_id: int) -> int:
+    """Tokens a batched greedy generation produced per row: up to and including the first EOS
+    (generate pads finished rows after their EOS), else the whole row."""
+    total = 0
+    for row in rows:
+        total += row.index(eos_id) + 1 if eos_id in row else len(row)
+    return total
 
 
 def evaluate_accuracy(inst, tok, by_domain: dict, *, limit, max_new: dict, batch: int, device: str):
     from ptr_training.moe import scorers
 
-    per_domain, counts = {}, {}
+    per_domain, counts, latency = {}, {}, {}
     for domain in DOMAINS:
         items = by_domain[domain][:limit] if limit else by_domain[domain]
-        correct = 0
+        if not items:
+            raise RuntimeError(f"no {domain} items to evaluate (an accuracy of 0 would be invented)")
+        correct, timing = 0, {}
         for i in range(0, len(items), batch):
             chunk = items[i : i + batch]
-            gens = generate(inst, tok, [e.prompt for e in chunk], domain, max_new[domain], device)
+            gens = generate(
+                inst, tok, [e.prompt for e in chunk], domain, max_new[domain], device, timing
+            )
             correct += sum(scorers.score(domain, g, e.reference) for g, e in zip(gens, chunk))
         counts[domain] = len(items)
-        per_domain[domain] = correct / len(items) if items else 0.0
-    return per_domain, counts
+        per_domain[domain] = correct / len(items)
+        tokens = timing.get("generated_tokens", 0)
+        latency[domain] = {
+            "seconds": timing.get("seconds", 0.0),
+            "generated_tokens": tokens,
+            "latency_per_token": timing["seconds"] / tokens if tokens else None,
+            "batch": batch,
+        }
+    return per_domain, counts, latency
 
 
 def routing_probe(inst, tok, by_domain: dict, device: str) -> dict:
@@ -481,6 +612,10 @@ def _load_tuning(path, arm: str) -> dict:
             f"m011: {path} was tuned for arm {tuned.get('arm')!r}, not {arm!r}; "
             "hyperparameters are selected per arm"
         )
+    seed = tuned.get("tuning_seed")
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        raise SystemExit(f"m011: {path} records no integer tuning_seed")
+    check_tuning_seed(seed)
     return tuned
 
 
@@ -502,6 +637,12 @@ def _hparams(args, kind: str) -> tuple[dict, dict | None]:
 
 def run(args) -> int:
     t0 = time.time()
+    if args.tune:
+        check_tuning_seed(args.seed)  # before anything is imported, built or written
+    try:
+        provenance.refuse_distributed_launch()
+    except provenance.DistributedLaunchRefused as error:
+        raise SystemExit(f"m011: {error}") from error
     from ptr_training.moe import routed_peft as rp
     from ptr_training.moe import scorers
 
@@ -531,6 +672,15 @@ def run(args) -> int:
     leaked = rp.non_adapter_trainable(inst.model)
     if leaked:
         raise RuntimeError(f"non-adapter parameters are trainable: {leaked[:5]}")
+    cfg = inst.model.config
+    expected = rp.expected_pinned_params(
+        rp_arm, cfg.hidden_size, cfg.intermediate_size, cfg.num_hidden_layers
+    )
+    if trainable != expected or (kind == "olmoe" and trainable != rp_arm.pinned_trainable_params):
+        raise RuntimeError(
+            f"{args.arm}: {trainable} trainable parameters, closed form {expected}, pinned "
+            f"{rp_arm.pinned_trainable_params} (olmoe); the arm does not match its pinned topology"
+        )
 
     source = args.corpora or ("fixture" if kind == "tiny" else "hf")
     parts = corpora.fixture_partitions() if source == "fixture" else corpora.load_pinned()
@@ -565,11 +715,31 @@ def run(args) -> int:
             max_length=max_length, device=device,
         )
 
+    corpus_reports_for = corpus_reports  # filled with the measured partition counters below
+
+    def record_training(tr: dict) -> dict:
+        """Fold one training's drawn item ids into the per-corpus counters, drop the id list."""
+        counts = outside_training_counts(tr.pop("drawn_item_ids"), parts)
+        for key, n in counts.items():
+            report = corpus_reports_for.setdefault(key, {})
+            report["training_outside_training_partition_count"] = (
+                (report.get("training_outside_training_partition_count") or 0) + n
+            )
+        return tr
+
     run_json = {
         "schema_version": SCHEMA_VERSION,
         "experiment": PINS["experiment"],
         "mode": "tune" if args.tune else "final",
         "seed": args.seed,
+        # Every RNG consumer of the run: model and adapter init (torch/python/numpy seeded
+        # before the model is built), the domain-balanced training sampler, the trial sampler.
+        "seeds": {
+            "run": args.seed,
+            "model_and_adapter_init": args.seed,
+            "training_sampler": args.seed,
+            "tuning_selection_seed": PINS["tuning_search_spec"]["selection_seed"],
+        },
         **_arm_report(rp_arm),
         "device": device,
         "pins": PINS,
@@ -585,7 +755,15 @@ def run(args) -> int:
             "applied": bool(inst.ctx is not None and inst.ctx.masked),
         },
         "trainable_params": trainable,
+        "trainable_params_closed_form": expected,
         "hyperparameters": hp,
+        "training_config": {
+            "micro_batch_size": micro or (4 if kind == "olmoe" else hp["batch_size"]),
+            "gradient_checkpointing": use_gc,
+            "max_length_tokens": max_length,
+            "eval_batch": eval_batch,
+            "max_new_tokens": max_new,
+        },
         "training_steps": {
             "pinned": PINS["training_steps_per_arm"],
             "run": steps,
@@ -595,6 +773,8 @@ def run(args) -> int:
         "versions": _versions(),
         "sandbox": scorers.sandbox_info(),
         "git_commit": _git_commit(),
+        "provenance": provenance.collect(device),
+        "model_pin_mismatches": model_info.get("model_pin_mismatches"),
         "tuning_trials_used": 0,
         "tuning_trial_set_digest": None,
     }
@@ -613,8 +793,8 @@ def run(args) -> int:
         results = []
         tune_steps = args.tune_steps or tuning_steps_for(steps)
         for t in trials:
-            tr = one_training(t["learning_rate"], t["batch_size"], tune_steps)
-            per, counts = evaluate_accuracy(
+            tr = record_training(one_training(t["learning_rate"], t["batch_size"], tune_steps))
+            per, counts, _ = evaluate_accuracy(
                 inst, tok, eval_by_domain, limit=args.eval_limit, max_new=max_new,
                 batch=eval_batch, device=device,
             )
@@ -652,8 +832,8 @@ def run(args) -> int:
         print(json.dumps({"selected": tuning["selected"], "trials": len(results)}))
         return 0
 
-    tr = one_training(hp["learning_rate"], hp["batch_size"], steps)
-    per, counts = evaluate_accuracy(
+    tr = record_training(one_training(hp["learning_rate"], hp["batch_size"], steps))
+    per, counts, latency = evaluate_accuracy(
         inst, tok, eval_by_domain, limit=args.eval_limit, max_new=max_new,
         batch=eval_batch, device=device,
     )
@@ -664,8 +844,25 @@ def run(args) -> int:
         "seed": args.seed,
         "split": eval_split,
         "per_domain_accuracy": per,
+        # The manifest's name for the same values.
+        "task_accuracy_per_domain": per,
         "counts": counts,
         "mean_task_accuracy": sum(per.values()) / len(per),
+        "latency_per_token": {d: v["latency_per_token"] for d, v in latency.items()},
+        "generation_timing": latency,
+        "training_flops": tr["estimated_total_flops"],
+        "training_flops_source": "first optimizer step x steps (FlopCounterMode)",
+        "training_data_outside_training_partition_count": sum(
+            r["training_outside_training_partition_count"] for r in corpus_reports.values()
+        ),
+        "validation_set_digest_by_corpus": {
+            k: r["selection_digest"]["validation"] for k, r in corpus_reports.items()
+        },
+        "validation_overlap_count_by_corpus": {
+            k: r["validation_overlap_count"] for k, r in corpus_reports.items()
+        },
+        "model_pin_mismatches": model_info.get("model_pin_mismatches"),
+        "not_produced": NOT_PRODUCED,
         "load_cv": primary["load_cv"],
         "routing_entropy": primary["entropy"],
         "routing_source": "adapter_router" if probe["adapter_router"] else "base_router",
