@@ -160,12 +160,27 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    cross-process overread test: the consumer tries to read past the signed span and must find
    only the staging buffer's own zeroed padding, never producer data.
    Zero-copy use of a producer-owned device allocation is outside the authenticated-content
-   guarantee and is not offered.
+   guarantee and is not offered. `InProcess` has no kernel seal either, so it is zero-copy only
+   when the producer **moves unique ownership** of an immutable buffer to the consumer for the
+   admitted lifetime: the producer keeps no alias (a candle tensor whose storage is shared with
+   another live tensor, or any buffer exported through DLPack, does not qualify), and the
+   consumer checks the digest after taking ownership. Where unique ownership cannot be shown, the
+   carrier copies into a receiver-owned buffer and verifies the digest there, as `CudaIpc` does.
 3b. **Bytes are bounded, not only handles.** Every handle has a maximum `byte_len`, and each
    producer has an in-flight byte budget; a handle that would exceed it is refused with a typed
    saturation error. A handle's bytes count against the budget for as long as its buffer is
    held, so they are released only with the notice that frees the buffer: `Consumed` or the
    reclaim at deadline plus skew; abandoning a handle releases nothing earlier (invariant 8).
+   Reaching deadline plus skew does not by itself make shared memory disappear: a consumer that
+   hangs or keeps its mapping keeps the pages alive (a `memfd` mapping survives the producer's
+   close), and freeing an exported CUDA allocation before the importer has closed it is unsafe.
+   So the producer's own pool keeps a buffer charged until **teardown is verified**: either
+   `Consumed` (sent after the consumer unmapped or closed the import), or the host supervisor
+   has terminated and reaped the consumer worker, which closes its descriptors, mappings and CUDA
+   imports. A consumer that has not acknowledged by deadline plus skew is terminated and reaped;
+   only then is the buffer freed. The producer's pool has a fixed cap, so a consumer that
+   withholds acknowledgements can at most exhaust its producer's pool, which then refuses new
+   handles, never grow memory beyond it.
    Deadlines are bounded too: a handle whose deadline lies beyond now plus the configured
    lifetime plus skew is refused, so tombstones cannot be pinned indefinitely.
 3c. **A handle is addressed and scoped.** The signed `consumer` names the stage it is for, and the
@@ -225,9 +240,13 @@ that reads the same tensors. Today every Pod of the reference path runs inside `
 **Build.**
 
 - A **Pod worker process** protocol on a Unix domain socket (Windows named pipe later): the
-  authority process spawns or admits a worker, the worker registers the stage identities it
-  serves with its signing key (the same registration the assembler already does per principal,
-  `chunk.rs:344`), and control messages are the existing PodWire request and response types.
+  authority process spawns or admits a worker; the **stage identities a worker may serve are
+  derived by the authority from the admitted placement and host policy**, never read from the
+  worker, and the worker only proves possession of the signing key bound to them (the key is
+  delivered over the inherited control socket of the spawn, then challenged). This is the same
+  shape as `FrameAssembler::register_principal` (`chunk.rs:344`), where the deployment supplies
+  stage identity and key; a compromised worker can therefore not register its key for another
+  stage. Control messages are the existing PodWire request and response types.
   Data goes by handle.
 - `HostShm` carrier: the producer creates a `memfd`, writes once, seals it against writes and
   resizing (rule 3a), and
@@ -316,11 +335,15 @@ token) that the in-process controller compares; it names no object, source, dest
 principal, deadline or nonce and carries no signature, so serialising it across hosts would let a
 live grant be replayed for another object or redirected to another backend. A remote transfer
 therefore carries an authenticated, single-use grant that binds the object digest, source,
-destination, principal, deadline and nonce **and the active-write binding** (generation,
+destination, principal, **the authority-derived project scope** (`ProjectId`), deadline and nonce
+**and the active-write binding** (generation,
 placement epoch, fencing token) of the object, signed by the authority that issued it; the
 receiver revalidates that binding against the current residency record at transfer time **and
 again, atomically, immediately before the destination replica becomes available**, discarding the
-transferred chunks if the binding no longer holds, so a placement fenced during a multi-chunk
+transferred chunks if the binding or the project scope no longer holds (a principal admitted to
+several projects can therefore not move an object of project A into a destination of project B;
+`TierObjectManifest` and the KV snapshot binding carry no project today, so the object namespace
+gains the project scope as well), so a placement fenced during a multi-chunk
 transfer cannot publish a stale replica. The local tier path has the same gap today
 (`TierResidencyController::transfer` validates the authorization before its asynchronous copy and
 not again when it finishes, `crates/ptr-runtime/src/tier.rs`); closing it is part of the S3
@@ -373,12 +396,12 @@ names its sensitivity control; the table names the baseline. Ids are proposals.
 
 | Id | Claim | Baseline / ablation | Refuted if | Needs |
 |---|---|---|---|---|
-| E011-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes within the existing bounds (1 MiB to 64 MiB, the activation `MAX_FRAME_BYTES`; the `Bytes` baseline is chunked under PodWire's 4 MiB `MAX_BODY_BYTES`, and every compared carrier carries the same chunking) | baseline: `Bytes` at every size; ablation: each carrier with its zero-copy step replaced by an explicit copy (isolates what the carrier saves); sensitivity: a planted fixed delay on one carrier must reorder it in the measured order, else the harness is blind | the order is violated, or two adjacent carriers are within noise (then the carrier preference is revised; carriers are never merged, since a carrier is an eligibility boundary, not a cost estimate) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
+| E011-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes within the existing bounds (1 MiB to 64 MiB, the activation `MAX_FRAME_BYTES`; the `Bytes` baseline is chunked under PodWire's 4 MiB `MAX_BODY_BYTES`, and every compared carrier carries the same chunking) | baseline: `Bytes` at every size; ablation, matched per carrier to the mechanism it actually has: `InProcess` and `HostShm` with their zero-copy step replaced by an explicit copy; `CudaIpc` with the IPC device-to-device copy replaced by a staged device-to-host-to-device copy; `DevicePeer` with peer access disabled (staged through host); `PinnedHost` with pageable instead of page-locked memory; `NvmeFile` with buffered instead of direct I/O; `Remote` has no mechanism to remove and is compared to the `Bytes` baseline only; sensitivity: a planted fixed delay on one carrier must reorder it in the measured order, else the harness is blind | the order is violated, or two adjacent carriers are within noise (then the carrier preference is revised; carriers are never merged, since a carrier is an eligibility boundary, not a cost estimate) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
 | E009-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, no mapping outlives its deadline plus skew, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any mapping alive after reclaim, any byte leak across a crash, or (GPU cell) any producer byte outside the signed span readable by the consumer through an IPC import, in any seed | CPU for `HostShm`; GPU for `CudaIpc`, including the cross-process overread test of rule 3a |
-| E010-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | LRU without lookahead; unpinned RAM | a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor | CPU part (RAM and NVMe tiers, unpinned versus locked) here; the GPU leg on hardware |
+| E010-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | baseline: LRU without lookahead; ablation: unpinned RAM; sensitivity: planted cells (one flipped byte in a stored object, a lease fenced between write and read, a perturbed routing trace that must lower the hit rate) that the harness must detect as a digest mismatch, a refused admission and a measured drop, else the harness is blind | a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor; or any planted cell not detected | CPU part (RAM and NVMe tiers, unpinned versus locked) here; the GPU leg on hardware |
 | E008 (registered) | two-stage split across a loopback socket (part B) with the extended frame (part A), bit-identical to the in-process split | E007 in process | any output difference, any admission of a frame with a stale epoch | CPU, one host |
 | E012 (E008 part C) | a real checkpoint split across two devices, F16/BF16 boundaries, activation versus KV bytes | the same checkpoint run on a single device, and an F32 boundary, as E008 part C registers them | as E008 part C | GPU in one host (no such hardware today) |
-| E013-two-host-split | the two-stage split of E008 with the stages on two hosts over the LAN, bit-identical to the in-process split, with every E008 refusal unchanged; plus a cross-host tier-object transfer (a KV snapshot) under the signed single-use grant, with a replay, a redirected destination and a foreign object attempted and counted | E008 part B on loopback; the transfer without a grant (must be refused, else the test is blind) | any output difference, any admitted stale frame, any replayed or redirected grant admitted, or zero attempts of any counted attack (vacuous) | the owner's two PCs |
+| E013-two-host-split | the two-stage split of E008 with the stages on two hosts over the LAN, bit-identical to the in-process split, with every E008 refusal unchanged; plus a cross-host tier-object transfer (a KV snapshot) under the signed single-use grant, with a replay, a redirected destination, a foreign object, a grant of another project and an active write fenced or replaced after the first authorization but before commit attempted and counted | E008 part B on loopback; the transfer without a grant (must be refused, else the test is blind); the final pre-commit check disabled (must publish the fenced replica, else that arm is blind) | any output difference, any admitted stale frame, any replayed, redirected, foreign-object or cross-project grant admitted, any destination replica made available after its write was fenced, or zero attempts of any counted attack (vacuous) | the owner's two PCs |
 
 None of these says the fabric makes a model better. The model-backed question (does
 request-level offload keep p95 latency of the doc 39 loop under a bound while holding N Pods on

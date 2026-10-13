@@ -108,11 +108,14 @@ and today each of them revokes **per Pod**: `heartbeat` and `register_node` call
 survives is routable with a stale partner.
 
 **Proposal.** A `TraySpec` names its members (`PodId`, `ArtifactId`, `Generation`,
-`ResourceRequirements` each), the **complete KV chain root digest** they share, and the host that
-acts as its authority process. The root is derived per member by `crates/ptr-pods/src/kv_chain.rs`
-and covers more than a `BaseModelRef` and a numeric regime (backend build, tokenizer, embedding
-weights, key encoding, model configuration); `assign_tray` requires exact equality of every
-member's root, so a tray is homogeneous the way an NVL72 rack is.
+`ResourceRequirements` each), the **complete ordered per-layer KV chain** they share, and the
+host that acts as its authority process. The chains are derived per member by
+`crates/ptr-pods/src/kv_chain.rs`; the root `chain(-1)` alone is not enough, because layer
+weights and most layer configuration enter only in `chain(l)` (`crates/ptr-pods/tests/kv_chain.rs`
+checks that changing a layer's key norm leaves `root()` unchanged). `assign_tray` therefore
+requires exact equality of every member's layer count and every `chain(l)` (equivalently of
+`final_id()` together with the layer count, since each `chain(l)` folds in its predecessor), so a
+tray is homogeneous the way an NVL72 rack is.
 `PodPlacementController::assign_tray` places all members or none under **one** placement epoch
 and **one** tray `FencingToken`; the per-member `FencedStateLease` carries the tray token in
 addition to its own. Any event that would revoke one member revokes the tray **at that event**:
@@ -232,7 +235,7 @@ the generation it was placed for.
 |---|---|---|---|
 | `InterconnectClass`, `RackId`, `TrayId`, `LocalityAnchor`, `LocalityRequirement` | `ptr-types` | closed enums and validated id newtypes, `Ord` on the class | nothing existing |
 | `PodResourceProfile.locality: Option<LocalityRequirement>`, `ResourceRequirements.locality` | `ptr-pods` | optional, `None` means `ScaleOut` (today's behaviour) | `PodSemanticManifest::digest` (the topology-independent requirement, `max_distance` and `anchor_kind`, is part of the manifest digest; the concrete tray or rack id is not, it lives on the `Placement`), `NeuralPodDescriptor::lineage_digest` |
-| `NodeRecord.rack: Option<RackId>` | `ptr-runtime::placement` | host-declared | `register_node` (a rack change is a topology change and bumps the epoch) |
+| `NodeRecord.rack: Option<RackId>` | `ptr-runtime::placement` | host-declared | `register_node`: a rack change is a topology change; bumping the controller's epoch is not enough, because existing `Placement`s keep their stored epoch and issued KV and tier leases and open uses do not repeat the rack-key lookup, so a rack re-declaration removes every placement on the node (as a device failure does), revokes its KV and tier leases and cancels its open rack-scoped uses in the same step; new placements then use the new rack |
 | `TraySpec`, `TrayPlacement`, `assign_tray`, tray token in `FencedStateLease` | `ptr-runtime::placement` | all-or-nothing, one epoch, one token; a member revocation revokes the tray | `revoke_unavailable_leases`, `revoke_for_node`, `revoke_for_pod` |
 | `PlacementError::LocalityViolation`, `ResolveError::TooFar` | `ptr-runtime`, `ptr-types` | typed refusals | `assign`, `PodDirectory::resolve` |
 | link class check in activation-frame admission | `ptr-runtime::split_stage` | refuses a frame whose link class exceeds the stage requirement | the existing `placement_epoch` revalidation |
