@@ -3,6 +3,7 @@
 import os
 import tomllib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from ptr_training.moe import corpora, m011, scorers
@@ -119,6 +120,13 @@ class ScorerTests(unittest.TestCase):
         for ex in parts["bfcl_simple"].train:
             self.assertTrue(scorers.score("tool", ex.answer, ex.reference))
 
+    def setUp(self):
+        # Hosts without bubblewrap (CI) exercise the scoring logic through the recorded opt-in.
+        if not scorers._bwrap_usable():
+            patcher = mock.patch.dict(os.environ, {scorers.UNSANDBOXED_ENV: "1"})
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_humaneval_subprocess(self):
         ex = corpora.fixture_partitions()["humaneval"].train[1]
         r = ex.reference
@@ -139,6 +147,39 @@ class ScorerTests(unittest.TestCase):
             "    import socket\n    socket.create_connection(('example.com', 80), 1)\n    return x\n"
         )
         self.assertFalse(scorers.run_humaneval(r["prompt"], net, r["test"], r["entry_point"]))
+
+    def test_gsm8k_reads_only_well_formed_numbers(self):
+        self.assertTrue(scorers.score_gsm8k("#### 1,234", "1234"))
+        self.assertTrue(scorers.score_gsm8k("The answer is 12.", "12"))
+        for malformed in ("#### 1,2", "#### 1,,2", "#### 12,34", "#### 1.2.3"):
+            self.assertIsNone(scorers.gsm8k_extract(malformed), malformed)
+            self.assertFalse(scorers.score_gsm8k(malformed, "12"), malformed)
+
+    def test_bfcl_rejects_a_repeated_keyword(self):
+        self.assertIsNone(scorers.parse_call("math.double(number=999, number=2)"))
+        self.assertEqual(scorers.parse_call("f(a=1, b=2)"), ("f", {"a": 1, "b": 2}))
+
+    def test_humaneval_refuses_without_a_sandbox_or_an_opt_in(self):
+        r = corpora.fixture_partitions()["humaneval"].train[0].reference
+        with mock.patch.object(scorers, "_bwrap_usable", return_value=False), mock.patch.dict(
+            os.environ, {scorers.UNSANDBOXED_ENV: ""}
+        ):
+            self.assertEqual(scorers.sandbox_info()["filesystem"], "refused")
+            with self.assertRaises(scorers.SandboxUnavailable):
+                scorers.run_humaneval(r["prompt"], "    return x\n", r["test"], r["entry_point"])
+
+    def test_sandbox_command_is_read_only_hides_homes_and_unshares(self):
+        cmd = scorers.sandbox_command("/usr/bin/bwrap", "/tmp/work", ["python3", "-I", "c.py"])
+        self.assertEqual(cmd[:4], ["/usr/bin/bwrap", "--ro-bind", "/", "/"])
+        self.assertIn("--unshare-all", cmd)
+        self.assertIn("--clearenv", cmd)
+        self.assertIn("--die-with-parent", cmd)
+        self.assertEqual(cmd[cmd.index("--bind") + 1 : cmd.index("--bind") + 3], ["/tmp/work"] * 2)
+        hidden = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--tmpfs"]
+        self.assertIn("/tmp", hidden)
+        if os.path.isdir("/home"):
+            self.assertIn("/home", hidden)
+        self.assertEqual(cmd[-4:], ["--", "python3", "-I", "c.py"])
 
 
 class TuningTests(unittest.TestCase):
@@ -162,7 +203,9 @@ class TuningTests(unittest.TestCase):
         self.assertEqual(m011.tuning_steps_for(2000), 500)
         self.assertEqual(m011.tuning_steps_for(7), 1)
         self.assertEqual(m011.tuning_steps_for(1), 1)  # at least one step
-        self.assertEqual(m011.tuning_deviations(seed=17, steps=500, trials=8), [])
+        self.assertEqual(m011.PINS["tuning_seed"], 1001)
+        self.assertNotIn(m011.PINS["tuning_seed"], m011.PINS["seeds"])
+        self.assertEqual(m011.tuning_deviations(seed=1001, steps=500, trials=8), [])
         self.assertEqual(
             [d["parameter"] for d in m011.tuning_deviations(seed=29, steps=499, trials=8)],
             ["tuning_seed", "tuning_steps"],

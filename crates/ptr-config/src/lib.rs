@@ -75,7 +75,16 @@ impl CliOverrides {
         Ok(out)
     }
 
+    /// Applies the CLI overrides and validates the result.
     pub fn apply_to(&self, config: &mut PtrConfig) -> Result<(), String> {
+        self.overlay(config);
+        config.validate()
+    }
+
+    /// Applies the CLI overrides without validating, for a host that validates once after every
+    /// layer (file, environment, CLI), so the highest-precedence layer can still correct a value
+    /// a lower layer left invalid.
+    pub fn overlay(&self, config: &mut PtrConfig) {
         if let Some(bind) = &self.bind {
             config.server.bind = bind.clone();
         }
@@ -100,7 +109,6 @@ impl CliOverrides {
         if let Some(value) = self.require_live_generation {
             config.action_boundary.require_live_generation = value;
         }
-        config.validate()
     }
 }
 
@@ -139,7 +147,21 @@ impl PtrConfig {
         Self::from_toml_str(&text).map_err(|e| e.to_string())
     }
 
+    /// Applies the `PTR_*` environment overrides and validates the result.
     pub fn apply_env<I, K, V>(&mut self, values: I) -> Result<(), String>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        self.overlay_env(values)?;
+        self.validate()
+    }
+
+    /// Applies the `PTR_*` environment overrides without validating the whole configuration
+    /// (a value that does not parse is still refused), for a host that validates once after the
+    /// CLI layer too.
+    pub fn overlay_env<I, K, V>(&mut self, values: I) -> Result<(), String>
     where
         I: IntoIterator<Item = (K, V)>,
         K: AsRef<str>,
@@ -205,7 +227,7 @@ impl PtrConfig {
                 _ => {}
             }
         }
-        self.validate()
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<(), String> {

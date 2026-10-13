@@ -39,21 +39,19 @@ async fn main() {
         .or_else(|| std::env::var("PTR_CONFIG").ok())
         .unwrap_or_else(|| "config/default.toml".into());
 
-    // Parsed here and validated by `apply_env` below, so the documented environment variables
-    // can complete the file (file -> environment -> CLI precedence).
+    // Parsed and overlaid without validation, then validated once by `validate_daemon` after the
+    // CLI layer: file -> environment -> CLI precedence, so a higher layer can complete or correct
+    // what a lower one left (the qwen-cpu pins from the environment, a capacity from the CLI).
     let mut config = PtrConfig::parse_path(&path).unwrap_or_else(|err| {
         eprintln!("failed to load PTR config {path}: {err}");
         std::process::exit(2);
     });
 
-    if let Err(err) = config.apply_env(std::env::vars()) {
+    if let Err(err) = config.overlay_env(std::env::vars()) {
         eprintln!("invalid PTR environment override: {err}");
         std::process::exit(2);
     }
-    if let Err(err) = cli.apply_to(&mut config) {
-        eprintln!("invalid PTR CLI override: {err}");
-        std::process::exit(2);
-    }
+    cli.overlay(&mut config);
 
     if let Err(err) = config.validate_daemon() {
         eprintln!("refusing to start ptrd: {err}");

@@ -371,6 +371,9 @@ class MakeFreezeScriptTests(unittest.TestCase):
             found = script.find(step, position + 1)
             self.assertGreater(found, position, f"step out of order or missing: {step}")
             position = found
+        # A seed run's exit is checked before its record is staged: a failed run is never committed.
+        loop = script[script.find("run_experiment.py run"):script.find("RUNSDONE")]
+        self.assertLess(loop.find("case $rc in 0|1)"), loop.find("git add"))
         self.assertIn("x001-prereg", script)
         self.assertIn("--timing-key elapsed_ms", script)
         self.assertNotRegex(script, r"(?i)claude|anthropic|co-authored")

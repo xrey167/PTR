@@ -37,7 +37,7 @@ on the 4090 by the author of this document; the first real run is the first real
   Secure Boot in the firmware. Check the state with `mokutil --sb-state`.
 - Use the stock kernel (6.8 or the HWE kernel Ubuntu offers) and install all updates first:
   `sudo apt update && sudo apt full-upgrade`, then reboot.
-- Base tools: `sudo apt install -y git curl build-essential pkg-config`.
+- Base tools: `sudo apt install -y git curl build-essential pkg-config bubblewrap` (bubblewrap sandboxes the model-generated code M011 scores on HumanEval).
 
 ## 2. NVIDIA driver 580
 

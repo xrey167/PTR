@@ -387,7 +387,7 @@ PYTHONPATH=training/src training/.venv/bin/python -m unittest discover -s traini
 
 # real run on the RTX 4090 (downloads OLMoE and the three corpora at the pinned revisions),
 # two commands per arm (TB1 protocol):
-# 1. tune ONCE on the first pinned seed (17): 8 trials, each floor(0.25 * 2000) = 500 steps,
+# 1. tune ONCE on the pilot seed 1001 (never a confirmatory seed): 8 trials of floor(0.25 * 2000) = 500 steps,
 #    seeded random search, selection on validation only -> frozen tuning.json
 python -m ptr_training.moe.m011 --arm mixlora --out runs/m011/mixlora/tune --model olmoe --tune
 # 2. every pinned seed (17 29 43 71 101) at the full 2000 steps with the frozen hyperparameters
@@ -400,9 +400,9 @@ python -m ptr_training.moe.m011 --arm mixlora --seed 29 --out runs/m011/mixlora/
   --model olmoe --hparams runs/m011/mixlora/tune/tuning.json
 ```
 
-Tuning protocol (TB1): `--tune` runs on the tuning seed only (default: the first pinned seed,
-17) with `tuning_steps = max(1, floor(0.25 * steps))` per trial (500 for 2000). `--tune-steps`,
-`--tune-budget` and a non-first `--seed` stay available as overrides; every departure from the
+Tuning protocol (TB1): `--tune` runs on the tuning seed only (default: the pilot seed 1001,
+which is not one of the confirmatory seeds 17 29 43 71 101) with `tuning_steps = max(1, floor(0.25 * steps))` per trial (500 for 2000). `--tune-steps`,
+`--tune-budget` and another `--seed` stay available as overrides; every departure from the
 pinned seed, steps or 8 trials is written to `deviations` in `tuning.json` and
 `tuning_deviations` in `run.json`. `tuning.json` also holds `tuning_seed`, `tuning_steps`,
 `tuning_trials_used`, `trial_set_digest`, the trials and the `selected` values

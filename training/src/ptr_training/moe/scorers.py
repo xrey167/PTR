@@ -2,7 +2,10 @@
 
 * GSM8K: exact-match on the final numeric answer.
 * HumanEval: pass@1 (greedy, one sample) by executing completion + tests in a subprocess with a
-  timeout, a scrubbed environment, resource limits and no network (see `sandbox_info`).
+  timeout, a scrubbed environment and resource limits, inside a bubblewrap sandbox: the host
+  file system read-only, the home directories hidden, a private /tmp and no network (see
+  `sandbox_info`). Without bubblewrap the code is refused unless the caller opts into the
+  unsandboxed fallback with `PTR_M011_ALLOW_UNSANDBOXED=1`, which `sandbox_info` records.
 * BFCL `simple`: AST check of one function call against the possible-answer file. This is a
   simplified re-implementation of the BFCL AST checker for the single-call `simple` category
   (name equality, required parameters present, every value among the allowed ones, no extra
@@ -23,7 +26,18 @@ from fractions import Fraction
 
 # ---------------------------------------------------------------------------- GSM8K
 
-_NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?|-?\.\d+")
+# A numeric token is a maximal run of digits, commas and points (with an optional sign). It is
+# read only when it is a well-formed number: commas only as thousands separators (1,234,567),
+# at most one decimal point. One trailing `.` or `,` is sentence punctuation and is dropped.
+# A malformed token such as `1,2` or `1,,2` is not a number, so it can never match a reference.
+_TOKEN = re.compile(r"-?[\d.,]*\d[\d.,]*")
+_WELL_FORMED = re.compile(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|-?\.\d+")
+
+
+def _number_token(token: str) -> str | None:
+    if token[-1] in ".,":
+        token = token[:-1]
+    return token if _WELL_FORMED.fullmatch(token) else None
 
 
 def _to_fraction(token: str) -> Fraction | None:
@@ -44,10 +58,11 @@ def gsm8k_extract(text: str) -> Fraction | None:
     """Final numeric answer of a generation: the number after `####` if present, else the last
     number in the text."""
     region = text.rsplit("####", 1)[1] if "####" in text else text
-    found = _NUMBER.findall(region)
+    found = _TOKEN.findall(region)
     if not found:
         return None
-    return _to_fraction(found[0] if "####" in text else found[-1])
+    token = _number_token(found[0] if "####" in text else found[-1])
+    return None if token is None else _to_fraction(token)
 
 
 def score_gsm8k(generation: str, reference_final: str) -> bool:
@@ -84,10 +99,69 @@ _s.getaddrinfo = _blocked
 """
 
 
+UNSANDBOXED_ENV = "PTR_M011_ALLOW_UNSANDBOXED"
+
+
+class SandboxUnavailable(RuntimeError):
+    """Generated code would run with the user's file system access and nobody opted into that."""
+
+
 def sandbox_info() -> dict:
-    """How network isolation is enforced here: kernel net namespace via `unshare` if usable,
-    else a socket block inside the child (best effort, not a security boundary)."""
-    return {"network": "unshare-net" if _unshare_usable() else "python-socket-block-only"}
+    """How generated code is isolated here. `filesystem` is `bwrap-readonly` when bubblewrap
+    runs it (host read-only, home hidden, private /tmp, no network), `unsandboxed-opt-in` when
+    the caller set `PTR_M011_ALLOW_UNSANDBOXED=1` without bubblewrap, else `refused`."""
+    if _bwrap_usable():
+        return {"filesystem": "bwrap-readonly", "network": "bwrap-unshare-net"}
+    if os.environ.get(UNSANDBOXED_ENV) == "1":
+        return {
+            "filesystem": "unsandboxed-opt-in",
+            "network": "unshare-net" if _unshare_usable() else "python-socket-block-only",
+        }
+    return {"filesystem": "refused", "network": "refused"}
+
+
+_BWRAP: bool | None = None
+
+
+def _bwrap_usable() -> bool:
+    global _BWRAP
+    if _BWRAP is None:
+        exe = shutil.which("bwrap")
+        _BWRAP = False
+        if exe:
+            try:
+                with tempfile.TemporaryDirectory(prefix="m011-probe-") as tmp:
+                    probe = sandbox_command(exe, tmp, [sys.executable, "-I", "-c", "pass"])
+                    _BWRAP = subprocess.run(probe, capture_output=True, timeout=10).returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                _BWRAP = False
+    return _BWRAP
+
+
+def sandbox_command(bwrap: str, workdir: str, argv: list[str]) -> list[str]:
+    """`argv` under bubblewrap: the host file system read-only, the home directories replaced by
+    empty tmpfs (the interpreter's own prefix is bound back read-only, since a venv often lives
+    under a home directory), a private /tmp with only `workdir` writable, new namespaces (no
+    network), the environment cleared and the sandbox killed with its parent."""
+    cmd = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
+    for hidden in sorted({os.path.expanduser("~"), "/root", "/home"}):
+        if os.path.isdir(hidden):
+            cmd += ["--tmpfs", hidden]
+    interpreter = {
+        os.path.realpath(sys.prefix),
+        os.path.realpath(sys.base_prefix),
+        os.path.dirname(os.path.realpath(sys.executable)),
+        os.path.dirname(os.path.abspath(sys.executable)),
+    }
+    for path in sorted(interpreter):
+        if os.path.isdir(path):
+            cmd += ["--ro-bind", path, path]
+    cmd += [
+        "--bind", workdir, workdir, "--chdir", workdir,
+        "--unshare-all", "--die-with-parent", "--new-session",
+        "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
+    ]
+    return cmd + ["--", *argv]
 
 
 _UNSHARE: bool | None = None
@@ -121,7 +195,16 @@ def run_humaneval(
     timeout: float = 10.0,
     memory_bytes: int = 2 * 1024**3,
 ) -> bool:
-    """pass@1 for one sample: True iff `prompt + completion` plus the tests run cleanly."""
+    """pass@1 for one sample: True iff `prompt + completion` plus the tests run cleanly.
+
+    Raises `SandboxUnavailable` when bubblewrap is missing and the unsandboxed fallback was not
+    opted into: model-generated code is never run with the user's file system by default."""
+    mode = sandbox_info()["filesystem"]
+    if mode == "refused":
+        raise SandboxUnavailable(
+            "HumanEval scoring runs model-generated code; install bubblewrap (apt install "
+            f"bubblewrap) or set {UNSANDBOXED_ENV}=1 to accept running it as this user"
+        )
     program = (
         _PREAMBLE.format(mem=memory_bytes, cpu=max(1, int(timeout)))
         + "\n"
@@ -136,7 +219,9 @@ def run_humaneval(
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(program)
         cmd = [sys.executable, "-I", path]
-        if _unshare_usable():
+        if mode == "bwrap-readonly":
+            cmd = sandbox_command(shutil.which("bwrap"), tmp, cmd)
+        elif _unshare_usable():
             cmd = [shutil.which("unshare"), "--net", "--map-root-user", *cmd]
         proc = subprocess.Popen(
             cmd,
@@ -187,7 +272,8 @@ def parse_call(text: str) -> tuple[str, dict] | None:
         return None
     kwargs = {}
     for kw in node.keywords:
-        if kw.arg is None:
+        # `**x` and a repeated keyword are invalid calls (the latter is a SyntaxError in Python).
+        if kw.arg is None or kw.arg in kwargs:
             return None
         try:
             kwargs[kw.arg] = ast.literal_eval(kw.value)
@@ -260,7 +346,10 @@ __all__ = [
     "gsm8k_reference",
     "parse_call",
     "run_humaneval",
+    "sandbox_command",
     "sandbox_info",
+    "SandboxUnavailable",
+    "UNSANDBOXED_ENV",
     "score",
     "score_bfcl",
     "score_gsm8k",
