@@ -57,7 +57,26 @@ fn free_addr() -> String {
         .to_string()
 }
 
+/// On unix `ptrd` creates its sampling keys itself; elsewhere a missing key is a startup error
+/// by design (see `load_or_create_key` in `src/main.rs`), so the test provisions fixed,
+/// non-secret test keys the way an operator would before starting the daemon.
+#[cfg(not(unix))]
+fn provision_keys(data_dir: &std::path::Path) {
+    std::fs::create_dir_all(data_dir).unwrap();
+    for (file, byte) in [
+        ("router-sampling.key", 0x5a_u8),
+        ("vcw-sampling.key", 0xa5_u8),
+    ] {
+        let path = data_dir.join(file);
+        if !path.exists() {
+            std::fs::write(&path, [byte; 32]).unwrap();
+        }
+    }
+}
+
 fn command(config: &Path, data: &Path, addr: &str) -> Command {
+    #[cfg(not(unix))]
+    provision_keys(data);
     let mut command = Command::new(env!("CARGO_BIN_EXE_ptrd"));
     command
         .env("PTR_CONFIG", config)
