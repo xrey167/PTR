@@ -80,4 +80,5 @@ To retire branches whose work is *not* in `main` (abandoned or superseded work),
 names in `archive_branches`: each one is first preserved as the tag `archive/<name>` at its
 current tip and only then deleted, again as a compare-and-delete. `main`, open pull request heads
 and names that do not exist are skipped; `dry_run` lists what would happen. Restore a branch with
-`git push origin archive/<name>:refs/heads/<name>`.
+`git push origin 'archive/<name>^{commit}:refs/heads/<name>'` (`^{commit}` peels an annotated
+tag to the commit it points to).

@@ -182,14 +182,17 @@ jobs:
               echo "failed (moved since the check, or delete failed; tag kept): $name"; failed=$((failed + 1)); continue
             fi
             after=$(git ls-remote origin "$tag" "$tag^{}" | awk -v r="$tag" -v p="$tag^{}" '$2 == p {c=$1} $2 == r && !c {c=$1} END {print c}')
-            if [ "$after" != "$sha" ]; then
-              if git push --force origin "$sha:$tag"; then
-                echo "archived and deleted: $name ($sha; archive tag had changed and was restored)"; archived=$((archived + 1))
-              else
-                echo "failed (branch deleted, archive tag missing; restore with git push origin $sha:refs/heads/$name): $name"; failed=$((failed + 1))
-              fi
-            else
+            if [ "$after" = "$sha" ]; then
               echo "archived and deleted: $name ($sha)"; archived=$((archived + 1))
+            elif [ -z "$after" ] && git push --force-with-lease="$tag:" origin "$sha:$tag"; then
+              # The tag vanished in between: recreate it, but only while it is still absent.
+              echo "archived and deleted: $name ($sha; archive tag had been removed and was recreated)"; archived=$((archived + 1))
+            elif git push --force-with-lease="refs/heads/$name:" origin "$sha:refs/heads/$name"; then
+              # The tag changed concurrently: never overwrite it; put the branch back (only if
+              # nothing recreated it) so the archived commit keeps a name.
+              echo "failed (archive tag changed concurrently; branch restored at $sha): $name"; failed=$((failed + 1))
+            else
+              echo "failed (archive tag changed and branch not restored; restore with git push origin $sha:refs/heads/$name): $name"; failed=$((failed + 1))
             fi
           done
           set +f
