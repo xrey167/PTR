@@ -2,9 +2,19 @@
 //! one built converts the prost-generated messages of [`generated`] (no rkyv or JSON adapter
 //! exists). No wire speaks the `PodCall` messages: `ptr-podwire` carries Pod access in its own
 //! bounded frames, with the [`activation`] frames of a split Pod inside their payloads.
+//!
+//! Beside them sits a generic control layer, std-only and transport-independent:
+//! [`negotiation`] (versions, features, compatibility matrix), [`control`] (control frames and
+//! their bounded codec), [`session`] (a state machine speaking those frames, with an
+//! in-memory loopback transport) and [`debug_json`] (JSON rendering for logs). Only the
+//! loopback session speaks these frames; nothing over a real network does yet.
 
 pub mod activation;
+pub mod control;
+pub mod debug_json;
 pub mod generated;
+pub mod negotiation;
+pub mod session;
 
 use ptr_types::{CapabilityId, Generation, Revision, TypeId};
 

@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-protocol"
-maturity = "scaffold"
-last_reviewed = "2026-10-13"
+maturity = "prototype"
+last_reviewed = "2026-10-14"
 
 implemented = [
   "PodWire v1 semantic version constant",
@@ -12,14 +12,17 @@ implemented = [
   "Validated generated PodCall to domain CallFrame conversion with malformed-frame rejection",
   "src/activation.rs, the payload schemas of a split-pod (pipeline layer split) operation: ALLOWLISTED_TYPES names the two type ids a split operation admits (the activation chunk and the policy), admit/admit_typed decode a TypedPayload as exactly one of them and refuse any other type_id with SchemaError::NotAllowlisted whatever the bytes are, ActivationFrame (tokens, width, F32 dtype, positions, UpstreamChain of stage, base model, adapters and experts each with identity, generation, digest and fence epoch, placement epoch, tensor) round-trips through a bounded length-prefixed codec whose decoder validates tokens x width x dtype against the tensor length and the positions length against the row count for every frame, and refuses trailing bytes, an unknown dtype, a zero or oversize chunk count and an empty identity; frame_digest, chunk_digest (frame id, chunk place, whole-frame digest, parent operation, signed deadline, chain, chunk bytes) and envelope_signing_bytes define what a chunk binds and what its signature covers; covered by src/activation.rs tests and the E007 harness",
   "Review fixes of the split path: SplitPolicy is signed (signed_absolute_deadline_ms and a 64-byte signature over policy_signing_bytes), admit_view / ChunkView decode a chunk without copying its bytes so a receiver can authenticate before it allocates, chain_bytes gives the canonical bytes of a chain for digests. Version 1 of the frame is Exact-only: it carries no mode and no taint, and the downstream admission (ptr-runtime admit_frame) refuses an Approximate upstream with ChainFault::NotExact; the mode and taint fields are E008.",
+  "src/negotiation.rs: semantic ProtocolVersion (major.minor.patch) and FeatureSet flags (idempotency, cancel, drain), a CompatibilityMatrix declaring which major pairs may talk and from which version each feature is usable, and negotiate / CompatibilityMatrix::negotiate, which deterministically and symmetrically picks the highest common version (the higher side speaks down) and the features usable at it, with typed rejections (InvalidLocalOffer/InvalidRemoteOffer, MajorMismatch, BelowMinimum, RequiredFeatureMissing); covered by a table of version pairs",
+  "src/control.rs: ControlFrame (Hello with node id, version offer and nonce; Decl; Ack; Cancel; Bye; Call and Reply carrying a bounded IdempotencyKey and a TypedPayload) beside, not inside, the existing Frame enum, with a hand-written versioned codec (magic, codec version, tag, length-prefixed fields, 1 MiB frame cap, string, key and capability caps, every failure a typed CodecError, trailing bytes rejected); tests decode every truncation of every frame kind and seeded random and bit-flipped input without a panic",
+  "src/session.rs: ProtocolSession, a state machine (Idle, HelloSent, Negotiated, Closing, Closed) that speaks ControlFrames with typed IllegalTransition, a bounded in-flight window in each direction, idempotency (a duplicate Call with the same key is answered from a bounded LRU of completed replies without running the handler again, a key reused with a different payload digest is rejected, a duplicate of a queued call is ignored), Cancel of a queued call with an Ack, and Bye that drains in-flight work when the drain feature is negotiated; LoopbackTransport is an in-memory duplex of two bounded queues carrying encoded frames; an integration test runs two sessions through handshake, calls, a retried duplicate, a cancel and close",
+  "src/debug_json.rs: deterministic hand-written JSON rendering (rendering only, no parsing) of ControlFrame and NegotiatedSession with RFC 8259 escaping and hex bytes; payloads over 64 bytes are elided to their length and SHA-256 digest",
 ]
 
 missing = [
   "The v1 ActivationFrame carries no KvReuseMode or KvReuseTaint (doc 36 section D lists them as frame fields); the downstream admission refuses a non-Exact upstream as stated by the caller, and the fields and the Approximate namespace belong to E008.",
-  "Semantic version negotiation and compatibility matrix",
-  "rkyv/local codec adapter and JSON debug adapter",
-  "Idempotency keys, ACK/CANCEL/BYE/HELLO/DECL frames from the wider PodWire design",
-  "Anything speaking these messages: they remain a declared shape, and the Pod access protocol that does cross a network boundary is ptr-podwire's own bounded format rather than these",
+  "rkyv/local codec adapter (the JSON debug adapter is render-only; there is no JSON parser and no rkyv adapter)",
+  "The control frames are not in the prost schemas under proto/ and have no prost conversion; the codec is a separate hand-written format, and the wider PodWire design may define these frames differently",
+  "Nothing over a real network speaks the control frames: the only speaker is the in-memory ProtocolSession over LoopbackTransport, with no timeouts, retry scheduling, reconnection, authentication or Hello nonce check; ptr-podwire carries Pod access in its own bounded format and does not use this session layer",
   "The activation schemas are hand-written bounded codecs beside the prost schemas, not generated ones; a Raw ancestry, input lineage, mode and taint field is E008's and will be a new type id, not a change of the v1 one",
 ]
 
@@ -27,6 +30,7 @@ next = [
   "Expand validated domain↔prost conversion to all frame types and canonical fixtures",
   "Add canonical wire fixtures and malformed-frame corpus",
   "Define semantic contract version separately from wire schema version",
+  "Put the control session on a real transport (ptr-net) behind a feature, with deadlines",
 ]
 
 experiments = [
@@ -47,6 +51,7 @@ decisions = [
 
 checks = [
   "prost roundtrip and malformed PodCall validation tests",
+  "negotiation table, control codec truncation and seeded random-input tests, session state machine and idempotency unit tests, tests/control_session.rs loopback end-to-end",
   "a compile-fail doctest that starts compiling, and therefore fails, if session_id is ever restored to PodCall",
   "workspace fmt/check/test/clippy",
 ]
