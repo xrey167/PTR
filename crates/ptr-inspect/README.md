@@ -8,29 +8,37 @@
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
-**Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 1 Rust source files · 48 nonblank source lines · 1 integration-test files · 5 test markers (`#[test]`, `#[tokio::test]`)
+**Maturity:** `prototype`  
+**Last reviewed:** 2026-10-14  
+**Code footprint:** 8 Rust source files · 2126 nonblank source lines · 2 integration-test files · 46 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
-- Generic InspectNode tree
+- Generic InspectNode tree with lossless integers (Int(i128), UInt(u128)), float Number, Bytes (length, FNV-1a 64 fingerprint, 32-byte prefix), Map and Enum nodes
 - Inspectable trait
 - Secret<T> that always renders Redacted, prints Secret([redacted]) through Debug for any T, and keeps its value in a private field reached only through expose/into_inner
+- Bounded pre-order Visitor/walk with InspectPath locations, enter/leave callbacks for struct, list, map and enum, and typed WalkError for depth and node-count limits
+- Inspectable impls for bool, all integers, floats, char, str/String, (), Option, Result, Vec, slices, arrays, BTreeMap/HashMap/BTreeSet/HashSet (hash collections sorted by rendered key), tuples up to 4, references, Box, Rc and Arc
+- Inspectable impls for ptr-types revisions, generations, timestamps, string identifiers, Probability, SemanticRole, EpistemicState and the other fieldless semantic enums, ConfidenceTarget/Estimate, ProvenanceRef, TypedValue, Epistemic and ActionIr
+- inspect_struct! declarative macro listing the fields of a user struct
+- Structural diff of two trees by struct field name, map key and list index (index-wise, no LCS) reporting Added, Removed, Changed and TypeChanged; two redaction markers compare equal and a redacted-versus-plaintext mismatch is reported with both sides redacted
+- Private<T> (redaction marker with type name and optional size class) and RawEvidence<T> (length and FNV-1a 64 fingerprint, truncated preview only under PreviewPolicy::Allow, capped at 256 bytes), both with non-leaking Debug
+- Key-based redaction passes (redact_keys exact, redact_keys_containing and redact_sensitive by fragment, case-insensitive) over struct fields, enum fields and text-keyed map entries
+- Deterministic indented tree renderer, single-line renderer (width, depth and item limits) and a hand-written JSON renderer with control-character escaping and non-finite floats as strings
 
 ### Missing for the target architecture
 
-- Valuable bridge and generic visitor
-- Struct/list/map traversal for arbitrary PTR domain types
-- Structured diff
-- Private<T>/RawEvidence<T> redaction wrappers
-- ptrctl rendering and tracing bridge
+- Valuable bridge (no valuable dependency or feature exists)
+- Tracing bridge
+- ptrctl inspect command wiring (the renderers exist; bins/ptrctl does not call them)
+- Inspectable impls for ptr-types pod addressing, checkpoint, codebook and slot-encoding types
+- List alignment (LCS) in diff and bounds on the size of a tree while it is being built
 
 ### Next milestones
 
-- Implement Valuable adapter behind feature flag
-- Add inspection-tree diff and redaction tests
-- Expose read-only ptrctl inspect command
+- Expose read-only ptrctl inspect command over render_tree and render_json
+- Implement Valuable adapter behind a feature flag if the dependency is added to the lockfile
+- Add inspect impls for the remaining ptr-types structures
 
 ### Linked experiments
 
@@ -48,6 +56,8 @@
 ### Current automated checks
 
 - Debug and alternate Debug of a Secret, alone and nested in a derived Debug, never contain the value
+- Secret, Private and RawEvidence content is absent from Debug, tree, compact and JSON output and from diffs
+- Visitor order, depth and node limits, every diff kind and JSON escaping are covered by tests
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

@@ -8,9 +8,9 @@
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
-**Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-19  
-**Code footprint:** 7 Rust source files · 351 nonblank source lines · 5 integration-test files · 12 test markers (`#[test]`, `#[tokio::test]`)
+**Maturity:** `prototype`  
+**Last reviewed:** 2026-10-14  
+**Code footprint:** 14 Rust source files · 2316 nonblank source lines · 11 integration-test files · 59 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -23,19 +23,25 @@
 - Unit tests beside source modules plus thematic integration tests with shared tests/common fixtures
 - Lazy trace-field iteration with impl Iterator, closure-based match-guard filtering and fallible try_for_each traversal
 - Internal macro_rules-generated TraceValue conversions plus public hygienic trace_event! builder macro
+- Bounded span model: deterministic seeded TraceId/SpanId generator, Tracer with injectable monotonic Clock (ManualClock for tests), RAII SpanGuard, events attached to spans, typed SpanError for open-span/parent limits and counted drops/truncation for finished-span ring, fields, events and value length
+- RedactingSink<S: TraceSink>: case-insensitive substring key deny-list (password, secret, token, api_key, authorization, cookie, dsn, private_key, ...) plus value heuristics (Bearer/Basic, URL passwords, PEM private keys, JWT shape, known credential prefixes, long hex / high-entropy tokens) applied before any inner sink sees an event
+- MemorySink bounded ring, FanoutSink, and deterministic counter-based per-level 1-in-N SamplingSink
+- OtlpJsonFileExporter: hand-written, redacting JSON-lines file writer following the OTLP/JSON trace field layout (resourceSpans/scopeSpans/spans); not an OpenTelemetry SDK, collector or network exporter
+- PlanRecord plus deterministic plan-vs-execution correlator over spans tagged ptr.plan_step reporting Executed/Skipped/OutOfOrder/Failed/Unplanned per step with a summary
+- Tracer::active_tree: open-span tree snapshot with ages relative to the clock, text rendering and stuck-span detection (std-only stand-in for async-backtrace, covers only instrumented spans)
 
 ### Missing for the target architecture
 
-- Subscriber/layer setup and exporter integration beyond the tracing sink adapter
-- OpenTelemetry and NeMo Relay exporters
-- Plan-vs-execution correlation
-- Redaction middleware
-- Selective async-backtrace/active-tree diagnostics
+- Subscriber/layer setup and exporter integration beyond the tracing sink adapter and the OTLP-JSON file writer
+- OpenTelemetry SDK/collector (OTLP network) integration and NeMo Relay exporters
+- Real async-backtrace of arbitrary futures (only explicitly instrumented spans appear in the active tree)
+- Redaction is heuristic: low-entropy or short secrets under non-denied keys are not detected, and hex digests are over-redacted
+- No instrumentation of runtime/execution/Pod/verifier boundaries yet
 
 ### Next milestones
 
 - Instrument request/execution/Pod/verifier boundaries
-- Add redaction-safe structured exporter
+- Wire Tracer, RedactingSink and plan correlation into ptr-runtime request lifecycle
 - Feed FlowSignature + runtime trace into feedback trajectories
 
 ### Linked experiments
@@ -60,6 +66,7 @@
 - unit tests for trace construction, iterator adapters/closures, fallible traversal, sink behavior and stable error codes/messages
 - integration tests share deterministic fixture code through tests/common/mod.rs
 - integration tests exercise exported macro expansion and generated TraceValue conversions
+- span lifecycle, nesting, bounds, redaction (keys, value heuristics, no plaintext via Debug), sampling determinism, OTLP-JSON shape (parsed back by a test-only JSON parser), plan correlation outcomes and active-tree/stuck detection tests
 - workspace fmt/check/test/clippy; guarded matches filter checked during merge review
 
 <!-- PTR:STATUS:END -->
