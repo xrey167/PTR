@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-10-04  
-**Code footprint:** 8 Rust source files · 3031 nonblank source lines · 6 integration-test files · 77 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-13  
+**Code footprint:** 9 Rust source files · 3208 nonblank source lines · 7 integration-test files · 85 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -48,6 +48,7 @@
 - PrincipalId: the name a branch or fast memory is attributed to, recorded as given (From<&str> and its public field take any string); effect attempts record a string, not a PrincipalId: one made through an admitted execution session records that session's principal, which the runtime validated when it created the session, while PtrRuntime::commit and replay record an EffectAttempted's principal as given, the empty string included; that a PrincipalId names the admitted principal is the caller's obligation
 - PodRevisionAddress::parse accepts only the spelling canonical_uri prints: exactly 64 lower-case hex digits for the semantic revision and a plain decimal generation; upper-case, signed or zero-padded spellings and multi-byte input are refused as InvalidAddress instead of aliasing one revision under several URIs or panicking on a split character
 - The crate declares its own rust-version (1.95) with a matching crates/ptr-types/clippy.toml instead of taking the workspace's 1.99, because model/burn-a0 depends on it by path and builds on 1.95; scripts/check_msrv_alignment.py holds the two equal, and a cargo +1.95.0 check of model/burn-a0 with --locked builds against it
+- PodIdentityDescriptor, ClusterKey: value-free pod identity. identity() is `pod:` plus the SHA-256 over a domain tag and the length-prefixed schema version, domain, kind, predicate, semantic role and sorted aliases (no artifact, generation or value); cluster_key() hashes the same hard semantics without the aliases. validate() refuses an unknown schema and empty fields (PodIdentityError). ClusterKey has a lower-case hex spelling that round-trips
 
 ### Missing for the target architecture
 
@@ -106,6 +107,7 @@
 - cognitive_contract integration tests including 162 independent-axis combinations
 - ConfidenceEstimate compile-pass and compile-fail doctests
 - workspace fmt/check/test/clippy; merge-review formatting normalization
+- tests/pod_identity.rs: identity and cluster key are deterministic; an alias change moves the identity and not the cluster key; role, domain, kind and predicate changes move both; field boundaries cannot be shifted between fields; validate rejects unknown schema and empty fields; hex round-trip (unit tests in src/pod_identity.rs also reject upper case and short input)
 
 <!-- PTR:STATUS:END -->
 

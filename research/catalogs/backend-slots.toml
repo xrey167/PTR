@@ -60,7 +60,7 @@ id = "routing-policy"
 owner = "ptr-router"
 status = "open"
 contract = "Deterministic/learned routing over operator and backend capability graph."
-evaluation = ""
+evaluation = "pod-routing"
 candidates = ["deterministic baseline", "learned router head", "hybrid policy"]
 open_questions = ["capability graph schema", "cost/latency budgets", "fallback semantics", "router training target"]
 

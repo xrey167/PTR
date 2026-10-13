@@ -539,3 +539,8 @@ status = "failed"
 id = "C008"
 path = "consciousness/C008-attention-schema-routing-cpu"
 status = "failed"
+
+[[experiment]]
+id = "R015"
+path = "runtime/R015-dragonfly-pod-addressing"
+status = "planned"

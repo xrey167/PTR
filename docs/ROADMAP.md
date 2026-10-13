@@ -18,6 +18,8 @@ and status, architecture contract and test evidence before widening scope.
 5. Real training with matched baselines and held-out/OOD evaluation.
 6. Learned-path integration into the existing runtime.
 
+The research-integration work packages (pod linking, reflex and failover, retrieval filters and wire deadline, training integrity and layering, serving and promotion) are tracked in [RESEARCH_INTEGRATION_PLAN_20261013.md](RESEARCH_INTEGRATION_PLAN_20261013.md).
+
 The broader phases below describe the target architecture; they are not a reason
 to finish every infrastructure slot before validating the cognitive/model path.
 The full Definition of Done remains unchanged.

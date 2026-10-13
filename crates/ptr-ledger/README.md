@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-08  
-**Code footprint:** 9 Rust source files · 8730 nonblank source lines · 16 integration-test files · 190 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-13  
+**Code footprint:** 9 Rust source files · 8887 nonblank source lines · 17 integration-test files · 195 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -80,6 +80,7 @@
 - KvTaintCommitted at tag 29 (subjects: 1 to MAX_KV_TAINT_SUBJECTS (16) pairs of KvTaintSubjectKind Action 0, Derivation 1, Content 2, PodOutput 3 or Request 4 and a 32-byte digest, in strictly ascending (kind code, digest) order; change: Record 0 with report and recipe digests, or Clear 1 with recipe and recompute digests): an empty or over-limit subject list, an unsorted or duplicated one, any zero digest, an unknown kind or change code and trailing bytes are refused by the decoder and by check_encodable; the ledger cannot check that a Clear names a live Record or who may write one, which the runtime does (the runtime registry that consumes the event is not built yet, so replay applies it as a no-op)
 - InputInvalidated at tag 30 (R011 WP3), the compound input invalidation: input identity (1 to MAX_INPUT_IDENTITY_BYTES = 256 bytes, no control character), generation (non-zero), binding digest, an InputInvalidationKind (code 0 Revoked, or code 1 Superseded { old_generation, new_generation, new_digest, replacement_ref }), a u32 fence count and a fence digest. The event names the experts it fences by count and digest only, never by a list; the ledger checks the shape (no zero digest, a Superseded kind repeats the event's generation as old_generation and moves strictly forward) with one function used by the decoder and check_encodable, and cannot check that the count and digest are the fence set, which the runtime re-derives on commit and replay. The public ptr-runtime commit refuses the event; only PtrRuntime::invalidate_input writes it
 - ExpertAuthorityChanged at tag 31 (R011 WP4), the change of an evidence authority: ExpertAuthorityKind (code 0 GateConfig, 1 Evaluator), a 32-byte identity digest, a non-zero epoch, ExpertAuthorityClass (code 0 Revoke, 1 TighteningRotation, 2 NonTightening), a u32 fence count and a fence digest. A Revoke or TighteningRotation fences the experts admitted under an earlier epoch of that kind in the same record, committed to by count and digest only like tag 30; the codec refuses a zero epoch, a zero identity or fence digest, and a NonTightening change with a non-zero count. The crate cannot check that the epoch advances or that the count and digest are the fence set; the runtime does both on commit and on replay, and the public commit refuses the event
+- LedgerEvent::PodHeadAdvanced { identity, old, new } (tag 32): compare-and-swap record of the head of a stable pod identity. The codec encodes the project, namespace and pod of each revision address, the semantic revision and the generation, and refuses on encode and decode an empty identity, an invalid or zero-revision address, and a non-rising generation when an old head is named (PTR_LEDGER_POD_HEAD_*). Whether `old` is the current head is the runtime's check
 
 ### Missing for the target architecture
 
@@ -165,6 +166,7 @@
 - kv_taint_round_trips_every_kind_and_change (tag 29, every subject kind, Record and Clear, 1 and 16 subjects, truncation and trailing bytes) and kv_taint_refuses_malformed_records_on_encode_and_decode (empty, over-limit, unsorted, duplicate, zero digest, unknown kind and change codes)
 - input_invalidation_round_trips_under_tag_30_and_the_codes_are_pinned, input_invalidation_refuses_every_non_canonical_form (empty, over-long and control-character identity, zero generation, zero binding or fence digest, a supersession that disagrees with the event's generation or does not move forward, zero new digest or replacement reference: each refused by check_encodable and the decoder) and input_invalidation_refuses_an_unknown_kind (every prefix, trailing bytes, kind codes 2, 3 and 255)
 - authority_change_round_trips_under_tag_31_and_the_codes_are_pinned (every prefix and trailing byte refused), authority_change_refuses_every_non_canonical_form (zero epoch, zero identity, zero fence digest, a non-tightening change that fences: each refused by check_encodable and the decoder) and authority_change_refuses_an_unknown_kind_or_class (effect_record_tests in src/lib.rs)
+- src/lib.rs unit tests: PodHeadAdvanced round-trips under tag 32 with and without an old head, every prefix and a trailing byte are refused, every non-canonical form is refused on encode and decode, an unknown presence byte is refused; tests/pod_head.rs: both moves survive a durable reopen and a non-rising move is refused before any byte is appended
 
 <!-- PTR:STATUS:END -->
 

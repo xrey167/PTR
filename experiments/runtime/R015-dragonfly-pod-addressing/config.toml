@@ -1,0 +1,26 @@
+version = 1
+kind = "workspace-area"
+name = "R015-dragonfly-pod-addressing"
+path = "experiments/runtime/R015-dragonfly-pod-addressing"
+tests_dir = "tests"
+
+# Frozen before R015 leaves `planned` (experiments/preregistration.toml,
+# scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be chosen.
+# The activation and abstention values restate crates/ptr-router/src/learned.rs.
+[preregistration]
+# The confirmatory seeds, as experiment.toml declares them.
+seeds = [17, 29, 43, 71, 101]
+harness = "ptr-bench dragonfly-addressing"
+# The frozen sentence encoder of the confirmatory run. The synthetic smoke world uses the
+# deterministic stand-in encoder `hashed-bow-64` revision `1`, which is no evidence about a model.
+encoder_model = "must-be-pinned-before-prepared"
+encoder_revision = "must-be-pinned-before-prepared"
+# Every trusted alias must score at least this, and at least this share of the negatives must be
+# rejected, or the representation is not activated.
+activation_alias_threshold_permille = 800
+activation_negative_reject_permille = 900
+# The router abstains below this best score, or when the runner-up is closer than the margin.
+abstain_below_permille = 500
+abstain_margin_permille = 150
+# How far below the cosine baseline's routing_accuracy the learned router may fall and still count.
+accuracy_margin_permille = "must-be-pinned-before-prepared"

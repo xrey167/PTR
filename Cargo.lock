@@ -4480,6 +4480,7 @@ dependencies = [
  "ptr-state",
  "ptr-types",
  "ptr-verifier",
+ "serde_json",
  "tokio",
  "tokio-postgres",
  "toml",

@@ -329,6 +329,21 @@ seeds = "int-list"
 public_regression_gate_permille = "int"
 backward_transfer_min_permille = "int"
 
+# Design: docs/architecture/40-pod-linking.md, ADR-0022. The harness (bins/ptr-bench, r015) prints one
+# JSON object per seed over a world the training step wrote. The thresholds restate the compiled
+# defaults of ptr-router (ACTIVATION_*_PERMILLE, LearnedRouterConfig) and are pinned; the frozen
+# encoder and the accuracy margin are still to be chosen, which keeps R015 in `planned`.
+[experiment.R015.required]
+seeds = "int-list"
+harness = "str"
+encoder_model = "str"
+encoder_revision = "str"
+activation_alias_threshold_permille = "int"
+activation_negative_reject_permille = "int"
+abstain_below_permille = "int"
+abstain_margin_permille = "int"
+accuracy_margin_permille = "int"
+
 # The harness (bins/ptr-bench, m008) prints one JSON object per seed; aggregate.py judges the five
 # seeds under the criteria file, which is frozen with the table, as is the preregistration text. The
 # pool and the vectors are the frozen artifact of research/embeddings. The recency buffer is configured

@@ -1,0 +1,52 @@
+component = "pod-routing"
+status = "open"
+decision = "unlocked"
+
+[criteria]
+correctness = 0.3
+failure_semantics = 0.15
+latency = 0.12
+throughput = 0.1
+memory = 0.08
+portability = 0.07
+operability = 0.06
+integration_cost = 0.05
+license_fit = 0.04
+research_flexibility = 0.03
+
+# The current default: every registry candidate scores 1.0 and the greatest PodId wins.
+[[candidate]]
+id = "constant-score"
+source = "internal"
+status = "evaluating"
+command = "cargo test -p ptr-router --locked --test router"
+evidence = ["../../../crates/ptr-router/tests/router.rs"]
+
+# Description-vector cosine over the registry candidates; the baseline a learned address must beat.
+# Measured by experiment R015 (arm `cosine_only`); no committed result yet.
+[[candidate]]
+id = "cosine-only"
+source = "internal"
+status = "to-evaluate"
+evidence = []
+
+# Per-pod learned vector and bias over a frozen encoder, activation-gated, advisory, with
+# abstention (ADR-0021). The unit and artifact tests are mechanics evidence; the routing claim is
+# R015's and has no frozen result yet.
+[[candidate]]
+id = "dragonfly-learned"
+source = "internal"
+status = "evaluating"
+command = "cargo test -p ptr-router --locked --test learned --test dragonfly_artifact"
+evidence = [
+  "../../../crates/ptr-router/tests/learned.rs",
+  "../../../crates/ptr-router/tests/dragonfly_artifact.rs",
+]
+
+# A LoRA that learns to emit a stable pod link. Design only, in experiment R002 (kill criterion:
+# the base model resolves no alias in 5 seeds, so reflex stays off). No code in PTR.
+[[candidate]]
+id = "symlink-lora"
+source = "internal"
+status = "to-evaluate"
+evidence = []

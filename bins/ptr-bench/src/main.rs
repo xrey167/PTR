@@ -126,6 +126,11 @@ fn main() {
         // The harness of R013: `<seed>` (the pinned scale), `<cases> <seed>` (the mutation
         // checker's form) or `--preflight`; no default seed, and a typo stops the run.
         "self-modification-authority" => experiments::r013::run(&args[2..]),
+        // The harness of R015 (Dragonfly pod addressing): one seed per run, no default seed. It
+        // reads the world the training step wrote; see `experiments::r015`.
+        "dragonfly-addressing" => {
+            experiments::r015::run(strict_or_exit(seed_arg(&args, "dragonfly-addressing")))
+        }
         // Not an R005 result: an exactness smoke run of the CPU reference backend.
         "kv-reuse-smoke" => experiments::kv_reuse_smoke::run(strict_or_exit(parse_strict_usize(
             &args, 2, 8, "requests",
@@ -167,9 +172,9 @@ fn main() {
 /// only when they are compiled in. The list is usage text only: it freezes nothing.
 #[cfg(feature = "postgres-experiments")]
 const EXPERIMENT_COMMANDS: &str =
-    "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|self-modification-authority|kv-reuse-smoke|fastmem-revocation|projection-equivalence|postgres-hybrid";
+    "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|self-modification-authority|dragonfly-addressing|kv-reuse-smoke|fastmem-revocation|projection-equivalence|postgres-hybrid";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|self-modification-authority|kv-reuse-smoke";
+const EXPERIMENT_COMMANDS: &str = "|snapshot-cancellation|weak-supervision|evidence-promotion|certified-branches|invalidation|fast-weight-memory|generate-verify-repair|vcw-loop|exact-prefix-reuse|mailbox-backpressure|positional-reuse-oracle|span-forget|layer-shared-lora-kv|moe-expert-kv-revocation|approximate-taint-containment|self-modification-safety|self-modification-authority|dragonfly-addressing|kv-reuse-smoke";
 
 /// The ledger experiment's subcommand, only when it is compiled in (usage text only).
 #[cfg(feature = "ledger-experiments")]
