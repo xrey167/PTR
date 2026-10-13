@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 import hashlib
+import shutil
 import stat
 import subprocess
 import sys
@@ -85,6 +86,8 @@ def write_sums(out_dir: Path, files: list[Path]) -> Path:
 
 # A checksum file lists at most a few thousand parts; anything larger is not one.
 MAX_SUMS_BYTES = 1024 * 1024
+# Free space a join leaves on the target filesystem beyond the joined bundle itself.
+JOIN_FREE_MARGIN_BYTES = 1024 * 1024 * 1024
 
 
 def read_sums(path: Path) -> dict[str, str]:
@@ -195,12 +198,29 @@ def cmd_join(args: argparse.Namespace) -> int:
         # `repo.bundle` link (to ~/.bashrc, say) must never receive the joined bytes.
         if target.is_symlink() or target.exists():
             raise BundleError(f"{target} already exists; remove it before joining")
+        # Part sizes come from another machine and a sparse part takes no space where it lies:
+        # the logical total must fit, with a margin, before a byte is written.
+        total = sum((directory / name).stat().st_size for name in names)
+        free = shutil.disk_usage(directory).free
+        if total + JOIN_FREE_MARGIN_BYTES > free:
+            raise BundleError(
+                f"joining needs {total} bytes plus a {JOIN_FREE_MARGIN_BYTES}-byte margin, "
+                f"but only {free} bytes are free at {directory}"
+            )
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        with os.fdopen(os.open(target, flags, 0o644), "wb") as dst:
-            for name in names:
-                with (directory / name).open("rb") as src:
-                    while block := src.read(CHUNK):
-                        dst.write(block)
+        # Opened outside the cleanup: if another process created the file first, O_EXCL fails
+        # and that file is not ours to remove.
+        fd = os.open(target, flags, 0o644)
+        try:
+            with os.fdopen(fd, "wb") as dst:
+                for name in names:
+                    with (directory / name).open("rb") as src:
+                        while block := src.read(CHUNK):
+                            dst.write(block)
+        except BaseException:
+            # Never leave a partial bundle behind; this process created it.
+            target.unlink(missing_ok=True)
+            raise
         print(f"joined {len(names)} parts into {target}")
     # `git bundle verify` needs a repository; prerequisites must exist in it.
     out = git("bundle", "verify", str(target))
