@@ -415,7 +415,10 @@ Three consequences, stated rather than discovered:
   control for exactly that, because a storage that refused every second writer
   would pass every other test in the file.
 
-The state file format moves to `PTRRST02`. An older file is refused by its magic
+The state file format moved to `PTRRST02` for the fence term; it is `PTRRST03` today (the later
+raft storage rework added the snapshot payload's digest and made the applied-event count a
+typed state, and a new
+layout takes `PTRRST04`, ADR-0022). An older file is refused by its magic
 rather than read as one whose token happens to be zero — a state file read as
 unfenced is the failure this exists to prevent.
 

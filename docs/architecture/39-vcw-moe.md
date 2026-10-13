@@ -10,11 +10,11 @@ the revocation-crash substrate (L001-v2, completed) and the whole-loop check F00
 an experiment with a baseline, ablations and a refutation rule (invariant 15, section 6).
 
 This document is the formal companion of [37 — Pod-MoE](37-pod-moe.md) (design of the three levels
-and, in its draft on branch `claude/dev-gw`, sections 10 and 11 on the verifier-closed loop) and of
-document 38, "consciousness indicators" (`38-consciousness-indicators.md`, same draft branch:
-functional capability requirements for the workspace, the self-model and the schema). References
-to 37 section 10 or 11, to 38 and to `docs/MODEL_WELFARE.md` are to those drafts and are plain text
-until they are merged. It restates their binding parts in
+and, in sections 10 and 11, the verifier-closed loop) and of
+[38 — consciousness indicators](38-consciousness-indicators.md) (functional capability
+requirements for the workspace, the self-model and the schema). Both, and
+[`docs/MODEL_WELFARE.md`](../MODEL_WELFARE.md), are merged; they were drafts on branch
+`claude/dev-gw` when this document was first written. It restates their binding parts in
 one place, formalises them, and delimits the construction from related work. Where this document
 and 37 or 38 differ, 37 and 38 decide and this document is wrong. Indicators are functional
 properties and not consciousness; no component here is trained on, or rewarded for, a statement

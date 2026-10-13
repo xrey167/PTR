@@ -1,6 +1,6 @@
 # 37 — Pod-MoE: a mixture of experts whose experts are pods
 
-Status: **design**, with one narrowed slice implemented and measured on the reference path: the R011 expert-authority mechanisms in `ptr-runtime` (§5, row R011). Nothing else in this document is implemented as a Pod-MoE. The pieces
+Status: **design**, with narrowed slices implemented and measured on the reference path: the R011 expert-authority mechanisms in `ptr-runtime` and the R013 attestor and lineage-authority mechanisms built on them (§5, rows R011 and R013), and the verifier-closed loop of §11 on simulated experts (F007, [39](39-vcw-moe.md)). Nothing else in this document is implemented as a Pod-MoE. The pieces
 it builds on exist as prototypes (`ptr-lineage`, `ptr-branch`, `ptr-router`,
 `ptr-pods`, `ptr-verifier`, see [35](35-agentic-substrate.md)); the parts marked
 *new* below do not exist yet. The base model is OLMoE-1B-7B. Training runs in Python
@@ -671,9 +671,9 @@ experience, is a target, reward or filter (principle 2 of doc 38).
 | Findings as routing signal | `FindingRouter` (`crates/ptr-router/src/findings.rs:773`), `classify` (`:352`, `Accept` only for `Pass` with no hard finding at the level), `FindingRegistry` (`:137`), `FallbackPolicy` (`:272`), `AdmissibleScorer` (`:649`; a learned scorer sees only verifier-admissible Pods and cannot name `Accept`), `FindingRouteRecord` (`:492`, propensities); the unroutable-code counter is the Birth signal | finding-conditioned routing with real Pods, off-policy evaluation of it, a learned scorer | CPU for the router; GPU with models | tests of the router only; no model evidence |
 | Propensity logging and off-policy evaluation | `route_checked`, arbiter estimators | the categorical L2 estimator and contextual log (section 2) | CPU | the arbiter estimators are tested for triage only |
 | Verifier-statistics L3 operators | lifecycle types and gates (`crates/ptr-pods/src/expert.rs`), R011 gate path | the statistics-driven policy | GPU | R011: gate path only |
-| Self-model, schema, critic | none | all | CPU toy, GPU on OLMoE | none |
+| Self-model, schema, critic | `SelfModel` (`crates/ptr-router/src/self_model.rs`) and `AttentionSchema` (`crates/ptr-router/src/attention_schema.rs`), advisory estimators over routing traces; no critic | a model-backed self-model, schema or critic; any evidence that either module helps | CPU toy, GPU on OLMoE | none for these modules (F007 does not test the self-model; C007 and C008 are separate CPU toys, both FALSIFIED) |
 
-### 11.8 Experiments (all planned)
+### 11.8 Experiments (F004-F006 planned)
 
 * **F004 `verifier-closed-pod-moe` (GPU).** The verifier-closed Pod-MoE against a standard
   learned-gate MoE (same total and active parameters), a single generator with self-refinement

@@ -36,3 +36,8 @@ executor call behind issuer/session/scope, revision/generation/capability, expir
 and required-verifier checks. AuthorizationReceipt remains diagnostic. This
 process-local gateway does not by itself implement network authentication,
 durable exactly-once effects or scoped access for existing Pure/Read Pod paths.
+Those came later as separate layers: a journaled execution audit with fencing and
+at-most-once keys ([28](28-durable-execution-audit.md)), peer admission by host
+policy and project-scoped Pods ([29](29-peer-admission-and-pod-scope.md)), and the
+execution and Pod wires over authenticated transport ([32](32-execution-wire.md),
+[33](33-pod-wire.md)). A signed receipt is still not built (ADR-0022, S2).
