@@ -91,7 +91,7 @@ situational caveat:
 |---|---|
 | `PTR_ERASURE_HOST_RETAINED_ARTIFACTS` | Recovery snapshots, compacted snapshots, backups and replicas live outside the path set. Nothing can discover them, so each is folded in explicitly with `with_retained_elsewhere`. |
 | `PTR_ERASURE_STORAGE_RESIDUE` | Absence from a file is not absence from the medium. Removing or rewriting a file says nothing about the blocks it occupied. |
-| `PTR_ERASURE_MODEL_DERIVED_STATE` | Model, KV and checkpoint state is not implemented in PTR, so nothing here can speak to it either way. |
+| `PTR_ERASURE_MODEL_DERIVED_STATE` | Model, KV and checkpoint state lies outside the audit. PTR now has sealed neural state ([27](27-neural-state-admission.md)) and a KV prefix catalog with lineage invalidation ([36](36-kv-reuse.md)) in `ptr-runtime`, but the audit searches neither, so nothing here can speak to it either way. |
 
 Making the host's own artifacts a *parameter* is the point: a recovery snapshot
 embeds the whole journal by construction, so a host that keeps one has not erased
@@ -136,9 +136,11 @@ Issue #15's *Deletion across retained state* gate also requires erasure "under t
 full lifecycle contract" for model-derived state, and measurement of the storage
 layer. Neither is delivered:
 
-- **Model-derived state does not exist yet.** When it does, its admission must be
-  bound to the lifecycle (a separate gate), and only then can its erasure be
-  specified.
+- **Model-derived state is not covered.** Sealed neural state is admitted against the
+  journal ([27](27-neural-state-admission.md)) and KV entries are invalidated by lineage
+  ([36](36-kv-reuse.md)), but neither is erased or searched by this audit, and erasure
+  of model-derived state remains unspecified; it is reported as an out-of-reach
+  boundary instead.
 - **Storage residue is unmeasured and unmeasurable from here.** Establishing it
   requires device-level evidence, not a byte search.
 - **Durable snapshot lifecycle is not implemented.** `ptr-runtime` snapshots are

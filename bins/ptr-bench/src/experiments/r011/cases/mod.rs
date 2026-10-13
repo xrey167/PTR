@@ -1,4 +1,4 @@
-//! The cases C1 to C13 of the draft preregistration, each driving the PUBLIC runtime API on a
+//! The cases C1 to C13 of the preregistration, each driving the PUBLIC runtime API on a
 //! [`fixture::Rt`] (a `PtrRuntime` over a durable `FileLedger` in a temporary directory; C11
 //! drives the R010 `KvSession` over the same runtime), and the counting they share.
 //!

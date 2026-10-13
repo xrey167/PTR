@@ -8,8 +8,9 @@ writing `run.json` and `metrics.json` (and `tuning.json` for `--tune`) into `--o
 
 Importing this module needs only the standard library; torch, transformers, peft and datasets
 are imported when a run starts. Pins below mirror the M011 config
-(`experiments/model/M011-routed-peft/config.toml`; `tests/test_m011_*` compare them); anything
-the config does not pin is listed in `UNPINNED_CHOICES` and recorded in `run.json`.
+(`experiments/model/M011-routed-peft/experiment.toml` and `config.toml`; `tests/test_m011_*`
+cross-check them against the in-tree `config.toml`, `PTR_M011_CONFIG` overrides the path);
+anything the config does not pin is listed in `UNPINNED_CHOICES` and recorded in `run.json`.
 """
 
 from __future__ import annotations

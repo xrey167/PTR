@@ -4,8 +4,8 @@
 //! experiment's `config.toml`, which is read at compile time; the drift test fails when a
 //! constant differs from the file, and when the file holds a key no constant mirrors. The
 //! third section holds the values the file leaves open (see `chosen`): they are this
-//! harness's proposal and are echoed in every result, and the draft preregistration lists
-//! them. R005 is `planned`: nothing here is frozen.
+//! harness's choice and are echoed in every result, and the preregistration lists
+//! them. R005 is frozen at its preregistration and has completed; the file is frozen with it.
 
 // The thresholds complete the compiled table the drift test compares with the file; the
 // harness evaluates most of them in `metrics`, and the rest only echo the table.
@@ -400,7 +400,7 @@ pub const MATRIX_CELLS: [&str; 52] = [
 // (`crates/ptr-runtime/src/kv_infer.rs`, `stack_config`); `pin::verify` proves the equality
 // by reproducing a cold run with a stack built from these values and comparing the logits
 // digest with the backend's. They are not in `config.toml` and so not covered by the drift
-// test against it; the draft preregistration proposes pinning them.
+// test against it; the preregistration pins them (`PREREGISTRATION.md`, chosen values).
 
 /// Tokens generated per request.
 pub const MAX_NEW_TOKENS: usize = 8;
@@ -442,7 +442,7 @@ pub const OTHER_PROJECT: &str = "r005-project-b";
 /// Domain of the corpus selection digests.
 pub const SELECTION_DOMAIN: &str = "ptr.r005.corpus-selection.v1";
 /// The digests of the corpus selection of each workload (`workload::selection_digest`),
-/// which the draft preregistration proposes to pin; a test reproduces them.
+/// which the preregistration pins; a test reproduces them.
 pub const SELECTION_DIGEST_MAIN: &str =
     "sha256:d06fd633832bb4bdb7b50e21473dcde2882ff234855aa9e32da6a97f67a7968d";
 pub const SELECTION_DIGEST_NODES_ONLY: &str =

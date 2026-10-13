@@ -63,10 +63,10 @@ repository rules are in `CLAUDE.md`.
 
 ## M011 (routed PEFT on OLMoE)
 
-**Requires the `claude/m011-routed-peft` branch merged**: `training/src/ptr_training/moe/m011.py`
-and its tests exist only there today, and the experiment manifest
-`experiments/model/M011-routed-peft/` lives on `claude/experiments-kv-moe`. Without them
-these commands do not exist. M011 is a preregistered-style experiment: follow its manifest for
+The entrypoint module `training/src/ptr_training/moe/m011.py` (tests `training/tests/test_m011_*`)
+and the manifest `experiments/model/M011-routed-peft/` are merged; the manifest's `entrypoint` is
+still empty, so a frozen run waits on its preregistration (`docs/GPU_HANDOVER.md`, step 4). M011
+is a preregistered-style experiment: follow its manifest for
 seeds, baselines and falsification; the same hard rules above apply (do not edit prepared
 records, no commits under `training/runs/`).
 

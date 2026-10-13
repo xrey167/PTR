@@ -64,8 +64,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-ingress.mmd`](../../docs/diagrams/components/ptr-ingress.mmd)
 
-**Upstream:** external world  
-**Downstream:** ptr-semdb, ptr-security
+**Upstream:** ptr-types; input from the external world  
+**Downstream:** none yet (no crate consumes it)
 
 ## Mission
 

@@ -34,7 +34,7 @@ Invoke by asking for the task, or explicitly as `/ptr-dev:<name>`.
 | `ptr-crate-change` | change or add a crate following `docs/RUST_API_STYLE.md`, `docs/TESTING.md`, docs-as-code and the backend-feature rules |
 | `ptr-new-experiment` | create an experiment with `scripts/new_experiment.py`, with hypothesis, metrics, baseline and falsification; successors instead of patches for prepared records |
 | `ptr-results` | write up a run or experiment with the right evidence class, seeds, baselines and intervals, without over-claiming |
-| `ptr-gitlab` | work with the GitLab remote (GitHub is suspended): publish with `scripts/publish_remote.py` (dry run first), draft MRs and pipeline status with `glab`, low-automation rules; background in `docs/HOSTING.md` |
+| `ptr-gitlab` | work with the GitLab remote (the alternative; GitHub, `origin`, is the primary remote): publish with `scripts/publish_remote.py` (dry run first), draft MRs and pipeline status with `glab`, low-automation rules; background in `docs/HOSTING.md` |
 | `ptr-offline-sync` | move the repository between machines with git bundles (create, split, join, verify, apply), bash and PowerShell |
 | `ptr-status` | produce a short Done / In progress / Blocked / Next report |
 | `experiment-run` | run and monitor a GPU smoke run or experiment on the Ubuntu desktop with two RTX 3090 (`hardware/dual-rtx3090.toml`) (`docs/DESKTOP_SETUP.md`) |

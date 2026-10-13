@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-py"
 maturity = "prototype"
-last_reviewed = "2026-10-11"
+last_reviewed = "2026-10-13"
 
 implemented = [
   "PyO3 (abi3-py311) extension module ptr_py over ptr-lineage, built by maturin in its own excluded Cargo workspace: aimer_score, rank_experts_for_pruning, subspace_overlap, chance_overlap, measure_interference, ties_merge and forgetting_gate_evaluate, taking and returning plain Python types (lists, nested row-major lists, tuples, dicts)",
@@ -20,11 +20,11 @@ missing = [
   "Parser for the server's /v1/vcw/traces/{id} JSON (not needed: the loop runs in-process)",
   "Lineage registry (register, gate, serve, retire) and replay pool from Python",
   "Published wheels; the module is built locally by make py-bindings",
-  "Caller in training/src/ptr_training/moe/gates.py (guarded import) is owned by the training package",
+  "Changes to its caller, training/src/ptr_training/moe/gates.py (guarded import), belong to the training package, not to this crate",
 ]
 
 next = [
-  "Wire the guarded import in the MoE gates and compare its results with the pure-Python fallback",
+  "Run the MoE gates on a real OLMoE model (the guarded import in training/src/ptr_training/moe/gates.py is wired and ran in the WP8 CPU smoke; there is deliberately no pure-Python fallback: a missing binding reports the gates as skipped)",
 ]
 
 experiments = [

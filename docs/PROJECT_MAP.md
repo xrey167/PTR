@@ -7,7 +7,15 @@
 > resolution) and `ptr-server` (now an effect path with idempotency keys).
 > For the current state of each crate read its `component.toml` and the
 > generated [`components/STATUS.md`](components/STATUS.md), which are checked
-> in CI.
+> in CI. Identifiers in §8 and §10 that have moved since, as of 2026-10-13:
+> `ptr-net` declares three ALPNs (`ALPN_RAFT`, `ALPN_PODWIRE`, `ALPN_EXEC`;
+> `ALPN_MODEL`, `ALPN_BLOB` and `ALPN_EVENTS` were removed by ADR-0022) and pins
+> iroh 1.3 on the workspace's Rust 1.99; the workspace MSRV is 1.99, not 1.85;
+> `LedgerEvent` tags run to 31 (27–31 are the expert, taint, input-invalidation
+> and authority events; the next free tag is 32); the compacted snapshot is
+> written as `PTRCS006` to `PTRCS009` with lifecycle sections `PTRLC004` to
+> `PTRLC007`; the raft state file is `PTRRST03`. ADR-0022 lists the next free
+> numbers for new layouts (`PTRCS010`, `PTRLC008`, `PTRRST04`).
 
 This is a map of the whole repository for someone who has not seen it before. It
 says what each part is, where it lives, how the parts connect, and — most

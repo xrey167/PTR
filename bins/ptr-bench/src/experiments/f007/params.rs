@@ -1,10 +1,10 @@
 //! The preregistered parameters of F007, compiled in.
 //!
-//! The constants mirror the keys of `[pinned_thresholds]` in the experiment's `config.toml`,
-//! which is read at compile time; the drift test fails when a constant differs from the file and
-//! when the file holds a key no constant mirrors. F007 is `planned`: nothing here is frozen.
-//! The decision margins (`criteria.toml`, `[decision]`) are not compiled in: the harness reports
-//! counts, the aggregator decides.
+//! The constants mirror the keys of `[pinned_thresholds]` in the experiment's `config.toml`, which
+//! is read at compile time; the drift test fails when a constant differs from the file and when the
+//! file holds a key no constant mirrors. F007 is frozen at its preregistration and has completed;
+//! the file is frozen with it. The decision margins (`criteria.toml`, `[decision]`) are not
+//! compiled in: the harness reports counts, the aggregator decides.
 
 #![cfg_attr(not(test), allow(dead_code))]
 

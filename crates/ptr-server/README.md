@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-10  
+**Last reviewed:** 2026-10-13  
 **Code footprint:** 10 Rust source files · 4009 nonblank source lines · 8 integration-test files · 90 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
@@ -37,7 +37,7 @@
 
 ### Missing for the target architecture
 
-- Pod resumption on the KV path; the taint registry is in memory and not rebuilt after a restart (see ptr-runtime)
+- Pod resumption on the KV path (the taint registry itself survives a restart: ptr-runtime rebuilds it from KvTaintCommitted events, tests/kv_taint_resumable.rs the_refusal_survives_a_restart_of_the_server)
 - Streaming ModelEvent/WebSocket or SSE API
 - Authentication/session/policy integration
 - Readiness/admin endpoints beyond basic health
@@ -93,8 +93,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-server.mmd`](../../docs/diagrams/components/ptr-server.mmd)
 
-**Upstream:** external clients  
-**Downstream:** ptr-ingress, ptr-exec, ptr-observe
+**Upstream:** ptr-config, ptr-ledger, ptr-model-api, ptr-pods, ptr-protocol, ptr-router, ptr-runtime, ptr-types, ptr-verifier; external clients over HTTP  
+**Downstream:** ptrd
 
 ## Mission
 

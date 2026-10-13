@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 3 Rust source files · 748 nonblank source lines · 2 integration-test files · 17 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 3 Rust source files · 749 nonblank source lines · 2 integration-test files · 17 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -27,13 +27,13 @@
 - propose_membership adds or removes one voter from the leader and drives it to quiescence, and voters() reports the group in ascending order
 - record_snapshot_within takes the RetentionFloor the payload covers, so a member's raft log is compacted only through the position whose entries produced exactly the events the retained snapshot covers; ptr-ledger's refusals come back as ClusterError::Node text that starts with the stable code; record_snapshot stays for hosts with no retained snapshot to name and takes its floor from the log
 - Snapshot payloads are carried unread, and the test carries a real PTRCS006 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes
-- No background loop, timer or retry policy: the caller drives accept and dispatch, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
+- No background loop, timer or retry policy: the caller drives accept (serve_once) and the stepping calls (tick, campaign, propose, propose_membership), which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
 - The whole composition is feature-gated, so iroh and raft stay out of every other workspace build exactly as ptr-net and ptr-ledger keep their own backends out
 
 ### Missing for the target architecture
 
-- An accept/tick loop that a deployment would run, including when to give up on a member that does not answer and what backpressure applies to one that answers slowly
-- Discovery of a joining member's address: propose_membership changes who votes, but a new voter must still be admitted with an address out of band
+- An accept/tick loop that a deployment would run, including when to give up on a member that does not answer and what backpressure applies to one that answers slowly (decided in ADR-0022, D4: it lives in the embedding host, ptrd, under a ServePolicy that ptr-net provides; spec S3, deferred to the first multi-host deployment)
+- Discovery of a joining member's address: propose_membership changes who votes, but a new voter must still be admitted with an address out of band; ADR-0022 decides against discovery (peers are configured through ptr-net's PeerBook)
 - The snapshot anchor travels from the authenticated leader rather than being retained independently, which is weaker than an out-of-band anchor: a compromised leader could send a consistent pair, and what this rules out is a stranger doing so
 - Session reuse: every exchange opens a connection, which is correct and wasteful
 - The member exposes no is_failed or is_poisoned accessor: ClusterError::Node carries the node's refusal as a String, so a caller learns that the node must be restarted only from the code at the start of that text (NodeFailed::CODE, PTR_RAFT_NODE_FAILED), never by asking, and there is no typed variant for it
@@ -41,8 +41,8 @@
 
 ### Next milestones
 
-- Retain snapshot anchors independently of the leader that sends them
-- Decide where the accept/tick loop belongs before adding one, since a loop in the wrong place makes the scheduling implicit again
+- Retaining snapshot anchors independently of the leader that sends them stays a deployment obligation (ADR-0022, C6: take_installed_snapshot_matching exists, the host supplies the independent anchor)
+- Build the accept/tick loop in ptrd under ptr-net's ServePolicy (ADR-0022, spec S3) once a multi-host deployment exists
 
 ### Linked experiments
 
@@ -89,7 +89,8 @@ stepped.
 ## What it is not
 
 It is not a daemon. There is no background loop, no timer and no retry policy here:
-a caller drives `serve_once` and `dispatch`. That keeps the scheduling decisions —
+a caller drives `serve_once`, `tick`, `campaign`, `propose` and
+`propose_membership`. That keeps the scheduling decisions —
 how often to tick, when to give up on a peer — somewhere they can be made
 deliberately, and it keeps the tests free of sleeps.
 

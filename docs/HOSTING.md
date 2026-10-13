@@ -1,37 +1,37 @@
-# Hosting: GitLab as the primary remote
+# Hosting: GitHub as the primary remote, GitLab as the alternative
 
-**Kurzfassung (Deutsch).** Der GitHub-Account `xrey167` ist gesperrt (vermutlich wegen vieler
-automatisierter Aktionen: viele PRs, Kommentare, CI-Wiederholungen). Bis das geklärt ist, ist
-GitLab.com (privates Projekt `ptr`) der primäre Remote; `.github/workflows` bleiben für eine
-spätere Rückkehr unverändert. Lokal arbeiten und Git-Bundles (`ptr-dev:ptr-offline-sync`)
-funktionieren immer. Ablauf: GitLab-Konto, privates leeres Projekt, Personal Access Token
-(`write_repository` und `api`, mit Ablaufdatum) nur lokal im Credential Manager speichern,
-dann `scripts/publish_remote.py` zuerst mit `--dry-run`, danach echt. CI läuft über
-`.gitlab-ci.yml` (gleiche Job-Namen wie bei GitHub, jeweils `make ci-<job>`); für GPU-Jobs wird
-der Desktop als Projekt-Runner mit dem Tag `ptr-gpu` registriert. Damit keine neue Sperre
-droht, gelten Regeln für wenig Automatisierung (Abschnitt 6): Pushes bündeln, keine
-Schleifen aus Kommentaren oder Re-Runs, wenige Pipelines pro Stunde. Der Rest ist Englisch,
-wie die übrigen Docs.
+**Summary.** GitHub (`origin`, `https://github.com/xrey167/PTR`) is the primary remote again,
+with CI in `.github/workflows/`. GitLab.com (private project `ptr`) was set up while the GitHub
+account `xrey167` was suspended and stays the alternative remote: `.gitlab-ci.yml` mirrors
+the GitHub jobs (same job names, each `make ci-<job>`), and the desktop can be registered as a
+project runner tagged `ptr-gpu` for GPU jobs. Working locally and moving the repository with
+git bundles (`ptr-dev:ptr-offline-sync`) always works. Publishing to GitLab goes through
+`scripts/publish_remote.py`, dry run first; a Personal Access Token (`write_repository` and
+`api`, with an expiry date) is stored only locally. The low-automation rules of section 6
+apply to both hosts.
 
 ## 1. Status
 
-- The GitHub account `xrey167` is suspended. The probable trigger is a high volume of
-  automated actions (many PRs, comments, CI re-runs). The cause is not confirmed.
-- `.github/workflows/` stays untouched so a return to GitHub (or a Forgejo/Gitea runner, see
-  section 7) needs no rework.
-- GitLab is the primary remote for now. The repository is private research code, dual-licensed
-  Apache-2.0 OR MIT (`LICENSE`, `LICENSE-APACHE`, `LICENSE-MIT`).
+- GitHub (`origin`) is the primary remote again. The account `xrey167` had been suspended;
+  the probable trigger was a high volume of automated actions (many PRs, comments, CI
+  re-runs). The cause was not confirmed, which is why the low-automation rules of section 6
+  still apply.
+- `.github/workflows/` is the CI of record. It was left untouched during the suspension, so
+  the return needed no rework.
+- GitLab is the alternative remote: the sections below describe it, the skill `ptr-gitlab`
+  covers publishing, merge requests and the runner. The repository is private research code,
+  dual-licensed Apache-2.0 OR MIT (`LICENSE`, `LICENSE-APACHE`, `LICENSE-MIT`).
 - Working locally and moving the repository with git bundles always works and needs no
   host: see the skill `ptr-dev:ptr-offline-sync` and `docs/CLAUDE_TOOLING.md`.
 
 ## 2. Options compared
 
-For cost and limits, check the provider's current pricing page; this document states no
+The alternatives to GitHub, as compared while it was suspended. For cost and limits, check the provider's current pricing page; this document states no
 numbers because they change.
 
 | Option | CI | Cost / limits | Control | Risk |
 |---|---|---|---|---|
-| GitLab.com (recommended) | GitLab CI (`.gitlab-ci.yml`), shared runners plus your own project runners | check the provider's current pricing page (shared-runner minutes and storage are limited) | hosted, but private projects and own runners are available | account moderation can also happen here, so keep automation low (section 6) and keep bundles as backup |
+| GitLab.com (the alternative remote in use) | GitLab CI (`.gitlab-ci.yml`), shared runners plus your own project runners | check the provider's current pricing page (shared-runner minutes and storage are limited) | hosted, but private projects and own runners are available | account moderation can also happen here, so keep automation low (section 6) and keep bundles as backup |
 | Self-hosted Forgejo/Gitea on the desktop | Forgejo Actions, largely compatible with `.github/workflows` (verify per workflow) | own hardware and electricity, no provider limits | full | desktop is a single point of failure; you do the updates, backups and network exposure. Use as second remote, not the only one |
 | Codeberg (Forgejo) | Forgejo Actions or Woodpecker where offered | check the provider's current pricing page | hosted | intended for free and open-source projects. This repo is licensed Apache-2.0 OR MIT, but it is private research code; confirm Codeberg's current terms permit private or not-yet-published work before using it |
 | Bitbucket / Azure DevOps | Bitbucket Pipelines / Azure Pipelines (both need new pipeline files) | check the provider's current pricing page | hosted | all CI would have to be rewritten; no benefit over GitLab here |
@@ -145,7 +145,7 @@ The old PR rules carry over: a green pipeline before merge.
    merge commit) once the pipeline is green.
 5. Pull `main`, delete the branch.
 
-## 6. Low-automation rules (to avoid another suspension)
+## 6. Low-automation rules (to avoid another suspension, on either host)
 
 - Batch pushes: several commits, one push.
 - No loops of comments, MR updates or pipeline re-runs. Never retry in a loop.
@@ -165,7 +165,7 @@ python3 scripts/publish_remote.py --name forgejo --remote-url https://<host>/<us
 
 Forgejo Actions is largely compatible with `.github/workflows`, but not identical (some
 actions, contexts and caching differ). Register a Forgejo runner and verify each workflow
-rather than assuming it passes. It doubles as a backup of the GitLab remote.
+rather than assuming it passes. It doubles as a backup of the GitHub and GitLab remotes.
 
 ## 8. Backup
 

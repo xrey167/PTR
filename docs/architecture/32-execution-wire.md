@@ -200,16 +200,21 @@ not. A receipt is the answer to your own request, not a certificate.
 
 - **No signed receipts, so no third-party evidence.** As above. Making one would
   need a signing key and a statement about what it attests to, which is a larger
-  decision than a wire format.
+  decision than a wire format; ADR-0022 (D2) has taken it — receipts and Pod answers
+  will be signed under one `SigningDomain` shared with the split-Pod chunk signature,
+  after authenticated peer identity (spec S2, not built).
 - **No accept loop, no timer, no retry.** A caller drives `serve_once` and
   `request`. The same deliberate omission as `ptr-cluster`: a loop in the wrong place
-  makes scheduling implicit, and "when do we give up" is a policy decision.
+  makes scheduling implicit, and "when do we give up" is a policy decision. ADR-0022
+  (D4) places the loop in the embedding host (`ptrd`) under a `ServePolicy` that
+  `ptr-net` will provide (spec S3, not built).
 - **Detached work cannot be requested over this wire.** A detached grant is audited
   by an attempt that stays unsettled until the adapter reports back
   (`28-durable-execution-audit.md`), and there is no channel here for that report. So
   it is refused — by the runtime, before the attempt is committed, which is why the
   refusal leaves the runtime unfenced. An outcome the requester can never be told is
-  not an outcome. A settlement channel is a second protocol.
+  not an outcome. A settlement channel is a second protocol (re-specified in ADR-0022 as
+  spec S6, after S5).
 - **Nothing here reconciles.** An `Uncertain` outcome is reported and then it is the
   host operator's, through `reconcile_effect`. The requester's only handle on it is
   its own at-most-once key, deliberately: a remote peer must not be able to declare
@@ -222,7 +227,8 @@ not. A receipt is the answer to your own request, not a certificate.
 - **One connection per request**, which is correct and wasteful — the same open item
   `31-cluster-integrity.md` records.
 - **No discovery.** Which address belongs to an id nobody told you is a mechanism
-  choice with its own trust question, and it is the owner's.
+  choice with its own trust question; ADR-0022 decides against it, so peers are
+  configured through `PeerBook`.
 
   **Address authority is no longer missing**, and the sentence that used to stand
   here — *a wrong address gets a refusal rather than a wrong execution only because

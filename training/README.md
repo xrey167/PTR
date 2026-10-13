@@ -33,7 +33,7 @@ The run manifest fails closed when a registered dataset artifact no longer match
 
 ## First training (WP8): CPU smoke run
 
-**Pipeline-Beleg, keine Evidenz.** This run shows that the `trl-moe` pipeline (SFT, then GSPO and SAPO arms, routing metrics, `ptr_py` gates) executes end to end on CPU. It is not evidence for any research claim: the model is a 0.24M-parameter random-init OLMoE, one seed, 32 eval tasks, no baseline, no ablation. The backend stays **unselected** (`backend_selection.status = "unselected"`, component `training-backend`, candidate `trl-peft` still `to-evaluate`; the run is labelled "unselected backend, pipeline evidence only").
+**Pipeline evidence, not research evidence.** This run shows that the `trl-moe` pipeline (SFT, then GSPO and SAPO arms, routing metrics, `ptr_py` gates) executes end to end on CPU. It is not evidence for any research claim: the model is a 0.24M-parameter random-init OLMoE, one seed, 32 eval tasks, no baseline, no ablation. The backend stays **unselected** (`backend_selection.status = "unselected"`, component `training-backend`, candidate `trl-peft` still `to-evaluate`; the run is labelled "unselected backend, pipeline evidence only").
 
 ```bash
 PYTHONPATH=training/src python -m ptr_training.run --config training/configs/stage-moe-smoke.toml --execute
@@ -71,9 +71,9 @@ Eval is 32 held-out tasks (16 arith, 16 json), overlap with training prompts 0. 
 
 Caveats: GSPO lowered the pass rate relative to SFT and SAPO raised it, but with 32 tasks and one seed the difference is within noise. Churn is measured on 64 tokens. All 36 overlap values (0.084 to 0.493) lie above the chance level of 0.0625 and the gate classifies every pair as informative, but at 0.24M parameters, random init and one seed this is not evidence of expert specialisation. The stored GSPO `clip_ratio_per_step` series matches the TRL log history (`clip_ratio/region_mean`, 0 to 0.75, peak at step 12). An earlier run of the PR #124 head showed all zeros because the series were built from a pre-filtered list of log entries instead of entries grouped by step; TRL logs `clip_ratio/*` on every optimizer step but `reward` only on generation steps, and `merge_log_history` now groups entries by `step` before building any series (commit af1cf71f, test `training/tests/test_moe_rl_series.py`). SAPO has no clip series because TRL 1.14.1 logs no `clip_ratio/*` keys for `loss_type=sapo`.
 
-## GPU path (one 24 GB GPU, RTX 4090 desktop)
+## GPU path (one 24 GB GPU per run; the desktop has two RTX 3090)
 
-Not run yet: these steps were written and unit-tested on CPU only (device selection, gradient accumulation and checkpointing are covered by `training/tests/test_moe_device.py`). The `hardware/rtx4090.toml` profile they name is added separately. All three runs are pipeline smokes on the unselected `trl-moe` backend, not evidence.
+Not run yet: these steps were written and unit-tested on CPU only (device selection, gradient accumulation and checkpointing are covered by `training/tests/test_moe_device.py`). The unsuffixed configs name `hardware/rtx4090.toml`, the `-rtx3090` ones `hardware/rtx3090.toml`. All three runs are pipeline smokes on the unselected `trl-moe` backend, not evidence.
 
 `[model] device` is `"auto"` (default: CUDA when available, else CPU), `"cpu"` or `"cuda"`; `"cuda"` raises a `ConfigError` when CUDA is unavailable instead of silently running on CPU. SFT and TRL (`use_cpu`) use the model's device, and `metrics.json` `hardware` records `device`, `gpu`, `torch_cuda` (`torch.version.cuda`) and the peak `torch.cuda.max_memory_allocated`. `[moe.sft] gradient_checkpointing` and `gradient_accumulation_steps` reduce memory; see `src/ptr_training/moe/README.md`.
 
@@ -84,9 +84,9 @@ RTX 3090 variants (the local host has two 24 GiB RTX 3090, PCIe, no NVLink; ever
 
 Run order, each step only after the previous one worked:
 
-1. `make smoke-gpu` runs `configs/stage-moe-smoke-gpu.toml`: the tiny random OLMoE on CUDA (device plumbing check).
-2. `make olmoe-sft-smoke` runs `configs/stage-moe-olmoe-sft-smoke.toml`: real `allenai/OLMoE-1B-7B-0125` (pinned revision), bf16, LoRA, SFT only, gradient checkpointing, batch 2 x 4 accumulation steps, max_length 256, 50 steps. Estimated (not measured) to fit in 24 GB: about 16.6 GiB allocated at peak (12.89 GiB of bf16 weights, 1.81 GiB of LoRA state for 121.6M trainable parameters, PEFT's merged expert tensors for one recomputed layer, logits and checkpointed activations); `python -m ptr_training.moe.memory --config <config>` or `ptr-train-run --config <config> --memory-report` prints the estimate, and `src/ptr_training/moe/README.md` ("Memory", "Two GPUs") has the table for every OLMoE config and M011 arm and the exact per-card commands.
+1. `make smoke-gpu` runs `configs/stage-moe-smoke-gpu-rtx3090.toml` (with `GPU_PROFILE=rtx4090`, `configs/stage-moe-smoke-gpu.toml`): the tiny random OLMoE on CUDA (device plumbing check).
+2. `make olmoe-sft-smoke` runs `configs/stage-moe-olmoe-sft-smoke-rtx3090.toml` (with `GPU_PROFILE=rtx4090`, `configs/stage-moe-olmoe-sft-smoke.toml`): real `allenai/OLMoE-1B-7B-0125` (pinned revision), bf16, LoRA, SFT only, gradient checkpointing, batch 2 x 4 accumulation steps, max_length 256, 50 steps. Estimated (not measured) to fit in 24 GB: about 16.6 GiB allocated at peak (12.89 GiB of bf16 weights, 1.81 GiB of LoRA state for 121.6M trainable parameters, PEFT's merged expert tensors for one recomputed layer, logits and checkpointed activations); `python -m ptr_training.moe.memory --config <config>` or `ptr-train-run --config <config> --memory-report` prints the estimate, and `src/ptr_training/moe/README.md` ("Memory", "Two GPUs") has the table for every OLMoE config and M011 arm and the exact per-card commands.
 3. `configs/stage-moe-olmoe.toml` (SFT + GSPO + SAPO, 3090 profile, not opted in) stays unrun until step 2 shows the measured peak memory. As written its SFT has no gradient checkpointing and is estimated at about 28.8 GiB (does not fit 24 GiB); the derived config needs `[moe.sft] gradient_checkpointing = true` (estimated about 17 GiB).
 
-Both Makefile targets are added by a separate change; until then run
-`PYTHONPATH=training/src python -m ptr_training.run --config training/configs/<config>.toml --execute` from a clean tree.
+Both Makefile targets run `PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.run --config <config> --execute`
+(`SMOKE_GPU_CONFIG` and `OLMOE_SFT_CONFIG` override the file); `--execute` needs a clean tracked tree.
