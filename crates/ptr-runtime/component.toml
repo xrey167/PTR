@@ -209,7 +209,7 @@ next = [
 ]
 experiments = ["E001", "E003", "E004", "E007", "L001-v2", "R011", "R012", "R015"]
 evaluations = []
-decisions = ["ADR-0022-learned-pod-addresses-advisory.md", "ADR-0001-rust-runtime.md", "ADR-0012-hard-effect-boundary.md", "ADR-0013-runtime-orchestrator.md", "ADR-0017-certified-agent-branches.md", "ADR-0020-only-the-runtime-merges-an-agent-branch.md"]
+decisions = ["ADR-0023-learned-pod-addresses-advisory.md", "ADR-0001-rust-runtime.md", "ADR-0012-hard-effect-boundary.md", "ADR-0013-runtime-orchestrator.md", "ADR-0017-certified-agent-branches.md", "ADR-0020-only-the-runtime-merges-an-agent-branch.md"]
 checks = [
   "src/policy.rs tests: a key id one byte over the identifier bound, installed in the trust store, is refused by verify as InvalidBundle although the ledger encoding of that bundle is refused by the decoder (a_key_id_longer_than_the_identifier_bound_does_not_verify, failing before the change), while an id at the bound verifies and round-trips as the control",
   "tests/branch_merge.rs: a listed reviewer cannot approve a branch they authored (a_reviewer_cannot_approve_the_branch_they_authored, failing before the change): the merge is refused as SelfApproval before certification or verification with nothing appended, the branch unmerged and the runtime unfenced, while the same plan authored by someone else merges under that reviewer and the author's own branch still merges under the runtime's triage",

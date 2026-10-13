@@ -69,7 +69,7 @@ evaluations = [
 decisions = [
   "ADR-0004-backend-independence.md",
   "ADR-0011-semantic-pod-contracts.md",
-  "ADR-0022-learned-pod-addresses-advisory.md",
+  "ADR-0023-learned-pod-addresses-advisory.md",
 ]
 
 checks = [

@@ -1,4 +1,4 @@
-# ADR-0022 — Learned Pod Addresses Are Advisory, Activation-Gated and Revoked Per Pod
+# ADR-0023 — Learned Pod Addresses Are Advisory, Activation-Gated and Revoked Per Pod
 
 ## Status
 Accepted for the prototype with work package 1 of the research integration plan (`ptr-types`, `ptr-pods`, `ptr-ledger`, `ptr-runtime`, `ptr-router`, `training/`). The routing benefit is a claim of experiment R015, which has a harness and no frozen result; this ADR fixes what a learned address may do, not that it helps.

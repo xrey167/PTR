@@ -12,15 +12,15 @@ Decisions: all five priorities as a roadmap; training in `training/` (Python), i
 
 | WP | Topic | Branch | Status | Resources |
 |---|---|---|---|---|
-| 1 | Pod linking: identity, head resolver, Dragonfly addresses | `claude/wp1-pod-linking` | in review | ledger tag 32 `PodHeadAdvanced`; [doc 40](architecture/40-pod-linking.md); [ADR-0022](../research/decisions/ADR-0022-learned-pod-addresses-advisory.md); experiment R015 (R002 design note); evaluation `pod-routing` |
+| 1 | Pod linking: identity, head resolver, Dragonfly addresses | `claude/wp1-pod-linking` | in review | ledger tag 32 `PodHeadAdvanced`; [doc 40](architecture/40-pod-linking.md); [ADR-0023](../research/decisions/ADR-0023-learned-pod-addresses-advisory.md); experiment R015 (R002 design note); evaluation `pod-routing` |
 | 2 | Reflex, failover and honest counters | `claude/wp2-reflex-failover` | planned | metrics in R015; section in doc 40 |
-| 3 | Retrieval filters, wire deadline, egress refusals | `claude/wp3-retrieval-filters-wire-deadline` | planned | ledger tag 33; doc 33 extended; ADR-0023 |
+| 3 | Retrieval filters, wire deadline, egress refusals | `claude/wp3-retrieval-filters-wire-deadline` | planned | ledger tag 33; doc 33 extended; ADR-0024 |
 | 4 | Training integrity and executable layering | `claude/wp4-training-integrity-layering` | planned | doc 41 |
-| 5 | Serving and promotion: batcher, adapter events, self-improvement contract | `claude/wp5-serving-promotion` | planned | ledger tags 34, 35, 36; doc 42; ADR-0024; experiments E009, R004, F008 |
+| 5 | Serving and promotion: batcher, adapter events, self-improvement contract | `claude/wp5-serving-promotion` | planned | ledger tags 34, 35, 36; doc 42; ADR-0025; experiments E009, R004, F008 |
 
 Order of work: WP1, then WP2 and WP3 (which depend on WP1), WP4 and WP5 largely independent. Merge order: WP4, WP3, WP1, WP2, WP5. New match arms for ledger events are appended at the end of each existing match so parallel branches merge with few conflicts.
 
-The numbers above are the ones reserved after the first draft of the plan met `main`: tags 27 to 31, documents 36 to 39, ADR-0021, and the experiment ids R004 and R005 were already in use.
+The numbers above are the ones reserved after the first draft of the plan met `main`: tags 27 to 31, documents 36 to 39, ADR-0021 and the experiment ids R004 and R005 were already in use, and ADR-0022 is taken by the open PR #133.
 
 ## WP1 — what landed
 

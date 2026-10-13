@@ -233,7 +233,7 @@
 
 ### Decision records
 
-- [ADR-0022-learned-pod-addresses-advisory.md](../../research/decisions/ADR-0022-learned-pod-addresses-advisory.md)
+- [ADR-0023-learned-pod-addresses-advisory.md](../../research/decisions/ADR-0023-learned-pod-addresses-advisory.md)
 - [ADR-0001-rust-runtime.md](../../research/decisions/ADR-0001-rust-runtime.md)
 - [ADR-0012-hard-effect-boundary.md](../../research/decisions/ADR-0012-hard-effect-boundary.md)
 - [ADR-0013-runtime-orchestrator.md](../../research/decisions/ADR-0013-runtime-orchestrator.md)

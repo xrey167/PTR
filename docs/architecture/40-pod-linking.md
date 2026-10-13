@@ -5,7 +5,7 @@ claim is not shown.** Experiment R015 has a harness and no frozen result. The Sy
 design only.
 
 Plan: [`../RESEARCH_INTEGRATION_PLAN_20261013.md`](../RESEARCH_INTEGRATION_PLAN_20261013.md)
-(work package 1). Decision: [ADR-0022](../../research/decisions/ADR-0022-learned-pod-addresses-advisory.md).
+(work package 1). Decision: [ADR-0023](../../research/decisions/ADR-0023-learned-pod-addresses-advisory.md).
 Owners: `ptr-types`, `ptr-pods`, `ptr-ledger`, `ptr-state`, `ptr-runtime`, `ptr-router`,
 `training/` (Python).
 

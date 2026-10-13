@@ -14,7 +14,7 @@ NO-GO if, across the 5 seeds, the learned router does not have a lower false_rou
 
 ## Design
 
-Design: [40 — Pod linking](../../../docs/architecture/40-pod-linking.md); decision: [ADR-0022](../../../research/decisions/ADR-0022-learned-pod-addresses-advisory.md); candidates: `evaluations/components/pod-routing`.
+Design: [40 — Pod linking](../../../docs/architecture/40-pod-linking.md); decision: [ADR-0023](../../../research/decisions/ADR-0023-learned-pod-addresses-advisory.md); candidates: `evaluations/components/pod-routing`.
 
 One run is one seed, in two steps:
 

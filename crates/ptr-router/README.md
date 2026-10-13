@@ -79,7 +79,7 @@
 
 - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
 - [ADR-0011-semantic-pod-contracts.md](../../research/decisions/ADR-0011-semantic-pod-contracts.md)
-- [ADR-0022-learned-pod-addresses-advisory.md](../../research/decisions/ADR-0022-learned-pod-addresses-advisory.md)
+- [ADR-0023-learned-pod-addresses-advisory.md](../../research/decisions/ADR-0023-learned-pod-addresses-advisory.md)
 
 ### Current automated checks
 
