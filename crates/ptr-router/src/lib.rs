@@ -1,5 +1,6 @@
 mod attention_schema;
 mod findings;
+mod learned;
 mod learning;
 mod ope;
 #[cfg(test)]
@@ -22,6 +23,12 @@ pub use findings::{
     FindingRouteRequest, FindingRouter, PodEligibility, RegistryChange, RegistryError,
     RegistryGeneration, RegistryUpdate, ReportClass, RouteClass, RouteOutcome, RouterBuildError,
     RouterConfig, RouterLimits, ScoringContext, UniformScorer,
+};
+pub use learned::{
+    ActivationPolicy, EncoderRef, GateReport, LearnedPodRouter, LearnedRouterConfig,
+    PodRepresentation, PodRepresentationParts, RepresentationError, RepresentationStore,
+    ScoreWeights, ACTIVATION_ALIAS_PERMILLE, ACTIVATION_NEGATIVE_REJECT_PERMILLE,
+    MAX_REPRESENTATION_DIMS, REPRESENTATION_SCHEMA,
 };
 pub use learning::{
     ArmCounts, LearnedPolicy, LearnerConfig, LearningError, LoggedDecision, RewardModel,

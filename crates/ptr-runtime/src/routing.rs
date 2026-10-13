@@ -73,6 +73,11 @@ pub(crate) fn route_failure_reason(error: &RoutedError) -> &'static str {
         RouteError::IneligibleChoice { .. } => "routing policy chose an ineligible pod",
         RouteError::MissingChoice { .. } => "routing policy made no choice",
         RouteError::NonceExhausted(_) => "routing nonce exhausted",
+        RouteError::Abstained { .. } => "routing abstained",
+        RouteError::NoRepresentation { .. } => "routing has no learned representation",
+        RouteError::InactiveRepresentation { .. } | RouteError::InvalidRepresentation { .. } => {
+            "routing representation refused"
+        }
         _ => "routing failed",
     }
 }

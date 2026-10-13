@@ -1,0 +1,581 @@
+//! The learned pod router is advisory: it ranks registry candidates, abstains when unsure, loads
+//! only activated representations and keeps each pod's representation independent.
+mod common;
+
+use common::{key, nonce, registry, request, route};
+use ptr_router::{
+    ActivationPolicy, EncoderRef, GateReport, LearnedPodRouter, LearnedRouterConfig,
+    PodRepresentation, PodRepresentationParts, RepresentationError, RepresentationStore,
+    RouteError, RouteFeatures, Router, ScoreWeights,
+};
+use ptr_types::{
+    CapabilityId, ClusterKey, Generation, PodId, PodIdentity, PodIdentityDescriptor, ProjectId,
+    RequestId, TypeId, POD_IDENTITY_SCHEMA_VERSION,
+};
+
+fn encoder() -> EncoderRef {
+    EncoderRef {
+        id: "test-encoder".into(),
+        revision: "r1".into(),
+    }
+}
+
+fn passing_gate() -> GateReport {
+    GateReport {
+        alias_threshold_permille: 800,
+        alias_min_permille: 930,
+        negative_threshold_permille: 900,
+        negative_reject_permille: 960,
+        alias_count: 4,
+        negative_count: 20,
+    }
+}
+
+fn failing_gate() -> GateReport {
+    GateReport {
+        alias_min_permille: 700,
+        ..passing_gate()
+    }
+}
+
+fn descriptor(pod: &str) -> PodIdentityDescriptor {
+    PodIdentityDescriptor {
+        schema_version: POD_IDENTITY_SCHEMA_VERSION,
+        domain: "supply".into(),
+        kind: "Retrieval".into(),
+        predicate: Some(format!("answers_{pod}")),
+        semantic_role: "reader".into(),
+        aliases: [format!("{pod} alias")].into(),
+    }
+}
+
+fn parts(pod: &str, z: Vec<f32>, bias: f32, generation: u64) -> PodRepresentationParts {
+    let descriptor = descriptor(pod);
+    PodRepresentationParts {
+        pod: PodId::from(pod),
+        identity: descriptor.identity(),
+        cluster_key: descriptor.cluster_key(),
+        encoder: encoder(),
+        generation: Generation(generation),
+        z,
+        bias,
+        weights: ScoreWeights::default(),
+        gate: passing_gate(),
+        activated: true,
+    }
+}
+
+fn representation(pod: &str, z: Vec<f32>, bias: f32, generation: u64) -> PodRepresentation {
+    PodRepresentation::new(parts(pod, z, bias, generation)).unwrap()
+}
+
+fn store(entries: Vec<PodRepresentation>) -> RepresentationStore {
+    let mut store = RepresentationStore::new(encoder());
+    for entry in entries {
+        store.insert(entry).unwrap();
+    }
+    store
+}
+
+fn router(entries: Vec<PodRepresentation>) -> LearnedPodRouter {
+    LearnedPodRouter::new(store(entries), LearnedRouterConfig::default()).unwrap()
+}
+
+fn sigmoid(logit: f64) -> f64 {
+    1.0 / (1.0 + (-logit).exp())
+}
+
+struct Scene {
+    project: ProjectId,
+    capability: CapabilityId,
+    input_type: TypeId,
+    request_id: RequestId,
+}
+
+fn scene() -> Scene {
+    Scene {
+        project: ProjectId::from("demo"),
+        capability: CapabilityId::from("read"),
+        input_type: TypeId::from("Text"),
+        request_id: RequestId::from("request-1"),
+    }
+}
+
+fn features(vector: Vec<f32>) -> RouteFeatures {
+    RouteFeatures::new().with_vector(vector).unwrap()
+}
+
+#[test]
+fn the_score_is_the_sigmoid_of_weighted_cosine_plus_metadata_minus_bias() {
+    let router = router(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
+    let score = router
+        .score(&PodId::from("alpha"), &[1.0, 0.0, 0.0])
+        .unwrap()
+        .unwrap();
+    assert!(
+        (score - sigmoid(12.0 + 3.0 - 10.0)).abs() < 1e-12,
+        "{score}"
+    );
+    // Scaling the query does not change a cosine.
+    let scaled = router
+        .score(&PodId::from("alpha"), &[5.0, 0.0, 0.0])
+        .unwrap()
+        .unwrap();
+    assert!((scaled - score).abs() < 1e-12);
+    // A pod without a representation has no score.
+    assert_eq!(
+        router
+            .score(&PodId::from("beta"), &[1.0, 0.0, 0.0])
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn only_registry_candidates_are_scored_even_when_an_outsider_would_score_higher() {
+    let scene = scene();
+    let registry = registry(&scene.project, &["alpha", "beta"]);
+    // "intruder" is not in the registry and matches the query perfectly; alpha matches less.
+    let router = router(vec![
+        representation("alpha", vec![1.0, 0.0, 0.0], 12.0, 1),
+        representation("beta", vec![0.0, 1.0, 0.0], 12.0, 1),
+        representation("intruder", vec![1.0, 0.0, 0.0], -50.0, 1),
+    ]);
+    let features = features(vec![1.0, 0.0, 0.0]);
+    let request = request(
+        &registry,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    let choice = route(&router, &request).unwrap().unwrap();
+    assert_eq!(choice.route().pod_id, PodId::from("alpha"));
+    // A deterministic point mass: the trusted boundary logs a propensity of exactly one.
+    assert_eq!(choice.propensity().get(), 1.0);
+}
+
+#[test]
+fn a_registry_without_candidates_yields_no_choice_rather_than_an_error() {
+    let scene = scene();
+    let empty = registry(&scene.project, &[]);
+    let router = router(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
+    let features = features(vec![1.0, 0.0, 0.0]);
+    let request = request(
+        &empty,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    assert!(route(&router, &request).unwrap().is_none());
+}
+
+#[test]
+fn the_router_abstains_when_the_margin_to_the_runner_up_is_below_the_minimum() {
+    let scene = scene();
+    let registry = registry(&scene.project, &["alpha", "beta"]);
+    let router = router(vec![
+        representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1),
+        representation("beta", vec![0.9, 0.1, 0.0], 10.0, 1),
+    ]);
+    let features = features(vec![1.0, 0.0, 0.0]);
+    let request = request(
+        &registry,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    let error = route(&router, &request).unwrap_err();
+    match error.error() {
+        RouteError::Abstained {
+            best,
+            runner_up,
+            best_score,
+            margin,
+        } => {
+            assert_eq!(best, &PodId::from("alpha"));
+            assert_eq!(runner_up.as_ref(), Some(&PodId::from("beta")));
+            assert!(*best_score > 0.5, "the best pod is confident on its own");
+            assert!(*margin < 0.15, "margin {margin}");
+        }
+        other => panic!("expected an abstention, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_router_abstains_when_the_best_score_is_below_the_threshold() {
+    let scene = scene();
+    let registry = registry(&scene.project, &["alpha"]);
+    let router = router(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
+    let features = features(vec![-1.0, 0.0, 0.0]);
+    let request = request(
+        &registry,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    let error = route(&router, &request).unwrap_err();
+    assert!(matches!(
+        error.error(),
+        RouteError::Abstained {
+            runner_up: None,
+            best_score,
+            margin,
+            ..
+        } if *best_score < 0.5 && (best_score - margin).abs() < 1e-12
+    ));
+}
+
+#[test]
+fn a_clear_winner_is_chosen_and_the_runner_up_is_not() {
+    let scene = scene();
+    let registry = registry(&scene.project, &["alpha", "beta"]);
+    let router = router(vec![
+        representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1),
+        representation("beta", vec![0.0, 1.0, 0.0], 10.0, 1),
+    ]);
+    for (query, expected) in [
+        (vec![1.0, 0.0, 0.0], "alpha"),
+        (vec![0.0, 1.0, 0.0], "beta"),
+    ] {
+        let features = features(query);
+        let request = request(
+            &registry,
+            &scene.project,
+            &scene.capability,
+            &scene.input_type,
+            &scene.request_id,
+            &features,
+        );
+        let choice = route(&router, &request).unwrap().unwrap();
+        assert_eq!(choice.route().pod_id, PodId::from(expected));
+    }
+}
+
+#[test]
+fn a_router_without_representations_reports_that_nothing_was_scored() {
+    let scene = scene();
+    let registry = registry(&scene.project, &["alpha", "beta"]);
+    let router = LearnedPodRouter::new(
+        RepresentationStore::new(encoder()),
+        LearnedRouterConfig::default(),
+    )
+    .unwrap();
+    let features = features(vec![1.0, 0.0, 0.0]);
+    let request = request(
+        &registry,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    let error = route(&router, &request).unwrap_err();
+    assert!(matches!(
+        error.error(),
+        RouteError::NoRepresentation { candidates: 2 }
+    ));
+}
+
+#[test]
+fn candidates_without_a_representation_are_not_scored() {
+    let scene = scene();
+    let registry = registry(&scene.project, &["alpha", "beta"]);
+    let router = router(vec![representation("beta", vec![0.0, 1.0, 0.0], 10.0, 1)]);
+    let features = features(vec![0.0, 1.0, 0.0]);
+    let request = request(
+        &registry,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    let choice = route(&router, &request).unwrap().unwrap();
+    assert_eq!(choice.route().pod_id, PodId::from("beta"));
+}
+
+#[test]
+fn a_missing_wrongly_sized_or_zero_query_is_invalid_features() {
+    let scene = scene();
+    let registry = registry(&scene.project, &["alpha"]);
+    let router = router(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
+    for query in [vec![], vec![1.0, 0.0], vec![0.0, 0.0, 0.0]] {
+        let features = RouteFeatures::new().with_vector(query).unwrap();
+        let request = request(
+            &registry,
+            &scene.project,
+            &scene.capability,
+            &scene.input_type,
+            &scene.request_id,
+            &features,
+        );
+        let error = router.policy(&request).unwrap_err();
+        assert!(
+            matches!(error, RouteError::InvalidFeatures { .. }),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn a_representation_that_is_not_activated_is_never_loaded() {
+    let mut store = RepresentationStore::new(encoder());
+    let mut inactive = parts("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    inactive.gate = failing_gate();
+    inactive.activated = false;
+    let inactive = PodRepresentation::new(inactive).unwrap();
+    assert!(!inactive.activated());
+    let error = store.insert(inactive).unwrap_err();
+    assert!(matches!(
+        error,
+        RouteError::InactiveRepresentation { ref pod } if pod == &PodId::from("alpha")
+    ));
+    assert!(store.is_empty());
+}
+
+#[test]
+fn an_activated_flag_that_contradicts_the_measured_gate_does_not_construct() {
+    let mut forged = parts("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    forged.gate = failing_gate();
+    forged.activated = true;
+    assert_eq!(
+        PodRepresentation::new(forged),
+        Err(RepresentationError::GateInconsistent)
+    );
+    let mut understated = parts("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    understated.activated = false;
+    assert_eq!(
+        PodRepresentation::new(understated),
+        Err(RepresentationError::GateInconsistent)
+    );
+}
+
+#[test]
+fn the_store_rechecks_the_measured_gate_against_its_own_minima() {
+    // The artifact claims thresholds it passes, but they are lower than the store requires.
+    let mut lenient = parts("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    lenient.gate = GateReport {
+        alias_threshold_permille: 100,
+        alias_min_permille: 500,
+        negative_threshold_permille: 100,
+        negative_reject_permille: 500,
+        alias_count: 3,
+        negative_count: 3,
+    };
+    let lenient = PodRepresentation::new(lenient).unwrap();
+    assert!(lenient.activated());
+    let mut strict = RepresentationStore::new(encoder());
+    assert!(matches!(
+        strict.insert(lenient.clone()),
+        Err(RouteError::InactiveRepresentation { .. })
+    ));
+    let mut permissive = RepresentationStore::with_policy(
+        encoder(),
+        ActivationPolicy {
+            min_alias_permille: 500,
+            min_negative_reject_permille: 500,
+        },
+    );
+    permissive.insert(lenient).unwrap();
+}
+
+#[test]
+fn invalid_representations_are_refused_with_the_reason() {
+    let refuse = |edit: &dyn Fn(&mut PodRepresentationParts)| {
+        let mut broken = parts("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+        edit(&mut broken);
+        PodRepresentation::new(broken).unwrap_err()
+    };
+    assert_eq!(
+        refuse(&|p| p.z = vec![0.0, 0.0, 0.0]),
+        RepresentationError::ZeroVector
+    );
+    assert_eq!(
+        refuse(&|p| p.z = vec![1.0, f32::NAN, 0.0]),
+        RepresentationError::NonFinite { field: "z" }
+    );
+    assert_eq!(
+        refuse(&|p| p.bias = f32::INFINITY),
+        RepresentationError::NonFinite { field: "bias" }
+    );
+    assert_eq!(
+        refuse(&|p| p.z = Vec::new()),
+        RepresentationError::InvalidDimensions {
+            actual: 0,
+            max: 4096
+        }
+    );
+    assert_eq!(
+        refuse(&|p| p.encoder.revision.clear()),
+        RepresentationError::EmptyField {
+            field: "encoder.revision"
+        }
+    );
+    assert_eq!(
+        refuse(&|p| p.weights.cosine = 0.0),
+        RepresentationError::NonFinite {
+            field: "cosine_weight"
+        }
+    );
+}
+
+#[test]
+fn a_representation_of_another_dimension_or_encoder_is_refused() {
+    let mut store = store(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1)]);
+    let wrong_dims = representation("beta", vec![1.0, 0.0, 0.0, 0.0], 10.0, 1);
+    assert!(matches!(
+        store.insert(wrong_dims),
+        Err(RouteError::InvalidRepresentation {
+            error: RepresentationError::DimensionMismatch {
+                expected: 3,
+                actual: 4
+            },
+            ..
+        })
+    ));
+    let mut other_encoder = parts("beta", vec![0.0, 1.0, 0.0], 10.0, 1);
+    other_encoder.encoder.revision = "r2".into();
+    assert!(matches!(
+        store.insert(PodRepresentation::new(other_encoder).unwrap()),
+        Err(RouteError::InvalidRepresentation {
+            error: RepresentationError::EncoderMismatch { .. },
+            ..
+        })
+    ));
+    assert_eq!(store.len(), 1);
+}
+
+#[test]
+fn a_representation_replaces_only_a_strictly_older_generation() {
+    let mut store = store(vec![representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 2)]);
+    for generation in [1, 2] {
+        assert!(matches!(
+            store.insert(representation(
+                "alpha",
+                vec![0.0, 1.0, 0.0],
+                10.0,
+                generation
+            )),
+            Err(RouteError::InvalidRepresentation {
+                error: RepresentationError::StaleGeneration { .. },
+                ..
+            })
+        ));
+    }
+    let replaced = store
+        .insert(representation("alpha", vec![0.0, 1.0, 0.0], 10.0, 3))
+        .unwrap()
+        .unwrap();
+    assert_eq!(replaced.generation(), Generation(2));
+    assert_eq!(
+        store.get(&PodId::from("alpha")).unwrap().generation(),
+        Generation(3)
+    );
+}
+
+#[test]
+fn removing_one_pods_representation_leaves_the_others_scoring_identically() {
+    let router_before = router(vec![
+        representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1),
+        representation("beta", vec![0.0, 1.0, 0.0], 10.0, 1),
+        representation("gamma", vec![0.0, 0.0, 1.0], 10.0, 1),
+    ]);
+    let query = [0.2, 0.7, 0.1];
+    let beta_before = router_before.score(&PodId::from("beta"), &query).unwrap();
+    let gamma_before = router_before.score(&PodId::from("gamma"), &query).unwrap();
+
+    let mut revoked = router_before.store().clone();
+    assert!(revoked.remove(&PodId::from("alpha")).is_some());
+    let router_after = LearnedPodRouter::new(revoked, LearnedRouterConfig::default()).unwrap();
+
+    assert_eq!(
+        router_after.score(&PodId::from("alpha"), &query).unwrap(),
+        None
+    );
+    assert_eq!(
+        router_after.score(&PodId::from("beta"), &query).unwrap(),
+        beta_before
+    );
+    assert_eq!(
+        router_after.score(&PodId::from("gamma"), &query).unwrap(),
+        gamma_before
+    );
+    // And routing still works for the pods that kept their representation.
+    let scene = scene();
+    let registry = registry(&scene.project, &["alpha", "beta", "gamma"]);
+    let features = features(vec![0.0, 1.0, 0.0]);
+    let request = request(
+        &registry,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    let choice = route(&router_after, &request).unwrap().unwrap();
+    assert_eq!(choice.route().pod_id, PodId::from("beta"));
+}
+
+#[test]
+fn the_same_request_routes_to_the_same_pod_with_the_same_draw_inputs() {
+    let scene = scene();
+    let registry = registry(&scene.project, &["alpha", "beta"]);
+    let router = router(vec![
+        representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1),
+        representation("beta", vec![0.0, 1.0, 0.0], 10.0, 1),
+    ]);
+    let features = features(vec![0.9, 0.1, 0.0]);
+    let request = request(
+        &registry,
+        &scene.project,
+        &scene.capability,
+        &scene.input_type,
+        &scene.request_id,
+        &features,
+    );
+    let first = route(&router, &request).unwrap().unwrap();
+    let again = ptr_router::route_checked(&router, &request, &key(), &nonce())
+        .unwrap()
+        .unwrap();
+    assert_eq!(first, again);
+}
+
+#[test]
+fn router_thresholds_must_be_probabilities() {
+    for config in [
+        LearnedRouterConfig {
+            abstain_below: 1.5,
+            ..LearnedRouterConfig::default()
+        },
+        LearnedRouterConfig {
+            min_margin: -0.1,
+            ..LearnedRouterConfig::default()
+        },
+        LearnedRouterConfig {
+            abstain_below: f64::NAN,
+            ..LearnedRouterConfig::default()
+        },
+    ] {
+        assert!(matches!(
+            LearnedPodRouter::new(RepresentationStore::new(encoder()), config),
+            Err(RouteError::InvalidFeatures { .. })
+        ));
+    }
+}
+
+#[test]
+fn identity_and_cluster_key_survive_in_the_representation() {
+    let alpha = representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    let descriptor = descriptor("alpha");
+    assert_eq!(alpha.identity(), &descriptor.identity());
+    assert_eq!(alpha.cluster_key(), descriptor.cluster_key());
+    let _: (&PodIdentity, ClusterKey) = (alpha.identity(), alpha.cluster_key());
+}

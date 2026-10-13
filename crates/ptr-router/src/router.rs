@@ -67,7 +67,7 @@
 
 use crate::{
     DecisionNonce, NonceExhausted, NonceSequence, PodRoute, PodRouter, Propensity, PropensityError,
-    SamplingKey,
+    RepresentationError, SamplingKey,
 };
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, Digest, PodId, Probability, ProjectId, RequestId, TypeId};
@@ -243,6 +243,31 @@ pub enum RouteError {
     MissingChoice { candidates: usize },
     /// The [`NonceSequence`] of a [`CheckedRouter`] cannot hand out another fresh nonce.
     NonceExhausted(NonceExhausted),
+    /// A learned router declined to choose: its best candidate scored below the abstention
+    /// threshold, or the margin to the runner-up was too small. Abstention is a valid outcome,
+    /// not a failure of the policy; a caller falls back to a non-learned router or fails the
+    /// request, and counts it apart from errors.
+    Abstained {
+        /// The highest-scoring candidate.
+        best: PodId,
+        /// The second-highest candidate, when there was one.
+        runner_up: Option<PodId>,
+        /// The sigmoid score of `best`.
+        best_score: f64,
+        /// `best_score` minus the runner-up's score; `best_score` when there was no runner-up.
+        margin: f64,
+    },
+    /// None of the eligible candidates has a learned representation, so a learned router has
+    /// nothing to score. Distinct from [`RouteError::Abstained`]: no pod was scored at all.
+    NoRepresentation { candidates: usize },
+    /// A learned representation was offered although it is not activated (its activation gate was
+    /// not passed, or it says so). Such a representation is never loaded.
+    InactiveRepresentation { pod: PodId },
+    /// A learned representation failed validation and was not loaded.
+    InvalidRepresentation {
+        pod: PodId,
+        error: RepresentationError,
+    },
 }
 
 impl RouteError {
@@ -276,6 +301,25 @@ impl fmt::Display for RouteError {
                 "router returned an empty distribution although {candidates} eligible candidates exist"
             ),
             Self::NonceExhausted(error) => write!(f, "{error}"),
+            Self::Abstained {
+                best,
+                runner_up,
+                best_score,
+                margin,
+            } => write!(
+                f,
+                "router abstained: best {best:?} scored {best_score:.4}, runner-up {runner_up:?}, margin {margin:.4}"
+            ),
+            Self::NoRepresentation { candidates } => write!(
+                f,
+                "none of {candidates} eligible candidates has a learned representation"
+            ),
+            Self::InactiveRepresentation { pod } => {
+                write!(f, "representation of pod {pod:?} is not activated")
+            }
+            Self::InvalidRepresentation { pod, error } => {
+                write!(f, "representation of pod {pod:?} is invalid: {error}")
+            }
         }
     }
 }
@@ -287,9 +331,13 @@ impl std::error::Error for RouteError {
             Self::InvalidPropensity(error) => Some(error),
             Self::InvalidDistribution(error) => Some(error),
             Self::NonceExhausted(error) => Some(error),
+            Self::InvalidRepresentation { error, .. } => Some(error),
             Self::InvalidFeatures { .. }
             | Self::IneligibleChoice { .. }
-            | Self::MissingChoice { .. } => None,
+            | Self::MissingChoice { .. }
+            | Self::Abstained { .. }
+            | Self::NoRepresentation { .. }
+            | Self::InactiveRepresentation { .. } => None,
         }
     }
 }
