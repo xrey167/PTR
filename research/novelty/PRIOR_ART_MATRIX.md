@@ -23,7 +23,7 @@ Rows for the mechanisms of [35 — Agentic substrate](../../docs/architecture/35
 | FSRS-4.5 (open-spaced-repetition); Efraimidis and Spirakis, weighted random sampling (IPL 2006) | Power-law forgetting; weighted sampling without replacement | Forgetting model and Gumbel-top-k draws | Forgetting is fitted on the training clock from probe losses; strata are sampled without replacement and held-out samples are excluded by type | R004 |
 | Dawid and Skene (JRSS C 1979); Ratner et al., Snorkel (arXiv:1711.10160) | Label models over noisy labeling functions | EM confusion-matrix model | Verifier-backed functions only veto and are never outvoted; Unknown and Disputed are outcomes; only uniform gold estimates accuracy | F002 |
 | Cormack, Clarke and Büttcher, reciprocal rank fusion (SIGIR 2009); Bruch, Gai and Ingber, fusion functions for hybrid retrieval (arXiv:2210.11934) | Rank and score fusion | Weighted RRF and convex fusion | Fusion keyed by capsule and generation, joined to the lifecycle catalog of the same snapshot | Q003 |
-| pgvector; VectorChord; ParadeDB pg_search; Tiger Data pg_textsearch | In-database vector and BM25 search | halfvec HNSW, iterative scans, BM25 candidates | Derived rows exist only for live generations, enforced by row-lock ordering with the projector | Q003 |
+| pgvector; VectorChord; ParadeDB pg_search; Tiger Data pg_textsearch | In-database vector and BM25 search | halfvec HNSW, iterative scans, BM25 candidates | Derived rows exist only for live generations, enforced by row-lock ordering with the projector | Q003-v3 (successor of the superseded Q003 and Q003-v2) |
 
 ## KV-cache reuse (doc 36)
 
