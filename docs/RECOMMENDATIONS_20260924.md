@@ -81,6 +81,11 @@ key identifier. PR 97 fixed three `ptr-pg` tests that assumed one
 SQLSTATE for every PostgreSQL version. The review's complete list of findings is not
 in the repository, so this note records what was merged and not what remains.
 
+*Owner decisions O4 and O6 (2026-10-13).* [ADR-0022](../research/decisions/ADR-0022-issue-23-respecification.md)
+records the decisions on D1–D6 (O4) and on G1/C9 (O6, "not now" until an A0 study passes its
+gates), re-specifies the deferred items S1–S8 against the integrated tree and closes C7 (raft
+never compacts or installs a snapshot above the ledger's retention floor).
+
 The rest of this document is unchanged and still describes `e93ed99`.
 
 ## 1. The diagnosis in one paragraph

@@ -81,8 +81,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-verifier.mmd`](../../docs/diagrams/components/ptr-verifier.mmd)
 
-**Upstream:** ptr-feedback, ptr-pods, ptr-search  
-**Downstream:** ptr-semdb, ptr-security, ptr-ledger
+**Upstream:** ptr-semdb, ptr-types  
+**Downstream:** ptr-runtime, ptr-pods, ptr-router, ptr-feedback, ptr-branch, ptr-podwire, ptr-server, ptr-bench
 
 ## Mission
 

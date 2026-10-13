@@ -1,7 +1,23 @@
 # ptr-bench
 
-Reference microbenchmarks and lifecycle probes. Run `cargo run -p ptr-bench -- all`.
-These probes do not establish model quality or production readiness.
+Reference microbenchmarks and lifecycle probes. Run `cargo run -p ptr-bench -- all` (the SemDB and
+mailbox microbenchmarks). These probes do not establish model quality or production readiness.
+
+Every experiment harness is a subcommand; the experiment's manifest names the exact command.
+
+| Subcommand | Experiment | Feature |
+|---|---|---|
+| `invalidation`, `snapshot-cancellation`, `certified-branches` | S001, S002, S003 | default |
+| `mailbox-backpressure`, `exact-prefix-reuse`, `positional-reuse-oracle`, `span-forget` | R001, R005, R006, R007 | default |
+| `layer-shared-lora-kv`, `moe-expert-kv-revocation`, `self-modification-safety`, `approximate-taint-containment`, `self-modification-authority` | R009, R010, R011, R012, R013 | default |
+| `generate-verify-repair`, `weak-supervision`, `calibrated-arbiter`, `vcw-loop` | F001, F002, F003, F007 | default |
+| `evidence-promotion`, `fast-weight-memory`, `split-pod-kv` | Q002, M008, E007 | default |
+| `kv-reuse-smoke` | none (smoke run, below) | default |
+| `fastmem-revocation`, `projection-equivalence`, `postgres-hybrid` | L003, L004, Q003 (Q003-v2, Q003-v3) | `postgres-experiments` |
+| `revocation-crash`, `raft-recovery` | L001-v2, L002 | `ledger-experiments` |
+
+The usage line printed for an unknown subcommand omits `split-pod-kv` and `calibrated-arbiter`,
+which exist all the same.
 
 Dependency setup now uses SemanticDelta.dependencies and timed updates use the
 fallible typed-value/staged invalidation API. Historical timings of the old
@@ -45,7 +61,7 @@ the run vacuous) and `falsifiers` (a tripped one falsifies R005 on that seed). T
 is 1 when a prerequisite is unmet, a falsifier is tripped or a metric has neither a value nor a
 reason, and 2 when the harness cannot run a case. The constants of `r005/params.rs` mirror
 `config.toml` (a drift test fails on any difference); the values the file leaves open are listed
-in `r005/params.rs` under "chosen" and in the draft preregistration.
+in `r005/params.rs` under "chosen" and in the preregistration.
 
 ## S003 certified branches
 

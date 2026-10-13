@@ -7,7 +7,7 @@ pub mod retention;
 pub use acknowledged::{AcknowledgedError, AcknowledgedLedger, Split, TailPolicy, TailRecovery};
 pub use compaction::{
     CompactionDecision, CompactionFault, CompactionOutcome, CompactionPlan, LogPaths,
-    RetentionPolicy,
+    RetentionFloor, RetentionPolicy,
 };
 pub use file::{FileLedger, LegacyLog, RecoverableLog};
 pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};
@@ -2855,7 +2855,9 @@ pub use raft_node::{
     SnapshotDelivery, MAX_MESSAGE_BYTES,
 };
 #[cfg(feature = "raft-rs-backend")]
-pub use raft_storage::{FileRaftStorage, MAX_ENTRY_BYTES, MAX_SNAPSHOT_BYTES};
+pub use raft_storage::{
+    FileRaftStorage, SnapshotFloorRefusal, MAX_ENTRY_BYTES, MAX_SNAPSHOT_BYTES,
+};
 
 #[cfg(feature = "raft-rs-backend")]
 mod raft_rs_backend {

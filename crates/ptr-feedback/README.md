@@ -67,8 +67,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-feedback.mmd`](../../docs/diagrams/components/ptr-feedback.mmd)
 
-**Upstream:** ptr-core, ptr-verifier  
-**Downstream:** training pipeline, ptr-ledger, ptr-observe
+**Upstream:** ptr-types, ptr-verifier  
+**Downstream:** ptr-runtime, ptr-bench
 
 ## Mission
 

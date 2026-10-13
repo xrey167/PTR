@@ -82,7 +82,7 @@ fn main() {
             &args,
             "approximate-taint-containment",
         ))),
-        // The harness of R006: one seed per run, no default seed. Not built yet: exits 2.
+        // The harness of R006: one seed per run, no default seed.
         "positional-reuse-oracle" => {
             experiments::r006::run(strict_or_exit(seed_arg(&args, "positional-reuse-oracle")))
         }

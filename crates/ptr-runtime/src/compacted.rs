@@ -168,7 +168,7 @@ const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC003";
 /// The lifecycle section of a PTRCS003 snapshot, read only inside one.
 const PRE_ATTESTATION_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
 
-/// Which of the two readable layouts a snapshot is in, as its outer magic
+/// Which of the readable layouts a snapshot is in, as its outer magic
 /// says. The lifecycle section must be the one that layout pairs with.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Layout {

@@ -69,8 +69,8 @@ Written and tested on CPU only; nothing here has run on a GPU.
   checkpointing, batch 2 x 4, max_length 256, 50 steps, `allow_unselected_backend = true`).
   Memory estimate for the latter, not measured: ~12.9 GB bf16 weights + LoRA/optimizer state
   (tens of MB) + checkpointed activations. Expect it to fit in 24 GB; the real peak lands in
-  `metrics.json`. Both are launched with `make smoke-gpu` and `make olmoe-sft-smoke` (targets
-  added separately).
+  `metrics.json`. Both are launched with `make smoke-gpu` and `make olmoe-sft-smoke`, which by
+  default (`GPU_PROFILE=rtx3090`) run their `-rtx3090` variants naming `hardware/rtx3090.toml`.
 - Tests: `training/tests/test_moe_device.py`.
 
 ## Verified versions (installed and read from source)
@@ -371,8 +371,8 @@ refused run writes no manifest.
 
 CPU-testable implementation of the three adapter topologies, domain-masked routing, corpus
 loaders and the entrypoint for experiment M011 (routed PEFT on OLMoE). The experiment stays
-`planned`; its manifest (`experiments/model/M011-routed-peft`) lives in a separate PR and the
-pins below mirror it (`tests/test_m011_*` cross-check them when `PTR_M011_CONFIG` points at
+`planned` (registry); its manifest is `experiments/model/M011-routed-peft`, its `entrypoint` is
+still empty, and the pins below mirror it (`tests/test_m011_*` cross-check them when `PTR_M011_CONFIG` points at
 that `config.toml`).
 
 | module | role |
@@ -407,7 +407,8 @@ PYTHONPATH=training/src training/.venv/bin/python -m ptr_training.moe.m011 \
 # tests (about 35 s on CPU)
 PYTHONPATH=training/src training/.venv/bin/python -m unittest discover -s training/tests -p 'test_m011*'
 
-# real run on the RTX 4090 (downloads OLMoE and the three corpora at the pinned revisions),
+# real run on one 24 GiB card (an RTX 3090 on the owner's desktop; downloads OLMoE and the three
+# corpora at the pinned revisions),
 # two commands per arm (TB1 protocol):
 # 1. tune ONCE on the pilot seed 1001 (never a confirmatory seed): 8 trials of floor(0.25 * 2000) = 500 steps,
 #    seeded random search, selection on validation only -> frozen tuning.json

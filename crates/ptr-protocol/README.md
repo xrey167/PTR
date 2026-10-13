@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-10-10  
-**Code footprint:** 3 Rust source files · 954 nonblank source lines · 2 integration-test files · 30 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-13  
+**Code footprint:** 3 Rust source files · 957 nonblank source lines · 2 integration-test files · 30 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -75,7 +75,7 @@ flowchart LR
 Dedicated diagram source: [`docs/diagrams/components/ptr-protocol.mmd`](../../docs/diagrams/components/ptr-protocol.mmd)
 
 **Upstream:** ptr-types  
-**Downstream:** ptr-net, ptr-pods, ptr-server
+**Downstream:** ptr-net, ptr-pods, ptr-podwire, ptr-runtime, ptr-server, ptr-bench
 
 ## Mission
 

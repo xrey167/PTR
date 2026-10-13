@@ -139,7 +139,7 @@ flowchart LR
 Dedicated diagram source: [`docs/diagrams/components/ptr-types.mmd`](../../docs/diagrams/components/ptr-types.mmd)
 
 **Upstream:** none  
-**Downstream:** all PTR crates
+**Downstream:** every other PTR crate and binary
 
 ## Mission and ownership
 
