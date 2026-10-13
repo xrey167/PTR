@@ -229,8 +229,8 @@ loop's budget and generation FLOPs are within 5%.
 | A4 | A3 with a fixed random permutation of the code-to-expert map (R2 control) |
 | A5 | Scalar-verdict bandit over A3's experts (LinUCB on pass/fail only; ORACLE-style) |
 | A6 | Learned recovery router over A3's experts that reads the raw report text but not the code table (CodeRescue-style) |
-| S+ | Positive sensitivity control: the F007 simulated world with declared heterogeneous skill; must show A3 ahead |
-| S0 | Null sensitivity control: the verifier's codes deterministically relabelled per task so they carry no information about the defect; A3 must tie A1 |
+| S+ | Positive sensitivity control, run in the simulated-expert harness (F007 design, same evaluation, routing and accounting code as the GPU arms): declared per-(expert, code) skill tables in which each failure-role specialist is better on its own role than the generic, domain and shuffled repairers, chosen so that the analytic expected A3 − A0, A3 − A1, A3 − A2 and A3 − A4 are each at least +8 points |
+| S0 | Null sensitivity control, same simulated harness: an **equal-skill world** in which every repair expert of A1, A2, A3 and A4 has the identical success probability on every code, so all four repair arms have the same expected success by construction |
 
 **Ablations.** Remove the code from A3's prompt (routing only, no conditioning); collapse roles
 (format + schema merged); vary the specialist rank at fixed total parameters (2 levels); repair
@@ -239,50 +239,57 @@ budget 2 vs 4 verifier calls.
 **Decision structure (proposed thresholds, frozen at preregistration).** Primary quantity:
 verified success within a budget of 4 verifier calls per task (accept predicate as in
 `Candidate::passes`: status Pass, no hard finding, weakest level at or above the required one),
-on 1,000 held-out tasks per seed; bounds are one-sided 95% bounds of a paired difference over
-tasks, per seed (the pilot checks power ≥ 0.8 at a true effect of +5 points).
+in percentage points, on the same 1,000 held-out tasks per seed for every arm. Each contrast is a
+paired difference over tasks; its one-sided 95% bounds are percentile bounds from 2,000 paired
+bootstrap resamples of the tasks, computed per seed (the pilot checks power ≥ 0.8 at a true effect
+of +5 points).
 
 *Validity gates (failure: run INVALID).*
 
 | Gate | Rule |
 |---|---|
 | V-A1 accounting | generation FLOPs of every arm within ±5% of A3; verifier calls per task exactly the budget; trainable parameters A1, A2, A3 (and A6's router excluded) within ±1%; identical task ids and order across arms (digest recorded) |
-| V-A2 hard counters | false accepts, unverified returns, budget violations and collateral edits (JSON: every field not named by a finding pointer byte-identical; arithmetic: not applicable; code: functions not named by a finding unchanged) are all 0 |
+| V-A2 hard counters | in every arm: false accepts, unverified returns and budget violations are 0. In the arms that edit an existing candidate (A1–A6): collateral edits are 0 (JSON: every field not named by a finding pointer byte-identical; arithmetic: not applicable; code: functions not named by a finding unchanged). In A0, which never edits a candidate: every verified candidate is a fresh sample from the base generator under the declared sampling configuration and seed (digest logged), and no candidate is ever modified after sampling |
 | V-A3 coverage | at least 2,000 training transitions for every failure role used by A3 |
 
 *Sensitivity controls (failure: run INVALID for every row that names the control).*
 
 | Control | Rule |
 |---|---|
-| S+ (positive) | in the F007 simulated heterogeneous-skill world run through the same harness: lower bound of A3 − A1 ≥ +3.0 in every seed |
-| S0 (null) | with codes relabelled so they carry no information: both bounds of A3 − A1 within [−1.5, +1.5] in every seed |
+| S+ (positive) | lower bounds of A3 − A0, A3 − A1, A3 − A2 and A3 − A4 each ≥ +3.0 in every seed |
+| S0 (null) | both bounds of A3 − A1, A3 − A2 and A3 − A4 inside [−1.5, +1.5] in every seed (all expected values are 0 by construction) |
 
 *Decision table.*
 
 | Row | Contrast | Margin | Needs | If supported | If refuted | If not shown |
 |---|---|---|---|---|---|---|
 | D1 | A3 − A1 (routing vs conditioning) | +3.0 points | S+, S0 | counts toward SUPPORTED | **K-A1**: thesis REFUTED (routing by failure class adds nothing over conditioning) | thesis cannot be SUPPORTED |
-| D2 | A3 − A0 (vs best-of-N) | +3.0 points | S+ | counts toward SUPPORTED | **K-A2**: thesis REFUTED (doc 39 R1: verifier access carries the effect) | thesis cannot be SUPPORTED |
-| D3 | A3 − A2 (failure axis vs domain axis) | +3.0 points | S+ | keeps the "axis" sub-claim | **K-A3**: "axis" sub-claim dropped; the thesis can at most be SUPPORTED-NARROW | thesis can at most be SUPPORTED-NARROW |
-| D4 | A3 − A4 (true vs shuffled map) | +3.0 points | S+ | counts toward SUPPORTED | **K-A4**: thesis REFUTED (doc 39 R2) | thesis cannot be SUPPORTED |
-| D5 | A3 − A6 (typed code table vs learned router on raw report text) | +3.0 points | S+ | keeps the "typed" sub-claim | "typed" sub-claim dropped | "typed" is not asserted |
+| D2 | A3 − A0 (vs best-of-N) | +3.0 points | S+ (S0 has no A0 null by design: resampling and repair differ in kind) | counts toward SUPPORTED | **K-A2**: thesis REFUTED (doc 39 R1: verifier access carries the effect) | thesis cannot be SUPPORTED |
+| D3 | A3 − A2 (failure axis vs domain axis) | +3.0 points | S+, S0 | keeps the "axis" sub-claim | **K-A3**: "axis" sub-claim dropped; the thesis can at most be SUPPORTED-NARROW | thesis can at most be SUPPORTED-NARROW |
+| D4 | A3 − A4 (true vs shuffled map) | +3.0 points | S+, S0 | counts toward SUPPORTED | **K-A4**: thesis REFUTED (doc 39 R2) | thesis cannot be SUPPORTED |
 
 *Thesis outcome.* **INVALID** if a gate fails. Otherwise **REFUTED** if D1, D2 or D4 is refuted
 (naming the row). Otherwise **SUPPORTED** if D1–D4 are all supported, and **SUPPORTED-NARROW**
 ("failure-routed experts beat conditioning and resampling"; no axis claim) if D1, D2 and D4 are
 supported and D3 is not. Otherwise **NOT_SHOWN**; a successor then needs a new preregistration with
-a power calculation from the observed variance, thresholds unchanged. D5 never changes the thesis
-outcome; it only decides whether the word "typed" may appear in a supported claim, and if A6 is not
-in the preregistered arm set, D5 is not judged and "typed" is not asserted. A5 (scalar bandit), the
-ablations, wall-clock and repairs per verifier call are reported only.
+a power calculation from the observed variance, thresholds unchanged. A5 (scalar bandit), A6
+(learned router on raw report text), the ablations, wall-clock and repairs per verifier call are
+reported only. In particular no outcome of thesis A asserts that the *typed* code table is needed:
+A3 − A6 has no sensitivity control that is positive under a correct harness (in the simulated
+world a text router can learn the code mapping exactly), so it cannot enter the table.
 
 **Compute estimate (unmeasured; to be replaced by the step-2 memory measurement of
 docs/GPU_HANDOVER.md).** CPU stage: harness, S+ and S0 through the `ptr_py` loop simulation
 (`bindings/ptr-py/src/vcw.rs`), a few CPU-hours. GPU stage on the pinned OLMoE base (about 1B
-active / 7B total, bf16 about 12.9 GB per doc 37): repair-transition collection about 5 GPU-h; 9
-LoRA trainings (A1, 3× A2, 5× A3) × 5 seeds at about 1–1.5 GPU-h each ≈ 45–70 GPU-h; evaluation
-of 7 arms × 1,000 tasks × 4 calls × 5 seeds ≈ 15–25 GPU-h. Total ≈ 70–100 GPU-h, i.e. 2–3 days
-on two cards with pilots on card 1.
+active / 7B total, bf16 about 12.9 GB per doc 37), full design: repair-transition collection about
+5 GPU-h; 9 LoRA trainings (A1, 3× A2, 5× A3) × 5 seeds at about 1–1.5 GPU-h each ≈ 45–70 GPU-h;
+evaluation of the GPU arms × 1,000 tasks × 4 calls × 5 seeds ≈ 15–25 GPU-h; total ≈ 65–100 GPU-h.
+The minimal decisive experiment (6 LoRA trainings per seed: A1, 2× A2, 3× A3) is ≈ 45–70 GPU-h.
+**Schedule:** seed training and evaluation belong to the frozen confirmatory run, and confirmatory
+seeds run one at a time on card 0 (AGENTS.md §2, OD-3); card 1 serves only pilots, tuning and
+mutation runs. So the confirmatory stage is ≈ 2.7–4.2 days of card-0 device time for the full
+design (≈ 1.9–2.9 days for the minimal one), plus about 1–2 days for pilots (card 1, before the
+freeze), the mutation check and the pilot rerun on the frozen commit.
 
 **Reuses.** `crates/ptr-verifier` (codes, verifiers) through `ptr_py.verify_*`;
 `crates/ptr-router/src/findings.rs` through `ptr_py` routing (`bindings/ptr-py/src/routing.rs`),
@@ -295,10 +302,10 @@ plan (`experiments/feedback/F007-vcw-loop/`); F005's manifest as the record to s
 verifiers, collateral-edit check is exact), three failure roles (format, value, schema), arms A0,
 A1, A2, A3, A4 and both controls S+ and S0, 5 confirmatory GPU seeds. A2 here is the same parameter
 budget split into two domain experts (arithmetic, JSON), routed by task family. This is the smallest
-set on which every row D1–D4 and both controls they need can be judged. A6 is optional: without
-it, D5 is not judged and "typed" is not asserted. A5 may follow in a successor (reported only). The
-CPU stage of thesis A runs S+ and S0 through the same harness with simulated experts and is a
-go/no-go for the GPU stage only.
+set on which every row D1–D4 and both controls they need can be judged. A5 and A6 may follow in a
+successor (reported only). S+ and S0 run in the simulated-expert harness inside the same frozen
+run. The separate CPU stage of thesis A (harness pilot with S+ and S0 only) is a go/no-go for the
+GPU stage only.
 
 ### Thesis B — Off-policy-auditable routing
 
@@ -320,29 +327,42 @@ that output, so the assumption holds only approximately. How approximately is th
 question. 2605.07260 shows that better equal-compute routes exist on hard tokens, so there is
 signal to rank.
 
-**Strongest baseline.** The status quo for judging routers without re-running them: (a) routing
-statistics (load CV, routing entropy, router margin, churn; already computed by
-`training/src/ptr_training/moe/routing_metrics.py`), and (b) the direct method, a learned reward
-model of per-token route value. For the estimator itself, set-level IPS/SNIPS (known to fail on
-large slates) is the naive comparator.
+**Strongest baseline.** The status quo for judging routers without re-running them, pinned to
+exactly two comparator rankings before the pilot: (a) **load-balance proxy**: each candidate's
+load coefficient of variation of its selected sets at the intervened decisions of the evaluation
+contexts (`load_cv` in `training/src/ptr_training/moe/routing_metrics.py`), ranked so that **lower
+CV ranks higher** (the balancing criterion routers are usually judged by); (b) **direct method
+(DM)**: a reward model r ≈ Σ_{e∈S} w_eᵀ h_c (one linear head per expert on the router input h_c),
+fitted by ridge regression on the *training cohort* only, with the ridge penalty chosen by 5-fold
+cross-validation inside that cohort, and candidates ranked by its predicted value. Other
+statistics (entropy, margin, churn) are reported only. Set-level IPS/SNIPS (known to fail on large
+slates) are reported only.
 
 **Candidate routers (targets).** At least 8, spanning a known value range: the trained router;
 the trained router with aux-loss-free bias updates at two step sizes (M012's arms); a router-only
 counterfactual update of the final layer (the EPO procedure of 2605.07260); two perturbed routers
 of known worse value (logit noise at two scales); a token-error-supervised router (2609.37751's
-headless variant, if it can be reproduced at this scale); and the uniform-within-top-2k router.
+headless variant; if it cannot be reproduced at this scale in the pilot, it is replaced by logit
+noise at a third scale, decided before the freeze); and the uniform-within-top-2k router. Exactly
+8 candidates are frozen.
 
-**Primary value estimand (one, fixed before the pilot).** The decision unit is a context
-c = (verified-correct trajectory y, position t, MoE layer ℓ) drawn from a fixed, held-out
-evaluation distribution D of trajectories with one uniformly drawn (t, ℓ) per teacher-forced pass
-(ℓ restricted to the declared exploration layers). The action is the expert set S chosen at (t, ℓ);
-every other routing decision of the pass uses the base router deterministically, and the
-aggregation weights on S are the base router's scores renormalised over S, so candidates are
-compared on *expert selection* only (a candidate that changes only gate weights is out of scope).
-The reward is r(c, S) = the teacher-forced probability of the realized token y_t when (t, ℓ) uses
-S, which lies in [0, 1] as `ope.rs` requires of rewards. For a candidate router π:
-- **V(π)** = E_{c∼D} E_{S∼π(·|c)} [ r(c, S) ], computed on-policy by running π at (t, ℓ) on a
-  held-out evaluation set of contexts (one forward per context and deterministic candidate);
+**Primary value estimand (one, fixed before the pilot).** Positions follow the causal-LM
+convention: the output at input position j is the distribution of the next token y_{j+1}. The
+decision unit is a context c = (verified-correct trajectory y, target index t ≥ 2, MoE layer ℓ),
+drawn from a fixed, held-out evaluation distribution D with one uniformly drawn (t, ℓ) per
+teacher-forced pass (ℓ restricted to the declared exploration layers). The intervened decision is
+the routing of **input position t − 1 at layer ℓ**, the position whose output predicts y_t. The
+action is the expert set S chosen there; every other routing decision of the pass (all positions,
+all layers) uses the base router deterministically, and the aggregation weights on S are the base
+router's scores renormalised over S, so candidates are compared on *expert selection* only (a
+candidate that changes only gate weights is out of scope). The reward is r(c, S) = the
+teacher-forced probability p(y_t | y_<t) read at the output of position t − 1 when that position's
+layer-ℓ decision uses S; it lies in [0, 1] as `ope.rs` requires of rewards. Because attention is
+causal, the intervention changes no input of any position before t − 1, so r(c, S) depends on S and
+on c only. For a candidate router π:
+- **V(π)** = E_{c∼D} E_{S∼π(·|c)} [ r(c, S) ], computed on-policy by running π at (position t − 1,
+  layer ℓ) on a held-out evaluation set of contexts, disjoint from every cohort (one forward per
+  context and deterministic candidate);
 - **V̂(π)** = the estimator's value computed only from a logged exploration cohort
   {(c_i, S_i, μ(S_i | c_i), r_i, π(·|c_i))}, where μ is the logging policy (base router with
   single-slot exploration ε) and π(·|c_i) is the candidate's slate distribution recorded for that
@@ -355,9 +375,11 @@ decision) is **reported only**: it enters no row of the decision table.
 **Logging plan.** Every target router's slate distribution must be computable on every logged
 context, so the candidate set is **frozen and shadow-scored during collection**: at each logged
 decision the harness evaluates every frozen candidate's router on the same router input (the
-layer-ℓ hidden state entering the MoE block, which no layer-ℓ routing decision can change) and
+hidden state of position t − 1 entering the layer-ℓ MoE block, which the intervened decision
+cannot change) and
 records its selected set and per-expert inclusion probabilities next to μ(S_i | c_i). In addition,
-the layer-ℓ router inputs of a pinned subset of the cohort (fp16, digest recorded) are retained so
+the router inputs (position t − 1, layer ℓ) of a pinned subset of the cohort (fp16, digest
+recorded) are retained so
 that a candidate added after collection can be scored on that subset only; a candidate with
 neither a shadow score nor retained inputs for a context is refused for that cohort, never
 estimated from a logits digest or a reconstruction.
@@ -379,9 +401,12 @@ pass, treating the others as context noise) as an explicitly approximate variant
 the exact one-decision-per-pass design.
 
 **Decision structure (proposed thresholds, frozen at preregistration).** Every bound below is a
-one-sided 95% percentile bound from 2,000 bootstrap resamples per seed, resampling the logged
-exploration-cohort contexts (V̂ recomputed) and, independently, the on-policy evaluation contexts
-(V recomputed).
+one-sided 95% percentile bound from 2,000 bootstrap replicates per seed. Each replicate resamples
+the logged exploration-cohort decisions (V̂ for all candidates and DB4 recomputed on the same
+resample) and, independently, the on-policy evaluation contexts (V for all candidates and the range
+max V − min V recomputed on the same resample); the row statistic is computed from the two resamples
+of that replicate. The comparator rankings of DB3 are recomputed on the same evaluation-context
+resample.
 
 *Validity gates (failure: run INVALID).*
 
@@ -395,8 +420,8 @@ exploration-cohort contexts (V̂ recomputed) and, independently, the on-policy e
 
 | Control | Rule |
 |---|---|
-| SB+ (positive) | synthetic world with an exactly additive reward: lower bound of τ_b(wPI, V) ≥ 0.90 |
-| SB0 (placebo) | propensities shuffled across decisions: upper bound of τ_b ≤ 0.30 |
+| SB+ (positive) | **additive world**, same logger, candidates and cohort sizes: the logged reward is replaced by r⁺(c, S) = Σ_{e∈S} φ(c, e) with φ(c, e) the base router's softmax probability of e at c divided by k, so Assumption 1 of the pseudoinverse estimator holds exactly and wPI is unbiased; the candidates' true values are computed exactly. Rule: lower bound of τ_b(V̂, V) ≥ 0.90 in every seed |
+| SB0 (null) | **action-independent world**, same logger, candidates and cohort: the logged reward is replaced by r⁰(c, S) = r(c, S_base), the reward of the base router's own set, so every candidate has the same true value by construction. Rule: for every non-refused candidate, both bounds of V̂(π) − V̂(base router) inside ±0.25 × R, where R = max V − min V is the on-policy value range of the real world (point estimate), in every seed |
 
 *Decision table (all at the declared ε, wPI as the estimator).*
 
@@ -404,8 +429,8 @@ exploration-cohort contexts (V̂ recomputed) and, independently, the on-policy e
 |---|---|---|---|---|---|---|
 | DB1 | τ_b between V̂ and V over the non-refused candidates | ≥ 0.80 (supported: lower bound ≥ 0.80; refuted: upper bound < 0.80) | SB+, SB0 | counts toward SUPPORTED | **K-B1**: thesis REFUTED (token-level OPE of routers does not rank correctly at this ε) | thesis cannot be SUPPORTED |
 | DB2 | calibration: max over candidates of \|V̂ − V\| / (max V − min V) | ≤ 0.25 (supported: upper bound ≤ 0.25; refuted: lower bound > 0.25) | SB+ | counts toward SUPPORTED | thesis REFUTED (estimates rank but are not usable as values) | thesis cannot be SUPPORTED |
-| DB3 | τ_b(wPI) − max(τ_b(routing statistics), τ_b(DM)) | ≥ 0.15 (supported: lower bound ≥ 0.15; refuted: upper bound < 0.15) | SB+, SB0 | counts toward SUPPORTED | **K-B3**: thesis REFUTED (logging propensities is unnecessary) | thesis cannot be SUPPORTED |
-| DB4 | exploration cost per logged decision: mean of (r(c, S_topk) − r(c, S_logged)) / r(c, S_topk) over the exploration-eligible decisions of the cohort (one per pass; the other decisions of the pass are not explored and do not enter the mean) | ≤ 1% (supported: upper bound ≤ 1%; refuted: lower bound > 1%) | none | counts toward SUPPORTED | **K-B2**: thesis REFUTED (the exploration costs more than the declared bound) | thesis cannot be SUPPORTED |
+| DB3 | τ_b(V̂, V) − max(τ_b(load-balance proxy, V), τ_b(DM, V)) | ≥ 0.15 (supported: lower bound ≥ 0.15; refuted: upper bound < 0.15) | SB+, SB0 | counts toward SUPPORTED | **K-B3**: thesis REFUTED (logging propensities is unnecessary) | thesis cannot be SUPPORTED |
+| DB4 | exploration cost per logged decision: (mean r(c, S_base) − mean r(c, S_logged)) / mean r(c, S_base), a ratio of means over the logged decisions of the cohort (one per pass, each exploration-eligible; the unexplored decisions of the pass do not enter), where S_base is the base router's own set at that decision, recomputed for every logged decision | ≤ 1% (supported: upper bound ≤ 1%; refuted: lower bound > 1%) | none (a measurement on the real model; no simulated world bears on it) | counts toward SUPPORTED | **K-B2**: thesis REFUTED (the exploration costs more than the declared bound) | thesis cannot be SUPPORTED |
 
 *Thesis outcome.* **INVALID** if a gate fails. Otherwise **REFUTED** if any of DB1–DB4 is refuted
 (naming the row). Otherwise **SUPPORTED** if DB1–DB4 are all supported, else **NOT_SHOWN**. The
@@ -420,8 +445,10 @@ model, so the whole CPU stage is about 10–15 CPU-h for 5 seeds. GPU stage on t
 (64 experts, top-8): 50,000 one-decision passes of up to 512 tokens per seed (about 25M tokens,
 forward only, shadow scoring is a router matmul per candidate) ≈ 3–5 GPU-h per seed; on-policy
 ground truth for 8 candidates on the evaluation contexts ≈ 1–2 GPU-h per seed; generation for the
-secondary pass@1 and the cost bound ≈ 2 GPU-h per seed. Total ≈ 30–45 GPU-h, still the cheapest of
-the three theses.
+reported-only pass@1 ≈ 2 GPU-h per seed. The SB+ and SB0 worlds reuse the logged passes (only the
+reward is recomputed; r(c, S_base) needs one extra forward per decision, ≈ 1 GPU-h per seed). Total
+≈ 30–50 GPU-h, run serially on card 0 for the confirmatory seeds, i.e. ≈ 1.3–2.1 days of device
+time plus pilots and the mutation check; still the cheapest of the three theses.
 
 **Reuses.** `crates/ptr-router/src/ope.rs` (estimator discipline, positivity refusal,
 `PromotionGate`) as the reference to port the slate estimator into later;
@@ -479,10 +506,23 @@ upcycled descendant, reactivated descendant}:
 10^6; 1802.08232, read). (2) *Loss-threshold membership inference*: AUC for separating a fixed,
 preregistered set of 500 designated **member** examples of the revoked shard (trained on by every
 non-gold arm) from 500 matched **non-member** examples of the same distribution that no arm ever
-trains on. Every comparison is gold-relative: Δexp(X) = exposure(X) − exposure(G), ΔAUC(X) =
-AUC(X) − AUC(G), Δutil(X) = utility(X) − utility(G) on retained shards. Bounds are one-sided 95%
-bounds per seed from a bootstrap over canaries (exposure) or over member and non-member examples
-(AUC) or over utility items.
+trains on. (3) *Retained-shard utility*: each shard is a task family with a deterministic
+exact-match checker; utility is exact-match accuracy in percentage points (higher is better; one
+"point" is one percentage point) on a pinned held-out set of 500 items per retained shard that no
+arm trains on, macro-averaged over the retained shards.
+
+**Combined gold.** G_s is the pair of gold retrains G1_s, G2_s (two seeds). Its value is the
+per-item mean of the two: per canary, the mean of the two exposures; per member or non-member
+example, the mean of the two attack scores (losses) before the AUC is computed; per utility item,
+the mean of the two correctness indicators. Every comparison is gold-relative: Δexp(X) =
+exposure(X) − exposure(G), ΔAUC(X) = AUC(X) − AUC(G), Δutil(X) = utility(X) − utility(G).
+
+**Bounds.** One-sided 95% percentile bounds from 2,000 paired bootstrap replicates per seed. Each
+replicate resamples items (canaries for exposure; member and non-member examples, stratified, for
+AUC; utility items within each retained shard), using the same resampled items for the arm and for
+the gold, and **draws the gold value of every resampled item from {G1, G2} with equal probability**
+instead of using the mean, so that the variability between gold retrains enters every bound. The
+statistic of a row is computed from the same replicate for all its components.
 
 **Decision structure (proposed thresholds, frozen at preregistration).**
 
@@ -491,8 +531,8 @@ bounds per seed from a bootstrap over canaries (exposure) or over member and non
 | Gate | Rule |
 |---|---|
 | V-C1 gold precision (checked first) | the two gold retrains of every schedule and seed agree within 0.5 bits of exposure and 0.02 AUC; otherwise the whole run is INVALID and a successor must preregister a higher-precision gold (more gold seeds with the tolerance set from their band, or a larger canary and member set) |
-| V-C2 integrity | canary and member insertion manifests (counts, digests) match for every arm; members and non-members are disjoint and never trained on by G |
-| V-C3 negative control | frozen-shared removal U: upper bound of Δexp ≤ 0.5 bits and both bounds of ΔAUC within ±0.03 (removal is exact by construction there; a failure means the harness is biased) |
+| V-C2 integrity | canary and member insertion manifests (counts, digests) match for every arm; members and non-members are disjoint and never trained on by G; compute is the analytic training FLOPs counted by the harness, and N_s's compute is within ±5% of L_s's |
+| V-C3 negative control | frozen-shared removal U: upper bound of Δexp ≤ 0.5 bits and both bounds of ΔAUC within ±0.03 and of Δutil within ±1.0 point. Under a correct harness this holds by construction: with frozen shared layers and per-expert router embeddings, the retained experts of U are trained with the same seeds as those of G1 and never see the revoked shard, so U equals G1 up to kernel nondeterminism, and V-C1 bounds the distance from G1 to the combined gold. A failure means the harness is biased |
 
 *Sensitivity controls (failure: run INVALID for every row that names the control).*
 
@@ -500,6 +540,10 @@ bounds per seed from a bootstrap over canaries (exposure) or over member and non
 |---|---|
 | P-exp | lower bound of Δexp(P) ≥ 4.0 bits in every seed |
 | P-mia | lower bound of ΔAUC(P) ≥ 0.10 in every seed |
+
+Both are positive under a correct harness whenever the model memorises at all, because P trains on
+the revoked canaries and members and G never does; if the model does not memorise at this scale the
+control fails and the dependent rows are invalid, which is the intended outcome.
 
 *Decision table. s ranges over the four mixing schedules (shared-layer averaging, router
 fine-tune on mixed data, TIES-merged descendant, upcycled descendant); the reactivated
@@ -509,7 +553,7 @@ descendant is reported only.*
 |---|---|---|---|---|---|
 | LEAK(s) | Δexp(U_s) and ΔAUC(U_s) | Δexp ≥ 2.0 bits **and** ΔAUC ≥ 0.05 | P-exp, P-mia | both lower bounds clear their margins in every seed | both upper bounds lie below their margins in every seed |
 | MATCH(L, s) | Δexp(L_s), ΔAUC(L_s), Δutil(L_s) | Δexp ≤ 0.5 bits; ΔAUC within ±0.03; Δutil within ±1.0 point | P-exp, P-mia | upper bound of Δexp ≤ 0.5 and both bounds of ΔAUC and of Δutil inside their bands, in every seed | in every seed, the lower bound of Δexp > 0.5, or the whole ΔAUC interval or the whole Δutil interval lies outside its band |
-| COST(L, s) | compute(L_s) / compute(G_s), measured by the harness (no interval) | ≤ 0.50 | none | ratio ≤ 0.50 in every seed | ratio > 0.50 in every seed (labelled **K-C2** when ≥ 1.0 in every seed: the closure cascades to a full retrain); mixed seeds are not shown |
+| COST(L, s) | compute(L_s) / compute(G1_s): training FLOPs of the closure retrain over those of one full gold retrain of schedule s, counted by the harness (no interval) | ≤ 0.50 | none | ratio ≤ 0.50 in every seed | ratio > 0.50 in every seed (labelled **K-C2** when ≥ 1.0 in every seed: the closure cascades to a full retrain); mixed seeds are not shown |
 | MATCH(N, s) | the MATCH criteria applied to N_s at L_s's compute | as MATCH(L, s) | P-exp, P-mia | as MATCH(L, s), for N_s | as MATCH(L, s), for N_s |
 
 *Thesis outcome (one per part, then the claim).*
@@ -529,11 +573,17 @@ descendant is reported only.*
   H-C1 is supported but H-C2 or H-C3 is refuted, the remedy part is dropped and the problem part
   stands as a measurement result about S*.
 
-**Compute estimate.** CPU stage: tiny MoE, 4 shards, one revoked shard per seed, 6 schedules × (U,
-L, N, 2 G) ≈ 30 trainings per seed at about 0.3–0.5 CPU-h each ≈ 50–75 CPU-h for 5 seeds (days on
-4 cores; can run unattended). GPU stage: LoRA experts per shard on the pinned OLMoE base (the
-PERFT-R arm of `routed_peft.py`), ≈ 1 GPU-h per expert training; 6 schedules × 5 seeds × about 3
-GPU-h ≈ 90 GPU-h. The gold retrains dominate.
+**Compute estimate.** Per seed the job list is: the 4 per-shard experts (trained once and shared
+by all schedules); the 3 retained-shard experts for each of the 2 gold seeds (6 trainings, shared
+by all schedules); the mixing operation of each of the 6 schedules applied to the model with the
+shard and to both golds (18 operations: router fine-tune, merge, upcycle-and-train, shared-layer
+averaging, reactivation); L and N for each schedule (12 jobs); and P (1 extra expert training).
+CPU stage (tiny MoE): about 41 small jobs per seed at 0.2–0.4 CPU-h ≈ 8–16 CPU-h per seed, ≈ 40–80
+CPU-h for 5 seeds (unattended, days on 4 cores). GPU stage (LoRA experts per shard on the pinned
+OLMoE base, the PERFT-R arm of `routed_peft.py`, ≈ 1 GPU-h per expert training and ≈ 0.5–1 GPU-h
+per mixing operation, L or N job): 4 + 6 + 9–18 + 6–12 + 1 ≈ 26–41 GPU-h per seed, ≈ 130–205 GPU-h
+for 5 seeds, run serially on card 0 for the confirmatory seeds: ≈ 5.5–8.5 days of device time plus
+pilots and the mutation check. The gold retrains and mixing operations dominate.
 
 **Reuses.** R011/R013's typed dependency index and closure rule
 (`crates/ptr-runtime/src/expert/dependency.rs`, compound `InputInvalidated`), as the reference
@@ -584,7 +634,7 @@ files unless marked otherwise. A change under `crates/<crate>/src/**` also updat
 | A1 | Repair-transition builder: generate tasks, run the base generator, verify through `ptr_py.verify_*`, keep (task, candidate, report, codes, reference) | `training/src/ptr_training/moe/repair_data.py`, `training/tests/test_repair_data.py` | ~400 LOC, 2 days | desktop `ptr_py` build |
 | A2 | Code-table parity test: Python's view of codes and roles equals `CODE_TABLE` | `training/tests/test_repair_codes.py` | ~100 LOC, 0.5 day | desktop `ptr_py` build |
 | A3 | Repair-expert trainer with parameter-matched arms (A1 generic, A2 domain, A3 failure-mode) | `training/src/ptr_training/moe/repair_experts.py` + tests | ~500 LOC, 3 days | A1, M011 path |
-| A4 | Loop evaluator: matched verifier-call and FLOP accounting, arms A0–A6, S0 relabelling, collateral-edit checker, routing through `ptr_py` `FindingRouter` with propensity logs | `training/src/ptr_training/moe/repair_eval.py` + tests | ~700 LOC, 4 days | A1–A3 |
+| A4 | Loop evaluator: matched verifier-call and FLOP accounting, arms A0–A6, the S+ and S0 simulated worlds, collateral-edit checker (repair arms) and the A0 fresh-sample invariant, routing through `ptr_py` `FindingRouter` with propensity logs | `training/src/ptr_training/moe/repair_eval.py` + tests | ~700 LOC, 4 days | A1–A3 |
 | A5 | CPU harness stage with `ptr_py` loop simulation for S+ and S0 | `training/src/ptr_training/moe/repair_sim.py` | ~250 LOC, 1.5 days | A4 |
 | A6 | Experiment records: CPU harness experiment and GPU successor (manifest, PREREGISTRATION, criteria, `aggregate.py`, mutation plan) | `experiments/feedback/<new id>/` via `scripts/new_experiment.py` | 2 days each | A4, A5 |
 
@@ -612,7 +662,7 @@ files unless marked otherwise. A change under `crates/<crate>/src/**` also updat
 
 ### 4.4 Order
 
-1. **B1–B4 on CPU** (cheapest decisive test; can start now, no GPU, no Rust change).
+1. **B1–B4 on CPU** (cheapest go/no-go for GPU spend; can start now, no GPU, no Rust change).
 2. **C1, C2 (mixing schedules only), C4 (U, G and P only) on CPU** — a CPU-scoped H-C1 go/no-go before any remedy
    code is written.
 3. **A1, A2** (dataset and parity; CPU; uses the `ptr_py` build that `scripts/setup_desktop.sh` already performs; X2 runs alongside and blocks nothing).
@@ -678,8 +728,9 @@ counts as model evidence.
 
 ### Programme-level risks
 - **Capacity.** One owner, two consumer cards, a strict preregistration discipline: each
-  confirmatory run costs days of setup. Running all three GPU stages is about 200 GPU-h plus
-  setup; the order in §4.4 is chosen so that two theses can die on CPU first.
+  confirmatory run costs days of setup. Running all three GPU stages is about 225–355 GPU-h of
+  serial card-0 confirmatory time (≈ 9.5–15 days) plus setup; the order in §4.4 is chosen so that
+  two theses can be stopped on CPU first (a no-go for GPU spend, never a falsification).
 - **Evidence-class creep.** The nearest risk is presenting a CPU harness pass as a statement about
   OLMoE. Every report keeps the evidence class next to the number.
 - **Tooling gaps.** No GitHub CI job builds `ptr_py` (it is built by `scripts/setup_desktop.sh`
@@ -728,7 +779,8 @@ counts as model evidence.
 - **New claim 27 (thesis B)**, draft: "When one routing decision per teacher-forced pass, at a
   declared MoE layer, is logged with single-slot exploration at rate ε and exact propensities, a
   slate off-policy estimator ranks candidate routers by their per-decision value (the teacher-forced
-  probability of the realized token, other decisions routed by the base router) in the same order
+  probability of the realized token y_t, read at input position t − 1 whose layer-ℓ routing is the
+  intervened decision, all other decisions routed by the base router) in the same order
   as on-policy evaluation (Kendall τ_b lower bound ≥ 0.80), at an exploration cost of at most 1%
   relative drop in that probability per logged decision. Exploration at every routing decision is
   not claimed. Unproven."
