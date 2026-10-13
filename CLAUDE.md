@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-PTR (Probabilistically Typed Reasoning) is a research-first Rust monorepo for a typed cognitive runtime and model architecture. It is a compiling contract/scaffold baseline: a README or doc describing a subsystem does not mean it is implemented. Completion is tracked through tests, experiments and `docs/DEFINITION_OF_DONE.md`; `docs/components/STATUS.md` (generated from every crate's `component.toml`) is the current component inventory; the root `STATUS.md` is hand-maintained evidence and status notes that can lag (its crate count is out of date). Every architectural claim must be falsifiable (baseline, ablation, failure criteria), and negative results are first-class artifacts.
+PTR (Probabilistically Typed Reasoning) is a research-first Rust monorepo for a typed cognitive runtime and model architecture. It is a compiling contract/scaffold baseline: a README or doc describing a subsystem does not mean it is implemented. Completion is tracked through tests, experiments and `docs/DEFINITION_OF_DONE.md`; `docs/components/STATUS.md` (generated from every crate's `component.toml`) is the current component inventory; the root `STATUS.md` is hand-maintained evidence and status notes that can lag the code. Every architectural claim must be falsifiable (baseline, ablation, failure criteria), and negative results are first-class artifacts.
 
 ## Commands
 
