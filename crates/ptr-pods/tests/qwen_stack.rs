@@ -742,8 +742,14 @@ fn reference_chain_id_and_logits_digest_are_pinned() {
         hex(&weights.finalize()),
         "74aacde5f18b897f284941d76efe690f60fe0ac84d9b573aa3a1a62488b24a4f"
     );
-    assert_eq!(
-        hex(&logits.finalize()),
-        "bd906bf44a63bbd7b30bb1f51e834675f7e3f509936b3f8e42a11d17f016a10c"
-    );
+    // The logits pass through `powf`, `exp`, `sin` and `cos`, which come from the platform math
+    // library and may differ in the last bit between targets (Windows MSVC differs from Linux
+    // glibc). The literal was computed on x86_64 Linux, so it is checked there; the chain id
+    // and weight digests above are platform independent and are checked everywhere.
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        assert_eq!(
+            hex(&logits.finalize()),
+            "bd906bf44a63bbd7b30bb1f51e834675f7e3f509936b3f8e42a11d17f016a10c"
+        );
+    }
 }

@@ -516,15 +516,21 @@ fn the_default_backend_fingerprint_is_pinned_to_the_pre_r006_literals() {
         config,
         "064a7c65166ca7fafd2986f906dfc63d0d5d2e044fb23403eb4f25575d0fcb05"
     );
-    assert_eq!(
-        kv_state,
-        "97e1598049890c3aff69568318364ebde5479ef034937551a1157c4f58dec180"
-    );
-    assert_eq!(
-        probe_logits,
-        "ff315dbdb6cf20f6aa65bc5f988c459b6a7d5727df500f9050bdd73be26b09ab"
-    );
     assert_eq!(infer_logits, probe_logits);
+    // The KV state and the logits pass through `powf`, `exp`, `sin` and `cos`, which come from the
+    // platform math library and may differ in the last bit between targets (Windows MSVC
+    // differs from Linux glibc). These literals were computed on x86_64 Linux, so they are
+    // checked there; the chain and config digests above are checked everywhere.
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        assert_eq!(
+            kv_state,
+            "97e1598049890c3aff69568318364ebde5479ef034937551a1157c4f58dec180"
+        );
+        assert_eq!(
+            probe_logits,
+            "ff315dbdb6cf20f6aa65bc5f988c459b6a7d5727df500f9050bdd73be26b09ab"
+        );
+    }
 }
 
 #[test]
