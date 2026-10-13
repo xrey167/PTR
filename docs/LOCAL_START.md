@@ -141,8 +141,8 @@ Notes for the last line: `ci-repository-invariants` needs `origin/main` or `BASE
 use the wave-12 tip `941f5ddb` if there is no remote. `ci-state-postgres` needs the exports of
 step c. A single job: `make ci-quality`, `make ci-ledger-raft-rs`, and so on (names in the
 `Makefile`). `make ci-local` does not cover `make a0` (run it separately), the Windows leg, the
-Python 3.11 leg, `security.yml` or `sdk.yml`. Candle CUDA and two `ptr-net` backends are compiled
-by no workflow (`CLAUDE.md`).
+Python 3.11 leg, `security.yml` or `sdk.yml`. Candle CUDA is compiled by no workflow, and
+`wintun-backend` only on CI's Windows leg (`CLAUDE.md`).
 
 **Check.** Everything exits 0, or the exceptions are written down with the exact error. Known
 local-only causes: `stable` older than 1.99 (step b), missing PostgreSQL variables (step c), no

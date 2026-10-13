@@ -62,11 +62,11 @@ Current implementation status:
 - `ptr-ledger` persists mesh/tunnel lifecycle events with stable tag 15 and
   `ptr-state`/`ptr-runtime` validate and project them.
 - `ptr-net` provides the fenced `WireguardUserspaceExecutor<D>` contract and
-  deterministic device-backed tests. Two platform devices exist behind features
-  that no CI workflow enables: `LinuxWireguardDevice` (`wireguard-uapi-backend`,
-  the WireGuard userspace UAPI plus the host `ip` utility, tested against a mock
-  UAPI socket only) and `WintunDevice` (`wintun-backend`, a TUN interface with no
-  WireGuard crypto dataplane). No macOS Network Extension adapter exists. None is
+  deterministic device-backed tests. Two platform devices exist behind features:
+  `LinuxWireguardDevice` (`wireguard-uapi-backend`, the WireGuard userspace UAPI
+  plus the host `ip` utility, linted and unit-tested in CI against a mock UAPI
+  socket only) and `WintunDevice` (`wintun-backend`, a TUN interface with no
+  WireGuard crypto dataplane, only compiled on CI's Windows leg). No macOS Network Extension adapter exists. None is
   claimed as hardware-validated here.
 
 ## Phase G — PTR-Diff
