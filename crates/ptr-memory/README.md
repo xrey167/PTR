@@ -10,10 +10,11 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 6 Rust source files · 1280 nonblank source lines · 2 integration-test files · 23 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 6 Rust source files · 1339 nonblank source lines · 2 integration-test files · 24 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- compile_structured_at / compile_selected_at (and MemoryController::compile_at / compile_candidates_at) leave out objects whose validity does not hold at the instant the context is compiled for and count them in CompiledContext::omitted_expired; the old compile_structured / compile_selected are the documented audit path with no time rule
 - KnowledgeObject.validity (KnowledgeValidity) and is_valid_at; the content digest includes a bounded validity and is unchanged for an unbounded one
 - MemoryClass taxonomy
 - SemanticCapsule with lifecycle/provenance/goal/constraint/known/hypothesis/unknown/relation fields
@@ -62,6 +63,7 @@
 
 ### Current automated checks
 
+- tests/retention.rs: an expired object is left out of a context compiled for an instant (half-open bounds, dependents of an omitted object refused, audit path unchanged)
 - tests/retention.rs: an object's validity is half-open and enters the digest only when bounded
 - ptr-memory tests/retention.rs: raw_history_is_digest_checked_and_idempotent, raw_history_rejects_tampering_and_conflicting_reuse
 - ptr-memory tests/retention.rs: knowledge_generation_is_immutable_and_context_digest_tracks_content, lifecycle_transition_does_not_mutate_immutable_generation_digest, invalidation_propagates_to_dependents, invalidation_is_not_archive, transition_to_invalidated_cascades_like_invalidate, reactivating_a_generation_keeps_its_recorded_demotion, activation_that_would_invalidate_itself_is_refused_without_side_effects

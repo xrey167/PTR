@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 5 Rust source files · 2436 nonblank source lines · 6 integration-test files · 81 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 2467 nonblank source lines · 6 integration-test files · 82 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- AliasTable bounds its input in bytes before normalising (MAX_QUERY_BYTES, MAX_ALIAS_BYTES)
 - SearchFilter has no Default (SearchFilter::at, audit_without_time); promote_verified_at / promote_verified_with_at ask the authority again (lifecycle and validity) at the instant of reliance
 - Retrieval eligibility (ADR-0024): backend-neutral SearchFilter (principal, groups, instant, role, predicate, any-of tags) with validate and the reference predicate admits, SearchAttributes for documents, SearchQuery carrying the filter into SearchIndex::search; SearchHit::observe_at / observe_resolved_at hold a hit to the authority's half-open validity, promote_verified_at / promote_verified_with_at check it again at the instant of reliance (ValidityRefusal, TimedPromotionError) and the untimed promotion refuses a time-checked hit; AliasTable, a closed alias query resolver (longest whole-word match, Unknown / Ambiguous)
 - EvidenceStage promotion states
@@ -66,6 +67,7 @@
 
 ### Current automated checks
 
+- tests/resolver.rs: input is bounded in bytes before it is normalised
 - tests/filter.rs: revocation and a shortened validity between observation and promotion are refused
 - tests/filter.rs: fail-closed access, group membership, half-open boundaries, no-now audit view, role/predicate/tags, validation bounds, commit-time expiry between retrieval and use, the untimed promotion refused for a time-checked hit; tests/resolver.rs: longest match, ambiguity, unknown, bounds
 - tests/evidence_promotion.rs: direct Known is blocked; a revoked generation that is still the live one is never observed (a_revoked_generation_is_never_observed_although_it_is_still_the_live_one); superseded, disputed and unknown generations are refused and only a live one is observed; a hit is promoted as the capsule and generation the lifecycle answered live for (a_hit_is_promoted_as_the_capsule_and_generation_the_lifecycle_answered_live_for); every promotion refusal has a stable code

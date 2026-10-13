@@ -9,10 +9,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 58 Rust source files · 48118 nonblank source lines · 92 integration-test files · 1212 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 58 Rust source files · 48245 nonblank source lines · 92 integration-test files · 1214 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- Failed appends of closed refusal windows are restored to their window without capacity eviction, so no counter is lost (the table may exceed its capacity only while the ledger refuses appends); MemoryController::compile_at / compile_candidates_at compile a context for an instant
 - Egress refusals are coalesced (src/egress.rs): per Pod revision and 60 s window, one counter per (reason, target) with at most 8 distinct pairs and an overflow counter per reason, appended as one event carrying count when the window closes or on flush_egress_refusals, so a window commits at most 14 events per Pod however many refusals there were; record_native_protocol_outcome is the dispatch hook for a native protocol call's result; PodRoute.deadline is an Option (no zero sentinel)
 - PtrRuntime::record_egress_refusal(EgressRefusalRecord) commits an egress refusal (Invariants 7 and 13: redacted target, no payload) as the only writer of the record; a generic commit refuses it; PodDirectory::resolve carries RouteConstraints.deadline
 - PtrRuntime::run_model_run_resumable(request_id, raw_text, infer) is the entry point for a ModelRun-producing (KV-reusing) backend: it ingests the request text, calls `infer` with the resulting SemanticContext, and builds the ResumableRun only through ingest_model_run (so Approximate taint is recorded and authorize_action refuses the action), emits RequestFinished for a finished run without control events, refuses a run that requests a Pod with RuntimeError::Model (this path does not resume Pods) and a run with neither Finished nor an action with ModelNoProgress. Used by ptr-server's ServerBackend::KvReusing; covered by ptr-server tests/kv_taint.rs
@@ -238,6 +239,7 @@
 
 ### Current automated checks
 
+- src/egress.rs unit tests: a failed flush at the pod capacity loses no counter; restore returns a counter to its window
 - tests/egress_refusal.rs: a thousand refusals become a bounded number of events whose counts add up; window rollover; the dispatch hook records only egress refusals
 - tests/egress_refusal.rs: committed, projected and replayed; malformed records refused before any append; a generic commit cannot forge one. tests/directory.rs: the route carries the caller's deadline
 - src/policy.rs tests: a key id one byte over the identifier bound, installed in the trust store, is refused by verify as InvalidBundle although the ledger encoding of that bundle is refused by the decoder (a_key_id_longer_than_the_identifier_bound_does_not_verify, failing before the change), while an id at the bound verifies and round-trips as the control
