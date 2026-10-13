@@ -182,7 +182,7 @@ Rules, each the same as the one already enforced for frames and KV pages, restat
    been reaped since it was exported (an import that a reaped process held is closed by the
    kernel and the driver); while both live, the buffer is reused, never freed, and counts against
    both quotas (rule 3b). Where no broker is available for a producer, the
-   CUDA carriers are disabled for it. E009's GPU cell kills the producer during the consumer's
+   CUDA carriers are disabled for it. E009's GPU cell also runs a live producer that keeps its import open after publishing (the buffer must stay allocated and charged to both quotas until both domains are reaped), and kills the producer during the consumer's
    import and during its copy, and the consumer must either complete a digest-verified copy or
    refuse the handle, never read freed memory.
    The export takes one of two forms, carried in the locator: the **legacy** form
