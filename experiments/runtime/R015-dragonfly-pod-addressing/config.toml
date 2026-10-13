@@ -4,6 +4,10 @@ name = "R015-dragonfly-pod-addressing"
 path = "experiments/runtime/R015-dragonfly-pod-addressing"
 tests_dir = "tests"
 
+# Chronology: on 2026-10-13, before this criterion was fixed, the harness was run once on the
+# confirmatory seeds 17, 29, 43, 71 and 101 to see that it works. Those numbers are not used: the
+# criterion below comes from the plan, and tuning or pilots run on seeds >= 1001 only. The
+# confirmatory seeds are to run once, after the freeze.
 # Frozen before R015 leaves `planned` (experiments/preregistration.toml,
 # scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be chosen.
 # The activation and abstention values restate crates/ptr-router/src/learned.rs.
@@ -23,4 +27,6 @@ activation_negative_reject_permille = 900
 abstain_below_permille = 500
 abstain_margin_permille = 150
 # How far below the cosine baseline's routing_accuracy the learned router may fall and still count.
-accuracy_margin_permille = "must-be-pinned-before-prepared"
+# Derived from the plan, not from data: no margin. The criterion is routing_accuracy >= cosine_only
+# and false_route_rate < cosine_only on every confirmatory seed.
+accuracy_margin_permille = 0

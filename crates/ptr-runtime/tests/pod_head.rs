@@ -1,7 +1,9 @@
 //! The head of a stable pod identity moves only through a committed compare-and-swap record.
 use ptr_config::PtrConfig;
 use ptr_ledger::LedgerEvent;
-use ptr_runtime::{pod_lifecycle_target, AdvancePodHead, PodHeadError, PtrRuntime, RuntimeError};
+use ptr_runtime::{
+    pod_lifecycle_target, AdvancePodHead, PodHeadError, PodHeadStatus, PtrRuntime, RuntimeError,
+};
 use ptr_types::{
     Generation, NamespaceId, PodAddress, PodId, PodIdentity, PodRevisionAddress, ProjectId,
 };
@@ -259,4 +261,32 @@ fn heads_survive_a_compacted_snapshot_and_moves_above_the_floor() {
     )
     .unwrap();
     assert_eq!(restored.pod_head(&identity()), Some(&revision("reader", 2)));
+}
+
+#[test]
+fn a_revoked_head_can_be_replaced_by_a_new_generation_naming_it_as_expected() {
+    let mut runtime = runtime();
+    advance(&mut runtime, None, revision("reader", 1)).unwrap();
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: pod_lifecycle_target(&revision("reader", 1)),
+            generation: Generation(1),
+        })
+        .unwrap();
+    assert_eq!(runtime.pod_head(&identity()), None);
+    let revoked = match runtime.pod_head_status(&identity()) {
+        Some(PodHeadStatus::Revoked(head)) => head.clone(),
+        other => panic!("expected the revoked head to be visible, got {other:?}"),
+    };
+    assert_eq!(revoked, revision("reader", 1));
+
+    // A writer that cannot see the revoked head believes there is none and is refused.
+    assert!(advance(&mut runtime, None, revision("reader", 2)).is_err());
+    // Naming the revoked head moves the identity on to a new, unrevoked generation.
+    advance(&mut runtime, Some(revoked), revision("reader", 2)).unwrap();
+    assert_eq!(runtime.pod_head(&identity()), Some(&revision("reader", 2)));
+    assert!(matches!(
+        runtime.pod_head_status(&identity()),
+        Some(PodHeadStatus::Live(head)) if head == &revision("reader", 2)
+    ));
 }

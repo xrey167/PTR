@@ -53,3 +53,25 @@ fn replaying_the_moves_leaves_the_last_head_in_the_materialized_state() {
     );
     assert_eq!(state.last_applied, 2);
 }
+
+#[test]
+fn an_address_that_does_not_render_projects_a_value_no_reader_accepts() {
+    let mut broken = address(1);
+    broken.address.pod_id = PodId::from("a/b");
+    let entries = projection_entries(&CommittedEvent {
+        index: CommitIndex(1),
+        event: LedgerEvent::PodHeadAdvanced {
+            identity: PodIdentity::from("pod:stable"),
+            old: None,
+            new: broken,
+        },
+    });
+    assert_eq!(
+        entries,
+        vec![(
+            pod_head_key("pod:stable"),
+            ptr_state::POD_HEAD_UNRENDERABLE.to_owned()
+        )]
+    );
+    assert!(PodRevisionAddress::parse(&entries[0].1).is_err());
+}

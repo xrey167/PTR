@@ -28,7 +28,7 @@ pub use learned::{
     ActivationPolicy, EncoderRef, GateReport, LearnedPodRouter, LearnedRouterConfig,
     PodRepresentation, PodRepresentationParts, RepresentationError, RepresentationStore,
     ScoreWeights, ACTIVATION_ALIAS_PERMILLE, ACTIVATION_NEGATIVE_REJECT_PERMILLE,
-    MAX_REPRESENTATION_DIMS, REPRESENTATION_SCHEMA,
+    MAX_MANIFEST_BYTES, MAX_REPRESENTATIONS, MAX_REPRESENTATION_DIMS, REPRESENTATION_SCHEMA,
 };
 pub use learning::{
     ArmCounts, LearnedPolicy, LearnerConfig, LearningError, LoggedDecision, RewardModel,

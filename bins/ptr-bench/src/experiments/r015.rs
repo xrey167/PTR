@@ -88,6 +88,19 @@ impl Tally {
     }
 }
 
+/// A digest that differs for every probe index (a single byte would repeat after 255).
+fn digest_of_index(index: usize) -> [u8; 32] {
+    let mut digest = [0u8; 32];
+    digest[..8].copy_from_slice(&(index as u64).to_le_bytes());
+    digest
+}
+
+fn nonce_of_index(index: usize) -> [u8; 16] {
+    let mut nonce = [0u8; 16];
+    nonce[..8].copy_from_slice(&(index as u64).to_le_bytes());
+    nonce
+}
+
 fn world_dir(seed: u64) -> PathBuf {
     Path::new("target/dragonfly-addressing").join(seed.to_string())
 }
@@ -208,10 +221,10 @@ fn run_seed(seed: u64) -> Result<Value, String> {
             capability: &capability,
             input_type: &input_type,
             request_id: &request_id,
-            request_digest: [index as u8; 32],
+            request_digest: digest_of_index(index),
             features: &features,
         };
-        let nonce = DecisionNonce::from_bytes([index as u8; 16]);
+        let nonce = DecisionNonce::from_bytes(nonce_of_index(index));
 
         learned_tally.record(label.as_ref(), &route(&learned, &request, &key, &nonce)?);
         constant_tally.record(label.as_ref(), &route(&PodRouter, &request, &key, &nonce)?);

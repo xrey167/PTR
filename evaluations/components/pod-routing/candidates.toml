@@ -31,7 +31,7 @@ status = "to-evaluate"
 evidence = []
 
 # Per-pod learned vector and bias over a frozen encoder, activation-gated, advisory, with
-# abstention (ADR-0021). The unit and artifact tests are mechanics evidence; the routing claim is
+# abstention (ADR-0023). The unit and artifact tests are mechanics evidence; the routing claim is
 # R015's and has no frozen result yet.
 [[candidate]]
 id = "dragonfly-learned"

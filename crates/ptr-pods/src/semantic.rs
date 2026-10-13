@@ -33,6 +33,38 @@ pub enum PodKind {
     Policy,
 }
 
+impl PodKind {
+    /// The stable name of the kind, as hashed into a pod identity. Pinned by a test: renaming a
+    /// variant must not silently rename every identity.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Context => "Context",
+            Self::Model => "Model",
+            Self::LanguageModel => "LanguageModel",
+            Self::Worker => "Worker",
+            Self::Environment => "Environment",
+            Self::Tool => "Tool",
+            Self::Retrieval => "Retrieval",
+            Self::Memory => "Memory",
+            Self::Math => "Math",
+            Self::Reasoning => "Reasoning",
+            Self::Planner => "Planner",
+            Self::Router => "Router",
+            Self::Verifier => "Verifier",
+            Self::Critic => "Critic",
+            Self::Simulator => "Simulator",
+            Self::Vision => "Vision",
+            Self::Embedding => "Embedding",
+            Self::Quantization => "Quantization",
+            Self::Transport => "Transport",
+            Self::Runtime => "Runtime",
+            Self::Agent => "Agent",
+            Self::Composite => "Composite",
+            Self::Policy => "Policy",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ModelVariant {
     Base,
@@ -141,7 +173,7 @@ impl PodSemanticManifest {
         PodIdentityDescriptor {
             schema_version: POD_IDENTITY_SCHEMA_VERSION,
             domain: self.domain.clone(),
-            kind: format!("{:?}", self.kind),
+            kind: self.kind.name().to_owned(),
             predicate: self.predicate.clone(),
             semantic_role: self.semantic_role.clone(),
             aliases: self.aliases.clone(),

@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 1 Rust source files · 1164 nonblank source lines · 4 integration-test files · 19 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 1 Rust source files · 1171 nonblank source lines · 4 integration-test files · 20 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -33,6 +33,7 @@
 - Projection of InputInvalidated (ledger tag 30, R011 WP3): expert-input:<identity byte length>:<identity>:<generation> holds revoked:<fence count>:<hex fence digest> or superseded:<new generation>:<hex new digest>:<fence count>:<hex fence digest>, and a revocation also projects revoked:<identity> as a Revoked record does. The event names the fenced experts by count and digest only, so this stateless projection writes no expert: key for them; the runtime, which derives the set from its dependency index, writes those. A version 3 ExpertCommitRecord additionally projects expert-inputs:<project>/<pod> = <generation>:<training>:<evaluation>:<hex block digest> for every expert it creates. Key and value parsers (parse_expert_input_key, parse_expert_input_entry, parse_expert_inputs_generation) accept exactly what the writers write
 - Projection of ExpertAuthorityChanged (ledger tag 31, R011 WP4): expert-authority:<kind name> (gate-config or evaluator) holds <epoch>:<hex identity digest>:<class name>:<fence count>:<hex fence digest> and records the latest change of that kind; parse_expert_authority_key and parse_expert_authority_entry are the strict inverses a compacted-snapshot restore checks the authority state against. The experts the change fenced are not in the event; the runtime writes their expert: keys
 - projection_entries maps PodHeadAdvanced to `pod-head:<identity>` holding the canonical revision address of the new head (pod_head_key, POD_HEAD_PREFIX), so replay, the Postgres projection and a compacted snapshot reproduce the head
+- A PodHeadAdvanced whose address cannot be rendered projects POD_HEAD_UNRENDERABLE instead of an empty head, which no reader parses, so a restore of that state fails closed
 
 ### Missing for the target architecture
 
@@ -76,6 +77,7 @@
 - an_input_invalidation_projects_the_input_and_never_guesses_the_fenced_experts, the_input_key_and_value_parsers_accept_exactly_what_the_writers_write and a_version_3_record_commits_to_its_dependency_block_per_created_expert (versions 1 and 2 project exactly what they did)
 - an_authority_change_projects_one_entry_per_kind_and_the_value_parses_back: the entry for each kind, the strict key and value parsers (leading zero, zero epoch, unknown class, bad count or digest and extra fields refused)
 - tests/pod_head.rs: a head move projects the canonical address under the identity key; replaying two moves leaves the last head in the materialized state
+- tests/pod_head.rs: an address that does not render projects the unrenderable marker, which does not parse as a revision address
 
 <!-- PTR:STATUS:END -->
 

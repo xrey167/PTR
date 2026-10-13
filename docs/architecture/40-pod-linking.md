@@ -33,9 +33,11 @@ and `validate` requires `pod_identity == descriptor.identity()`. A retrained pod
 (artifact, generation) and not its identity or cluster key; changing an alias or the role needs a
 new identity, and the manifest refuses the old one with expected and actual.
 
-The plan said an alias change moves both hashes. The research definition (and the reason for a
-cluster at all) excludes aliases from the cluster key, so this implementation does too; a role,
-domain, kind or predicate change moves both.
+The plan said an alias change moves both hashes. The plan was made more precise here, and the
+coordinator approved it: the research definition (`semantics.py`, cluster = schema, domain, type,
+predicate, role) and the reason for a cluster at all exclude aliases from the cluster key, so this
+implementation does too. An alias changes the identity, not the cluster; a role, domain, kind or
+predicate change moves both.
 
 ## Head resolver (`ptr-ledger`, `ptr-state`, `ptr-runtime`)
 
@@ -82,7 +84,9 @@ and at least 90 % of the negative examples were rejected. Otherwise the exporter
 `not-activated`. `RepresentationStore::insert` re-checks the measured values against its own
 minima whatever thresholds the artifact claims, refuses a representation that is not activated
 (`RouteError::InactiveRepresentation`), one of another encoder or dimension, or one that is not a
-newer generation of the same pod.
+newer generation of the same pod. A store holds at most `MAX_REPRESENTATIONS` pods (4096) and a
+manifest is at most `MAX_MANIFEST_BYTES` (64 KiB) before it is parsed; its minima can be made
+stricter with `with_policy`, never weaker.
 
 **Router.** `LearnedPodRouter` implements `Router` and ranks only `registry.candidates(...)`;
 the trusted boundary still refuses anything outside that set. It returns a point mass on the best
@@ -118,6 +122,10 @@ what was refused and why.
 - **Symlink-LoRA.** A model that emits a link was a research idea; PTR keeps identity value-free
   and the head a ledger fact, so no link is learned in code. It is a candidate in
   `evaluations/components/pod-routing` and a design note with a kill criterion in R002.
+- **The unsampled convenience wrappers** (`run_resumable_with_pods`, `run_model_with_pods`) still
+  select with `PodRouter::select`; they have no sampling key. Routing them through a
+  `CheckedRouter` needs a key and nonce source the runtime does not own, and stays open in
+  `ptr-router`'s `component.toml`. The production path (`..._using_router`) is already checked.
 - **A Rust encoder, a `ptrd` wiring of the learned router, a frozen R015 result.**
 - **Failover and counters** for misses (work package 2).
 - Postgres tests of the new event need `PTR_PG_TEST_DSN`; the projection mapping itself is

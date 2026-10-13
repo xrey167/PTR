@@ -564,3 +564,41 @@ fn an_unverified_hypothesis_of_another_generation_does_not_abort_the_merge() {
         Some(ptr_pods::HypothesisError::GenerationConflict)
     );
 }
+
+#[test]
+fn pod_kind_names_are_pinned_because_they_are_hashed_into_identities() {
+    // Renaming a variant must not rename every pod identity; this list is the contract. The
+    // exporter in training/ hashes the same strings (`Retrieval` is the one its fixture uses).
+    let pinned = [
+        (PodKind::Context, "Context"),
+        (PodKind::Model, "Model"),
+        (PodKind::LanguageModel, "LanguageModel"),
+        (PodKind::Worker, "Worker"),
+        (PodKind::Environment, "Environment"),
+        (PodKind::Tool, "Tool"),
+        (PodKind::Retrieval, "Retrieval"),
+        (PodKind::Memory, "Memory"),
+        (PodKind::Math, "Math"),
+        (PodKind::Reasoning, "Reasoning"),
+        (PodKind::Planner, "Planner"),
+        (PodKind::Router, "Router"),
+        (PodKind::Verifier, "Verifier"),
+        (PodKind::Critic, "Critic"),
+        (PodKind::Simulator, "Simulator"),
+        (PodKind::Vision, "Vision"),
+        (PodKind::Embedding, "Embedding"),
+        (PodKind::Quantization, "Quantization"),
+        (PodKind::Transport, "Transport"),
+        (PodKind::Runtime, "Runtime"),
+        (PodKind::Agent, "Agent"),
+        (PodKind::Composite, "Composite"),
+        (PodKind::Policy, "Policy"),
+    ];
+    for (kind, name) in pinned {
+        assert_eq!(kind.name(), name);
+        // The identity descriptor carries exactly this name.
+        let mut manifest = manifest();
+        manifest.kind = kind;
+        assert_eq!(manifest.identity_descriptor().kind, name);
+    }
+}

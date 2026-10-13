@@ -55,6 +55,16 @@ pub enum PodHeadError {
     MalformedEntry { key: String },
 }
 
+/// The head of an identity as the lifecycle authority sees it now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PodHeadStatus<'a> {
+    /// The head's generation is not revoked.
+    Live(&'a PodRevisionAddress),
+    /// The head's generation carries a revocation tombstone. [`PtrRuntime::pod_head`] hides it,
+    /// but it is still the committed head: a move names it as `expected`.
+    Revoked(&'a PodRevisionAddress),
+}
+
 /// The heads, derived from the committed history.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PodHeads {
@@ -124,6 +134,21 @@ impl PtrRuntime {
             .revoked_generations
             .contains(&(pod_lifecycle_target(head), head.generation));
         (!revoked).then_some(head)
+    }
+
+    /// The committed head of `identity` and whether its generation is revoked. Unlike
+    /// [`PtrRuntime::pod_head`] this shows a revoked head, so a writer can name it as `expected`
+    /// when it moves the identity to a new generation.
+    pub fn pod_head_status(&self, identity: &PodIdentity) -> Option<PodHeadStatus<'_>> {
+        let head = self.pod_heads.get(identity)?;
+        let revoked = self
+            .revoked_generations
+            .contains(&(pod_lifecycle_target(head), head.generation));
+        Some(if revoked {
+            PodHeadStatus::Revoked(head)
+        } else {
+            PodHeadStatus::Live(head)
+        })
     }
 
     /// Every unrevoked head, ordered by identity.

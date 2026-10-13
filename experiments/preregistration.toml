@@ -332,7 +332,7 @@ backward_transfer_min_permille = "int"
 # Design: docs/architecture/40-pod-linking.md, ADR-0023. The harness (bins/ptr-bench, r015) prints one
 # JSON object per seed over a world the training step wrote. The thresholds restate the compiled
 # defaults of ptr-router (ACTIVATION_*_PERMILLE, LearnedRouterConfig) and are pinned; the frozen
-# encoder and the accuracy margin are still to be chosen, which keeps R015 in `planned`.
+# encoder is still to be chosen, which keeps R015 in `planned`; the accuracy margin is pinned at 0.
 [experiment.R015.required]
 seeds = "int-list"
 harness = "str"

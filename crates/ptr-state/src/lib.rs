@@ -366,10 +366,18 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         // the fallback to an empty value is unreachable for a committed event.
         LedgerEvent::PodHeadAdvanced { identity, new, .. } => vec![(
             pod_head_key(&identity.0),
-            new.canonical_uri().unwrap_or_default(),
+            // An address that does not render is projected as a value no reader parses, so a
+            // restore of this state refuses it (`PodHeadError::MalformedEntry`) instead of
+            // holding an empty or invented head.
+            new.canonical_uri()
+                .unwrap_or_else(|_| POD_HEAD_UNRENDERABLE.to_owned()),
         )],
     }
 }
+
+/// The projected value of a head whose address cannot be rendered. The ledger codec refuses such
+/// an address, so a committed event never produces it.
+pub const POD_HEAD_UNRENDERABLE: &str = "unrenderable";
 
 /// The prefix of every pod head key ([`pod_head_key`]).
 pub const POD_HEAD_PREFIX: &str = "pod-head:";

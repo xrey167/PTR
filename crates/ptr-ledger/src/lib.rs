@@ -1168,18 +1168,6 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_u32(&mut out, *fence_count);
             out.extend_from_slice(fence_digest);
         }
-        LedgerEvent::PodHeadAdvanced { identity, old, new } => {
-            out.push(32);
-            put_string(&mut out, &identity.0);
-            match old {
-                None => out.push(0),
-                Some(old) => {
-                    out.push(1);
-                    put_revision_address(&mut out, old);
-                }
-            }
-            put_revision_address(&mut out, new);
-        }
         LedgerEvent::ExecutionManifestRevoked {
             manifest_digest,
             generation,
@@ -1353,6 +1341,18 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_u64(&mut out, generation.0);
             put_u64(&mut out, revision.0);
             out.extend_from_slice(event_digest);
+        }
+        LedgerEvent::PodHeadAdvanced { identity, old, new } => {
+            out.push(32);
+            put_string(&mut out, &identity.0);
+            match old {
+                None => out.push(0),
+                Some(old) => {
+                    out.push(1);
+                    put_revision_address(&mut out, old);
+                }
+            }
+            put_revision_address(&mut out, new);
         }
     }
     out
@@ -1925,13 +1925,13 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
         LedgerEvent::KvTaintCommitted { .. } => check_kv_taint(event)?,
         LedgerEvent::InputInvalidated { .. } => check_input_invalidated(event)?,
         LedgerEvent::ExpertAuthorityChanged { .. } => check_expert_authority_changed(event)?,
-        LedgerEvent::PodHeadAdvanced { .. } => check_pod_head_advanced(event)?,
         LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
             endpoint: Some(endpoint),
             ..
         }) => endpoint
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+        LedgerEvent::PodHeadAdvanced { .. } => check_pod_head_advanced(event)?,
         _ => {}
     }
     Ok(())

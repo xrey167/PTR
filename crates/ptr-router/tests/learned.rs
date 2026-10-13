@@ -6,7 +6,7 @@ use common::{key, nonce, registry, request, route};
 use ptr_router::{
     ActivationPolicy, EncoderRef, GateReport, LearnedPodRouter, LearnedRouterConfig,
     PodRepresentation, PodRepresentationParts, RepresentationError, RepresentationStore,
-    RouteError, RouteFeatures, Router, ScoreWeights,
+    RouteError, RouteFeatures, Router, ScoreWeights, MAX_MANIFEST_BYTES, MAX_REPRESENTATIONS,
 };
 use ptr_types::{
     CapabilityId, ClusterKey, Generation, PodId, PodIdentity, PodIdentityDescriptor, ProjectId,
@@ -377,14 +377,78 @@ fn the_store_rechecks_the_measured_gate_against_its_own_minima() {
         strict.insert(lenient.clone()),
         Err(RouteError::InactiveRepresentation { .. })
     ));
-    let mut permissive = RepresentationStore::with_policy(
+    // The activation gate can be made stricter, never weaker.
+    for (alias, negative, field) in [
+        (500, 900, "min_alias_permille"),
+        (800, 500, "min_negative_reject_permille"),
+    ] {
+        assert_eq!(
+            RepresentationStore::with_policy(
+                encoder(),
+                ActivationPolicy {
+                    min_alias_permille: alias,
+                    min_negative_reject_permille: negative,
+                },
+            )
+            .unwrap_err(),
+            RepresentationError::PolicyBelowMinimum { field }
+        );
+    }
+    let mut stricter = RepresentationStore::with_policy(
         encoder(),
         ActivationPolicy {
-            min_alias_permille: 500,
-            min_negative_reject_permille: 500,
+            min_alias_permille: 990,
+            min_negative_reject_permille: 990,
         },
+    )
+    .unwrap();
+    // A representation that passes the built-in gate but not this one is refused.
+    let passing = representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    assert!(matches!(
+        stricter.insert(passing),
+        Err(RouteError::InactiveRepresentation { .. })
+    ));
+}
+
+#[test]
+fn a_store_holds_a_bounded_number_of_pods() {
+    let mut store = RepresentationStore::new(encoder());
+    for index in 0..MAX_REPRESENTATIONS {
+        store
+            .insert(representation(
+                &format!("pod-{index}"),
+                vec![1.0, 0.0, 0.0],
+                10.0,
+                1,
+            ))
+            .unwrap();
+    }
+    assert_eq!(store.len(), MAX_REPRESENTATIONS);
+    assert!(matches!(
+        store.insert(representation("one-too-many", vec![1.0, 0.0, 0.0], 10.0, 1)),
+        Err(RouteError::InvalidRepresentation {
+            error: RepresentationError::TooManyRepresentations {
+                max: MAX_REPRESENTATIONS
+            },
+            ..
+        })
+    ));
+    // A newer generation of a pod already held still replaces it.
+    store
+        .insert(representation("pod-0", vec![0.0, 1.0, 0.0], 10.0, 2))
+        .unwrap();
+}
+
+#[test]
+fn an_oversized_manifest_is_refused_before_it_is_parsed() {
+    let manifest = " ".repeat(MAX_MANIFEST_BYTES + 1);
+    assert_eq!(
+        PodRepresentation::from_artifact(&manifest, &[]),
+        Err(RepresentationError::ManifestTooLarge {
+            max: MAX_MANIFEST_BYTES,
+            actual: MAX_MANIFEST_BYTES + 1,
+        })
     );
-    permissive.insert(lenient).unwrap();
 }
 
 #[test]

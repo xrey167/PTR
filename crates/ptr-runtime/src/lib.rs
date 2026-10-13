@@ -87,7 +87,7 @@ pub use placement::{
     DeviceHealth, DeviceRecord, FencedStateLease, FencingToken, NodeHealth, NodeRecord, Placement,
     PlacementEpoch, PlacementError, PodPlacementController,
 };
-pub use pod_head::{pod_lifecycle_target, AdvancePodHead, PodHeadError};
+pub use pod_head::{pod_lifecycle_target, AdvancePodHead, PodHeadError, PodHeadStatus};
 pub use pod_representation::{
     AdmittedRepresentations, BindPodRepresentation, PodRepresentationError, RepresentationDenial,
     RepresentationRefusal,

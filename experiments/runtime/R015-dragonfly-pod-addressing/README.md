@@ -10,7 +10,7 @@ routing_accuracy,abstain_rate,false_route_rate
 cosine_only,constant_score
 
 ## Falsification
-NO-GO if, across the 5 seeds, the learned router does not have a lower false_route_rate than the cosine-only baseline, or its routing_accuracy falls below the baseline by more than the margin pinned at freeze; the representations then stay deactivated and the default PodRouter stays the only router. A learned router that routes to a pod outside registry.candidates, or loads a representation past an unmet activation gate, fails outright.
+NO-GO unless, on every one of the 5 confirmatory seeds, the learned router has routing_accuracy at least that of the cosine-only baseline (margin 0 permille) and a false_route_rate strictly below it; both must hold on every seed, or the representations stay deactivated and the default PodRouter stays the only router. A learned router that routes to a pod outside registry.candidates, or loads a representation past an unmet activation gate, fails outright.
 
 ## Design
 
@@ -25,7 +25,9 @@ Arms: `learned` (`LearnedPodRouter`, may abstain), `cosine_only` (closest descri
 
 ## Status
 
-`planned`. The harness and the training step exist, and the encoder is a deterministic stand-in (`hashed-bow-64`), which is no evidence about a language model. The frozen encoder and the accuracy margin are `must-be-pinned-before-prepared` in `config.toml`. An unfrozen smoke run of the five seeds (not evidence, recorded to show the harness works) gave `learned` a lower `false_route_rate` than `cosine_only` on all five seeds and a higher or equal `routing_accuracy` on three of them. Nothing was tuned after looking at it.
+`planned`. The harness and the training step exist, and the encoder is a deterministic stand-in (`hashed-bow-64`), which is no evidence about a language model. The frozen encoder is `must-be-pinned-before-prepared` in `config.toml`; the accuracy margin is pinned at 0 permille and the criterion above comes from the plan, not from data.
+
+Chronology, disclosed: on 2026-10-13, before the criterion was fixed, the harness was run once on the confirmatory seeds 17, 29, 43, 71 and 101 to see that it works. That result is not usable and is not used; tuning and pilots run on seeds >= 1001 only, and the confirmatory seeds run once, after the freeze.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

@@ -45,6 +45,10 @@ pub const MAX_REPRESENTATION_DIMS: usize = 4096;
 pub const ACTIVATION_ALIAS_PERMILLE: u16 = 800;
 /// Minimum share of rejected negative examples for activation, in permille.
 pub const ACTIVATION_NEGATIVE_REJECT_PERMILLE: u16 = 900;
+/// The most representations one store holds (Invariant 8: bounded).
+pub const MAX_REPRESENTATIONS: usize = 4096;
+/// The most bytes a manifest may have before it is parsed.
+pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 
 const ARTIFACT_KIND: &str = "dragonfly-pod-address";
 const DIGEST_DOMAIN: &str = "ptr.dragonfly.artifact.v1";
@@ -167,6 +171,19 @@ pub enum RepresentationError {
     Malformed {
         field: &'static str,
     },
+    /// The manifest is larger than [`MAX_MANIFEST_BYTES`].
+    ManifestTooLarge {
+        max: usize,
+        actual: usize,
+    },
+    /// The store already holds [`MAX_REPRESENTATIONS`] pods.
+    TooManyRepresentations {
+        max: usize,
+    },
+    /// An [`ActivationPolicy`] weaker than the built-in minimum. A store may only be stricter.
+    PolicyBelowMinimum {
+        field: &'static str,
+    },
 }
 
 impl fmt::Display for RepresentationError {
@@ -223,6 +240,12 @@ impl PodRepresentation {
     /// [`RepresentationError::DigestMismatch`] when any field was changed after export, and the
     /// validation errors of [`PodRepresentation::new`].
     pub fn from_artifact(manifest_json: &str, weights: &[u8]) -> Result<Self, RepresentationError> {
+        if manifest_json.len() > MAX_MANIFEST_BYTES {
+            return Err(RepresentationError::ManifestTooLarge {
+                max: MAX_MANIFEST_BYTES,
+                actual: manifest_json.len(),
+            });
+        }
         let manifest: serde_json::Value =
             serde_json::from_str(manifest_json).map_err(|_| malformed("manifest"))?;
         let root = manifest.as_object().ok_or_else(|| malformed("manifest"))?;
@@ -658,15 +681,39 @@ pub struct RepresentationStore {
 
 impl RepresentationStore {
     pub fn new(encoder: EncoderRef) -> Self {
-        Self::with_policy(encoder, ActivationPolicy::default())
+        // The default policy is the built-in minimum, which `with_policy` accepts by definition.
+        Self {
+            encoder,
+            policy: ActivationPolicy::default(),
+            entries: BTreeMap::new(),
+        }
     }
 
-    pub fn with_policy(encoder: EncoderRef, policy: ActivationPolicy) -> Self {
-        Self {
+    /// A store with its own activation minima.
+    ///
+    /// # Errors
+    /// [`RepresentationError::PolicyBelowMinimum`] when a minimum is below
+    /// [`ACTIVATION_ALIAS_PERMILLE`] or [`ACTIVATION_NEGATIVE_REJECT_PERMILLE`]: the gate can be
+    /// tightened here, never loosened.
+    pub fn with_policy(
+        encoder: EncoderRef,
+        policy: ActivationPolicy,
+    ) -> Result<Self, RepresentationError> {
+        if policy.min_alias_permille < ACTIVATION_ALIAS_PERMILLE {
+            return Err(RepresentationError::PolicyBelowMinimum {
+                field: "min_alias_permille",
+            });
+        }
+        if policy.min_negative_reject_permille < ACTIVATION_NEGATIVE_REJECT_PERMILLE {
+            return Err(RepresentationError::PolicyBelowMinimum {
+                field: "min_negative_reject_permille",
+            });
+        }
+        Ok(Self {
             encoder,
             policy,
             entries: BTreeMap::new(),
-        }
+        })
     }
 
     /// Loads an activated representation, replacing an older generation of the same pod.
@@ -709,6 +756,11 @@ impl RepresentationStore {
                     actual: representation.dims(),
                 }));
             }
+        }
+        if !self.entries.contains_key(&pod) && self.entries.len() >= MAX_REPRESENTATIONS {
+            return Err(invalid(RepresentationError::TooManyRepresentations {
+                max: MAX_REPRESENTATIONS,
+            }));
         }
         if let Some(current) = self.entries.get(&pod) {
             if representation.generation() <= current.generation() {
