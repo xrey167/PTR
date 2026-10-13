@@ -21,8 +21,8 @@ The plan is cut into the five stages the owner named, in the order they build on
 The thing every stage shares, and the reason this is one plan rather than five, is section 1.
 Whether the plan is worth building, stage by stage, is section 7; the short answer is that S1,
 S3 and S4 pay for themselves on any single card, S2 has no hardware on the owner's two
-single-card PCs (section 0a) and is built on S3's pinned buffer, and S5, the already-planned
-E008, runs between those two PCs.
+single-card PCs (section 0a) and is built on S3's pinned buffer, and S5 runs between those two
+PCs as E013, with the already-planned E008 (loopback) as its one-host baseline.
 
 ## 0. Facts checked before implementation
 
@@ -214,7 +214,7 @@ from the data side:
 
 | Carrier | When | Mechanism | Zero copies? |
 |---|---|---|---|
-| `InProcess` | same process | the tensor object itself (candle `Tensor` or a DLPack capsule across a language boundary) | yes |
+| `InProcess` | same process | the tensor object itself, with unique ownership moved to the consumer (rule 3a) | yes, only under moved unique ownership; a candle tensor with shared storage or a DLPack capsule across a language boundary is copied into a receiver-owned buffer (one copy) |
 | `HostShm` | same host, other process, CPU tensor | `memfd` or a named shared mapping (`memmap2` is already in `Cargo.lock`), sealed read-only before the handle is sent | yes |
 | `CudaIpc` | same host, other process, same GPU | `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle` through `cudarc` with dynamic loading (0.19.10 is already in `Cargo.lock` through candle); event handle for stream ordering; exported only from an isolated staging buffer (VMM, or `cudaMalloc` rounded to 2 MiB, base and size checked before export); the consumer copies into its own allocation (rule 3a) | no: one device-to-device copy |
 | `DevicePeer` | same host, other GPU, peer access available | `cudaMemcpyPeer` on a stream into a receiver-owned allocation; no direct peer mapping (rule 3a) | one device-to-device copy |
@@ -337,7 +337,14 @@ live grant be replayed for another object or redirected to another backend. A re
 therefore carries an authenticated, single-use grant that binds the object digest, source,
 destination, principal, **the authority-derived project scope** (`ProjectId`), deadline and nonce
 **and the active-write binding** (generation,
-placement epoch, fencing token) of the object, signed by the authority that issued it; the
+placement epoch, fencing token) of the object, signed by the authority that issued it. Single use
+is enforced by the receiver: consuming the grant and publishing the replica are **one atomic
+step** that records the grant nonce as a tombstone; tombstones are bounded per issuing authority
+(a typed saturation refusal when full) and retained until the grant's deadline plus skew, and
+grant deadlines are bounded like handle deadlines, so the table cannot grow without limit. Each
+grant also names the receiver's **session id**, a random value the receiver draws at every
+start, so a grant issued before a restart is refused after it even though the tombstones were not
+persisted; the
 receiver revalidates that binding against the current residency record at transfer time **and
 again, atomically, immediately before the destination replica becomes available**, discarding the
 transferred chunks if the binding or the project scope no longer holds (a principal admitted to
@@ -381,8 +388,9 @@ Every pull request: positive and negative tests (`docs/TESTING.md`), `component.
 5. **S2** carrier table, peer probe, two-device pipeline split in two workers. Needs two GPUs in
    one host for the record, which the owner does not have; the `PinnedHost` path is testable
    with one.
-6. **S5** E008 as registered, then cross-host tier transfer. Needs two hosts: the owner's
-   3090 PC and 4090 PC; the PTR-Research LXD cluster is enough for the CPU part.
+6. **S5** E008 as registered (loopback, one host) as the baseline, then E013 across the two
+   hosts, including the cross-host tier transfer. E013 needs two hosts: the owner's 3090 PC and
+   4090 PC; the PTR-Research LXD cluster is enough for the CPU part.
 
 S2 comes after S3 on purpose: without peer access S2's working carrier **is** S3's pinned
 buffer, so S3 builds the piece S2 needs.
@@ -396,9 +404,9 @@ names its sensitivity control; the table names the baseline. Ids are proposals.
 
 | Id | Claim | Baseline / ablation | Refuted if | Needs |
 |---|---|---|---|---|
-| E011-carriers | The carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile` < `Remote` (loopback) < `Remote` (LAN), each by a preregistered factor, at frame sizes within the existing bounds (1 MiB to 64 MiB, the activation `MAX_FRAME_BYTES`; the `Bytes` baseline is chunked under PodWire's 4 MiB `MAX_BODY_BYTES`, and every compared carrier carries the same chunking) | baseline: `Bytes` at every size; ablation, matched per carrier to the mechanism it actually has: `InProcess` and `HostShm` with their zero-copy step replaced by an explicit copy; `CudaIpc` with the IPC device-to-device copy replaced by a staged device-to-host-to-device copy; `DevicePeer` with peer access disabled (staged through host); `PinnedHost` with pageable instead of page-locked memory; `NvmeFile` with buffered instead of direct I/O; `Remote` has no mechanism to remove and is compared to the `Bytes` baseline only; sensitivity: a planted fixed delay on one carrier must reorder it in the measured order, else the harness is blind | the order is violated, or two adjacent carriers are within noise (then the carrier preference is revised; carriers are never merged, since a carrier is an eligibility boundary, not a cost estimate) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
-| E009-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, no mapping outlives its deadline plus skew, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any mapping alive after reclaim, any byte leak across a crash, or (GPU cell) any producer byte outside the signed span readable by the consumer through an IPC import, in any seed | CPU for `HostShm`; GPU for `CudaIpc`, including the cross-process overread test of rule 3a |
-| E010-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | baseline: LRU without lookahead; ablation: unpinned RAM; sensitivity: planted cells (one flipped byte in a stored object, a lease fenced between write and read, a perturbed routing trace that must lower the hit rate) that the harness must detect as a digest mismatch, a refused admission and a measured drop, else the harness is blind | a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor; or any planted cell not detected | CPU part (RAM and NVMe tiers, unpinned versus locked) here; the GPU leg on hardware |
+| E011-carriers | The local carriers order the measured frame transfer time: `InProcess` < `HostShm` ≈ `CudaIpc` < `PinnedHost` < `NvmeFile`, each by a preregistered factor (`Remote` over loopback and LAN is measured alongside, descriptively), at frame sizes within the existing bounds (1 MiB to 64 MiB, the activation `MAX_FRAME_BYTES`; the `Bytes` baseline is chunked under PodWire's 4 MiB `MAX_BODY_BYTES`, and every compared carrier carries the same chunking) | baseline: `Bytes` at every size; ablation, matched per carrier to the mechanism it actually has: `InProcess` and `HostShm` with their zero-copy step replaced by an explicit copy; `CudaIpc` with the IPC device-to-device copy replaced by a staged device-to-host-to-device copy; `DevicePeer` with peer access disabled (staged through host); `PinnedHost` with pageable instead of page-locked memory; `NvmeFile` with buffered instead of direct I/O; `Remote` is not part of the ordering claim (its cells are reported as descriptive calibration for carrier selection only, since it has no mechanism to ablate); sensitivity: a planted fixed delay on one carrier must reorder it in the measured order, else the harness is blind | the order is violated, or two adjacent carriers are within noise (then the carrier preference is revised; carriers are never merged, since a carrier is an eligibility boundary, not a cost estimate) | CPU cells (`InProcess`, `Bytes`, `HostShm`, `NvmeFile`, loopback `Remote`) here; GPU cells and the LAN cell on hardware |
+| E009-handle-fence | After a placement epoch bump, a device revocation or a worker crash, no handle of the old epoch is admitted, a buffer stays charged until its teardown is verified (`Consumed`, or the late consumer terminated and reaped by the supervisor, which starts at deadline plus skew), no mapping survives a verified reap, and the producer reclaims every buffer | the same loop with admission disabled (must leak or admit, else the test is blind) | any stale admission, any buffer freed before its teardown was verified, any mapping alive after a verified reap, any byte leak across a crash, or (GPU cell) any producer byte outside the signed span readable by the consumer through an IPC import, in any seed | CPU for `HostShm`; GPU for `CudaIpc`, including the cross-process overread test of rule 3a |
+| E010-offload-roundtrip | Expert weights and KV pages move GPU→pinned RAM→NVMe→GPU with identical digests, the fencing lease renewed, and the lookahead policy keeps a preregistered hit rate on a replayed routing trace | baseline: LRU without lookahead; ablation: unpinned RAM; sensitivity: planted cells (one flipped byte in a stored object, a lease fenced between write and read, a perturbed routing trace that must lower the hit rate) that the harness must detect as a digest mismatch, a refused admission and a measured drop, else the harness is blind | in an unperturbed claim cell: a digest mismatch, a stale-lease admission, or a hit rate below the preregistered floor; in a planted cell: the expected detection or refusal not observed (planted cells are judged only on that, never by the claim-cell falsifiers) | CPU part (RAM and NVMe tiers, unpinned versus locked) here; the GPU leg on hardware |
 | E008 (registered) | two-stage split across a loopback socket (part B) with the extended frame (part A), bit-identical to the in-process split | E007 in process | any output difference, any admission of a frame with a stale epoch | CPU, one host |
 | E012 (E008 part C) | a real checkpoint split across two devices, F16/BF16 boundaries, activation versus KV bytes | the same checkpoint run on a single device, and an F32 boundary, as E008 part C registers them | as E008 part C | GPU in one host (no such hardware today) |
 | E013-two-host-split | the two-stage split of E008 with the stages on two hosts over the LAN, bit-identical to the in-process split, with every E008 refusal unchanged; plus a cross-host tier-object transfer (a KV snapshot) under the signed single-use grant, with a replay, a redirected destination, a foreign object, a grant of another project and an active write fenced or replaced after the first authorization but before commit attempted and counted | E008 part B on loopback; the transfer without a grant (must be refused, else the test is blind); the final pre-commit check disabled (must publish the fenced replica, else that arm is blind) | any output difference, any admitted stale frame, any replayed, redirected, foreign-object or cross-project grant admitted, any destination replica made available after its write was fenced, or zero attempts of any counted attack (vacuous) | the owner's two PCs |
@@ -419,8 +427,9 @@ one card) is a later experiment on the F-series hardware plan and is not claimed
 - **S2: build, but no hardware yet.** The owner's PCs have one card each, so S2 is built on the
   pinned buffer of S3, tested with simulated devices, and checked on hardware only once a host
   has two cards.
-- **S5: yes, as E008**, already planned and registered, and directly testable between the
-  owner's two PCs; this document adds nothing to it but the shared handle contract.
+- **S5: yes, as E013** between the owner's two PCs, on top of E008 (already planned and
+  registered, loopback only, so no evidence for two hosts by itself); this document adds the
+  shared handle contract and the signed tier-transfer grant.
 - **What never makes sense here:** per-token expert dispatch across PCIe or a network, and a
   claim that any of this is "NVLink". The fabric is, as an estimate, around a hundred times slower (section 2: PCIe
   against NVLink bandwidth) and carries typed,
