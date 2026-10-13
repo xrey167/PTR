@@ -4,8 +4,8 @@
 > Refresh with `python3 scripts/update_component_docs.py --write`.
 
 **Component count:** 33  
-**Maturity distribution:** `foundation`: 1, `prototype`: 23, `research-scaffold`: 1, `scaffold`: 8  
-**Rust footprint:** 285 source files · 139746 nonblank source lines · 242 integration-test files · 3243 test markers (`#[test]`, `#[tokio::test]`)
+**Maturity distribution:** `foundation`: 1, `prototype`: 24, `research-scaffold`: 1, `scaffold`: 7  
+**Rust footprint:** 288 source files · 141559 nonblank source lines · 245 integration-test files · 3292 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -14,7 +14,7 @@
 | [ptr-cluster](../../crates/ptr-cluster/README.md) | `prototype` | 3 | 749 | 2 | 17 | 15 | 6 | — | — |
 | [ptr-config](../../crates/ptr-config/README.md) | `prototype` | 2 | 1167 | 6 | 30 | 13 | 4 | E001:planned | — |
 | [ptr-core](../../crates/ptr-core/README.md) | `research-scaffold` | 13 | 200 | 1 | 1 | 9 | 6 | M001:planned, M002:planned, M003:planned, M004:planned, M005:planned, M006:planned, M007:planned, E001:planned, E003:planned, E004:planned | model-framework:open, inference-serving:open |
-| [ptr-events](../../crates/ptr-events/README.md) | `scaffold` | 2 | 306 | 2 | 8 | 9 | 4 | E001:planned, F001:frozen | event-streaming:open |
+| [ptr-events](../../crates/ptr-events/README.md) | `prototype` | 5 | 2119 | 5 | 57 | 14 | 5 | E001:planned, F001:frozen | event-streaming:open |
 | [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 3 | 458 | 2 | 18 | 7 | 7 | R001:frozen, E001:planned, E003:planned | execution-runtime:open |
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | `prototype` | 5 | 1597 | 3 | 36 | 18 | 9 | — | — |
 | [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 3189 | 4 | 85 | 13 | 3 | M008:frozen, L003:completed | fast-weight-memory:open |
