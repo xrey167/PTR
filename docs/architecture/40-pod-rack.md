@@ -67,7 +67,9 @@ pattern only adds a **scope** to it (section 4).
 ### 2.1 One rack: the scale-up domain
 
 **Proposal.** `NodeRecord` gains `rack: Option<RackId>` next to `zone`. A rack is a declared
-set of nodes whose pairwise interconnect class is at least `ScaleUpFabric`. The declaration is
+set of nodes whose pairwise interconnect class is no farther than `ScaleUpFabric` (in the order
+of section 2.4, `InProcess` nearest to `ScaleOut` farthest), so a node reachable only by scale-out
+can never be a rack member. The declaration is
 **host policy** (the operator says which nodes share a fabric), exactly like `AdmissionPolicy`
 says which peer is which principal ([29](29-peer-admission-and-pod-scope.md)): PTR cannot
 measure NVLink and must not pretend to. A node without a rack is a rack of one.
@@ -151,9 +153,12 @@ InterconnectClass = InProcess | SameDevice | SameHost | ScaleUpFabric | ScaleOut
 ordered from nearest to farthest, and a `LocalityRequirement { max_distance, anchor }` on
 `PodResourceProfile` (and on `ResourceRequirements` for neural Pods), where `anchor` is the
 tray, the rack or nothing. Placement refuses an assignment whose distance to the anchor exceeds
-`max_distance` (`PlacementError::LocalityViolation`), and `RouteConstraints`
-(`crates/ptr-runtime/src/directory.rs`, `PodDirectory::resolve`) carries the same requirement
-so a route to a Pod that is too far is `ResolveError`, not a slow route. The activation-frame
+`max_distance` (`PlacementError::LocalityViolation`). Routing enforces the same bound, but the
+bound is **loaded from the admitted profile of the resolved Pod**, never taken from the caller:
+`PodDirectory::resolve` (`crates/ptr-runtime/src/directory.rs`) today sees only caller-supplied
+`RouteConstraints`, so resolution must look up the admitted requirement itself, and a request's
+constraints may only narrow it, never widen or omit it. A route to a Pod that is too far is a
+`ResolveError`, not a slow route. The activation-frame
 admission in `split_stage` checks the class of the link the frame arrived on against the
 stage's requirement, as it checks `placement_epoch` today.
 
