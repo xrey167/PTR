@@ -1,10 +1,10 @@
 //! The preregistered parameters of R009, compiled in.
 //!
-//! The constants of the first section mirror the keys of `[pinned_thresholds]` in the
-//! experiment's `config.toml`, which is read at compile time; the drift test fails when a
-//! constant differs from the file, and when the file holds a key no constant mirrors. The
-//! second section holds the values the file leaves open (the draft preregistration pins them
-//! as the `[preregistration]` table). R009 is `planned`: nothing here is frozen.
+//! The constants of the first section mirror the keys of `[pinned_thresholds]` in the experiment's
+//! `config.toml`, which is read at compile time; the drift test fails when a constant differs from
+//! the file, and when the file holds a key no constant mirrors. The second section holds the values
+//! the file leaves open (the preregistration pins them as the `[preregistration]` table).
+//! R009 is frozen at its preregistration and has completed; the file is frozen with it.
 
 // The thresholds complete the compiled table the drift test compares with the file; the
 // harness evaluates most of them in `metrics`, and the rest only echo the table.
@@ -184,7 +184,7 @@ pub const DECLARED_DEPENDENCY_KINDS: [&str; 5] =
 pub const DEPENDENCY_LIST_NARROWING_REASON: &str =
     "narrowed: the dense LoRA workload has no experts";
 
-// ---- the values the config leaves open (the draft preregistration's `[preregistration]`) ---
+// ---- the values the config leaves open (the preregistration's `[preregistration]`) ---
 
 /// The subcommand and the manifest's entrypoint.
 pub const BENCHMARK: &str = "layer-shared-lora-kv";

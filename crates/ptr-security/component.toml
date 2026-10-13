@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-security"
 maturity = "prototype"
-last_reviewed = "2026-09-19"
+last_reviewed = "2026-10-13"
 
 implemented = [
   "PermissionSet with capability membership",
@@ -13,10 +13,10 @@ implemented = [
 ]
 
 missing = [
-  "Principal/session/resource scopes",
+  "Principal/session/resource scopes in this crate (the scoped execution gateway of ptr-runtime, doc 21, holds host-issued sessions and exact capsule/project grants; ptr-security decides on one ActionAuthorization at a time)",
   "Context trust/evidence model",
   "Sandbox execution contract",
-  "Durable denial/receipt audit persistence and escalation requirements",
+  "Durable denial/receipt audit persistence and escalation requirements (ptr-runtime journals effect attempts and settlements, doc 28, but no AuthorizationReceipt or denial is persisted)",
 ]
 
 next = [

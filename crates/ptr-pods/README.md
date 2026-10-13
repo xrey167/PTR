@@ -71,7 +71,7 @@
 
 ### Missing for the target architecture
 
-- Workspace: no Pod invokes it yet (the finding router of package B and the end-to-end experiment are separate work), slot content is not committed to the ledger, and no experiment has measured whether a workspace or displacement helps; determinism assumes a pure host verifier and registry, and submit-time bounds (PendingFull) depend on arrival order; the host must bound verifier wall-clock time and a panicking AuthorRegistry is not caught
+- Workspace: only ptr-runtime's VcwLoop drives it (one workspace per request, simulated or test experts), slot content is not committed to the ledger, and no experiment shows that a workspace or displacement helps a model (F007 measured the workspace only as an implementation check in a world that declares a broadcast reader); determinism assumes a pure host verifier and registry, and submit-time bounds (PendingFull) depend on arrival order; the host must bound verifier wall-clock time and a panicking AuthorRegistry is not caught
 - Adapters and MoE are not yet wired into ptr-runtime's KvSession/backend: nothing there binds an adapter or expert dependency to a session, re-resolves the binding at restart or tags batch-variant routing Approximate; the catalog and fork paths still have no layer scope or cross-adapter prefix sharing; the MoE has no capacity-free load balancing loss and no trained weights, and the MLP-only adapter is a block-output correction, not a gate/up/down LoRA
 - Async invocation and PodContext
 - Process-isolated, remote-Iroh and GPU/DLPack adapters
@@ -87,7 +87,7 @@
 ### Next milestones
 
 - Extend registry with lifecycle/backpressure and remote/process adapters
-- Implement registry and one native reference Pod
+- Wire a real model (the qwen-cpu generator or another) into this crate's paged-KV executors, leases and taint; the registry and native Pods exist (PodRegistry, NeuralPodAdapter, and the VCW expert Pods in ptr-runtime)
 - Run unseen-Pod semantic generalization experiment R002
 
 ### Linked experiments
@@ -138,8 +138,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-pods.mmd`](../../docs/diagrams/components/ptr-pods.mmd)
 
-**Upstream:** ptr-exec, ptr-router  
-**Downstream:** ptr-verifier, ptr-semdb
+**Upstream:** ptr-protocol, ptr-storage, ptr-types, ptr-verifier  
+**Downstream:** ptr-runtime, ptr-router, ptr-state, ptr-podwire, ptr-server, ptrd, ptr-worker, ptr-bench
 
 ## Mission
 

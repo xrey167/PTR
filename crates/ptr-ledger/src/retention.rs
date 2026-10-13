@@ -37,8 +37,9 @@ pub enum OutOfReach {
     /// Blocks a filesystem or device still holds after a file is removed or
     /// rewritten. Absence from a file is not absence from the medium.
     StorageResidue,
-    /// Model, KV and checkpoint state. Not implemented in PTR, so nothing here can
-    /// speak to it either way.
+    /// Model, KV and checkpoint state. The audit searches none of it (sealed neural
+    /// state and the KV catalog live in `ptr-runtime`), so nothing here can speak to
+    /// it either way.
     ModelDerivedState,
 }
 

@@ -39,7 +39,7 @@
 ### Next milestones
 
 - Implement lexical reference backend first
-- Derive SourceOwnership from KnowledgeStore objects (needs an accessor in ptr-memory), connect the typed promotion path to the retriever index and to ptr-verifier reports, and deprecate the boolean observe/promote_verified once Q002 is frozen
+- Derive SourceOwnership from KnowledgeStore objects (needs an accessor in ptr-memory), connect the typed promotion path to the retriever index and to ptr-verifier reports, and deprecate the boolean observe/promote_verified (Q002, its precondition, is completed)
 - Run Q001/Q002 and strong RAG baseline E002
 
 ### Linked experiments
@@ -92,8 +92,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-search.mmd`](../../docs/diagrams/components/ptr-search.mmd)
 
-**Upstream:** ptr-router, ptr-memory  
-**Downstream:** ptr-verifier, ptr-core
+**Upstream:** ptr-memory, ptr-types  
+**Downstream:** ptr-fastmem, ptr-pg, ptr-bench
 
 ## Mission
 

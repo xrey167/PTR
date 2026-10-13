@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 3 Rust source files · 964 nonblank source lines · 2 integration-test files · 31 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 3 Rust source files · 967 nonblank source lines · 2 integration-test files · 31 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -77,7 +77,7 @@ flowchart LR
 Dedicated diagram source: [`docs/diagrams/components/ptr-protocol.mmd`](../../docs/diagrams/components/ptr-protocol.mmd)
 
 **Upstream:** ptr-types  
-**Downstream:** ptr-net, ptr-pods, ptr-server
+**Downstream:** ptr-net, ptr-pods, ptr-podwire, ptr-runtime, ptr-server, ptr-bench
 
 ## Mission
 

@@ -146,7 +146,9 @@ impl fmt::Display for TokenizerIdentity {
     }
 }
 
-/// Text to token ids and back. A real HF tokenizer arrives later in `ptr-tokenizers`.
+/// Text to token ids and back. [`ByteTokenizer`] is the only implementation; no Hugging Face
+/// tokenizer implements this trait (the `tokenizers`-backed tokenizer of `ptr-pods`' `qwen-cpu`
+/// feature is private to that model).
 pub trait Tokenizer: Send + Sync {
     fn identity(&self) -> &TokenizerIdentity;
     fn encode(&self, text: &str) -> Vec<TokenId>;

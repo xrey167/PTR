@@ -72,8 +72,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-storage.mmd`](../../docs/diagrams/components/ptr-storage.mmd)
 
-**Upstream:** ptr-ingress, ptr-pods  
-**Downstream:** ptr-memory, ptr-search, ptr-net
+**Upstream:** ptr-types  
+**Downstream:** ptr-pods, ptr-runtime
 
 ## Mission
 

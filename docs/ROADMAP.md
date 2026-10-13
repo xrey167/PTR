@@ -18,6 +18,11 @@ and status, architecture contract and test evidence before widening scope.
 5. Real training with matched baselines and held-out/OOD evaluation.
 6. Learned-path integration into the existing runtime.
 
+Status (2026-10-13): steps 1 and 2 are done; step 4 ran as preregistered A0 studies
+whose isolating contrasts are INCONCLUSIVE with no positive claim (`STATUS.md`);
+step 3 (G1) and step 6 are decided "not now" until an A0 study passes its gates
+(ADR-0022, S8); step 5 has not started.
+
 The broader phases below describe the target architecture; they are not a reason
 to finish every infrastructure slot before validating the cognitive/model path.
 The full Definition of Done remains unchanged.
@@ -57,9 +62,12 @@ Current implementation status:
 - `ptr-ledger` persists mesh/tunnel lifecycle events with stable tag 15 and
   `ptr-state`/`ptr-runtime` validate and project them.
 - `ptr-net` provides the fenced `WireguardUserspaceExecutor<D>` contract and
-  deterministic device-backed tests. Privileged Linux kernel, Windows Wintun,
-  and macOS Network Extension implementations are still platform adapters;
-  they are not claimed as locally hardware-validated here.
+  deterministic device-backed tests. Two platform devices exist behind features:
+  `LinuxWireguardDevice` (`wireguard-uapi-backend`, the WireGuard userspace UAPI
+  plus the host `ip` utility, linted and unit-tested in CI against a mock UAPI
+  socket only) and `WintunDevice` (`wintun-backend`, a TUN interface with no
+  WireGuard crypto dataplane, only compiled on CI's Windows leg). No macOS Network Extension adapter exists. None is
+  claimed as hardware-validated here.
 
 ## Phase G — PTR-Diff
 Parallel structured reasoning / diffusion architecture only after A0 has measurable evidence over controlled baselines.

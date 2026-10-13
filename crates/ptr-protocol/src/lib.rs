@@ -1,4 +1,7 @@
-//! Semantic PodWire domain frames. Network encodings (prost/rkyv/JSON) are adapters around these types.
+//! Semantic PodWire domain frames. Network encodings are adapters around these types; the only
+//! one built converts the prost-generated messages of [`generated`] (no rkyv or JSON adapter
+//! exists). No wire speaks the `PodCall` messages: `ptr-podwire` carries Pod access in its own
+//! bounded frames, with the [`activation`] frames of a split Pod inside their payloads.
 
 pub mod activation;
 pub mod generated;

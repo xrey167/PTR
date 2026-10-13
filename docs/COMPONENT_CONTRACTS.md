@@ -41,6 +41,8 @@ The axes must not be collapsed into one enum: semantic role, epistemic state, un
 | WriteRequest/SourceRef | fastmem | pg journal | source key, generation, input digest, raw key/value cells, gates |
 | MetricSpec/MetricRow | analytics | pg (compiled SQL) | metric, grouping, window of days, numerator, denominator |
 
+Most rows name a Rust type of that name. Four name a contract that has no type of that name yet: `TypedProposal` (the nearest is `ptr_ingress::SemanticProposal`), `ExecutionRecipe` (the router returns a `RouteDecision` of scored targets, with no budgets, dependencies or fallback policy), `Observation` (a `PodOutputKind` of `ptr_pods::PodOutput`) and `EvidenceCandidate` (the nearest is `ptr_search::SearchHit` with its `EvidenceStage`). `ActionIR` is `ptr_types::ActionIr`. `PodRequest` exists only as the PodWire frame type of `ptr-podwire`.
+
 ## Compatibility
 
 Every cross-process/network contract needs:

@@ -84,8 +84,8 @@ flowchart LR
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-memory.mmd`](../../docs/diagrams/components/ptr-memory.mmd)
 
-**Upstream:** ptr-state, ptr-semdb, ptr-verifier  
-**Downstream:** ptr-search, ptr-core
+**Upstream:** ptr-types  
+**Downstream:** ptr-search, ptr-runtime, ptr-bench
 
 ## Mission
 

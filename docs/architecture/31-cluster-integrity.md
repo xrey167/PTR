@@ -100,6 +100,59 @@ a file in place, so its cost is proportional to what is *kept* — the opposite 
 what compaction is for. That is acceptable because compaction is rare, and it is
 written down rather than discovered later.
 
+### Raft's floor is bounded by the ledger's retention floor
+
+Raft's log is where a committed ledger event lives until a durable snapshot of the
+state machine describes it. Discarding an entry that no such snapshot covers
+leaves its event retained nowhere: a follower that still needs it can be neither
+replayed to nor sent a snapshot that holds it, and a member restored from what
+*is* retained comes back without it. For an `EffectAttempted`/`EffectSettled`
+pair, that is the memory that an at-most-once key was spent.
+
+So the retention floor is an input to compaction rather than something a caller
+is trusted to have checked. `record_snapshot_within(index, payload, floor)` (on
+`RaftNode`, `ClusterMember` and the storage) takes a `RetentionFloor` — the ledger
+position the application's durable snapshot covers through, for PTR
+`CompactedSnapshot::covers` — and `FileRaftStorage` itself counts how many ledger
+events the entries at or below `index` produced, with the same predicate
+`RaftNode` applies entries by (a leader's empty entry and a configuration change
+are not events, so a raft index and a ledger index are different numbers for the
+same position). The invariant is equality, and every refusal is a typed
+`SnapshotFloorRefusal` carried in the `io::Error`, made before a byte moves:
+
+- **Fewer covered than discarded** is `PTR_RAFT_COMPACTION_ABOVE_RETENTION_FLOOR`
+  (`compacting_short_of_the_retained_floor_is_refused_and_leaves_the_log_whole`,
+  `a_leader_refuses_to_compact_past_its_retained_floor_and_a_lagging_member_is_replayed`,
+  `raft_refuses_to_discard_a_settled_attempt_the_retained_snapshot_predates`).
+- **More covered than discarded** is `PTR_RAFT_SNAPSHOT_FLOOR_MISMATCH`: the
+  payload is what a member that installs it holds *at* `index`, and raft replays
+  from `index + 1`, so a payload that already contains later events would have
+  them applied twice
+  (`a_payload_claiming_more_than_the_prefix_produced_is_refused`).
+- **Equal** compacts, and the count is persisted with the snapshot position, so a
+  reopened member numbers the next event from the snapshot's coverage
+  (`the_floor_is_counted_in_ledger_events_not_raft_indexes`,
+  `a_floor_of_zero_covers_a_prefix_with_no_events`).
+- **An installed snapshot not yet accounted for** has no base to count from, so
+  recording is refused with `PTR_RAFT_SNAPSHOT_UNACCOUNTED` until
+  `resume_with_applied` says what the payload covers. The state is durable (the
+  state file records `SnapshotPending`), so a restart in between comes back still
+  blocked
+  (`an_unaccounted_installed_snapshot_blocks_compaction_across_a_restart`).
+
+`record_snapshot(index, payload)` remains for callers that keep no retained
+snapshot to name: it takes the floor from the log itself, so the equality holds by
+construction and it protects nothing against discarding an event that nothing else
+retains. It is the form the frozen L002 harness uses, and it is why a host that has
+a durable snapshot must call `record_snapshot_within`.
+
+End to end, with a runtime as the state machine: its records go through raft, the
+log is compacted to a `PTRCS006` snapshot's floor, a second key is spent above
+it, the member restarts, and the runtime restored from the snapshot plus raft's
+remainder answers both keys with their original outcome and executes neither,
+while an unspent key still executes
+(`an_at_most_once_key_survives_raft_compacting_to_the_retention_floor_and_a_restart`).
+
 ## A group, driven message by message
 
 `RaftNode` is one member that hands its outbound messages back instead of dropping
@@ -216,7 +269,7 @@ involved. Two suites, each proving the thing it can actually prove.
 ### Not a daemon
 
 There is no background loop, no timer and no retry policy in this crate. A caller
-drives `serve_once` and `dispatch`. That is a deliberate omission rather than an
+drives `serve_once`, `tick`, `campaign`, `propose` and `propose_membership`. That is a deliberate omission rather than an
 unfinished one: a loop in the wrong place makes scheduling implicit, and "when do we
 give up on a member that does not answer" is a policy decision, not a detail. It is
 also what keeps these tests free of sleeps.
@@ -362,7 +415,10 @@ Three consequences, stated rather than discovered:
   control for exactly that, because a storage that refused every second writer
   would pass every other test in the file.
 
-The state file format moves to `PTRRST02`. An older file is refused by its magic
+The state file format moved to `PTRRST02` for the fence term; it is `PTRRST03` today (the later
+raft storage rework added the snapshot payload's digest and made the applied-event count a
+typed state, and a new
+layout takes `PTRRST04`, ADR-0022). An older file is refused by its magic
 rather than read as one whose token happens to be zero — a state file read as
 unfenced is the failure this exists to prevent.
 
@@ -374,7 +430,9 @@ unfenced is the failure this exists to prevent.
   on localhost.
 - **Nothing runs the loop.** `ptr-cluster` provides the pieces and no deployment
   drives them: there is no accept/tick service, no policy for a member that stops
-  answering, and no backpressure toward one that answers slowly.
+  answering, and no backpressure toward one that answers slowly. ADR-0022 (D4) places
+  that loop in the embedding host (`ptrd`) under a `ServePolicy` from `ptr-net`
+  (spec S3, not built).
 - **Membership changes one voter at a time, and a joiner must be admitted
   first.** `propose_membership` adds or removes a single voter; a batch API is
   not offered, because raft's single-step change is safe only while consecutive
@@ -401,9 +459,18 @@ unfenced is the failure this exists to prevent.
   about any other copy. This bullet used to say that durable leadership fencing "is
   not implemented", which contradicted that section; it is corrected here, and the
   fence is described as implemented with that window, not as complete.
-- **Compaction is not integrated with the ledger's retention floor.** This is
-  raft's own log, distinct from the committed ledger in
-  `25-erasure-and-retention.md`, and the two floors are still independent.
+- **Raft's floor is bounded by the retention floor it is given, not by one it
+  can verify.** Raft cannot discard an entry whose event lies past the
+  `RetentionFloor` it is handed through `record_snapshot_within`, and cannot
+  record a payload that claims more. It cannot check that the floor is *true* —
+  that a snapshot covering it exists and is durably retained. `RetentionFloor` is
+  a claim the host makes, by convention from `CompactedSnapshot::covers`, and a
+  host that passes a floor no retained artifact backs, or loses that artifact
+  afterwards, loses the events exactly as before (the anchor-retention obligation
+  of `24-protected-anchors.md`). The unbounded `record_snapshot` is still public.
+  Raft's floor and the runtime ledger's own `CompactionBarrier` floor remain two
+  cutovers the host performs; this ties raft to the snapshot, not the two logs to
+  each other.
 - **A deployment with no second channel still trusts the leader.** The mechanism
   for retaining an anchor independently exists; supplying one is the host's, and a
   host that calls `take_installed_snapshot` is back to trusting the sender. Nothing

@@ -1,8 +1,9 @@
 //! The parameters of R001, compiled in.
 //!
-//! They mirror the keys of `[pinned_thresholds]` in the experiment's `config.toml`, which is
-//! read at compile time; the drift test fails when a constant differs from the file or the
-//! file holds a key no constant mirrors. R001 is `planned`: nothing here is frozen.
+//! They mirror the keys of `[pinned_thresholds]` in the experiment's `config.toml`, which is read
+//! at compile time; the drift test fails when a constant differs from the file or the file holds a
+//! key no constant mirrors. R001 is frozen at its preregistration and has completed; the file is
+//! frozen with it.
 
 // The drift test and the echo of the procedure use items the harness itself does not read.
 #![cfg_attr(not(test), allow(dead_code))]
