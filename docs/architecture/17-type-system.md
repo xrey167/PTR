@@ -210,9 +210,9 @@ ReasoningOperator  -> reasoning_operator_id
 
 Burn/PyTorch datasets, checkpoints and serving adapters must use the codebook version explicitly. Do not serialize `enum as u8` and assume the ordering remains stable.
 
-The current Burn A0 package already separates slot-type, epistemic, validity, provenance and confidence channels, which is directionally correct. Its current integer category counts remain research-local until the shared codebook is designed.
+The current Burn A0 package separates slot-type, epistemic, validity, provenance and confidence channels, and its slot-type, epistemic and router widths are the cardinalities of the versioned codebook ([26](26-cognitive-codebook.md)), not local integer counts.
 
-The next model-alignment step is therefore:
+The model-alignment steps were (3 and 4 are done through the codebook of [26](26-cognitive-codebook.md) and the checkpoint header; 1, 2 and 5 are open):
 
 1. rename/focus opaque `slot_type` metadata as semantic-role metadata;
 2. add a separate uncertainty-kind channel;
@@ -273,9 +273,8 @@ A type stays in a component crate when it is primarily that component's aggregat
 The current prototype still has several places where the target type system is not fully propagated:
 
 - `Epistemic<T>` remains a useful prototype convenience wrapper, but its `Distribution` variant mixes uncertainty representation into epistemic state; new model metadata should use the separated axes.
-- Burn A0 uses local integer `slot_type`/epistemic IDs rather than a versioned shared cognitive codebook.
 - `SemanticCapsule` still stores goals/constraints/known/hypotheses/unknowns/relations as separate `Vec<String>` fields; memory should eventually store shared typed semantic objects instead.
-- `ActionIr` is a cross-component contract but is currently owned by `ptr-core`; its long-term shared ownership (`ptr-types` versus a dedicated action-contract crate) is still open.
+- `ActionIr` now lives in `ptr-types` (`ptr-core` re-exports it), so core, model API and runtime share one definition; whether a dedicated action-contract crate should own it later is still open.
 - Search scores and source/backend metadata still need stronger typed semantics before retrieval data can participate safely in the same cognitive type system.
 
 These are explicit architecture tasks, not reasons to collapse all component structs into `ptr-types`.
