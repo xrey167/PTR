@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-10  
-**Code footprint:** 10 Rust source files · 4009 nonblank source lines · 8 integration-test files · 90 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-13  
+**Code footprint:** 10 Rust source files · 4060 nonblank source lines · 8 integration-test files · 91 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -34,6 +34,7 @@
 - Install and request validation (follow-ups of PR #132): a code task whose tests are empty, repeat an id or differ in arity is a 400 before the id is consumed; install checks every Pod of the roster (collision, generation) before committing any, so a refusal leaves no orphan live capsule; an active scope under the service name is adopted only if it has the service project, no lease and no children, otherwise the next incarnation is used (tests: job::tests::an_unpassable_code_suite_is_a_bad_request, tests/vcw.rs a_refusal_late_in_the_roster_commits_none_of_the_earlier_pods and an_active_scope_of_another_project_under_the_service_name_is_not_adopted)
 - Shadow learning report consistency: when a kind rotates its frozen candidate (the held-out log can no longer reach the next estimate point), the stored latest estimate is dropped with it, so learning_report() never pairs a fresh candidate digest with the previous candidate's estimate; that estimate stays in the VcwShadowEstimate runtime event (test: shadow::tests::rotating_the_candidate_drops_the_previous_candidates_estimate)
 - Second round of install and trace fixes: an active scope under the service name is adopted only with the service session as well (admission refuses a different session), and when the vcw loop itself fails its failed trace is stored before the request is finished, so the trace read-back shows what the recorded digest names (test: tests/vcw.rs an_active_scope_of_another_session_under_the_service_name_is_not_adopted)
+- Execution sessions do not accumulate: POST /v1/requests registers one execution session per mutating request and now revokes it as soon as the request's preparation and execution end, whatever their outcome, instead of leaving it to its 30 s expiry; before, 1024 mutating requests (replays of a settled key included) within 30 s filled the runtime's session table and every further mutation failed with CapacityExceeded (422) (test: tests::mutating_requests_do_not_accumulate_execution_sessions, 1100 mutating requests in a row)
 
 ### Missing for the target architecture
 
