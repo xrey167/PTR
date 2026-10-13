@@ -1,5 +1,5 @@
 use ptr_events::{
-    BusError, EventClass, EventConsumer, EventProducer, InMemoryBus, NewRecord, Offset,
+    BusError, EventClass, EventConsumer, EventProducer, InMemoryBus, Limit, NewRecord, Offset,
 };
 
 fn record(key: &str) -> NewRecord {
@@ -35,7 +35,12 @@ fn a_slow_consumer_blocks_producers_instead_of_losing_records() {
     bus.commit("fast", Offset(2)).unwrap();
     assert_eq!(
         bus.publish(record("c")).unwrap_err(),
-        BusError::Full { capacity: 2 }
+        BusError::Full {
+            limit: Limit::Records,
+            capacity: 2,
+            depth: 2,
+            blocked_by: Some("slow".into()),
+        }
     );
     bus.commit("slow", Offset(1)).unwrap();
     bus.publish(record("c")).unwrap();
@@ -68,7 +73,12 @@ fn a_refused_publish_does_not_consume_an_offset_or_replace_the_pending_record() 
     assert_eq!(bus.publish(record("first")), Ok(Offset(1)));
     assert_eq!(
         bus.publish(record("refused")),
-        Err(BusError::Full { capacity: 1 })
+        Err(BusError::Full {
+            limit: Limit::Records,
+            capacity: 1,
+            depth: 1,
+            blocked_by: Some("worker".into()),
+        })
     );
     let pending = bus.poll("worker", 10).unwrap();
     assert_eq!(pending.len(), 1);
