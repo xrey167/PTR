@@ -352,7 +352,10 @@ accept/tick loop in a deployment yet, and receipts and answers are not signed (A
   (PERFT-R, MixLoRA, plain LoRA arms). Python ≥ 3.11, locked in `training/uv.lock`.
 - **`model/burn-a0`**: a small trainable Burn model with typed slots, typed attention, latent
   refinement, operator router and lifecycle masks; not connected to the runtime (ADR-0022, S8).
-- **GPU**: the target machine is two RTX 3090 ([`hardware/dual-rtx3090.toml`](hardware/dual-rtx3090.toml)).
+- **GPU**: the owner's machines are two PCs with one card each, an RTX 3090
+  ([`hardware/rtx3090.toml`](hardware/rtx3090.toml)) and an RTX 4090
+  ([`hardware/rtx4090.toml`](hardware/rtx4090.toml)); the earlier two-3090 desktop
+  ([`hardware/dual-rtx3090.toml`](hardware/dual-rtx3090.toml)) is superseded.
   Run order and open decisions: [`docs/LOCAL_START.md`](docs/LOCAL_START.md),
   [`docs/DESKTOP_SETUP.md`](docs/DESKTOP_SETUP.md), [`docs/GPU_HANDOVER.md`](docs/GPU_HANDOVER.md),
   [`docs/VCW_MOE_GPU_PLAN.md`](docs/VCW_MOE_GPU_PLAN.md). All plans; nothing has run on GPU.

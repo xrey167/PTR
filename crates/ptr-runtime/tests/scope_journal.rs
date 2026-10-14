@@ -8,6 +8,7 @@ use ptr_types::{
     Generation, PodId, ProjectId, ScopeId, ScopeLeaseBinding, SessionId, StateId,
     StatefulRequestRecovery, Timestamp, UncertainRequest,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn scope(id: &str) -> ExecutionScope {
@@ -64,11 +65,18 @@ impl ScopeCleanupCoordinator for CleanupProbe {
 }
 
 fn temp_path() -> std::path::PathBuf {
+    // The clock alone can repeat across parallel tests (coarse on Windows), and two tests on one
+    // ledger file collide on its exclusive lock; the process id and a counter keep paths unique.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("ptr-scope-journal-{nonce}.ledger"))
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "ptr-scope-journal-{}-{nonce}-{n}.ledger",
+        std::process::id()
+    ))
 }
 
 #[test]
