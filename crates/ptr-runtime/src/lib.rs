@@ -2854,10 +2854,7 @@ impl PtrRuntime {
                 let target = capsule.to_string();
                 // Until target keys are a cross-component tagged union, prevent
                 // capsule IDs from impersonating the two reserved namespaces.
-                if target.starts_with("constraint:")
-                    || target.starts_with("procedure:")
-                    || target.starts_with("ptr-adapter:")
-                {
+                if target.starts_with("constraint:") || target.starts_with("procedure:") {
                     return Err(RuntimeError::ReservedTargetNamespace { target });
                 }
                 if let Some(current) = self.capsule_projects.get(&target) {
@@ -3619,6 +3616,15 @@ fn hypothesis_output(event: &LedgerEvent) -> Option<ptr_pods::PodOutput> {
 }
 
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
+    // The adapter lifecycle namespace is reserved for new capsules only. A ledger that already
+    // holds a capsule with this prefix still replays (it is applied as the capsule it is);
+    // `validate_adapter_event` keeps an adapter off a key such a capsule owns.
+    if let LedgerEvent::CapsuleCommitted { capsule, .. } = event {
+        let target = capsule.to_string();
+        if target.starts_with(adapter::ADAPTER_KEY_PREFIX) {
+            return Err(RuntimeError::ReservedTargetNamespace { target });
+        }
+    }
     // A new hypothesis record carries the version-2 output digest only; the version-1 digest
     // (ambiguous, issue #141) is accepted for records already in a log, on replay and restore.
     if let (LedgerEvent::PodHypothesisCommitted { output_digest, .. }, Some(output)) =

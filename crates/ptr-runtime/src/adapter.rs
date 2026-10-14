@@ -284,10 +284,13 @@ impl AdapterProjection {
     }
 }
 
+/// The prefix of an adapter's lifecycle key; no new capsule may take it.
+pub(crate) const ADAPTER_KEY_PREFIX: &str = "ptr-adapter:";
+
 /// The lifecycle key of an adapter: the project is part of it, and the ledger refuses a `/` in
 /// either name, so two pairs never share a key.
 pub(crate) fn adapter_key(project: &ProjectId, adapter: &str) -> String {
-    format!("ptr-adapter:{}/{}", project.0, adapter)
+    format!("{ADAPTER_KEY_PREFIX}{}/{}", project.0, adapter)
 }
 
 impl PtrRuntime {
@@ -545,7 +548,18 @@ impl PtrRuntime {
                 .is_some_and(|(open_project, open_day)| {
                     open_project == &project.0 && *open_day == day
                 });
-        if !admitted {
+        // An admission left open longer than the retention is expired: judged against the
+        // runtime clock here, not only when a later admission happens to sweep the table.
+        let expired = self
+            .adapters
+            .clock
+            .as_ref()
+            .and_then(|clock| clock.today())
+            .is_some_and(|today| day.saturating_add(OPEN_CYCLE_RETENTION_DAYS) < today);
+        if expired {
+            self.adapters.open.remove(&serial);
+        }
+        if !admitted || expired {
             return Err(AdapterError::TicketNotAdmitted.into());
         }
         let index = self.commit_gated(LedgerEvent::ImprovementCycleRecorded {
@@ -570,6 +584,10 @@ impl PtrRuntime {
                 ..
             } => {
                 let key = adapter_key(project, adapter);
+                if self.capsule_projects.contains_key(&key) {
+                    // A capsule of an older ledger owns this key; an adapter never shares it.
+                    return Err(RuntimeError::ReservedTargetNamespace { target: key });
+                }
                 let current = self.live_generation(&key);
                 if current.is_none() && self.adapters.promoted.len() >= MAX_PROMOTED_ADAPTERS {
                     return Err(AdapterError::TooManyAdapters {
@@ -598,6 +616,9 @@ impl PtrRuntime {
                 ..
             } => {
                 let key = adapter_key(project, adapter);
+                if self.capsule_projects.contains_key(&key) {
+                    return Err(RuntimeError::ReservedTargetNamespace { target: key });
+                }
                 let current = self.live_generation(&key);
                 if current.is_none_or(|live| *generation > live)
                     || self

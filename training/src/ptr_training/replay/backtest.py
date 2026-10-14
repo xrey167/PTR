@@ -95,17 +95,20 @@ class Generation:
 def levels_of(
     decisions: Mapping[str, Level],
     categories: dict[str, list[str]],
+    zero_based: frozenset[str] | set[str] = frozenset(),
     *,
     register: bool = False,
 ) -> dict[str, float]:
     """Decision values as numbers, one number per decision.
 
-    A string is one categorical decision, not one indicator per value: its level is the
-    1-based position of the value among the values the pool has seen for that decision, in
-    order of first appearance, and 0 means the decision was not set. Changing ``mode`` from
-    "off" to "on" is therefore one decision moving from level 1 to level 2, which the fit can
-    attribute. The positions are an ordering by first appearance, so a decision with more than
-    two values is treated as linear in that order; that is a stated limit of the model.
+    A string is one categorical decision, not one indicator per value. Its level is the position
+    of the value among the values the pool has seen for that decision, in order of first
+    appearance. If the decision is present in the pool's first generation (``zero_based``), the
+    first value is the reference level 0, so an alternating history has a level-zero generation
+    to anchor the intercept on. If the decision appears later, 0 is "not set" and the values
+    start at 1, so introducing it is a visible move. Changing ``mode`` from "off" to "on" is one
+    decision moving by one level, which the fit can attribute. A decision with more than two
+    values is treated as linear in that order; that is a stated limit of the model.
 
     ``register`` adds a value the pool has not seen to ``categories``; without it, an unseen
     value gets the level one past the last known one, which is outside the observed range and
@@ -124,8 +127,9 @@ def levels_of(
             if value not in known:
                 if register:
                     known.append(value)
-            position = known.index(value) + 1 if value in known else len(known) + 1
-            levels[name] = float(position)
+            base = 0 if name in zero_based else 1
+            position = known.index(value) if value in known else len(known)
+            levels[name] = float(position + base)
         else:
             raise HistoryError(f"decision {name!r} has an unsupported type")
     return levels
@@ -142,6 +146,11 @@ class HistoryPool:
     def __init__(self) -> None:
         self._generations: list[Generation] = []
         self._categories: dict[str, list[str]] = {}
+        self._zero_based: set[str] = set()
+
+    def zero_based(self) -> set[str]:
+        """Categorical decisions present in the first generation (their first value is level 0)."""
+        return set(self._zero_based)
 
     def categories(self) -> dict[str, list[str]]:
         """The values seen per categorical decision, in order of first appearance (a copy)."""
@@ -193,8 +202,12 @@ class HistoryPool:
                 raise HistoryError("outcome values must be Outcome instances")
         # Encode against a copy, so a refusal leaves the registered categories untouched.
         categories = self.categories()
-        levels = levels_of(decisions, categories, register=True)
+        zero_based = self.zero_based()
+        if not self._generations:
+            zero_based = {n for n, v in decisions.items() if isinstance(v, str)}
+        levels = levels_of(decisions, categories, zero_based, register=True)
         self._categories = categories
+        self._zero_based = zero_based
         self._generations.append(
             Generation(
                 name=name,
@@ -243,6 +256,9 @@ class ReplaySimulator:
     def _fit(self) -> tuple[dict[str, dict[str, float]], list[dict[str, Any]]]:
         slopes: dict[str, dict[str, list[float]]] = {}
         ambiguous: list[dict[str, Any]] = []
+        # Decisions whose step or slope is not a finite number (a step of 5e-324 overflows the
+        # slope): they are not identified, and no NaN or infinity reaches a prediction.
+        self.nonfinite: set[str] = set()
         for prev, curr in zip(self.generations, self.generations[1:]):
             names = set(prev.levels) | set(curr.levels)
             moved = sorted(
@@ -255,12 +271,25 @@ class ReplaySimulator:
                 continue
             decision = moved[0]
             step = curr.levels.get(decision, 0.0) - prev.levels.get(decision, 0.0)
+            if not math.isfinite(step) or step == 0.0:
+                self.nonfinite.add(decision)
+                continue
             for family in self.families:
                 delta = curr.outcome[family].rate - prev.outcome[family].rate
-                slopes.setdefault(decision, {}).setdefault(family, []).append(delta / step)
-        responses = {
-            d: {f: sum(v) / len(v) for f, v in fams.items()} for d, fams in slopes.items()
-        }
+                slope = delta / step
+                if not math.isfinite(slope):
+                    self.nonfinite.add(decision)
+                    continue
+                slopes.setdefault(decision, {}).setdefault(family, []).append(slope)
+        responses: dict[str, dict[str, float]] = {}
+        for decision, families in slopes.items():
+            if decision in self.nonfinite:
+                continue
+            means = {f: sum(v) / len(v) for f, v in families.items()}
+            if all(math.isfinite(m) for m in means.values()):
+                responses[decision] = means
+            else:
+                self.nonfinite.add(decision)
         return responses, ambiguous
 
     def _limits(self) -> dict[str, tuple[float, float]]:
@@ -280,10 +309,17 @@ class ReplaySimulator:
         return None
 
     def simulate(self, decisions: Mapping[str, Level]) -> dict[str, Prediction]:
-        levels = levels_of(decisions, self.pool.categories())
+        levels = levels_of(decisions, self.pool.categories(), self.pool.zero_based())
         unknown = tuple(
             sorted(n for n, level in levels.items() if level != 0.0 and n not in self.responses)
         )
+        if self.baseline is not None and not unknown:
+            # A response times a level can still leave the finite numbers.
+            for name, level in levels.items():
+                for response in self.responses.get(name, {}).values():
+                    if not math.isfinite(response * level):
+                        unknown = (*unknown, name)
+            unknown = tuple(sorted(set(unknown)))
         if self.baseline is None or unknown:
             reason = unknown or ("intercept",)
             return {f: Prediction(None, False, reason) for f in self.families}
@@ -294,13 +330,15 @@ class ReplaySimulator:
                 response = self.responses.get(name, {})
                 if family in response:
                     rate += response[family] * level
+            if not math.isfinite(rate):
+                return {f: Prediction(None, False, ("non-finite prediction",)) for f in self.families}
             out[family] = Prediction(min(max(rate, 0.0), 1.0), True)
         return out
 
     def extrapolation(self, decisions: Mapping[str, Level]) -> list[dict[str, Any]]:
         """Levels asked for that the history never showed."""
         beyond = []
-        for name, level in levels_of(decisions, self.pool.categories()).items():
+        for name, level in levels_of(decisions, self.pool.categories(), self.pool.zero_based()).items():
             low, high = self.limits.get(name, (0.0, 0.0))
             if level < low or level > high:
                 beyond.append({"decision": name, "level": level, "observed": [low, high]})

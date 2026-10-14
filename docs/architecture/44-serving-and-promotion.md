@@ -37,7 +37,8 @@ flowchart LR
 `AdapterRevoked { project, adapter, generation, reason }` (tag 40). The codec holds both to one canonical form:
 names of 1 to 256 bytes without control characters, whitespace or `/`, a non-zero generation, no all-zero digest, a
 reason of at most 512 bytes. The same check runs in the decoder and in `check_encodable`. The public
-`PtrRuntime::commit` refuses both, and a capsule named `ptr-adapter:...` is refused, so only `promote_adapter` and
+`PtrRuntime::commit` refuses both, and a new capsule named `ptr-adapter:...` is refused (a ledger that already holds one replays it as a capsule, and an
+adapter is refused on a key a capsule owns), so only `promote_adapter` and
 `revoke_adapter` write them.
 
 **Keys are project-scoped.** The lifecycle key is `ptr-adapter:<project>/<adapter>`. Because the ledger refuses a `/` in
@@ -94,7 +95,7 @@ A self-improvement cycle proposes a change to the system's own adaptation and me
   `day` upwards is impossible, and a history from the future refuses cycles until the clock passes it. A replayed
   runtime rebuilds the same counts and high-water days from the ledger. At most 1024 projects and 1024 open
   admissions are tracked, on replay as in live admission. A ticket names the runtime that admitted it and its open
-  admission: another runtime's ticket, an expired one (7 days) or a used one is refused and commits nothing. An
+  admission: another runtime's ticket, an expired one (7 days, judged against the clock at record time) or a used one is refused and commits nothing. An
   admitted-but-unrecorded cycle is adapter state: it blocks a compacted snapshot like a promotion does.
 
 **Limit.** An admitted cycle whose process crashes before it is recorded is not counted after the restart. The budget
@@ -112,10 +113,13 @@ and charged to neither. `backtest(pool, error_bound=...)` holds each generation 
   in-sample fit is arithmetic;
 - `pipeline_ran` (the backtest completed) and `predictive` (at least `min_within_bound` generations predicted out of sample, and at least `min_within_fraction` of the predictable ones, each with every
   family within the bound) are separate claims;
-- a string decision is one categorical decision (its level is the 1-based position of the value in order of first
-  appearance, 0 meaning not set), so `mode` off to on is one decision moving by one level; more than two values are
+- a string decision is one categorical decision (its level is the position of the value in order of first appearance;
+  the first value is level 0 if the decision is in the pool's first generation, so an alternating history anchors its
+  intercept, otherwise 0 means not set and values start at 1), so `mode` off to on is one decision moving by one level; more than two values are
   treated as linear in that order, a stated limit; an unseen value is extrapolation;
-- the within-bound decision uses the exact errors; only the report rounds;
+- the within-bound decision uses the exact errors; only the report rounds; a step or slope that is not a finite number
+  (a step of 5e-324 overflows the slope) leaves the decision unidentified and no NaN or infinity reaches a prediction
+  or the report;
 - `choose_winner` aborts with `NotPredictive` on a history that predicted nothing, and with `ExtrapolationAbort` when
   the best policy asks for a decision level the history never showed.
 
@@ -140,8 +144,9 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 - **Generation at use (invariant 3).** A `BatchGate` is asked about the key of every batch immediately before the model
   runs; a revoked generation is refused at that use (`ModelError::revoked()`), not only when it was queued. A key that
   names an adapter is refused when the batcher was built without a gate (there is no admit-all default). A `resume`
-  passes the gate under the scoped key its request was admitted under (remembered by request id; `resume_with` takes
-  the key explicitly). Deadlines and cancellations are checked again after the gate, immediately before the backend call.
+  passes the gate under the scoped key its request was admitted under (remembered by request id for the most recent
+  4096 requests; an id the batcher does not remember is refused, never mapped to the unscoped key; `resume_with` takes
+  the key explicitly), with the same panic containment as a batch. Deadlines and cancellations are checked again after the gate, immediately before the backend call.
 - **Failure containment.** A backend panic or a wrong-length answer fails its batch and the batcher keeps serving; every
   caller gets exactly one answer, also on drop. Request text is never printed by `Debug`.
 

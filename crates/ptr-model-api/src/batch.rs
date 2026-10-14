@@ -453,7 +453,19 @@ impl<B: BatchInferenceBackend + 'static> AdaptiveBatcher<B> {
             bump(&self.shared.counters.revoked, 1);
             return Err(ModelError::revoked());
         }
-        self.shared.backend.resume(request)
+        // The same containment as a batch: a backend that panics fails this call only.
+        match catch_unwind(AssertUnwindSafe(|| self.shared.backend.resume(request))) {
+            Ok(result) => {
+                if result.is_err() {
+                    bump(&self.shared.counters.backend_errors, 1);
+                }
+                result
+            }
+            Err(_) => {
+                bump(&self.shared.counters.backend_errors, 1);
+                Err(ModelError::backend_failure())
+            }
+        }
     }
 
     /// The counters since the batcher was built.
@@ -505,8 +517,11 @@ impl<B: BatchInferenceBackend + ResumableInferenceBackend + 'static> ResumableIn
 {
     /// A resume carries its whole observation, so it is not batched: it goes straight to the
     /// backend, after the gate has admitted the key its request was admitted under (remembered
-    /// by request id for the most recent 4096 requests; a request this batcher never saw is
-    /// held to the unscoped key). A generation revoked since the `infer` stops the resume.
+    /// by request id for the most recent 4096 requests). A generation revoked since the `infer`
+    /// stops the resume. A request id this batcher does not remember (never seen here, or
+    /// evicted) is refused with [`ModelError::revoked`]: there is no scope to ask the gate
+    /// about, and an unscoped key must never stand in for it. A caller that knows the scope
+    /// uses [`AdaptiveBatcher::resume_with`].
     fn resume(&self, request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
         let key = self
             .shared
@@ -514,9 +529,14 @@ impl<B: BatchInferenceBackend + ResumableInferenceBackend + 'static> ResumableIn
             .remembered
             .keys
             .get(&request.request_id)
-            .cloned()
-            .unwrap_or_else(BatchKey::unscoped);
-        self.resume_with(request, &key)
+            .cloned();
+        match key {
+            Some(key) => self.resume_with(request, &key),
+            None => {
+                bump(&self.shared.counters.revoked, 1);
+                Err(ModelError::revoked())
+            }
+        }
     }
 }
 

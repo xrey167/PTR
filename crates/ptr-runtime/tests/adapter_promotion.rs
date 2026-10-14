@@ -353,3 +353,42 @@ fn a_report_from_the_plain_evaluate_path_cannot_become_a_proposal() {
         Err(LineageError::BaselineNotChecked { id: "coder".into() })
     );
 }
+
+#[test]
+fn a_ledger_that_already_holds_a_capsule_in_the_adapter_namespace_still_replays() {
+    use ptr_ledger::CommittedEvent;
+    use ptr_types::CommitIndex;
+
+    // Written before the prefix was reserved: an ordinary capsule that happens to be named so.
+    let history = vec![CommittedEvent {
+        index: CommitIndex(1),
+        event: LedgerEvent::CapsuleCommitted {
+            project: project("alpha"),
+            capsule: CapsuleId::from("ptr-adapter:alpha/coder"),
+            generation: Generation(1),
+        },
+    }];
+    let mut runtime = PtrRuntime::replay(PtrConfig::default(), &history).expect("replays");
+    assert_eq!(
+        runtime.live_generation("ptr-adapter:alpha/coder"),
+        Some(Generation(1))
+    );
+    // It is a capsule, not an adapter.
+    assert!(runtime
+        .serving_adapter(&project("alpha"), "coder")
+        .is_none());
+    // New appends keep the namespace closed, and an adapter never shares the key.
+    assert!(matches!(
+        runtime.commit(LedgerEvent::CapsuleCommitted {
+            project: project("alpha"),
+            capsule: CapsuleId::from("ptr-adapter:alpha/other"),
+            generation: Generation(1),
+        }),
+        Err(RuntimeError::ReservedTargetNamespace { .. })
+    ));
+    assert!(matches!(
+        runtime.promote_adapter(request("coder", 2, WEIGHTS)),
+        Err(RuntimeError::ReservedTargetNamespace { .. })
+    ));
+    assert_eq!(runtime.committed_events().len(), 1);
+}

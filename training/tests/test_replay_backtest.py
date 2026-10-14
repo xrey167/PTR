@@ -226,7 +226,7 @@ class CategoricalAndPrecisionTests(unittest.TestCase):
         self.assertEqual(simulator.ambiguous, [])
         self.assertEqual(set(simulator.responses), {"mode"})
         self.assertEqual(pool.categories(), {"mode": ["off", "on"]})
-        # off -> on moved the single decision `mode` by one level and the fit says so.
+        # not set -> off -> on: the single decision `mode` moved by one level each time.
         self.assertAlmostEqual(simulator.responses["mode"]["typed"], 0.15)
         self.assertTrue(simulator.simulate({"mode": "on"})["typed"].identified)
 
@@ -270,3 +270,40 @@ class CategoricalAndPrecisionTests(unittest.TestCase):
         self.assertFalse(row["within_bound"], "the decision does not")
         self.assertEqual(report.within_bound, 1)
         self.assertFalse(report.predictive)
+
+    def test_an_alternating_categorical_history_anchors_its_intercept_and_predicts(self):
+        pool = HistoryPool()
+        rates = (200, 500, 210, 490, 205, 495)
+        for order, (rate, mode) in enumerate(zip(rates, ("off", "on") * 3)):
+            pool.add_generation(
+                f"g{order}", order=order, decisions={"mode": mode}, outcome=outcome(rate)
+            )
+        self.assertEqual(pool.categories(), {"mode": ["off", "on"]})
+        report = backtest(pool, error_bound=0.05, **RULE)
+        self.assertGreaterEqual(report.predicted, 3)
+        self.assertTrue(report.predictive)
+
+    def test_a_step_that_overflows_the_slope_is_not_identified_and_leaves_no_nan(self):
+        import json
+
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={"x": 0}, outcome=outcome(200))
+        pool.add_generation("g1", order=1, decisions={"x": 5e-324}, outcome=outcome(300))
+        pool.add_generation("g2", order=2, decisions={"x": 1}, outcome=outcome(400))
+        simulator = ReplaySimulator(pool)
+        self.assertIn("x", simulator.nonfinite)
+        self.assertNotIn("x", simulator.responses)
+        for family in simulator.simulate({"x": 1}).values():
+            self.assertFalse(family.identified)
+            self.assertIsNone(family.rate)
+        report = backtest(pool, error_bound=0.1, **RULE)
+        self.assertTrue(report.pipeline_ran)
+        json.dumps(report.to_dict(), allow_nan=False)
+
+    def test_a_response_times_a_huge_level_cannot_make_a_nan_prediction(self):
+        pool = HistoryPool()
+        pool.add_generation("g0", order=0, decisions={"x": 0}, outcome=outcome(200))
+        pool.add_generation("g1", order=1, decisions={"x": 1}, outcome=outcome(300))
+        simulator = ReplaySimulator(pool)
+        for family in simulator.simulate({"x": 1e308}).values():
+            self.assertTrue(family.rate is None or 0.0 <= family.rate <= 1.0)

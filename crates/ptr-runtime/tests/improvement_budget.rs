@@ -390,3 +390,33 @@ fn replay_refuses_a_history_that_names_more_projects_than_the_runtime_tracks() {
         PtrRuntime::replay(PtrConfig::default(), &history[..MAX_TRACKED_CYCLE_PROJECTS]).is_ok()
     );
 }
+
+#[test]
+fn a_ticket_older_than_the_retention_is_refused_at_record_time_without_another_begin() {
+    use ptr_runtime::adapter::OPEN_CYCLE_RETENTION_DAYS;
+    let (mut runtime, clock) = runtime(1, 10);
+    let ticket = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("admitted");
+    // The clock moves past the retention; nobody calls begin in between.
+    clock.set(10 + OPEN_CYCLE_RETENTION_DAYS + 1);
+    let before = runtime.committed_events().len();
+    assert_eq!(
+        runtime.record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed),
+        Err(RuntimeError::Adapter(AdapterError::TicketNotAdmitted))
+    );
+    assert_eq!(runtime.committed_events().len(), before);
+}
+
+#[test]
+fn a_ticket_within_the_retention_is_still_recorded() {
+    use ptr_runtime::adapter::OPEN_CYCLE_RETENTION_DAYS;
+    let (mut runtime, clock) = runtime(1, 10);
+    let ticket = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("admitted");
+    clock.set(10 + OPEN_CYCLE_RETENTION_DAYS);
+    assert!(runtime
+        .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
+        .is_ok());
+}

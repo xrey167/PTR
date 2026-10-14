@@ -430,6 +430,7 @@ fn a_resume_is_stopped_by_a_closed_gate() {
         Some(Arc::clone(&gate) as Arc<dyn BatchGate>),
     )
     .expect("built");
+    batcher.infer(&request("r")).expect("served");
     assert!(batcher.resume(&common::resume_request("r")).is_ok());
     gate.0.store(false, Ordering::SeqCst);
     assert_eq!(
@@ -479,8 +480,12 @@ fn a_resume_is_held_to_the_scoped_key_its_request_was_admitted_under() {
         batcher.resume(&common::resume_request("r1")),
         Err(ModelError::revoked())
     );
-    // A request the batcher never saw is held to the unscoped key, which is still admitted.
-    assert!(batcher.resume(&common::resume_request("other")).is_ok());
+    // A request the batcher never saw has no scope to ask the gate about: refused, and the
+    // unscoped key (still admitted) does not stand in for it.
+    assert_eq!(
+        batcher.resume(&common::resume_request("other")),
+        Err(ModelError::revoked())
+    );
 }
 
 #[test]
@@ -599,4 +604,68 @@ fn a_cancellation_that_lands_while_the_gate_decides_keeps_the_request_from_the_b
     });
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
     assert_eq!(batcher.stats().cancelled, 1);
+}
+
+#[test]
+fn a_resume_whose_request_was_evicted_from_the_key_cache_is_refused() {
+    use ptr_model_api::ResumableInferenceBackend;
+    let batcher = echo_batcher(Arc::new(OpenGate));
+    batcher
+        .infer_with(&request("first"), keyed("p", "coder"))
+        .expect("served");
+    assert!(batcher.resume(&common::resume_request("first")).is_ok());
+    // 4096 other requests push the first one out of the bounded cache.
+    for n in 0..4096 {
+        batcher
+            .infer_with(&request(&format!("other-{n}")), keyed("p", "coder"))
+            .expect("served");
+    }
+    assert_eq!(
+        batcher.resume(&common::resume_request("first")),
+        Err(ModelError::revoked())
+    );
+    assert!(batcher
+        .resume(&common::resume_request("other-4095"))
+        .is_ok());
+}
+
+/// A backend whose resume panics.
+struct PanickingResume;
+
+impl ptr_model_api::InferenceBackend for PanickingResume {
+    fn name(&self) -> &'static str {
+        "panicking-resume"
+    }
+
+    fn infer(&self, _request: &ptr_model_api::ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Finished])
+    }
+}
+
+impl ptr_model_api::BatchInferenceBackend for PanickingResume {}
+
+impl ptr_model_api::ResumableInferenceBackend for PanickingResume {
+    fn resume(
+        &self,
+        _request: &ptr_model_api::ModelResumeRequest,
+    ) -> Result<Vec<ModelEvent>, ModelError> {
+        panic!("resume panics on purpose");
+    }
+}
+
+#[test]
+fn a_backend_panic_in_resume_fails_that_call_and_the_batcher_keeps_serving() {
+    let batcher = AdaptiveBatcher::with_parts(
+        Arc::new(PanickingResume),
+        policy(1, 0, 4),
+        Arc::new(SystemClock),
+        Some(Arc::new(OpenGate) as Arc<dyn BatchGate>),
+    )
+    .expect("built");
+    assert_eq!(
+        batcher.resume_with(&common::resume_request("r"), &BatchKey::unscoped()),
+        Err(ModelError::backend_failure())
+    );
+    assert_eq!(batcher.stats().backend_errors, 1);
+    assert!(batcher.infer(&request("after")).is_ok());
 }
