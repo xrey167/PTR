@@ -225,6 +225,15 @@ impl MemoryJournal {
         options: JournalOptions,
     ) -> Result<(Self, JournalRecovery), JournalError> {
         let path = path.as_ref().to_path_buf();
+        // Every journal starts with its header, so a smaller cap could never hold a valid file:
+        // refuse it before anything is created or rewritten.
+        let header_len = HEADER_LEN as u64;
+        if options.max_file_bytes < header_len {
+            return Err(JournalError::FileTooLarge {
+                len: header_len,
+                max: options.max_file_bytes,
+            });
+        }
         let tmp = temp_path(&path);
         match fs::remove_file(&tmp) {
             Ok(()) => {}
@@ -604,6 +613,29 @@ mod tests {
             MemoryJournal::open(&path.0, JournalKind::Memory, JournalOptions::default())
                 .unwrap_err(),
             JournalError::BadHeader
+        );
+    }
+
+    #[test]
+    fn a_cap_below_the_header_is_refused_before_anything_is_written() {
+        let path = TempPath::new("tinycap");
+        let options = JournalOptions {
+            max_file_bytes: HEADER_LEN as u64 - 1,
+            ..JournalOptions::default()
+        };
+        let err = MemoryJournal::open(&path.0, JournalKind::Memory, options).unwrap_err();
+        assert_eq!(
+            err,
+            JournalError::FileTooLarge {
+                len: HEADER_LEN as u64,
+                max: HEADER_LEN as u64 - 1
+            }
+        );
+        // Nothing was created, so the same configuration fails the same way on every open.
+        assert!(!path.0.exists());
+        assert_eq!(
+            MemoryJournal::open(&path.0, JournalKind::Memory, options).unwrap_err(),
+            err
         );
     }
 
