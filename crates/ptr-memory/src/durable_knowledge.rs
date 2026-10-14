@@ -3,9 +3,13 @@
 //!
 //! The wrapped store keeps its exact semantics: each mutating method first runs on the in-memory
 //! store (which validates and either changes nothing or applies completely) and, only on success,
-//! appends the operation to the journal. A journal failure after the in-memory change poisons
-//! the wrapper, because memory would be ahead of disk; reopen the journal to recover the last
-//! durable state. Read access goes through [`DurableKnowledgeStore::store`].
+//! appends the operation to the journal. If the append fails, the in-memory store is rebuilt from
+//! the intact journal records, so [`DurableKnowledgeStore::store`] never exposes a change whose
+//! call returned an error. A rejection that wrote nothing (record or file size bound) leaves the
+//! wrapper usable; an I/O failure poisons it because the file tail is unknown, and reopening
+//! recovers the durable state (a frame that reached the disk before the failure is part of it).
+//! If the rebuild itself fails the store is emptied and stays poisoned. Read access goes through
+//! [`DurableKnowledgeStore::store`].
 //!
 //! Journal payload encoding (tag byte, then little-endian fields from `codec`):
 //! `1 Raw`, `2 Register`, `3 Admit`, `4 Activate`, `5 Transition`, `6 Invalidate`, plus the
@@ -59,8 +63,8 @@ pub enum DurableKnowledgeError {
         record_index: usize,
         error: KnowledgeStoreError,
     },
-    /// The operation was applied in memory and the journal write then failed, or compaction
-    /// left the journal unusable. Reopen the journal.
+    /// The journal write failed with an I/O error (or compaction left the journal unusable).
+    /// Reopen the journal.
     Poisoned,
 }
 
@@ -145,7 +149,12 @@ impl DurableKnowledgeStore {
 
     fn persist(&mut self, op: &Op) -> Result<(), DurableKnowledgeError> {
         if let Err(error) = self.journal.append(&encode_op(op)) {
-            self.poisoned = true;
+            // The in-memory store already applied the operation; make reads agree with the
+            // journal again before reporting the failure.
+            self.rebuild_from_journal();
+            if matches!(error, JournalError::Io { .. } | JournalError::Poisoned) {
+                self.poisoned = true;
+            }
             return Err(error.into());
         }
         if let Some(limit) = self.options.compact_after_records {
@@ -154,6 +163,27 @@ impl DurableKnowledgeStore {
             }
         }
         Ok(())
+    }
+
+    /// Replaces the in-memory store with a replay of the intact journal records, so that after a
+    /// failed append no reader sees a change the caller was told did not happen. If the journal
+    /// cannot be read or replayed, the store is emptied and the wrapper stays poisoned rather
+    /// than exposing state that may be ahead of disk.
+    fn rebuild_from_journal(&mut self) {
+        let rebuilt = self.journal.read_records().ok().and_then(|records| {
+            let mut store = KnowledgeStore::default();
+            for payload in &records {
+                apply_replay(&mut store, decode_op(payload).ok()?).ok()?;
+            }
+            Some(store)
+        });
+        match rebuilt {
+            Some(store) => self.store = store,
+            None => {
+                self.store = KnowledgeStore::default();
+                self.poisoned = true;
+            }
+        }
     }
 
     /// Appends immutable raw history. Returns whether the event was new.

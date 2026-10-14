@@ -12,6 +12,15 @@ pub(crate) struct KnowledgeExport {
     pub(crate) revisions: Vec<(KnowledgeObjectId, u64)>,
 }
 
+pub(crate) fn role_tag(role: ptr_types::EventRole) -> u8 {
+    match role {
+        ptr_types::EventRole::System => 0,
+        ptr_types::EventRole::User => 1,
+        ptr_types::EventRole::Assistant => 2,
+        ptr_types::EventRole::Tool => 3,
+    }
+}
+
 pub(crate) fn lifecycle_tag(lifecycle: KnowledgeLifecycle) -> u8 {
     match lifecycle {
         KnowledgeLifecycle::Hot => 0,
@@ -334,45 +343,58 @@ impl KnowledgeStore {
     /// per-object revision counters. Two stores with equal digests are indistinguishable through
     /// this API.
     pub fn state_digest(&self) -> [u8; 32] {
+        // Every variable-length field is length-prefixed and every optional field carries a
+        // presence tag, so distinct states cannot produce the same byte stream.
+        fn field(hasher: &mut Sha256, bytes: &[u8]) {
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(bytes);
+        }
         let mut hasher = Sha256::new();
+        hasher.update(b"state-digest-v2");
         for (id, event) in &self.raw {
-            hasher.update(b"raw\0");
-            hasher.update(id.0.as_bytes());
-            hasher.update(b"\0");
+            hasher.update(b"raw");
+            field(&mut hasher, id.0.as_bytes());
+            field(&mut hasher, event.session.0.as_bytes());
+            hasher.update([crate::knowledge::role_tag(event.role)]);
+            hasher.update(event.timestamp.0.to_le_bytes());
             hasher.update(event.digest);
-            hasher.update(format!(
-                "{:?}{:?}{}",
-                event.role, event.session, event.timestamp.0
-            ));
-            if let Some(call) = &event.tool_call {
-                hasher.update(call.name.as_bytes());
-                hasher.update(&call.arguments);
+            match &event.tool_call {
+                Some(call) => {
+                    hasher.update([1]);
+                    field(&mut hasher, call.name.as_bytes());
+                    field(&mut hasher, &call.arguments);
+                }
+                None => hasher.update([0]),
             }
-            if let Some(result) = &event.tool_result {
-                hasher.update(&result.output);
+            match &event.tool_result {
+                Some(result) => {
+                    hasher.update([1]);
+                    field(&mut hasher, &result.output);
+                }
+                None => hasher.update([0]),
             }
         }
         for (key, object) in &self.objects {
-            hasher.update(b"obj\0");
-            hasher.update(key.logical_id.0.as_bytes());
+            hasher.update(b"obj");
+            field(&mut hasher, key.logical_id.0.as_bytes());
             hasher.update(key.generation.0.to_le_bytes());
             hasher.update(object.digest());
         }
         for (id, generation) in &self.current {
-            hasher.update(b"cur\0");
-            hasher.update(id.0.as_bytes());
+            hasher.update(b"cur");
+            field(&mut hasher, id.0.as_bytes());
             hasher.update(generation.0.to_le_bytes());
         }
         for (key, record) in &self.lifecycle {
-            hasher.update(b"lc\0");
-            hasher.update(key.logical_id.0.as_bytes());
+            hasher.update(b"lc");
+            field(&mut hasher, key.logical_id.0.as_bytes());
             hasher.update(key.generation.0.to_le_bytes());
             hasher.update([lifecycle_tag(record.lifecycle)]);
             hasher.update(record.revision.to_le_bytes());
         }
         for (id, revision) in &self.revisions {
-            hasher.update(b"rev\0");
-            hasher.update(id.0.as_bytes());
+            hasher.update(b"rev");
+            field(&mut hasher, id.0.as_bytes());
             hasher.update(revision.to_le_bytes());
         }
         hasher.finalize().into()
