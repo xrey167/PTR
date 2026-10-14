@@ -534,4 +534,7 @@ fn a_link_trace_is_bounded_so_every_refusal_of_it_can_be_recorded() {
     assert_eq!(check(&link), Err(ptr_pods::PodLinkError::InvalidTrace));
     link.trace_id.clear();
     assert_eq!(check(&link), Err(ptr_pods::PodLinkError::InvalidTrace));
+    // `*` is the recorded trace of a refusal that stands for several traces.
+    link.trace_id = "*".into();
+    assert_eq!(check(&link), Err(ptr_pods::PodLinkError::InvalidTrace));
 }

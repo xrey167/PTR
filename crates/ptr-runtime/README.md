@@ -9,10 +9,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 58 Rust source files · 48868 nonblank source lines · 92 integration-test files · 1232 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 58 Rust source files · 48873 nonblank source lines · 92 integration-test files · 1233 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- The dependency-closure walk refuses a fan-out that would take pending past MAX_DEPENDENCY_CLOSURE before it extends
 - Manifest admission and resolution check the dependency closure of every bound knowledge object, transitively (bounded by MAX_DEPENDENCY_CLOSURE), against the instant: an expired dependency refuses admission or resolution and is named in ExpiredKnowledgeGeneration. Egress refusals of one (reason, target) from different traces share a counter whose event carries the trace * (MANY_TRACES)
 - ManifestValidity (the per-request check a wire host makes that an admitted manifest still holds) and KnowledgeManifestValidity over the manifest registry and the knowledge store; ExecutionManifestRegistry::resolve_at
 - Only a later window rolls a Pod's refusal counters over; an observation from an earlier window is counted in the open one, so timestamps alternating around a window boundary cannot produce an event per refusal
@@ -250,6 +251,7 @@
 
 ### Current automated checks
 
+- tests/manifest_resolver.rs: a_dependency_fan_out_over_the_closure_bound_is_refused_before_it_is_walked
 - tests/manifest_resolver.rs: an_expired_dependency_blocks_admission_and_later_resolution_of_the_manifest. src/egress.rs: refusals_from_different_traces_share_a_counter_that_says_so
 - tests/manifest_resolver.rs: the knowledge-backed validity check refuses once a bound object ends, for an unknown digest and after revocation
 - src/egress.rs: timestamps_alternating_around_a_window_boundary_roll_over_at_most_once

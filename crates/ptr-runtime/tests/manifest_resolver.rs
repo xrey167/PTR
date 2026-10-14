@@ -650,3 +650,34 @@ fn an_expired_dependency_blocks_admission_and_later_resolution_of_the_manifest()
         Err(ptr_runtime::RuntimeManifestError::ExpiredKnowledgeGeneration { .. })
     ));
 }
+
+#[test]
+fn a_dependency_fan_out_over_the_closure_bound_is_refused_before_it_is_walked() {
+    let (_, template) = knowledge();
+    let mut dependency = template.clone();
+    dependency.id = KnowledgeObjectId::from("dep");
+    let key = ptr_memory::KnowledgeKey {
+        logical_id: dependency.id.clone(),
+        generation: dependency.generation,
+    };
+    let mut wide = template;
+    wide.id = KnowledgeObjectId::from("wide");
+    wide.dependencies = vec![key; ptr_runtime::MAX_DEPENDENCY_CLOSURE + 1];
+    let mut store = KnowledgeStore::default();
+    store.register_object(dependency).unwrap();
+    store.register_object(wide.clone()).unwrap();
+    let pod = descriptor();
+    let mut artifacts = InMemoryArtifactCatalog::default();
+    artifacts.admit(pod.clone()).unwrap();
+    let candidate = manifest(&wide, &pod);
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let refused =
+        runtime.admit_execution_manifest(candidate, &store, &artifacts, ptr_types::Timestamp(0));
+    assert!(
+        matches!(
+            refused,
+            Err(ptr_runtime::RuntimeManifestError::InvalidKnowledgeDependency { .. })
+        ),
+        "{refused:?}"
+    );
+}

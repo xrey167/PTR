@@ -59,6 +59,10 @@ fn ensure_closure_valid_at(
         if !object.is_valid_at(now) {
             return Err(RuntimeManifestError::ExpiredKnowledgeGeneration { key, now });
         }
+        // The fan-out is bounded before it is taken, so `pending` never outgrows the bound.
+        if seen.len() + pending.len() + object.dependencies.len() > MAX_DEPENDENCY_CLOSURE {
+            return Err(RuntimeManifestError::InvalidKnowledgeDependency { key: root.clone() });
+        }
         pending.extend(object.dependencies.iter().cloned());
     }
     Ok(())

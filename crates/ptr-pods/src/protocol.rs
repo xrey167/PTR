@@ -267,7 +267,12 @@ impl PodLink {
         self.target
             .validate()
             .map_err(|_| PodLinkError::InvalidAddress)?;
-        if self.trace_id.is_empty() || self.trace_id.len() > MAX_TRACE_ID_BYTES {
+        // `*` is the trace of a recorded refusal that stands for several traces (the runtime's
+        // coalescing marker); a link carrying it would have its single refusal rejected.
+        if self.trace_id.is_empty()
+            || self.trace_id.len() > MAX_TRACE_ID_BYTES
+            || self.trace_id == "*"
+        {
             return Err(PodLinkError::InvalidTrace);
         }
         if self.hop_limit == 0 || self.deadline.0 <= now.0 {

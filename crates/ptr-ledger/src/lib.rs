@@ -339,7 +339,7 @@ pub enum LedgerEvent {
         fence_digest: [u8; 32],
     },
     /// A Pod's outbound connection or publication was refused by its egress policy or its
-    /// rate limit before anything left the host (tag 33). The record names the trace, the Pod
+    /// rate limit before anything left the host (tag 37). The record names the trace, the Pod
     /// revision that tried, the redacted `target` (`*`, a hashed `host:` or a hashed `topic:`, never a payload)
     /// and the reason, so the refusal is part of the replayable history rather than a log line.
     ///
@@ -1373,7 +1373,7 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             saturated,
             reason,
         } => {
-            out.push(33);
+            out.push(37);
             put_string(&mut out, &trace_id.0);
             match source {
                 EgressRefusalSource::Pod(source) => {
@@ -1821,7 +1821,7 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             check_expert_authority_changed(&event)?;
             event
         }
-        33 => {
+        37 => {
             let trace_id = TraceId(cursor.string()?);
             let source = match cursor.u8()? {
                 0 => {
@@ -3303,7 +3303,7 @@ mod effect_record_tests {
     }
 
     #[test]
-    fn egress_refusal_round_trips_under_tag_33_and_the_codes_are_pinned() {
+    fn egress_refusal_round_trips_under_tag_37_and_the_codes_are_pinned() {
         let pinned = [
             (EgressRefusalReason::HostNotAllowed, 0u8),
             (EgressRefusalReason::PortNotAllowed, 1),
@@ -3320,7 +3320,7 @@ mod effect_record_tests {
             let event = egress_refused_event(reason);
             check_encodable(&event).unwrap();
             let encoded = encode_event(&event);
-            assert_eq!(encoded[0], 33);
+            assert_eq!(encoded[0], 37);
             assert_eq!(*encoded.last().unwrap(), code, "the reason code is last");
             assert_eq!(
                 encoded[encoded.len() - 2],
@@ -3367,6 +3367,15 @@ mod effect_record_tests {
     }
 
     #[test]
+    fn tag_33_belongs_to_another_decision_and_decodes_as_unknown() {
+        let mut encoded = encode_event(&egress_refused_event(EgressRefusalReason::RateLimited));
+        assert_eq!(encoded[0], 37);
+        encoded[0] = 33;
+        let error = decode_event(&encoded).unwrap_err();
+        assert!(error.to_string().contains("unknown ledger event tag 33"));
+    }
+
+    #[test]
     fn the_many_traces_marker_needs_a_count_of_at_least_two() {
         for (count, accepted) in [(1u32, false), (2, true), (u32::MAX, true)] {
             let mut event = egress_refused_event(EgressRefusalReason::RateLimited);
@@ -3391,7 +3400,7 @@ mod effect_record_tests {
         }
         check_encodable(&event).unwrap();
         let encoded = encode_event(&event);
-        assert_eq!(encoded[0], 33);
+        assert_eq!(encoded[0], 37);
         assert_eq!(decode_event(&encoded).unwrap(), event);
         for len in 0..encoded.len() {
             assert!(decode_event(&encoded[..len]).is_err(), "prefix {len}");

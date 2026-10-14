@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-13  
-**Code footprint:** 5 Rust source files · 5498 nonblank source lines · 5 integration-test files · 104 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 5 Rust source files · 5531 nonblank source lines · 5 integration-test files · 106 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- Both receive paths ask the request deadline again with a fresh clock after the manifest and validity checks, right before the Pod runs; a replayed session answer is refused past its request deadline (DeadlineExceeded { sent: false })
 - A binding taken from the runtime (with_runtime_execution_manifest, bind_v2_runtime_admitted) carries its ManifestValidity and asks it on every request it serves, whether or not the host has a manifest registry attached
 - PodAddressBinding::forward_to puts the sending Pod on the visited trail and refuses a hop to any visited Pod, so A to B and back to A, or A to B to C to A, is refused
 - PodHost::with_runtime_manifest_registry and bind_v2_runtime_admitted require a ptr_runtime::ManifestValidity: both receive paths (serve_once_v2, serve_v2_incoming) check it with the host clock after the registry resolved the digest, and a failure refuses the request before the Pod is invoked (PodWireError::ManifestNoLongerValid)
@@ -94,6 +95,7 @@
 
 ### Current automated checks
 
+- tests/wire.rs: a_deadline_that_passes_during_the_checks_is_asked_again_before_the_pod_runs, a_cached_session_answer_is_not_replayed_past_the_requests_deadline
 - tests/wire.rs: a_runtime_backed_binding_asks_its_validity_on_every_request_without_a_host_registry
 - tests/frame_v4.rs: a_hop_back_to_the_pod_that_sent_the_request_is_refused
 - tests/wire.rs: a manifest that still holds is served; a failing validity check refuses the request with the Pod not invoked; revocation still blocks

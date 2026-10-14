@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-10-13"
 
 implemented = [
+  "PodLink::validate refuses the trace * (the coalescing marker of a recorded refusal that stands for several traces)",
   "PodLink::validate bounds the trace at MAX_TRACE_ID_BYTES (256, the ledger bound of a recorded refusal) and refuses it as PodLinkError::InvalidTrace",
   "TCP and UDP executors refuse a request under a topic policy or on an MQTT link with EgressRefusalReason::TopicUnverifiable (code 6), because they send the payload unchanged and cannot tie a declared topic to the wire; check_publication is kept for an executor that reads the topic from its frame",
   "Topic policy is total: a policy that lists topics refuses a request that names none (EgressRefusalReason::TopicRequired); a refused topic is recorded as a digest prefix and length (redact_topic), a host or port refusal as a hashed host with its port (redact_endpoint, host:<16 hex>:<len>:<port>); PodLink and native validation use milliseconds since the epoch",

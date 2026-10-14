@@ -1272,6 +1272,17 @@ async fn serve_with_runtime_manifest(
     revoke: bool,
     validity: Arc<SwitchedValidity>,
 ) -> (PodOutcome, usize) {
+    let (outcome, ran) = serve_with_runtime_manifest_deadline(revoke, validity, None).await;
+    (outcome.unwrap(), ran)
+}
+
+/// [`serve_with_runtime_manifest`] with a request that carries an absolute deadline
+/// `deadline_after_ms` from now.
+async fn serve_with_runtime_manifest_deadline(
+    revoke: bool,
+    validity: Arc<dyn ptr_runtime::ManifestValidity>,
+    deadline_after_ms: Option<u64>,
+) -> (Result<PodOutcome, PodWireError>, usize) {
     let client = PodClient::bind().await.unwrap();
     let invocations = Arc::new(Mutex::new(0));
     let admitted = pod("alpha", &invocations);
@@ -1320,16 +1331,126 @@ async fn serve_with_runtime_manifest(
 
     let host_identity = host.identity().public_key.clone();
     let address = located(host.address());
-    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await.unwrap() });
+    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await });
     let session = client.connect_session(address, 1).await.unwrap();
     let mut request = request_v2(host_identity, 100, &manifest, Generation(7), Revision(12));
     request.placement_epoch = Some(3);
     request.fencing_token = Some(55);
-    let answer = session.request_v2(&request).await.unwrap();
+    if let Some(after) = deadline_after_ms {
+        request = with_deadline(request, wall_clock_millis() + after);
+    }
+    let answer = session
+        .request_v2(&request)
+        .await
+        .map(|answer| answer.outcome);
+    session.close().await;
+    let served = server.await.unwrap();
+    if deadline_after_ms.is_none() {
+        assert_eq!(served.unwrap().len(), 1);
+    }
+    let ran = *invocations.lock().unwrap();
+    (answer, ran)
+}
+
+/// A validity check that takes a while, as a slow lookup would.
+struct SlowValidity(std::time::Duration);
+
+impl ptr_runtime::ManifestValidity for SlowValidity {
+    fn ensure_valid_at(
+        &self,
+        _digest: &[u8; 32],
+        _now: Timestamp,
+    ) -> Result<(), ptr_runtime::RuntimeManifestError> {
+        std::thread::sleep(self.0);
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deadline_that_passes_during_the_checks_is_asked_again_before_the_pod_runs() {
+    // Valid when the request arrives, expired by the time the checks are done. The requester's
+    // own wait is bounded by the same deadline, so it reports a sent timeout; what matters is
+    // that the host did not run the Pod.
+    let (outcome, ran) = serve_with_runtime_manifest_deadline(
+        false,
+        Arc::new(SlowValidity(std::time::Duration::from_millis(900))),
+        Some(600),
+    )
+    .await;
+    assert!(
+        matches!(
+            outcome,
+            Err(PodWireError::DeadlineExceeded { sent: true, .. })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(ran, 0, "the Pod is not invoked");
+    // The same check with room to spare serves it.
+    let (outcome, ran) = serve_with_runtime_manifest_deadline(
+        false,
+        Arc::new(SlowValidity(std::time::Duration::from_millis(10))),
+        Some(30_000),
+    )
+    .await;
+    assert!(
+        matches!(outcome, Ok(PodOutcome::Answered { .. })),
+        "{outcome:?}"
+    );
+    assert_eq!(ran, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cached_session_answer_is_not_replayed_past_the_requests_deadline() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let mut pods = PodRegistry::default();
+    pods.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(pods, policy, Pass).await.unwrap();
+    let binding = host
+        .bind_v2_stateful_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(7),
+            Revision(12),
+            3,
+            55,
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(7), Revision(12)))
+        .unwrap();
+    let host_identity = host.identity().public_key.clone();
+    let address = located(host.address());
+    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await.unwrap() });
+    let session = client.connect_session(address, 1).await.unwrap();
+    let mut request = with_deadline(
+        request_v2(host_identity, 100, &manifest, Generation(7), Revision(12)),
+        wall_clock_millis() + 1_500,
+    );
+    request.placement_epoch = Some(3);
+    request.fencing_token = Some(55);
+    let first = session.request_v2(&request).await.unwrap();
+    assert!(matches!(first.outcome, PodOutcome::Answered { .. }));
+    // Inside the deadline a replay returns the cached answer.
+    assert_eq!(session.request_v2(&request).await.unwrap(), first);
+    tokio::time::sleep(std::time::Duration::from_millis(1_700)).await;
+    let replay = session.request_v2(&request).await;
+    assert!(
+        matches!(
+            replay,
+            Err(PodWireError::DeadlineExceeded { sent: false, .. })
+        ),
+        "{replay:?}"
+    );
     session.close().await;
     assert_eq!(server.await.unwrap().len(), 1);
-    let ran = *invocations.lock().unwrap();
-    (answer.outcome, ran)
+    assert_eq!(*invocations.lock().unwrap(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

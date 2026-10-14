@@ -858,6 +858,21 @@ impl PodHost {
                         },
                         Some(error),
                     )
+                } else if let Some(error) = expired_deadline(&request) {
+                    // The checks above take time; the deadline is asked again with a fresh
+                    // clock right before the Pod would run.
+                    (
+                        request_id,
+                        request.generation,
+                        request.revision,
+                        request.identity_digest,
+                        request.session_id.clone(),
+                        request.policy_revision,
+                        PodOutcome::Refused {
+                            code: RefusalCode::Unavailable,
+                        },
+                        Some(error),
+                    )
                 } else {
                     self.answer_v2_bound_request(&peer, binding, request, request_id)
                 }
@@ -1071,6 +1086,21 @@ impl PodHost {
                     .check_runtime_manifest(&request)
                     .and_then(|()| binding.check_runtime_validity())
                 {
+                    (
+                        request_id,
+                        request.generation,
+                        request.revision,
+                        request.identity_digest,
+                        request.session_id.clone(),
+                        request.policy_revision,
+                        PodOutcome::Refused {
+                            code: RefusalCode::Unavailable,
+                        },
+                        Some(error),
+                    )
+                } else if let Some(error) = expired_deadline(&request) {
+                    // The checks above take time; the deadline is asked again with a fresh
+                    // clock right before the Pod would run.
                     (
                         request_id,
                         request.generation,
@@ -1314,6 +1344,9 @@ impl PodSession {
             .cloned()
         {
             if cached_digest == digest {
+                // A replay is still a call: past its deadline it is refused as the first
+                // send would be, nothing having left.
+                request_budget(self.request_timeout, request.address.as_ref())?;
                 return Ok(answer);
             }
             return Err(PodWireError::DuplicateRequest {

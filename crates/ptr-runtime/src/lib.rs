@@ -76,6 +76,7 @@ pub use manifest::{
     validate_and_build, validate_authority, ExecutionManifestRegistry, KnowledgeManifestValidity,
     ManifestAuthorityRegistry, ManifestBindingAuthority, ManifestValidity,
     RuntimeExecutionManifestResolver, RuntimeManifestError, ValidatedExecutionManifest,
+    MAX_DEPENDENCY_CLOSURE,
 };
 pub use merge::{
     ChangeOrigin, HoldReason, MergeAuthority, MergeHold, MergeOutcome, MergePreview, MergeReceipt,
