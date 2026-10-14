@@ -25,13 +25,16 @@
 //!
 //! # Artifact
 //!
-//! [`PodRepresentation::from_artifact`] reads the pair `dragonfly-<identity>.json` and
-//! `dragonfly-<identity>.bin` the Python exporter writes. The binary file holds `dims` little
+//! [`PodRepresentation::from_artifact`] reads the pair
+//! `dragonfly-<project>__<identity>.json` and `.bin` the Python exporter writes (the project is
+//! part of the name: two projects with equal pod semantics share an identity). The binary file holds `dims` little
 //! endian `f32` values of `z` followed by one `f32` bias. The manifest carries the SHA-256 of
 //! that file and a digest over every field (see [`PodRepresentation::digest`]); a mismatch of
 //! either refuses the load.
 
-use crate::{AbstentionReason, RouteDistribution, RouteError, RouteRequest, Router};
+use crate::{
+    AbstentionReason, AdmittedRepresentation, RouteDistribution, RouteError, RouteRequest, Router,
+};
 use ptr_types::{ClusterKey, Generation, PodId, PodIdentity, ProjectId};
 use sha2::{Digest as ShaDigest, Sha256};
 use std::collections::BTreeMap;
@@ -931,7 +934,25 @@ impl Router for LearnedPodRouter {
         }
         let query = request.features.vector();
         let mut scored: Vec<(PodId, f64)> = Vec::new();
+        let admitted = request.features.admitted_representations();
         for pod in &candidates {
+            if let Some(admitted) = admitted {
+                // The host re-admitted representations for this request: one that is not named
+                // (or whose digest differs) does not take part in scoring.
+                let named = self
+                    .store
+                    .get(request.project, pod)
+                    .is_some_and(|representation| {
+                        admitted.contains(&AdmittedRepresentation {
+                            project: request.project.clone(),
+                            pod: pod.clone(),
+                            digest: *representation.digest(),
+                        })
+                    });
+                if !named {
+                    continue;
+                }
+            }
             if let Some(score) = self.score(request.project, pod, query)? {
                 scored.push((pod.clone(), score));
             }

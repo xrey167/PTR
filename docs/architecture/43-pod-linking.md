@@ -114,7 +114,7 @@ space.
 payload length and a digest prefix (Invariant 13).
 `ptrd` does not wire a learned router for that reason.
 
-**Artifact.** `dragonfly-<identity>.json` (manifest) and `.bin` (`dims` little-endian `f32` of `z`,
+**Artifact.** `dragonfly-<project>__<identity>.json` (manifest) and `.bin` (`dims` little-endian `f32` of `z`,
 then the bias). The manifest carries the encoder, dimension, generation, project, pod, identity, cluster
 key, scoring weights, the gate measurement, `weights_sha256` and a `digest` over every field and the
 weights. The Python exporter and the Rust loader share a committed fixture
@@ -130,6 +130,17 @@ target at the pod's exact generation, with its digest in the provenance, and
 `StaleGeneration` until a representation trained for it is bound; a payload swapped under a valid
 binding is refused. `admitted_representations` builds the router store from the cache and reports
 what was refused and why.
+
+The store itself holds no binding, so admission is repeated for every request instead of once at
+load time. `EmbeddingSampler::new(router, embedder, admission_cache)` keeps the bound states, and
+for each Pod request the runtime calls `PodSampler::features_at(&runtime, query)`, which re-runs
+`admit_pod_representation` on every cached state against the committed lifecycle and hands the
+router the admitted set (`RouteFeatures::with_admitted_representations`: project, pod and digest of
+each). A representation outside that set does not take part in scoring, so a revocation or a new
+pod generation that was committed after the store was built stops it with the very next request
+(the pod is uncovered: partial coverage, or no representation). The set can only narrow what is
+scored; eligibility stays with the registry. Without the runtime (`PodSampler::features`) the set
+is empty: fail closed.
 
 ## What is not here
 

@@ -72,6 +72,7 @@ use crate::{
 use ptr_pods::PodRegistry;
 use ptr_types::{CapabilityId, Digest, PodId, Probability, ProjectId, RequestId, TypeId};
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// A pod sampled by the trusted routing path together with the probability of sampling it and
@@ -126,6 +127,16 @@ impl RoutedChoice {
     }
 }
 
+/// One learned representation a host admitted for this request: the pod it addresses and the
+/// digest of the exact representation. A learned router scores a representation only when it is
+/// named here (see [`RouteFeatures::with_admitted_representations`]).
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct AdmittedRepresentation {
+    pub project: ProjectId,
+    pub pod: PodId,
+    pub digest: [u8; 32],
+}
+
 /// Per-request inputs a router may condition on. It defines no semantics beyond that: a router
 /// decides whether and how to use each field. Absent values mean "not available".
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -133,6 +144,7 @@ pub struct RouteFeatures {
     uncertainty: Option<Probability>,
     token_budget: Option<u32>,
     vector: Vec<f32>,
+    admitted: Option<BTreeSet<AdmittedRepresentation>>,
 }
 
 impl RouteFeatures {
@@ -162,6 +174,24 @@ impl RouteFeatures {
         }
         self.vector = vector;
         Ok(self)
+    }
+
+    /// Restricts a learned router to the representations the host admitted for this request. The
+    /// set can only narrow what is scored, never add a candidate: eligibility stays with the
+    /// registry. A representation that is not in the set does not take part in scoring, so its
+    /// pod counts as uncovered (partial coverage, or no representation at all). `Some(empty)`
+    /// admits nothing. A router that does not use representations ignores it.
+    pub fn with_admitted_representations(
+        mut self,
+        admitted: BTreeSet<AdmittedRepresentation>,
+    ) -> Self {
+        self.admitted = Some(admitted);
+        self
+    }
+
+    /// The admitted representations, or `None` when the host set no restriction.
+    pub fn admitted_representations(&self) -> Option<&BTreeSet<AdmittedRepresentation>> {
+        self.admitted.as_ref()
     }
 
     pub fn uncertainty(&self) -> Option<Probability> {

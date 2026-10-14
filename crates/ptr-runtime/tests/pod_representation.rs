@@ -401,7 +401,10 @@ impl QueryEmbedder for AxisEmbedder {
     }
 }
 
-fn sampler(store: RepresentationStore) -> EmbeddingSampler<LearnedPodRouter> {
+fn sampler(
+    store: RepresentationStore,
+    admission: NeuralStateCache,
+) -> EmbeddingSampler<LearnedPodRouter> {
     EmbeddingSampler::new(
         CheckedRouter::new(
             LearnedPodRouter::new(store, LearnedRouterConfig::default()).unwrap(),
@@ -409,6 +412,7 @@ fn sampler(store: RepresentationStore) -> EmbeddingSampler<LearnedPodRouter> {
             NonceSequence::starting_at([4; 8], 0),
         ),
         Arc::new(AxisEmbedder),
+        admission,
     )
     .unwrap()
 }
@@ -446,9 +450,10 @@ fn routed_pods(runtime: &PtrRuntime) -> Vec<String> {
 #[test]
 fn the_runtime_routes_each_question_to_the_pod_whose_address_matches() {
     let mut runtime = runtime();
-    let admitted = runtime.admitted_representations(encoder(), &cache(&runtime));
+    let bound = cache(&runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
     assert!(admitted.refused.is_empty());
-    let sampler = sampler(admitted.store);
+    let sampler = sampler(admitted.store, bound);
     run(&mut runtime, b"alpha question", &sampler).unwrap();
     run(&mut runtime, b"beta question", &sampler).unwrap();
     assert_eq!(routed_pods(&runtime), ["alpha", "beta"]);
@@ -469,7 +474,7 @@ fn after_a_revocation_the_runtime_abstains_instead_of_routing_to_the_revoked_pod
         .store
         .get(&ProjectId::from("demo"), &PodId::from("beta"))
         .is_some();
-    let sampler = sampler(admitted.store);
+    let sampler = sampler(admitted.store, cache);
     // The alpha question no longer finds alpha's address; beta's does not match it either.
     let error = run(&mut runtime, b"alpha question", &sampler).unwrap_err();
     assert_eq!(
@@ -496,8 +501,9 @@ fn after_a_revocation_the_runtime_abstains_instead_of_routing_to_the_revoked_pod
 #[test]
 fn an_ambiguous_or_unrelated_question_abstains() {
     let mut runtime = runtime();
-    let admitted = runtime.admitted_representations(encoder(), &cache(&runtime));
-    let sampler = sampler(admitted.store);
+    let bound = cache(&runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    let sampler = sampler(admitted.store, bound);
     let error = run(&mut runtime, b"unrelated question", &sampler).unwrap_err();
     assert_eq!(
         error,
@@ -510,8 +516,9 @@ fn an_ambiguous_or_unrelated_question_abstains() {
 #[test]
 fn an_encoder_failure_or_a_wrongly_sized_query_is_a_pod_free_route_failure() {
     let mut runtime = runtime();
-    let admitted = runtime.admitted_representations(encoder(), &cache(&runtime));
-    let sampler = sampler(admitted.store);
+    let bound = cache(&runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    let sampler = sampler(admitted.store, bound);
     assert_eq!(
         run(&mut runtime, b"wrong size", &sampler).unwrap_err(),
         RuntimeError::RouteFailed {
@@ -551,6 +558,111 @@ fn the_debug_output_of_a_route_query_does_not_contain_the_payload() {
     assert!(shown.contains(&secret.len().to_string()));
 }
 
+const ABSTAINED: RuntimeError = RuntimeError::RouteFailed {
+    reason: "routing abstained",
+};
+
+/// A sampler built while everything is admitted, then used across a later lifecycle commit.
+fn live_sampler(runtime: &PtrRuntime) -> EmbeddingSampler<LearnedPodRouter> {
+    let bound = cache(runtime);
+    let admitted = runtime.admitted_representations(encoder(), &bound);
+    assert!(admitted.refused.is_empty());
+    sampler(admitted.store, bound)
+}
+
+#[test]
+fn a_revocation_committed_after_the_sampler_was_built_stops_the_representation_at_once() {
+    let mut runtime = runtime();
+    let sampler = live_sampler(&runtime);
+    run(&mut runtime, b"alpha question", &sampler).unwrap();
+    run(&mut runtime, b"beta question", &sampler).unwrap();
+    assert_eq!(routed_pods(&runtime), ["alpha", "beta"]);
+
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: pod_lifecycle_target(&address("alpha", 1)),
+            generation: Generation(1),
+        })
+        .unwrap();
+    // The very next requests, with the same sampler and no rebuild: alpha's address is not used
+    // any more, and alpha being uncovered makes the whole field abstain.
+    for question in [&b"alpha question"[..], b"beta question"] {
+        assert_eq!(run_slice(&mut runtime, question, &sampler), Err(ABSTAINED));
+    }
+    assert_eq!(routed_pods(&runtime), ["alpha", "beta"]);
+
+    // A replay of the committed history decides the same.
+    let mut replayed =
+        PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+    for question in [&b"alpha question"[..], b"beta question"] {
+        assert_eq!(run_slice(&mut replayed, question, &sampler), Err(ABSTAINED));
+    }
+    assert!(routed_pods(&replayed).is_empty());
+}
+
+#[test]
+fn a_supersession_committed_after_the_sampler_was_built_stops_the_old_representation() {
+    let mut runtime = runtime();
+    let sampler = live_sampler(&runtime);
+    run(&mut runtime, b"beta question", &sampler).unwrap();
+    runtime
+        .commit(LedgerEvent::CapsuleSuperseded {
+            capsule: CapsuleId::from(pod_lifecycle_target(&address("beta", 1)).as_str()),
+            old: Generation(1),
+            new: Generation(2),
+        })
+        .unwrap();
+    for question in [&b"beta question"[..], b"alpha question"] {
+        assert_eq!(run_slice(&mut runtime, question, &sampler), Err(ABSTAINED));
+    }
+    assert_eq!(routed_pods(&runtime), ["beta"]);
+    let mut replayed =
+        PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).unwrap();
+    assert_eq!(
+        run_slice(&mut replayed, b"beta question", &sampler),
+        Err(ABSTAINED)
+    );
+}
+
+#[test]
+fn without_the_runtime_a_sampler_admits_no_representation() {
+    use ptr_runtime::PodSampler;
+    let runtime = runtime();
+    let sampler = live_sampler(&runtime);
+    let (project, capability, input_type, request_id) = (
+        ProjectId::from("demo"),
+        CapabilityId::from("Echo<Text>"),
+        TypeId::from("Text"),
+        ptr_types::RequestId::from("request-1"),
+    );
+    let query = RouteQuery {
+        project: &project,
+        capability: &capability,
+        input_type: &input_type,
+        request_id: &request_id,
+        payload: b"alpha question",
+    };
+    let features = sampler.features(&query).unwrap();
+    assert_eq!(
+        features.admitted_representations().map(|set| set.len()),
+        Some(0)
+    );
+    let features = sampler.features_at(&runtime, &query).unwrap();
+    assert_eq!(
+        features.admitted_representations().map(|set| set.len()),
+        Some(2)
+    );
+}
+
+fn run_slice(
+    runtime: &mut PtrRuntime,
+    payload: &[u8],
+    sampler: &EmbeddingSampler<LearnedPodRouter>,
+) -> Result<(), RuntimeError> {
+    let payload: &'static [u8] = Box::leak(payload.to_vec().into_boxed_slice());
+    run(runtime, payload, sampler)
+}
+
 struct OtherEncoder(EncoderRef);
 impl QueryEmbedder for OtherEncoder {
     fn encoder(&self) -> &EncoderRef {
@@ -586,10 +698,13 @@ fn an_embedder_of_another_model_or_revision_is_refused_even_at_the_same_dimensio
         },
     ] {
         // Same three dimensions as the store: only the identity of the encoder differs.
-        let error =
-            EmbeddingSampler::new(router(store.clone()), Arc::new(OtherEncoder(other.clone())))
-                .err()
-                .expect("a mismatched encoder is refused");
+        let error = EmbeddingSampler::new(
+            router(store.clone()),
+            Arc::new(OtherEncoder(other.clone())),
+            NeuralStateCache::default(),
+        )
+        .err()
+        .expect("a mismatched encoder is refused");
         assert_eq!(
             error,
             EmbeddingSamplerError::EncoderMismatch {
@@ -600,5 +715,10 @@ fn an_embedder_of_another_model_or_revision_is_refused_even_at_the_same_dimensio
         assert!(error.to_string().contains("test-encoder@r1"), "{error}");
     }
     // The matching encoder is accepted.
-    assert!(EmbeddingSampler::new(router(store), Arc::new(OtherEncoder(encoder()))).is_ok());
+    assert!(EmbeddingSampler::new(
+        router(store),
+        Arc::new(OtherEncoder(encoder())),
+        NeuralStateCache::default()
+    )
+    .is_ok());
 }

@@ -797,3 +797,68 @@ fn identity_and_cluster_key_survive_in_the_representation() {
     assert_eq!(alpha.cluster_key(), descriptor.cluster_key());
     let _: (&PodIdentity, ClusterKey) = (alpha.identity(), alpha.cluster_key());
 }
+
+#[test]
+fn the_admitted_set_of_a_request_narrows_scoring_and_never_widens_it() {
+    use ptr_router::AdmittedRepresentation;
+    use std::collections::BTreeSet;
+
+    let scene = scene();
+    let registry = registry(&scene.project, &["alpha", "beta"]);
+    let alpha = representation("alpha", vec![1.0, 0.0, 0.0], 10.0, 1);
+    let beta = representation("beta", vec![0.0, 1.0, 0.0], 10.0, 1);
+    let router = router(vec![alpha.clone(), beta.clone()]);
+    let named = |representation: &PodRepresentation| AdmittedRepresentation {
+        project: scene.project.clone(),
+        pod: representation.pod().clone(),
+        digest: *representation.digest(),
+    };
+    let outcome = |admitted: Option<BTreeSet<AdmittedRepresentation>>| {
+        let mut features = features(vec![0.0, 1.0, 0.0]);
+        if let Some(admitted) = admitted {
+            features = features.with_admitted_representations(admitted);
+        }
+        let request = request(
+            &registry,
+            &scene.project,
+            &scene.capability,
+            &scene.input_type,
+            &scene.request_id,
+            &features,
+        );
+        router.policy(&request).map(|_| ())
+    };
+    let reason = |result: Result<(), RouteError>| match result.unwrap_err() {
+        RouteError::Abstained { reason, .. } => Some(reason),
+        RouteError::NoRepresentation { .. } => None,
+        other => panic!("unexpected {other:?}"),
+    };
+
+    // No restriction: both are scored and beta wins clearly.
+    assert!(outcome(None).is_ok());
+    assert!(outcome(Some([named(&alpha), named(&beta)].into())).is_ok());
+    // Only beta admitted: alpha is uncovered, so the field abstains as partial coverage.
+    assert_eq!(
+        reason(outcome(Some([named(&beta)].into()))),
+        Some(AbstentionReason::PartialCoverage)
+    );
+    // Nothing admitted: nothing is scored at all.
+    assert_eq!(reason(outcome(Some(BTreeSet::new()))), None);
+    // A digest that is not the loaded representation's does not admit it.
+    let mut stale = named(&alpha);
+    stale.digest = [0xAA; 32];
+    assert_eq!(
+        reason(outcome(Some([stale, named(&beta)].into()))),
+        Some(AbstentionReason::PartialCoverage)
+    );
+    // Naming a pod that has no loaded representation adds nothing: eligibility is the registry's.
+    let intruder = AdmittedRepresentation {
+        project: scene.project.clone(),
+        pod: PodId::from("intruder"),
+        digest: [1; 32],
+    };
+    assert_eq!(
+        reason(outcome(Some([named(&beta), intruder].into()))),
+        Some(AbstentionReason::PartialCoverage)
+    );
+}

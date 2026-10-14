@@ -3,8 +3,8 @@
 Two files per pod, named after the pod identity with `:` replaced by `-` (a colon is not a legal
 file name character everywhere):
 
-* `dragonfly-<identity>.bin`: `dims` little-endian float32 values of `z`, then one float32 bias.
-* `dragonfly-<identity>.json`: the manifest. `weights_sha256` is the SHA-256 of the `.bin` file and
+* `dragonfly-<project>__<identity>.bin`: `dims` little-endian float32 values of `z`, then one float32 bias.
+* `dragonfly-<project>__<identity>.json`: the manifest. `weights_sha256` is the SHA-256 of the `.bin` file and
   `digest` covers every field plus the weights, so any later edit is detected on load.
 
 The digest layout is the one in `crates/ptr-router/src/learned.rs` (`digest_of`); the committed
@@ -94,8 +94,26 @@ def build_manifest(trained: TrainedAddress, weights: bytes) -> dict:
     return manifest
 
 
-def artifact_stem(pod_identity: str) -> str:
-    return "dragonfly-" + pod_identity.replace(":", "-")
+_SAFE = frozenset("abcdefghijklmnopqrstuvwxyz0123456789.-")
+
+
+def _encode_project(project: str) -> str:
+    """A reversible file-name form of a project id: lower-case letters, digits, `.` and `-` stay,
+    every other byte (upper case, `_`, `/`, non-ASCII, ...) becomes `_XX` in hex. Upper case is
+    escaped too, so two projects never collide on a case-insensitive file system."""
+    if not project:
+        raise ValueError("a project id is required")
+    return "".join(
+        char if char in _SAFE else "".join(f"_{byte:02x}" for byte in char.encode("utf-8"))
+        for char in project
+    )
+
+
+def artifact_stem(project: str, pod_identity: str) -> str:
+    """`dragonfly-<project>__<identity>`: the project is part of the name, because two projects
+    with equal pod semantics derive one identity. The encoded project holds `_` only as the
+    start of an `_XX` escape, so the `__` separator is unambiguous."""
+    return f"dragonfly-{_encode_project(project)}__" + pod_identity.replace(":", "-")
 
 
 def export_address(trained: TrainedAddress, out_dir: Path) -> tuple[Path, Path]:
@@ -106,14 +124,20 @@ def export_address(trained: TrainedAddress, out_dir: Path) -> tuple[Path, Path]:
     """
     weights = weights_bytes(trained.z, trained.bias)
     manifest = build_manifest(trained, weights)
-    stem = artifact_stem(manifest["pod_identity"])
+    stem = artifact_stem(manifest["project"], manifest["pod_identity"])
     manifest["weights_file"] = f"{stem}.bin"
     manifest["digest"] = artifact_digest(manifest, weights).hex()
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / f"{stem}.json"
     bin_path = out_dir / f"{stem}.bin"
-    bin_path.write_bytes(weights)
-    json_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    for path in (json_path, bin_path):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; an export never overwrites an artifact")
+    # `xb`/`x` also refuse a file that appeared since the check.
+    with open(bin_path, "xb") as handle:
+        handle.write(weights)
+    with open(json_path, "x", encoding="utf-8") as handle:
+        handle.write(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return json_path, bin_path
 
 

@@ -5,6 +5,7 @@
 //! [`ptr_router::route_checked`] without ever holding the key (Invariant 14: a recorded
 //! decision replays from key, nonce and request; Invariant 13: the key never leaves the router).
 
+use crate::neural::NeuralStateCache;
 use crate::{PtrRuntime, RuntimeError};
 use ptr_events::RuntimeEvent;
 use ptr_pods::{DynPod, PodRegistry};
@@ -14,6 +15,7 @@ use ptr_router::{
 };
 use ptr_types::{CapabilityId, Digest, ProjectId, RequestId, TypeId};
 use sha2::{Digest as _, Sha256};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// What a [`PodSampler`] may derive request features from: the scope of one Pod request and its
@@ -75,6 +77,19 @@ pub trait PodSampler: Send + Sync {
     fn features(&self, _query: &RouteQuery<'_>) -> Result<RouteFeatures, RouteError> {
         Ok(RouteFeatures::default())
     }
+
+    /// The request features at the moment of routing, with the runtime's committed facts at hand.
+    /// The runtime calls this, not [`PodSampler::features`], for every Pod request. A sampler
+    /// over learned representations re-admits them here (see [`EmbeddingSampler`]), so a
+    /// revocation committed after a representation was loaded stops it from being used at once.
+    /// The default is [`PodSampler::features`].
+    fn features_at(
+        &self,
+        _runtime: &PtrRuntime,
+        query: &RouteQuery<'_>,
+    ) -> Result<RouteFeatures, RouteError> {
+        self.features(query)
+    }
 }
 
 /// A [`CheckedRouter`] whose requests are embedded by `embedder` before routing, so a learned
@@ -83,6 +98,7 @@ pub trait PodSampler: Send + Sync {
 pub struct EmbeddingSampler<R> {
     router: CheckedRouter<R>,
     embedder: Arc<dyn QueryEmbedder>,
+    admission: NeuralStateCache,
 }
 
 /// The embedder and the router's representations use different encoders.
@@ -117,6 +133,7 @@ impl<R: Router + EncodedWith> EmbeddingSampler<R> {
     pub fn new(
         router: CheckedRouter<R>,
         embedder: Arc<dyn QueryEmbedder>,
+        admission: NeuralStateCache,
     ) -> Result<Self, EmbeddingSamplerError> {
         if embedder.encoder() != router.inner().encoder() {
             return Err(EmbeddingSamplerError::EncoderMismatch {
@@ -124,7 +141,11 @@ impl<R: Router + EncodedWith> EmbeddingSampler<R> {
                 store: router.inner().encoder().clone(),
             });
         }
-        Ok(Self { router, embedder })
+        Ok(Self {
+            router,
+            embedder,
+            admission,
+        })
     }
 }
 
@@ -137,8 +158,26 @@ impl<R: Router + Send + Sync> PodSampler for EmbeddingSampler<R> {
         self.router.key_id()
     }
 
+    /// Without the runtime nothing can be admitted: the request carries an empty admission set,
+    /// so a learned router scores no representation (fail closed).
     fn features(&self, query: &RouteQuery<'_>) -> Result<RouteFeatures, RouteError> {
-        RouteFeatures::new().with_vector(self.embedder.embed(query)?)
+        Ok(RouteFeatures::new()
+            .with_vector(self.embedder.embed(query)?)?
+            .with_admitted_representations(BTreeSet::new()))
+    }
+
+    /// The query vector and the representations of the admission cache that are admitted by the
+    /// runtime's committed facts right now: revoked, superseded, mis-bound or foreign-project
+    /// states are left out on every request.
+    fn features_at(
+        &self,
+        runtime: &PtrRuntime,
+        query: &RouteQuery<'_>,
+    ) -> Result<RouteFeatures, RouteError> {
+        let admitted = runtime.admitted_representation_set(&self.admission);
+        Ok(RouteFeatures::new()
+            .with_vector(self.embedder.embed(query)?)?
+            .with_admitted_representations(admitted))
     }
 }
 
@@ -233,13 +272,16 @@ impl PtrRuntime {
                 .ok_or_else(unavailable),
             PodSelection::Sampled(sampler) => {
                 let features = sampler
-                    .features(&RouteQuery {
-                        project,
-                        capability,
-                        input_type,
-                        request_id,
-                        payload,
-                    })
+                    .features_at(
+                        self,
+                        &RouteQuery {
+                            project,
+                            capability,
+                            input_type,
+                            request_id,
+                            payload,
+                        },
+                    )
                     .map_err(|error| RuntimeError::RouteFailed {
                         reason: route_error_reason(&error),
                     })?;

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .encoder import HashedBagOfWordsEncoder, l2_normalize
@@ -24,6 +25,7 @@ from .train import PodTrainingSpec, TrainConfig, TrainedAddress, train_pod_addre
 
 ENCODER_DIMS = 32
 PROJECT = "demo"
+OTHER_PROJECT = "other"
 
 _QUESTIONS = {
     "mueller": [
@@ -107,8 +109,12 @@ def build_world(out_dir: Path) -> dict:
         _spec("kowalski"), encoder, TrainConfig(steps=1, learning_rate=0.0)
     )
 
+    # The same pod semantics (hence the same identity) and pod id in a second project: it must
+    # export next to the first without touching it, and load into the same store without a clash.
+    twin = train_pod_address(replace(_spec("mueller"), project=OTHER_PROJECT), encoder)
+
     pods = []
-    for key, address in trained.items():
+    for key, address in [*trained.items(), ("twin", twin)]:
         json_path, _ = export_address(address, out_dir)
         pods.append(
             {
@@ -119,7 +125,8 @@ def build_world(out_dir: Path) -> dict:
                 "generation": address.spec.generation,
                 "status": address.gate.status,
                 "manifest": json_path.name,
-                "weights": artifact_stem(address.spec.descriptor.identity()) + ".bin",
+                "weights": artifact_stem(address.spec.project, address.spec.descriptor.identity())
+                + ".bin",
             }
         )
 

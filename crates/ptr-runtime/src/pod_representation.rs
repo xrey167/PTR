@@ -17,9 +17,12 @@ use crate::neural::{Denial, NeuralError, NeuralState, NeuralStateCache, StateDec
 use crate::pod_head::pod_lifecycle_target;
 use crate::{PtrRuntime, RuntimeError};
 use ptr_router::{
-    EncoderRef, PodRepresentation, RepresentationError, RepresentationStore, RouteError,
+    AdmittedRepresentation, EncoderRef, PodRepresentation, RepresentationError,
+    RepresentationStore, RouteError,
 };
 use ptr_types::{CodebookVersion, EvidenceId, PodRevisionAddress, ProvenanceRef};
+
+use std::collections::BTreeSet;
 
 const PROVENANCE_PREFIX: &str = "dragonfly:";
 
@@ -178,6 +181,25 @@ impl PtrRuntime {
             return Err(RepresentationDenial::BindingMismatch);
         }
         Ok(representation)
+    }
+
+    /// The representations of `cache` that are admitted now, named by pod and digest: the set a
+    /// learned router may score with for one request. It is recomputed from the committed
+    /// lifecycle on every call, so a revocation or a new pod generation that was committed since
+    /// the state was bound removes the representation from the very next request.
+    pub fn admitted_representation_set(
+        &self,
+        cache: &NeuralStateCache,
+    ) -> BTreeSet<AdmittedRepresentation> {
+        cache
+            .keys()
+            .filter_map(|key| self.admit_cached_representation(cache, key).ok())
+            .map(|representation| AdmittedRepresentation {
+                project: representation.project().clone(),
+                pod: representation.pod().clone(),
+                digest: *representation.digest(),
+            })
+            .collect()
     }
 
     /// Builds the router store from every cached representation that is admitted now. A refused

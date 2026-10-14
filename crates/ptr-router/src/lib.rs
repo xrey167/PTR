@@ -45,8 +45,9 @@ pub use policy_book::{
 };
 pub use propensity::{Propensity, PropensityError};
 pub use router::{
-    route_checked, AbstentionReason, CheckedRouter, DistributionError, PolicyFailure,
-    RouteDistribution, RouteError, RouteFeatures, RouteRequest, RoutedChoice, RoutedError, Router,
+    route_checked, AbstentionReason, AdmittedRepresentation, CheckedRouter, DistributionError,
+    PolicyFailure, RouteDistribution, RouteError, RouteFeatures, RouteRequest, RoutedChoice,
+    RoutedError, Router,
 };
 pub use sampling::{DecisionNonce, NonceExhausted, NonceSequence, SamplingKey};
 pub use self_model::{

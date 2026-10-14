@@ -93,7 +93,10 @@ fn every_exported_pod_loads_with_the_fields_the_exporter_wrote() {
         let (pod_id, manifest) = pod(entry);
         let representation = load(manifest).unwrap();
         assert_eq!(representation.pod(), &PodId::from(pod_id));
-        assert_eq!(representation.project(), &ProjectId::from("demo"));
+        assert_eq!(
+            representation.project(),
+            &ProjectId::from(entry["project"].as_str().unwrap())
+        );
         assert_eq!(
             representation.identity().0,
             entry["pod_identity"].as_str().unwrap()
@@ -116,6 +119,46 @@ fn every_exported_pod_loads_with_the_fields_the_exporter_wrote() {
             expected["dims"].as_u64().unwrap()
         );
     }
+}
+
+#[test]
+fn one_identity_exported_for_two_projects_gives_two_loadable_pairs_that_share_a_store() {
+    let expected = expected();
+    let twins: Vec<&Value> = expected["pods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["pod_id"] == "supplier-mueller")
+        .collect();
+    assert_eq!(twins.len(), 2);
+    assert_eq!(twins[0]["pod_identity"], twins[1]["pod_identity"]);
+    assert_ne!(twins[0]["project"], twins[1]["project"]);
+    // Two distinct file pairs, named after their project.
+    assert_ne!(twins[0]["manifest"], twins[1]["manifest"]);
+    assert_ne!(twins[0]["weights"], twins[1]["weights"]);
+    for entry in &twins {
+        let project = entry["project"].as_str().unwrap();
+        assert!(entry["manifest"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("dragonfly-{project}__")));
+    }
+    // Both load into one store without replacing each other.
+    let store = activated_store();
+    for entry in &twins {
+        let project = ProjectId::from(entry["project"].as_str().unwrap());
+        let loaded = store
+            .get(&project, &PodId::from("supplier-mueller"))
+            .unwrap();
+        assert_eq!(loaded.project(), &project);
+    }
+    let activated = expected["pods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["status"] == "activated")
+        .count();
+    assert_eq!(store.len(), activated);
 }
 
 #[test]

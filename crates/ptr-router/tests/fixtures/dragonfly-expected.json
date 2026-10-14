@@ -68,32 +68,42 @@
     {
       "cluster_key": "76d375c4bcf6a22fdca10c5c74d5b04302685d5995760fbc2fb1f3e793cb59ec",
       "generation": 3,
-      "manifest": "dragonfly-pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.json",
+      "manifest": "dragonfly-demo__pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.json",
       "pod_id": "supplier-mueller",
       "pod_identity": "pod:e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1",
       "project": "demo",
       "status": "activated",
-      "weights": "dragonfly-pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.bin"
+      "weights": "dragonfly-demo__pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.bin"
     },
     {
       "cluster_key": "f5454cf58bbefbf5b74cb5fa3ec5d552e0e1b35d11d669abf3dfd2885f0e31ba",
       "generation": 3,
-      "manifest": "dragonfly-pod-b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e.json",
+      "manifest": "dragonfly-demo__pod-b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e.json",
       "pod_id": "supplier-schmidt",
       "pod_identity": "pod:b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e",
       "project": "demo",
       "status": "activated",
-      "weights": "dragonfly-pod-b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e.bin"
+      "weights": "dragonfly-demo__pod-b4d83d4da45bab1b666c5d4b319f00a121288cb82459c207c3b7224a8d88a58e.bin"
     },
     {
       "cluster_key": "a0b2d2b88f74b1768cb37184a1805f72b9fd82ea848c2d0bffb5c1e4476d024d",
       "generation": 3,
-      "manifest": "dragonfly-pod-cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d.json",
+      "manifest": "dragonfly-demo__pod-cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d.json",
       "pod_id": "supplier-kowalski",
       "pod_identity": "pod:cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d",
       "project": "demo",
       "status": "not-activated",
-      "weights": "dragonfly-pod-cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d.bin"
+      "weights": "dragonfly-demo__pod-cc07a7dd199cd2741ff53af9f61f8383213b610218ef41ca65c380bf2c43ca3d.bin"
+    },
+    {
+      "cluster_key": "76d375c4bcf6a22fdca10c5c74d5b04302685d5995760fbc2fb1f3e793cb59ec",
+      "generation": 3,
+      "manifest": "dragonfly-other__pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.json",
+      "pod_id": "supplier-mueller",
+      "pod_identity": "pod:e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1",
+      "project": "other",
+      "status": "activated",
+      "weights": "dragonfly-other__pod-e62f215b1f72a8e1d1ccd61c159239caa8b66397376e60f4e6401d1b708160c1.bin"
     }
   ],
   "probes": [
