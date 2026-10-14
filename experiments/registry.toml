@@ -549,3 +549,8 @@ status = "planned"
 id = "F008"
 path = "feedback/F008-replay-backtest"
 status = "planned"
+
+[[experiment]]
+id = "E014"
+path = "system/E014-adaptive-batching"
+status = "planned"

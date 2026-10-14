@@ -147,7 +147,7 @@ literals in 40 files. The scoped path is `infer_with`.
 | Promotion without a baseline is refused, the digest is recomputed, a revocation is seen at the next use | unit and integration tests (`ptr-lineage`, `ptr-runtime`, `ptr-ledger`) | tests are the evidence of the mechanism; no experiment needed |
 | The improvement budget binds and aborted cycles spend it | integration tests (`ptr-runtime`, `ptr-feedback`) | as above |
 | The backtest is a valid instrument | `training/tests/test_replay_backtest.py` (mechanism only) | **F008-replay-backtest** (planned): seeded synthetic histories with a known response, positive, negative and interaction controls, the in-sample scorer as the baseline, persistence as the naive predictor, the oracle as the ceiling, noise and bound ladders, ablations of chronology, identification and the extrapolation abort; confirmatory seeds 17, 29, 43, 71, 101 never run, pilot and smoke seeds 1001 and above explorative |
-| Batching raises throughput at equal deadline compliance | none: the default `infer_batch` is sequential | a batching experiment, **id pending** (E009 is reserved by [42](42-pod-data-plane.md)): baseline no batcher; arms batch-size and deadline ablations; a batch-cost sensitivity control (fixed against marginal cost per request); an oracle ceiling that batches with perfect arrival knowledge; falsified if the throughput gain at equal deadline drops is below 1.2 times at any confirmatory seed |
+| Batching raises throughput at equal deadline compliance | none: the default `infer_batch` is sequential | **E014-adaptive-batching** (planned; E009 to E013 are reserved by [42](42-pod-data-plane.md); no entrypoint and not freezable until the server calls the model outside its runtime lock; confirmatory seeds 17, 29, 43, 71, 101 never run, pilot seeds 1001 and above explorative): baseline no batcher; arms batch-size and deadline ablations; a batch-cost sensitivity control (fixed against marginal cost per request); an oracle ceiling that batches with perfect arrival knowledge; falsified if the throughput gain at equal deadline drops is below 1.2 times at any confirmatory seed |
 | Gated adapter lineage beats a naive chain | none | **R004** stays planned; its harness, preregistration pins and entrypoint do not exist |
 | Serving reproduces the evaluation numbers (parity) | none | a parity run for an `adapter-serving` candidate; not registered in this change |
 
@@ -159,5 +159,5 @@ stubs.
 - Move the model call out of the server lock, then wire the batcher and the router into `ptrd`.
 - A snapshot section for adapter bindings and cycle counts, so compaction works with adapters.
 - A request router that uses `BatchKey` and `check_adapter_use` at dispatch.
-- Register the batching experiment under an id the coordinator assigns; build R004 and F008 up to `prepared`.
+- Build E014 (after the server-lock restructuring), R004 and F008 up to `prepared`.
 - A real batched forward in one backend.

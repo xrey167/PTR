@@ -42,7 +42,7 @@
 - Structured cancellation and timeout semantics
 - AdaptiveBatcher is not wired into ptrd or ptr-config ([model.batch] and [model.replicas] do not exist): ptr-server serializes requests behind the runtime lock, so a batcher in front of it would only queue; the lock restructuring (model call outside the lock, commit inside) is not done
 - ModelRequest carries neither a deadline nor a batch key (adding fields would touch every struct literal, about 70 across 40 files); the scoped path is AdaptiveBatcher::infer_with
-- No backend implements infer_batch with a batched forward pass, so the default sequential loop gains nothing; the throughput gain of batching is unmeasured, and the experiment that would measure it has no registered id yet (E009 is reserved by docs/architecture/42-pod-data-plane.md)
+- No backend implements infer_batch with a batched forward pass, so the default sequential loop gains nothing; the throughput gain of batching is unmeasured, and the experiment that would measure it, E014-adaptive-batching, is planned with no entrypoint (it cannot be frozen until the server calls the model outside its runtime lock)
 - ReplicaRouter failover does not carry the request deadline, and replicas must be interchangeable (resume may land on another replica than infer)
 
 ### Next milestones
@@ -51,7 +51,7 @@
 - Add backend capability descriptor
 - Implement first external model adapter after inference-serving evaluation
 - Move the model call out of ptr-server's runtime lock (call outside, commit inside, generation checked at the commit) and then wire AdaptiveBatcher and ReplicaRouter into ptrd with [model.batch] and [model.replicas]
-- Register and run the batching experiment (baseline: no batcher; arms: batch-size ablation, deadline ablation, a batch-cost sensitivity control, an oracle ceiling) under an id the coordinator assigns
+- Build and run E014-adaptive-batching (baseline: no batcher; batch-size, wait and deadline ablations, a batch-cost sensitivity control, an oracle ceiling) once the server-lock restructuring exists
 
 ### Linked experiments
 

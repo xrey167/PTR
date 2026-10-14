@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "E014-adaptive-batching"
+path = "experiments/system/E014-adaptive-batching"
+tests_dir = "tests"
