@@ -93,7 +93,7 @@ fn an_exhausted_budget_refuses_the_next_cycle_even_when_the_earlier_ones_aborted
         .expect("first");
     runtime
         .record_improvement_cycle(
-            first,
+            &first,
             ImprovementCycleOutcome::Aborted {
                 reason: "evaluation diverged".into(),
             },
@@ -103,7 +103,7 @@ fn an_exhausted_budget_refuses_the_next_cycle_even_when_the_earlier_ones_aborted
         .begin_improvement_cycle(begin("alpha"))
         .expect("second");
     runtime
-        .record_improvement_cycle(second, ImprovementCycleOutcome::Completed)
+        .record_improvement_cycle(&second, ImprovementCycleOutcome::Completed)
         .expect("records completion");
     assert_eq!(
         runtime.begin_improvement_cycle(begin("alpha")),
@@ -179,7 +179,7 @@ fn the_count_is_rebuilt_from_the_ledger_and_the_next_day_starts_fresh() {
         .begin_improvement_cycle(begin("alpha"))
         .expect("admitted");
     runtime
-        .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
+        .record_improvement_cycle(&ticket, ImprovementCycleOutcome::Completed)
         .expect("records");
     let history = runtime.committed_events().to_vec();
 
@@ -207,7 +207,7 @@ fn a_history_from_the_future_refuses_cycles_until_the_clock_catches_up() {
         .begin_improvement_cycle(begin("alpha"))
         .expect("admitted");
     runtime
-        .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
+        .record_improvement_cycle(&ticket, ImprovementCycleOutcome::Completed)
         .expect("records");
     let history = runtime.committed_events().to_vec();
 
@@ -261,7 +261,7 @@ fn a_malformed_abort_reason_is_refused_and_leaves_the_cycle_counted() {
         .expect("admitted");
     assert!(runtime
         .record_improvement_cycle(
-            ticket,
+            &ticket,
             ImprovementCycleOutcome::Aborted {
                 reason: String::new()
             }
@@ -301,7 +301,7 @@ fn the_tracked_projects_are_bounded_for_admitted_and_for_recorded_cycles() {
             .begin_improvement_cycle(begin(&format!("p{n}")))
             .expect("within the bound");
         recorded
-            .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
+            .record_improvement_cycle(&ticket, ImprovementCycleOutcome::Completed)
             .expect("records");
     }
     assert_eq!(
@@ -336,7 +336,7 @@ fn a_ticket_of_another_runtime_is_refused_and_commits_nothing() {
         .expect("admitted by a");
     let before = b.committed_events().len();
     assert_eq!(
-        b.record_improvement_cycle(ticket_of_a, ImprovementCycleOutcome::Completed),
+        b.record_improvement_cycle(&ticket_of_a, ImprovementCycleOutcome::Completed),
         Err(RuntimeError::Adapter(AdapterError::TicketNotAdmitted))
     );
     assert_eq!(b.committed_events().len(), before);
@@ -356,7 +356,7 @@ fn an_admission_that_stayed_open_past_the_retention_can_no_longer_be_recorded() 
         .expect("a later day has its own budget");
     let before = runtime.committed_events().len();
     assert_eq!(
-        runtime.record_improvement_cycle(stale, ImprovementCycleOutcome::Completed),
+        runtime.record_improvement_cycle(&stale, ImprovementCycleOutcome::Completed),
         Err(RuntimeError::Adapter(AdapterError::TicketNotAdmitted))
     );
     assert_eq!(runtime.committed_events().len(), before);
@@ -402,7 +402,7 @@ fn a_ticket_older_than_the_retention_is_refused_at_record_time_without_another_b
     clock.set(10 + OPEN_CYCLE_RETENTION_DAYS + 1);
     let before = runtime.committed_events().len();
     assert_eq!(
-        runtime.record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed),
+        runtime.record_improvement_cycle(&ticket, ImprovementCycleOutcome::Completed),
         Err(RuntimeError::Adapter(AdapterError::TicketNotAdmitted))
     );
     assert_eq!(runtime.committed_events().len(), before);
@@ -417,7 +417,7 @@ fn a_ticket_within_the_retention_is_still_recorded() {
         .expect("admitted");
     clock.set(10 + OPEN_CYCLE_RETENTION_DAYS);
     assert!(runtime
-        .record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed)
+        .record_improvement_cycle(&ticket, ImprovementCycleOutcome::Completed)
         .is_ok());
 }
 
@@ -430,7 +430,7 @@ fn recording_with_an_unreadable_clock_is_refused_and_the_admission_stays_counted
     clock.set(u64::MAX);
     let before = runtime.committed_events().len();
     assert_eq!(
-        runtime.record_improvement_cycle(ticket, ImprovementCycleOutcome::Completed),
+        runtime.record_improvement_cycle(&ticket, ImprovementCycleOutcome::Completed),
         Err(RuntimeError::Adapter(AdapterError::ClockUnavailable))
     );
     assert_eq!(runtime.committed_events().len(), before);
@@ -475,10 +475,10 @@ fn a_cycle_recorded_out_of_day_order_is_counted_on_its_own_day_live_and_on_repla
         .begin_improvement_cycle(begin("alpha"))
         .expect("day 11");
     runtime
-        .record_improvement_cycle(on_day_11, ImprovementCycleOutcome::Completed)
+        .record_improvement_cycle(&on_day_11, ImprovementCycleOutcome::Completed)
         .expect("records day 11 first");
     runtime
-        .record_improvement_cycle(on_day_10, ImprovementCycleOutcome::Completed)
+        .record_improvement_cycle(&on_day_10, ImprovementCycleOutcome::Completed)
         .expect("then day 10");
     let alpha = ProjectId::from("alpha");
     assert_eq!(runtime.improvement_cycles_used(&alpha, 10), 1);
@@ -488,4 +488,65 @@ fn a_cycle_recorded_out_of_day_order_is_counted_on_its_own_day_live_and_on_repla
     let replayed = PtrRuntime::replay(PtrConfig::default(), &history).expect("replays");
     assert_eq!(replayed.improvement_cycles_used(&alpha, 10), 1);
     assert_eq!(replayed.improvement_cycles_used(&alpha, 11), 1);
+}
+
+#[test]
+fn projects_kept_only_by_expired_admissions_do_not_fill_the_project_bound() {
+    use ptr_runtime::adapter::{MAX_TRACKED_CYCLE_PROJECTS, OPEN_CYCLE_RETENTION_DAYS};
+    let (mut runtime, clock) = runtime(5_000, 1);
+    // One admission each for as many distinct projects as the bound allows, none recorded.
+    let mut held = Vec::new();
+    for n in 0..MAX_TRACKED_CYCLE_PROJECTS {
+        held.push(
+            runtime
+                .begin_improvement_cycle(begin(&format!("project-{n}")))
+                .expect("within the bound"),
+        );
+    }
+    assert!(matches!(
+        runtime.begin_improvement_cycle(begin("newcomer")),
+        Err(RuntimeError::Adapter(
+            AdapterError::TooManyCycleProjects { .. }
+        ))
+    ));
+    // Their admissions expire: what remains of them is a high-water day, which must not keep a
+    // new project out.
+    clock.set(1 + OPEN_CYCLE_RETENTION_DAYS + 1);
+    assert!(runtime.begin_improvement_cycle(begin("newcomer")).is_ok());
+}
+
+#[test]
+fn a_record_refused_before_the_append_leaves_the_ticket_usable() {
+    let (mut runtime, _clock) = runtime(1, 10);
+    let ticket = runtime
+        .begin_improvement_cycle(begin("alpha"))
+        .expect("admitted");
+    // Refused before anything is appended: a malformed abort reason.
+    assert!(runtime
+        .record_improvement_cycle(
+            &ticket,
+            ImprovementCycleOutcome::Aborted {
+                reason: String::new()
+            }
+        )
+        .is_err());
+    let before = runtime.committed_events().len();
+    // The same ticket records the cycle once the outcome is right.
+    runtime
+        .record_improvement_cycle(&ticket, ImprovementCycleOutcome::Completed)
+        .expect("the ticket was not consumed");
+    assert_eq!(runtime.committed_events().len(), before + 1);
+    // The budget counts the cycle once, and the ticket cannot be used a second time.
+    assert_eq!(
+        runtime.improvement_cycles_used(&ProjectId::from("alpha"), 10),
+        1
+    );
+    assert_eq!(
+        runtime.record_improvement_cycle(&ticket, ImprovementCycleOutcome::Completed),
+        Err(RuntimeError::Adapter(AdapterError::TicketNotAdmitted))
+    );
+    assert_eq!(
+        runtime.begin_improvement_cycle(begin("alpha")),
+        Err(exhausted(10, 1, 1))
+    );
 }

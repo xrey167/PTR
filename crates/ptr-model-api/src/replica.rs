@@ -11,22 +11,52 @@
 //! cancellation, a revoked generation and a closed replica end the request. The kind is a typed
 //! field of the error; the message is never read.
 //!
-//! **Resume does not fail over by default.** A `resume` continues a run that started on some
-//! replica; whether another replica may take it over is a property of the replicas, so it is
-//! chosen explicitly with [`ResumeFailover::Interchangeable`], and
-//! [`ResumeFailover::Never`] tries the rotation's replica once.
+//! **Resume does not fail over by default, and goes back where the run started.** A `resume`
+//! continues a run that started on some replica. The router remembers which replica answered
+//! the `infer` of each of the most recent [`MAX_PLACEMENTS`] request ids, and
+//! [`ResumeFailover::Never`] sends the resume to exactly that replica, once; a request id the
+//! router has no placement for (never seen, or evicted) takes the rotation's replica, which a
+//! stateful replica will refuse. Whether another replica may take a run over is a property of
+//! the replicas, so it is chosen explicitly with [`ResumeFailover::Interchangeable`], the only
+//! policy under which a resume may move.
 
 use crate::{
     InferenceBackend, ModelError, ModelEvent, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
 };
+use ptr_types::RequestId;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// The most replicas one router fronts.
 pub const MAX_REPLICAS: usize = 64;
+
+/// The most request ids whose serving replica a router remembers for a later `resume`.
+pub const MAX_PLACEMENTS: usize = 4096;
+
+/// The replica that answered the `infer` of recent request ids, oldest evicted first.
+#[derive(Default)]
+struct Placements {
+    order: VecDeque<RequestId>,
+    replica: HashMap<RequestId, usize>,
+}
+
+impl Placements {
+    fn record(&mut self, id: &RequestId, replica: usize) {
+        if self.replica.insert(id.clone(), replica).is_some() {
+            return;
+        }
+        while self.order.len() >= MAX_PLACEMENTS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.replica.remove(&oldest);
+            }
+        }
+        self.order.push_back(id.clone());
+    }
+}
 
 /// Why a router could not be built.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -106,6 +136,7 @@ pub struct ReplicaRouter {
     replicas: Vec<Replica>,
     next: AtomicUsize,
     policy: ReplicaPolicy,
+    placements: Mutex<Placements>,
 }
 
 impl fmt::Debug for ReplicaRouter {
@@ -152,6 +183,7 @@ impl ReplicaRouter {
                 .collect(),
             next: AtomicUsize::new(0),
             policy,
+            placements: Mutex::new(Placements::default()),
         })
     }
 
@@ -168,15 +200,20 @@ impl ReplicaRouter {
             .collect()
     }
 
+    /// Run `call` from `first` (the rotation's replica when none) on at most `max_failover`
+    /// more; returns the value and the index of the replica that produced it.
     fn route<T>(
         &self,
+        first: Option<usize>,
         max_failover: u8,
         call: impl Fn(&dyn ResumableInferenceBackend) -> Result<T, ModelError>,
-    ) -> Result<T, ModelError> {
-        let start = self.next.fetch_add(1, Ordering::Relaxed) % self.replicas.len();
+    ) -> Result<(T, usize), ModelError> {
+        let start = first.unwrap_or_else(|| self.next.fetch_add(1, Ordering::Relaxed))
+            % self.replicas.len();
         let mut last_error = ModelError::backend_failure();
         for step in 0..=usize::from(max_failover) {
-            let replica = &self.replicas[(start + step) % self.replicas.len()];
+            let index = (start + step) % self.replicas.len();
+            let replica = &self.replicas[index];
             replica.counters.attempts.fetch_add(1, Ordering::Relaxed);
             if step > 0 {
                 replica.counters.failovers.fetch_add(1, Ordering::Relaxed);
@@ -186,7 +223,7 @@ impl ReplicaRouter {
             let outcome = catch_unwind(AssertUnwindSafe(|| call(replica.backend.as_ref())))
                 .unwrap_or_else(|_| Err(ModelError::backend_failure()));
             match outcome {
-                Ok(value) => return Ok(value),
+                Ok(value) => return Ok((value, index)),
                 Err(error) => {
                     replica.counters.failures.fetch_add(1, Ordering::Relaxed);
                     if !error.allows_failover() {
@@ -206,7 +243,14 @@ impl InferenceBackend for ReplicaRouter {
     }
 
     fn infer(&self, request: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError> {
-        self.route(self.policy.max_failover, |backend| backend.infer(request))
+        let (events, replica) = self.route(None, self.policy.max_failover, |backend| {
+            backend.infer(request)
+        })?;
+        self.placements
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .record(&request.request_id, replica);
+        Ok(events)
     }
 }
 
@@ -216,6 +260,15 @@ impl ResumableInferenceBackend for ReplicaRouter {
             ResumeFailover::Never => 0,
             ResumeFailover::Interchangeable => self.policy.max_failover,
         };
-        self.route(max_failover, |backend| backend.resume(request))
+        // The replica that started the run, if the router still knows it.
+        let placed = self
+            .placements
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replica
+            .get(&request.request_id)
+            .copied();
+        self.route(placed, max_failover, |backend| backend.resume(request))
+            .map(|(events, _)| events)
     }
 }

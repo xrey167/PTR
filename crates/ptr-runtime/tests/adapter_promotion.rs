@@ -41,7 +41,9 @@ fn revoke(name: &str, generation: u64) -> RevokeAdapter {
 
 fn runtime() -> PtrRuntime {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).expect("runtime");
-    runtime.pin_promotion_gate(gate_digest());
+    runtime
+        .pin_promotion_gate(gate_digest())
+        .expect("pins once");
     runtime
 }
 
@@ -372,7 +374,9 @@ fn a_ledger_that_already_holds_a_capsule_in_the_adapter_namespace_still_replays(
         },
     }];
     let mut runtime = PtrRuntime::replay(PtrConfig::default(), &history).expect("replays");
-    runtime.pin_promotion_gate(gate_digest());
+    runtime
+        .pin_promotion_gate(gate_digest())
+        .expect("pins once");
     assert_eq!(
         runtime.live_generation("ptr-adapter:alpha/coder"),
         Some(Generation(1))
@@ -463,4 +467,80 @@ fn only_a_report_from_the_pinned_gate_configuration_promotes_and_nothing_else_co
     runtime
         .promote_adapter(request("coder", 1, WEIGHTS))
         .expect("the pinned gate's report promotes");
+}
+
+#[test]
+fn the_pin_is_set_once_and_a_laxer_gate_cannot_replace_it() {
+    let mut runtime = runtime();
+    let lax = ForgettingGate {
+        max_average_forgetting: 0.9,
+        ..gate()
+    };
+    let lax_digest = lax.config_digest().expect("valid");
+    assert_eq!(
+        runtime.pin_promotion_gate(lax_digest),
+        Err(AdapterError::GatePinConflict {
+            pinned: gate_digest()
+        })
+    );
+    // Pinning the same digest again changes nothing.
+    assert_eq!(runtime.pin_promotion_gate(gate_digest()), Ok(()));
+    // The original gate still applies: the laxer report is refused, the pinned one promotes.
+    let before = runtime.committed_events().len();
+    let foreign = PromoteAdapter {
+        project: project("alpha"),
+        proposal: proposal_under(&lax, "alpha", "coder", WEIGHTS, Some(0.7)).expect("proposal"),
+        frozen_split_manifest: SPLITS,
+        generation: Generation(1),
+        artifact: WEIGHTS,
+    };
+    assert!(matches!(
+        runtime.promote_adapter(foreign),
+        Err(RuntimeError::Adapter(
+            AdapterError::GateConfigurationMismatch { .. }
+        ))
+    ));
+    assert_eq!(runtime.committed_events().len(), before);
+    runtime
+        .promote_adapter(request("coder", 1, WEIGHTS))
+        .expect("the pinned gate's report promotes");
+}
+
+#[test]
+fn a_generic_revoke_in_the_adapter_namespace_is_refused_and_an_old_one_still_replays() {
+    use ptr_ledger::CommittedEvent;
+    use ptr_types::CommitIndex;
+
+    let mut runtime = runtime();
+    runtime
+        .promote_adapter(request("coder", 1, WEIGHTS))
+        .expect("promotes");
+    let before = runtime.committed_events().len();
+    let generic = LedgerEvent::Revoked {
+        subject: "ptr-adapter:alpha/coder".into(),
+        generation: Generation(1),
+    };
+    assert!(matches!(
+        runtime.commit(generic.clone()),
+        Err(RuntimeError::ReservedTargetNamespace { .. })
+    ));
+    assert!(matches!(
+        runtime.commit(LedgerEvent::CapsuleSuperseded {
+            capsule: CapsuleId::from("ptr-adapter:alpha/coder"),
+            old: Generation(1),
+            new: Generation(2),
+        }),
+        Err(RuntimeError::ReservedTargetNamespace { .. })
+    ));
+    assert_eq!(runtime.committed_events().len(), before, "ledger unchanged");
+    assert!(runtime
+        .serving_adapter(&project("alpha"), "coder")
+        .is_some());
+
+    // A ledger written before the namespace was closed still replays.
+    let history = vec![CommittedEvent {
+        index: CommitIndex(1),
+        event: generic,
+    }];
+    assert!(PtrRuntime::replay(PtrConfig::default(), &history).is_ok());
 }

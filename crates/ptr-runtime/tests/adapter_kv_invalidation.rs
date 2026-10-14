@@ -88,7 +88,9 @@ fn adapter_dependency(generation: u64) -> KvDependency {
 /// A runtime with a catalog, adapter generation 2 promoted, and one entry recorded under it.
 fn harness() -> (PtrRuntime, InMemoryPagedKvBackend) {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).expect("runtime");
-    runtime.pin_promotion_gate(adapter_support::gate_digest());
+    runtime
+        .pin_promotion_gate(adapter_support::gate_digest())
+        .expect("pins once");
     let backend = InMemoryPagedKvBackend::new(KvPageSize::DEFAULT);
     let catalog = KvPrefixCatalog::new(
         backend.take_fork_authority().unwrap(),

@@ -3720,8 +3720,15 @@ fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
     // The adapter lifecycle namespace is reserved for new capsules only. A ledger that already
     // holds a capsule with this prefix still replays (it is applied as the capsule it is);
     // `validate_adapter_event` keeps an adapter off a key such a capsule owns.
-    if let LedgerEvent::CapsuleCommitted { capsule, .. } = event {
-        let target = capsule.to_string();
+    // The same holds for the generic lifecycle records that would move or revoke a key in the
+    // namespace: only `promote_adapter` and `revoke_adapter` write there.
+    let reserved = match event {
+        LedgerEvent::CapsuleCommitted { capsule, .. }
+        | LedgerEvent::CapsuleSuperseded { capsule, .. } => Some(capsule.to_string()),
+        LedgerEvent::Revoked { subject, .. } => Some(subject.clone()),
+        _ => None,
+    };
+    if let Some(target) = reserved {
         if target.starts_with(adapter::ADAPTER_KEY_PREFIX) {
             return Err(RuntimeError::ReservedTargetNamespace { target });
         }

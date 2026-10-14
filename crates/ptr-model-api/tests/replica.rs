@@ -308,3 +308,36 @@ fn a_panicking_replica_is_a_failed_replica_that_fails_over_and_is_counted() {
         Err(ModelError::backend_failure())
     );
 }
+
+#[test]
+fn a_resume_without_failover_goes_back_to_the_replica_that_started_the_run() {
+    let replicas = [healthy("a"), healthy("b"), healthy("c")];
+    let strict = ReplicaRouter::new(
+        replicas
+            .iter()
+            .map(|r| Arc::clone(r) as Arc<dyn ResumableInferenceBackend>)
+            .collect(),
+        ReplicaPolicy {
+            max_failover: 0,
+            resume: ResumeFailover::Never,
+        },
+    )
+    .expect("router");
+    // r0 starts on a, r1 on b. The rotation now points at c.
+    assert_eq!(label(strict.infer(&request("r0")).expect("served")), "a");
+    assert_eq!(label(strict.infer(&request("r1")).expect("served")), "b");
+    // Each resume lands on the replica that started its run, not on the next in rotation.
+    assert_eq!(
+        label(strict.resume(&resume_request("r1")).expect("served")),
+        "b"
+    );
+    assert_eq!(
+        label(strict.resume(&resume_request("r0")).expect("served")),
+        "a"
+    );
+    assert_eq!(
+        replicas[2].calls.load(Ordering::SeqCst),
+        0,
+        "c never saw either run"
+    );
+}

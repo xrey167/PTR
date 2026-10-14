@@ -98,6 +98,8 @@ pub enum AdapterError {
     ClockRegressed { high_water_day: u64, today: u64 },
     /// The runtime's cycle clock cannot say what day it is, or none was configured.
     ClockUnavailable,
+    /// A different gate configuration is already pinned; a pin is never replaced.
+    GatePinConflict { pinned: [u8; 32] },
     /// No gate configuration is pinned in this runtime
     /// ([`PtrRuntime::pin_promotion_gate`]), so no report can be vouched for.
     NoPinnedPromotionGate,
@@ -304,10 +306,23 @@ pub(crate) fn adapter_key(project: &ProjectId, adapter: &str) -> String {
 impl PtrRuntime {
     /// Pin the one forgetting-gate configuration (`ForgettingGate::config_digest`) whose
     /// reports [`PtrRuntime::promote_adapter`] accepts. It is host configuration and not
-    /// committed history; pinning again replaces it. Until it is pinned every promotion is
-    /// refused with [`AdapterError::NoPinnedPromotionGate`].
-    pub fn pin_promotion_gate(&mut self, config_digest: [u8; 32]) {
-        self.pinned_promotion_gate = Some(config_digest);
+    /// committed history, and it is pinned once: pinning the same digest again changes nothing,
+    /// and a different one is [`AdapterError::GatePinConflict`] and leaves the pin as it was.
+    /// Until it is pinned every promotion is refused with
+    /// [`AdapterError::NoPinnedPromotionGate`].
+    ///
+    /// # Errors
+    /// [`AdapterError::GatePinConflict`].
+    pub fn pin_promotion_gate(&mut self, config_digest: [u8; 32]) -> Result<(), AdapterError> {
+        match self.pinned_promotion_gate {
+            Some(pinned) if pinned != config_digest => {
+                Err(AdapterError::GatePinConflict { pinned })
+            }
+            _ => {
+                self.pinned_promotion_gate = Some(config_digest);
+                Ok(())
+            }
+        }
     }
 
     /// Commit the promotion of an adapter generation.
@@ -510,6 +525,29 @@ impl PtrRuntime {
         let Some(day) = clock.today() else {
             return Err(AdapterError::ClockUnavailable.into());
         };
+        // Admissions of any project that stayed unrecorded for longer than the retention expire
+        // (they can no longer be recorded), swept before any bound is looked at so one
+        // project's expired admissions never keep another project out.
+        self.adapters
+            .open
+            .retain(|_, (_, open_day)| open_day.saturating_add(OPEN_CYCLE_RETENTION_DAYS) >= day);
+        // A project whose only trace is a high-water day left by admissions that have expired
+        // has recorded nothing and holds no open admission: it no longer counts against the
+        // project bound.
+        if !self.adapters.high_water.contains_key(&project.0)
+            && self.adapters.high_water.len() >= MAX_TRACKED_CYCLE_PROJECTS
+        {
+            let open_projects: std::collections::BTreeSet<String> = self
+                .adapters
+                .open
+                .values()
+                .map(|(open_project, _)| open_project.clone())
+                .collect();
+            let recorded = &self.adapters.cycle_days;
+            self.adapters
+                .high_water
+                .retain(|name, _| recorded.contains_key(name) || open_projects.contains(name));
+        }
         match self.adapters.high_water.get(&project.0) {
             Some(high_water) if day < *high_water => {
                 return Err(AdapterError::ClockRegressed {
@@ -529,12 +567,6 @@ impl PtrRuntime {
         budget
             .check_budget(day, self.adapters.used(&project.0, day))
             .map_err(AdapterError::BudgetExhausted)?;
-        // Admissions of any project that stayed unrecorded for longer than the retention expire
-        // (they can no longer be recorded), swept before the global bound is looked at so one
-        // project's expired admissions never keep another project out.
-        self.adapters
-            .open
-            .retain(|_, (_, open_day)| open_day.saturating_add(OPEN_CYCLE_RETENTION_DAYS) >= day);
         // The open table is bounded like the recorded one, and before it grows.
         if self.adapters.open.len() >= MAX_TRACKED_CYCLE_PROJECTS {
             return Err(AdapterError::TooManyCycleProjects {
@@ -555,21 +587,24 @@ impl PtrRuntime {
         })
     }
 
-    /// Record how an admitted cycle ended. A failed append leaves the cycle counted as
-    /// running.
+    /// Record how an admitted cycle ended. The ticket is taken by reference: a record that is
+    /// refused before the append (a fenced runtime, a malformed abort reason, an unreadable
+    /// clock) leaves the admission open and the ticket usable, the cycle counted as running,
+    /// and a retry with the same ticket can succeed. Only a committed record closes the
+    /// admission, so the ticket cannot be used twice.
     ///
     /// # Errors
     /// [`RuntimeError::Ledger`] for a malformed abort reason and the runtime's own errors when
     /// the append is refused.
     pub fn record_improvement_cycle(
         &mut self,
-        ticket: ImprovementCycleTicket,
+        ticket: &ImprovementCycleTicket,
         outcome: ImprovementCycleOutcome,
     ) -> Result<CommitIndex, RuntimeError> {
-        let ImprovementCycleTicket {
+        let &ImprovementCycleTicket {
             issuer,
             serial,
-            project,
+            ref project,
             day,
             policy_digest,
         } = ticket;
@@ -598,7 +633,7 @@ impl PtrRuntime {
             return Err(AdapterError::TicketNotAdmitted.into());
         }
         let index = self.commit_gated(LedgerEvent::ImprovementCycleRecorded {
-            project,
+            project: project.clone(),
             day,
             outcome,
             policy_digest,

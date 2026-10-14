@@ -59,7 +59,7 @@ computed by the caller is not accepted.
 
 **The gate is pinned.** A report vouches only as far as the gate that produced it is the gate the runtime trusts. The host
 pins the digest of one forgetting-gate configuration (`PtrRuntime::pin_promotion_gate`, runtime configuration and not
-committed history); `promote_adapter` compares `gate_config_digest` of the report with it and refuses with
+committed history); the pin is set once (the same digest again changes nothing, a different one is `GatePinConflict`). `promote_adapter` compares `gate_config_digest` of the report with it and refuses with
 `NoPinnedPromotionGate` when nothing is pinned and `GateConfigurationMismatch` for another configuration, before
 anything is committed.
 
@@ -162,13 +162,15 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 - **Generation at use (invariant 3).** A `BatchGate` is asked about the key of every batch immediately before the model
   runs; a revoked generation is refused at that use (`ModelError::revoked()`), not only when it was queued. A key that
   names an adapter is refused when the batcher was built without a gate (there is no admit-all default). A resume
-  is bound to the scope of the answer it continues: `infer_scoped` returns the answer with a `ResumeBinding` (request id,
-  `BatchKey` and answer digest, no public constructor) and `resume_with(request, answer, binding, key)` refuses a key, a request or an answer that differs
-  from the bound one (`ModelErrorKind::ScopeMismatch`; the binding carries a SHA-256 of the answer's events, so the
-  binding of another call under the same request id and a different scope does not continue it) before anything runs, then asks the gate about the bound key, so an
-  observation made under a revoked generation is refused whatever key the caller holds for a live generation or another
-  project. The batcher keeps no request-id-to-scope table, because an id is not a credential and a bounded table can be
-  filled, evicted or overwritten. The unscoped
+  continues a continuation the batcher issued: `infer_scoped` returns the answer with a `ResumeBinding`, which holds nothing but an
+  unguessable 128-bit id (two OS-keyed hashers over a counter; no public constructor, `Debug` prints nothing of it). The
+  scope (`BatchKey`, request id) and the digest of the observation that resumes it live in the batcher's table of at most
+  `MAX_OPEN_CONTINUATIONS` (4096, oldest evicted; an evicted continuation fails closed). Whoever produced the observation
+  records it once with `record_observation(binding, observation)`; `resume_with(request, binding, key)` looks the entry up
+  and refuses an unknown, evicted or used id, another request id, another key or an observation whose digest is not the
+  recorded one (`ModelErrorKind::ScopeMismatch`) before anything runs, then consumes the entry (single-use) and asks the gate
+  about the entry's key. Two calls under the same request id with identical outputs therefore stay apart, and an
+  observation recorded under a revoked generation cannot be carried by a key or binding of a live one. The unscoped
   `resume` of the trait is served only by a batcher built without a gate (which serves no adapter) and is refused when a
   gate is configured. A gate that panics has not admitted the key (refused as revoked, counted); a worker that ends for
   any reason closes the batcher and answers every queued caller with `closed`. Resume has the same panic containment as a batch. Deadlines and cancellations are checked again after the gate, immediately before the backend call.
@@ -179,7 +181,7 @@ simulator training happens in PTR until `predictive` has been true on a real gen
 once, by an allowlist on the typed `ModelErrorKind`: only overload and backend failure (`ModelError::allows_failover`).
 A refusal of the request itself (kind `Other`, the default of `ModelError::new`), a passed deadline, a cancellation, a
 revoked generation and a closed backend end the request; the message is never read. A `resume` tries one replica unless
-`ResumeFailover::Interchangeable` declares the replicas interchangeable for it. Counters per replica:
+`ResumeFailover::Interchangeable` declares the replicas interchangeable for it, and it goes back to the replica that answered the `infer` of its request id (the most recent 4096 ids are remembered; an id the router does not know takes the rotation's replica). Counters per replica:
 attempts, failures, failovers. `ReplicaRouter(AdaptiveBatcher(backend))` composes.
 
 **Not done, and why.** `ptr-server` serializes requests behind the runtime lock, so a batcher in front of it would only
