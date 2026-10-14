@@ -584,3 +584,48 @@ fn promotion_respects_the_semantic_class_capacity() {
     assert_eq!(store.records_of(MemoryClass::Semantic).count(), 1);
     assert_eq!(store.clock(), before, "nothing committed");
 }
+
+/// Blocks the compaction temp file with a directory so `rewrite` fails with an I/O error while
+/// the journal itself stays intact and writable.
+fn block_compaction(file: &TempJournal) -> std::path::PathBuf {
+    let mut tmp = file.0.as_os_str().to_owned();
+    tmp.push(".compact.tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::create_dir(&tmp).unwrap();
+    tmp
+}
+
+#[test]
+fn failed_automatic_compaction_does_not_fail_a_committed_mutation() {
+    let file = TempJournal::new("ms-compact-fail");
+    let options = MemoryStoreOptions {
+        compact_after_records: Some(2),
+        ..MemoryStoreOptions::default()
+    };
+    let mut store = DurableMemoryStore::open(&file.0, options).unwrap();
+    let blocker = block_compaction(&file);
+    store
+        .insert(new_record("a", MemoryClass::Semantic, vec![]))
+        .unwrap();
+    // The second append reaches the threshold; compaction fails but the insert is durable.
+    store
+        .insert(new_record("b", MemoryClass::Semantic, vec![]))
+        .expect("a durable mutation must not be reported as failed");
+    assert_eq!(store.compaction_failures(), 1);
+    assert!(store.last_compaction_error().is_some());
+    assert!(store.get(&rid("b")).is_some());
+    // Retrying the call would be wrong: it already took effect.
+    assert!(matches!(
+        store.insert(new_record("b", MemoryClass::Semantic, vec![])),
+        Err(MemoryStoreError::DuplicateRecord(_))
+    ));
+    // Compaction is retried on a later commit once the fault clears.
+    std::fs::remove_dir(&blocker).unwrap();
+    store
+        .insert(new_record("c", MemoryClass::Semantic, vec![]))
+        .unwrap();
+    assert!(store.last_compaction_error().is_none());
+    drop(store);
+    let reopened = DurableMemoryStore::open(&file.0, options).unwrap();
+    assert_eq!(reopened.len(), 3);
+}

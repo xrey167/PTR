@@ -183,6 +183,8 @@ pub struct DurableMemoryStore {
     journal: MemoryJournal,
     options: MemoryStoreOptions,
     recovered_truncated_bytes: u64,
+    compaction_failures: u64,
+    last_compaction_error: Option<MemoryStoreError>,
 }
 
 impl DurableMemoryStore {
@@ -213,7 +215,20 @@ impl DurableMemoryStore {
             journal,
             options,
             recovered_truncated_bytes: recovery.truncated_bytes,
+            compaction_failures: 0,
+            last_compaction_error: None,
         })
+    }
+
+    /// Number of automatic compactions that failed after their triggering mutation was already
+    /// durable. Such a failure never fails the mutation; compaction is retried on later commits.
+    pub fn compaction_failures(&self) -> u64 {
+        self.compaction_failures
+    }
+
+    /// The most recent automatic-compaction failure, cleared by the next successful compaction.
+    pub fn last_compaction_error(&self) -> Option<&MemoryStoreError> {
+        self.last_compaction_error.as_ref()
     }
 
     /// Bytes of a torn tail removed when this store was opened.
@@ -632,6 +647,7 @@ impl DurableMemoryStore {
             ));
         }
         self.journal.rewrite(&payloads)?;
+        self.last_compaction_error = None;
         Ok(())
     }
 
@@ -654,7 +670,12 @@ impl DurableMemoryStore {
         self.clock = clock;
         if let Some(limit) = self.options.compact_after_records {
             if self.journal.appended_since_rewrite() >= limit {
-                self.compact()?;
+                // The mutation is already durable and applied: a failed rewrite must not be
+                // reported as a failed mutation. Record it; the next commit retries.
+                if let Err(error) = self.compact() {
+                    self.compaction_failures += 1;
+                    self.last_compaction_error = Some(error);
+                }
             }
         }
         Ok(())

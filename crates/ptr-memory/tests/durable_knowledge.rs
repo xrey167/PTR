@@ -319,3 +319,38 @@ fn rejected_journal_write_leaves_no_observable_state_change() {
     let reopened = DurableKnowledgeStore::open(&file.0, options).unwrap();
     assert_eq!(reopened.state_digest(), digest);
 }
+
+#[test]
+fn failed_automatic_compaction_does_not_fail_a_journaled_operation() {
+    let file = TempJournal::new("dk-compact-fail");
+    let options = DurableOptions {
+        compact_after_records: Some(2),
+        ..DurableOptions::default()
+    };
+    let mut durable = DurableKnowledgeStore::open(&file.0, options).unwrap();
+    let mut tmp = file.0.as_os_str().to_owned();
+    tmp.push(".compact.tmp");
+    let blocker = std::path::PathBuf::from(tmp);
+    fs::create_dir(&blocker).unwrap();
+    assert_eq!(durable.append_raw(raw_event("e1", "one")), Ok(true));
+    // The second append reaches the threshold; compaction fails but the event is journaled.
+    assert_eq!(
+        durable.append_raw(raw_event("e2", "two")),
+        Ok(true),
+        "a journaled operation must not be reported as failed"
+    );
+    assert_eq!(durable.compaction_failures(), 1);
+    assert!(durable.last_compaction_error().is_some());
+    let digest = durable.state_digest();
+    // The wrapper is not poisoned and the operation is not repeated as new.
+    assert_eq!(durable.append_raw(raw_event("e2", "two")), Ok(false));
+    // Compaction is retried on a later commit once the fault clears.
+    fs::remove_dir(&blocker).unwrap();
+    assert_eq!(durable.append_raw(raw_event("e3", "three")), Ok(true));
+    assert!(durable.last_compaction_error().is_none());
+    let digest_after = durable.state_digest();
+    assert_ne!(digest, digest_after);
+    drop(durable);
+    let reopened = DurableKnowledgeStore::open(&file.0, options).unwrap();
+    assert_eq!(reopened.state_digest(), digest_after);
+}
