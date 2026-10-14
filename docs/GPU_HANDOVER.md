@@ -2,9 +2,13 @@
 
 Written 2026-10-08 for the PTR owner's Ubuntu 24.04 desktop, originally assuming one NVIDIA RTX 4090
 (24 GiB). The owner's machines are now (inventory of 2026-10-13) two PCs with one card each, an RTX
-3090 (`hardware/rtx3090.toml`) and an RTX 4090 (`hardware/rtx4090.toml`); run every step on each PC
-with that PC's profile, and run the experiments whose manifests name `hardware/rtx3090.toml` on the
-3090 PC. Earlier notes below that speak of one machine with two RTX 3090 describe the superseded
+3090 (`hardware/rtx3090.toml`) and an RTX 4090 (`hardware/rtx4090.toml`). Run the setup and smoke
+steps on each PC with that PC's profile. Every experiment runs on **exactly one** host, the one whose
+profile its manifest declares: `hardware/rtx3090.toml` on the 3090 PC, `hardware/rtx4090.toml` on the
+4090 PC; an experiment whose declared profile matches neither PC (for example `dual-rtx3090`) is not
+run until matching hardware exists or a successor declares a single-card profile.
+`run_experiment.py` records the declared profile but does not enforce it, so this assignment is
+checked by hand before every confirmatory seed, and a seed is never rerun on the other PC. Earlier notes below that speak of one machine with two RTX 3090 describe the superseded
 inventory.
 It is a plan, not a result. It was assembled from repository files on a machine without a
 GPU, nothing in it has run on a GPU, and no experiment mentioned here has evidence yet.
@@ -697,7 +701,7 @@ placeholder.
 | OD-8 | R004 | placeholders `public_regression_gate_permille`, `backward_transfer_min_permille`; also backbone, domain sequence, public suite, compute budget | placeholder + gap | pin values and name an OLMoE or other backbone | name the backbone first (it fixes what a gate value means), then pin both |
 | OD-9 | R003, E001, E002, E003, E004, E005 | pinned open backbone (ADR-0021, "separate later decision"); ADR-0015 coding backbone; `model.toml` fields; strong_rag revisions (`dense.revision`, `reranker.revision`, `answer.generator`, `answer.revision`) | gap | choose backbone and revisions / keep deferring | keep deferring until steps 4 to 13 have run |
 | OD-10 | E005 | `token_budget`, `full_context_baseline`, `agent_memory_baselines`, `baseline_strong_rag_sha256` | placeholder | pin each | after OD-9 |
-| OD-11 | R003 | declared `dual-rtx3090` profile (2 x 24 GiB) matches the two cards of this machine; the blocker is the missing backbone and multi-GPU trainer (original wording: vs a single 4090) | gap | change the profile in a successor / defer | defer with OD-9 |
+| OD-11 | R003 | declared `dual-rtx3090` profile (2 x 24 GiB) matches **no** owner machine since the inventory of 2026-10-13 (two PCs with one card each); the earlier blocker, the missing backbone and multi-GPU trainer, also remains (original wording: vs a single 4090) | gap | external matching hardware / a successor with a single-card profile / defer | defer with OD-9 |
 | OD-12 | M016 | start only after R006 is completed (R006 itself is CPU and needs its own preregistration and 5 seeds) | gap | complete R006 first / change M016's design | complete R006 first |
 
 Placeholders found in the GPU-phase manifests: only R004 (two keys) and E005 (four keys) hold

@@ -105,7 +105,10 @@ including the generation of every semantic, memory and derived input that operat
 **ordered Raw ancestry** it read (`(Raw, content_digest)` pairs, since Raw segments carry no
 generation; doc 36 section D), the **destination placement** (the consumer stage's placement and
 its epoch at the time the operation started) together with the **consumer worker's session id**
-(a random value the supervisor draws at every spawn of that worker), and
+(a random value the supervisor draws at every spawn of that worker), the **producer worker's
+session id** (drawn the same way; a crashed and respawned producer gets a new one even when its
+placement epoch is unchanged, and its exit cancels every operation it produced for, so none of
+its unconsumed handles of any carrier stays admittable), and
 the **expected model-side chain** (stage, base model, adapters and experts with identity,
 generation, digest and fence epoch), the **payload types** the operation accepts, and the
 **authority-derived project** (`ProjectId`) the operation runs in. Pod and stage ids are unique
@@ -115,7 +118,8 @@ consumer placement, inputs or worker session belong to another project is refuse
 consumption both ask the authority whether the operation is known, every input is still live at
 the current committed anchor, every Raw ancestor is still present (not erased) with its recorded
 digest, the consumer stage still holds the recorded destination placement and epoch and is
-served by the worker session the record names, all within the recorded project (so a handle delivered to a replacement worker
+served by the worker session the record names, the producing worker still runs under the
+recorded producer session, all within the recorded project (so a handle delivered to a replacement worker
 after the consumer's device failed, its stage was re-placed or its worker crashed and was
 respawned for the same placement is refused, and each of those events cancels every operation
 addressed to the old placement or session), the handle's chain **equals** the expected chain exactly (a
@@ -494,7 +498,13 @@ bounded, authenticated **operation setup** over `ptr-cluster`, signed by the sou
 bound to the project, the destination placement and epoch and the consumer worker's session,
 and subject to the same size caps. The destination acknowledges only after checking the record
 against its own live state, and drops it on any fence of those bindings; a handle whose
-operation has no acknowledged record there is refused as an unknown operation. Cross-host **tier transfers** (a KV snapshot or an expert's weights moving from
+operation has no acknowledged record there is refused as an unknown operation. The copied record
+can lag a revocation at the source, so every admission and every consumption of a `Remote` handle
+also synchronises with the source authority: the destination sends a bounded revalidation
+request naming the operation, and the source answers from its own committed state (inputs, Raw
+ancestry, chain and producer session) at an anchor at least as new as the request; the handle is
+refused unless that answer arrives before the deadline and confirms every binding. A committed
+revocation at the source therefore always wins over the destination's copy. Cross-host **tier transfers** (a KV snapshot or an expert's weights moving from
 one host's RAM to another's) need their own grant. `TierTransferAuthorization`
 (`crates/ptr-runtime/src/tier.rs:390`) is only the tuple (generation, placement epoch, fencing
 token) that the in-process controller compares; it names no object, source, destination,
