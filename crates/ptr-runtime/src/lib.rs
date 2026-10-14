@@ -599,11 +599,6 @@ pub enum RuntimeError {
     LegacySemanticRecord {
         index: CommitIndex,
     },
-    /// The ledger holds an admission of this request and Pod recorded under the version-1
-    /// output digest (before issue #141), its follow-up (hypothesis or promotion) is missing,
-    /// and the retry's output has that same version-1 digest. Version 1 is not injective, so
-    /// the retry cannot be proven to be the admitted output and the follow-up is not completed
-    /// from it: an operator has to recover the admission. Nothing was appended.
     /// Committing this record would take the execution section of a compacted snapshot past
     /// its bounds ([`compacted::MAX_SECTION_BYTES`] bytes, or more than the section's item bound
     /// in one of its lists). The section holds the unsettled attempts (each reserving room for
@@ -627,8 +622,15 @@ pub enum RuntimeError {
         /// The longest of its lists, in items.
         items: usize,
     },
+    /// The ledger holds an admission of this request and Pod recorded under the version-1
+    /// output digest (before issue #141), its follow-up (hypothesis or promotion) is missing,
+    /// and the retry's output has that same version-1 digest. Version 1 is not injective, so
+    /// the retry cannot be proven to be the admitted output and the follow-up is not completed
+    /// from it: an operator has to recover the admission. Nothing was appended.
     LegacyAdmissionIncomplete {
+        /// The request id of the admission.
         request_id: RequestId,
+        /// The Pod the admission was recorded for.
         pod_id: ptr_types::PodId,
     },
     ModelResumeLimit {
@@ -2260,6 +2262,56 @@ impl PtrRuntime {
             None
         };
 
+        // An admission recorded before version 2 under this output's version-1 digest (issue
+        // #141). Version 1 is not injective, so only its recorded result is returned, when its
+        // follow-up is in the ledger, and a missing follow-up is refused, never completed from
+        // a version-1 match. Both are decided before anything is appended (the taint record
+        // below included): the answer is pure and the refusal leaves the ledger as it was.
+        if legacy_digest != output_digest {
+            for (position, committed) in self.committed_events().iter().enumerate() {
+                let LedgerEvent::PodOutputAdmitted {
+                    request_id,
+                    session_id,
+                    scope_id,
+                    pod_id,
+                    output_digest: existing_digest,
+                    output_kind,
+                    revision,
+                    ..
+                } = &committed.event
+                else {
+                    continue;
+                };
+                if request_id != &request.request_id
+                    || pod_id != &request.pod_id
+                    || existing_digest != &legacy_digest
+                {
+                    continue;
+                }
+                if scope_id != &request.scope_id || session_id != &request.session_id {
+                    return Err(RuntimeError::PodOutputAdmission(
+                        "request id was admitted for a different scope or session".into(),
+                    ));
+                }
+                if self.admission_followup_committed(
+                    *output_kind,
+                    &request,
+                    &legacy_digest,
+                    position,
+                ) {
+                    return self.admission_result_from_code(
+                        *output_kind,
+                        *revision,
+                        &request,
+                        legacy_digest,
+                    );
+                }
+                return Err(RuntimeError::LegacyAdmissionIncomplete {
+                    request_id: request.request_id.clone(),
+                    pod_id: request.pod_id.clone(),
+                });
+            }
+        }
         // Taint first: the registry record precedes the admission, the candidate and the
         // hypothesis record, so a crash in between leaves a stray taint record (which only
         // refuses more), never an untainted candidate. It also precedes the retry lookup below,
@@ -2292,34 +2344,6 @@ impl PtrRuntime {
             } = &committed.event
             {
                 if request_id == &request.request_id && pod_id == &request.pod_id {
-                    // An admission recorded before version 2 under this output's version-1
-                    // digest (issue #141). Version 1 is not injective, so only its recorded
-                    // result is returned, when its follow-up is in the ledger; a missing
-                    // follow-up is never completed from a version-1 match.
-                    if existing_digest == &legacy_digest && legacy_digest != output_digest {
-                        if scope_id != &request.scope_id || session_id != &request.session_id {
-                            return Err(RuntimeError::PodOutputAdmission(
-                                "request id was admitted for a different scope or session".into(),
-                            ));
-                        }
-                        if self.admission_followup_committed(
-                            *output_kind,
-                            &request,
-                            &legacy_digest,
-                            position,
-                        ) {
-                            return self.admission_result_from_code(
-                                *output_kind,
-                                *revision,
-                                &request,
-                                legacy_digest,
-                            );
-                        }
-                        return Err(RuntimeError::LegacyAdmissionIncomplete {
-                            request_id: request.request_id.clone(),
-                            pod_id: request.pod_id.clone(),
-                        });
-                    }
                     if existing_digest != &output_digest {
                         return Err(RuntimeError::PodOutputAdmission(
                             "request id was reused with a different output".into(),

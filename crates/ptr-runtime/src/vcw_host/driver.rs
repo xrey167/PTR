@@ -97,6 +97,13 @@ pub enum Refusal {
     PendingInstallsFull {
         pending: usize,
     },
+    /// The result's Pod id is already registered in the PodRegistry with another manifest and
+    /// the operation is not a reactivation of it: installing it after the commit would be
+    /// refused (`register_new`), so it is refused before admission instead and nothing is
+    /// committed.
+    PodIdTaken {
+        pod: PodId,
+    },
     /// The runtime's admission refused the proposal.
     Admission {
         /// The refusal was the gate report not passing.
@@ -631,6 +638,17 @@ impl StructureDriver {
         let withdraw = |vcw: &mut VcwLoop<S>| {
             vcw.withdraw_structure_request(proposal);
         };
+        // A result whose id another Pod holds could be committed but never installed: refuse it
+        // before anything reaches the ledger. `install` checks again after the commit, for a
+        // registration that races this check.
+        if let Some(specialist) = &specialist {
+            if install_collides(pods, proposal.kind(), specialist) {
+                withdraw(vcw);
+                return StructureResult::Refused(Refusal::PodIdTaken {
+                    pod: specialist.pod.clone(),
+                });
+            }
+        }
         // 2. The held-out measurement, before and after the change.
         let roster = RosterView::of(vcw);
         let removed_pods: Vec<PodId> = match proposal.request().op() {
@@ -820,6 +838,13 @@ fn finish<S: AdmissibleScorer>(
 /// ([`PodRegistry::replace_if_current`]); a Birth, Merge or Split result is a fresh id and goes
 /// through [`PodRegistry::register_new`], which refuses an id that is already registered
 /// (issue #141: replacing it would swap a live Pod without a lifecycle transition).
+fn install_collides(pods: &PodRegistry, kind: OpKind, specialist: &TrainedSpecialist) -> bool {
+    kind != OpKind::Reactivate
+        && pods
+            .get(&specialist.manifest.project, &specialist.pod)
+            .is_some_and(|existing| existing.manifest().digest() != specialist.manifest.digest())
+}
+
 fn install(
     pods: &mut PodRegistry,
     kind: OpKind,

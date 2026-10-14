@@ -438,3 +438,35 @@ fn install_replaces_an_existing_entry_only_for_a_reactivation() {
     install(&mut pods, OpKind::Reactivate, &newcomer).unwrap();
     assert_eq!(registered(&pods), newcomer.manifest.digest());
 }
+
+/// Review of #141 (round 5): a registration that races the preflight (the id is taken after
+/// the Birth is committed) is still caught by the install: the registered Pod is not replaced
+/// and the committed expert is not reported installed.
+#[test]
+fn an_id_taken_after_the_commit_is_not_replaced_by_the_install() {
+    let mut f = Fixture::new(&[]);
+    let trained = f.train("raced", &["x"]);
+    f.slots += 1;
+    let result = f.spec(&trained, 100 + f.slots, 1);
+    let (proposal, commit) = f.admit(StructuralOp::Birth { result });
+    let intruder = SimulatedTrainer::new(project(), DefectDoc::clean_type(), 7, 0.5)
+        .train(&TrainingRequest {
+            kind: OpKind::Birth,
+            pod: pod("raced"),
+            codes: [code("x")].into_iter().collect(),
+            sources: Vec::new(),
+        })
+        .unwrap();
+    f.pods.register_new(intruder.executable()).unwrap();
+    f.pend(commit, proposal, trained, Vec::new(), &["x"]);
+    let retry = f.retry();
+    assert!(retry.installed.is_empty(), "{retry:?}");
+    assert_eq!(
+        f.pods
+            .get(&project(), &pod("raced"))
+            .unwrap()
+            .manifest()
+            .digest(),
+        intruder.manifest.digest()
+    );
+}

@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-14  
-**Code footprint:** 57 Rust source files · 49111 nonblank source lines · 91 integration-test files · 1232 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 57 Rust source files · 49190 nonblank source lines · 91 integration-test files · 1234 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -163,6 +163,7 @@
 - admit_pod_output and admissions recorded before PodOutput digest version 2: version 1 is not injective, so a retry whose output has the version-1 digest an earlier admission of the same request and Pod was recorded under gets that admission's recorded result only when its follow-up (hypothesis or promotion) is already in the ledger (nothing appended); when the follow-up is missing the retry is refused with RuntimeError::LegacyAdmissionIncomplete and nothing is appended, for the identical output and for a different output with the same version-1 digest, so an operator recovers it; another output still conflicts and a fresh request uses version 2 (tests/output_admission.rs)
 - PTRCS010 outer compacted-snapshot magic (review of issue #141): written only when the execution section is PTREX003 (the history holds a scope), so a build from before the scope block stops at the outer magic; a scope-free snapshot keeps its PTRCS006 to PTRCS009 magic byte for byte. Under PTRCS010 the lifecycle layout is read from the lifecycle section's own magic (PTRLC004 to PTRLC007); PTRCS010 requires PTREX003 and PTREX003 is refused under any other outer magic, both by version (tests/compacted_snapshot.rs, ptr-cluster tests/wire.rs carries one over the cluster path)
 - Review of issue #141, round 4: a repairer that edits again in the same round moves to the end of a repaired candidate's authors (A, B, A gives ..., B, A), so VerifiedAnswer::author is the Pod that made the last edit and each Pod is listed once (tests/vcw_loop.rs a_repairer_that_edits_again_is_the_last_author); a history replayed, opened or restored from a log written before the execution-section budget that holds more than a compacted snapshot carries is reported by PtrRuntime::execution_section_overflow (ExecutionSectionOverflow) and refused by export_compacted_snapshot with RuntimeError::CompactionBlocked, never a generic section limit, while the runtime itself opens and new growth is refused (tests/compacted_snapshot.rs); an attempt under a key that is already settled reserves only the difference to the entry it replaces and adds no settled item, so a retry is admitted at the item bound (unit test); restoring the scope block checks ancestry in one linear pass (a 16,384-deep chain restores, a cycle and a missing parent are refused)
+- Review of issue #141, round 5: StructureDriver refuses a Birth, Merge or Split whose result id another Pod already holds in the PodRegistry before admission (Refusal::PodIdTaken, nothing committed, no install left pending), and install still refuses a registration that races it after the commit (tests/vcw_structure.rs, src/vcw_host/driver_tests.rs); admit_pod_output decides a retry of an admission recorded under the version-1 digest (answer from the recorded result, or LegacyAdmissionIncomplete) before anything is appended, the KV-taint record included (tests/output_admission.rs)
 
 ### Missing for the target architecture
 

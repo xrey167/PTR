@@ -854,7 +854,7 @@ fn an_incomplete_legacy_admission_is_refused_for_the_identical_and_a_colliding_o
     // Crash between the admission record and its promotion: only the record is in the ledger.
     let mut runtime = runtime_with(legacy_records(&admitted, false));
     let events = runtime.committed_events().len();
-    for retry in [admitted.clone(), colliding] {
+    for retry in [admitted.clone(), colliding.clone()] {
         let refused = runtime.admit_pod_output(retry, &Pass);
         assert!(
             matches!(
@@ -865,6 +865,27 @@ fn an_incomplete_legacy_admission_is_refused_for_the_identical_and_a_colliding_o
             "{refused:?}"
         );
         assert_eq!(runtime.committed_events().len(), events, "nothing appended");
+    }
+    // Review of #141 (round 5): a retry that carries an approximate KV taint is refused just
+    // the same, before its taint is recorded: nothing at all is appended.
+    for retry in [admitted.clone(), colliding] {
+        let mut tainted = retry;
+        tainted.kv_taint = ptr_model_api::KvReuseTaint::Approximate {
+            report_digest: [5; 32],
+        };
+        let refused = runtime.admit_pod_output(tainted, &Pass);
+        assert!(
+            matches!(
+                &refused,
+                Err(ptr_runtime::RuntimeError::LegacyAdmissionIncomplete { .. })
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(runtime.committed_events().len(), events, "nothing appended");
+        assert!(!runtime.committed_events().iter().any(|committed| matches!(
+            committed.event,
+            ptr_ledger::LedgerEvent::KvTaintCommitted { .. }
+        )));
     }
     // A different output with another digest is still a reused request id.
     let mut other = request(PodOutputKind::Observation);
