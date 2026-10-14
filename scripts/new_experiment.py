@@ -22,6 +22,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SEEDS = (17, 29, 43, 71, 101)
 DEFAULT_HARDWARE = "hardware/default.toml"
 EXPERIMENT_ID = re.compile(r"^[A-Z][0-9]{3}$")
+# A successor of an experiment whose prepared or frozen record must not be patched takes the
+# predecessor's id with a version suffix (`M003-v4`, `L001-v2`): `<area>/<ID>-v<N>-<name>`.
+SUCCESSOR_SUFFIX = re.compile(r"^(v[1-9][0-9]*)-(.*)$")
 SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 # An area is one of the category directories under experiments/, named in plain
 # lowercase. Checking the name, and not only that the directory exists, is what
@@ -128,7 +131,10 @@ def create(
     if not AREA.match(area) or area == "tests" or not (experiments / area).is_dir():
         raise ValueError(f"unknown experiment area {area!r}")
     exp_id, _, slug = name.partition("-")
-    if not EXPERIMENT_ID.match(exp_id):
+    successor = SUCCESSOR_SUFFIX.match(slug)
+    if successor:
+        exp_id, slug = f"{exp_id}-{successor.group(1)}", successor.group(2)
+    if not EXPERIMENT_ID.match(exp_id.split("-", 1)[0]):
         raise ValueError(f"experiment id must be a capital letter and three digits, got {exp_id!r}")
     if not SLUG.match(slug):
         raise ValueError(f"experiment name must be lowercase words joined by '-', got {slug!r}")
@@ -160,6 +166,17 @@ def create(
     registered = tomllib.loads(registry_text).get("experiment", [])
     if any(entry["id"] == exp_id for entry in registered):
         raise ValueError(f"experiment id {exp_id} is already registered")
+    if successor:
+        # A successor names an experiment it succeeds: the base id must be registered, in the
+        # same area, or the version suffix would mint an id that succeeds nothing.
+        base = exp_id.split("-", 1)[0]
+        if not any(
+            entry["id"] == base and str(entry.get("path", "")).split("/", 1)[0] == area
+            for entry in registered
+        ):
+            raise ValueError(
+                f"successor {exp_id} needs its base experiment {base} registered in area {area!r}"
+            )
     target = experiments / area / name
     if target.exists():
         raise ValueError(f"experiments/{area}/{name} already exists")
@@ -252,7 +269,11 @@ def write_experiment(
 def main(argv: list[str] | None = None) -> int:
     """Parse scaffold options, create and register an experiment, and report validation errors."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("path", help="<area>/<ID>-<name>, e.g. model/M008-slot-dropout")
+    parser.add_argument(
+        "path",
+        help="<area>/<ID>-<name>, e.g. model/M008-slot-dropout, or <area>/<ID>-v<N>-<name> for a "
+        "successor, e.g. feedback/F007-v2-vcw-loop",
+    )
     parser.add_argument("--hypothesis", required=True)
     parser.add_argument("--metrics", required=True)
     parser.add_argument("--baseline", required=True)

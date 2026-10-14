@@ -153,16 +153,22 @@ impl TextPayload {
     }
 }
 
+const TEXT_PAYLOAD_DIGEST_DOMAIN: &[u8] = b"ptr.runtime.vcw.text_payload.v2";
+
 impl VcwPayload for TextPayload {
     fn payload_type(&self) -> TypeId {
         self.type_id.clone()
     }
 
+    /// v2 (issue #141): a domain tag, then the type id and the text, each length-prefixed. v1
+    /// joined them with a 0 byte, so a type id holding a 0 byte aliased another split.
     fn payload_digest(&self) -> Digest {
         let mut hasher = Sha256::new();
-        hasher.update(self.type_id.0.as_bytes());
-        hasher.update([0]);
-        hasher.update(self.text.as_bytes());
+        hasher.update(TEXT_PAYLOAD_DIGEST_DOMAIN);
+        for field in [self.type_id.0.as_bytes(), self.text.as_bytes()] {
+            hasher.update((field.len() as u64).to_le_bytes());
+            hasher.update(field);
+        }
         hasher.finalize().into()
     }
 }
@@ -287,5 +293,13 @@ mod tests {
         assert!(message.contains("wrong_answer"));
         assert!(message.contains("A previous answer was: 5"));
         assert!(message.contains("What is 2 + 2?"));
+    }
+
+    /// Issue #141: v1 joined the type id and the text with a 0 byte, so the boundary could move.
+    #[test]
+    fn a_zero_byte_in_the_type_or_text_does_not_alias() {
+        let left = TextPayload::new(TypeId::from("a\0b"), "c");
+        let right = TextPayload::new(TypeId::from("a"), "b\0c");
+        assert_ne!(left.payload_digest(), right.payload_digest());
     }
 }

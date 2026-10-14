@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-10-13  
-**Code footprint:** 40 Rust source files · 19058 nonblank source lines · 27 integration-test files · 350 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-14  
+**Code footprint:** 40 Rust source files · 19084 nonblank source lines · 27 integration-test files · 352 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -73,6 +73,7 @@
 - PodSemanticManifest carries predicate and aliases, identity_descriptor() and cluster_key(); validate() derives the PodIdentityDescriptor and requires pod_identity to equal descriptor.identity() (ManifestError::IdentityMismatch { expected, actual }, InvalidIdentityDescriptor). A retrained pod (other artifact or generation) changes digest() and keeps identity and cluster key; an alias or role change needs a new identity. digest() covers predicate and aliases
 - QwenCpuStats counts decode_steps (single-token forward passes after prefill) directly, and decode_tokens_per_second divides them by decode time instead of generated_tokens minus requests, which an immediate end-of-turn request understated (unit test in src/qwen_cpu/generator.rs, feature qwen-cpu)
 - PodKind::name() gives the pinned string of each kind that PodSemanticManifest::identity_descriptor hashes into a pod identity (not the Debug rendering), so renaming a variant cannot silently rename identities
+- PodOutput::digest is versioned (issue #141): version 2 starts with the domain tag ptr.pods.output.v2 and writes the dependency count before the sorted dependencies and the provenance count before the sorted provenance entries, so a 32-byte dependency of the form u64le(23) || 23 bytes || 0x00 no longer reads as a provenance entry and two different outputs no longer share a digest; PodOutput::legacy_v1_digest keeps the uncounted version-1 encoding only for checking records committed before version 2 (tests/output.rs shows the two aliasing outputs equal under v1 and distinct under v2)
 
 ### Missing for the target architecture
 

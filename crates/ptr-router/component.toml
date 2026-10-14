@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-router"
 maturity = "scaffold"
-last_reviewed = "2026-10-13"
+last_reviewed = "2026-10-14"
 
 implemented = [
   "RouteScore and RouteDecision with deterministic best-score selection",
@@ -32,6 +32,8 @@ implemented = [
   "PodRepresentation (pod, identity, cluster key, EncoderRef, generation, z, bias, ScoreWeights, GateReport, activated, digest) validated on construction; from_artifact reads the Python exporter's manifest and weights file (schema, weights SHA-256, digest over every field, an f32-exact scoring weights check) and to_artifact/to_payload write the same layout. RepresentationStore loads only activated representations whose measured gate values meet its own ActivationPolicy (alias score >= 800 permille, negatives rejected >= 900 permille), of one encoder and dimension and a newer generation than the loaded one; otherwise RouteError::InactiveRepresentation or InvalidRepresentation { error: RepresentationError }",
   "Bounds and a gate that only tightens: RepresentationStore holds at most MAX_REPRESENTATIONS (4096) pods (RepresentationError::TooManyRepresentations), a manifest is refused above MAX_MANIFEST_BYTES (64 KiB) before it is parsed (ManifestTooLarge), and RepresentationStore::with_policy returns Result and refuses an ActivationPolicy below the built-in 800/900 permille minima (PolicyBelowMinimum): the gate can be made stricter, never weaker",
   "Project-scoped addresses and partial coverage: RepresentationStore is keyed by (ProjectId, PodId) and the project is part of the manifest, the weights digest input and the Python export, so two projects with one pod id never collide and routing in a project scores only that project's addresses (LearnedPodRouter::score and the store getters take the project). RouteError::Abstained carries an AbstentionReason: LowScore, SmallMargin, or PartialCoverage when some registry candidate has no representation, so the router never ranks part of the field",
+  "AttentionSchema generation table (issue #141): bounded at 1024 Pods with least-recently-seen eviction instead of refusing every Pod past the cap; an evicted Pod's statistics are dropped with it (its generation change could no longer be noticed), a tracked Pod's last-seen epoch is refreshed on every observe and settle, and the schema digest (layout ptr-router/attention-schema/v3) covers the last-seen epochs and the eviction count (unit test in src/attention_schema.rs; the pinned digest of tests/attention_schema.rs moved with the layout, the pinned picks did not)",
+  "AttentionSchema after an eviction (review of issue #141): from the first eviction of the generation table on, no statistic exists for a Pod the table does not track: the first eviction (and every later one) purges the moving-average and per-Pod entries of untracked Pods, including support members that were never chosen, observe neither creates nor updates (it removes) an untracked entry, and a Pod that becomes tracked again starts empty; under the cap nothing changes (the pinned digest and picks of tests/attention_schema.rs are unchanged; unit tests a_support_only_pod_loses_its_statistics_at_the_first_eviction and the_evicted_pod_gathers_no_statistics_and_returns_empty check ema and per-Pod keys within the tracked Pods after any eviction)",
 ]
 
 missing = [

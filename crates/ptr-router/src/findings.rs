@@ -504,6 +504,40 @@ pub struct FindingRouteRecord {
 }
 
 impl FindingRouteRecord {
+    /// A record with the given support and choice, for unit tests of its consumers. The
+    /// propensity is the chosen Pod's width; draw, nonce and key are fixed.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        request: &str,
+        class: RouteClass,
+        support: Vec<(PodId, u64)>,
+        pod: PodId,
+        pod_generation: Generation,
+    ) -> Self {
+        let width = support
+            .iter()
+            .find(|(p, _)| *p == pod)
+            .map_or(1, |(_, w)| *w);
+        let mut request_digest = [0u8; 32];
+        for (slot, byte) in request_digest.iter_mut().zip(request.bytes()) {
+            *slot = byte;
+        }
+        Self {
+            request_id: RequestId::from(request),
+            request_digest,
+            class,
+            support,
+            pod,
+            pod_generation,
+            propensity: Propensity::new(width as f64 / RouteDistribution::RESOLUTION as f64)
+                .expect("a width within the resolution"),
+            draw: 0,
+            nonce: DecisionNonce::from_bytes([1; 16]),
+            key_id: [2; 8],
+            generation: RegistryGeneration(1),
+        }
+    }
+
     pub fn request_id(&self) -> &RequestId {
         &self.request_id
     }
