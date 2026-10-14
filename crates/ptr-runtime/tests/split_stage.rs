@@ -331,3 +331,50 @@ fn an_approximate_upstream_is_refused_and_a_full_cache_recovers_from_a_lost_revo
     assert_eq!(cache.evict_dead(&live(&world)), 1);
     assert!(cache.is_empty());
 }
+
+#[test]
+fn a_frame_produced_on_a_device_that_then_failed_is_refused() {
+    let mut world = world();
+    let old = frame(&world);
+    let admitted = admit_frame(&old, KvReuseMode::Exact, &live(&world)).unwrap();
+    let mut cache: SplitStageCache<u8> = SplitStageCache::new(2);
+    let key = cache
+        .store(&[&admitted], &own_chain(), 1, &live(&world))
+        .unwrap();
+    world
+        .placement
+        .heartbeat(
+            &NodeId::from("n1"),
+            Timestamp(2),
+            vec![DeviceRecord {
+                device_id: DeviceId::from("cpu"),
+                vram_bytes: 10,
+                used_vram_bytes: 0,
+                health: DeviceHealth::Failed,
+            }],
+        )
+        .unwrap();
+    assert!(matches!(
+        admit_frame(&old, KvReuseMode::Exact, &live(&world)),
+        Err(ChainFault::StalePlacement { .. })
+    ));
+    assert!(matches!(
+        cache.lookup(&key, &live(&world)),
+        Err(UseFault::Stale(ChainFault::StalePlacement { .. }))
+    ));
+    // The entry was evicted at that use, so it is gone afterwards.
+    assert!(cache.lookup(&key, &live(&world)).is_err());
+}
+
+#[test]
+fn a_frame_produced_before_its_node_was_replaced_is_refused() {
+    let mut world = world();
+    let old = frame(&world);
+    admit_frame(&old, KvReuseMode::Exact, &live(&world)).unwrap();
+    // A new node process registers under the same id with the same healthy device.
+    world.placement.register_node(node("n1")).unwrap();
+    assert!(matches!(
+        admit_frame(&old, KvReuseMode::Exact, &live(&world)),
+        Err(ChainFault::StalePlacement { .. })
+    ));
+}

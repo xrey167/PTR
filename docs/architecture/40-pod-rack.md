@@ -104,9 +104,10 @@ generation and lineage (doc 37 section 1). The rack is a property of a `Placemen
 
 In the rack, a tray is pulled and replaced as a whole; nothing inside it survives the pull.
 PTR's equivalents of "pull" are a failed heartbeat, a revoked device and a topology change,
-and today each of them revokes **per Pod**: `heartbeat` and `register_node` call
-`revoke_unavailable_leases`, `mark_node_failed` revokes every lease on the node
-(`crates/ptr-runtime/src/placement.rs:127-169`). A group of Pods that only make sense together
+and today each of them revokes **per Pod** or per node: `heartbeat` revokes the placements
+and leases on a device that vanished or failed, `register_node` for a node already registered
+(a replacement) and `mark_node_failed` revoke every placement and lease on the node
+(`crates/ptr-runtime/src/placement.rs`, `register_node`, `heartbeat`, `mark_node_failed`). A group of Pods that only make sense together
 (an attention stage with the expert Pods it routes to, or two pipeline stages that share a
 `placement_epoch`) can therefore end up half placed and half revoked, and the half that
 survives is routable with a stale partner.
@@ -161,7 +162,7 @@ release; an output computed by a member of a fenced tray is refused there.
 
 **Invariant kept.** Fencing is strictly stronger, never weaker: a tray token adds a reason to
 refuse, it never admits something the per-Pod token would refuse. `register_node`, `heartbeat`
-and `mark_node_failed` keep their per-Pod behaviour for Pods that are not in a tray.
+and `mark_node_failed` keep their present behaviour for Pods that are not in a tray.
 
 ### 2.3 The host CPU in every tray: authority stays beside the accelerators
 
