@@ -495,8 +495,11 @@ therefore carries an authenticated, single-use grant that binds the object diges
 destination, principal, **the authority-derived project scope** (`ProjectId`), deadline and nonce
 **and the active-write binding** (generation,
 placement epoch, fencing token) of the object, signed by the authority that issued it. Single use
-is enforced by the receiver: consuming the grant and publishing the replica are **one atomic
-step** that records the grant nonce as a tombstone; tombstones are bounded per issuing authority
+is enforced by the receiver in two steps. Before it accepts the first chunk, it **atomically
+reserves** the grant nonce, so a second transfer under the same grant, concurrent or later, is
+refused before any buffer or receiver capacity is reserved for it. Consuming the grant and
+publishing the replica are then **one atomic step** that turns the reservation into a completion
+tombstone; an abandoned or failed transfer turns it into an abandonment tombstone; tombstones are bounded per issuing authority
 (a typed saturation refusal when full) and retained until the grant's deadline plus skew, and
 grant deadlines are bounded like handle deadlines, so the table cannot grow without limit. Each
 grant also names the receiver's **session id**, a random value the receiver draws at every

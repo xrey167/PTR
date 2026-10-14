@@ -111,15 +111,24 @@ and today each of them revokes **per Pod**: `heartbeat` and `register_node` call
 `placement_epoch`) can therefore end up half placed and half revoked, and the half that
 survives is routable with a stale partner.
 
-**Proposal.** A `TraySpec` names its members (`PodId`, `ArtifactId`, `Generation`,
-`ResourceRequirements` each), the **complete ordered per-layer KV chain** they share, and the
-host that acts as its authority process. The chains are derived per member by
+**Proposal.** A `TraySpec` belongs to exactly one project and names its members
+(`(ProjectId, PodId)`, `ArtifactId`, `Generation`, `ResourceRequirements` each). `PodRegistry`
+allows the same `PodId` in two projects, so every placement, membership, lease and fencing lookup
+of a tray is keyed by `(ProjectId, PodId)`, and a member of another project is refused. A tray
+also names the **complete ordered per-layer KV chain** its members share, and the host that acts
+as its authority process. The chains are derived per member by
 `crates/ptr-pods/src/kv_chain.rs`; the root `chain(-1)` alone is not enough, because layer
 weights and most layer configuration enter only in `chain(l)` (`crates/ptr-pods/tests/kv_chain.rs`
 checks that changing a layer's key norm leaves `root()` unchanged). `assign_tray` therefore
 requires exact equality of every member's layer count and every `chain(l)` (equivalently of
 `final_id()` together with the layer count, since each `chain(l)` folds in its predecessor), so a
-tray is homogeneous the way an NVL72 rack is.
+tray shares KV the way an NVL72 rack does. The KV chain is not a full model identity: a change
+to a layer's FFN or the output path that leaves every stored K/V unchanged moves no chain
+(`crates/ptr-pods/tests/kv_chain.rs`, `ffn_change_at_layer_l_changes_chain_after_l_only`). So
+`assign_tray` also requires equality of every member's complete base-model artifact and manifest
+digest and of its numeric configuration (dtype, quantisation, numeric regime). The KV chains are
+the condition for sharing KV; the model digest and numeric configuration are the condition for
+homogeneity.
 `PodPlacementController::assign_tray` places all members or none under **one** placement epoch
 and **one** tray `FencingToken`; the per-member `FencedStateLease` carries the tray token in
 addition to its own. Any event that would revoke one member revokes the tray **at that event**:
