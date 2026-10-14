@@ -7,7 +7,7 @@
 //! client-chosen request id is replaced by a SHA-256 digest prefix (never recorded raw). The file is
 //! capped: a batch that would exceed `max_export_bytes` is dropped and counted.
 
-use crate::options::{RequestTracingOptions, ServerOptionsError};
+use crate::options::{RequestTracingOptions, ServerOptionsError, MAX_TRACE_EXPORT_BYTES};
 use axum::{
     extract::{MatchedPath, Request, State},
     middleware::Next,
@@ -43,6 +43,11 @@ impl RequestTracing {
     pub(crate) fn new(options: RequestTracingOptions) -> Result<Self, ServerOptionsError> {
         if options.max_export_bytes == 0 {
             return Err(ServerOptionsError::ZeroTraceExportCap);
+        }
+        if options.max_export_bytes > MAX_TRACE_EXPORT_BYTES {
+            return Err(ServerOptionsError::TraceExportCapTooLarge {
+                max: MAX_TRACE_EXPORT_BYTES,
+            });
         }
         let unavailable = |error: std::io::Error| ServerOptionsError::TraceExportUnavailable {
             path: options.export_path.clone(),

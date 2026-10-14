@@ -16,6 +16,7 @@ implemented = [
   "Risk/disagreement verification policy producing Agree/SampleVerified/Disputed/NeedsFullCheck with typed reasons (kind/extension mismatch, invalid or too-deep JSON, classifier disagreement, probability divergence, lossy decoding, always full check for write/network/exec effects)",
   "PolicyConfig::validate and IngressPipeline::try_new reject NaN, infinite or out-of-[0, 1] policy thresholds with a typed PolicyConfigError; IngressPipeline::new and evaluate_policy stay infallible but fail closed by replacing an invalid threshold with the strictest valid value (0.0 risk/divergence, 1.0 minimum sniff confidence)",
   "IngressPipeline producing an IngressRecord that keeps the untouched raw input next to kind, normalized text, segments, proposal, evidence and decision, with a configurable input size bound and typed errors",
+  "Limit sweep: IngressPipeline::new and try_new clamp IngressConfig::max_input_bytes to MAX_INGRESS_INPUT_BYTES (64 MiB), and parse clamps ParseOptions::max_json_depth and max_segments to MAX_PARSE_JSON_DEPTH and MAX_PARSE_SEGMENTS (JsonTooDeep now reports the effective limit), so a host passing usize::MAX still gets bounded inline input",
 ]
 
 missing = [

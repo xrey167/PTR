@@ -100,6 +100,11 @@ impl TextModel for ScriptedTextModel {
     }
 }
 
+/// Hard maximum of [`PromptOptions::max_tokens`].
+pub const MAX_PROMPT_TOKENS: u32 = 1 << 20;
+/// Hard maximum of [`PromptOptions::max_output_chars`] and [`PromptOptions::max_prompt_chars`].
+pub const MAX_PROMPT_CHARS: usize = 1 << 22;
+
 /// Why an adaptor could not be built.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PromptError {
@@ -107,6 +112,9 @@ pub enum PromptError {
     NoOutputChars,
     /// The prompt budget cannot hold even the template.
     PromptBudgetTooSmall,
+    /// `max_tokens`, `max_output_chars` or `max_prompt_chars` is above [`MAX_PROMPT_TOKENS`] or
+    /// [`MAX_PROMPT_CHARS`].
+    LimitTooLarge,
 }
 
 impl fmt::Display for PromptError {
@@ -115,6 +123,7 @@ impl fmt::Display for PromptError {
             Self::NoTokens => "max_tokens must be positive",
             Self::NoOutputChars => "max_output_chars must be positive",
             Self::PromptBudgetTooSmall => "max_prompt_chars is too small for the template",
+            Self::LimitTooLarge => "a prompt limit is above its hard maximum",
         })
     }
 }
@@ -124,12 +133,12 @@ impl Error for PromptError {}
 /// Bounds on one model call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PromptOptions {
-    /// Token limit passed to the model.
+    /// Token limit passed to the model; at most [`MAX_PROMPT_TOKENS`].
     pub max_tokens: u32,
-    /// The model's answer is cut to this many characters.
+    /// The model's answer is cut to this many characters; at most [`MAX_PROMPT_CHARS`].
     pub max_output_chars: usize,
     /// Whole-prompt cap in characters: the task, previous candidate and issue list are cut so the
-    /// finished prompt, template included, never exceeds it.
+    /// finished prompt, template included, never exceeds it; at most [`MAX_PROMPT_CHARS`].
     pub max_prompt_chars: usize,
 }
 
@@ -143,6 +152,12 @@ impl PromptOptions {
         }
         if self.max_prompt_chars < 256 {
             return Err(PromptError::PromptBudgetTooSmall);
+        }
+        if self.max_tokens > MAX_PROMPT_TOKENS
+            || self.max_output_chars > MAX_PROMPT_CHARS
+            || self.max_prompt_chars > MAX_PROMPT_CHARS
+        {
+            return Err(PromptError::LimitTooLarge);
         }
         Ok(())
     }
@@ -395,6 +410,22 @@ mod tests {
             }),
             Some(PromptError::PromptBudgetTooSmall)
         );
+        for options in [
+            PromptOptions {
+                max_tokens: u32::MAX,
+                ..options()
+            },
+            PromptOptions {
+                max_output_chars: usize::MAX,
+                ..options()
+            },
+            PromptOptions {
+                max_prompt_chars: usize::MAX,
+                ..options()
+            },
+        ] {
+            assert_eq!(build(options), Some(PromptError::LimitTooLarge));
+        }
         let repairer = PromptedRepairer::<_, String>::new(
             &model,
             "t",

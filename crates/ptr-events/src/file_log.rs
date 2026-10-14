@@ -33,6 +33,10 @@ const OFFSETS_MAGIC: &[u8; 8] = b"PTROFF01";
 const MAX_OFFSETS_BYTES: u64 = (MAX_CONSUMERS * (2 + MAX_FIELD_BYTES + 8) + 16) as u64;
 /// Default segment size.
 pub const DEFAULT_SEGMENT_BYTES: u64 = 8 << 20;
+/// Hard upper bound on [`FileLogConfig::segment_max_bytes`] (1 GiB). Retention only deletes
+/// closed segments, so a segment size that never rolls in practice would defeat it; larger values
+/// are refused with [`PolicyViolation::LimitTooLarge`].
+pub const MAX_SEGMENT_BYTES: u64 = 1 << 30;
 
 /// When appended data is forced to stable storage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,7 +57,8 @@ pub const MAX_FILE_LOG_UNACKED_RECORDS: usize = crate::bus::MAX_BUS_RECORD_CAPAC
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileLogConfig {
     /// A segment is closed before an append that would grow it past this many bytes (a single
-    /// larger record still gets a segment of its own).
+    /// larger record still gets a segment of its own). At most [`MAX_SEGMENT_BYTES`]; larger
+    /// values are refused by [`FileEventLog::open`] with [`PolicyViolation::LimitTooLarge`].
     pub segment_max_bytes: u64,
     pub fsync: FsyncPolicy,
     /// Bound on records some registered consumer has not acknowledged.
@@ -86,7 +91,9 @@ impl FileLogConfig {
                 violation: PolicyViolation::ZeroBound,
             });
         }
-        if self.max_unacked_records > MAX_FILE_LOG_UNACKED_RECORDS {
+        if self.max_unacked_records > MAX_FILE_LOG_UNACKED_RECORDS
+            || self.segment_max_bytes > MAX_SEGMENT_BYTES
+        {
             return Err(BusError::InvalidPolicy {
                 violation: PolicyViolation::LimitTooLarge,
             });
@@ -1241,6 +1248,22 @@ mod tests {
         assert_eq!(config.validate(), Ok(()));
         config.retention = RetentionPolicy::with_max_bytes(usize::MAX);
         assert_eq!(config.validate(), too_large);
+    }
+
+    #[test]
+    fn config_refuses_segment_size_that_never_rolls() {
+        let mut config = FileLogConfig::new(1);
+        config.segment_max_bytes = u64::MAX;
+        assert_eq!(
+            config.validate(),
+            Err(BusError::InvalidPolicy {
+                violation: PolicyViolation::LimitTooLarge,
+            })
+        );
+        config.segment_max_bytes = MAX_SEGMENT_BYTES + 1;
+        assert!(config.validate().is_err());
+        config.segment_max_bytes = MAX_SEGMENT_BYTES;
+        assert_eq!(config.validate(), Ok(()));
     }
 
     #[test]

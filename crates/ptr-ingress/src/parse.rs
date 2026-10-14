@@ -125,9 +125,17 @@ impl ParseIssue {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ParseOptions {
+    /// Clamped to [`MAX_PARSE_JSON_DEPTH`] by [`parse`].
     pub max_json_depth: usize,
+    /// Clamped to [`MAX_PARSE_SEGMENTS`] by [`parse`].
     pub max_segments: usize,
 }
+
+/// Hard maximum of [`ParseOptions::max_json_depth`], the nesting the JSON validator allows.
+pub const MAX_PARSE_JSON_DEPTH: usize = JSON_DEPTH_HARD_CAP;
+
+/// Hard maximum of [`ParseOptions::max_segments`] (about a million segments).
+pub const MAX_PARSE_SEGMENTS: usize = 1 << 20;
 
 impl Default for ParseOptions {
     fn default() -> Self {
@@ -219,6 +227,10 @@ impl Builder<'_> {
 
 /// Parses normalized text into a format guess plus typed, span-carrying segments.
 pub fn parse(text: &NormalizedText, options: &ParseOptions) -> ParsedDocument {
+    let options = &ParseOptions {
+        max_json_depth: options.max_json_depth.min(MAX_PARSE_JSON_DEPTH),
+        max_segments: options.max_segments.min(MAX_PARSE_SEGMENTS),
+    };
     let s = text.text();
     let mut b = Builder {
         norm: text,
@@ -996,6 +1008,22 @@ mod tests {
         assert_eq!(d.segments.len(), 2);
         assert_eq!(doc("  \n\n").format, DocumentFormat::Empty);
         assert!(doc("").segments.is_empty());
+    }
+
+    #[test]
+    fn unbounded_parse_options_are_clamped_and_reported_as_effective() {
+        let nested = format!("{}1{}", "[".repeat(300), "]".repeat(300));
+        let n = normalize(nested.as_bytes(), &NormalizeOptions::default()).unwrap();
+        let d = parse(
+            &n,
+            &ParseOptions {
+                max_json_depth: usize::MAX,
+                max_segments: usize::MAX,
+            },
+        );
+        assert!(d.issues.contains(&ParseIssue::JsonTooDeep {
+            limit: MAX_PARSE_JSON_DEPTH
+        }));
     }
 
     #[test]

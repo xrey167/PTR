@@ -29,11 +29,12 @@ pub use cluster::{
 };
 pub use log::{
     read_log, rotated_path, AppendReport, LogConfig, LogError, ReadMode, ReadOutcome,
-    TrajectoryLog, MAX_KEEP, MIN_ROTATION_BYTES,
+    TrajectoryLog, MAX_KEEP, MAX_ROTATION_BYTES, MIN_ROTATION_BYTES,
 };
 pub use prompted::{
     generation_prompt, repair_prompt, PromptError, PromptOptions, PromptedGenerator,
     PromptedRepairer, PromptedStats, ScriptedTextModel, TextModel, TextModelError,
+    MAX_PROMPT_CHARS, MAX_PROMPT_TOKENS,
 };
 pub use record::{
     OutcomeRecord, RecordError, StepRecord, TrajectoryRecord, UsageRecord, MAX_ID_CHARS,
