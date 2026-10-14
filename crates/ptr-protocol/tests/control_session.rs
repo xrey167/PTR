@@ -269,3 +269,59 @@ fn every_truncation_of_every_frame_kind_is_an_error() {
         assert_eq!(decode(&bytes), Ok(frame));
     }
 }
+
+/// A Reply that is late rather than lost: the caller retries, the peer answers the retry from
+/// its completed cache, and both Replies arrive. The second one must not abort the session.
+#[test]
+fn duplicate_reply_after_retry_with_delayed_original_is_ignored_and_counted() {
+    let ((mut a, mut ta), (mut b, mut tb)) = handshake();
+    let mut handler = |p: &TypedPayload| payload(&[b"echo:".as_slice(), &p.bytes].concat());
+
+    ta.send(&a.call(key("k"), payload(b"one")).unwrap())
+        .unwrap();
+    b.pump(&mut tb).unwrap();
+    b.serve_all(&mut tb, &mut handler).unwrap();
+    // The original Reply is delayed: it sits unread in a's inbound queue. The caller retries
+    // meanwhile and the peer answers the retry from its cache.
+    ta.send(&a.retry(1).unwrap()).unwrap();
+    assert_eq!(
+        b.pump(&mut tb).unwrap(),
+        vec![SessionEvent::DuplicateServed { seq: 1 }]
+    );
+
+    // Both Replies now reach the caller in one pump.
+    let events = a.pump(&mut ta).unwrap();
+    assert_eq!(
+        events,
+        vec![
+            SessionEvent::Replied {
+                seq: 1,
+                payload: payload(b"echo:one")
+            },
+            SessionEvent::DuplicateIgnored { seq: 1 },
+        ]
+    );
+    assert_eq!(a.outstanding_calls(), 0);
+    assert_eq!(a.duplicate_replies_ignored(), 1);
+
+    // A recently completed seq answered with a different payload, and a seq never sent, stay
+    // typed errors.
+    tb.send(&ControlFrame::Reply {
+        seq: 1,
+        payload: payload(b"echo:other"),
+    })
+    .unwrap();
+    assert_eq!(
+        a.pump(&mut ta),
+        Err(DriveError::Session(SessionError::UnknownSeq { seq: 1 }))
+    );
+    tb.send(&ControlFrame::Reply {
+        seq: 77,
+        payload: payload(b"x"),
+    })
+    .unwrap();
+    assert_eq!(
+        a.pump(&mut ta),
+        Err(DriveError::Session(SessionError::UnknownSeq { seq: 77 }))
+    );
+}
