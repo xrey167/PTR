@@ -127,3 +127,47 @@ fn inner_sink_errors_propagate() {
         "sink_unavailable"
     );
 }
+
+const TOKEN_REQUEST_IDS: [&str; 2] = [
+    "Bearer abcdef0123456789",
+    "q8Zr3xK9LmP2vB7nT5yW1cD6hJ4sA0eFgUiOpXzRtYu",
+];
+
+#[test]
+fn secret_looking_request_id_never_reaches_inner_sink() {
+    for token in TOKEN_REQUEST_IDS {
+        let sink = RedactingSink::new(MemorySink::new(4));
+        let event = TraceEvent::request(
+            TraceLevel::Info,
+            "login",
+            RequestId::from(token),
+            Revision(1),
+        );
+        sink.emit(&event).expect("emit");
+
+        let seen = sink.inner().events();
+        assert!(!format!("{seen:?}").contains(token), "leaked {token}");
+        assert_eq!(
+            seen[0].fields[fields::REQUEST_ID],
+            TraceValue::String(REDACTED.into())
+        );
+        assert_eq!(sink.redacted_values(), 1);
+    }
+}
+
+#[test]
+fn ordinary_request_id_is_preserved_as_typed_value() {
+    let sink = RedactingSink::new(MemorySink::new(4));
+    let event = TraceEvent::request(
+        TraceLevel::Info,
+        "ok",
+        RequestId::from("req-42"),
+        Revision(1),
+    );
+    sink.emit(&event).expect("emit");
+    assert_eq!(
+        sink.inner().events()[0].fields[fields::REQUEST_ID],
+        TraceValue::RequestId(RequestId::from("req-42"))
+    );
+    assert_eq!(sink.redacted_values(), 0);
+}
