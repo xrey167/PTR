@@ -80,12 +80,16 @@ fn chunk(bytes: &[u8]) -> ChunkDescriptor {
     ChunkDescriptor::for_bytes(0, 0, bytes)
 }
 
-const SMALL_NEED: u64 = 4 * 4096;
+/// Locked bytes the small tests need at most: four pages of the probed host page size (64 KiB
+/// pages on some aarch64 kernels make this 256 KiB, not 16 KiB).
+fn small_need() -> u64 {
+    4 * backend(0).page_size() as u64
+}
 
 #[test]
 fn roundtrip_and_capabilities() {
     let _guard = serial();
-    if !memlock_allows("roundtrip_and_capabilities", SMALL_NEED) {
+    if !memlock_allows("roundtrip_and_capabilities", small_need()) {
         return;
     }
     let tier = backend(4);
@@ -110,7 +114,7 @@ fn identical_reput_is_ok_and_forged_bytes_are_refused() {
     let _guard = serial();
     if !memlock_allows(
         "identical_reput_is_ok_and_forged_bytes_are_refused",
-        SMALL_NEED,
+        small_need(),
     ) {
         return;
     }
@@ -177,7 +181,7 @@ fn budget_is_charged_with_the_page_rounded_footprint() {
     let _guard = serial();
     if !memlock_allows(
         "budget_is_charged_with_the_page_rounded_footprint",
-        SMALL_NEED,
+        small_need(),
     ) {
         return;
     }
@@ -205,7 +209,7 @@ fn budget_is_charged_with_the_page_rounded_footprint() {
 #[test]
 fn put_over_budget_is_refused_and_leaves_budget_and_content_unchanged() {
     let _guard = serial();
-    if !memlock_allows("put_over_budget_is_refused", SMALL_NEED) {
+    if !memlock_allows("put_over_budget_is_refused", small_need()) {
         return;
     }
     let tier = backend(2);
@@ -249,7 +253,7 @@ fn delete_releases_the_budget_and_cycles_do_not_leak() {
     let _guard = serial();
     if !memlock_allows(
         "delete_releases_the_budget_and_cycles_do_not_leak",
-        SMALL_NEED,
+        small_need(),
     ) {
         return;
     }
@@ -291,7 +295,7 @@ fn verify_chunk_reports_digest_length_and_validity() {
     let _guard = serial();
     if !memlock_allows(
         "verify_chunk_reports_digest_length_and_validity",
-        SMALL_NEED,
+        small_need(),
     ) {
         return;
     }
@@ -318,7 +322,7 @@ fn verify_chunk_reports_digest_length_and_validity() {
 #[test]
 fn empty_chunk_costs_one_page() {
     let _guard = serial();
-    if !memlock_allows("empty_chunk_costs_one_page", SMALL_NEED) {
+    if !memlock_allows("empty_chunk_costs_one_page", small_need()) {
         return;
     }
     let tier = backend(1);
@@ -337,6 +341,21 @@ fn mlock_refusal_is_a_typed_error_with_no_charge() {
         eprintln!("SKIP mlock_refusal_is_a_typed_error_with_no_charge: RLIMIT_MEMLOCK unlimited or unreadable");
         return;
     };
+    // The test allocates and hashes more than the whole limit; above this cap (for example a
+    // GPU worker with a multi-gigabyte limit) it is skipped instead of exhausting memory.
+    const REFUSAL_TEST_CAP: u64 = 256 * 1024 * 1024;
+    if limit > REFUSAL_TEST_CAP {
+        assert!(
+            !in_ci(),
+            "RLIMIT_MEMLOCK {limit} bytes is above the {REFUSAL_TEST_CAP}-byte cap in CI: \
+             the refusal path was not exercised"
+        );
+        eprintln!(
+            "SKIP mlock_refusal_is_a_typed_error_with_no_charge: RLIMIT_MEMLOCK {limit} bytes \
+             is above the {REFUSAL_TEST_CAP}-byte cap"
+        );
+        return;
+    }
     let probe = backend(0);
     let page = probe.page_size();
     // One chunk that is larger than the whole limit, with a budget that would admit it.

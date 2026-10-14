@@ -5,7 +5,7 @@
 
 **Component count:** 34  
 **Maturity distribution:** `foundation`: 1, `prototype`: 22, `research-scaffold`: 1, `scaffold`: 10  
-**Rust footprint:** 283 source files · 146653 nonblank source lines · 248 integration-test files · 3491 test markers (`#[test]`, `#[tokio::test]`)
+**Rust footprint:** 283 source files · 146658 nonblank source lines · 248 integration-test files · 3491 test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -17,7 +17,7 @@
 | [ptr-events](../../crates/ptr-events/README.md) | `scaffold` | 2 | 306 | 2 | 8 | 9 | 4 | E001:planned, F001:frozen | event-streaming:open |
 | [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 3 | 458 | 2 | 18 | 7 | 7 | R001:frozen, E001:planned, E003:planned | execution-runtime:open |
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | `prototype` | 5 | 1597 | 3 | 36 | 18 | 9 | — | — |
-| [ptr-fabric](../../crates/ptr-fabric/README.md) | `prototype` | 4 | 357 | 3 | 23 | 5 | 6 | — | — |
+| [ptr-fabric](../../crates/ptr-fabric/README.md) | `prototype` | 4 | 362 | 3 | 23 | 5 | 6 | — | — |
 | [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 3189 | 4 | 85 | 13 | 3 | M008:frozen, L003:completed | fast-weight-memory:open |
 | [ptr-feedback](../../crates/ptr-feedback/README.md) | `scaffold` | 3 | 775 | 3 | 21 | 5 | 4 | F001:frozen, E001:planned | — |
 | [ptr-ingress](../../crates/ptr-ingress/README.md) | `scaffold` | 1 | 45 | 1 | 1 | 4 | 4 | E001:planned, E004:planned | ingress-classifier:open |

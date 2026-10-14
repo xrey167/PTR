@@ -40,6 +40,13 @@ fn the_bound_itself_is_accepted_and_one_more_byte_is_refused() {
 #[test]
 fn an_empty_tensor_is_refused() {
     assert_eq!(export_bytes(&[]), Err(FabricError::EmptyTensor));
+    // A hand-built empty handle whose length and digest commit to the empty slice.
+    let empty = handle(
+        CarrierLocator::Bytes { inline: Vec::new() },
+        0,
+        content_digest(&[]),
+    );
+    assert_eq!(import_bytes(&empty), Err(FabricError::EmptyTensor));
 }
 
 #[test]

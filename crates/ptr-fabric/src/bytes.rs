@@ -23,7 +23,8 @@ pub fn export_bytes(bytes: &[u8]) -> Result<CarrierLocator, FabricError> {
     })
 }
 
-/// Import the bytes of a `Bytes` handle: the carrier and locator must be `Bytes`, the length
+/// Import the bytes of a `Bytes` handle: the carrier and locator must be `Bytes`, the payload
+/// must not be empty, the length
 /// must equal `byte_len` and the SHA-256 must equal `content_digest`. The bytes are returned
 /// only when all of that holds.
 pub fn import_bytes(handle: &TensorHandle) -> Result<&[u8], FabricError> {
@@ -33,6 +34,10 @@ pub fn import_bytes(handle: &TensorHandle) -> Result<&[u8], FabricError> {
     let CarrierLocator::Bytes { inline } = &handle.locator else {
         return Err(FabricError::WrongLocator);
     };
+    // An empty tensor has no region and no handle, on import as on export.
+    if inline.is_empty() {
+        return Err(FabricError::EmptyTensor);
+    }
     let found = inline.len() as u64;
     // Self-contained bound: a hand-built handle is not hashed beyond the inline limit.
     if found > MAX_INLINE_BYTES {
