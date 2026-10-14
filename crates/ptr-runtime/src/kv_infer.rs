@@ -645,8 +645,9 @@ impl RevokedInputs {
                 // Fed adapter lifecycle events from a ledger, the backend is ledger-anchored
                 // from here on (see `strict_adapters`).
                 self.strict_adapters = true;
-                self.revoked
-                    .insert((crate::adapter::adapter_key(project, adapter), *generation));
+                let key = crate::adapter::adapter_key(project, adapter);
+                self.revoked.insert((key.clone(), *generation));
+                self.prune_adapter(&key);
             }
             LedgerEvent::AdapterPromoted {
                 project,
@@ -658,6 +659,7 @@ impl RevokedInputs {
             } => {
                 self.strict_adapters = true;
                 let key = crate::adapter::adapter_key(project, adapter);
+                let key_for_prune = key.clone();
                 self.raise_floor(key.clone(), *generation);
                 // The promoted generation, the digest of the weights it was promoted with and the
                 // base model it was promoted for.
@@ -670,6 +672,7 @@ impl RevokedInputs {
                 if *generation >= current.generation {
                     *current = promoted;
                 }
+                self.prune_adapter(&key_for_prune);
             }
             // Every other kind leaves no input dead. Listed, not wildcarded, so a new event
             // kind cannot be ignored here without someone deciding it.
@@ -697,6 +700,32 @@ impl RevokedInputs {
             | LedgerEvent::ExpertAuthorityChanged { .. }
             | LedgerEvent::EgressRefused { .. }
             | LedgerEvent::ImprovementCycleRecorded { .. } => {}
+        }
+    }
+
+    /// Bound the revocation tombstones of one adapter key. Whatever is below the supersession
+    /// floor is already not live and goes; at most `MAX_GENERATIONS_PER_ADAPTER` stay, the
+    /// highest, so the revocation of the current generation is always kept.
+    fn prune_adapter(&mut self, key: &str) {
+        let floor = self.floors.get(key).copied();
+        let kept: Vec<Generation> = self
+            .revoked
+            .range((key.to_owned(), Generation(0))..=(key.to_owned(), Generation(u64::MAX)))
+            .map(|(_, generation)| *generation)
+            .collect();
+        let mut live = Vec::new();
+        for generation in kept {
+            if floor.is_some_and(|floor| generation < floor) {
+                self.revoked.remove(&(key.to_owned(), generation));
+            } else {
+                live.push(generation);
+            }
+        }
+        let max = crate::adapter::MAX_GENERATIONS_PER_ADAPTER;
+        if live.len() > max {
+            for old in &live[..live.len() - max] {
+                self.revoked.remove(&(key.to_owned(), *old));
+            }
         }
     }
 
@@ -1976,5 +2005,50 @@ mod tests {
             ReferenceKvReuseBackend::new(ReferenceKvLimits::default(), blank),
             Err(ReferenceKvError::InvalidScope)
         ));
+    }
+
+    #[test]
+    fn adapter_revocation_tombstones_are_bounded_and_the_current_one_stays_refused() {
+        let mut inputs = RevokedInputs::default();
+        let project = ProjectId::from("alpha");
+        let key = crate::adapter::adapter_key(&project, "coder");
+        for generation in 1..=100u64 {
+            inputs.note_event(&LedgerEvent::AdapterPromoted {
+                project: project.clone(),
+                adapter: "coder".into(),
+                generation: Generation(generation),
+                base: [1; 32],
+                artifact_sha256: [2; 32],
+                gate_report_digest: [3; 32],
+            });
+            inputs.note_event(&LedgerEvent::AdapterRevoked {
+                project: project.clone(),
+                adapter: "coder".into(),
+                generation: Generation(generation),
+                reason: "revoked".into(),
+            });
+        }
+        // Everything below the supersession floor is already not live and was dropped; at most
+        // 64 stay, the current generation's among them.
+        let kept = inputs
+            .revoked
+            .iter()
+            .filter(|(identity, _)| *identity == key)
+            .count();
+        assert!(
+            kept <= crate::adapter::MAX_GENERATIONS_PER_ADAPTER,
+            "{kept} kept"
+        );
+        assert!(inputs.revoked.contains(&(key.clone(), Generation(100))));
+        let current = KvDependency::adapter(&key, Generation(100), [2; 32]);
+        assert!(
+            !inputs.is_live(&current),
+            "the current revoked generation is refused"
+        );
+        let old = KvDependency::adapter(&key, Generation(1), [2; 32]);
+        assert!(
+            !inputs.is_live(&old),
+            "a pruned old generation is still not live"
+        );
     }
 }

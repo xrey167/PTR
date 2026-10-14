@@ -511,3 +511,26 @@ class KindPinningAndTextTests(unittest.TestCase):
             pool.add_generation("g1", order=1, decisions={"mode": "\ud800"}, outcome=outcome(300))
         self.assertEqual(pool.fingerprint(), before)
         self.assertEqual(len(pool.generations), 1)
+
+
+class NeverSeenDecisionTests(unittest.TestCase):
+    def test_a_decision_the_history_never_named_is_neither_identified_nor_selected(self):
+        pool = linear_pool()
+        simulator = ReplaySimulator(pool)
+        # Known decision at a seen level, plus one the history never named, at value 0.
+        policy = {"x": 2, "never_seen": 0}
+        prediction = simulator.simulate(policy)
+        self.assertTrue(all(not p.identified for p in prediction.values()))
+        self.assertIn("never_seen", next(iter(prediction.values())).unidentified)
+        self.assertEqual(
+            [b["decision"] for b in simulator.extrapolation(policy)], ["never_seen"]
+        )
+        # False counts the same.
+        self.assertTrue(
+            all(not p.identified for p in simulator.simulate({"x": 2, "never_seen": False}).values())
+        )
+        # And it is not selected: only the policy without it is.
+        report = backtest(pool, **PINNED)
+        self.assertTrue(report.predictive)
+        winner = choose_winner(pool, report, [policy, {"x": 2}], **PINNED)
+        self.assertEqual(winner["decisions"], {"x": 2})

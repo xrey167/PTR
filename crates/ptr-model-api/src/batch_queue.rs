@@ -15,7 +15,7 @@
 //!   group whose oldest request arrived first goes first, whatever its key.
 
 use crate::batch::{BatchKey, BatchPolicy, CancelFlag};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// One queued request, with the payload the caller wants back.
 #[derive(Debug)]
@@ -82,24 +82,133 @@ impl From<u64> for Now {
     }
 }
 
+/// One key's requests, oldest first, and where the group is registered in the schedules.
+#[derive(Debug)]
+struct Group<J> {
+    key: BatchKey,
+    entries: BTreeMap<u64, Entry<J>>,
+    /// The deadlines of the entries, counted, so the tightest is the first key.
+    deadlines: BTreeMap<u64, usize>,
+    registered: Registered,
+}
+
+/// The schedule entries a group currently holds, so they can be removed exactly.
+#[derive(Debug, Default)]
+struct Registered {
+    wait: Option<(u64, u64)>,
+    deadline: Option<(u64, u64)>,
+    ready: Option<u64>,
+}
+
+/// The bounded queue.
+///
+/// Readiness is kept incrementally: every key has a group, and each group sits in ordered
+/// schedules (when its oldest request has waited out, when its tightest deadline is within the
+/// margin, and the set of groups that are ready now, by oldest request). A push and a
+/// `take_ready` touch the groups they affect and a logarithmic number of schedule entries; they
+/// never walk the whole queue, however many keys it holds.
 #[derive(Debug)]
 pub(crate) struct BatchQueue<J> {
     policy: BatchPolicy,
-    entries: VecDeque<Entry<J>>,
     next_seq: u64,
+    len: usize,
+    ids: HashMap<BatchKey, u32>,
+    groups: HashMap<u32, Group<J>>,
+    next_gid: u32,
+    /// (arrived + max_wait of the oldest request, its seq, group): monotonic reading.
+    wait_due: BTreeSet<(u64, u64, u32)>,
+    /// (tightest deadline - margin, oldest seq, group): wall reading.
+    deadline_due: BTreeSet<(u64, u64, u32)>,
+    /// (deadline, seq, group) of every request that has one: wall reading.
+    expiry: BTreeSet<(u64, u64, u32)>,
+    /// (oldest seq, group) of the groups that are ready now.
+    ready: BTreeSet<(u64, u32)>,
+    /// Schedule operations and entry visits, for the cost test.
+    ops: u64,
 }
 
 impl<J> BatchQueue<J> {
     pub(crate) fn new(policy: BatchPolicy) -> Self {
         Self {
             policy,
-            entries: VecDeque::new(),
             next_seq: 0,
+            len: 0,
+            ids: HashMap::new(),
+            groups: HashMap::new(),
+            next_gid: 0,
+            wait_due: BTreeSet::new(),
+            deadline_due: BTreeSet::new(),
+            expiry: BTreeSet::new(),
+            ready: BTreeSet::new(),
+            ops: 0,
         }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.entries.len()
+        self.len
+    }
+
+    /// How many schedule operations and entry visits the queue has done.
+    #[cfg(test)]
+    pub(crate) fn ops(&self) -> u64 {
+        self.ops
+    }
+
+    /// Remove every schedule entry of a group.
+    fn unregister(&mut self, gid: u32) {
+        let Some(group) = self.groups.get_mut(&gid) else {
+            return;
+        };
+        let registered = std::mem::take(&mut group.registered);
+        if let Some((due, seq)) = registered.wait {
+            self.wait_due.remove(&(due, seq, gid));
+            self.ops += 1;
+        }
+        if let Some((due, seq)) = registered.deadline {
+            self.deadline_due.remove(&(due, seq, gid));
+            self.ops += 1;
+        }
+        if let Some(seq) = registered.ready {
+            self.ready.remove(&(seq, gid));
+            self.ops += 1;
+        }
+    }
+
+    /// Enter a group in the schedules from its current entries; an empty group is dropped.
+    fn register(&mut self, gid: u32) {
+        let Some(group) = self.groups.get_mut(&gid) else {
+            return;
+        };
+        let Some((&first_seq, first)) = group.entries.iter().next() else {
+            let key = group.key.clone();
+            self.groups.remove(&gid);
+            self.ids.remove(&key);
+            self.ops += 1;
+            return;
+        };
+        let wait = (
+            first.arrived.saturating_add(self.policy.max_wait_millis),
+            first_seq,
+        );
+        let deadline = group.deadlines.keys().next().map(|tightest| {
+            (
+                tightest.saturating_sub(self.policy.deadline_margin_millis),
+                first_seq,
+            )
+        });
+        group.registered.wait = Some(wait);
+        group.registered.deadline = deadline;
+        self.wait_due.insert((wait.0, wait.1, gid));
+        if let Some((due, seq)) = deadline {
+            self.deadline_due.insert((due, seq, gid));
+            self.ops += 1;
+        }
+        if group.entries.len() >= self.policy.max_batch {
+            group.registered.ready = Some(first_seq);
+            self.ready.insert((first_seq, gid));
+            self.ops += 1;
+        }
+        self.ops += 1;
     }
 
     /// Queue one request. The bound is checked before the entry is added.
@@ -112,116 +221,189 @@ impl<J> BatchQueue<J> {
         now: impl Into<Now>,
     ) -> Result<(), QueueFull> {
         let now = now.into();
-        if self.entries.len() >= self.policy.queue_capacity {
+        if self.len >= self.policy.queue_capacity {
             return Err(QueueFull);
         }
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
-        self.entries.push_back(Entry {
-            seq,
-            key,
-            // Queue age is measured on the monotonic reading: a wall clock that steps cannot
-            // stretch or shrink max_wait.
-            arrived: now.mono,
-            deadline,
-            cancel,
-            payload,
-        });
+        let gid = match self.ids.get(&key) {
+            Some(gid) => *gid,
+            None => {
+                let gid = self.next_gid;
+                self.next_gid = self.next_gid.wrapping_add(1);
+                self.ids.insert(key.clone(), gid);
+                self.groups.insert(
+                    gid,
+                    Group {
+                        key: key.clone(),
+                        entries: BTreeMap::new(),
+                        deadlines: BTreeMap::new(),
+                        registered: Registered::default(),
+                    },
+                );
+                gid
+            }
+        };
+        self.unregister(gid);
+        if let Some(group) = self.groups.get_mut(&gid) {
+            group.entries.insert(
+                seq,
+                Entry {
+                    seq,
+                    key,
+                    // Queue age is measured on the monotonic reading: a wall clock that steps
+                    // cannot stretch or shrink max_wait.
+                    arrived: now.mono,
+                    deadline,
+                    cancel,
+                    payload,
+                },
+            );
+            if let Some(deadline) = deadline {
+                *group.deadlines.entry(deadline).or_insert(0) += 1;
+                self.expiry.insert((deadline, seq, gid));
+                self.ops += 1;
+            }
+        }
+        self.len += 1;
+        self.register(gid);
         Ok(())
     }
 
-    /// Remove every entry (the queue is being closed).
+    /// Remove every entry (the queue is being closed), oldest first.
     pub(crate) fn drain(&mut self) -> Vec<Entry<J>> {
-        self.entries.drain(..).collect()
+        let mut all: Vec<Entry<J>> = self
+            .groups
+            .drain()
+            .flat_map(|(_, group)| group.entries.into_values())
+            .collect();
+        all.sort_by_key(|entry| entry.seq);
+        self.ids.clear();
+        self.wait_due.clear();
+        self.deadline_due.clear();
+        self.expiry.clear();
+        self.ready.clear();
+        self.len = 0;
+        all
+    }
+
+    /// Take one entry out of its group, keeping the deadline books.
+    fn remove_entry(&mut self, gid: u32, seq: u64) -> Option<Entry<J>> {
+        let group = self.groups.get_mut(&gid)?;
+        let entry = group.entries.remove(&seq)?;
+        if let Some(deadline) = entry.deadline {
+            if let Some(count) = group.deadlines.get_mut(&deadline) {
+                *count -= 1;
+                if *count == 0 {
+                    group.deadlines.remove(&deadline);
+                }
+            }
+            self.expiry.remove(&(deadline, seq, gid));
+            self.ops += 1;
+        }
+        self.len -= 1;
+        self.ops += 1;
+        Some(entry)
     }
 
     /// Drop what must not reach the model, then take the batch that is ready at `now`, if any.
     pub(crate) fn take_ready(&mut self, now: impl Into<Now>) -> Ready<J> {
         let now = now.into();
         let mut dropped = Vec::new();
-        let mut kept = VecDeque::with_capacity(self.entries.len());
-        for entry in self.entries.drain(..) {
-            if entry.cancel.as_ref().is_some_and(CancelFlag::is_cancelled) {
-                dropped.push((Dropped::Cancelled, entry));
-            } else if entry.deadline.is_some_and(|deadline| deadline <= now.wall) {
-                dropped.push((Dropped::DeadlinePassed, entry));
-            } else {
-                kept.push_back(entry);
-            }
-        }
-        self.entries = kept;
 
-        // One pass over the queue builds a group per distinct key, in order of each key's oldest
-        // request; the cost is linear in the queue however many distinct keys it holds.
-        // Per group: the requests and the milliseconds until it is due. Waiting is judged on the
-        // monotonic reading, deadlines on the wall one; each side is turned into a distance
-        // from now, so the two never meet as absolute times.
-        let mut groups: Vec<(&BatchKey, usize, u64)> = Vec::new();
-        let mut index_of: HashMap<&BatchKey, usize> = HashMap::new();
-        for entry in &self.entries {
-            let index = *index_of.entry(&entry.key).or_insert_with(|| {
-                groups.push((&entry.key, 0, u64::MAX));
-                groups.len() - 1
-            });
-            let group = &mut groups[index];
-            group.1 += 1;
-            group.2 = group.2.min(
-                entry
-                    .arrived
-                    .saturating_add(self.policy.max_wait_millis)
-                    .saturating_sub(now.mono),
-            );
-            if let Some(deadline) = entry.deadline {
-                group.2 = group.2.min(
-                    deadline
-                        .saturating_sub(self.policy.deadline_margin_millis)
-                        .saturating_sub(now.wall),
-                );
-            }
-        }
-        let mut chosen: Option<BatchKey> = None;
-        let mut wake_after: Option<u64> = None;
-        for (key, count, due_in) in groups {
-            if count >= self.policy.max_batch || due_in == 0 {
-                // Groups are visited oldest first, so the first ready one is the one to serve.
-                chosen = Some(key.clone());
+        // Requests whose deadline has passed leave, tightest first.
+        while let Some(&(deadline, seq, gid)) = self.expiry.iter().next() {
+            if deadline > now.wall {
                 break;
             }
-            wake_after = Some(wake_after.map_or(due_in, |at| at.min(due_in)));
+            self.unregister(gid);
+            if let Some(entry) = self.remove_entry(gid, seq) {
+                dropped.push((Dropped::DeadlinePassed, entry));
+            }
+            self.register(gid);
         }
 
-        let batch = chosen.map(|key| {
-            let mut batch = Vec::new();
-            let mut rest = VecDeque::with_capacity(self.entries.len());
-            for entry in self.entries.drain(..) {
-                if entry.key == key && batch.len() < self.policy.max_batch {
-                    batch.push(entry);
+        // Groups that have waited out, or whose tightest deadline is within the margin, are
+        // ready; each moves into the ready set once.
+        while let Some(&(due, seq, gid)) = self.wait_due.iter().next() {
+            if due > now.mono {
+                break;
+            }
+            self.promote(gid, seq);
+        }
+        while let Some(&(due, seq, gid)) = self.deadline_due.iter().next() {
+            if due > now.wall {
+                break;
+            }
+            self.promote(gid, seq);
+        }
+
+        // The ready group whose oldest request arrived first goes first. Cancelled requests of
+        // that group leave with it, unserved.
+        let mut batch = None;
+        while batch.is_none() {
+            let Some(&(_, gid)) = self.ready.iter().next() else {
+                break;
+            };
+            self.unregister(gid);
+            let mut taken = Vec::new();
+            while taken.len() < self.policy.max_batch {
+                let Some(&seq) = self
+                    .groups
+                    .get(&gid)
+                    .and_then(|group| group.entries.keys().next())
+                else {
+                    break;
+                };
+                self.ops += 1;
+                let Some(entry) = self.remove_entry(gid, seq) else {
+                    break;
+                };
+                if entry.cancel.as_ref().is_some_and(CancelFlag::is_cancelled) {
+                    dropped.push((Dropped::Cancelled, entry));
                 } else {
-                    rest.push_back(entry);
+                    taken.push(entry);
                 }
             }
-            self.entries = rest;
-            batch
-        });
-        // After a dispatch the remainder is looked at again straight away.
-        let wake_after = if batch.is_some() && !self.entries.is_empty() {
+            self.register(gid);
+            if !taken.is_empty() {
+                batch = Some(taken);
+            }
+        }
+
+        // When to look again: after a dispatch the remainder straight away, otherwise at the
+        // nearest of the three schedules, each as a distance from its own reading.
+        let mut wake_after = if batch.is_some() && self.len > 0 {
             Some(0)
         } else {
-            wake_after
+            None
         };
-        // A deadline inside the queue is itself a time to look again, so it is dropped on time.
-        let wake_after = self.entries.iter().filter_map(|entry| entry.deadline).fold(
-            wake_after,
-            |at, deadline| {
-                let in_ms = deadline.saturating_sub(now.wall);
-                Some(at.map_or(in_ms, |at| at.min(in_ms)))
-            },
-        );
-        debug_assert!(self.entries.iter().all(|entry| entry.seq < self.next_seq));
+        let mut sooner = |distance: u64| {
+            wake_after = Some(wake_after.map_or(distance, |at: u64| at.min(distance)));
+        };
+        if let Some(&(due, _, _)) = self.wait_due.iter().next() {
+            sooner(due.saturating_sub(now.mono));
+        }
+        if let Some(&(due, _, _)) = self.deadline_due.iter().next() {
+            sooner(due.saturating_sub(now.wall));
+        }
+        if let Some(&(deadline, _, _)) = self.expiry.iter().next() {
+            sooner(deadline.saturating_sub(now.wall));
+        }
         Ready {
             dropped,
             batch,
             wake_after,
+        }
+    }
+
+    /// Move a group whose schedule entry came due into the ready set.
+    fn promote(&mut self, gid: u32, seq: u64) {
+        self.unregister(gid);
+        if let Some(group) = self.groups.get_mut(&gid) {
+            group.registered.ready = Some(seq);
+            self.ready.insert((seq, gid));
+            self.ops += 1;
         }
     }
 }
@@ -271,6 +453,43 @@ mod tests {
             "two scans of {capacity} distinct keys took {:?}",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn a_push_and_a_take_cost_a_logarithmic_number_of_operations_in_the_queue_size() {
+        let capacity = 65_536;
+        let mut queue = BatchQueue::new(policy(8, 1_000, capacity));
+        for n in 0..capacity {
+            // One arrival on a fresh key, then the worker looks at the queue, as it does for
+            // every wake-up.
+            queue
+                .push(
+                    key(&format!("adapter-{n}")),
+                    None,
+                    None,
+                    n as u32,
+                    n as u64 / 64,
+                )
+                .unwrap();
+            assert!(queue.take_ready(0).batch.is_none());
+        }
+        // Per arrival a handful of schedule operations, not a walk of the queue: well under
+        // 64 per arrival (a full scan would be tens of thousands).
+        assert!(
+            queue.ops() < 64 * capacity as u64,
+            "{} operations for {capacity} arrivals",
+            queue.ops()
+        );
+        // Everything has waited out: one request leaves per call. Becoming ready is paid once per
+        // group, so the whole drain stays within a bounded cost per request too.
+        let before = queue.ops();
+        let mut served = 0;
+        while queue.len() > 0 {
+            assert!(queue.take_ready(10_000).batch.is_some());
+            served += 1;
+        }
+        assert_eq!(served, capacity);
+        assert!(queue.ops() - before < 64 * capacity as u64);
     }
 
     #[test]

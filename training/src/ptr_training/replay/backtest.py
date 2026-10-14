@@ -317,6 +317,9 @@ class ReplaySimulator:
         self._categories: dict[str, list[str]] = {}
         self._zero_based: set[str] = set()
         self._levels: dict[str, dict[str, float]] = {}
+        # Every decision the kept history names. A decision outside this set was never shown,
+        # whatever value it is asked about with.
+        self._known: set[str] = set()
         for index, generation in enumerate(self.generations):
             if index == 0:
                 self._zero_based = {
@@ -325,6 +328,7 @@ class ReplaySimulator:
             self._levels[generation.name] = levels_of(
                 generation.decisions, self._categories, self._zero_based, register=True
             )
+            self._known |= set(generation.decisions)
 
     def _fit(self) -> tuple[dict[str, dict[str, float]], list[dict[str, Any]]]:
         slopes: dict[str, dict[str, list[float]]] = {}
@@ -401,8 +405,14 @@ class ReplaySimulator:
     def simulate(self, decisions: Mapping[str, Level]) -> dict[str, Prediction]:
         self._check_kinds(decisions)
         levels = levels_of(decisions, dict(self._categories), self._zero_based)
+        # Unknown by name: a decision the history never named is unidentified even at 0 or
+        # False; a named decision that never moved is identified only at level 0.
         unknown = tuple(
-            sorted(n for n, level in levels.items() if level != 0.0 and n not in self.responses)
+            sorted(
+                n
+                for n, level in levels.items()
+                if n not in self._known or (level != 0.0 and n not in self.responses)
+            )
         )
         if self.baseline is not None and not unknown:
             # A response times a level can still leave the finite numbers.
@@ -431,6 +441,10 @@ class ReplaySimulator:
         self._check_kinds(decisions)
         beyond = []
         for name, level in levels_of(decisions, dict(self._categories), self._zero_based).items():
+            if name not in self._known:
+                # Never shown at all: beyond the history whatever the value.
+                beyond.append({"decision": name, "level": level, "observed": []})
+                continue
             low, high = self.limits.get(name, (0.0, 0.0))
             if level < low or level > high:
                 beyond.append({"decision": name, "level": level, "observed": [low, high]})
