@@ -130,6 +130,8 @@ pub struct BoundedStream<S: StreamSource> {
     source: S,
     options: StreamOptions,
     buffer: VecDeque<StreamItem>,
+    /// Effective look-ahead bound: `buffer_capacity` clamped into `1..=MAX_STREAM_BUFFER`.
+    buffer_limit: usize,
     source_done: bool,
     delivered: usize,
     ended: bool,
@@ -137,11 +139,12 @@ pub struct BoundedStream<S: StreamSource> {
 
 impl<S: StreamSource> BoundedStream<S> {
     pub fn new(source: S, options: StreamOptions) -> Self {
-        let capacity = options.limits.buffer_capacity.min(MAX_STREAM_BUFFER);
+        let capacity = options.limits.buffer_capacity.clamp(1, MAX_STREAM_BUFFER);
         Self {
             source,
             options,
             buffer: VecDeque::with_capacity(capacity),
+            buffer_limit: capacity,
             source_done: false,
             delivered: 0,
             ended: false,
@@ -166,7 +169,7 @@ impl<S: StreamSource> BoundedStream<S> {
     }
 
     fn refill(&mut self) -> Result<(), GenerationError> {
-        while !self.source_done && self.buffer.len() < self.options.limits.buffer_capacity {
+        while !self.source_done && self.buffer.len() < self.buffer_limit {
             // Checked between every source step, not once per refill.
             self.check_stop()?;
             match self.source.next_item()? {
@@ -372,6 +375,47 @@ impl StreamingBackend for ReferenceByteStreamingBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Endless source that fails after `stop_after` pulls so a defect cannot exhaust memory.
+    struct EndlessSource {
+        pulled: usize,
+        stop_after: usize,
+    }
+
+    impl StreamSource for EndlessSource {
+        fn next_item(&mut self) -> Result<Option<StreamItem>, GenerationError> {
+            self.pulled += 1;
+            if self.pulled > self.stop_after {
+                return Err(GenerationError::StreamClosed);
+            }
+            Ok(Some(StreamItem::Model(ModelEvent::Finished)))
+        }
+    }
+
+    #[test]
+    fn oversized_public_buffer_capacity_is_clamped_by_new() {
+        for capacity in [usize::MAX, MAX_STREAM_BUFFER + 1, 0] {
+            let options = StreamOptions {
+                limits: StreamLimits {
+                    max_tokens: 4,
+                    buffer_capacity: capacity,
+                },
+                ..StreamOptions::default()
+            };
+            let source = EndlessSource {
+                pulled: 0,
+                stop_after: 3 * MAX_STREAM_BUFFER,
+            };
+            let mut stream = BoundedStream::new(source, options);
+            let _ = stream.next_event();
+            assert!(stream.buffered() <= MAX_STREAM_BUFFER);
+            assert!(
+                stream.source.pulled <= MAX_STREAM_BUFFER,
+                "pulled {} items with capacity {capacity}",
+                stream.source.pulled
+            );
+        }
+    }
 
     #[test]
     fn limits_reject_zero_and_oversize() {
